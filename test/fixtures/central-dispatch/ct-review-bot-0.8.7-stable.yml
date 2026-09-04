@@ -1,0 +1,143 @@
+name: Review Yeti
+
+# Base-owned trigger shim. The provider credential, transport policy, review
+# implementation, and verdict enforcement live in exampleorg/example-review-actions.
+# This workflow sends only immutable review coordinates, then fails closed until
+# the correlated central run succeeds for the still-current PR head.
+on:
+  pull_request_target:
+    branches:
+      - 0.8.6-stable
+      - 0.8.7-stable
+      - 0.8.8-stable
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+# A superseded review has no evidentiary value. The replacement run must still
+# complete successfully for the new exact head before this required context can
+# pass. Merge-group placeholders are never cancelled by a PR synchronization.
+concurrency:
+  group: ct-review-bot-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  review:
+    # Preserve the existing required status context emitted by the former
+    # reusable-workflow job: outer job `Review Yeti` / called job `Review Yeti`.
+    name: Review Yeti / Review Yeti
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    timeout-minutes: 5
+    env:
+      CENTRAL_REPOSITORY: exampleorg/example-review-actions
+      CENTRAL_EVENT_TYPE: review-yeti-request
+      TARGET_REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REQUEST_ID: example-api:${{ github.event.pull_request.number }}:${{ github.event.pull_request.head.sha }}:${{ github.run_id }}:${{ github.run_attempt }}
+    steps:
+      # Mint the Review Yeti App installation token (REL-519 / REL-522). Every
+      # dispatch, poll, and PR read in this job runs as the ct-review-bot App
+      # (CT_REVIEW_BOT_APP_ID / _PRIVATE_KEY, org secrets) with its own rate
+      # bucket. There is deliberately no PAT fallback: if the App secrets are
+      # missing or the App lacks a permission, this job fails loudly.
+      - name: Mint Review Yeti dispatch token
+        id: ry_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (mutable tag = supply-chain risk on a secret-bearing step)
+        with:
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: example-review-actions,example-api
+
+      - name: Report Review Yeti dispatch identity
+        run: |
+          if [[ -n "${{ steps.ry_token.outputs.token }}" ]]; then
+            echo "Review Yeti dispatch identity: app-token"
+          else
+            echo "::error::Review Yeti App token was not minted; CT_REVIEW_BOT_APP_ID / _PRIVATE_KEY must be provisioned and the ct-review-bot App installed (REL-522). There is no PAT fallback."
+            exit 1
+          fi
+
+      - name: Validate immutable review coordinates
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "The Review Yeti App token is required to dispatch and observe the central review (CT_REVIEW_BOT_APP_ID / _PRIVATE_KEY)." >&2
+            exit 1
+          fi
+          if [[ "${TARGET_REPOSITORY}" != "exampleorg/example-api" ]]; then
+            echo "Unexpected target repository: ${TARGET_REPOSITORY}" >&2
+            exit 1
+          fi
+          if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid pull request number." >&2
+            exit 1
+          fi
+          if [[ ! "${EXPECTED_BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ ! "${EXPECTED_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Base and head coordinates must be full lowercase Git SHAs." >&2
+            exit 1
+          fi
+          if [[ ! "${REQUEST_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]]; then
+            echo "Generated request id is outside the central contract." >&2
+            exit 1
+          fi
+
+          live_coordinates="$(
+            gh api "repos/${TARGET_REPOSITORY}/pulls/${PR_NUMBER}" \
+              --jq '[.state, .base.sha, .head.sha] | @tsv'
+          )"
+          IFS=$'\t' read -r live_state live_base_sha live_head_sha <<<"${live_coordinates}"
+          if [[ "${live_state}" != "open" ]] ||
+             [[ "${live_base_sha}" != "${EXPECTED_BASE_SHA}" ]] ||
+             [[ "${live_head_sha}" != "${EXPECTED_HEAD_SHA}" ]]; then
+            echo "Pull request coordinates changed before central dispatch." >&2
+            exit 1
+          fi
+
+      - name: Dispatch central Review Yeti
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          jq -nc \
+            --arg event_type "${CENTRAL_EVENT_TYPE}" \
+            --arg request_id "${REQUEST_ID}" \
+            --arg repository "${TARGET_REPOSITORY}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --arg base_sha "${EXPECTED_BASE_SHA}" \
+            --arg head_sha "${EXPECTED_HEAD_SHA}" \
+            '{event_type: $event_type, client_payload: {request_id: $request_id, repository: $repository, pr_number: $pr_number, base_sha: $base_sha, head_sha: $head_sha}}' |
+            gh api --method POST "repos/exampleorg/example-review-actions/dispatches" --input - --silent
+
+      - name: Confirm central Review Yeti dispatch
+        run: |
+          echo "Dispatched central Review Yeti for ${TARGET_REPOSITORY}#${PR_NUMBER} (${EXPECTED_HEAD_SHA}) to ${CENTRAL_REPOSITORY}."
+          echo "Central Review Yeti executes asynchronously via repository-dispatch.yml in ${CENTRAL_REPOSITORY}."
+
+  # Required-context placeholder for merge_group events. The PR's exact head
+  # already passed this workflow before queue admission; this job reports the
+  # required context on the queue's synthetic commit without a second review.
+  merge-group-review:
+    name: Review Yeti / Review Yeti
+    if: github.event_name == 'merge_group'
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
+    timeout-minutes: 5
+    steps:
+      - name: Report merge-group result
+        run: |
+          echo "Merge-group admission relies on the constituent pull request's"
+          echo "exact-head Review Yeti result, already required before admission."

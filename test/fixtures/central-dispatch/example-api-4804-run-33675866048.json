@@ -1,0 +1,23 @@
+{
+  "_provenance": {
+    "captured_via": "gh api repos/exampleorg/example-api/actions/runs/33675866048",
+    "captured_at": "2026-09-04T12:36:00Z",
+    "fields": "byte-exact from the live GitHub Actions API response; only fields consumed by validateCentralDispatch (plus id/name/status/conclusion/timestamps for context) are retained.",
+    "known_quirk": "pull_requests is an empty array in this live response because PR #4804 has since closed; GitHub's Actions runs API stops populating pull_requests once the associated PR closes. This is the REL-512 incident run: base 0.8.8-stable while the caller executed from the repository's default branch (0.8.7-stable), which the validator must read the caller-workflow bytes from -- see ../README.md."
+  },
+  "id": 33675866048,
+  "name": "Review Yeti",
+  "event": "pull_request_target",
+  "path": ".github/workflows/ct-review-bot.yml",
+  "head_sha": "a575247e7706d778acab4a3b02230a601cb68580",
+  "head_branch": "chore/API-3142-forward-merge-087-into-088",
+  "run_attempt": 2,
+  "status": "completed",
+  "conclusion": "failure",
+  "created_at": "2026-09-02T19:52:04Z",
+  "run_started_at": "2026-09-02T20:10:12Z",
+  "repository": {
+    "full_name": "exampleorg/example-api"
+  },
+  "pull_requests": []
+}

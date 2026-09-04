@@ -1,0 +1,26 @@
+{
+  "_provenance": {
+    "captured_via": "gh api repos/exampleorg/example-api/commits/a575247e7706d778acab4a3b02230a601cb68580 (association proof) + gh api repos/exampleorg/example-api/pulls/4804 (current state)",
+    "captured_at": "2026-09-04T12:36:00Z",
+    "fields": "number, base.ref ('0.8.8-stable'), base.repo.full_name, base.repo.default_branch ('0.8.7-stable'), head.ref are byte-exact from the live PR API response and unchanged since -- this is exactly the REL-512 divergence: the PR's base branch is 0.8.8-stable but the repository's default branch (the branch GitHub actually executes the pull_request_target caller workflow from) is 0.8.7-stable. state and head.sha are reconstructed to the value they held when run 33675866048 executed: the commit is real (gh api repos/exampleorg/example-api/commits/a575247e... returns a real commit authored 2026-09-02T19:51:52Z, 12 seconds before the run's created_at, titled 'fix: restore lost route and classify audit coverage for the merge's new operations' -- the exact API-3175 audit-classification commit from the 088-realignment punchlist); GitHub's commit-to-PR association lookup no longer lists PR #4804 for this commit because the PR's head has since moved past it, which is the same post-advance quirk documented for the 4820 fixture.",
+    "reconstructed_fields": {
+      "state": "'open' -- the PR was open when run 33675866048 executed.",
+      "head.sha": "a575247e7706d778acab4a3b02230a601cb68580 -- copied from the run's own head_sha; confirmed as a real commit on this PR's branch by timestamp and message content (API-3175 forward-merge audit classification work).",
+      "base.sha": "b6f609c8ea962e7f3f79f983cc6a8fa863ec8d3f -- a real 0.8.8-stable commit (gh api 'repos/exampleorg/example-api/commits?sha=0.8.8-stable&until=2026-09-02T19:52:04Z') closest in time to the run; identical to the 4820 fixture's base because 0.8.8-stable was built directly on top of 0.8.7-stable's tip at that point in the chunked forward-merge (ADR 0515)."
+    }
+  },
+  "number": 4804,
+  "state": "open",
+  "base": {
+    "sha": "b6f609c8ea962e7f3f79f983cc6a8fa863ec8d3f",
+    "ref": "0.8.8-stable",
+    "repo": {
+      "full_name": "exampleorg/example-api",
+      "default_branch": "0.8.7-stable"
+    }
+  },
+  "head": {
+    "sha": "a575247e7706d778acab4a3b02230a601cb68580",
+    "ref": "chore/API-3142-forward-merge-087-into-088"
+  }
+}

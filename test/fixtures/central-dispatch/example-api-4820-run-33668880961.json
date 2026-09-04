@@ -1,0 +1,23 @@
+{
+  "_provenance": {
+    "captured_via": "gh api repos/exampleorg/example-api/actions/runs/33668880961",
+    "captured_at": "2026-09-04T12:36:00Z",
+    "fields": "byte-exact from the live GitHub Actions API response; only fields consumed by validateCentralDispatch (plus id/name/status/conclusion/timestamps for context) are retained -- the full response also carries ~20 *_url link templates that are not part of the validated contract.",
+    "known_quirk": "pull_requests is an empty array in this live response because PR #4820 has since closed; GitHub's Actions runs API stops populating pull_requests once the associated PR closes. This run passed central dispatch validation in production while PR #4820 was still open. See ../README.md."
+  },
+  "id": 33668880961,
+  "name": "Review Yeti",
+  "event": "pull_request_target",
+  "path": ".github/workflows/ct-review-bot.yml",
+  "head_sha": "16fc0123e7977ea15b24f1c20ca6789c601f8573",
+  "head_branch": "ci/API-3154-sticky-producer-atomic-seal",
+  "run_attempt": 7,
+  "status": "completed",
+  "conclusion": "success",
+  "created_at": "2026-09-02T18:42:40Z",
+  "run_started_at": "2026-09-02T19:47:08Z",
+  "repository": {
+    "full_name": "exampleorg/example-api"
+  },
+  "pull_requests": []
+}

@@ -1,0 +1,26 @@
+{
+  "_provenance": {
+    "captured_via": "gh api repos/exampleorg/example-api/commits/16fc0123e7977ea15b24f1c20ca6789c601f8573/pulls (association) + gh api repos/exampleorg/example-api/pulls/4820 (current state)",
+    "captured_at": "2026-09-04T12:36:00Z",
+    "fields": "number, base.ref, base.repo.full_name, base.repo.default_branch, head.ref are byte-exact from the live PR API response (these are stable metadata that do not change once a PR is opened against a given base branch). state and head.sha are reconstructed to the value they held at the moment run 33668880961 executed, because the live PR API now reflects PR #4820 in its current (closed, since-advanced) state: gh api .../commits/16fc0123.../pulls confirms commit 16fc0123e7977ea15b24f1c20ca6789c601f8573 (the run's own head_sha) is associated with PR #4820 against base 0.8.7-stable, proving this really was that PR's head at review time.",
+    "reconstructed_fields": {
+      "state": "'open' -- the PR was open when run 33668880961 executed (a closed/merged PR cannot receive a pull_request_target run).",
+      "head.sha": "16fc0123e7977ea15b24f1c20ca6789c601f8573 -- copied from the run's own head_sha, confirmed via the commit-to-PR association lookup above; the live PR head has since advanced past this commit.",
+      "base.sha": "b6f609c8ea962e7f3f79f983cc6a8fa863ec8d3f -- a real 0.8.7-stable commit (gh api 'repos/exampleorg/example-api/commits?sha=0.8.7-stable&until=2026-09-02T18:42:40Z' i.e. the run's created_at), used as the base tip closest in time to the run; the exact byte-for-byte base SHA GitHub reported to that specific run is not retrievable after the fact via the REST API for a closed PR."
+    }
+  },
+  "number": 4820,
+  "state": "open",
+  "base": {
+    "sha": "b6f609c8ea962e7f3f79f983cc6a8fa863ec8d3f",
+    "ref": "0.8.7-stable",
+    "repo": {
+      "full_name": "exampleorg/example-api",
+      "default_branch": "0.8.7-stable"
+    }
+  },
+  "head": {
+    "sha": "16fc0123e7977ea15b24f1c20ca6789c601f8573",
+    "ref": "ci/API-3154-sticky-producer-atomic-seal"
+  }
+}
