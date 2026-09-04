@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseAndValidateConfig, loadConfig, translateCodeRabbitToV3, ConfigValidationError } from '../../src/config/configLoader';
-import { ctReviewConfigV3Schema } from '../../src/config/schema';
+import { ctReviewConfigV3Schema, CtReviewConfigV3 } from '../../src/config/schema';
 import { formatInlineCommentBody, ASCII_MASCOT, CommentPublisher } from '../../src/github/commentPublisher';
 import { runReviewPipeline } from '../../src/app';
 
@@ -58,7 +58,9 @@ mascot: true
         }
       };
 
-      const v3 = translateCodeRabbitToV3(raw);
+      // translateCodeRabbitToV3's declared return type is `any` in the source; annotate with the
+      // real config schema type so downstream .find/.filter callbacks get real element types.
+      const v3: CtReviewConfigV3 = translateCodeRabbitToV3(raw);
 
       // Tier 1: Personas array exists, non-empty, contains required persona
       expect(Array.isArray(v3.personas)).toBe(true);

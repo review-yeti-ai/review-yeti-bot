@@ -43,7 +43,7 @@ describe('Empirical Verification: Latency Stat Reporting Accuracy in POST /api/o
     Object.entries(providerKeys).forEach(([pId, apiKeyRaw]) => {
       try {
         dashboardStore.updateProviderConfig(pId, {
-          status: 'active',
+          status: 'connected',
           apiKeyRaw,
           enabled: true,
           active: true,

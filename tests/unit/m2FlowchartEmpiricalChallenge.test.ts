@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { createDefaultV3Config } from '../../src/config/configLoader';
-import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
+import { OmniRouteClient, type OmniRouteRequest, type OmniRouteResponse } from '../../src/gateway/omniRouteClient';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
 import { generateMermaidDiagram, analyzeDiffComplexity } from '../../src/review/mermaidEngine';
 
@@ -13,9 +13,9 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
   describe('Corner Case 1: generateArchitecturalFlowchart toggle permutations', () => {
     it('returns mermaidDiagram when generateArchitecturalFlowchart option is explicitly true (even without review_flowchart persona)', async () => {
       const config = createDefaultV3Config();
-      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', apiKey: 'mock' });
+      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
 
-      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: any) => {
+      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
@@ -26,6 +26,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else if (prompt.includes('"role":"moderator"')) {
           return {
@@ -33,6 +34,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else {
           return {
@@ -40,6 +42,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         }
       });
@@ -62,9 +65,9 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
 
     it('returns undefined mermaidDiagram when generateArchitecturalFlowchart is false and review_flowchart is NOT in config', async () => {
       const config = createDefaultV3Config();
-      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', apiKey: 'mock' });
+      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
 
-      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: any) => {
+      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
@@ -75,6 +78,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else if (prompt.includes('"role":"moderator"')) {
           return {
@@ -82,6 +86,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else {
           return {
@@ -89,6 +94,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         }
       });
@@ -113,9 +119,9 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
       });
 
       const config = createDefaultV3Config();
-      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', apiKey: 'mock' });
+      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
 
-      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: any) => {
+      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
@@ -126,6 +132,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else if (prompt.includes('"role":"moderator"')) {
           return {
@@ -133,6 +140,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else {
           return {
@@ -140,6 +148,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         }
       });
@@ -169,9 +178,9 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
         providers: ['synthetic'],
       });
 
-      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', apiKey: 'mock' });
+      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
 
-      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: any) => {
+      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
@@ -186,6 +195,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else if (prompt.includes('"role":"moderator"')) {
           return {
@@ -193,6 +203,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else {
           return {
@@ -200,6 +211,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         }
       });
@@ -230,9 +242,9 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
         providers: ['synthetic'],
       });
 
-      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', apiKey: 'mock' });
+      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
 
-      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: any) => {
+      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
@@ -247,6 +259,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else if (prompt.includes('"role":"moderator"')) {
           return {
@@ -254,6 +267,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         } else {
           return {
@@ -261,6 +275,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
             model: opts.model,
             usage: { prompt: 10, completion: 10, total: 20 },
             costUSD: 0.0001,
+            raw: null,
           };
         }
       });

@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, personaSchema } from '../../src/config/schema';
+import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { DashboardStore } from '../../src/persistence/dashboardStore';
 
 function createMockConfig(overrides?: Partial<CtReviewConfigV3['personas'][number]>): CtReviewConfigV3 {
   return {
+    ...createDefaultV3Config(),
     version: 3,
     profile: 'balanced',
     quorum: 1,
@@ -32,10 +34,13 @@ function createMockConfig(overrides?: Partial<CtReviewConfigV3['personas'][numbe
     },
     path_instructions: [],
     rules: [],
-    reviewer_effort: 'medium',
-    confidence_threshold: 70,
+    reviews: {
+      ...createDefaultV3Config().reviews,
+      reviewer_effort: 'medium',
+      confidence_threshold: 70,
+      mascot: true,
+    },
     mascot: true,
-    display: { mascot: true },
   };
 }
 

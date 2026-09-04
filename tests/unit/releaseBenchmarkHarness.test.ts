@@ -371,8 +371,8 @@ describe('Release Benchmark Harness Engine (scripts/evaluate-release-benchmark.m
 
       expect(result.exitCode).toBe(0);
       expect(result.report).toBeDefined();
-      expect(result.report.models).toEqual(['google/gemini-3.7-flash:high']);
-      expect(result.report.scenarios.length).toBe(7);
+      expect(result.report!.models).toEqual(['google/gemini-3.7-flash:high']);
+      expect(result.report!.scenarios.length).toBe(7);
     });
 
     it('compares against baseline and enforces quality gate cleanly', async () => {

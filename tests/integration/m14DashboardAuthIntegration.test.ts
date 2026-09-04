@@ -366,7 +366,15 @@ describe('M14 Integration: Dashboard REST API & Auth Portal', () => {
         repo,
         prNumber: 42,
         headSha: 'a1b2c3d4e5f67890123456789012345678901234',
-        installationId: 12345,
+        baseSha: 'b2c3d4e5f67890123456789012345678901234a1',
+        title: 'Test PR for disabled automation',
+        body: '',
+        sender: 'octocat',
+        labels: [],
+        triggerSource: 'pr_event',
+        triggerAction: 'opened',
+        deliveryId: 'delivery-m14-disabled-automation',
+        installationId: '12345',
       });
 
       expect(pipelineResult).toEqual({
