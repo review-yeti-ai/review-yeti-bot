@@ -2,7 +2,7 @@
 
 > **Authority:** This guide describes the public GitHub Action release path. CallTelemetry fleet
 > provider policy and consumer rollout remain owned by
-> [`calltelemetry/ct-review-actions`](https://github.com/calltelemetry/ct-review-actions). See
+> [`centralized review actions`](centralized review actions control plane). See
 > [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 The immutable release unit is a `vMAJOR.MINOR.PATCH` tag. The `v1` tag is a rolling consumer channel

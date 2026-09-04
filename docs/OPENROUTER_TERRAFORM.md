@@ -4,11 +4,11 @@
 > **Historical CallTelemetry infrastructure record; non-operational.** The resource identifiers,
 > Doppler paths, mutation commands, and secret handoffs below have not been revalidated. Do not run
 > them or use this file to change provider policy. Current CallTelemetry fleet authority is
-> `calltelemetry/ct-review-actions`. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+> `centralized review actions`. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 This retained record described a direct OpenRouter deployment for the historical `CT Review Fleet`.
 Its provider template and reference stack were associated with the ct-meta
-[`ct-platform/openrouter` skill](https://github.com/calltelemetry/ct-meta/tree/main/plugins/ct-platform/skills/openrouter);
+[`ct-platform/openrouter` skill](OpenRouter skill documentation);
 this repository's [`infra/openrouter/`](../infra/openrouter/) directory is a
 consumer template for operators who need the deployment beside the bot.
 
@@ -99,7 +99,7 @@ without printing it:
 
 ```bash
 doppler secrets get OPENROUTER_REVIEW_FLEET_KEY --project ai-workspace --config dev --plain \
-  | gh secret set OPENROUTER_PR_REVIEW_API_KEY --repo calltelemetry/REPOSITORY --body -
+  | gh secret set OPENROUTER_PR_REVIEW_API_KEY --repo my-org/REPOSITORY --body -
 ```
 
 Do not put the raw key in Terraform outputs, workflow YAML, a shell history, or

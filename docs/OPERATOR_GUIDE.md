@@ -51,7 +51,7 @@ kubectl apply -f k8s/synthetic-secret.yaml
 Verify Kubernetes secrets and server readiness:
 ```bash
 kubectl get secret ct-review-bot-secrets -n ct-review-bot
-curl -s https://review-bot.calltelemetry.com/health | jq .
+curl -s https://review-bot.example.com/health | jq .
 ```
 
 ## GitHub App Bot Authentication & Webhook Setup
@@ -65,8 +65,8 @@ Set the following environment variables in your Kubernetes Secret or Doppler:
 - `GITHUB_WEBHOOK_SECRET`: Secret token for validating HMAC SHA-256 signatures on incoming GitHub webhooks.
 
 ### 2. GitHub Webhook Configuration
-In your GitHub App / Organization Settings (`https://github.com/organizations/calltelemetry/settings/apps/ct-review-bot`):
-- **Webhook URL**: `https://review-bot.calltelemetry.com/webhook`
+In your GitHub App / Organization Settings (`https://github.com/organizations/my-org/settings/apps/review-yeti-bot`):
+- **Webhook URL**: `https://review-bot.example.com/webhook`
 - **Permissions**:
   - `Pull Requests`: Read & Write
   - `Issues`: Read & Write
@@ -92,5 +92,5 @@ a model in the request handler. Configure all allowlists before enabling it:
 - `DATABASE_URL` or `POSTGRES_URL`, plus the GitHub App credentials above.
 
 The Action requests audience `review-yeti-doks-dispatch` and posts to
-`https://review-bot.calltelemetry.com/api/dispatch/action`. Keep App-gate publication disabled
+`https://review-bot.example.com/api/dispatch/action`. Keep App-gate publication disabled
 until the separate worker receipt/finalizer and required-check plans pass exact-head qualification.
