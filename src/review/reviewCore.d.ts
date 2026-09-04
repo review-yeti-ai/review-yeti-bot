@@ -14,6 +14,14 @@ export interface ReviewFinding {
 export interface ReviewChangedFile {
   path: string;
   patch?: string;
+  /**
+   * Gitlink metadata. `reviewCore.js` reads both of these directly --
+   * `isSubmodule === true || String(mode) === '160000'` -- to decide whether a changed entry is a
+   * submodule pointer, but the declaration omitted them, so any caller constructing a
+   * ReviewChangedFile in TypeScript could not express a submodule at all (REL-570).
+   */
+  mode?: string;
+  isSubmodule?: boolean;
 }
 
 export interface ReviewLane {
