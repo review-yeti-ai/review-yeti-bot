@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../../support/timeBudget';
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, expect, it } from 'vitest';
@@ -6,7 +7,6 @@ import { TurnProgressBar } from '../../../src/components/dashboard/TurnProgressB
 import { SessionTurnTimeline } from '../../../src/components/dashboard/SessionTurnTimeline';
 import { FindingsDeltaCard, FindingsDeltaBadge } from '../../../src/components/dashboard/FindingsDeltaCard';
 import { PersonaTurnStep, FindingsDeltaSummary } from '../../../src/types/dashboard';
-import { timeBudgetMs } from '../../support/timeBudget';
 
 describe('M6 Adversarial Edge Case Testing Suite', () => {
 

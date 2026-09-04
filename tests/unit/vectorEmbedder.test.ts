@@ -1,6 +1,6 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import { VectorEmbedder } from '../../src/indexer/vectorEmbedder';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('VectorEmbedder', () => {
   const embedder = new VectorEmbedder();

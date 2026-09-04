@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,7 +15,6 @@ import { scanRepositoryStack } from '../../src/onboarding/stackScanner';
 import { generateCtReviewConfig } from '../../src/onboarding/configGenerator';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
 import { Finding } from '../../src/reflection/nitSuppressionEngine';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('EMPIRICAL STRESS TEST: Milestone 28 & Milestone 29', () => {
   let memoryStore: PRMemoryStore;

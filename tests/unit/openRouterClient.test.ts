@@ -1,9 +1,9 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import { createCassetteFetch } from '../support/cassetteFetch';
 import { LiveStreamBus } from '../../src/live/liveStreamBus';
 import {
-import { timeBudgetMs } from '../support/timeBudget';
   buildOpenRouterChatRequest,
   buildOpenRouterSdkChatRequest,
   normalizeOpenRouterModel,

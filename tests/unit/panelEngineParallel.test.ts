@@ -1,8 +1,8 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, vi } from 'vitest';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { ReviewModelClient, OpenRouterResponse } from '../../src/gateway/openRouterClient';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Panel Engine Parallel Execution', () => {
   const mockConfig: CtReviewConfigV3 = {

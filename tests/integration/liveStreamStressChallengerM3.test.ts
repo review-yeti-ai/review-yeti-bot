@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -12,7 +13,6 @@ import { PersonaTabs } from '../../src/components/live/persona-tabs';
 import { PersonaProgressGrid } from '../../src/components/live/persona-progress-grid';
 import { StreamingMetricsCharts } from '../../src/components/live/streaming-metrics-charts';
 import { ActiveJobsSidebar } from '../../src/components/live/active-jobs-sidebar';
-import { timeBudgetMs } from '../support/timeBudget';
 
 // Mock ResizeObserver for Recharts in jsdom
 beforeEach(() => {

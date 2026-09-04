@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -14,7 +15,6 @@ import {
   ComparativeBenchmarkReport,
 } from '../../src/evaluation/evaluationRunner';
 import { EvaluationScenario, getAllScenarios, getScenarioById } from '../../src/evaluation/scenarios';
-import { timeBudgetMs } from '../support/timeBudget';
 
 describe('Adversarial Verification Suite: EvaluationRunner & Scenarios', () => {
   const rootRepoDir = path.resolve(__dirname, '../..');

@@ -1,3 +1,4 @@
+import { timeBudgetMs } from '../support/timeBudget';
 /**
  * Unit Test Suite: VCR Review Cassette Recording Engine & DeepSeek V4 Flash Low Execution
  * Location: tests/unit/reviewCassetteEngine.test.ts
@@ -34,7 +35,6 @@ import {
   PipelineExecutionResult,
 } from "../../src/evaluation/pipelineHarnessRunner";
 import {
-import { timeBudgetMs } from '../support/timeBudget';
   getAllScenarios,
   getScenarioById,
   EvaluationScenario,
