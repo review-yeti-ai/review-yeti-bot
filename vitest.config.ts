@@ -65,7 +65,16 @@ export default defineConfig({
     ],
     cacheDir: 'node_modules/.vitest',
     pool: 'forks',
-    fileParallelism: false,
+    // REL-560: run test files in parallel. Serial execution left the runner idle -- measured 117%
+    // CPU across a full run on a 16-core machine, versus 443% and a ~4x wall-clock win at four
+    // workers. After #456 gave every worker its own disposable state root, files no longer share
+    // `/tmp/ct-review-bot`, which is what made serial execution load-bearing in the first place.
+    //
+    // Wall-clock budget assertions are the known hazard here: a `toBeLessThan(<ms>)` measured
+    // inside one worker now includes contention from the others. Where those are real signal they
+    // are scaled by the worker count (see tests/support/timing.ts); where a test genuinely cannot
+    // tolerate a neighbour it must say so, not force the whole suite back into single file.
+    fileParallelism: true,
     isolate: true,
     coverage: {
       provider: 'v8',
