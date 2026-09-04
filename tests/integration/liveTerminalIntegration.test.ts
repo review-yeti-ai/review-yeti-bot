@@ -143,7 +143,7 @@ describe('Live Review Terminal Integration Suite (Milestone 35/36)', () => {
       {
         jobId,
         timestamp: new Date().toISOString(),
-        type: 'nit_suppression',
+        type: 'nit:suppression',
         persona: 'quality',
         data: { message: 'Suppressed minor variable naming nit in src/util.ts', path: 'src/util.ts' },
       },

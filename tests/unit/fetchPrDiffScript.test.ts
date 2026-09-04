@@ -209,6 +209,7 @@ function runScript(env: Record<string, string>) {
 
   execFileSync('bash', [scriptPath], {
     env: {
+      NODE_ENV: 'test',
       PATH: process.env.PATH,
       GH_TOKEN: 'fake-token',
       DIFF_OUTPUT_PATH: outputPath,
