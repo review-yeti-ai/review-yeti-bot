@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -137,7 +137,10 @@ describe('Milestone 5 Adversarial Challenger 2: Tier 5 Coverage Hardening & Edge
       const writtenData: string[] = [];
       const headersSet: Record<string, string> = {};
       let isClosed = false;
-      let closeHandler: (() => void) | null = null;
+      // A `let` captured and reassigned only from inside a nested closure loses its narrowed
+      // type outside that closure (TS's flow analysis can't prove when the closure runs), so a
+      // boxed ref keeps the real function type intact at the read site below.
+      const closeHandlerRef: { current: (() => void) | null } = { current: null };
 
       const mockRes: any = {
         setHeader: (key: string, val: string) => {
@@ -150,7 +153,7 @@ describe('Milestone 5 Adversarial Challenger 2: Tier 5 Coverage Hardening & Edge
         },
         on: (event: string, handler: () => void) => {
           if (event === 'close') {
-            closeHandler = handler;
+            closeHandlerRef.current = handler;
           }
         },
       };
@@ -181,8 +184,8 @@ describe('Milestone 5 Adversarial Challenger 2: Tier 5 Coverage Hardening & Edge
       expect(writtenData[5]).toContain('Live event post-connect');
 
       // Simulate client close & cleanup
-      if (closeHandler) {
-        closeHandler();
+      if (closeHandlerRef.current) {
+        closeHandlerRef.current();
       }
 
       // Publish event after disconnect — should not write to closed client
