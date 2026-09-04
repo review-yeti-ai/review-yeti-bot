@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.3...v1.28.4) (2026-09-04)
+
+
+### Bug Fixes
+
+* **test:** scale wall-clock budgets by worker contention (REL-560) ([#460](https://github.com/review-yeti-ai/review-yeti-bot/issues/460)) ([f0697ac](https://github.com/review-yeti-ai/review-yeti-bot/commit/f0697acedffa904c6ab6b108d9a921e3d0f8355f))
+
 ## [1.28.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.28.2...v1.28.3) (2026-09-04)
 
 
