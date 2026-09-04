@@ -9,6 +9,8 @@ export type LiveStreamEventType =
   | 'openrouter:metric'
   | 'ast:lookup'
   | 'nit:suppression'
+  | 'job:queued'
+  | 'job:dispatched'
   | 'job:complete'
   // Legacy event type shims
   | 'agent_start'
