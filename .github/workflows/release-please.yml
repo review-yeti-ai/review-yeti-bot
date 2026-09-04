@@ -30,3 +30,84 @@ jobs:
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  merge-release-pr:
+    name: Merge the release PR once its required checks pass
+    needs: release-please
+    runs-on: ubuntu-latest
+    # The wait below is bounded at 45 minutes; this is the outer guard.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # Every reviewed change that reaches main should become a tagged release without a human
+      # step. Merging this PR is the only manual link left in that chain: release-please tags the
+      # release and publishes it on the next main push, and release.yml's promote-rolling-v1 job
+      # already moves the rolling v1 consumer channel to the validated release commit.
+      #
+      # This is deliberately NOT `gh pr merge --auto`. Auto-merge arms on whatever GitHub reports
+      # for the required contexts and then fires unattended, including on a re-run days later.
+      # Here the run watches one exact head SHA, refuses to merge if any check reports a failing
+      # conclusion, and walks away the moment release-please replaces the head with a newer
+      # release PR.
+      - name: Wait for required checks, then merge
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          pr="$(gh pr list --state open --base main --json number,headRefName \
+            --jq 'map(select(.headRefName | startswith("release-please--branches--main"))) | first | .number // empty')"
+          if [[ -z "$pr" ]]; then
+            echo "No open release pull request; this push released or had nothing to release."
+            exit 0
+          fi
+
+          head="$(gh pr view "$pr" --json headRefOid --jq '.headRefOid')"
+          echo "Watching release PR #${pr} at ${head}."
+
+          deadline=$(( SECONDS + 45 * 60 ))
+          while (( SECONDS < deadline )); do
+            snapshot="$(gh pr view "$pr" --json state,headRefOid,mergeStateStatus,statusCheckRollup)"
+            state="$(jq -r '.state' <<<"$snapshot")"
+            current="$(jq -r '.headRefOid' <<<"$snapshot")"
+            merge_state="$(jq -r '.mergeStateStatus' <<<"$snapshot")"
+
+            if [[ "$state" != "OPEN" ]]; then
+              echo "Release PR #${pr} is ${state}; nothing left to merge."
+              exit 0
+            fi
+            if [[ "$current" != "$head" ]]; then
+              # release-please rewrote the release branch for a newer main commit. That push
+              # started its own run of this workflow, which owns the new head; this one stops
+              # rather than merging a PR whose checks it never watched.
+              echo "Release PR #${pr} moved from ${head} to ${current}; a newer run owns it."
+              exit 0
+            fi
+
+            failing="$(jq -r '
+              [ .statusCheckRollup[]?
+                | (.conclusion // .state)
+                | select(. == "FAILURE" or . == "TIMED_OUT" or . == "ACTION_REQUIRED"
+                         or . == "STARTUP_FAILURE" or . == "ERROR")
+              ] | length' <<<"$snapshot")"
+            if (( failing > 0 )); then
+              echo "::error::Release PR #${pr} has ${failing} failing check(s) at ${head}; refusing to merge."
+              jq -r '.statusCheckRollup[]? | "  \(.name // .context) = \(.conclusion // .state)"' <<<"$snapshot"
+              exit 1
+            fi
+
+            if [[ "$merge_state" == "CLEAN" ]]; then
+              gh pr merge "$pr" --squash
+              echo "Merged release PR #${pr} at ${head}."
+              exit 0
+            fi
+
+            echo "Release PR #${pr} mergeStateStatus=${merge_state}; waiting for its required checks."
+            sleep 30
+          done
+
+          echo "::error::Timed out waiting for release PR #${pr} to become mergeable at ${head}."
+          exit 1
