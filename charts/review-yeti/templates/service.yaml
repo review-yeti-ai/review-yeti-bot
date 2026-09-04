@@ -1,0 +1,26 @@
+{{- if .Values.dispatcher.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "review-yeti.dispatcher.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "review-yeti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dispatcher
+  {{- with .Values.dispatcher.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.dispatcher.service.type }}
+  ports:
+    - port: {{ .Values.dispatcher.service.port }}
+      targetPort: {{ .Values.dispatcher.service.targetPort }}
+      protocol: TCP
+      name: http
+      {{- if and (or (eq .Values.dispatcher.service.type "NodePort") (eq .Values.dispatcher.service.type "LoadBalancer")) .Values.dispatcher.service.nodePort }}
+      nodePort: {{ .Values.dispatcher.service.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "review-yeti.dispatcher.selectorLabels" . | nindent 4 }}
+{{- end }}
