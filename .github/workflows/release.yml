@@ -105,6 +105,12 @@ jobs:
           npm run test:unit
           npm run test:integration
 
+      # REL-559: the end-to-end pack/install/attest closure moved out of the per-pull-request
+      # lane, where it cost 120 of the unit suite's 181 seconds of file time and reached the
+      # public npm registry on every PR. It runs here instead -- before anything is published.
+      - name: Execute Release Packaging Closure Contract
+        run: npm run test:release-contract
+
       - name: Run Benchmark Evaluation & Automated Quality Gate
         id: benchmark
         env:
