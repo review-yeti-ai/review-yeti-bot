@@ -26,8 +26,13 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     # Keep required validation bounded alongside the review job; a stalled install or suite must
-    # not turn CI into an unbounded review wait.
-    timeout-minutes: 15
+    # not turn CI into an unbounded review wait. 15 was too tight to be a stall detector: the
+    # measured full suite plus `npm run build` runs ~9-13 minutes, so ordinary runs were landing
+    # 2 minutes from the cap and two of them (including a post-merge run on main) were killed
+    # mid-`npm run build` and reported as `cancelled`. A release-please PR is the worst case,
+    # because its version bump rewrites package-lock.json and misses the npm/vitest cache key.
+    # 25 keeps a real bound while leaving headroom for a cold cache.
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
