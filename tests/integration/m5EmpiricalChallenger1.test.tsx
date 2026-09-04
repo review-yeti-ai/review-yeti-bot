@@ -64,7 +64,8 @@ describe('Milestone 5 Empirical Challenger 1: Build Cleanliness, Process Isolati
     it('vitest.config.ts uses top-level pool controls without deprecated poolOptions', () => {
       const rawConfig = (config as any).test ? config : (config as any).default || config;
       expect(rawConfig.test?.pool).toBe('forks');
-      expect(rawConfig.test?.fileParallelism).toBe(false);
+      // REL-560: parallel files, still one isolated fork per file.
+      expect(rawConfig.test?.fileParallelism).toBe(true);
       expect(rawConfig.test?.isolate).toBe(true);
       expect(rawConfig.test?.poolOptions).toBeUndefined();
     });

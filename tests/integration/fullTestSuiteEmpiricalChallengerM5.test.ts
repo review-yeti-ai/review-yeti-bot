@@ -10,13 +10,16 @@ describe('Milestone 5 Empirical Challenger: Full Test Suite & Isolation Harness'
   describe('1. Process Isolation Verification under Vitest 4', () => {
     it('vitest.config.ts uses top-level pool controls without deprecated poolOptions', () => {
       expect(config.test?.pool).toBe('forks');
-      expect(config.test?.fileParallelism).toBe(false);
+      // REL-560: files run in parallel. The isolation guarantee this suite actually depends on is
+      // `isolate: true` plus the forks pool -- one fresh process per file -- not serial execution.
+      // Serial execution was a workaround for shared /tmp/ct-review-bot state, removed in #456.
+      expect(config.test?.fileParallelism).toBe(true);
       expect(config.test?.isolate).toBe(true);
       expect((config.test as any)?.poolOptions).toBeUndefined();
     });
 
     it('verifies process isolation parameters', () => {
-      expect(config.test?.fileParallelism).toBe(false);
+      expect(config.test?.fileParallelism).toBe(true);
       // Verify that process environment is isolated and process PID is accessible
       expect(process.pid).toBeGreaterThan(0);
       expect(typeof process.env).toBe('object');
