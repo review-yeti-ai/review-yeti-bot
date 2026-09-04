@@ -4,21 +4,48 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
 export const CENTRAL_REPOSITORY = 'exampleorg/example-review-actions';
-// Repositories admitted to the central dispatch boundary. ADR 0490 scope
-// widened 2026-09-02 (example-review-actions #200): example-release and example-meta joined
-// example-api on the Ollama-only policy.
+// Repositories admitted to the central dispatch boundary. ADR 0519 replaced the
+// fixed three-repository list with an owner check plus a per-repository
+// concurrency cap: admission is earned by landing the base-owned caller on the
+// target's default branch, which already requires write plus review there, and
+// the shared Ollama lane is protected by the cap rather than by list
+// membership. ADR 0490 still governs the lane itself.
+export const TARGET_OWNER = 'exampleorg';
+// A GitHub repository name: no slashes, no leading dot, no path traversal.
+const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/u;
 export const TARGET_REPOSITORY = 'exampleorg/example-api';
-export const ALLOWED_TARGET_REPOSITORIES = Object.freeze(new Set([
-  TARGET_REPOSITORY,
-  'exampleorg/example-release',
-  'exampleorg/example-meta',
-]));
+
+// Peak observed central concurrency over a 17.4h / 100-run sample was 4 global,
+// and 4 / 3 / 2 for example-release / example-meta / example-api. Six is above every
+// observed per-repository peak and well under the shared Ollama budget, so it
+// bounds a runaway repository without throttling normal traffic. Override for
+// an incident with CT_REVIEW_REPOSITORY_CONCURRENCY_CAP.
+export const DEFAULT_REPOSITORY_CONCURRENCY_CAP = 6;
+
+export function repositoryConcurrencyCap(env = process.env) {
+  const raw = env?.CT_REVIEW_REPOSITORY_CONCURRENCY_CAP;
+  if (raw === undefined || raw === '') return DEFAULT_REPOSITORY_CONCURRENCY_CAP;
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error('CT_REVIEW_REPOSITORY_CONCURRENCY_CAP must be a positive integer');
+  }
+  return parsed;
+}
+
+export function assertAdmittedRepository(repository) {
+  if (typeof repository !== 'string') throw new Error('repository must be a string');
+  const [owner, name, ...rest] = repository.split('/');
+  if (owner !== TARGET_OWNER || rest.length > 0 || !REPOSITORY_NAME_PATTERN.test(name ?? '')) {
+    throw new Error(`repository must be a ${TARGET_OWNER}/<repo> repository, got '${repository}'`);
+  }
+  return name;
+}
 export const DISPATCH_EVENT_TYPE = 'review-yeti-request';
 export const CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
 
 const PAYLOAD_KEYS = Object.freeze(['base_sha', 'head_sha', 'pr_number', 'repository', 'request_id']);
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
-const REQUEST_ID_PATTERN = /^(example-api|example-release|example-meta):([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
+const REQUEST_ID_PATTERN = /^([A-Za-z0-9_][A-Za-z0-9._-]{0,99}):([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
 const PROVIDER_SECRET_PATTERN = /(?:OLLAMA_PR_REVIEW_API_KEY|OPENROUTER(?:_PR_REVIEW_API_KEY|_REVIEW_FLEET_KEY|_API_KEY)|FIREWORKS_PR_REVIEW_API_KEY|SYNTHETIC_API_KEY|GEMINI_API_KEY)/u;
 
 function assertPlainObject(value, label) {
@@ -33,9 +60,7 @@ export function validateDispatchPayload(payload) {
   if (JSON.stringify(keys) !== JSON.stringify(PAYLOAD_KEYS)) {
     throw new Error(`client_payload must contain exactly: ${PAYLOAD_KEYS.join(', ')}`);
   }
-  if (!ALLOWED_TARGET_REPOSITORIES.has(payload.repository)) {
-    throw new Error(`repository must be one of ${[...ALLOWED_TARGET_REPOSITORIES].join(', ')}`);
-  }
+  assertAdmittedRepository(payload.repository);
   if (!Number.isSafeInteger(payload.pr_number) || payload.pr_number < 1) {
     throw new Error('pr_number must be a positive safe integer');
   }
@@ -108,6 +133,47 @@ async function githubJson(url, token, fetchImpl) {
   return response.json();
 }
 
+
+// ADR 0519: the shared Ollama lane is protected by a per-repository cap rather
+// than by a fixed repository allowlist. Count this repository's in-flight
+// central runs and refuse admission above the cap, so one repository cannot
+// occupy the budget that a required merge gate depends on. The refusal is
+// retryable: it reports capacity, not a policy violation.
+export async function assertRepositoryCapacity({
+  repositoryName,
+  token,
+  fetchImpl = globalThis.fetch,
+  cap = repositoryConcurrencyCap(),
+  selfRunId = process.env.GITHUB_RUN_ID,
+}) {
+  const url = `https://api.github.com/repos/${CENTRAL_REPOSITORY}`
+    + '/actions/workflows/repository-dispatch.yml/runs'
+    + '?status=in_progress&per_page=100';
+  let runs;
+  try {
+    runs = await githubJson(url, token, fetchImpl);
+  } catch {
+    // Capacity is a guard rail, not an evidence gate. A transient listing
+    // failure must not reject a legitimate review; the cap re-applies on the
+    // next dispatch.
+    return { cap, inFlight: null, skipped: 'central run listing unavailable' };
+  }
+  const prefix = `${repositoryName}:`;
+  const inFlight = (Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : []).filter((run) => {
+    if (selfRunId && String(run?.id) === String(selfRunId)) return false;
+    const title = typeof run?.display_title === 'string' ? run.display_title : '';
+    // display_title carries the request_id, whose first field is the repo name.
+    return title.includes(prefix);
+  }).length;
+  if (inFlight >= cap) {
+    throw new Error(
+      `repository ${repositoryName} already has ${inFlight} central reviews in flight `
+      + `(cap ${cap}); retry when capacity frees`,
+    );
+  }
+  return { cap, inFlight };
+}
+
 export async function validateCentralDispatch({ payload, token, fetchImpl = globalThis.fetch }) {
   const request = validateDispatchPayload(payload);
   const [, , , , callerRunIdText, callerRunAttemptText] = REQUEST_ID_PATTERN.exec(request.request_id);
@@ -140,6 +206,14 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
       || !callerRun.pull_requests.some((candidate) => candidate?.number === request.pr_number)) {
     throw new Error('caller run is not bound to the requested PR');
   }
+
+  // Capacity is checked only after identity is proven, so an invalid request
+  // reports the validation failure rather than a misleading capacity message.
+  await assertRepositoryCapacity({
+    repositoryName: assertAdmittedRepository(request.repository),
+    token,
+    fetchImpl,
+  });
 
   // The base-owned caller workflow. Live evidence (example-api #4804, base 0.8.8-stable, run
   // 33675866048): GitHub executed the caller from the repository DEFAULT branch — whose

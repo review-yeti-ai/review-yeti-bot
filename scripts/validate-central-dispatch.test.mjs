@@ -4,8 +4,12 @@ import test from 'node:test';
 
 import {
   CENTRAL_REPOSITORY,
+  DEFAULT_REPOSITORY_CONCURRENCY_CAP,
   DISPATCH_EVENT_TYPE,
   TARGET_REPOSITORY,
+  assertAdmittedRepository,
+  assertRepositoryCapacity,
+  repositoryConcurrencyCap,
   validateCallerWorkflow,
   validateCentralDispatch,
   validateDispatchPayload,
@@ -182,13 +186,17 @@ test('validates exact live PR identity and the immutable base-owned caller with 
   assert.match(result.caller_workflow_sha256, /^[0-9a-f]{64}$/u);
   assert.equal(result.caller_run_id, callerRunId);
   assert.equal(result.caller_run_attempt, callerRunAttempt);
-  assert.equal(calls.length, 3);
+  // 4 calls: PR identity, caller run, capacity listing, caller workflow bytes.
+  // Capacity is checked after identity so an invalid request reports the
+  // validation failure, not a capacity message.
+  assert.equal(calls.length, 4);
   assert.equal(calls[0].init.headers.authorization, 'Bearer central-token');
   assert.equal(calls[1].url.endsWith(`/actions/runs/${callerRunId}`), true);
   // The fixture PR targets 0.8.8-stable while the default branch is 0.8.7-stable: the caller
   // bytes must be read from the default branch (what GitHub executes), never from base.ref.
-  assert.equal(calls[2].url.endsWith('?ref=0.8.7-stable'), true);
-  assert.equal(calls[2].url.includes('0.8.8-stable'), false);
+  assert.equal(calls[2].url.includes('/actions/workflows/repository-dispatch.yml/runs'), true);
+  assert.equal(calls[3].url.endsWith('?ref=0.8.7-stable'), true);
+  assert.equal(calls[3].url.includes('0.8.8-stable'), false);
   assert.equal(calls.some((call) => call.url.includes('central-token')), false);
 });
 
@@ -303,4 +311,82 @@ jobs:
   assert.equal(calls.some((call) => call.url.includes('?ref=0.8.7-stable')), true);
   // Sanity: had the validator read base.ref, the legacy shim would have been rejected.
   assert.throws(() => validateCallerWorkflow(legacyShim), /missing central marker/u);
+});
+
+// ADR 0519: admission is by owner plus a valid base-owned caller, not a fixed
+// repository list, and the shared lane is bounded by a per-repository cap.
+test('admits any exampleorg repository and rejects everything else', () => {
+  for (const name of ['example-api', 'example-release', 'example-meta', 'example-workspace', 'example-ui']) {
+    assert.equal(assertAdmittedRepository(`exampleorg/${name}`), name);
+  }
+  for (const bad of [
+    'evil/example-workspace',            // wrong owner
+    'exampleorg/a/b',            // extra path segment
+    'exampleorg/../example-review-actions', // traversal
+    'exampleorg/',               // empty name
+    'exampleorg/.hidden',        // leading dot
+    'example-workspace',                 // unqualified
+  ]) {
+    assert.throws(() => assertAdmittedRepository(bad), /must be a exampleorg\/<repo> repository/u);
+  }
+});
+
+test('request_id repo-name is generic but still bound to the payload repository', () => {
+  const ok = {
+    ...payload,
+    repository: 'exampleorg/example-workspace',
+    request_id: `example-workspace:4527:${headSha}:${callerRunId}:${callerRunAttempt}`,
+  };
+  assert.equal(validateDispatchPayload(ok).repository, 'exampleorg/example-workspace');
+  // A generic pattern must not let the prefix drift from the repository.
+  assert.throws(
+    () => validateDispatchPayload({ ...ok, request_id: `example-api:4527:${headSha}:${callerRunId}:${callerRunAttempt}` }),
+    /request_id repo-name must match the payload repository/u,
+  );
+});
+
+test('per-repository capacity cap bounds the shared lane without blocking normal traffic', async () => {
+  const listing = (count, name = 'example-workspace') => async () => ({
+    ok: true,
+    json: async () => ({
+      workflow_runs: Array.from({ length: count }, (_, index) => ({
+        id: 5000 + index,
+        display_title: `Review Yeti central / ${name}:1:${headSha}:1:1`,
+      })),
+    }),
+  });
+  const cap = DEFAULT_REPOSITORY_CONCURRENCY_CAP;
+  assert.equal(cap, 6);
+  assert.equal(repositoryConcurrencyCap({}), cap);
+  assert.equal(repositoryConcurrencyCap({ CT_REVIEW_REPOSITORY_CONCURRENCY_CAP: '2' }), 2);
+  assert.throws(() => repositoryConcurrencyCap({ CT_REVIEW_REPOSITORY_CONCURRENCY_CAP: '0' }), /positive integer/u);
+
+  const under = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace', token: 't', fetchImpl: listing(cap - 1), cap, selfRunId: '0',
+  });
+  assert.equal(under.inFlight, cap - 1);
+
+  await assert.rejects(
+    assertRepositoryCapacity({ repositoryName: 'example-workspace', token: 't', fetchImpl: listing(cap), cap, selfRunId: '0' }),
+    /already has 6 central reviews in flight \(cap 6\)/u,
+  );
+
+  // Another repository's runs never consume this repository's budget.
+  const isolated = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace', token: 't', fetchImpl: listing(cap, 'example-api'), cap: 1, selfRunId: '0',
+  });
+  assert.equal(isolated.inFlight, 0);
+
+  // The dispatching run must not count against its own cap.
+  const selfExcluded = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace', token: 't', fetchImpl: listing(cap), cap, selfRunId: '5000',
+  });
+  assert.equal(selfExcluded.inFlight, cap - 1);
+
+  // Capacity is a guard rail, not an evidence gate: a listing outage must not
+  // reject a legitimate review.
+  const degraded = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace', token: 't', fetchImpl: async () => ({ ok: false, status: 500 }), cap: 1, selfRunId: '0',
+  });
+  assert.equal(degraded.inFlight, null);
 });
