@@ -1,0 +1,45 @@
+# DigitalOcean Kubernetes (DOKS) Production Values for Review Yeti
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    service.beta.kubernetes.io/do-loadbalancer-name: "review-yeti-lb"
+    service.beta.kubernetes.io/do-loadbalancer-protocol: "https"
+    service.beta.kubernetes.io/do-loadbalancer-tls-ports: "443"
+    service.beta.kubernetes.io/do-loadbalancer-redirect-http-to-https: "true"
+  host: "review.doks.example.com"
+  path: "/api/admission/dispatch"
+  pathType: "Prefix"
+  tls:
+    enabled: true
+    secretName: "review-yeti-doks-tls"
+
+worker:
+  storage:
+    storageClassName: "do-block-storage"
+    size: "2Gi"
+
+dispatcher:
+  replicaCount: 2
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+operator:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+secrets:
+  create: false
+  existingSecretName: "review-yeti-secrets"
