@@ -1,0 +1,40 @@
+# Drop-in .coderabbit.yaml replacement configuration for Review Yeti
+# Review Yeti transparently parses and normalizes this configuration into its V3 review schema.
+
+language: "en-US"
+tone_instructions: "Be concise, analytical, and actionable. Provide copy-pasteable code suggestions where defects are found."
+
+reviews:
+  profile: "balanced"
+  reviewer_effort: "high"
+  confidence_threshold: 75
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  sequence_diagrams: true
+  path_instructions:
+    - path: "src/api/**"
+      instructions: "Ensure all endpoints validate input schemas via Zod and handle async errors gracefully."
+    - path: "src/models/**"
+      instructions: "Verify database constraints, foreign key relations, and tenant scoping."
+
+chat:
+  auto_reply: true
+  max_context_turns: 10
+
+knowledge_base:
+  learnings: true
+  issues: true
+  pull_requests: true
+
+path_filters:
+  - "!*.min.js"
+  - "!dist/**"
+  - "!node_modules/**"
+  - "!vendor/**"
+
+auto_review:
+  enabled: true
+  ignore_drafts: true

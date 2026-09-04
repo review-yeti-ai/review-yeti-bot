@@ -1,0 +1,98 @@
+{{- if .Values.operator.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "review-yeti.operator.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "review-yeti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "review-yeti.operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.operator.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "review-yeti.operator.selectorLabels" . | nindent 8 }}
+        {{- with .Values.operator.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "review-yeti.operator.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.operator.serviceAccount.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
+      containers:
+        - name: operator
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          command: ["/manager"]
+          env:
+            - name: REVIEW_YETI_OPERATOR_ENABLED
+              value: "true"
+            - name: REVIEW_YETI_OPERATOR_METRICS_ADDR
+              value: {{ .Values.operator.config.metricsAddr | quote }}
+            - name: REVIEW_YETI_OPERATOR_HEALTH_ADDR
+              value: {{ .Values.operator.config.healthAddr | quote }}
+            - name: REVIEW_YETI_OPERATOR_MAX_CONCURRENT_JOBS
+              value: {{ .Values.operator.config.maxConcurrentJobs | quote }}
+            - name: REVIEW_YETI_WORKER_IMAGE
+              value: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default .Chart.AppVersion }}"
+            - name: REVIEW_YETI_WORKER_CPU_REQUEST
+              value: {{ .Values.worker.resources.requests.cpu | quote }}
+            - name: REVIEW_YETI_WORKER_MEMORY_REQUEST
+              value: {{ .Values.worker.resources.requests.memory | quote }}
+            - name: REVIEW_YETI_WORKER_CPU_LIMIT
+              value: {{ .Values.worker.resources.limits.cpu | quote }}
+            - name: REVIEW_YETI_WORKER_MEMORY_LIMIT
+              value: {{ .Values.worker.resources.limits.memory | quote }}
+            - name: REVIEW_YETI_WORKER_STORAGE_SIZE
+              value: {{ .Values.worker.storage.size | quote }}
+            - name: REVIEW_YETI_WORKER_STORAGE_CLASS
+              value: {{ .Values.worker.storage.storageClassName | quote }}
+            - name: REVIEW_YETI_WORKER_ACTIVE_DEADLINE
+              value: {{ .Values.worker.activeDeadlineSeconds | quote }}
+            - name: REVIEW_YETI_WORKER_TTL_AFTER_FINISHED
+              value: {{ .Values.worker.ttlSecondsAfterFinished | quote }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          securityContext:
+            {{- toYaml .Values.operator.securityContext | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.operator.probes.startup | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.operator.probes.readiness | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.operator.probes.liveness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

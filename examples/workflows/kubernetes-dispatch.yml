@@ -1,0 +1,36 @@
+name: Review Yeti Kubernetes Dispatch
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: review-yeti-k8s-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write   # Required for GitHub Actions OIDC federation with Kubernetes
+  contents: read
+  pull-requests: read
+
+jobs:
+  dispatch:
+    name: Dispatch Review to Kubernetes
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Dispatch Review Job to Cluster
+        id: doks-dispatch
+        uses: review-yeti-ai/review-yeti-bot@v1
+        with:
+          execution-backend: 'doks'
+          doks-dispatch-url: ${{ vars.REVIEW_YETI_DISPATCH_URL || 'https://review-yeti.example.com/api/dispatch/action' }}
+          doks-publish-mode: 'app-gate'
+
+      - name: Dispatch Confirmation
+        run: |
+          echo "### Review Yeti Cluster Dispatch" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ steps.doks-dispatch.outputs.review-status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Gate Decision**: ${{ steps.doks-dispatch.outputs.gate-decision }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Rationale**: ${{ steps.doks-dispatch.outputs.rationale }}" >> $GITHUB_STEP_SUMMARY
+          echo "Review execution offloaded to Kubernetes. The PR check will update when the cluster worker finishes."

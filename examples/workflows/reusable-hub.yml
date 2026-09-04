@@ -1,0 +1,78 @@
+name: Review Yeti Reusable Hub
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: 'LLM model route for review execution'
+        type: string
+        default: 'deepseek/deepseek-v4-flash-0731'
+        required: false
+      personas:
+        description: 'Comma-separated persona IDs to run (empty string uses default panel)'
+        type: string
+        default: ''
+        required: false
+      fail-on-block:
+        description: 'Fail the GitHub workflow run if the final verdict is BLOCK'
+        type: boolean
+        default: true
+        required: false
+    secrets:
+      OPENROUTER_API_KEY:
+        description: 'OpenRouter API key for LLM inference'
+        required: true
+      REVIEW_BOT_GITHUB_TOKEN:
+        description: 'Custom GitHub token or App token (defaults to workflow token if omitted)'
+        required: false
+    outputs:
+      verdict:
+        description: 'Consolidated review verdict (SHIP, FIX_FIRST, BLOCK, NO_VERDICT)'
+        value: ${{ jobs.review.outputs.verdict }}
+      findings-count:
+        description: 'Total findings across all personas'
+        value: ${{ jobs.review.outputs.findings-count }}
+      review-status:
+        description: 'Execution status of the review panel'
+        value: ${{ jobs.review.outputs.review-status }}
+
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: 'Pull Request number to trigger review on'
+        type: string
+        required: true
+      model:
+        description: 'LLM model route for review execution'
+        type: string
+        default: 'deepseek/deepseek-v4-flash-0731'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Organization Review Panel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      verdict: ${{ steps.run-review.outputs.verdict }}
+      findings-count: ${{ steps.run-review.outputs.findings-count }}
+      review-status: ${{ steps.run-review.outputs.review-status }}
+    steps:
+      - name: Execute Review Yeti
+        id: run-review
+        uses: review-yeti-ai/review-yeti-bot@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          github-token: ${{ secrets.REVIEW_BOT_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+          model: ${{ inputs.model || 'deepseek/deepseek-v4-flash-0731' }}
+          personas: ${{ inputs.personas || '' }}
+
+      - name: Enforce Merge Gate
+        if: ${{ inputs.fail-on-block && steps.run-review.outputs.verdict == 'BLOCK' }}
+        run: |
+          echo "::error::Review Yeti issued a BLOCK verdict. Pull request contains blocking defects."
+          exit 1

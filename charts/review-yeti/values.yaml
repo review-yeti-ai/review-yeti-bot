@@ -1,0 +1,266 @@
+# Default values for review-yeti.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Custom Resource Definition installation
+# Set to true to install the PRReviewJob CRD as part of the chart templates.
+# GitOps users managing CRDs out-of-band (e.g., via ArgoCD) can set this to false.
+crd:
+  install: true
+
+# Review Yeti Dispatcher / Admission Webhook Service
+# Receives webhook admission dispatches from GitHub Action shims or direct webhooks.
+dispatcher:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/review-yeti-ai/review-yeti-dispatcher
+    pullPolicy: IfNotPresent
+    # Overrides the image tag whose default is the chart appVersion.
+    tag: ""
+
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+    automountServiceAccountToken: false
+
+  podAnnotations: {}
+  podLabels: {}
+
+  # Non-root pod security context enforcing standard unprivileged UID/GID
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Container security context with read-only rootfs and privilege escalation disabled
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    capabilities:
+      drop:
+        - ALL
+
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: 3000
+    annotations: {}
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  probes:
+    startup:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 2
+      timeoutSeconds: 1
+      failureThreshold: 30
+    readiness:
+      httpGet:
+        path: /ready
+        port: http
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 3
+    liveness:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 10
+      timeoutSeconds: 2
+      failureThreshold: 3
+
+  config:
+    nodeEnv: production
+    host: "0.0.0.0"
+    port: 3000
+    allowAppGate: true
+    repositoryIds: ""
+    ownerIds: ""
+    workflowRefs: ""
+    workflowShas: ""
+
+  nodeSelector: {}
+  tolerations: []
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values:
+                    - dispatcher
+            topologyKey: kubernetes.io/hostname
+
+# Review Yeti Operator (reconciles PRReviewJob CRD into ephemeral worker jobs)
+operator:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/review-yeti-ai/review-yeti-operator
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+    automountServiceAccountToken: true
+
+  podAnnotations: {}
+  podLabels: {}
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    capabilities:
+      drop:
+        - ALL
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  probes:
+    startup:
+      httpGet:
+        path: /healthz
+        port: health
+      periodSeconds: 2
+      timeoutSeconds: 1
+      failureThreshold: 30
+    readiness:
+      httpGet:
+        path: /readyz
+        port: health
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 3
+    liveness:
+      httpGet:
+        path: /healthz
+        port: health
+      periodSeconds: 10
+      timeoutSeconds: 2
+      failureThreshold: 3
+
+  config:
+    metricsAddr: ":8080"
+    healthAddr: ":8081"
+    maxConcurrentJobs: 10
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Ephemeral Worker Pod Sizing and Defaults
+# These settings configure the worker batch/v1 Jobs spawned by the operator.
+worker:
+  image:
+    repository: ghcr.io/review-yeti-ai/review-yeti-worker
+    pullPolicy: IfNotPresent
+    tag: ""
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  storage:
+    size: 1Gi
+    storageClassName: ""
+
+  activeDeadlineSeconds: 840
+  ttlSecondsAfterFinished: 300
+
+# Ingress Configuration
+# Exposes the dispatcher endpoint externally to receive webhook requests.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: review-bot.example.com
+  path: /api/admission/dispatch
+  pathType: Prefix
+  tls:
+    enabled: false
+    secretName: review-yeti-tls
+
+# GitHub App and LLM Provider Secrets
+# Supports both chart-managed secrets and referencing external secrets (Vault, SealedSecrets, etc.).
+secrets:
+  # Set create: true to generate a Kubernetes Secret from the parameters below.
+  # If existingSecretName is provided, this secret is skipped and existingSecretName is mounted.
+  create: true
+  existingSecretName: ""
+
+  # GitHub App Credentials
+  appId: ""
+  installationId: ""
+  privateKey: ""
+
+  # Dispatcher Authentication Secret
+  dispatchToken: ""
+
+  # LLM Provider API Keys
+  openRouterApiKey: ""
+  openRouterBaseUrl: ""
+  anthropicApiKey: ""
+  openaiApiKey: ""

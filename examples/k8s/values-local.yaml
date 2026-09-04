@@ -1,0 +1,47 @@
+# Local Development Values for Minikube, Kind, or K3s with local Ollama
+ingress:
+  enabled: false
+
+dispatcher:
+  replicaCount: 1
+  service:
+    type: NodePort
+    nodePort: 30080
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+
+operator:
+  replicaCount: 1
+  config:
+    maxConcurrentJobs: 2
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+
+worker:
+  storage:
+    storageClassName: "standard" # Use "local-path" on K3s
+    size: "500Mi"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+secrets:
+  create: true
+  # host.minikube.internal resolves to host machine running Ollama on port 11434
+  openRouterBaseUrl: "http://host.minikube.internal:11434/v1"
+  openRouterApiKey: "ollama"
+  dispatchToken: "local-dev-token"
