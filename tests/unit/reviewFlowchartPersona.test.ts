@@ -3,7 +3,7 @@ import { ALL_PERSONA_IDS, PERSONA_METADATA } from '../../src/components/settings
 import { dashboardStore } from '../../src/persistence/dashboardStore';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { createDefaultV3Config } from '../../src/config/configLoader';
-import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
+import { OmniRouteClient, type OmniRouteRequest, type OmniRouteResponse } from '../../src/gateway/omniRouteClient';
 
 describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
   beforeEach(() => {
@@ -58,10 +58,10 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
   describe('Task 3: LLM Analysis Step & Diagram Generation in panelEngine', () => {
     it('executes executePersonaPanel and populates mermaidDiagram when generateArchitecturalFlowchart is enabled', async () => {
       const config = createDefaultV3Config();
-      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', apiKey: 'mock' });
+      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
 
       // Mock completion for LLM calls during panel execution
-      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: any) => {
+      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
@@ -73,6 +73,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
+            raw: null,
           };
         } else if (allMsg.includes('moderator')) {
           return {
@@ -80,6 +81,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
+            raw: null,
           };
         } else {
           return {
@@ -91,6 +93,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
+            raw: null,
           };
         }
       });
@@ -119,8 +122,6 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
       // Add review_flowchart persona to config
       config.personas.push({
         id: 'review_flowchart',
-        name: '📊 Review Flowchart & Architecture',
-        description: 'Generates Mermaid.js diagrams',
         enabled: true,
         required: false,
         charter: 'builtin:review-flowchart',
@@ -129,8 +130,8 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
         providers: ['synthetic'],
       });
 
-      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', apiKey: 'mock' });
-      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: any) => {
+      const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
+      vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
         const prompt = opts.messages?.[1]?.content || '';
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
@@ -142,6 +143,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
+            raw: null,
           };
         } else if (allMsg.includes('moderator')) {
           return {
@@ -149,6 +151,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
+            raw: null,
           };
         } else {
           return {
@@ -160,6 +163,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
             model: opts.model,
             usage: { prompt: 100, completion: 50, total: 150 },
             costUSD: 0.001,
+            raw: null,
           };
         }
       });

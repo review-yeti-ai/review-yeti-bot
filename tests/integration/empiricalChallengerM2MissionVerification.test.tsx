@@ -6,6 +6,15 @@ import supertest from 'supertest';
 import express from 'express';
 
 import { OverviewMetrics } from '../../src/components/dashboard/overview-metrics';
+import type { OverviewStats } from '../../src/types/dashboard';
+
+// The component's `stats` prop is declared as `OverviewStats | null`, but every field is read
+// with defensive optional chaining (`stats?.totalCostUSD ?? 0`, etc.) — the real runtime contract
+// tolerates a partial/empty object, which is exactly what this suite exercises. The declared
+// type doesn't reflect that (a product type worth tightening to `Partial<OverviewStats> | null`,
+// left alone here per scope), so an empty object is asserted to the declared type rather than
+// weakening the test by fabricating stat values that would defeat the empty-state assertions.
+const EMPTY_STATS = {} as OverviewStats;
 import { CostEstimatorCard } from '../../src/components/onboarding/cost-estimator-card';
 import { isProviderEnabled } from '../../src/lib/model-filtering';
 import { createIntegrationsRouter } from '../../src/dashboard/integrationsApi';
@@ -19,7 +28,7 @@ describe('M2 Challenger Empirical Stress Tests', () => {
 
   describe('1. OverviewMetrics Empty State Rendering (stats={})', () => {
     it('renders correctly without throwing when stats={} is passed', () => {
-      const { container } = render(<OverviewMetrics stats={{}} />);
+      const { container } = render(<OverviewMetrics stats={EMPTY_STATS} />);
       expect(container).toBeDefined();
 
       // Total PR Reviews should display 0
@@ -51,7 +60,7 @@ describe('M2 Challenger Empirical Stress Tests', () => {
     });
 
     it('handles clicking Spending Cap modal trigger card with stats={}', () => {
-      render(<OverviewMetrics stats={{}} />);
+      render(<OverviewMetrics stats={EMPTY_STATS} />);
       const capCard = screen.getByText('Monthly Spend / Cap').closest('[role="button"]');
       expect(capCard).toBeInTheDocument();
       if (capCard) {
@@ -60,7 +69,7 @@ describe('M2 Challenger Empirical Stress Tests', () => {
     });
 
     it('handles clicking Memory Graph modal trigger card with stats={}', () => {
-      render(<OverviewMetrics stats={{}} />);
+      render(<OverviewMetrics stats={EMPTY_STATS} />);
       const graphCard = screen.getByText('Memory Graph Nodes').closest('[role="button"]');
       expect(graphCard).toBeInTheDocument();
       if (graphCard) {
