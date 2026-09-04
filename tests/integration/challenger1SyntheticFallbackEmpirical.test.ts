@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
-import { CtReviewConfigV3 } from '../../src/config/schema';
+import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 
 describe('Challenger 1 Empirical Synthetic Fallback Verification (omniRouteClient & panelEngine)', () => {
   afterEach(() => {
@@ -9,18 +9,23 @@ describe('Challenger 1 Empirical Synthetic Fallback Verification (omniRouteClien
     vi.stubGlobal('fetch', undefined);
   });
 
-  const mockConfig: CtReviewConfigV3 = {
-    version: '3.0',
+  // Parsed through the real schema (rather than hand-typed as CtReviewConfigV3) so
+  // all the `.default(...)`-backed top-level sections (profile, reviews, chat, etc.)
+  // are populated the same way production config loading populates them.
+  const mockConfig: CtReviewConfigV3 = ctReviewConfigV3Schema.parse({
+    version: 3,
     quorum: 1,
     path_instructions: [],
     rules: [],
     reviewers: {
+      execution: 'personas',
+      overall_timeout_s: 30,
       fallback: 'none',
       providers: [
         {
           id: 'codex',
-          type: 'omniroute',
           model: 'codex/gpt-5.6-sol-high',
+          effort: 'high',
           review_timeout_s: 5,
           arbiter_timeout_s: 5,
           enabled: true,
@@ -40,7 +45,7 @@ describe('Challenger 1 Empirical Synthetic Fallback Verification (omniRouteClien
         enabled: true,
       },
     ],
-  };
+  });
 
   describe('1. omniRouteClient.complete network exception & synthetic fallback checks', () => {
     it('THROWS network error on simulated fetch network failure (ECONNREFUSED) without forging synthetic GLM-5.2 response', async () => {

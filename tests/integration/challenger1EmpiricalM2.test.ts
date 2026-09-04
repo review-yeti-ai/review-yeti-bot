@@ -418,7 +418,7 @@ describe('Challenger 1 Empirical Stress & Latency Suite for Milestone 2 (SSE Eng
 
       const history = bus.getHistory(jobId);
       expect(history.length).toBe(1);
-      expect(history[0].data.chunk.length).toBe(1024 * 1024);
+      expect(history[0]?.data.chunk?.length).toBe(1024 * 1024);
     });
   });
 });
