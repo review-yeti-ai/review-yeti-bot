@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.7...v1.29.8) (2026-09-04)
+
+
+### Bug Fixes
+
+* **types:** rename evaluation harness PersonaFinding to HarnessPersonaFinding (REL-573) ([#488](https://github.com/review-yeti-ai/review-yeti-bot/issues/488)) ([28156b2](https://github.com/review-yeti-ai/review-yeti-bot/commit/28156b2e1fcc012d52e64a7a4c94d672f251065b))
+
 ## [1.29.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.6...v1.29.7) (2026-09-04)
 
 
