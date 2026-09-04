@@ -13,12 +13,85 @@ import {
   calculateScenarioDeltas,
   evaluateModelGate,
   evaluateQualityGate,
-  compareBaselines,
+  compareBaselines as compareBaselinesUntyped,
   formatMarkdownReport,
   formatJsonReport,
   showHelp,
-  main,
+  main as mainUntyped,
 } from '../../scripts/compare-release-baselines.mjs';
+
+// scripts/compare-release-baselines.mjs is a plain .mjs module with no JSDoc/type
+// annotations, so tsc's structural inference of its multi-return-statement
+// functions (`compareBaselines`, `main`) produces partial/union shapes that don't
+// match how the module is actually used at runtime. We re-type the two call
+// sites locally rather than editing the source script (out of scope for this fix).
+type MetricDelta = { baseline: number; candidate: number; delta: number; percentChange?: number };
+
+type ModelDelta = {
+  model: string;
+  status: string;
+  reason?: string;
+  violations: string[];
+  totalScenarios?: MetricDelta;
+  verdictAccuracy?: MetricDelta;
+  recall?: MetricDelta;
+  precision?: MetricDelta;
+  f1Score?: MetricDelta;
+  avgSnrDb?: MetricDelta;
+  avgTtftMs?: MetricDelta;
+  totalCostUSD?: MetricDelta;
+  normalizedAvgCostUSD?: MetricDelta;
+  normalizedCostDeltaPct?: number;
+  costEfficiency?: MetricDelta;
+  totalTp?: MetricDelta;
+  totalFp?: MetricDelta;
+  totalFn?: MetricDelta;
+  newFnCount?: number;
+  newFpCount?: number;
+  omittedFiles?: MetricDelta;
+  coveragePct?: MetricDelta;
+  partitionsCount?: MetricDelta;
+  compactionReductionPct?: MetricDelta;
+  omittedFilesCount?: number;
+  coveragePercent?: number;
+};
+
+type ComparisonResult = {
+  timestamp: string;
+  baselineFile: string;
+  candidateFile: string;
+  passed: boolean;
+  hasRegressions: boolean;
+  totalBreaches: number;
+  thresholds: Record<string, any>;
+  summaryDeltas: ModelDelta[];
+  modelDeltas: Record<string, ModelDelta>;
+  scenarioDeltas: any[];
+  breaches: any[];
+};
+
+type MainResult = {
+  exitCode: number;
+  help?: boolean;
+  error?: string;
+  report?: ComparisonResult;
+  comparison?: ComparisonResult;
+  markdown?: string;
+  json?: string;
+};
+
+const compareBaselines = compareBaselinesUntyped as unknown as (
+  candInput: any,
+  baseInput: any,
+  options?: Record<string, any>
+) => ComparisonResult;
+const main = mainUntyped as unknown as (argv?: string[]) => Promise<MainResult>;
+
+/** Narrows a possibly-undefined lookup result, asserting it exists first. */
+function assertDefined<T>(value: T | undefined | null): T {
+  expect(value).toBeDefined();
+  return value as T;
+}
 
 describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs)', () => {
   const rootRepoDir = path.resolve(__dirname, '../..');
@@ -42,7 +115,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
   });
 
   // In-memory mock helpers
-  const createMockSummary = (overrides = {}) => ({
+  const createMockSummary = (overrides: Record<string, any> = {}) => ({
     model: 'deepseek/deepseek-v4-flash-0731:high',
     totalScenarios: 20,
     verdictMatches: 20,
@@ -65,7 +138,17 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
     ...overrides,
   });
 
-  const createMockMatrix = (summaryOverrides = {}, detailedResults = []) => ({
+  const createMockMatrix = (
+    summaryOverrides: Record<string, any> = {},
+    detailedResults: any[] = []
+  ): {
+    timestamp: string;
+    version: string;
+    models: string[];
+    scenarios: string[];
+    summary: Record<string, ReturnType<typeof createMockSummary>>;
+    detailedResults: any[];
+  } => ({
     timestamp: '2026-08-20T17:15:13.875Z',
     version: 'v1',
     models: [
@@ -333,7 +416,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       delete cand.summary['openrouter/5.6-luna-high'];
 
       const report = compareBaselines(cand, base);
-      const luna = report.summaryDeltas.find((d: any) => areModelsEquivalent(d.model, 'openrouter/5.6-luna-high'));
+      const luna = assertDefined(report.summaryDeltas.find((d: any) => areModelsEquivalent(d.model, 'openrouter/5.6-luna-high')));
       expect(luna).toBeDefined();
       expect(luna.status).toBe('PASS');
     });
@@ -345,7 +428,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       cand.models.push('experimental/new-model');
 
       const report = compareBaselines(cand, base);
-      const exp = report.summaryDeltas.find((d: any) => d.model === 'experimental/new-model');
+      const exp = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'experimental/new-model'));
       expect(exp).toBeDefined();
       expect(exp.status).toBe('SKIPPED');
       expect(exp.reason).toContain('Not present in baseline');
@@ -358,7 +441,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       delete cand.summary['google/gemini-3.7-flash:high'];
 
       const report = compareBaselines(cand, base, { models: DEFAULT_MODELS });
-      const gemini = report.summaryDeltas.find((d: any) => d.model === 'google/gemini-3.7-flash:high');
+      const gemini = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'google/gemini-3.7-flash:high'));
       expect(gemini).toBeDefined();
       expect(gemini.status).toBe('SKIPPED');
       expect(gemini.violations.some((v: string) => v.includes('missing in candidate'))).toBe(true);
@@ -407,11 +490,11 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(true);
-      const qwen = report.summaryDeltas.find((d: any) => d.model === 'qwen/qwen-3.8-27b:high');
+      const qwen = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'qwen/qwen-3.8-27b:high'));
       expect(qwen.status).toBe('PASS');
-      expect(qwen.recall.delta).toBeGreaterThan(0);
-      expect(qwen.verdictAccuracy.delta).toBeGreaterThan(0);
-      expect(qwen.avgSnrDb.delta).toBeGreaterThan(0);
+      expect(assertDefined(qwen.recall).delta).toBeGreaterThan(0);
+      expect(assertDefined(qwen.verdictAccuracy).delta).toBeGreaterThan(0);
+      expect(assertDefined(qwen.avgSnrDb).delta).toBeGreaterThan(0);
     });
 
     it('4.3 Gate 1: Drops in Recall exceeding threshold trigger REGRESSION', () => {
@@ -423,7 +506,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
 
       expect(report.passed).toBe(false);
       expect(report.hasRegressions).toBe(true);
-      const ds = report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high');
+      const ds = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high'));
       expect(ds.status).toBe('REGRESSION');
       expect(ds.violations.some((v: string) => v.includes('Recall drop'))).toBe(true);
     });
@@ -436,7 +519,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base, { maxRecallDrop: 0.05 });
 
       expect(report.passed).toBe(true);
-      const ds = report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high');
+      const ds = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high'));
       expect(ds.status).toBe('PASS');
     });
 
@@ -448,7 +531,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(false);
-      const luna = report.summaryDeltas.find((d: any) => d.model === 'openrouter/5.6-luna-high');
+      const luna = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'openrouter/5.6-luna-high'));
       expect(luna.status).toBe('REGRESSION');
       expect(luna.violations.some((v: string) => v.includes('Accuracy drop'))).toBe(true);
     });
@@ -463,7 +546,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(false);
-      const gemini = report.summaryDeltas.find((d: any) => d.model === 'google/gemini-3.7-flash:high');
+      const gemini = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'google/gemini-3.7-flash:high'));
       expect(gemini.status).toBe('REGRESSION');
       expect(gemini.violations.some((v: string) => v.includes('SNR degradation'))).toBe(true);
     });
@@ -478,7 +561,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(false);
-      const ds = report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high');
+      const ds = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high'));
       expect(ds.status).toBe('REGRESSION');
       expect(ds.violations.some((v: string) => v.includes('F1 drop'))).toBe(true);
     });
@@ -493,7 +576,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(false);
-      const qwen = report.summaryDeltas.find((d: any) => d.model === 'qwen/qwen-3.8-27b:high');
+      const qwen = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'qwen/qwen-3.8-27b:high'));
       expect(qwen.status).toBe('REGRESSION');
       expect(qwen.violations.some((v: string) => v.includes('TTFT latency spike'))).toBe(true);
     });
@@ -508,7 +591,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(true);
-      const qwen = report.summaryDeltas.find((d: any) => d.model === 'qwen/qwen-3.8-27b:high');
+      const qwen = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'qwen/qwen-3.8-27b:high'));
       expect(qwen.status).toBe('PASS');
     });
 
@@ -522,7 +605,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(false);
-      const ds = report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high');
+      const ds = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high'));
       expect(ds.status).toBe('REGRESSION');
       expect(ds.violations.some((v: string) => v.includes('Cost inflation without recall gain'))).toBe(true);
     });
@@ -537,7 +620,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(true);
-      const ds = report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high');
+      const ds = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high'));
       expect(ds.status).toBe('PASS');
     });
 
@@ -551,7 +634,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base, { disallowNewFn: true });
 
       expect(report.passed).toBe(false);
-      const ds = report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high');
+      const ds = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high'));
       expect(ds.status).toBe('REGRESSION');
       expect(ds.violations.some((v: string) => v.includes('New false negatives'))).toBe(true);
     });
@@ -566,7 +649,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base, { disallowNewFp: true });
 
       expect(report.passed).toBe(false);
-      const ds = report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high');
+      const ds = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high'));
       expect(ds.status).toBe('REGRESSION');
       expect(ds.violations.some((v: string) => v.includes('New false positives'))).toBe(true);
     });
@@ -581,7 +664,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
       const report = compareBaselines(cand, base);
 
       expect(report.passed).toBe(false);
-      const ds = report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high');
+      const ds = assertDefined(report.summaryDeltas.find((d: any) => d.model === 'deepseek/deepseek-v4-flash-0731:high'));
       expect(ds.status).toBe('REGRESSION');
       expect(ds.violations.length).toBeGreaterThanOrEqual(3);
     });
@@ -825,8 +908,8 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--strict',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.passed).toBe(true);
-      expect(res.comparison.hasRegressions).toBe(false);
+      expect(assertDefined(res.comparison).passed).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(false);
     });
 
     it('7.2 verifies canonical v2 benchmark matrix against v1 baseline passes cleanly', async () => {
@@ -838,8 +921,8 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--strict',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.passed).toBe(true);
-      expect(res.comparison.hasRegressions).toBe(false);
+      expect(assertDefined(res.comparison).passed).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(false);
     });
 
     it('7.3 exits with code 1 in --strict mode when regression is detected', async () => {
@@ -857,7 +940,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--strict',
       ]);
       expect(res.exitCode).toBe(1);
-      expect(res.comparison.hasRegressions).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(true);
     });
 
     it('7.4 exits with code 0 in --warn-only mode even when regressions are present', async () => {
@@ -875,7 +958,7 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--warn-only',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.hasRegressions).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(true);
     });
 
     it('7.5 writes formatted output to file when --output=<path> is specified', async () => {
@@ -925,10 +1008,10 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--strict',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.passed).toBe(true);
-      expect(res.comparison.hasRegressions).toBe(false);
-      expect(res.comparison.totalBreaches).toBe(0);
-      for (const d of res.comparison.summaryDeltas) {
+      expect(assertDefined(res.comparison).passed).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(false);
+      expect(assertDefined(res.comparison).totalBreaches).toBe(0);
+      for (const d of assertDefined(res.comparison).summaryDeltas) {
         expect(d.status).toBe('PASS');
         expect(d.violations.length).toBe(0);
       }
@@ -943,9 +1026,9 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--strict',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.passed).toBe(true);
-      expect(res.comparison.hasRegressions).toBe(false);
-      expect(res.comparison.totalBreaches).toBe(0);
+      expect(assertDefined(res.comparison).passed).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(false);
+      expect(assertDefined(res.comparison).totalBreaches).toBe(0);
     });
 
     it('7.11 verifies canonical v3 benchmark matrix against v1 baseline passes cleanly', async () => {
@@ -957,8 +1040,8 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--strict',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.passed).toBe(true);
-      expect(res.comparison.hasRegressions).toBe(false);
+      expect(assertDefined(res.comparison).passed).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(false);
     });
 
     it('7.12 verifies canonical Baseline v5 matrix against Baseline v4 matrix passes cleanly with 0 breaches and deepseek low skipped', async () => {
@@ -970,13 +1053,13 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--strict',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.passed).toBe(true);
-      expect(res.comparison.hasRegressions).toBe(false);
-      expect(res.comparison.totalBreaches).toBe(0);
-      expect(res.comparison.modelDeltas['deepseek/deepseek-v4-flash-0731:low'].status).toBe('SKIPPED');
+      expect(assertDefined(res.comparison).passed).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(false);
+      expect(assertDefined(res.comparison).totalBreaches).toBe(0);
+      expect(assertDefined(res.comparison).modelDeltas['deepseek/deepseek-v4-flash-0731:low'].status).toBe('SKIPPED');
       for (const model of ['deepseek/deepseek-v4-flash-0731:high', 'openrouter/5.6-luna-high', 'qwen/qwen-3.8-27b:high', 'google/gemini-3.7-flash:high']) {
-        expect(res.comparison.modelDeltas[model].status).toBe('PASS');
-        expect(res.comparison.modelDeltas[model].violations.length).toBe(0);
+        expect(assertDefined(res.comparison).modelDeltas[model].status).toBe('PASS');
+        expect(assertDefined(res.comparison).modelDeltas[model].violations.length).toBe(0);
       }
     });
 
@@ -989,10 +1072,10 @@ describe('Release Regression Quality Gate (scripts/compare-release-baselines.mjs
         '--strict',
       ]);
       expect(res.exitCode).toBe(0);
-      expect(res.comparison.passed).toBe(true);
-      expect(res.comparison.hasRegressions).toBe(false);
-      expect(res.comparison.totalBreaches).toBe(0);
-      for (const d of res.comparison.summaryDeltas) {
+      expect(assertDefined(res.comparison).passed).toBe(true);
+      expect(assertDefined(res.comparison).hasRegressions).toBe(false);
+      expect(assertDefined(res.comparison).totalBreaches).toBe(0);
+      for (const d of assertDefined(res.comparison).summaryDeltas) {
         expect(d.status).toBe('PASS');
         expect(d.violations.length).toBe(0);
       }

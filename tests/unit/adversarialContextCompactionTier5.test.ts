@@ -47,6 +47,7 @@ import {
   PersonaFinding,
 } from '../../src/evaluation/pipelineHarnessRunner';
 import { changedLineNumbers } from '../../src/review/reviewCore';
+import { ExpectedFinding } from '../../src/evaluation/scenarios';
 import { reviewLimitsSchema, ctReviewConfigV4Schema } from '../../src/config/schema';
 
 describe('Tier 5 Adversarial Robustness: Context Management & Compaction Architecture', () => {
@@ -775,9 +776,9 @@ describe('Tier 5 Adversarial Robustness: Context Management & Compaction Archite
     });
 
     it('TEST_T5_AGG_03: pipeline metrics accurately compute TP, FP, FN, precision, recall, F1, and SNR for partitioned PRs', () => {
-      const expected = [
-        { path: 'src/sip.ts', line: 50, severity: 'P0' as const, title: 'SIP Race' },
-        { path: 'src/rtp.ts', line: 100, severity: 'P1' as const, title: 'RTP Leak' },
+      const expected: ExpectedFinding[] = [
+        { personaId: 'security', path: 'src/sip.ts', line: 50, severity: 'P0' as const, title: 'SIP Race' },
+        { personaId: 'performance', path: 'src/rtp.ts', line: 100, severity: 'P1' as const, title: 'RTP Leak' },
       ];
 
       const actual: PersonaFinding[] = [

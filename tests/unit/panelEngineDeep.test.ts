@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
-import { CtReviewConfigV3 } from '../../src/config/schema';
+import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
+// Parsed through the real schema (rather than hand-typed as CtReviewConfigV3) so
+// all the `.default(...)`-backed top-level sections (reviews, chat, etc.) are
+// populated the same way production config loading populates them.
 function buildDeepConfig(): CtReviewConfigV3 {
-  return {
+  return ctReviewConfigV3Schema.parse({
     version: 3,
     profile: 'assertive',
     quorum: 2,
@@ -43,7 +46,7 @@ function buildDeepConfig(): CtReviewConfigV3 {
     confidence_threshold: 70,
     mascot: true,
     display: { mascot: true },
-  };
+  });
 }
 
 describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
