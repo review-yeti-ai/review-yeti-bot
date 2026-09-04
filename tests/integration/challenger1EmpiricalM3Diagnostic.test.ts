@@ -4,7 +4,6 @@ import fs from 'fs';
 import path from 'path';
 import { createApp } from '../../src/app';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
-import type { ProviderConfigRecord } from '../../src/persistence/dashboardStore';
 import * as panelEngine from '../../src/panel/panelEngine';
 
 const TEMP_STORE_PATH = path.join('/tmp', 'ct-review-bot', `diagnostic_challenger_m3_${Date.now()}.json`);
@@ -30,11 +29,10 @@ describe('Milestone 3 Empirical Challenge: POST /api/onboarding/diagnostic', () 
 
   describe('1. Unconfigured or Invalid Credentials Verification', () => {
     it('returns HTTP 400 Bad Request with clear error message when credentials are unconfigured', async () => {
-      // Set provider configs in store to unconfigured
-      // src/persistence/dashboardStore.ts's ProviderConfigRecord.status type omits 'unconfigured'
-      // even though src/api/onboarding.ts explicitly checks `cfg.status === 'unconfigured'`
-      // (see this worker's report: real product type gap, left unfixed -- out of file scope).
-      dashboardStore.updateProviderConfig('openai', { status: 'unconfigured' as ProviderConfigRecord['status'], apiKeyRaw: '' });
+      // Set provider configs in store to unconfigured. 'unconfigured' is now part of
+      // ProviderConfigRecord['status'] (REL-573) since src/api/onboarding.ts genuinely
+      // branches on `cfg.status === 'unconfigured'` at runtime.
+      dashboardStore.updateProviderConfig('openai', { status: 'unconfigured', apiKeyRaw: '' });
 
       const res = await request(app)
         .post('/api/onboarding/diagnostic')
@@ -49,11 +47,9 @@ describe('Milestone 3 Empirical Challenge: POST /api/onboarding/diagnostic', () 
     }, 15000);
 
     it('returns HTTP 400 Bad Request with clear error message when credentials are invalid', async () => {
-      // Set provider config in store to unconfigured API key
-      // src/persistence/dashboardStore.ts's ProviderConfigRecord.status type omits 'unconfigured'
-      // even though src/api/onboarding.ts explicitly checks `cfg.status === 'unconfigured'`
-      // (see this worker's report: real product type gap, left unfixed -- out of file scope).
-      dashboardStore.updateProviderConfig('openai', { status: 'unconfigured' as ProviderConfigRecord['status'], apiKeyRaw: '' });
+      // Set provider config in store to unconfigured API key. 'unconfigured' is now part
+      // of ProviderConfigRecord['status'] (REL-573).
+      dashboardStore.updateProviderConfig('openai', { status: 'unconfigured', apiKeyRaw: '' });
 
       const res = await request(app)
         .post('/api/onboarding/diagnostic')
