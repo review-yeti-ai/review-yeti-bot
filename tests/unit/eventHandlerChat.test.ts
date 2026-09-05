@@ -95,5 +95,85 @@ describe('eventHandlerChat.test.ts — Webhook Event Filtering & Chat Command Pa
       expect(result.shouldTrigger).toBe(false);
       expect(result.reason).toContain('not bot review command or inline reply');
     });
+
+    it('triggers on issue_comment carrying "@review-yeti explain"', () => {
+      const payload = {
+        action: 'created',
+        issue: { number: 55, pull_request: {} },
+        comment: { id: 601, body: '@review-yeti explain why is this insecure?' },
+        repository: { name: 'review-yeti-bot', owner: { login: 'review-yeti-ai' } },
+        sender: { login: 'developer5' },
+      };
+
+      const result = handler.evaluateTrigger('issue_comment', payload, 'delivery-55');
+      expect(result.shouldTrigger).toBe(true);
+      expect(result.parsedPayload?.prNumber).toBe(55);
+      expect(result.parsedPayload?.commandText).toBe('@review-yeti explain why is this insecure?');
+      expect(result.parsedPayload?.triggerSource).toBe('comment_command');
+    });
+
+    it('triggers on pull_request_review_comment carrying "@review-yeti fix" with diff_hunk and path', () => {
+      const payload = {
+        action: 'created',
+        pull_request: { number: 77 },
+        comment: {
+          id: 701,
+          body: '@review-yeti fix replace with bcrypt hash',
+          path: 'src/auth/hash.ts',
+          diff_hunk: '@@ -1,3 +1,3 @@\n-const hash = md5(pass);',
+        },
+        repository: { name: 'review-yeti-bot', owner: { login: 'review-yeti-ai' } },
+        sender: { login: 'developer6' },
+      };
+
+      const result = handler.evaluateTrigger('pull_request_review_comment', payload, 'delivery-77');
+      expect(result.shouldTrigger).toBe(true);
+      expect(result.parsedPayload?.prNumber).toBe(77);
+      expect(result.parsedPayload?.commandText).toBe('@review-yeti fix replace with bcrypt hash');
+      expect(result.parsedPayload?.filePath).toBe('src/auth/hash.ts');
+      expect(result.parsedPayload?.diffHunk).toContain('md5');
+    });
+
+    it('triggers on review comment carrying "@review-yeti ignore" and "@review-yeti mute"', () => {
+      const payloadIgnore = {
+        action: 'created',
+        pull_request: { number: 88 },
+        comment: { id: 801, body: '@review-yeti ignore false positive in test file' },
+        repository: { name: 'review-yeti-bot', owner: { login: 'review-yeti-ai' } },
+        sender: { login: 'developer7' },
+      };
+      const resIgnore = handler.evaluateTrigger('pull_request_review_comment', payloadIgnore);
+      expect(resIgnore.shouldTrigger).toBe(true);
+      expect(resIgnore.parsedPayload?.commandText).toBe('@review-yeti ignore false positive in test file');
+
+      const payloadMute = {
+        action: 'created',
+        pull_request: { number: 88 },
+        comment: { id: 802, body: '@review-yeti mute test-rule' },
+        repository: { name: 'review-yeti-bot', owner: { login: 'review-yeti-ai' } },
+        sender: { login: 'developer7' },
+      };
+      const resMute = handler.evaluateTrigger('pull_request_review_comment', payloadMute);
+      expect(resMute.shouldTrigger).toBe(true);
+      expect(resMute.parsedPayload?.commandText).toBe('@review-yeti mute test-rule');
+    });
+
+    it('suppresses bot self-loop comments from review-yeti[bot] and review-yeti-bot', () => {
+      const payloadBot1 = {
+        action: 'created',
+        issue: { number: 90, pull_request: {} },
+        comment: { id: 901, body: '@review-yeti review' },
+        sender: { login: 'review-yeti[bot]' },
+      };
+      expect(handler.evaluateTrigger('issue_comment', payloadBot1).shouldTrigger).toBe(false);
+
+      const payloadBot2 = {
+        action: 'created',
+        issue: { number: 90, pull_request: {} },
+        comment: { id: 902, body: '@review-yeti review' },
+        sender: { login: 'review-yeti-bot' },
+      };
+      expect(handler.evaluateTrigger('issue_comment', payloadBot2).shouldTrigger).toBe(false);
+    });
   });
 });

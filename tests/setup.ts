@@ -9,9 +9,55 @@ import { dashboardStore } from '../src/persistence/dashboardStore';
 import { postgresStore } from '../src/persistence/postgresStore';
 import { providerPool } from '../src/gateway/providerPool';
 import { inMemorySpanExporter } from '../src/telemetry/spans';
+import http from 'node:http';
 import { authService } from '../src/dashboard/authService';
 
 expect.extend(matchers);
+
+import supertest from 'supertest';
+import https from 'node:https';
+
+// Patch Supertest's serverAddress to connect via IPv6 [::1] when binding to IPv6 (default in Node for listen(0)),
+// avoiding macOS port collision where 127.0.0.1 hits local host proxy servers bound to IPv4.
+if ((supertest as any).Test?.prototype?.serverAddress) {
+  (supertest as any).Test.prototype.serverAddress = function (app: any, path: string) {
+    let addr = app.address();
+    if (!addr) {
+      this._server = app.listen(0);
+      addr = app.address();
+    }
+    const port = addr ? addr.port : 0;
+    const protocol = app instanceof https.Server ? 'https' : 'http';
+    const host = addr && addr.family === 'IPv6' ? '[::1]' : '127.0.0.1';
+    return `${protocol}://${host}:${port}${path}`;
+  };
+}
+
+// Similarly patch http.get and http.request so raw http.get calls using http://127.0.0.1:<port> connect via [::1]
+function normalize127(arg: any) {
+  if (typeof arg === 'string') {
+    return arg.replace('http://127.0.0.1:', 'http://[::1]:');
+  }
+  if (arg instanceof URL) {
+    if (arg.hostname === '127.0.0.1') arg.hostname = '::1';
+    return arg;
+  }
+  if (arg && typeof arg === 'object') {
+    if (arg.hostname === '127.0.0.1') arg.hostname = '::1';
+    if (arg.host === '127.0.0.1') arg.host = '[::1]';
+  }
+  return arg;
+}
+const origHttpGet = http.get;
+(http as any).get = function (...args: any[]) {
+  args[0] = normalize127(args[0]);
+  return (origHttpGet as any).apply(this, args);
+};
+const origHttpRequest = http.request;
+(http as any).request = function (...args: any[]) {
+  args[0] = normalize127(args[0]);
+  return (origHttpRequest as any).apply(this, args);
+};
 
 // Set standard test environment variables
 const testStoreId = `${process.pid}_${Math.random().toString(36).substring(2)}`;
