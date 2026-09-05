@@ -12,6 +12,9 @@ process.env.NO_PROXY = '*';
 process.env.no_proxy = '*';
 
 export default defineConfig({
+  // REL-582: `cacheDir` is a Vite root option, not a `test.*` one. It sat under `test:` and was
+  // silently accepted only because vite's types were unresolvable under `moduleResolution: node`.
+  cacheDir: 'node_modules/.vitest',
   oxc: {
     jsx: {
       runtime: 'automatic',
@@ -47,13 +50,12 @@ export default defineConfig({
       },
     },
     setupFiles: ['./tests/setup.ts'],
-    environmentMatchGlobs: [
-      ['**/*.tsx', 'jsdom'],
-      ['tests/**/*.tsx', 'jsdom'],
-      ['tests/unit/components/**', 'jsdom'],
-      ['**/useSSE.test.ts', 'jsdom'],
-      ['**/liveStream*.test.ts', 'jsdom']
-    ],
+    // REL-582: `environmentMatchGlobs` was removed in Vitest 3 and is silently ignored by
+    // Vitest 4 -- it was dead config. It only looked load-bearing because `moduleResolution: node`
+    // could not resolve vite's types, so `InlineConfig` was implicitly `any` and nothing flagged
+    // the unknown key. Every test that renders declares `// @vitest-environment jsdom` in its own
+    // docblock (verified: zero render()-calling files without one), which is the supported
+    // mechanism and the one actually in force.
     include: [
       'src/**/*.test.ts',
       'tests/unit/**/*.test.ts',
@@ -63,7 +65,6 @@ export default defineConfig({
       'tests/e2e/**/*.test.ts',
       'tests/benchmark/**/*.test.ts'
     ],
-    cacheDir: 'node_modules/.vitest',
     pool: 'forks',
     // REL-560: run test files in parallel. Serial execution left the runner idle -- measured 117%
     // CPU across a full run on a 16-core machine, versus 443% and a ~4x wall-clock win at four
