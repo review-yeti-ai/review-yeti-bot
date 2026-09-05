@@ -21,8 +21,9 @@ In addition, Review Yeti supports a **Community Persona Store** that enables sha
    - [Architecture Matrix: Storage by Execution Mode](#architecture-matrix-storage-by-execution-mode)
    - [Strategy 1: GitHub Actions Cache (Zero Infrastructure)](#strategy-1-github-actions-cache-actionscachev4--zero-infrastructure)
    - [Strategy 2: Self-Hosted Kubernetes / Cluster Mode (Persistent Volume)](#strategy-2-self-hosted-kubernetes--cluster-mode-persistent-volume)
-   - [Strategy 3: Central PostgreSQL Database (`DATABASE_URL`)](#strategy-3-central-postgresql-database-database_url)
-   - [Strategy 4: Local Pre-Commit CLI (`git yeti`)](#strategy-4-local-pre-commit-cli-git-yeti)
+   - [Strategy 4: Central PostgreSQL Database (`DATABASE_URL`)](#strategy-3-central-postgresql-database-database_url)
+   - [Strategy 5: Central Cloud Cognitive Memory via Honcho (`HONCHO_API_KEY`)](#strategy-5-central-cloud-cognitive-memory-via-honcho-honcho_api_key)
+   - [Strategy 6: Local Pre-Commit CLI (`git yeti`)](#strategy-6-local-pre-commit-cli-git-yeti)
 5. [Nit Suppression Engine (`NitSuppressionEngine`)](#nit-suppression-engine-nitsuppressionengine)
    - [Multi-Strategy Matching Pipeline](#multi-strategy-matching-pipeline)
    - [Path Glob Matching](#path-glob-matching)
@@ -237,8 +238,9 @@ Because standard GitHub Actions runners (`ubuntu-latest`) destroy their filesyst
 | **1. Standalone GitHub Action** | `.ct-memory/team_memory.db` (SQLite WAL) | **GitHub Actions Cache** (`actions/cache@v4`) | Zero-infrastructure single-repo workflows |
 | **2. Self-Hosted Kubernetes / Cluster** | Persistent Volume (`/app/.ct-memory`) | **Kubernetes PersistentVolumeClaim (PVC)** | Helm / Operator cluster deployments |
 | **3. Interactive Webhook Server** | Container volume or host mount | **Docker Volume / Host Path** (`CT_TEAM_MEMORY_DB`) | Dedicated GitHub App webhook nodes |
-| **4. Central Enterprise Database** | PostgreSQL instance | **`DATABASE_URL` Dual-Write Connection** | Multi-repo teams sharing org-wide memory |
-| **5. Git Repository / Metadata Branch** | Git commit in `.ct-memory/` | **Git Commit & Push** | Pure open-source repos with auditable history |
+| **4. Central Enterprise Database** | PostgreSQL instance | **`DATABASE_URL` Dual-Write Connection** | Multi-repo teams sharing org-wide relational memory |
+| **5. Central Cloud Cognitive Memory** | Honcho Workspace (`/v3/workspaces/{ws}`) | **Honcho Memory Adapter / Composite Sync** | Semantic team memory, cross-PR cognitive recall, zero DB maintenance |
+| **6. Git Repository / Metadata Branch** | Git commit in `.ct-memory/` | **Git Commit & Push** | Pure open-source repos with auditable history |
 
 ---
 
@@ -313,11 +315,56 @@ For enterprise environments or multi-repo teams that want a single shared brain 
 
 ---
 
-### Strategy 4: Local Pre-Commit CLI (`git yeti`)
+### Strategy 5: Central Cloud Cognitive Memory via Honcho (`HONCHO_API_KEY`)
+
+For teams wanting AI-native cognitive memory that learns semantic rules, suppresses nits, and shares architectural constraints across PRs without maintaining a dedicated database:
+
+Review Yeti features a pluggable **Memory Adapter Pattern** (`src/memory/adapters/`) with native support for **Honcho** (`https://honcho.dev` or self-hosted Honcho).
+
+#### Supported Memory Providers
+- `sqlite`: Local zero-dependency Node 24 native SQLite WAL database (`.ct-memory/team_memory.db`).
+- `honcho`: Direct cloud cognitive memory store interfacing with Honcho v3 REST API.
+- `composite`: Two-tier memory combining local ultra-fast SQLite cache with asynchronous cloud synchronization to Honcho. Automatically activated when `HONCHO_API_KEY` is present.
+- `postgres`: Enterprise relational storage via `DATABASE_URL`.
+
+#### Honcho Configuration Environment Variables
+| Variable | Default | Description |
+|---|---|---|
+| `MEMORY_PROVIDER` | `auto` / `composite` | Memory provider selection: `sqlite`, `honcho`, `composite`, `postgres`, `auto`. |
+| `HONCHO_API_KEY` | *(None)* | Bearer authentication key for the Honcho API. |
+| `HONCHO_BASE_URL` | `http://localhost:8000` | Base URL of the Honcho instance (e.g. `https://honcho.example.com`). |
+| `HONCHO_WORKSPACE` | `default` | Target Honcho workspace isolating memory across organizational units. |
+| `HONCHO_PEER` | `review-yeti` | Writer peer identity representing the Review Yeti agent. |
+| `HONCHO_OBSERVED` | `developer` | Observed peer identity representing team contributors. |
+
+#### GitHub Actions Workflow Example with Honcho
+```yaml
+# .github/workflows/review-yeti.yml
+- name: Run Review Yeti with Honcho Cloud Memory
+  uses: review-yeti-ai/review-yeti-bot@v1
+  env:
+    HONCHO_BASE_URL: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.example.com' }}
+    HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
+    HONCHO_WORKSPACE: 'core-platform'
+    MEMORY_PROVIDER: 'composite'
+  with:
+    openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+#### How Honcho Synchronization Works
+1. **Learnings & Conventions**: Saved as typed conclusions (`schema: "ct-honcho-conclusion.v1"`, `kind: "decision_context"`) scoped to the repository and domain.
+2. **Nit Suppressions**: Captured as corrections (`kind: "correction"`) with pattern and file path metadata.
+3. **ADR Constraints**: Preserved as architectural invariants (`kind: "invariant"`).
+4. **Resilience**: If the Honcho endpoint experiences a network timeout or outage, the `CompositeMemoryAdapter` seamlessly serves queries from the local SQLite cache without interrupting review workflows.
+
+---
+
+### Strategy 6: Local Pre-Commit CLI (`git yeti`)
 
 When developers run `git yeti pre-commit` locally:
 - Team memory is stored at `.ct-memory/team_memory.db` on their local machine.
-- Developers can optionally share rules across the team by checking in `.ct-review.yaml` or syncing via the central PostgreSQL / GitHub App instance.
+- Developers can optionally share rules across the team by checking in `.ct-review.yaml` or syncing via central PostgreSQL or Honcho.
 
 ---
 

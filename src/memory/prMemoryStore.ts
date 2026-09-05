@@ -13,6 +13,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { logger } from '../utils/logger';
 import { postgresStore } from '../persistence/postgresStore';
+import {
+  MemoryAdapter,
+  MemoryAdapterConfig,
+  createMemoryAdapter,
+} from './adapters';
 
 export interface ReviewerLearning {
   id?: string;
@@ -71,7 +76,7 @@ export function getDefaultTeamMemoryPath(): string {
   return process.env.CT_TEAM_MEMORY_DB || DEFAULT_TEAM_MEMORY_PATH;
 }
 
-function matchesFilePath(pattern: string | null | undefined, filePath: string): boolean {
+export function matchesFilePath(pattern: string | null | undefined, filePath: string): boolean {
   if (!pattern || pattern === '' || pattern === '**' || pattern === '*') {
     return true;
   }
@@ -83,11 +88,11 @@ function matchesFilePath(pattern: string | null | undefined, filePath: string): 
   }
   let regStr = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\?/g, '__QUESTION__')
+    .replace(/\/\*\*\//g, '__SLASH_GLOBSTAR_SLASH__')
     .replace(/\*\*/g, '__GLOBSTAR__')
     .replace(/\*/g, '__STAR__')
-    .replace(/\?/g, '__QUESTION__');
-
-  regStr = regStr
+    .replace(/__SLASH_GLOBSTAR_SLASH__/g, '(?:/|/.+/)?')
     .replace(/__GLOBSTAR__/g, '.*')
     .replace(/__STAR__/g, '[^/]*')
     .replace(/__QUESTION__/g, '.');
@@ -98,14 +103,26 @@ function matchesFilePath(pattern: string | null | undefined, filePath: string): 
 export class PRMemoryStore {
   private db: DatabaseSync;
   private dbPath: string;
+  private adapter?: MemoryAdapter;
 
-  constructor(dbPath?: string) {
+  constructor(dbPathOrConfigOrAdapter?: string | MemoryAdapterConfig | MemoryAdapter) {
+    if (dbPathOrConfigOrAdapter && typeof dbPathOrConfigOrAdapter === 'object' && 'providerName' in dbPathOrConfigOrAdapter) {
+      this.adapter = dbPathOrConfigOrAdapter as MemoryAdapter;
+      this.dbPath = ':memory:';
+      this.db = new DatabaseSync(':memory:');
+      this.initDatabase();
+      return;
+    }
+
     const defaultPath = process.env.NODE_ENV === 'test'
       ? ':memory:'
       : (process.env.CT_REVIEW_DATA_DIR
         ? path.join(process.env.CT_REVIEW_DATA_DIR, 'team_memory.db')
         : DEFAULT_TEAM_MEMORY_PATH);
-    this.dbPath = dbPath || process.env.CT_TEAM_MEMORY_DB || process.env.CT_REVIEW_MEMORY_DB || defaultPath;
+    this.dbPath = typeof dbPathOrConfigOrAdapter === 'string'
+      ? dbPathOrConfigOrAdapter
+      : (process.env.CT_TEAM_MEMORY_DB || process.env.CT_REVIEW_MEMORY_DB || defaultPath);
+
     if (this.dbPath === ':memory:' || this.dbPath.startsWith(':memory:')) {
       this.db = new DatabaseSync(':memory:');
     } else {
@@ -116,6 +133,27 @@ export class PRMemoryStore {
       this.db = new DatabaseSync(this.dbPath);
     }
     this.initDatabase();
+
+    const shouldEnableHoncho = typeof dbPathOrConfigOrAdapter !== 'string' && (
+      process.env.NODE_ENV === 'test'
+        ? (process.env.MEMORY_PROVIDER === 'honcho' || process.env.MEMORY_PROVIDER === 'composite')
+        : Boolean(process.env.HONCHO_API_KEY || process.env.MEMORY_PROVIDER === 'honcho' || process.env.MEMORY_PROVIDER === 'composite')
+    );
+
+    if (shouldEnableHoncho) {
+      try {
+        this.adapter = createMemoryAdapter({
+          provider: (process.env.MEMORY_PROVIDER as any) || 'composite',
+          sqlite: { dbPath: this.dbPath },
+        });
+      } catch (err: any) {
+        logger.warn('Failed to initialize Honcho memory adapter in PRMemoryStore', { error: err?.message });
+      }
+    }
+  }
+
+  public getAdapter(): MemoryAdapter | undefined {
+    return this.adapter;
   }
 
   public getDbPath(): string {
@@ -221,6 +259,18 @@ export class PRMemoryStore {
     prNumber: number,
     learning: Omit<ReviewerLearning, 'repo' | 'prNumber'>
   ): Promise<ReviewerLearning> {
+    if (this.adapter) {
+      const record = await this.adapter.recordLearning(repo, prNumber, learning);
+      if (postgresStore.isConfigured()) {
+        try {
+          await postgresStore.saveLearnedRule(record as any);
+        } catch (err: any) {
+          logger.warn('Failed dual-write learned rule to PostgreSQL', { error: err?.message });
+        }
+      }
+      return record;
+    }
+
     const id = learning.id || `lrn_${crypto.randomUUID().slice(0, 8)}`;
     const now = new Date().toISOString();
     const createdAt = learning.createdAt || now;
@@ -264,6 +314,18 @@ export class PRMemoryStore {
     prNumber: number,
     nit: Omit<ResolvedNitPattern, 'repo' | 'prNumber'> & { ruleId?: string }
   ): Promise<ResolvedNitPattern> {
+    if (this.adapter) {
+      const record = await this.adapter.recordResolvedNit(repo, prNumber, nit);
+      if (postgresStore.isConfigured()) {
+        try {
+          await postgresStore.saveSuppressedNit(record as any);
+        } catch (err: any) {
+          logger.warn('Failed dual-write suppressed nit to PostgreSQL', { error: err?.message });
+        }
+      }
+      return record;
+    }
+
     const id = nit.id || `nit_${crypto.randomUUID().slice(0, 8)}`;
     const resolvedAt = nit.resolvedAt || new Date().toISOString();
     const suppressionCount = nit.suppressionCount || 0;
@@ -341,6 +403,18 @@ export class PRMemoryStore {
     repo: string,
     adr: Omit<ADRConstraint, 'repo'>
   ): Promise<ADRConstraint> {
+    if (this.adapter) {
+      const record = await this.adapter.recordAdrConstraint(repo, adr);
+      if (postgresStore.isConfigured()) {
+        try {
+          await postgresStore.saveADRConstraint(record as any);
+        } catch (err: any) {
+          logger.warn('Failed dual-write ADR constraint to PostgreSQL', { error: err?.message });
+        }
+      }
+      return record;
+    }
+
     const id = adr.id || `adr_${crypto.randomUUID().slice(0, 8)}`;
     const createdAt = adr.createdAt || new Date().toISOString();
     const stmt = this.db.prepare(`
@@ -375,6 +449,9 @@ export class PRMemoryStore {
     repo: string,
     rule: Omit<PathInstructionRule, 'repo'>
   ): Promise<PathInstructionRule> {
+    if (this.adapter && this.adapter.recordPathInstruction) {
+      return this.adapter.recordPathInstruction(repo, rule);
+    }
     const id = rule.id || `inst_${crypto.randomUUID().slice(0, 8)}`;
     const createdAt = rule.createdAt || new Date().toISOString();
     const stmt = this.db.prepare(`
@@ -404,6 +481,18 @@ export class PRMemoryStore {
   private incrementNitStmt?: any;
 
   public async incrementNitSuppression(id: string): Promise<void> {
+    if (this.adapter) {
+      await this.adapter.incrementNitSuppression(id);
+      if (postgresStore.isConfigured()) {
+        try {
+          await postgresStore.incrementNitSuppression(id);
+        } catch (err: any) {
+          logger.warn('Failed dual-write incrementNitSuppression to PostgreSQL', { error: err?.message });
+        }
+      }
+      return;
+    }
+
     if (!this.incrementNitStmt) {
       this.incrementNitStmt = this.db.prepare('UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE id = ?');
     }
@@ -454,6 +543,22 @@ export class PRMemoryStore {
       } catch (err: any) {
         logger.warn('PostgreSQL queryLearnings failed, seamlessly falling back to local SQLite', { error: err?.message });
       }
+    }
+
+    if (this.adapter) {
+      let learnings = await this.adapter.getLearnings(repo, options);
+      if (options.query) {
+        const q = options.query.toLowerCase();
+        learnings = learnings.filter((l) =>
+          l.title.toLowerCase().includes(q) || l.description.toLowerCase().includes(q)
+        );
+      }
+      let resolvedNits = await this.adapter.getResolvedNits(repo, options.filePath);
+      if (options.ruleId) {
+        resolvedNits = resolvedNits.filter((n) => n.ruleId === options.ruleId || n.id === options.ruleId || n.pattern === options.ruleId);
+      }
+      const adrConstraints = await this.adapter.getAdrConstraints(repo, 'accepted');
+      return { learnings, resolvedNits, adrConstraints };
     }
 
     let lSql = 'SELECT * FROM learnings WHERE repo = ?';
@@ -542,6 +647,24 @@ export class PRMemoryStore {
       nits = nits.filter((n) => n.pattern.toLowerCase().includes(p));
     }
     return nits;
+  }
+
+  public async getLearnings(
+    repo: string,
+    options?: { category?: string; filePath?: string; limit?: number }
+  ): Promise<ReviewerLearning[]> {
+    if (this.adapter) {
+      return this.adapter.getLearnings(repo, options);
+    }
+    const state = await this.queryLearnings(repo, options as any);
+    return state.learnings;
+  }
+
+  public async getResolvedNits(repo: string, filePath?: string): Promise<ResolvedNitPattern[]> {
+    if (this.adapter) {
+      return this.adapter.getResolvedNits(repo, filePath);
+    }
+    return this.queryResolvedNits(repo, { filePath });
   }
 
   public async recordFeedback(repo: string, reaction: string, feedbackType: 'positive' | 'negative' = 'positive'): Promise<void> {
@@ -633,6 +756,9 @@ export class PRMemoryStore {
   }
 
   public async clearRepoMemory(repo: string): Promise<void> {
+    if (this.adapter && this.adapter.clear) {
+      await this.adapter.clear(repo);
+    }
     this.db.prepare('DELETE FROM learnings WHERE repo = ?').run(repo);
     this.db.prepare('DELETE FROM resolved_nits WHERE repo = ?').run(repo);
     this.db.prepare('DELETE FROM adr_constraints WHERE repo = ?').run(repo);
@@ -648,6 +774,9 @@ export class PRMemoryStore {
   }
 
   public getCounts(): { learningsCount: number; suppressedNitsCount: number; adrConstraintsCount: number } {
+    if (this.adapter && typeof (this.adapter as any).getCounts === 'function') {
+      return (this.adapter as any).getCounts();
+    }
     try {
       const l = this.db.prepare('SELECT COUNT(*) as cnt FROM learnings').get() as { cnt: number } | undefined;
       const n = this.db.prepare('SELECT COUNT(*) as cnt FROM resolved_nits').get() as { cnt: number } | undefined;
@@ -663,6 +792,9 @@ export class PRMemoryStore {
   }
 
   public close(): void {
+    if (this.adapter && this.adapter.close) {
+      this.adapter.close().catch(() => {});
+    }
     if (this.db && typeof this.db.close === 'function') {
       try {
         this.db.close();

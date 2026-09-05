@@ -237,6 +237,7 @@ export function translateCodeRabbitToV3(raw: any): CtReviewConfigV3 {
 
   const mergedDials = {
     memory_engine,
+    memory_provider: dials.memory_provider || 'auto',
     mascot,
     confidence_threshold,
     ticket_enforcement,
