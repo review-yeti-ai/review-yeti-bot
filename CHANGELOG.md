@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.32.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.32.1...v1.32.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **ci:** refuse a SKIPPED check only when it is required (REL-586) ([#513](https://github.com/review-yeti-ai/review-yeti-bot/issues/513)) ([b714645](https://github.com/review-yeti-ai/review-yeti-bot/commit/b71464522ebca52522c48732bef8dd8a02cf5618))
+* **github:** rename App check run to Review Yeti so it completes the central lane's stuck check (REL-586) ([#512](https://github.com/review-yeti-ai/review-yeti-bot/issues/512)) ([c42d1f8](https://github.com/review-yeti-ai/review-yeti-bot/commit/c42d1f86d329a3e14ee583ea83345adec8ed6d20))
+* **review-bot:** harden verdict gate on coverage signals, drop misplaced P2 block (REL-585) ([#510](https://github.com/review-yeti-ai/review-yeti-bot/issues/510)) ([d21e2c5](https://github.com/review-yeti-ai/review-yeti-bot/commit/d21e2c50b1be1aff38e503d444a9848cf113731c))
+
 ## [1.32.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.32.0...v1.32.1) (2026-09-05)
 
 
