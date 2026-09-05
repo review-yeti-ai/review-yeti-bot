@@ -226,6 +226,22 @@ export function useSSE(options: UseSSEOptions = {}) {
             };
           }
         }
+      } else if (type === 'job:queued' || type === 'job:dispatched') {
+        // Job-level lifecycle events (persona: 'all'). Mirrors /api/live/active's
+        // job.status of 'queued'/'dispatched': no persona has started executing
+        // yet, so PersonaStatus stays PENDING (there is no QUEUED/DISPATCHED
+        // persona status) and only the informational message is refreshed so
+        // it does not disagree with the poll-derived job summary.
+        const jobLifecycleMessage =
+          data?.message || (type === 'job:queued' ? 'Review job queued' : 'Review job dispatched');
+        for (const key of Object.keys(nextPersonaProgress)) {
+          if (nextPersonaProgress[key].status === 'PENDING') {
+            nextPersonaProgress[key] = {
+              ...nextPersonaProgress[key],
+              lastMessage: jobLifecycleMessage,
+            };
+          }
+        }
       }
 
       // Token and cost extraction
