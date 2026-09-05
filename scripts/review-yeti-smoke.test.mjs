@@ -513,7 +513,33 @@ test('the smoke suite treats missing keys as unavailable and still accepts the h
   assert.deepEqual(result.results.map((result) => result.status), ['healthy']);
 });
 
-test('the smoke suite still accepts SSE chat completions if a transport streams', async () => {
+test('the smoke suite handles thinking tokens in think tags before json object', async () => {
+    const rawContent = "<think>The user asks for {\"ok\":true}.</think>{\"ok\":true,\"review\":\"SMOKE_OK\"}";
+    const transport = {
+      name: "bifrost",
+      base_url: "https://llm-gateway.example/v1",
+      model: "ollama/glm-5.3-flash",
+      compat: "openai",
+      stream: true,
+      max_tokens: 65536,
+      timeout_ms: 5000,
+      connect_timeout_ms: 5000,
+      ttft_ms: 5000,
+      stall_ms: 5000,
+    };
+    const sseBody = [
+      "data: " + JSON.stringify({ choices: [{ delta: { content: rawContent } }] }),
+      "data: [DONE]",
+    ].join("\n");
+    const fetchImpl = async () => new Response(sseBody, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+    const result = await probeTransport(transport, "test-key", fetchImpl, 5000, 5000);
+    assert.equal(result.status, "healthy");
+  });
+
+  test('the smoke suite still accepts SSE chat completions if a transport streams', async () => {
   const logs = [];
   const result = await runSmoke({
     policy: policyFixtureWith('openrouter-primary'),

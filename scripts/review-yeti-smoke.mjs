@@ -327,7 +327,11 @@ export function buildRequest(transport) {
 
 function extractJsonObject(content) {
   if (typeof content !== 'string') return null;
-  const unwrapped = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const unwrapped = content
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
   const start = unwrapped.indexOf('{');
   const end = unwrapped.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
