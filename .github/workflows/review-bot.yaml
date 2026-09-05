@@ -93,6 +93,7 @@ jobs:
         env:
           VERDICT: ${{ steps.review.outputs.verdict }}
           REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
+          P2_COUNT: ${{ steps.review.outputs.p2-count }}
         run: |
           set -euo pipefail
 
@@ -103,7 +104,15 @@ jobs:
 
           case "${VERDICT}" in
             SHIP)
-              echo "Verdict SHIP — review approved this head."
+              # A P2-only review still arbitrates to SHIP ("passed or contained only minor nits"),
+              # so SHIP alone does not mean "nothing to fix". Nits that merge are nits that never
+              # get fixed, and they accumulate into exactly the kind of drift this repo spent
+              # REL-570/573 clearing out. Require a genuinely clean head.
+              if [ "${P2_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+                echo "::error::Verdict is SHIP but ${P2_COUNT} P2/nit finding(s) remain. Resolve them, or reply on the thread if a finding is a false positive, then push."
+                exit 1
+              fi
+              echo "Verdict SHIP with no outstanding findings."
               ;;
             FIX_FIRST|BLOCK)
               echo "::error::Review verdict is ${VERDICT}. Resolve the findings in the review comment and push a fix."

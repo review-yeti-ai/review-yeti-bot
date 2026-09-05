@@ -45,6 +45,18 @@ describe('review verdict enforcement (REL-580)', () => {
     expect(run).toMatch(/\*\)[\s\S]*exit 1/u);
   });
 
+  it('blocks on outstanding P2 nits even when the verdict is SHIP', () => {
+    const run = enforce!.run!;
+    // A P2-only review arbitrates to SHIP ("passed or contained only minor nits"), so SHIP alone
+    // does not mean "nothing to fix". Nits that merge are nits that never get fixed.
+    expect(enforce!.env?.P2_COUNT).toContain('steps.review.outputs.p2-count');
+    expect(run).toMatch(/P2_COUNT[\s\S]{0,120}-gt 0/u);
+    // The P2 branch must live inside the SHIP case, not replace it.
+    const shipCase = run.slice(run.indexOf('SHIP)'), run.indexOf('FIX_FIRST|BLOCK)'));
+    expect(shipCase).toContain('P2_COUNT');
+    expect(shipCase).toContain('exit 1');
+  });
+
   it('leaves the non-terminal DISPATCHED state neutral', () => {
     const run = enforce!.run!;
     // The App gate is still pending on this head; a later run decides. Neither pass nor fail.
