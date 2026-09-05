@@ -102,10 +102,6 @@ describe('commentPublisher.ts — Comprehensive Unit Expansion Tests', () => {
       body: 'LGTM!',
       inlineComments: [
         {
-          owner: 'calltelemetry',
-          repo: 'ct-review-bot',
-          prNumber: 10,
-          commitSha: 'head-sha-10',
           path: 'src/app.ts',
           line: 42,
           finding: sampleFinding,

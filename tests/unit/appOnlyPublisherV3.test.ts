@@ -32,10 +32,6 @@ describe('GitHub App installation-token-only publisher', () => {
       event: 'COMMENT',
       body: 'persona evidence',
       inlineComments: [{
-        owner: 'calltelemetry',
-        repo: 'ct-meta',
-        prNumber: 99,
-        commitSha: 'head123',
         path: 'tools/example.sh',
         line: 4,
         finding: {

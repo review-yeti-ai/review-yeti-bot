@@ -554,10 +554,6 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         const summary = checkSummary(panel);
         const ship = panel.arbiter.verdict === 'SHIP';
         const finalInline = buildFinalInlineComments({
-          owner,
-          repo,
-          prNumber,
-          commitSha: headSha,
           findings: retainedFindings,
           max: MAX_FINAL_INLINE_COMMENTS,
         });
