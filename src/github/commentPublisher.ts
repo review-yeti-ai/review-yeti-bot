@@ -68,6 +68,10 @@ export interface PublishInlineCommentRequest {
   side?: 'LEFT' | 'RIGHT';
   startLine?: number;
   finding: PersonaFinding;
+  owner?: string;
+  repo?: string;
+  prNumber?: number;
+  commitSha?: string;
 }
 
 export interface PublishReviewRequest {
