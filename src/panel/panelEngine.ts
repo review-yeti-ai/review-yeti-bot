@@ -19,6 +19,23 @@ import { ASTParser } from '../indexer/astParser';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
+/**
+ * REL-583: `fixOptions` on a panel finding was `any[]`, while the GitHub-publication sibling
+ * already typed the identical payload as `FixOption[]` -- `panelPublication.ts` assigns one
+ * straight into the other. The shape was never unknown, only unstated.
+ *
+ * Declared here rather than imported from `src/github/commentPublisher.ts` because the dependency
+ * runs github -> panel (commentPublisher imports PanelFinding from this module); importing back
+ * would invert it and create the same cycle repaired in #493. commentPublisher re-exports this
+ * name so its existing importers are unaffected.
+ */
+export interface FixOption {
+  rank?: number;
+  title?: string;
+  explanation?: string;
+  suggestionCode?: string;
+}
+
 export interface PanelFinding {
   severity: FindingSeverity;
   path: string;
@@ -29,7 +46,7 @@ export interface PanelFinding {
   suggestion?: string;
   confidence?: number;
   recommendation?: string;
-  fixOptions?: any[];
+  fixOptions?: FixOption[];
   isArchitectural?: boolean;
 }
 
