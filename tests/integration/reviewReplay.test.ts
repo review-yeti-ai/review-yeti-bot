@@ -272,7 +272,6 @@ describe('review pipeline cassette replay', () => {
       owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 42, commitSha: 'head-sha-42',
       event: 'COMMENT', body: 'Replay publication',
       inlineComments: [{
-        owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 42, commitSha: 'head-sha-42',
         path: 'src/api/user.ts', line: 2, finding,
       }],
     });
@@ -282,7 +281,6 @@ describe('review pipeline cassette replay', () => {
       owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 43, commitSha: 'head-sha-43',
       event: 'REQUEST_CHANGES', body: 'Line fallback',
       inlineComments: [{
-        owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 43, commitSha: 'head-sha-43',
         path: 'src/api/user.ts', line: 2, finding,
       }],
     });

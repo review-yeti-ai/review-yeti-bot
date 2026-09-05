@@ -304,10 +304,6 @@ mascot: false
         mascot: true,
         inlineComments: [
           {
-            owner: 'testowner',
-            repo: 'testrepo',
-            prNumber: 42,
-            commitSha: 'sha123',
             path: 'src/app.ts',
             line: 10,
             finding: {
