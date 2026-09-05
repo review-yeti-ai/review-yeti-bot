@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runReviewPipeline } from '../../src/app';
 import { ParsedPRPayload } from '../../src/github/eventHandler';
+import { logger } from '../../src/utils/logger';
 
 const POLICY = `
 version: 3
@@ -98,6 +99,7 @@ function route(options: {
   recursiveSubmodule?: boolean;
   singlePersona?: boolean;
   omniOutage?: boolean;
+  checkCreateFails?: boolean;
 } = {}) {
   const requests: Array<{ url: string; method: string; body: any }> = [];
   let pullReads = 0;
@@ -151,7 +153,14 @@ function route(options: {
         }])
         : json([{ filename: 'src/proof.ts', patch: '@@ -0,0 +1 @@\n+export const proof = true;' }]);
     }
-    if (url.endsWith('/check-runs') && method === 'POST') return json({ id: 991 }, 201);
+    if (url.endsWith('/check-runs') && method === 'POST') {
+      // REL-586: the check-run name must match the central lane's `Review Yeti`
+      // check so the App's completion supersedes it instead of creating a
+      // second, differently-named check.
+      if (body?.name !== 'Review Yeti') return json({ error: `unexpected check name ${body?.name}` }, 400);
+      if (options.checkCreateFails) return json({ message: 'Resource not accessible by integration' }, 403);
+      return json({ id: 991 }, 201);
+    }
     if (url.includes('/check-runs/991') && method === 'PATCH') return json({});
     if (url.endsWith('/reviews') && method === 'POST') return json({ id: 700 + requests.length }, 201);
     if (/\/issues\/\d+\/comments$/.test(url) && method === 'POST') return json({ id: 800 }, 201);
@@ -264,5 +273,22 @@ describe('GitHub App configurable persona pipeline', () => {
     expect(completion?.body.conclusion).toBe('failure');
     const comment = mock.requests.find((request) => /\/issues\/9103\/comments$/.test(request.url));
     expect(comment?.body.body).toContain('No code verdict or approval was fabricated');
+  });
+
+  it('publishes with no completing check run and logs loudly when Check Run creation fails (REL-586)', async () => {
+    const mock = route({ checkCreateFails: true });
+    vi.stubGlobal('fetch', mock.fetchMock);
+    const errorSpy = vi.spyOn(logger, 'error');
+
+    const result = await runReviewPipeline(payload(9106));
+
+    expect(result).toMatchObject({ status: 'processed', decision: 'APPROVE' });
+    // No checkId was ever minted, so none of the completeCheck() call sites run.
+    expect(mock.requests.filter((request) => request.method === 'PATCH' && request.url.includes('/check-runs'))).toHaveLength(0);
+    // The failure to create a check run must be loud (error level), not swallowed as a warn.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Check Run creation failed'),
+      expect.objectContaining({ owner: 'calltelemetry', repo: 'ct-meta' }),
+    );
   });
 });
