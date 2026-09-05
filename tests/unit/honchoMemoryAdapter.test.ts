@@ -89,7 +89,10 @@ describe("HonchoMemoryAdapter Unit Tests", () => {
     await adapter.initialize();
     expect(mockFetch).toHaveBeenCalledWith(
       expect.stringContaining(`/v3/workspaces/${adapter.getWorkspace()}/peers`),
-      expect.objectContaining({ method: "POST" })
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ id: adapter.getPeer() }),
+      })
     );
   });
 
