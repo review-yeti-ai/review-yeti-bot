@@ -514,7 +514,7 @@ test('the smoke suite treats missing keys as unavailable and still accepts the h
 });
 
 test('the smoke suite handles thinking tokens in think tags before json object', async () => {
-    const rawContent = "<think>The user asks for {\"ok\":true}.</think>{\"ok\":true,\"review\":\"SMOKE_OK\"}";
+    const rawContent = "The user asks for {\"ok\":true}. Just returning it.</think>{\"ok\":true,\"review\":\"SMOKE_OK\"}";
     const transport = {
       name: "bifrost",
       base_url: "https://llm-gateway.example/v1",

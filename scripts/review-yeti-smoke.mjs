@@ -328,6 +328,7 @@ export function buildRequest(transport) {
 function extractJsonObject(content) {
   if (typeof content !== 'string') return null;
   const unwrapped = content
+    .replace(/^[\s\S]*?<\/think>/i, '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
