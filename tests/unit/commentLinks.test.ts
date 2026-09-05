@@ -270,10 +270,6 @@ describe('Comment Publisher Dashboard Links & Markdown Suite', () => {
 
       const inlineComments = [
         {
-          owner: 'acme',
-          repo: 'backend',
-          prNumber: 5,
-          commitSha: 'abc1234',
           path: 'src/index.ts',
           line: 10,
           finding: {
@@ -286,10 +282,6 @@ describe('Comment Publisher Dashboard Links & Markdown Suite', () => {
           },
         },
         {
-          owner: 'acme',
-          repo: 'backend',
-          prNumber: 5,
-          commitSha: 'abc1234',
           path: 'src/index.ts',
           line: 15,
           finding: {
