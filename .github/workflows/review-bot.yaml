@@ -88,12 +88,35 @@ jobs:
       # on the same head decides. It stays neutral rather than passing or failing.
       # An empty or NO_VERDICT result fails: a review that could not complete safely is never an
       # implicit pass.
+      #
+      # REL-585: a SHIP verdict alone does not mean the exact head was fully covered. The
+      # pipeline's own gate-decision/merge-eligible/files-omitted outputs (review-pipeline.js
+      # writeStepOutputs) are the load-bearing signals that the diff budget did not omit files and
+      # that arbitration considered the review merge-eligible; this step used to read none of
+      # them, so a SHIP where the diff budget dropped files still passed. Mirror the central
+      # gate's established contract (ct-review-actions' check-review-verdict.sh) instead of
+      # re-deriving a weaker one here.
+      #
+      # REL-585 also removes the P2-blocking branch that used to live here. That policy belonged
+      # to arbitration, not this workflow layer: the central gate treats P2 as advisory (same
+      # file, same rationale), the App path treats P2 as advisory (src/app.ts, `ship = verdict ===
+      # 'SHIP'`), and arbitration already encodes a P2 escalation threshold
+      # (`fixP2 = max(5, panelSize)` in src/review/reviewCore.js) that promotes a P2-heavy review
+      # to FIX_FIRST on its own. Duplicating a second, stricter opinion here had no suppression
+      # path on this code path -- NitSuppressionEngine only exists in the App path
+      # (src/github/commentPublisher.ts) and nothing in review-pipeline.js reads review threads,
+      # so this step's own error message ("reply on the thread") did nothing. Worse,
+      # sanitizeFindings maps any unrecognised severity to P2, so malformed model output could
+      # block a merge outright. Leaving P2 enforcement solely to arbitration keeps one place that
+      # owns the threshold and can actually act on it.
       - name: Enforce Verdict
         if: always()
         env:
           VERDICT: ${{ steps.review.outputs.verdict }}
           REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
-          P2_COUNT: ${{ steps.review.outputs.p2-count }}
+          GATE_DECISION: ${{ steps.review.outputs.gate-decision }}
+          MERGE_ELIGIBLE: ${{ steps.review.outputs.merge-eligible }}
+          FILES_OMITTED: ${{ steps.review.outputs.files-omitted }}
         run: |
           set -euo pipefail
 
@@ -104,15 +127,22 @@ jobs:
 
           case "${VERDICT}" in
             SHIP)
-              # A P2-only review still arbitrates to SHIP ("passed or contained only minor nits"),
-              # so SHIP alone does not mean "nothing to fix". Nits that merge are nits that never
-              # get fixed, and they accumulate into exactly the kind of drift this repo spent
-              # REL-570/573 clearing out. Require a genuinely clean head.
-              if [ "${P2_COUNT:-0}" -gt 0 ] 2>/dev/null; then
-                echo "::error::Verdict is SHIP but ${P2_COUNT} P2/nit finding(s) remain. Resolve them, or reply on the thread if a finding is a false positive, then push."
+              # A SHIP verdict only means the exact head is safe to merge if the pipeline's own
+              # coverage/gate signals agree. Any of these not in its good state is a hard fail,
+              # same semantics as the central gate.
+              if [ "${GATE_DECISION:-}" != "PASS" ]; then
+                echo "::error::Verdict is SHIP but gate-decision is '${GATE_DECISION:-}', not PASS."
                 exit 1
               fi
-              echo "Verdict SHIP with no outstanding findings."
+              if [ "${MERGE_ELIGIBLE:-}" != "true" ]; then
+                echo "::error::Verdict is SHIP but merge-eligible is '${MERGE_ELIGIBLE:-}', not true."
+                exit 1
+              fi
+              if [ "${FILES_OMITTED:-0}" != "0" ]; then
+                echo "::error::Verdict is SHIP but ${FILES_OMITTED:-0} changed file(s) were omitted from review. The verdict does not cover the full diff."
+                exit 1
+              fi
+              echo "Verdict SHIP with gate-decision PASS, merge-eligible true, and no omitted files."
               ;;
             FIX_FIRST|BLOCK)
               echo "::error::Review verdict is ${VERDICT}. Resolve the findings in the review comment and push a fix."
