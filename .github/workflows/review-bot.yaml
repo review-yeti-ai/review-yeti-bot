@@ -77,6 +77,48 @@ jobs:
           echo "Verdict: ${{ steps.review.outputs.verdict }}"
           echo "Findings: ${{ steps.review.outputs.findings-count }} (P0: ${{ steps.review.outputs.p0-count }}, P1: ${{ steps.review.outputs.p1-count }}, P2: ${{ steps.review.outputs.p2-count }})"
 
+      # REL-580: enforce the verdict. Until now this job only echoed it, so the required
+      # "Execute AI Review Pipeline" check went green whenever the pipeline *ran* -- it meant
+      # "the reviewer finished talking", not "the reviewer approved". PR #490 shipped a P1
+      # regression (a types/live <-> liveStreamBus import cycle) on a green check carrying a
+      # FIX_FIRST verdict, and was merged on that green. A required check that cannot go red on
+      # its own conclusion is not a gate.
+      #
+      # DISPATCHED is the one non-terminal state: the App gate is still pending and a later run
+      # on the same head decides. It stays neutral rather than passing or failing.
+      # An empty or NO_VERDICT result fails: a review that could not complete safely is never an
+      # implicit pass.
+      - name: Enforce Verdict
+        if: always()
+        env:
+          VERDICT: ${{ steps.review.outputs.verdict }}
+          REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
+        run: |
+          set -euo pipefail
+
+          if [ "${REVIEW_STATUS}" = "DISPATCHED" ]; then
+            echo "::notice::Review dispatched; the App gate is still pending on this head. Not gating."
+            exit 0
+          fi
+
+          case "${VERDICT}" in
+            SHIP)
+              echo "Verdict SHIP — review approved this head."
+              ;;
+            FIX_FIRST|BLOCK)
+              echo "::error::Review verdict is ${VERDICT}. Resolve the findings in the review comment and push a fix."
+              exit 1
+              ;;
+            NO_VERDICT|"")
+              echo "::error::Review produced no usable verdict (verdict='${VERDICT}', review-status='${REVIEW_STATUS}'). Treating as blocked rather than passing."
+              exit 1
+              ;;
+            *)
+              echo "::error::Unrecognized verdict '${VERDICT}'. Failing closed."
+              exit 1
+              ;;
+          esac
+
       # Session logs are uploaded rather than committed. Pushing back into the checked-out
       # repository fails on detached PR checkouts and cannot work for a cross-repo target.
       - name: Upload Session Ledger
