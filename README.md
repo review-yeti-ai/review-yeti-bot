@@ -22,6 +22,12 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 ## ✨ Features at a Glance
 
 - 👥 **Multi-Persona Review Panel**: Dedicated reviewers for Security & Tenancy, System Architecture, Performance, QA & Testing, and Dependency Safety.
+- ⚡ **Native 1-Click Commit Suggestions**: Formats actionable fixes directly into native GitHub ````suggestion ` diff blocks for 1-click merging.
+- 💬 **Interactive PR Chat Mentoring**: Mention `@review-yeti explain`, `@review-yeti fix`, `@review-yeti ignore`, or `@review-yeti mute` in review threads ([Guide](docs/INTERACTIVE_CHAT.md)).
+- 💻 **Local Pre-Commit CLI & Git Hook**: Evaluate staged changes in < 5s with sub-10ms credential detection and blocking P0 checks via `git yeti pre-commit` ([Guide](docs/CLI_REFERENCE.md)).
+- 🧙 **30-Second GitHub App Setup Wizard**: Automated onboarding via GitHub App Manifest Flow (`npx review-yeti init`) with least-privilege security and `.env` generation ([Guide](docs/CLI_REFERENCE.md#review-yeti-init-30-second-setup-wizard)).
+- 👥 **Community Persona Store**: Reference and compose external persona charters across repositories using `uses: ...` ([Guide](docs/TEAM_MEMORY.md#community-persona-store--charter-loader)).
+- 🧠 **Persistent Team Memory**: SQLite WAL database (`.ct-memory/team_memory.db`) that suppresses repetitive false-positive nits while enforcing non-bypassable P0/P1 security gates ([Guide](docs/TEAM_MEMORY.md)).
 - ⚖️ **Binding Arbitration Engine**: Automated moderator and arbiter that deduplicate findings and deliver clear verdicts: `SHIP`, `FIX_FIRST`, or `BLOCK`.
 - ⚡ **Dual Execution Engines**:
   - **Ephemeral Action Mode**: Zero infrastructure, 60-second setup directly in GitHub Actions.
@@ -278,26 +284,31 @@ While basic reviews work with the built-in `GITHUB_TOKEN`, setting up a **GitHub
 
 ---
 
-## 💻 Running Locally via CLI
+## 💻 Running Locally via CLI & Git Hooks
 
-You can run Review Yeti directly from your terminal to inspect diffs or test personas locally:
+Review Yeti includes a fast local CLI to catch vulnerabilities and lint issues before you commit:
 
 ```bash
-# 1. Review local uncommitted changes
-git diff origin/main...HEAD > /tmp/changes.diff
+# 1. 30-Second GitHub App onboarding wizard
+npx review-yeti init
 
-PR_DIFF_FILE=/tmp/changes.diff \
-PR_NUMBER=1 \
-GITHUB_REPOSITORY="my-org/my-repo" \
-OPENROUTER_API_KEY="sk-or-v1-..." \
-node .github/workflows/pipelines/review-pipeline.js
+# 2. Evaluate staged changes locally in < 5 seconds
+npx review-yeti pre-commit
+
+# 3. Install as an automatic pre-commit git hook
+npx review-yeti install-hook
 ```
+
+👉 **Read the comprehensive [CLI Reference & Git Hook Guide](docs/CLI_REFERENCE.md)**.
 
 ---
 
 ## 📚 Documentation Index
 
-- 🚀 **[Onboarding Guide](docs/ONBOARDING_GUIDE.md)** — Getting started, deployment patterns, and branch protection.
+- 🚀 **[Onboarding Guide](docs/ONBOARDING_GUIDE.md)** — 30-second setup, deployment patterns, and branch protection.
+- 💬 **[Interactive PR Chat Guide](docs/INTERACTIVE_CHAT.md)** — Mentoring commands (`@review-yeti explain`, `fix`, `ignore`), webhook routing, and ephemeral tokens.
+- 💻 **[CLI Reference & Git Hooks](docs/CLI_REFERENCE.md)** — Local pre-commit checks, 30-second GitHub App wizard, and hook installers.
+- 🧠 **[Team Memory & Nit Suppression](docs/TEAM_MEMORY.md)** — SQLite WAL reflection, community personas (`uses:`), and non-bypassable security gates.
 - ☸️ **[Helm 3 Operations Guide](docs/HELM_GUIDE.md)** — Comprehensive step-by-step Helm chart installation, values tuning, cloud guides (DOKS/EKS), upgrades, and rollbacks.
 - 🛠️ **[Production Troubleshooting Guide](docs/TROUBLESHOOTING.md)** — Diagnosing HTTP 403/401/429 errors, worker timeouts, lease locks, and OOM issues.
 - 📦 **[Examples Gallery](examples/README.md)** — Copy-pasteable GitHub Actions workflows, configuration profiles, and custom persona charters.

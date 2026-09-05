@@ -90,6 +90,18 @@ export function dedupeActionableFindings(
     } else if (finding.suggestion && !existing.suggestion) {
       existing.suggestion = finding.suggestion;
     }
+    if (!existing.startLine && finding.startLine) {
+      existing.startLine = finding.startLine;
+    }
+    if (!existing.fixOptions && finding.fixOptions) {
+      existing.fixOptions = finding.fixOptions;
+    }
+    if (!existing.recommendation && finding.recommendation) {
+      existing.recommendation = finding.recommendation;
+    }
+    if (existing.isArchitectural === undefined && finding.isArchitectural !== undefined) {
+      existing.isArchitectural = finding.isArchitectural;
+    }
   }
 
   const ranked = [...byKey.values()].sort((a, b) => {
@@ -111,9 +123,12 @@ export function dedupeActionableFindings(
       line: entry.line,
       title: entry.title,
       body: `${entry.body || ''}${attribution}`,
+      ...(entry.startLine !== undefined ? { startLine: entry.startLine } : {}),
       ...(entry.suggestion ? { suggestion: entry.suggestion } : {}),
       ...(entry.confidence !== undefined ? { confidence: entry.confidence } : {}),
       ...(entry.recommendation ? { recommendation: entry.recommendation } : {}),
+      ...(entry.fixOptions ? { fixOptions: entry.fixOptions } : {}),
+      ...(entry.isArchitectural !== undefined ? { isArchitectural: entry.isArchitectural } : {}),
       persona: personas[0],
     };
   });
@@ -182,14 +197,20 @@ export function buildFinalInlineComments(options: {
   return deduped.map((finding) => ({
     path: finding.path,
     line: finding.line,
+    ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
     finding: {
       persona: finding.persona as any,
       severity: finding.severity === 'P0' ? 'critical' : finding.severity === 'P1' ? 'major' : 'minor',
       filePath: finding.path,
       lineNumber: finding.line,
+      ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
       title: finding.title,
       comment: `${finding.title}\n\n${finding.body}`,
       suggestion: finding.suggestion,
+      confidence: finding.confidence,
+      recommendation: finding.recommendation,
+      fixOptions: finding.fixOptions,
+      isArchitectural: finding.isArchitectural,
     },
   }));
 }
