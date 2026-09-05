@@ -1,0 +1,83 @@
+name: v1 release integrity alarm
+
+# Every consumer resolves this repository's rolling `v1` tag at review time
+# (ct-review-actions pins `action_channel: "v1"`). The promise `v1` makes is
+# "a commit that passed the release pipeline" — not merely "a commit on main".
+#
+# release.yml's promote-rolling-v1 job upholds that: it only ever moves `v1` to
+# a commit carrying a validated `v1.x.y` tag. But update-major-tag.yml also has
+# an `unreleased_recovery` input that deliberately bypasses the tag requirement
+# and promotes the bare main tip. It has been used (v1 -> 2742cf4, unreleased),
+# and ADR 0513 records that as the condition to revisit: if recovery becomes
+# routine, `v1` no longer means what consumers assume.
+#
+# This patrol makes that condition observable instead of a thing someone
+# remembers. It never moves `v1` — promotion stays the exclusive writer.
+
+on:
+  schedule:
+    - cron: "41 * * * *" # hourly at :41, offset from ct-review-actions' :23 patrol
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: v1-release-integrity
+  cancel-in-progress: false
+
+jobs:
+  integrity-check:
+    name: Assert v1 points at a released commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout with tags
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compare v1 against its release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          v1_sha="$(git rev-list -n 1 'v1^{commit}')"
+          release_tag="$(git tag --points-at "$v1_sha" | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)"
+
+          echo "v1 -> $v1_sha"
+          echo "release tag at that commit: ${release_tag:-<none>}"
+
+          if [ -n "$release_tag" ]; then
+            echo "IN SYNC — v1 points at released $release_tag."
+            exit 0
+          fi
+
+          # No semver tag at v1's commit: it was moved by the unreleased_recovery
+          # path (or by hand). Consumers are running unreleased bytes.
+          title="v1 points at an unreleased commit ($(echo "$v1_sha" | cut -c1-7))"
+          body=$(printf '%s' \
+            "The rolling \`v1\` tag every consumer resolves at review time points at " \
+            "\`$v1_sha\`, which carries **no \`vX.Y.Z\` release tag**. Consumers are running " \
+            "bytes that never went through the release pipeline.\n\n" \
+            "This is what \`update-major-tag.yml\`'s \`unreleased_recovery\` input permits. " \
+            "ADR 0513 records routine use of it as the trigger to re-derive what \`v1\` " \
+            "guarantees.\n\nResolve by cutting a release and letting " \
+            "\`release.yml\`'s promote-rolling-v1 move \`v1\` normally. " \
+            "Do not force the tag by hand.")
+
+          existing="$(gh api "repos/${REPO}/issues?state=open&labels=v1-drift" --jq 'length')"
+          if [ "$existing" -gt 0 ]; then
+            echo "Integrity issue already open — not duplicating."
+            exit 0
+          fi
+
+          gh api "repos/${REPO}/issues" \
+            --method POST \
+            -f title="$title" \
+            -f body="$body" \
+            -f "labels[]=v1-drift"
