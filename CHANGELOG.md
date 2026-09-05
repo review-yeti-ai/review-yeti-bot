@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.31.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.31.0...v1.31.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* **memory:** align Honcho peer/session payload keys and query array deserialization ([f8594a2](https://github.com/review-yeti-ai/review-yeti-bot/commit/f8594a23aeadf72257a3dd12fbadfe27fd944c9e))
+
 ## [1.31.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.30.0...v1.31.0) (2026-09-05)
 
 
