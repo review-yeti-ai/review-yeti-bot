@@ -4,6 +4,8 @@
 
 **Goal:** Run Review Yeti reviews as bounded DOKS Jobs with durable dispatch, exact-head publication, and a same-PR reusable workspace PVC that is removed after 30 idle minutes.
 
+> **REL-586 update:** the App's check run is named `Review Yeti` (not `Review Yeti / Gate` as originally planned here) so its completion supersedes the central lane's `in_progress` check of the same name on the same head. See `src/github/installationClient.ts`.
+
 **Architecture:** The GitHub App ingress persists delivery, run, and outbox state in PostgreSQL. An internal dispatcher projects admitted runs into `PRReviewJob` resources. A leader-elected Go operator controls four active Jobs and manages repository+PR scoped PVC/Lease lifecycle. Workers return signed, idempotent receipts; a separate finalizer rechecks the PR head and publishes. The existing central GitHub Action remains the production fallback through manual qualification.
 
 **Tech Stack:** Node.js 24+, TypeScript 5, PostgreSQL, Express, GitHub App installation tokens, Go 1.22, controller-runtime 0.18, Kubernetes batch Jobs/Leases/PVCs, DOKS block storage, Vitest, Go test.
@@ -23,7 +25,7 @@
 - Never place the App private key, webhook secret, or long-lived GitHub credential in a worker Pod.
 - Never use `do-block-storage-retain`, `ReadWriteMany`, a shared fleet PVC, or a head-SHA-specific PVC for PR workspaces.
 - Review all generated CRD/RBAC manifests before applying them to any cluster.
-- The production ruleset requires `Review Yeti / Gate` from the Review Yeti App integration and native review-thread resolution. Runtime pods have no repository-administration permission.
+- The production ruleset requires `Review Yeti` from the Review Yeti App integration and native review-thread resolution. Runtime pods have no repository-administration permission.
 - The dedicated worker image must meet the companion plan's 300 MiB/50% size gate and 5/20/60-second warm/reused, warm/new-PVC, and cold-node process-start p95 gates.
 
 ---
@@ -740,7 +742,7 @@ Required gate:
 - 0 duplicate/stale publications (and 0 publications during non-publishing qualification);
 - 0 App private key or Kubernetes token in worker environment/logs;
 - at most four active Jobs.
-- required `Review Yeti / Gate` is sourced from the Review Yeti App and unresolved conversations demonstrably block merge;
+- required `Review Yeti` is sourced from the Review Yeti App and unresolved conversations demonstrably block merge;
 - worker image and the three dispatch tiers meet the companion performance gates.
 
 **Step 4: Run one approved live parallel review**
@@ -800,7 +802,7 @@ Do not auto-expand, schedule a canary, or disable the fallback based on elapsed 
 - [ ] Four-Job cap and 15-minute end-to-end deadline survive restarts.
 - [ ] Worker has neither App private key nor Kubernetes API token.
 - [ ] Images are immutable digests; no `latest` remains in the execution path.
-- [ ] `Review Yeti / Gate` is required from the App integration; unresolved conversations cannot pass and thread-only reconciliation makes no model call.
+- [ ] `Review Yeti` is required from the App integration; unresolved conversations cannot pass and thread-only reconciliation makes no model call.
 - [ ] Worker image is prebuilt, worker-only, pre-pulled, at most 300 MiB compressed and at least 50% smaller than the service image.
 - [ ] Dispatch process-start p95 is at most 5s warm/reused, 20s warm/new-PVC, and 60s on a qualification cold node.
 - [ ] Manual non-publishing parallel qualification passes; no scheduled canary exists.
