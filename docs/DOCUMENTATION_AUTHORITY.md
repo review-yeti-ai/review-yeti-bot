@@ -17,6 +17,11 @@ When documentation and executable behavior disagree, use this order of precedenc
 
 - [`README.md`](../README.md) — Main entry point and quickstart.
 - [`ONBOARDING_GUIDE.md`](ONBOARDING_GUIDE.md) — Step-by-step consumer onboarding and deployment patterns.
+- [`INTERACTIVE_CHAT.md`](INTERACTIVE_CHAT.md) — Interactive PR chat commands, webhook routing, and mentoring workflows.
+- [`CLI_REFERENCE.md`](CLI_REFERENCE.md) — Local pre-commit CLI, 30-second setup wizard, and git hook setup.
+- [`TEAM_MEMORY.md`](TEAM_MEMORY.md) — Persistent SQLite WAL reflection, community personas, and nit suppression.
+- [`HELM_GUIDE.md`](HELM_GUIDE.md) — Production Helm chart installation, upgrades, and cloud values.
+- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — Production triage, permission errors, rate limits, and incident playbooks.
 - [`GITHUB_APP_SETUP.md`](GITHUB_APP_SETUP.md) — GitHub App registration, permissions matrix, and RS256 token exchange.
 - [`KUBERNETES_MODE.md`](KUBERNETES_MODE.md) — Kubernetes and DOKS async execution mode, worker pods, and zero-waste dispatch handshake.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — Core pipeline design, arbitration consensus, and trust boundaries.

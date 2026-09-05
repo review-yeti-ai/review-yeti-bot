@@ -74,6 +74,9 @@ describe('Milestone 4: Express Static & SPA Fallback Routing UI Tests', () => {
 
   it('GET /dashboard/memory serves public/memory.html', async () => {
     const res = await request(app).get('/dashboard/memory');
+    if (res.status !== 200) {
+      console.log('GET /dashboard/memory failed:', res.status, res.body, JSON.stringify(res.text));
+    }
     expect(res.status).toBe(200);
     expect(res.header['content-type']).toMatch(/html/);
     expect(res.header['cache-control']).toBe('no-cache, no-store, must-revalidate');
