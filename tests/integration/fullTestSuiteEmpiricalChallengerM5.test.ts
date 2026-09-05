@@ -40,22 +40,33 @@ describe('Milestone 5 Empirical Challenger: Full Test Suite & Isolation Harness'
       expect(config.test?.environment).toBe('node');
     });
 
-    it('vitest.config.ts includes correct environmentMatchGlobs for jsdom components', () => {
-      const matchGlobs = config.test?.environmentMatchGlobs;
-      expect(matchGlobs).toBeDefined();
-      expect(Array.isArray(matchGlobs)).toBe(true);
-      
-      const tsxGlob = matchGlobs?.find(([pattern]: [string | RegExp, string]) => pattern === '**/*.tsx');
-      expect(tsxGlob).toBeDefined();
-      expect(tsxGlob?.[1]).toBe('jsdom');
-
-      const sseGlob = matchGlobs?.find(([pattern]: [string | RegExp, string]) => pattern === '**/useSSE.test.ts');
-      expect(sseGlob).toBeDefined();
-      expect(sseGlob?.[1]).toBe('jsdom');
-
-      const liveGlob = matchGlobs?.find(([pattern]: [string | RegExp, string]) => pattern === '**/liveStream*.test.ts');
-      expect(liveGlob).toBeDefined();
-      expect(liveGlob?.[1]).toBe('jsdom');
+    it('every rendering test declares its own jsdom environment (REL-582)', () => {
+      // This replaces an assertion on `environmentMatchGlobs`, which was removed in Vitest 3 and
+      // is silently ignored by Vitest 4. That test verified a mapping the runner never applied --
+      // false confidence, and it only survived because `moduleResolution: node` left vite's
+      // `InlineConfig` as `any` so the unknown key never failed to typecheck.
+      //
+      // The mechanism actually in force is the per-file docblock. Assert that instead: any test
+      // that renders must declare its own environment, or it runs without a DOM.
+      const testsRoot = path.join(projectRoot, 'tests');
+      const offenders: string[] = [];
+      const walk = (dir: string) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) { walk(full); continue; }
+          if (!/\.tsx?$/u.test(entry.name)) continue;
+          const source = fs.readFileSync(full, 'utf8');
+          // Require an actual import of a testing-library render, not merely the substring
+          // "render(" -- otherwise this assertion matches its own source text.
+          if (!/import\s*\{[^}]*\brender\b[^}]*\}\s*from\s*'@testing-library\//u.test(source)) continue;
+          if (!/\brender\(/u.test(source)) continue;
+          if (!/@vitest-environment\s+jsdom/u.test(source.slice(0, 400))) {
+            offenders.push(path.relative(projectRoot, full));
+          }
+        }
+      };
+      walk(testsRoot);
+      expect(offenders, `these render() but declare no jsdom environment: ${offenders.join(', ')}`).toEqual([]);
     });
 
     it('executes .test.ts file in Node environment without DOM globals (window, document, HTMLElement, localStorage)', () => {
