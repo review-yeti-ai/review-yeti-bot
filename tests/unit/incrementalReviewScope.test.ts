@@ -140,6 +140,36 @@ describe('trusted incremental review scope', () => {
     expect(scope.isCompleteTrustedReport(incomplete, expected)).toBe(false);
   });
 
+  it('REL-586: rejects a parent report where any lane omitted files from its own diff budget', () => {
+    const digest = 'f'.repeat(64);
+    const expected = {
+      repo: 'calltelemetry/example', prNumber: 17, baseSha: BASE, headSha: HEAD,
+      planDigest: digest, personaIds: PERSONAS,
+    };
+    expect(scope.isCompleteTrustedReport(parentReport(digest), expected)).toBe(true);
+
+    // A lane that SHIPped/FIX_FIRSTed while omitting files from its own diff budget
+    // (review-pipeline.js's buildReviewRunReport records diffOmittedFilesCount per lane) never
+    // actually reviewed those omitted files. Trusting this report as a carry-forward parent would
+    // let planIncrementalLanes carry that lane's evidence -- clean or dirty -- forward as if it
+    // covered every file it owns, permanently exempting the omitted files from ever being
+    // reviewed by anyone.
+    const partialCoverageOnCleanLane = parentReport(digest);
+    (partialCoverageOnCleanLane.lanes[0] as any).diffOmittedFilesCount = 1;
+    expect(scope.isCompleteTrustedReport(partialCoverageOnCleanLane, expected)).toBe(false);
+
+    // Also rejected when the omission is on the already-dirty lane -- the omission itself is
+    // disqualifying, independent of that lane's decision/findings.
+    const partialCoverageOnDirtyLane = parentReport(digest);
+    (partialCoverageOnDirtyLane.lanes.find((lane: any) => lane.personaId === 'dependencies') as any).diffOmittedFilesCount = 3;
+    expect(scope.isCompleteTrustedReport(partialCoverageOnDirtyLane, expected)).toBe(false);
+
+    // An explicit zero (full coverage) remains trusted.
+    const explicitZero = parentReport(digest);
+    (explicitZero.lanes[0] as any).diffOmittedFilesCount = 0;
+    expect(scope.isCompleteTrustedReport(explicitZero, expected)).toBe(true);
+  });
+
   describe('planIncrementalLanes (REL-552 carry matrix)', () => {
     const roster = ['touched-clean', 'touched-dirty', 'untouched-clean', 'untouched-dirty'];
 
@@ -207,6 +237,72 @@ describe('trusted incremental review scope', () => {
       });
       expect(plan.livePersonaIds).toContain('untouched-clean');
       expect(plan.carriedClean).not.toContain('untouched-clean');
+    });
+
+    it('REL-586: a lane forced live only by owning a P2 on a changed file lands in priorFindingsPersonaIds without forcing reviewFullDiff', () => {
+      const plan = scope.planIncrementalLanes({
+        parentReport: {
+          lanes: [
+            { personaId: 'touched-clean', decision: 'APPROVE', findings: [] },
+            { personaId: 'touched-dirty', decision: 'APPROVE', findings: [] },
+            // A P2 (not P0/P1) on the delta file -- ownsChangedFileFinding forces this live, but
+            // isDirty (P0/P1 only) does not consider it dirty.
+            { personaId: 'untouched-clean', decision: 'FINDINGS', findings: [{ severity: 'P2', path: 'delta.txt', line: 1, title: 'nit', body: 'b' }] },
+            { personaId: 'untouched-dirty', decision: 'APPROVE', findings: [] },
+          ],
+        },
+        deltaFiles: [{ path: 'delta.txt', patch: '@@ -1,1 +1,1 @@\n-a\n+b\n' }],
+        personaIds: roster,
+        index: fakeIndex,
+        resolveFileDomains: fakeResolve,
+      });
+      expect(plan.livePersonaIds).toContain('untouched-clean');
+      // REL-586: without this, the P2 owner reviews the bounded delta with zero memory of what
+      // it previously flagged and the finding can vanish for no reason other than the smaller
+      // diff -- this is the exact invariant this fix protects.
+      expect(plan.priorFindingsPersonaIds).toContain('untouched-clean');
+      // A P2 alone must not force a full-diff re-review (only P0/P1 does).
+      expect(plan.dirtyLivePersonaIds).not.toContain('untouched-clean');
+      expect(plan.reviewFullDiff).toBe(false);
+    });
+
+    it('REL-586: the P2-owning live persona actually receives its prior finding as re-verification context in the model prompt', async () => {
+      const realRoster = ['style', 'architecture'];
+      const parent = {
+        lanes: [
+          { personaId: 'style', decision: 'FINDINGS', findings: [{ severity: 'P2', path: 'lib/formatter.ex', line: 5, title: 'Inconsistent spacing', body: 'Previously flagged nit.' }] },
+          { personaId: 'architecture', decision: 'APPROVE', findings: [] },
+        ],
+      };
+      const deltaFiles = [{ path: 'lib/formatter.ex', patch: '@@ -5,1 +5,1 @@\n-old\n+new\n' }];
+
+      const plan = scope.planIncrementalLanes({
+        parentReport: parent, deltaFiles, personaIds: realRoster, index: domainIndex, resolveFileDomains,
+      });
+      expect(plan.livePersonaIds).toContain('style');
+      expect(plan.reviewFullDiff).toBe(false);
+      expect(plan.priorFindingsPersonaIds).toContain('style');
+
+      // Reproduce main()'s exact priorFindingsByPersonaId construction (review-pipeline.js),
+      // now keyed off priorFindingsPersonaIds instead of dirtyLivePersonaIds alone.
+      const priorFindingsByPersonaId = new Map(
+        plan.priorFindingsPersonaIds.map((personaId: string) => [
+          personaId,
+          parent.lanes.find((lane) => lane.personaId === personaId)?.findings || [],
+        ]),
+      );
+
+      const stylePersona = pipeline.PERSONA_CHARTERS.find((p: any) => p.id === 'style');
+      const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+      await pipeline.reviewWithModel(stylePersona, deltaFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl, priorFindings: priorFindingsByPersonaId.get('style'),
+      });
+
+      const messages = calls[0].body.messages;
+      const user = messages.find((m: any) => m.role === 'user').content;
+      expect(user).toContain('Prior findings from the previous review of this PR');
+      expect(user).toContain('Inconsistent spacing');
+      expect(user).toContain('Previously flagged nit.');
     });
 
     it('fails closed to all-live when any delta file is unrecognized by the domain index', () => {
@@ -500,6 +596,49 @@ describe('trusted incremental review scope', () => {
       ].join('\n'));
       const fullArbitration = pipeline.computeArbitrationQuorum(merged, 2, { changedFiles: fullDiffFiles });
       expect(fullArbitration.metrics.p2Count).toBe(1);
+    });
+
+    it('REL-586 floor rule: forces security live when domain resolution + roster intersection would otherwise leave fewer than two live personas', () => {
+      const realRoster = ['licensing', 'security'];
+      const plan = scope.planIncrementalLanes({
+        parentReport: { lanes: realRoster.map((personaId) => ({ personaId, decision: 'APPROVE', findings: [] })) },
+        // README.md resolves to docs -> documentation + licensing (see domainIndex.test.ts).
+        // 'documentation' is not in this roster, so only 'licensing' would be live without the
+        // floor rule -- letting whichever persona the PR's own file choices happen to touch be
+        // the sole reviewer.
+        deltaFiles: [{ path: 'README.md', patch: '' }],
+        personaIds: realRoster,
+        index: domainIndex,
+        resolveFileDomains,
+      });
+      expect(plan.livePersonaIds.sort()).toEqual(['licensing', 'security'].sort());
+      expect(plan.reason).toBe('security_floor');
+    });
+
+    it('REL-586 floor rule: does not fire when domain resolution already yields two or more live personas', () => {
+      const realRoster = ['documentation', 'licensing', 'security'];
+      const plan = scope.planIncrementalLanes({
+        parentReport: { lanes: realRoster.map((personaId) => ({ personaId, decision: 'APPROVE', findings: [] })) },
+        deltaFiles: [{ path: 'README.md', patch: '' }],
+        personaIds: realRoster,
+        index: domainIndex,
+        resolveFileDomains,
+      });
+      expect(plan.livePersonaIds.sort()).toEqual(['documentation', 'licensing'].sort());
+      expect(plan.reason).toBe('domain_index');
+    });
+
+    it('REL-586 floor rule: is a no-op when the configured roster does not include security at all', () => {
+      const realRoster = ['licensing'];
+      const plan = scope.planIncrementalLanes({
+        parentReport: { lanes: realRoster.map((personaId) => ({ personaId, decision: 'APPROVE', findings: [] })) },
+        deltaFiles: [{ path: 'README.md', patch: '' }],
+        personaIds: realRoster,
+        index: domainIndex,
+        resolveFileDomains,
+      });
+      expect(plan.livePersonaIds).toEqual(['licensing']);
+      expect(plan.reason).toBe('domain_index');
     });
 
     it('is not influenced by diff or PR-body text shaped like evidence -- only the verified parentReport argument can produce a carried lane', () => {

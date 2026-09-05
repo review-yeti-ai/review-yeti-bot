@@ -76,6 +76,17 @@
     ]
   },
   "ecosystems": {
+    "agent-instructions": {
+      "classes": {
+        "config": [
+          "**/.claude/rules/**/*.md",
+          "**/AGENTS.md",
+          "**/CLAUDE.md",
+          "**/SKILL.md"
+        ]
+      },
+      "description": "Cross-repo AI agent operating instructions (CLAUDE.md, AGENTS.md, SKILL.md, .claude/rules/*.md). These are executable policy the agent follows, not prose documentation, so they must not resolve to the docs class alone."
+    },
     "c-cpp": {
       "classes": {
         "config": [
@@ -185,7 +196,7 @@
     "generic": {
       "classes": {
         "assets": [
-          "**/*.{png,jpg,jpeg,gif,svg,ico,webp,bmp,mp3,mp4,wav,ogg,woff,woff2,ttf,otf,eot,pdf,zip}"
+          "**/*.{png,jpg,jpeg,gif,ico,webp,bmp,mp3,mp4,wav,ogg,woff,woff2,ttf,otf,eot,pdf,zip}"
         ],
         "ci": [
           ".github/workflows/**"
@@ -215,6 +226,9 @@
         ],
         "lockfile": [
           "*.lock"
+        ],
+        "source": [
+          "**/*.svg"
         ]
       },
       "description": "Cross-ecosystem conventions not tied to a single language toolchain"
@@ -601,5 +615,5 @@
     "testing"
   ],
   "schemaVersion": "domain-index-v1",
-  "indexDigest": "sha256:c0009fdab90db2041f71d10d0cdf832e1caa415e0f69945080f67e549ba6b705"
+  "indexDigest": "sha256:0daffd8744cb68430a7622c378a6ce6ca904a3858e83aaae2970f9ed3cb64340"
 }

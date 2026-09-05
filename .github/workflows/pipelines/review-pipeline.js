@@ -6508,9 +6508,20 @@ async function main() {
   // rule planIncrementalLanes already applies to compute `reviewFullDiff`, free to drift from it.
   // `dirtyLivePersonaIds` is now read directly off the plan (via the scope object), the single
   // source of truth exported from incremental-review-scope.js.
-  const dirtyLivePersonaIds = reviewScope.mode === 'delta' ? (reviewScope.dirtyLivePersonaIds || []) : [];
+  //
+  // REL-586: broadened from `dirtyLivePersonaIds` to `priorFindingsPersonaIds`, which also
+  // includes a live persona forced live only by owning a P2 on a changed file. That P2 owner
+  // does NOT force `reviewFullDiff` (unlike a P0/P1 dirty-live owner), but without this context
+  // it would review only the bounded delta with no memory of the P2 it previously raised, and
+  // that finding would silently vanish rather than being re-verified.
+  // Fall back to dirtyLivePersonaIds if the scope predates priorFindingsPersonaIds: losing the
+  // P2 re-verification context is a regression, but silently dropping a P0/P1 owner's prior
+  // findings would be a much worse one.
+  const priorFindingsPersonaIds = reviewScope.mode === 'delta'
+    ? (reviewScope.priorFindingsPersonaIds || reviewScope.dirtyLivePersonaIds || [])
+    : [];
   const priorFindingsByPersonaId = new Map(
-    dirtyLivePersonaIds.map((personaId) => [
+    priorFindingsPersonaIds.map((personaId) => [
       personaId,
       (scopeResolution.parentReport?.lanes || []).find((lane) => lane.personaId === personaId)?.findings || [],
     ]),

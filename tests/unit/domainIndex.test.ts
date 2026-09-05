@@ -265,5 +265,35 @@ describe('Master Domain Index (REL-551)', () => {
       const resolution = resolveFileDomains('mix.lock', index);
       expect(resolution.classes).toEqual(['lockfile']);
     });
+
+    it('REL-586: CLAUDE.md, AGENTS.md, SKILL.md, and .claude/rules/*.md are executable policy -- they resolve to config in addition to docs, not docs alone', () => {
+      const policyPaths = [
+        'CLAUDE.md',
+        'AGENTS.md',
+        'plugins/ct-workflow/skills/coder-worker/SKILL.md',
+        '.claude/rules/00-overview.md',
+      ];
+      for (const filePath of policyPaths) {
+        const resolution = resolveFileDomains(filePath, index);
+        expect(resolution.matched, filePath).toBe(true);
+        expect(resolution.classes, filePath).toContain('config');
+        // config -> security, architecture, devops -- a policy-file-only PR must not be
+        // reviewable by the licensing persona alone.
+        expect(resolution.personas, filePath).toContain('security');
+        expect(resolution.personas, filePath).toContain('architecture');
+      }
+      // An ordinary README.md is unaffected -- still docs-only.
+      expect(resolveFileDomains('README.md', index).classes).toEqual(['docs']);
+    });
+
+    it('REL-586: an SVG resolves to the source class (not the personaless assets class)', () => {
+      const resolution = resolveFileDomains('assets/logo.svg', index);
+      expect(resolution.matched).toBe(true);
+      expect(resolution.classes).toContain('source');
+      expect(resolution.classes).not.toContain('assets');
+      expect(resolution.personas.length).toBeGreaterThan(0);
+      // A PNG stays in the personaless assets class -- only SVG moved.
+      expect(resolveFileDomains('assets/logo.png', index).classes).toEqual(['assets']);
+    });
   });
 });
