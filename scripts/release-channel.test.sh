@@ -14,6 +14,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
   '  *"git/tags/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"*) if [[ "${FAKE_BAD_TAG:-}" == true ]]; then printf "%s\n" '\''{"object":{"type":"commit","sha":"fedcba9876543210fedcba9876543210fedcba98"}}'\''; elif [[ "${FAKE_NON_COMMIT_TAG:-}" == true ]]; then printf "%s\n" '\''{"object":{"type":"tree","sha":"tree-object"}}'\''; else printf "%s\n" '\''{"object":{"type":"commit","sha":"0123456789abcdef0123456789abcdef01234567"}}'\''; fi;;' \
   '  *"git/tags/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"*) printf "%s\n" '\''{"object":{"type":"commit","sha":"0123456789abcdef0123456789abcdef01234567"}}'\'';;' \
   '  *"compare/main...0123456789abcdef0123456789abcdef01234567"*) if [[ "${FAKE_BAD_COMPARE:-}" == true ]]; then printf "%s\n" diverged; elif [[ "${FAKE_IDENTICAL:-}" == true ]]; then printf "%s\n" identical; else printf "%s\n" behind; fi;;' \
+  '  *"/tags?per_page=100"*) if [[ "${FAKE_TAG_LIST_FAILS:-}" == true ]]; then echo "boom: rate limited" >&2; exit 1; elif [[ "${FAKE_NO_RELEASE_TAG:-}" == true ]]; then printf "%s\n" '\''[[{"name":"v0.9.0","commit":{"sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}}]]'\''; else printf "%s\n" '\''[[{"name":"v1.2.3","commit":{"sha":"0123456789abcdef0123456789abcdef01234567"}},{"name":"v1","commit":{"sha":"0123456789abcdef0123456789abcdef01234567"}}]]'\''; fi;;' \
   '  *) echo "unexpected gh call: $*" >&2; exit 1;;' \
   'esac' > "$fake_bin/gh"
 chmod +x "$fake_bin/gh"
@@ -92,6 +93,18 @@ expect_failure non-commit-tag env \
   REVIEW_YETI_ACTION_CHANNEL=v1 RESOLVED_SHA=0123456789abcdef0123456789abcdef01234567 RESOLVED_REF_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   "$repo_root/scripts/validate-release-provenance.sh"
 grep -q 'non-commit object' "$tmp_dir/non-commit-tag.log"
+
+expect_failure no-release-tag env \
+  PATH="$fake_bin:$PATH" GH_TOKEN=test-token FAKE_NO_RELEASE_TAG=true REVIEW_YETI_REPOSITORY='review-yeti-ai/review-yeti-bot' \
+  REVIEW_YETI_ACTION_CHANNEL=v1 RESOLVED_SHA=0123456789abcdef0123456789abcdef01234567 RESOLVED_REF_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  "$repo_root/scripts/validate-release-provenance.sh"
+grep -q 'carries no vX.Y.Z release tag' "$tmp_dir/no-release-tag.log"
+
+expect_failure tag-list-unavailable env \
+  PATH="$fake_bin:$PATH" GH_TOKEN=test-token FAKE_TAG_LIST_FAILS=true REVIEW_YETI_REPOSITORY='review-yeti-ai/review-yeti-bot' \
+  REVIEW_YETI_ACTION_CHANNEL=v1 RESOLVED_SHA=0123456789abcdef0123456789abcdef01234567 RESOLVED_REF_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  "$repo_root/scripts/validate-release-provenance.sh"
+grep -q 'Could not list release tags' "$tmp_dir/tag-list-unavailable.log"
 
 set +e
 PATH="$fake_bin:$PATH" GH_TOKEN=test-token GITHUB_OUTPUT="$tmp_dir/invalid-output" \
