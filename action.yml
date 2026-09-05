@@ -199,6 +199,30 @@ inputs:
     description: 'Context7 API key for documentation evidence retrieval.'
     required: false
     default: ''
+  honcho-api-key:
+    description: 'Honcho API key for cloud cognitive memory synchronization.'
+    required: false
+    default: ''
+  honcho-base-url:
+    description: 'Base URL for Honcho memory API.'
+    required: false
+    default: ''
+  honcho-workspace:
+    description: 'Honcho workspace namespace for team memory.'
+    required: false
+    default: ''
+  honcho-peer:
+    description: 'Honcho writer peer ID for Review Yeti.'
+    required: false
+    default: ''
+  honcho-observed:
+    description: 'Honcho observed peer ID for repository contributors.'
+    required: false
+    default: ''
+  memory-provider:
+    description: 'Memory backend provider: sqlite, honcho, composite, postgres, auto.'
+    required: false
+    default: ''
   # Deprecated compatibility inputs retained for callers on the pre-v1 contract. The central
   # workflow now passes the supported policy/transport inputs above; these are intentionally
   # accepted and ignored so an older caller can finish its migration without changing review
@@ -531,6 +555,12 @@ runs:
         REVIEW_YETI_DISPATCH_MODE: ${{ inputs.dispatch-mode }}
         CONTEXT7_API_KEY: ${{ inputs.context7-api-key }}
         LINEAR_API_KEY: ${{ inputs.linear-api-key || env.LINEAR_API_KEY }}
+        HONCHO_API_KEY: ${{ inputs.honcho-api-key || env.HONCHO_API_KEY }}
+        HONCHO_BASE_URL: ${{ inputs.honcho-base-url || env.HONCHO_BASE_URL }}
+        HONCHO_WORKSPACE: ${{ inputs.honcho-workspace || env.HONCHO_WORKSPACE }}
+        HONCHO_PEER: ${{ inputs.honcho-peer || env.HONCHO_PEER }}
+        HONCHO_OBSERVED: ${{ inputs.honcho-observed || env.HONCHO_OBSERVED }}
+        MEMORY_PROVIDER: ${{ inputs.memory-provider || env.MEMORY_PROVIDER }}
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
         OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
