@@ -6514,7 +6514,12 @@ async function main() {
   // does NOT force `reviewFullDiff` (unlike a P0/P1 dirty-live owner), but without this context
   // it would review only the bounded delta with no memory of the P2 it previously raised, and
   // that finding would silently vanish rather than being re-verified.
-  const priorFindingsPersonaIds = reviewScope.mode === 'delta' ? (reviewScope.priorFindingsPersonaIds || []) : [];
+  // Fall back to dirtyLivePersonaIds if the scope predates priorFindingsPersonaIds: losing the
+  // P2 re-verification context is a regression, but silently dropping a P0/P1 owner's prior
+  // findings would be a much worse one.
+  const priorFindingsPersonaIds = reviewScope.mode === 'delta'
+    ? (reviewScope.priorFindingsPersonaIds || reviewScope.dirtyLivePersonaIds || [])
+    : [];
   const priorFindingsByPersonaId = new Map(
     priorFindingsPersonaIds.map((personaId) => [
       personaId,
