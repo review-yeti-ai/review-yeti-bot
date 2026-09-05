@@ -243,10 +243,6 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
       body: 'persona result',
       idempotencyKey: 'persona:security',
       inlineComments: [{
-        owner: 'exampleorg',
-        repo: 'bot',
-        prNumber: 9,
-        commitSha: 'head-9',
         path: 'src/app.ts',
         line: 4,
         finding: baseFinding,

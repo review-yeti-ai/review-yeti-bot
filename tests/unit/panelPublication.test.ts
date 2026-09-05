@@ -85,10 +85,6 @@ describe('panelPublication', () => {
 
   it('buildFinalInlineComments maps only deduped actionable findings', () => {
     const comments = buildFinalInlineComments({
-      owner: 'exampleorg',
-      repo: 'example-meta',
-      prNumber: 1,
-      commitSha: 'deadbeef',
       findings: [
         { ...baseFinding, persona: 'security-tenancy' },
         { ...baseFinding, persona: 'policy-compliance' },

@@ -175,19 +175,11 @@ export function formatPersonaIssueComment(
 }
 
 export function buildFinalInlineComments(options: {
-  owner: string;
-  repo: string;
-  prNumber: number;
-  commitSha: string;
   findings: FindingWithPersona[];
   max?: number;
 }): PublishInlineCommentRequest[] {
   const deduped = dedupeActionableFindings(options.findings, { max: options.max });
   return deduped.map((finding) => ({
-    owner: options.owner,
-    repo: options.repo,
-    prNumber: options.prNumber,
-    commitSha: options.commitSha,
     path: finding.path,
     line: finding.line,
     finding: {

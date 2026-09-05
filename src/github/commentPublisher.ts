@@ -61,10 +61,6 @@ export interface BoundaryOptions {
 }
 
 export interface PublishInlineCommentRequest {
-  owner: string;
-  repo: string;
-  prNumber: number;
-  commitSha: string;
   path: string;
   line: number;
   side?: 'LEFT' | 'RIGHT';
