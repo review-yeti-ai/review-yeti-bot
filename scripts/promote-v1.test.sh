@@ -597,4 +597,24 @@ grep -Fq 'max-incremental-chain: ${{ steps.policy.outputs.max_incremental_chain 
 grep -Fq 'max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml"
 
+# DISPATCHED is not a verdict: the review was handed to the DOKS queue and the Review Yeti App
+# gate reports the real outcome on the same head. check-review-verdict.sh already treats
+# DISPATCHED + PENDING as a pass, but the check-run publisher used to map "anything not SHIP" to
+# `failure`, so a dispatched review published a red required check that nothing ever superseded.
+# It must publish an in-progress check instead -- still blocking, but not a false failure.
+grep -Fq 'if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'status: "in_progress",' "$repo_root/.github/workflows/review-yeti.yml"
+# ...and the in-progress payload must NOT carry a conclusion, or it stops being non-terminal.
+python3 - "$repo_root/.github/workflows/review-yeti.yml" <<'PYEOF'
+import re, sys, yaml
+wf = yaml.safe_load(open(sys.argv[1]))
+run = next(st['run'] for j in wf['jobs'].values() for st in (j.get('steps') or [])
+           if 'Publishing Check Run' in str(st.get('run', '')))
+block = run[run.index('== "DISPATCHED"'):run.index('conclusion="success"')]
+assert 'status: "in_progress"' in block, 'dispatched branch must publish in_progress'
+assert 'conclusion' not in block, 'in_progress check must not carry a conclusion'
+assert re.search(r'exit 0', block), 'dispatched branch must not fall through to the verdict mapping'
+print('  dispatched check-run contract ok')
+PYEOF
+
 echo "promote-v1 behavioral contract passed"
