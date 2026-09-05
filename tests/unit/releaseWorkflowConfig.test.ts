@@ -50,6 +50,18 @@ describe('Release Please configuration', () => {
     expect(workflow).toMatch(/timeout-minutes:\s*60/u);
   });
 
+  it('refuses a SKIPPED check only when that check is actually required (REL-586)', () => {
+    const workflow = fs.readFileSync(workflowPath, 'utf8');
+    // build-and-deploy / publish-ghcr / publish-ghcr-arch are conditioned off on pull requests and
+    // are SKIPPED on every release PR by design. Refusing SKIPPED unconditionally broke the release
+    // chain outright: run 33975162412 refused a release PR whose three required checks were all
+    // SUCCESS. The refusal must be scoped to the repository's real required contexts.
+    expect(workflow).toContain('required_status_checks');
+    expect(workflow).toMatch(/SKIPPED[\s\S]{0,80}\$required \| index\(\$n\)/u);
+    // ...and it must read them from branch protection rather than hardcoding a list that drifts.
+    expect(workflow).not.toMatch(/SKIPPED"\s*\)\s*\n\s*\]\s*\|\s*length/u);
+  });
+
   it('gives the required test job room for a cold cache instead of killing it as a stall', () => {
     // A release-please PR bumps package.json/package-lock.json, which misses the npm and vitest
     // cache keys; at timeout-minutes: 15 those runs were killed mid-build and reported
