@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.9...v1.29.10) (2026-09-05)
+
+
+### Bug Fixes
+
+* **types:** break the types/live &lt;-&gt; liveStreamBus import cycle (REL-573) ([#493](https://github.com/review-yeti-ai/review-yeti-bot/issues/493)) ([ee5434f](https://github.com/review-yeti-ai/review-yeti-bot/commit/ee5434f289da2af6e2b4907cde1743c48208300e))
+
 ## [1.29.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.8...v1.29.9) (2026-09-05)
 
 
