@@ -1,14 +1,12 @@
 import { logger } from '../utils/logger';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
-import { PanelFinding } from '../panel/panelEngine';
-import { NitSuppressionEngine } from '../reflection/nitSuppressionEngine';
+import { PanelFinding, FixOption } from '../panel/panelEngine';
 
-export interface FixOption {
-  rank?: number;
-  title?: string;
-  explanation?: string;
-  suggestionCode?: string;
-}
+// REL-583: FixOption now lives with PanelFinding in the panel module (github -> panel is the
+// established direction). Re-exported so existing `from '../github/commentPublisher'` importers
+// keep resolving.
+export type { FixOption };
+import { NitSuppressionEngine } from '../reflection/nitSuppressionEngine';
 
 export interface PersonaFinding {
   persona: string;
