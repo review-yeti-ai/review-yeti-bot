@@ -2,6 +2,7 @@ import yaml from 'js-yaml';
 import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS } from './schema';
 import { logger } from '../utils/logger';
 import { OMNIROUTE_GENERATED_PROVIDERS, OMNIROUTE_GENERATED_MODEL_LIST } from '../types/providers.generated';
+import { CommunityPersonaLoader, CommunityPersonaLoaderOptions, sanitizePersonaId } from '../personas/communityPersonaLoader';
 
 export class ConfigValidationError extends Error {
   constructor(message: string, public readonly details?: unknown) {
@@ -282,6 +283,22 @@ export function translateLegacyConfigToV3(raw: any): CtReviewConfigV3 {
 
 import { ConfigResolver } from './configResolver';
 
+export async function resolveConfigPersonas(config: any, options?: CommunityPersonaLoaderOptions): Promise<any> {
+  if (!config || !Array.isArray(config.personas)) {
+    return config;
+  }
+  const hasUses = config.personas.some((p: any) => p && p.uses);
+  if (!hasUses) {
+    return config;
+  }
+  const loader = new CommunityPersonaLoader(options);
+  const resolvedPersonas = await loader.resolvePersonas(config.personas);
+  return {
+    ...config,
+    personas: resolvedPersonas,
+  };
+}
+
 export async function loadConfig(
   owner: string,
   repo: string,
@@ -296,11 +313,15 @@ export async function loadConfig(
     if (content !== null && content !== undefined) {
       const isCodeRabbit = fileName === '.coderabbit.yaml';
       const parsed = parseAndValidateConfig(content, isCodeRabbit);
+      let loaded: any;
       if ((parsed as any).version !== 3 && (parsed as any).version !== 4) {
-        return translateLegacyConfigToV3(parsed);
+        loaded = translateLegacyConfigToV3(parsed);
+      } else if ((parsed as any).version === 4) {
+        loaded = parsed;
+      } else {
+        loaded = resolver.deepMergeConfigs(createDefaultV3Config(), null, parsed);
       }
-      if ((parsed as any).version === 4) return parsed;
-      return resolver.deepMergeConfigs(createDefaultV3Config(), null, parsed);
+      return resolveConfigPersonas(loaded);
     }
   }
 
@@ -310,11 +331,15 @@ export async function loadConfig(
       if (content !== null && content !== undefined) {
         const isCodeRabbit = fileName === '.coderabbit.yaml';
         const parsed = parseAndValidateConfig(content, isCodeRabbit);
+        let loaded: any;
         if ((parsed as any).version !== 3 && (parsed as any).version !== 4) {
-          return translateLegacyConfigToV3(parsed);
+          loaded = translateLegacyConfigToV3(parsed);
+        } else if ((parsed as any).version === 4) {
+          loaded = parsed;
+        } else {
+          loaded = resolver.deepMergeConfigs(createDefaultV3Config(), parsed, null);
         }
-        if ((parsed as any).version === 4) return parsed;
-        return resolver.deepMergeConfigs(createDefaultV3Config(), parsed, null);
+        return resolveConfigPersonas(loaded);
       }
     }
   }
@@ -438,6 +463,12 @@ export function sanitizeV3Config(raw: Record<string, unknown>): Record<string, u
   if (Array.isArray(personas)) {
     for (const persona of personas) {
       if (!persona || typeof persona !== 'object') continue;
+      if (!persona.id && (persona.name || persona.uses)) {
+        persona.id = sanitizePersonaId(persona.name || persona.uses);
+      }
+      if ((!persona.providers || !Array.isArray(persona.providers) || persona.providers.length === 0) && definedProviderIds.size > 0) {
+        persona.providers = [Array.from(definedProviderIds)[0]];
+      }
       if (persona.model && typeof persona.model === 'string') {
         const isSupportedModel = R4_ALLOWED_MODELS.includes(persona.model) ||
           OMNIROUTE_GENERATED_MODEL_LIST.includes(persona.model) ||

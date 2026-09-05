@@ -1,17 +1,22 @@
-import { PRMemoryStore } from '../memory/prMemoryStore';
+import { PRMemoryStore, ResolvedNitPattern } from '../memory/prMemoryStore';
 import { LearningStore } from './learningStore';
 import { LiveStreamBus } from '../live/liveStreamBus';
 
 export interface Finding {
   id?: string;
+  ruleId?: string;
+  rule?: string;
   path: string;
   line?: number;
   title: string;
   body?: string;
   severity?: string;
+  comment?: string;
+  suggestion?: string;
+  [key: string]: any;
 }
 
-function isPathMatch(pattern: string | null | undefined, filePath: string): boolean {
+export function isPathMatch(pattern: string | null | undefined, filePath: string): boolean {
   if (!pattern || pattern === '' || pattern === '**' || pattern === '*') {
     return true;
   }
@@ -40,21 +45,35 @@ function isPathMatch(pattern: string | null | undefined, filePath: string): bool
 export class NitSuppressionEngine {
   private prMemoryStore: PRMemoryStore;
 
-  constructor(store: PRMemoryStore | LearningStore) {
-    if (store instanceof PRMemoryStore) {
+  constructor(store?: PRMemoryStore | LearningStore | string) {
+    if (typeof store === 'string') {
+      this.prMemoryStore = new PRMemoryStore(store);
+    } else if (store instanceof PRMemoryStore) {
       this.prMemoryStore = store;
+    } else if (store && (store as any).getMemoryStore) {
+      this.prMemoryStore = (store as any).getMemoryStore();
+    } else if (store && (store as any).prMemoryStore) {
+      this.prMemoryStore = (store as any).prMemoryStore;
     } else {
-      this.prMemoryStore = (store as any).prMemoryStore || new PRMemoryStore();
+      this.prMemoryStore = new PRMemoryStore();
     }
   }
 
+  public getMemoryStore(): PRMemoryStore {
+    return this.prMemoryStore;
+  }
+
+  /**
+   * Evaluates findings against persistent team memory, suppressing matching false-positive nits.
+   * SAFETY ENFORCEMENT: Blocking P0/P1 security and correctness issues are NEVER suppressed.
+   */
   public async suppressNits(
     repo: string,
     findings: Finding[],
     jobId?: string,
   ): Promise<{
     activeFindings: Finding[];
-    suppressedFindings: Array<{ finding: Finding; nitPattern: any }>;
+    suppressedFindings: Array<{ finding: Finding; nitPattern: ResolvedNitPattern }>;
     active?: Finding[];
     suppressed?: Finding[];
   }> {
@@ -62,24 +81,60 @@ export class NitSuppressionEngine {
     const resolvedNits = memory.resolvedNits || [];
 
     const activeFindings: Finding[] = [];
-    const suppressedFindings: Array<{ finding: Finding; nitPattern: any }> = [];
+    const suppressedFindings: Array<{ finding: Finding; nitPattern: ResolvedNitPattern }> = [];
 
     for (const finding of findings) {
-      const isNit = finding.severity === 'nit' || finding.severity === 'minor' || finding.severity === 'P2';
-      const textToMatch = `${finding.title} ${finding.body || ''}`.toLowerCase();
+      const severity = String(finding.severity || '').toUpperCase();
+      const isBlocking =
+        severity === 'P0' ||
+        severity === 'P1' ||
+        severity === 'CRITICAL' ||
+        severity === 'BLOCKER' ||
+        severity === 'HIGH' ||
+        severity === 'ERROR';
 
-      const matchedNit = resolvedNits.find((nit: any) => {
+      // SAFETY: Under no circumstances can P0 or P1 security/correctness findings be suppressed.
+      if (isBlocking) {
+        activeFindings.push(finding);
+        continue;
+      }
+
+      const findingRuleId = (finding.ruleId || finding.rule || finding.id || '').toLowerCase().trim();
+      const textToMatch = `${finding.title} ${finding.body || ''} ${finding.comment || ''} ${findingRuleId}`.toLowerCase();
+
+      const matchedNit = resolvedNits.find((nit: ResolvedNitPattern) => {
+        // 1. File path match
         if (!isPathMatch(nit.filePath, finding.path)) {
           return false;
         }
 
+        // 2. Rule ID match
+        const nitRuleId = (nit.ruleId || '').toLowerCase().trim();
+        if (nitRuleId && findingRuleId && (nitRuleId === findingRuleId || findingRuleId.includes(nitRuleId))) {
+          return true;
+        }
+
+        // 3. Pattern match
         const pattern = (nit.pattern || '').toLowerCase().trim();
         if (!pattern) return false;
+
+        if (findingRuleId && (pattern === findingRuleId || findingRuleId.includes(pattern))) {
+          return true;
+        }
 
         if (textToMatch.includes(pattern)) {
           return true;
         }
 
+        // Regex pattern support
+        try {
+          const regex = new RegExp(pattern, 'i');
+          if (regex.test(textToMatch)) {
+            return true;
+          }
+        } catch (_) {}
+
+        // Multi-word token match
         const words = pattern.split(/\s+/).filter((w: string) => w.length > 0);
         if (words.length > 0 && words.every((word: string) => textToMatch.includes(word))) {
           return true;
@@ -88,7 +143,7 @@ export class NitSuppressionEngine {
         return false;
       });
 
-      if (isNit && matchedNit) {
+      if (matchedNit) {
         suppressedFindings.push({ finding, nitPattern: matchedNit });
         if (matchedNit.id) {
           await this.prMemoryStore.incrementNitSuppression(matchedNit.id);
@@ -104,6 +159,7 @@ export class NitSuppressionEngine {
               findingTitle: finding.title,
               filePath: finding.path,
               pattern: matchedNit.pattern,
+              ruleId: matchedNit.ruleId,
               rationale: `Suppressed per repository resolved nit memory rule: ${matchedNit.pattern}`,
             },
           });
@@ -132,5 +188,17 @@ export class NitSuppressionEngine {
       suppressed: res.suppressedFindings.map((sf) => sf.finding),
     };
   }
-}
 
+  public async recordDismissedNit(
+    repo: string,
+    prNumber: number,
+    nit: { pattern: string; filePath?: string; ruleId?: string; reason?: string }
+  ): Promise<ResolvedNitPattern> {
+    return this.prMemoryStore.recordResolvedNit(repo, prNumber, {
+      pattern: nit.pattern,
+      filePath: nit.filePath || '**',
+      ruleId: nit.ruleId,
+      reason: nit.reason || 'Dismissed nit via review interaction',
+    });
+  }
+}
