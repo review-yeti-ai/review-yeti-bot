@@ -10,7 +10,7 @@ Action deployment remains unchanged.
 
 ## Manual Action admission
 
-- Workflow run: [33471161856](https://github.com/calltelemetry/ct-pr-operator-sandbox/actions/runs/33471161856)
+- Workflow run: [33471161856](https://github.com/review-yeti-ai/ct-pr-operator-sandbox/actions/runs/33471161856)
 - Trigger: one operator-approved `workflow_dispatch`; no schedule or canary
 - Mode: `execution-backend=doks`, `publish-mode=disabled`
 - Result: success in 25 seconds
@@ -47,7 +47,7 @@ engine from DOKS using OpenRouter GLM:
 
 - Job: `ct-review-panel-qual-f8fdedd1`
 - Run: `run_88f32348b540f67e3dc4fc02099b20fa`
-- Worker image: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:64a2dbd9e5e620ab279ca79d56821e414dd2c70a4155b0ca89829f6751b748d5`
+- Worker image: `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:64a2dbd9e5e620ab279ca79d56821e414dd2c70a4155b0ca89829f6751b748d5`
 - Requested/resolved model: `z-ai/glm-5.3-flash`
 - Result: `SHIP`, quorum satisfied, zero GitHub writes, publication disabled
 - Provider calls: 5

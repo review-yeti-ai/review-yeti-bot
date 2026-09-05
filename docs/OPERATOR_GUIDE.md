@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > **Optional service document.** This DOKS/App runbook does not operate the public GitHub Action or
-> the CallTelemetry production fleet. Its deployment, secret, provider, and authentication claims
+> the internal production fleet. Its deployment, secret, provider, and authentication claims
 > require verification against current service source before use. See
 > [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 

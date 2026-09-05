@@ -1,8 +1,8 @@
 # Releasing Review Yeti
 
-> **Authority:** This guide describes the public GitHub Action release path. CallTelemetry fleet
+> **Authority:** This guide describes the public GitHub Action release path. Central fleet
 > provider policy and consumer rollout remain owned by
-> [`centralized review actions`](centralized review actions control plane). See
+> `centralized review actions`. See
 > [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 The immutable release unit is a `vMAJOR.MINOR.PATCH` tag. The `v1` tag is a rolling consumer channel
@@ -72,7 +72,7 @@ rerunning the bounded consumer Action contract.
 To roll the consumer channel back, select the exact commit of a previously tested `v1.x.y` release,
 run the guarded manual workflow, and verify the resulting `v1` peeled commit. Record the prior and
 new tag objects, target commit, workflow run, reason, and follow-up decision. This changes the bot
-release channel only; it does not change CallTelemetry provider order.
+release channel only; it does not change fleet provider order.
 
 ## Boundaries
 

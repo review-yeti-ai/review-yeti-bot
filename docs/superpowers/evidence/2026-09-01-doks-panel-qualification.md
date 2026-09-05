@@ -9,7 +9,7 @@ or production routing.
 
 - Job: `ct-review-panel-qual-c1c04461`
 - Run: `run_19a807082999a1512dd7e9ba7488e0eb`
-- Worker image: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:7c9a3a915e16aceba2e52bb97bc03ebb2589a3adc9610b2edf3d3cb01d0d3249`
+- Worker image: `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:7c9a3a915e16aceba2e52bb97bc03ebb2589a3adc9610b2edf3d3cb01d0d3249`
 - Requested/resolved model: `deepseek/deepseek-v4-flash-0731`
 - Worker qualification deadline: 600 seconds (10 minutes)
 - Kubernetes Job deadline: 840 seconds (14 minutes)

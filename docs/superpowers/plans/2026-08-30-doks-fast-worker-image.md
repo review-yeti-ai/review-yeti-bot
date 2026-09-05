@@ -116,7 +116,7 @@ git commit -m "feat(perf): measure review dispatch startup stages"
 **Interfaces:**
 
 - Consumes: compiled `dist/cli/runLiveReview.js`, root lockfile, immutable Node 24 base-image digest, worker self-test fixtures.
-- Produces: an OCI reference in `registry.digitalocean.com/calltelemetry/review-yeti-worker` whose digest matches `^sha256:[a-f0-9]{64}$`, plus an SBOM, provenance attestation, compressed-size receipt, and self-test receipt.
+- Produces: an OCI reference in `registry.digitalocean.com/review-yeti/review-yeti-worker` whose digest matches `^sha256:[a-f0-9]{64}$`, plus an SBOM, provenance attestation, compressed-size receipt, and self-test receipt.
 
 - [ ] **Step 1: Write failing runtime-closure and Dockerfile tests**
 

@@ -123,32 +123,67 @@ export const providerSchema = z.object({
   }
 });
 
-export const personaSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
-  enabled: z.boolean(),
-  required: z.boolean(),
-  charter: z.union([BuiltinCharterEnum, z.string().min(12)]),
-  paths: z.array(z.string().min(1)).min(1),
-  providers: z.array(ProviderIdEnum).min(1),
-  model: z.string().optional(),
-  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
-  maxTurns: z.number().int().min(1).max(20).optional(),
-  dual_model: z.boolean().optional(),
-  adversarial_model: z.string().optional(),
-  customPrompt: z.string().optional(),
-}).superRefine((persona, ctx) => {
-  if (persona.charter.startsWith('builtin:') && !BuiltinCharterEnum.safeParse(persona.charter).success) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['charter'], message: `unknown built-in charter ${persona.charter}` });
-  }
-  if (new Set(persona.providers).size !== persona.providers.length) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['providers'], message: 'provider order contains duplicates' });
-  }
-  if (persona.model) {
-    if (persona.model.startsWith('invalid-') || persona.model.startsWith('completely-fake-')) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['model'], message: `model ${persona.model} is not in R4_ALLOWED_MODELS` });
+export const personaSchema = z.preprocess(
+  (val: any) => {
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const copy = { ...val };
+      if (!copy.id && (copy.name || copy.uses)) {
+        let derived = String(copy.name || copy.uses)
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 64);
+        if (!/^[a-z]/.test(derived)) derived = `p-${derived}`;
+        copy.id = derived;
+      }
+      if (!copy.charter && copy.uses) {
+        copy.charter = 'builtin:security';
+      }
+      if (!copy.paths) {
+        copy.paths = ['**'];
+      }
+      if (!copy.providers) {
+        copy.providers = ['openrouter'];
+      }
+      if (copy.enabled === undefined) {
+        copy.enabled = true;
+      }
+      if (copy.required === undefined) {
+        copy.required = false;
+      }
+      return copy;
     }
-  }
-});
+    return val;
+  },
+  z.object({
+    id: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
+    name: z.string().optional(),
+    uses: z.string().optional(),
+    enabled: z.boolean(),
+    required: z.boolean(),
+    charter: z.union([BuiltinCharterEnum, z.string().min(12)]),
+    paths: z.array(z.string().min(1)).min(1),
+    providers: z.array(ProviderIdEnum).min(1),
+    model: z.string().optional(),
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+    maxTurns: z.number().int().min(1).max(20).optional(),
+    dual_model: z.boolean().optional(),
+    adversarial_model: z.string().optional(),
+    customPrompt: z.string().optional(),
+  }).superRefine((persona, ctx) => {
+    if (persona.charter.startsWith('builtin:') && !BuiltinCharterEnum.safeParse(persona.charter).success) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['charter'], message: `unknown built-in charter ${persona.charter}` });
+    }
+    if (new Set(persona.providers).size !== persona.providers.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['providers'], message: 'provider order contains duplicates' });
+    }
+    if (persona.model) {
+      if (persona.model.startsWith('invalid-') || persona.model.startsWith('completely-fake-')) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['model'], message: `model ${persona.model} is not in R4_ALLOWED_MODELS` });
+      }
+    }
+  })
+);
 
 export const reviewsSchema = z.object({
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
@@ -270,11 +305,11 @@ const ctReviewConfigV3ObjectSchema = z.object({
 }).passthrough();
 
 function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {
-  const ids = config.personas.map((persona: any) => persona.id);
+  const ids = config.personas.map((persona: any) => persona.id || persona.name || persona.uses);
   if (new Set(ids).size !== ids.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas'], message: 'persona ids must be unique' });
   }
-  if (!config.personas.some((persona: any) => persona.enabled && persona.required)) {
+  if (!config.personas.some((persona: any) => (persona.enabled ?? true) && (persona.required ?? false))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas'], message: 'at least one enabled required persona is required' });
   }
   const enabled = new Set(config.reviewers.providers.filter((provider: any) => provider.enabled).map((provider: any) => provider.id));
@@ -283,11 +318,13 @@ function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'providers'], message: 'provider ids must be unique' });
   }
   config.personas.forEach((persona: any, index: number) => {
-    persona.providers.forEach((provider: string) => {
-      if (!enabled.has(provider)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas', index, 'providers'], message: `persona references disabled provider ${provider}` });
-      }
-    });
+    if (Array.isArray(persona.providers)) {
+      persona.providers.forEach((provider: string) => {
+        if (!enabled.has(provider)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas', index, 'providers'], message: `persona references disabled provider ${provider}` });
+        }
+      });
+    }
   });
   config.reviewers.arbiter.order.forEach((provider: string) => {
     if (!enabled.has(provider)) {

@@ -10,7 +10,7 @@ recall, false-positive rate, or production routing.
 - PR #346 merged at `c2e8ca676eac9ed1189f4e858c7dcf6c5a4236af`.
 - PR #347 merged at `06746910a36ccbb31fd58b8ee434d9ec042c7eea`.
 - Worker image:
-  `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:7c9a3a915e16aceba2e52bb97bc03ebb2589a3adc9610b2edf3d3cb01d0d3249`.
+  `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:7c9a3a915e16aceba2e52bb97bc03ebb2589a3adc9610b2edf3d3cb01d0d3249`.
 - The panel path now requires actual top-level role fields rather than accepting a fenced copy
   of the request's `outputSchema`. It permits one corrective turn and then fails closed.
 - The qualification fixture reserves two persona turns so that correction remains bounded.
@@ -56,7 +56,7 @@ qualification Jobs, Pods, Secrets, PVCs, Leases, operator Deployment, scheduled 
 split, provider policy, or GitHub publication was left behind. `ct-review-system` contains only
 the pre-existing `ct-review-action-dispatch` Deployment and its two Pods:
 
-`registry.digitalocean.com/calltelemetry/ct-review-bot@sha256:59f19384715ed75a587543687256bb807b3cc2044c0f67921fece27062b164e6`
+`registry.digitalocean.com/review-yeti/ct-review-bot@sha256:59f19384715ed75a587543687256bb807b3cc2044c0f67921fece27062b164e6`
 
 ## Decision
 

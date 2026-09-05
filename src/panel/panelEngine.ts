@@ -23,12 +23,14 @@ export interface PanelFinding {
   severity: FindingSeverity;
   path: string;
   line: number;
+  startLine?: number;
   title: string;
   body: string;
   suggestion?: string;
   confidence?: number;
   recommendation?: string;
   fixOptions?: any[];
+  isArchitectural?: boolean;
 }
 
 export interface PersonaLaneResult {
@@ -95,6 +97,7 @@ const FINDING_OUTPUT_SCHEMA = {
     severity: { type: 'string', enum: ['P0', 'P1', 'P2'] },
     path: { type: 'string' },
     line: { type: 'integer', minimum: 1 },
+    start_line: { type: ['integer', 'null'], minimum: 1 },
     title: { type: 'string' },
     body: { type: 'string' },
     suggestion: { type: ['string', 'null'] },
@@ -612,7 +615,29 @@ export function validateFindings(value: unknown, changedFiles?: Array<{ path: st
     const suffix = validation.index === undefined ? '' : ` at index ${validation.index}`;
     throw new PanelFindingsValidationError(`invalid findings contract${suffix}: ${validation.error || 'unknown validation error'}`);
   }
-  return validation.findings as PanelFinding[];
+  const findings = validation.findings as PanelFinding[];
+  if (Array.isArray(value)) {
+    for (let i = 0; i < findings.length; i++) {
+      const raw = value[i];
+      if (raw && typeof raw === 'object') {
+        const rawObj = raw as Record<string, unknown>;
+        const sl = rawObj.startLine ?? rawObj.start_line;
+        if (typeof sl === 'number' && Number.isInteger(sl) && sl >= 1) {
+          findings[i].startLine = sl;
+        }
+        if (typeof rawObj.isArchitectural === 'boolean') {
+          findings[i].isArchitectural = rawObj.isArchitectural;
+        }
+        if (rawObj.fixOptions && Array.isArray(rawObj.fixOptions) && !findings[i].fixOptions) {
+          findings[i].fixOptions = rawObj.fixOptions;
+        }
+        if (typeof rawObj.recommendation === 'string' && !findings[i].recommendation) {
+          findings[i].recommendation = rawObj.recommendation;
+        }
+      }
+    }
+  }
+  return findings;
 }
 
 /** Retry only provider conditions that are plausibly transient; auth and contract errors fail over. */
