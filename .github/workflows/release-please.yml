@@ -87,15 +87,27 @@ jobs:
               exit 0
             fi
 
-            # SKIPPED is refused alongside the other non-clean conclusions: GitHub reports a
-            # skipped required check as part of a CLEAN mergeStateStatus, so a required job that
-            # gets skipped (e.g. a later path-filter change) would otherwise let this job merge
-            # an unreviewed release PR.
-            failing="$(jq -r '
+            # A skipped *required* check still satisfies GitHub's CLEAN, so a required job that
+            # gets skipped (e.g. someone adds a path filter) would otherwise let this job merge an
+            # unreviewed release PR. But SKIPPED must only be refused for checks that are actually
+            # required: build-and-deploy, publish-ghcr and publish-ghcr-arch are conditioned off on
+            # pull requests and are skipped on every release PR by design. Refusing SKIPPED
+            # unconditionally broke the release chain outright -- run 33975162412 refused a release
+            # PR whose test / Execute AI Review Pipeline / legacy-runtime were all SUCCESS.
+            #
+            # Read the required contexts from branch protection rather than hardcoding them, so
+            # this tracks the repository's real gate instead of drifting from it.
+            required="$(gh api "repos/${GH_REPO}/branches/main/protection/required_status_checks" \
+              --jq '.contexts // []' 2>/dev/null || echo '[]')"
+
+            failing="$(jq -r --argjson required "$required" '
               [ .statusCheckRollup[]?
-                | (.conclusion // .state)
-                | select(. == "FAILURE" or . == "TIMED_OUT" or . == "ACTION_REQUIRED"
-                         or . == "STARTUP_FAILURE" or . == "ERROR" or . == "SKIPPED")
+                | { n: (.name // .context), c: (.conclusion // .state) }
+                | select(
+                    (.c == "FAILURE" or .c == "TIMED_OUT" or .c == "ACTION_REQUIRED"
+                     or .c == "STARTUP_FAILURE" or .c == "ERROR")
+                    or (.c == "SKIPPED" and (.n as $n | $required | index($n)))
+                  )
               ] | length' <<<"$snapshot")"
             if (( failing > 0 )); then
               echo "::error::Release PR #${pr} has ${failing} failing check(s) at ${head}; refusing to merge."
