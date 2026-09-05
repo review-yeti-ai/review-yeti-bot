@@ -1,3 +1,8 @@
+import type {
+  PersonaProgress as BusPersonaProgress,
+  TokenMetrics as BusTokenMetrics,
+} from '../live/liveStreamBus';
+
 export type LiveStreamEventType =
   | 'persona:start'
   | 'persona:chunk'
@@ -89,7 +94,20 @@ export interface LiveStreamEvent {
   data: LiveStreamEventData;
 }
 
-export type PersonaStatus = 'PENDING' | 'IN PROGRESS' | 'COMPLETED' | 'FAILED';
+export type PersonaStatus =
+  | 'PENDING'
+  | 'IN PROGRESS'
+  | 'COMPLETED'
+  | 'FAILED'
+  // Legacy lowercase/underscore status values assigned by the server-side
+  // LiveStreamBus job tracker's own `PersonaProgress` shape (REL-573
+  // LiveJobSummary consolidation). Kept as additional members rather than
+  // narrowing so `LiveJobSummary.personaProgress` can legitimately hold
+  // either shape without a lossy cast.
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'failed';
 
 export interface PersonaProgressState {
   persona: LiveStreamPersona;
@@ -129,9 +147,19 @@ export interface LiveJobSummary {
   repo?: string;
   prNumber?: number;
   title?: string;
-  status: 'active' | 'completed' | 'failed';
-  personaProgress: Record<string, PersonaProgressState>;
-  tokenMetrics: StreamingTokenMetrics;
+  // Widened union: the LiveStreamBus job tracker (src/live/liveStreamBus.ts)
+  // also assigns 'queued' and 'dispatched' before a job goes active.
+  status: 'queued' | 'active' | 'completed' | 'failed' | 'dispatched';
+  // Widened union: LiveStreamBus populates this map with its own
+  // `PersonaProgress` shape (no `progress` percentage field, lowercase
+  // status strings); front-end producers (useSSE) populate it with the
+  // richer `PersonaProgressState` shape. Both are legitimate producers, so
+  // the survivor type accepts either rather than narrowing to one.
+  personaProgress: Record<string, PersonaProgressState | BusPersonaProgress>;
+  // Widened union: LiveStreamBus's own `TokenMetrics` omits
+  // tokensPerSec/latencyMs/astNodes/nitsFound, which useSSE's
+  // `StreamingTokenMetrics` always populates.
+  tokenMetrics: StreamingTokenMetrics | BusTokenMetrics;
   startTime: string;
   endTime?: string;
   eventCount: number;
