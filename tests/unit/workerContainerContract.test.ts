@@ -103,7 +103,7 @@ describe('worker container contract', () => {
     const workflow = readRequired(ciWorkflowPath);
     expect(liveReview).toContain("process.argv.includes('--self-test')");
     expect(liveReview).toContain('runWorkerSelfTest');
-    expect(selfTestModules).toHaveLength(7);
+    expect(selfTestModules).toHaveLength(6);
     expect(selfTestModules.map((module: { id: string }) => module.id)).toContain('../github/qualificationReader');
     expect(selfTestModules.map((module: { id: string }) => module.id)).toContain('../k8s/reviewJobDispatchEngine');
     expect(workflow).toContain('file: Dockerfile.worker');

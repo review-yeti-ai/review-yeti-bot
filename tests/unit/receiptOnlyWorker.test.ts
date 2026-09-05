@@ -143,12 +143,11 @@ describe('receipt-only worker contract', () => {
     );
 
     expect(fsMocks.readFile).toHaveBeenCalledWith('/tmp/runtime-manifest.json');
-    expect(moduleLoader).toHaveBeenCalledTimes(7);
+    expect(moduleLoader).toHaveBeenCalledTimes(6);
     expect(new Set(moduleLoader.mock.calls.flat())).toEqual(new Set([
       '../gateway/openRouterClient',
       '../panel/panelEngine',
       '../github/qualificationReader',
-      '../github/publicationReceipt',
       '../k8s/reviewJobProjection',
       '../k8s/reviewJobDispatchEngine',
       'node:child_process',
