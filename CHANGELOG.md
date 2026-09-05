@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.30.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.11...v1.30.0) (2026-09-05)
+
+
+### Features
+
+* complete developer delight superpowers, community personas, team memory, and docs overhaul ([2df28bb](https://github.com/review-yeti-ai/review-yeti-bot/commit/2df28bb4f8200b76305725c218182b22f57042ba))
+* complete developer delight superpowers, community personas, team memory, and docs overhaul ([efef2b9](https://github.com/review-yeti-ai/review-yeti-bot/commit/efef2b9b047fa13449389ecc15cead2523ddd613))
+
+
+### Bug Fixes
+
+* **types:** align test fixtures and comment publisher signatures with main ([9e59273](https://github.com/review-yeti-ai/review-yeti-bot/commit/9e592739b456a5dd7303afe3d453114e59baf50d))
+
 ## [1.29.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.10...v1.29.11) (2026-09-05)
 
 
