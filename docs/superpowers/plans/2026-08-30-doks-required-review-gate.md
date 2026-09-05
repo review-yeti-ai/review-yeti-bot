@@ -4,6 +4,8 @@
 
 **Goal:** Make the direct Review Yeti GitHub App behave as a required exact-head CI gate that remains non-passing for binding review failures and unresolved required conversations.
 
+> **REL-586 update:** the App's check run is named `Review Yeti` (not `Review Yeti / Gate` as originally planned here) so its completion supersedes the central lane's `in_progress` check of the same name on the same head. See `src/github/installationClient.ts`.
+
 **Architecture:** Review Yeti creates one fixed-name Check Run per admitted head, stores its ID with the durable review run, and finalizes it from verified receipts plus a live paginated review-thread snapshot. Thread webhooks enqueue a lightweight gate-only reconciliation; they never dispatch a Kubernetes Job or call a model. Repository rulesets—not runtime pods—require the App-sourced check and native conversation resolution.
 
 **Tech Stack:** Node.js 24+, TypeScript 5, PostgreSQL, GitHub App Checks REST API, GitHub GraphQL API, GitHub rulesets, Vitest.
@@ -13,7 +15,7 @@
 ## Global Constraints
 
 - Prerequisite: complete Tasks 1, 2, and 9 of `2026-08-30-doks-review-dispatch.md` before this plan.
-- Check name is exactly `Review Yeti / Gate`; `external_id` is the durable `runId` and the check belongs to the admitted head SHA.
+- Check name is exactly `Review Yeti`; `external_id` is the durable `runId` and the check belongs to the admitted head SHA.
 - Only `success` passes. Never use `neutral` or `skipped` for an admitted required review.
 - A thread resolution cannot override a binding `BLOCK`; only a fresh exact-head `SHIP` receipt can do that.
 - Re-query current head and all review threads immediately before writing `success`.
@@ -174,7 +176,7 @@ git commit -m "feat(github): compute exact-head review thread gate"
 - Produces:
 
 ```ts
-export const REVIEW_GATE_CHECK_NAME = 'Review Yeti / Gate';
+export const REVIEW_GATE_CHECK_NAME = 'Review Yeti';
 
 export interface ReviewGateCheckRecord {
   runId: string;
@@ -358,7 +360,7 @@ Read repository rulesets with inherited parents, normalize `required_status_chec
 
 In a qualification repository:
 
-1. create `Review Yeti / Gate` from the App on an exact head;
+1. create `Review Yeti` from the App on an exact head;
 2. require that exact context from the App integration;
 3. require conversation resolution;
 4. demonstrate `action_required`, `failure`, and `timed_out` each block merge;
@@ -382,7 +384,7 @@ git commit -m "test(github): qualify required Review Yeti merge gate"
 
 ## Acceptance checklist
 
-- [ ] Every admitted head receives exactly one `Review Yeti / Gate` Check from the Review Yeti App.
+- [ ] Every admitted head receives exactly one `Review Yeti` Check from the Review Yeti App.
 - [ ] Required check is tied to the expected App integration ID and exact current head.
 - [ ] `action_required`, `failure`, and `timed_out` block the qualification PR.
 - [ ] Any required unresolved conversation prevents `success`.

@@ -195,7 +195,13 @@ export class GitHubInstallationClient {
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
-        name: 'Review Yeti / Gate',
+        // REL-586: must match the check name the central lane (ct-review-actions
+        // review-yeti.yml) publishes as `in_progress` when it dispatches to DOKS.
+        // GitHub supersedes check runs by name+app, so a mismatched name (formerly
+        // `Review Yeti / Gate`) left the central check stuck in_progress forever
+        // because this App's own check never completed the one the central lane
+        // created. Do not rename this without updating the central publisher too.
+        name: 'Review Yeti',
         head_sha: headSha,
         status: 'in_progress',
         output: {
