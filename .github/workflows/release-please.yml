@@ -87,11 +87,15 @@ jobs:
               exit 0
             fi
 
+            # SKIPPED is refused alongside the other non-clean conclusions: GitHub reports a
+            # skipped required check as part of a CLEAN mergeStateStatus, so a required job that
+            # gets skipped (e.g. a later path-filter change) would otherwise let this job merge
+            # an unreviewed release PR.
             failing="$(jq -r '
               [ .statusCheckRollup[]?
                 | (.conclusion // .state)
                 | select(. == "FAILURE" or . == "TIMED_OUT" or . == "ACTION_REQUIRED"
-                         or . == "STARTUP_FAILURE" or . == "ERROR")
+                         or . == "STARTUP_FAILURE" or . == "ERROR" or . == "SKIPPED")
               ] | length' <<<"$snapshot")"
             if (( failing > 0 )); then
               echo "::error::Release PR #${pr} has ${failing} failing check(s) at ${head}; refusing to merge."
