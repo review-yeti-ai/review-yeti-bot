@@ -609,20 +609,34 @@ if grep -Fq 'Publishing Check Run' "$repo_root/.github/workflows/review-yeti.yml
   exit 1
 fi
 
-# DISPATCHED is not a verdict: the review was handed to the DOKS queue and the Review Yeti App
-# gate reports the real outcome on the same head. check-review-verdict.sh already treats
-# DISPATCHED + PENDING as a pass, but the check-run publisher used to map "anything not SHIP" to
-# `failure`, so a dispatched review published a red required check that nothing ever superseded.
-# It must publish an in-progress check instead -- still blocking, but not a false failure.
+# DISPATCHED is not a verdict: the review was handed to the DOKS queue and no persona judged
+# this head. check-review-verdict.sh already treats DISPATCHED + PENDING as a pass, but the
+# publisher used to map "anything not SHIP" to `failure`, so a dispatched review published a red
+# required check that nothing superseded.
+#
+# Publishing `in_progress` fixed that false red and introduced a third failure mode: nothing in
+# this repository ever completes the check. The App gate the comment appealed to does not exist
+# here, and dispatched PRs were left pending indefinitely -- observed on example-workspace#2534 and
+# example-meta#2787, whose central runs both completed successfully while the consumer checks stayed
+# in_progress. A check stuck pending neither blocks nor informs.
+#
+# It must publish a TERMINAL neutral check, exactly as passthrough does: neutral asserts neither
+# success nor failure, does not block a required check, and says plainly that this head was
+# queued rather than judged.
 grep -Fq 'if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then' "$repo_root/scripts/publish-review-check-run.sh"
-grep -Fq 'status: "in_progress",' "$repo_root/scripts/publish-review-check-run.sh"
-# ...and the in-progress payload must NOT carry a conclusion, or it stops being non-terminal.
+grep -Fq 'conclusion: "neutral",' "$repo_root/scripts/publish-review-check-run.sh"
+# ...and the dispatched payload must be terminal, never left in progress.
 python3 - "$repo_root/scripts/publish-review-check-run.sh" <<'PY_PUBLISH_CONTRACT_EOF'
 import re, sys
 script = open(sys.argv[1]).read()
 block = script[script.index('== "DISPATCHED"'):script.index('REVIEW_YETI_PASSTHROUGH:-}" == "true"')]
-assert 'status: "in_progress"' in block, 'dispatched branch must publish in_progress'
-assert 'conclusion' not in block, 'in_progress check must not carry a conclusion'
+assert 'status: "completed"' in block, 'dispatched branch must publish a terminal check'
+assert 'in_progress' not in block, 'dispatched check must not be left pending; nothing completes it'
+assert 'conclusion: "neutral"' in block, 'dispatched branch must publish neutral'
+assert '"success"' not in block and '"failure"' not in block, \
+    'dispatched branch must assert neither success nor failure'
+assert 'DISPATCHED' in block and 'no verdict' in block.lower(), \
+    'dispatched title/summary must plainly say no verdict was published for this head'
 assert re.search(r'exit 0', block), 'dispatched branch must not fall through to the verdict mapping'
 
 # REVIEW_YETI_PASSTHROUGH must publish `neutral`, never `success` -- neutral does not block a
@@ -634,7 +648,7 @@ assert '"success"' not in passthrough_block, 'passthrough branch must never publ
 assert 'PASSTHROUGH' in passthrough_block and 'no review performed' in passthrough_block.lower(), \
     'passthrough title/summary must plainly say no review was performed'
 assert re.search(r'exit 0', passthrough_block), 'passthrough branch must not fall through to the verdict mapping'
-print('  dispatched + neutral-passthrough check-run contract ok')
+print('  terminal-neutral dispatched + neutral-passthrough check-run contract ok')
 PY_PUBLISH_CONTRACT_EOF
 
 # Behavioral proof: invoke the real script (not a grep of its text) with a fake curl that
