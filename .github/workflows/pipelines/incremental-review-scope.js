@@ -107,6 +107,15 @@ function isCompleteTrustedReport(report, expected) {
   for (const lane of report.lanes) {
     if (!lane || !expectedIds.has(lane.personaId) || seen.has(lane.personaId)) return false;
     if (!['APPROVE', 'FINDINGS'].includes(lane.decision) || !Array.isArray(lane.findings)) return false;
+    // REL-586: a lane that SHIPped/FIX_FIRSTed while omitting files from its own diff budget
+    // (review-pipeline.js's buildReviewRunReport records diffOmittedFilesCount per lane) never
+    // actually reviewed the omitted files. Trusting this report as a carry-forward parent would
+    // let planIncrementalLanes carry that lane's evidence -- clean or dirty -- as if it covered
+    // every file it owns, silently exempting the omitted files from ever being reviewed by
+    // anyone. Mirrors the central backstop's contract (ct-review-actions'
+    // check-review-verdict.sh: a reused lane may never assert coverage it does not have) by
+    // refusing trust of the whole report up front, before any carry split is computed.
+    if (Number(lane.diffOmittedFilesCount) > 0) return false;
     seen.add(lane.personaId);
   }
   return seen.size === expectedIds.size;
@@ -166,6 +175,19 @@ function isDirtyLane(lane) {
  * be empty; that is never a valid outcome (the gate requires at least one live lane so a
  * provider receipt exists), so it falls back to the same "one generalist" rule the old selector
  * used: `architecture` if present in the roster, else the roster's first persona.
+ *
+ * REL-586 security floor: an under-mapped domain/class or a narrow roster can otherwise leave a
+ * PR author's own delta choosing a single live reviewer. When real domain resolution reaches
+ * exactly one live persona (distinct from the empty-live fallback above, which handles zero),
+ * `security` is forced live as a floor (`reason: 'security_floor'`) whenever the roster
+ * includes it and it is not already that sole live persona.
+ *
+ * REL-586 P2 carry: `ownsChangedFileFinding` forces a lane live purely because it owns ANY
+ * severity finding on a changed file, but only P0/P1 (`isDirty`) triggers `reviewFullDiff` and
+ * prior-findings injection. A P2 forced live this way would review only the bounded delta with no
+ * memory of what it previously found. `priorFindingsPersonaIds` is the superset of
+ * `dirtyLivePersonaIds` that also includes these P2 owners, so main() can hand them their own
+ * prior findings as re-verification context without also paying for a full-diff re-review.
  */
 function planIncrementalLanes({ parentReport, deltaFiles, personaIds, index, resolveFileDomains }) {
   const roster = Array.isArray(personaIds) ? personaIds : [];
@@ -192,6 +214,15 @@ function planIncrementalLanes({ parentReport, deltaFiles, personaIds, index, res
   const isDirty = (personaId) => isDirtyLane(parentLanesById.get(personaId));
   const ownsChangedFileFinding = (personaId) => laneFindings(parentLanesById.get(personaId))
     .some((finding) => changedPathsLower.has(String(finding?.path || '').toLowerCase()));
+  // REL-586: `isDirty` (P0/P1 only) is what forces a full-diff re-review. A P2 owned on a
+  // changed file forces the owning lane live via `ownsChangedFileFinding` above, but that live
+  // review only sees the bounded delta and, unlike a P0/P1 dirty-live lane, was never told what
+  // it previously found -- the P2 silently vanishes if the model does not independently
+  // rediscover it from the smaller diff alone. This predicate identifies that case so its
+  // finding can be preserved without also paying for a full-diff re-review (see
+  // `priorFindingsPersonaIds` below).
+  const ownsChangedFileP2 = (personaId) => laneFindings(parentLanesById.get(personaId))
+    .some((finding) => finding?.severity === 'P2' && changedPathsLower.has(String(finding?.path || '').toLowerCase()));
 
   const livePersonaIds = [];
   const carriedClean = [];
@@ -213,6 +244,10 @@ function planIncrementalLanes({ parentReport, deltaFiles, personaIds, index, res
   if (livePersonaIds.length === 0) {
     // One generalist owns every hunk. Architecture is the stable default; custom rosters fall
     // back to their first configured reviewer rather than silently leaving a hunk unassigned.
+    // This is a genuinely personaless delta (e.g. a binary asset) -- distinct from the
+    // under-mapped-domain floor below, which only applies when domain resolution DID reach a
+    // persona but too narrowly. Do not also apply the floor here: an image-only delta reviewed
+    // by the sole generalist is the deliberately accepted, already-tested floor for that case.
     const broadReviewer = roster.includes('architecture') ? 'architecture' : roster[0];
     if (broadReviewer) {
       livePersonaIds.push(broadReviewer);
@@ -222,6 +257,18 @@ function planIncrementalLanes({ parentReport, deltaFiles, personaIds, index, res
       if (dirtyIndex !== -1) carriedDirty.splice(dirtyIndex, 1);
       reason = 'empty_live_fallback';
     }
+  } else if (livePersonaIds.length === 1 && roster.includes('security') && !livePersonaIds.includes('security')) {
+    // REL-586: an under-mapped domain (e.g. an ecosystem/class gap, or a roster that simply does
+    // not include many personas for a given file class) can leave the live set with exactly one
+    // persona reached through real domain resolution -- effectively letting whoever authored the
+    // delta pick their own single reviewer. Force `security` live as a floor whenever it is
+    // configured in the roster and is not already the (sole) live persona.
+    livePersonaIds.push('security');
+    const cleanIndex = carriedClean.indexOf('security');
+    if (cleanIndex !== -1) carriedClean.splice(cleanIndex, 1);
+    const dirtyIndex = carriedDirty.indexOf('security');
+    if (dirtyIndex !== -1) carriedDirty.splice(dirtyIndex, 1);
+    reason = 'security_floor';
   }
 
   // REL-552 Review Yeti PR #444 (architecture, P2): expose the dirty-live set itself (not just
@@ -229,8 +276,17 @@ function planIncrementalLanes({ parentReport, deltaFiles, personaIds, index, res
   // own prior findings without re-deriving "dirty" independently from parentReport.lanes.
   const dirtyLivePersonaIds = livePersonaIds.filter(isDirty);
   const reviewFullDiff = dirtyLivePersonaIds.length > 0;
+  // REL-586: superset of dirtyLivePersonaIds that also includes a live persona forced live only
+  // by owning a P2 on a changed file. Unlike dirtyLivePersonaIds, this does NOT feed
+  // `reviewFullDiff` -- a P2 nit should not force a full-diff re-review -- but main() uses it to
+  // decide which live personas get their own prior findings injected as re-verification context,
+  // so the P2 is given a chance to survive rather than vanishing merely because its lane was
+  // re-run on the smaller delta.
+  const priorFindingsPersonaIds = livePersonaIds.filter((personaId) => isDirty(personaId) || ownsChangedFileP2(personaId));
 
-  return { livePersonaIds, carriedClean, carriedDirty, dirtyLivePersonaIds, reviewFullDiff, reason };
+  return {
+    livePersonaIds, carriedClean, carriedDirty, dirtyLivePersonaIds, priorFindingsPersonaIds, reviewFullDiff, reason,
+  };
 }
 
 function mergeIncrementalPersonaResults(personas, liveResults, parentReport, reviewedPersonaIds, reuseKindByPersonaId = null) {
@@ -470,6 +526,7 @@ async function resolveIncrementalReviewScope(options) {
           carriedCleanPersonaIds: plan.carriedClean,
           carriedDirtyPersonaIds: plan.carriedDirty,
           dirtyLivePersonaIds: plan.dirtyLivePersonaIds,
+          priorFindingsPersonaIds: plan.priorFindingsPersonaIds,
           reviewFullDiff: plan.reviewFullDiff,
           lanePlanReason: plan.reason,
           chainDepth: parentChainDepth + 1,

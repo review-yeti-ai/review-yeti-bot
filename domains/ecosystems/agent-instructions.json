@@ -1,0 +1,7 @@
+{
+  "ecosystem": "agent-instructions",
+  "description": "Cross-repo AI agent operating instructions (CLAUDE.md, AGENTS.md, SKILL.md, .claude/rules/*.md). These are executable policy the agent follows, not prose documentation, so they must not resolve to the docs class alone.",
+  "classes": {
+    "config": ["**/CLAUDE.md", "**/AGENTS.md", "**/SKILL.md", "**/.claude/rules/**/*.md"]
+  }
+}
