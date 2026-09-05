@@ -158,7 +158,7 @@ If verification exposed a documentation or template defect, fix it, rerun the fa
 
 ```bash
 git push -u origin codex/openrouter-terraform-guide
-gh pr create -R calltelemetry/ct-review-bot --base main --head codex/openrouter-terraform-guide --title "docs: teach OpenRouter Terraform deployment" --body-file /tmp/ct-review-bot-openrouter-pr.md
+gh pr create -R review-yeti-ai/review-yeti-bot --base main --head codex/openrouter-terraform-guide --title "docs: teach OpenRouter Terraform deployment" --body-file /tmp/ct-review-bot-openrouter-pr.md
 ```
 
 The PR body must identify ct-meta as the canonical policy source, state that no apply or secret rotation occurred, and list the exact local validation receipts.

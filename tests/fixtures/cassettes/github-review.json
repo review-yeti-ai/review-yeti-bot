@@ -575,7 +575,7 @@
           "user-agent": "ct-review-bot[bot]"
         },
         "body": {
-          "body": "Line fallback\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr43_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)\n\n### 📝 Inline Findings (Fallback)\n\n#### 📄 File: `src/api/user.ts` (Line 2)\n### [security] Validate input — Severity: P1\n\n**Finding**: Synthetic finding\n",
+          "body": "Line fallback\n\n---\n[📊 Live Terminal Dashboard](https://dashboard.test/dashboard/live?jobId=job_calltelemetry_ct-review-bot_pr43_head-sh) | [🏢 Org Settings](https://dashboard.test/dashboard/organization)\n\n### 📝 Actionable Findings (Diff Line Resolution Fallback)\n\n| Severity | Location | Finding | Recommended Action |\n|---|---|---|---|\n| **P1** | `src/api/user.ts:2` | Validate input | Synthetic finding |",
           "event": "REQUEST_CHANGES",
           "commit_id": "head-sha-43"
         }

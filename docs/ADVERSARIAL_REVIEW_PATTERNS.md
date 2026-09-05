@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > **Historical design record; non-authoritative.** Provider, persona, OmniRoute, and prompt claims
-> are preserved as proposal context and do not describe the current public Action or CallTelemetry
+> are preserved as proposal context and do not describe the current public Action or production
 > fleet. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 ## Executive Overview

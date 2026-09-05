@@ -1,6 +1,6 @@
 # DOKS Review Dispatch Design
 
-**Status:** Proposed; non-authoritative until implemented, reviewed, released, and activated through the CallTelemetry fleet control plane.
+**Status:** Proposed; non-authoritative until implemented, reviewed, released, and activated through the Review Yeti fleet control plane.
 
 **Date:** 2026-08-30
 
@@ -8,7 +8,7 @@
 
 Move Review Yeti execution from per-review hosted GitHub Action runners to bounded Kubernetes Jobs on the existing DigitalOcean Kubernetes cluster without weakening review correctness, publication safety, or rollback. GitHub remains the event source and review UI. PostgreSQL is the durable lifecycle authority. Kubernetes is an execution substrate, not the source of truth for whether a review may publish.
 
-The current `calltelemetry/ct-review-actions` workflow remains the production fallback throughout qualification. Consumer repositories remain configuration-light. Multica may observe runs and request authenticated manual re-drives later, but it is not in the critical webhook, dispatch, execution, or publication path.
+The current `review-yeti-ai/review-yeti-actions` workflow remains the production fallback throughout qualification. Consumer repositories remain configuration-light. Multica may observe runs and request authenticated manual re-drives later, but it is not in the critical webhook, dispatch, execution, or publication path.
 
 ## Non-negotiable constraints
 
@@ -195,7 +195,7 @@ spec:
   runId: "rr_..."
   deliveryId: "..."
   repositoryId: 123456789
-  repo: "calltelemetry/cisco-cdr"
+  repo: "review-yeti-ai/backend-api"
   prNumber: 42
   headSha: "<40 hex>"
   baseSha: "<40 hex>"
@@ -338,7 +338,7 @@ There is no traffic split and no scheduled canary.
 6. With separate explicit approval, opt one repository into DOKS publication while the central workflow remains one-change rollback.
 7. Expand only after the acceptance gates remain satisfied.
 
-Rollback removes the repository from the DOKS allowlist and restores the central `calltelemetry/ct-review-actions` required workflow. It does not change provider routing or consumer repository configuration.
+Rollback removes the repository from the DOKS allowlist and restores the central `review-yeti-ai/review-yeti-actions` required workflow. It does not change provider routing or consumer repository configuration.
 
 ## Acceptance gates
 

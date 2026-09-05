@@ -5,7 +5,7 @@ provider request, GitHub write, review publication, traffic split, or scheduled 
 
 ## Comparison baseline
 
-The hosted `calltelemetry/ct-review-actions` Review Yeti workflow baseline remains the prior
+The hosted `review-yeti-ai/review-yeti-actions` Review Yeti workflow baseline remains the prior
 45-terminal-run sample:
 
 | Path | Sample | p50 | p95 | Maximum | Notes |
@@ -23,8 +23,8 @@ this qualification.
 ## Qualification setup
 
 - Operator source head: `c9d6dbe` (`fix(operator): record fast worker start timing`).
-- Operator image: `registry.digitalocean.com/calltelemetry/review-yeti-operator@sha256:63b610857dd9458a73480482e36505852dbfa1a409d6d779d36339e786a2a5cf`.
-- Worker image: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:481f73b96132d2d95d2c71bb8cb281e65987bd40491be5717ece8767854801cf` (amd64 manifest of the immutable qualification tag).
+- Operator image: `registry.digitalocean.com/review-yeti/review-yeti-operator@sha256:63b610857dd9458a73480482e36505852dbfa1a409d6d779d36339e786a2a5cf`.
+- Worker image: `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:481f73b96132d2d95d2c71bb8cb281e65987bd40491be5717ece8767854801cf` (amd64 manifest of the immutable qualification tag).
 - Kubernetes API egress was restricted to the exact Service IP `10.245.0.1/32`, translated DOKS endpoint `100.65.15.150/32`, and public endpoint `104.248.111.134/32`, TCP/443, plus DNS.
 - The v1alpha2 CRD and operator were installed only in `ct-review-system`; the checked-in deployment remained `replicas: 0` and disabled.
 - The synthetic projection used `publicationMode: disabled`, no Secret object, and a PR-scoped 1 GiB `do-block-storage` PVC.

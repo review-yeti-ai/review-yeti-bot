@@ -3,11 +3,17 @@
   "version": "1.28.6",
   "description": "Repository-configurable persona-panel GitHub App with binding arbitration",
   "main": "dist/index.js",
+  "bin": {
+    "review-yeti": "bin/review-yeti.js",
+    "git-yeti": "bin/review-yeti.js",
+    "ct-review": "bin/review-yeti.js"
+  },
   "files": [
     "action.yml",
     ".github/workflows/pipelines/",
     "src/",
     "dist/",
+    "bin/",
     "scripts/",
     "pi-runtime/",
     "README.md",

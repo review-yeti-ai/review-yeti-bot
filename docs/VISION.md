@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > **Aspirational design record; non-authoritative.** This document describes product direction, not
-> current Action behavior, provider routing, release state, or CallTelemetry fleet policy. See
+> current Action behavior, provider routing, release state, or central fleet policy. See
 > [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 Review responsibility belongs to repository-configured teams, not a generic

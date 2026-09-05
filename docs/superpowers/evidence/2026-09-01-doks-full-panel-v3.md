@@ -10,9 +10,9 @@ traffic split, or production Action routing change was created.
 - Source: `ea05dac5b1d50a2aaffefe739a00d0b424123499`
 - Deadline fix: PR #397, `fix(doks): preserve full-panel deadline budget`
 - Operator image:
-  `registry.digitalocean.com/calltelemetry/review-yeti-operator@sha256:47d802d640f16e4619d712f660eae1b7ceb1afc5cec90b41fe7c879c9c8a301d`
+  `registry.digitalocean.com/review-yeti/review-yeti-operator@sha256:47d802d640f16e4619d712f660eae1b7ceb1afc5cec90b41fe7c879c9c8a301d`
 - Worker image:
-  `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:f89ae42380abc44ed52145eff2b774175b6d6ce98e0d3da2abc0cc27fe6892ad`
+  `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:f89ae42380abc44ed52145eff2b774175b6d6ce98e0d3da2abc0cc27fe6892ad`
 - Worker self-test runtime-manifest digest:
   `1cd51aa24e665019d40fe38fb61577dd0219de5afc8cdde3abce3eab41725558`
 - Run: `run_ea05dac5b1d50a2aaffefe739a00d0b4`

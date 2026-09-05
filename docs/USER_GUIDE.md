@@ -1,11 +1,11 @@
-# 📖 ct-review-bot — User Guide
+# 📖 Review Yeti — User Guide
 
 > [!IMPORTANT]
 > **Optional service document.** Dashboard, App, chat, memory, and repository-management behavior
-> here is separate from the public GitHub Action and the CallTelemetry production fleet. Verify
+> here is separate from the public GitHub Action. Verify
 > current service behavior before use. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
-Welcome to the **ct-review-bot** User Guide. This comprehensive guide covers operational workflows, authentication, repository management, dashboard analytics, interactive PR chat commands, and rich automated code review features for developers and operations teams.
+Welcome to the **Review Yeti** User Guide. This comprehensive guide covers operational workflows, authentication, repository management, dashboard analytics, interactive PR chat commands, local pre-commit checks, persistent team memory, and rich automated code review features for developers and operations teams.
 
 ---
 
@@ -20,11 +20,21 @@ Welcome to the **ct-review-bot** User Guide. This comprehensive guide covers ope
    - [Managing Repository Toggles](#managing-repository-toggles)
    - [Platform Settings & Cost Caps](#platform-settings--cost-caps)
 5. [Overview Metrics & Activity Logs](#overview-metrics--activity-logs)
-6. [`@ct-review` Chat Command Suite](#ct-review-chat-command-suite)
-7. [Rich Review Artifacts](#rich-review-artifacts)
-   - [Automated Mermaid Diagrams](#automated-mermaid-diagrams)
-   - [Confidence Scores (0-100%)](#confidence-scores-0-100)
+6. [Interactive PR Chat & Mentoring Suite (`@review-yeti`)](#interactive-pr-chat--mentoring-suite-review-yeti)
+   - [Explain, Fix, and Refactor Workflows](#explain-fix-and-refactor-workflows)
+   - [Persistent Nit Suppression (`ignore` and `mute`)](#persistent-nit-suppression-ignore-and-mute)
+7. [Native 1-Click Commit Suggestions](#native-1-click-commit-suggestions)
    - [Ranked Fix Options (Option 1 vs Option 2)](#ranked-fix-options-option-1-vs-option-2)
+   - [Fallback Table Rendering](#fallback-table-rendering)
+8. [Local Pre-Commit CLI & Git Hooks](#local-pre-commit-cli--git-hooks)
+   - [Sub-10ms Credential Checks](#sub-10ms-credential-checks)
+   - [Blocking P0 Exits](#blocking-p0-exits)
+9. [Persistent Team Memory & Nit Suppression](#persistent-team-memory--nit-suppression)
+   - [SQLite WAL Storage (`.ct-memory/team_memory.db`)](#sqlite-wal-storage-ct-memoryteam_memorydb)
+   - [Non-Bypassable Security Safety Policy](#non-bypassable-security-safety-policy)
+10. [Rich Review Artifacts](#rich-review-artifacts)
+    - [Automated Mermaid Diagrams](#automated-mermaid-diagrams)
+    - [Confidence Scores (0-100%)](#confidence-scores-0-100)
 
 ---
 
@@ -312,17 +322,125 @@ Returns a rolling audit log of recent PR review panel runs:
 
 ---
 
-## 💬 `@ct-review` Chat Command Suite
+## 💬 Interactive PR Chat & Mentoring Suite (`@review-yeti`)
 
-Developers can interact directly with `ct-review-bot` by posting comments on Pull Requests or replying to inline review threads. Commands start with `@ct-review` (or `@ct-review-bot`).
+Developers can interact directly with Review Yeti by posting comments on Pull Requests or replying to inline review threads. Review Yeti recognizes `@review-yeti`, `@review-yeti-bot`, and the `@ct-review` compatibility alias.
 
-| Command | Usage Example | Description |
+| Command | Example | Description |
 | :--- | :--- | :--- |
-| **`@ct-review review`** | `@ct-review review` | Triggers an immediate, full multi-persona quorum review panel. |
-| **`@ct-review ask <question>`** | `@ct-review ask How does this handle database deadlocks?` | Answers specific questions about the PR diff or codebase architecture using context-aware LLMs. |
-| **`@ct-review refactor`** | `@ct-review refactor simplify this switch statement` | Generates clean code refactoring recommendations with 1-click GitHub apply blocks (````suggestion ... ````). |
-| **`@ct-review explain`** | `@ct-review explain` | Provides step-by-step explanations of complex diff hunks or inline comment thread discussions. |
-| **`@ct-review summarize`** | `@ct-review summarize` | Re-generates and posts a fresh executive overview, bulleted walkthrough, and module changeset breakdown. |
+| **`@review-yeti explain`** | `@review-yeti explain why this loop is inefficient` | Provides architectural and security rationale for a diff hunk or finding. |
+| **`@review-yeti fix`** | `@review-yeti fix use parameterized query` | Generates a 1-click native GitHub suggestion (` ```suggestion `). |
+| **`@review-yeti refactor`** | `@review-yeti refactor simplify switch expression` | Generates clean refactored code blocks in thread replies. |
+| **`@review-yeti ignore`** | `@review-yeti ignore Trailing comma - Optional in config` | Suppresses matching false-positive nits across repository team memory. |
+| **`@review-yeti mute`** | `@review-yeti mute rule:no-explicit-any - Legacy migration` | Mutes a specific rule ID for this repository subsystem. |
+| **`@review-yeti summarize`** | `@review-yeti summarize` | Posts a fresh executive walkthrough and Mermaid architecture diagram. |
+| **`@review-yeti review`** | `@review-yeti review` | Triggers an immediate, full multi-persona quorum review panel. |
+
+👉 **For complete details on webhook routing and ephemeral authentication, see the [Interactive PR Chat Guide](INTERACTIVE_CHAT.md).**
+
+---
+
+## ⚡ Native 1-Click Commit Suggestions
+
+Review Yeti formats actionable code replacements as native GitHub suggestion diff blocks:
+
+````markdown
+```suggestion
+const res = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+```
+````
+
+Developers can click **Commit suggestion** directly inside GitHub PR review threads to merge the proposed fix with zero manual typing.
+
+### Ranked Fix Options (Option 1 vs Option 2)
+
+When multiple valid architectural approaches exist, Review Yeti formats Option 1 as an instantly committable ````suggestion ` block and presents Option 2 as a structured alternative:
+
+```markdown
+### [arch-lane] High Memory Allocations in Event Loop — Severity: MAJOR
+
+**Confidence**: 88%
+**Finding**: Instantiating large object buffers inside the loop causes excessive GC pressure.
+[RECOMMENDATION] Refactor memory buffer allocation outside loop scope or use static buffer pooling.
+
+#### Option 1: Recommended Fix (Rank #1)
+Pre-allocate buffer pool prior to entering process loop.
+```suggestion
+const bufferPool = new BufferPool(1024);
+for (const item of items) {
+  bufferPool.process(item);
+}
+```
+
+#### Option 2: Alternative Approach (Rank #2)
+Stream items using AsyncIterable generators to minimize peak memory footprint.
+```typescript
+for await (const chunk of streamItems(items)) {
+  processChunk(chunk);
+}
+```
+```
+
+### Fallback Table Rendering
+
+For findings where a single-line or multi-line replacement is not applicable (e.g. multi-file architectural refactorings, deleted files, or missing dependencies), Review Yeti preserves structured markdown tables:
+
+| Severity | File Path | Line | Description | Recommendation |
+|---|---|---|---|---|
+| 🟠 P1 | `src/services/billing.ts` | 10 | Tight coupling to external payment SDK | Introduce PaymentGateway adapter interface in domain layer |
+
+---
+
+## 💻 Local Pre-Commit CLI & Git Hooks
+
+Prevent bad commits from ever reaching GitHub using the local `review-yeti` CLI:
+
+```bash
+# Evaluate staged changes (git diff --cached) in < 5 seconds
+npx review-yeti pre-commit
+
+# Or use native git subcommand syntax
+git yeti pre-commit
+
+# Install as a native git pre-commit hook (.git/hooks/pre-commit)
+npx review-yeti install-hook
+```
+
+### Sub-10ms Credential Checks
+Before invoking any external LLMs, Review Yeti executes a pre-flight regex scanner that inspects staged changes in sub-10ms for:
+- AWS Access Keys (`AKIA...`)
+- GitHub Personal Access Tokens (`ghp_...`, `github_pat_...`)
+- RSA and OpenSSH Private Keys (`-----BEGIN RSA PRIVATE KEY-----`)
+- OpenAI API Keys (`sk-...`) and Slack Tokens (`xoxb-...`)
+
+### Blocking P0 Exits
+If a critical vulnerability or exposed secret is found, Review Yeti prints color-coded ANSI diagnostics and exits with code `1`, aborting the `git commit`:
+
+```
+[P0] AWS Access Key at src/config/aws.ts:5
+  AWS Access Key ID detected in staged changes
+  💡 Suggestion: Use environment variables or IAM roles.
+Commit blocked: 1 blocking P0 issue(s) detected. Fix before committing.
+```
+
+👉 **Read the complete [CLI Reference & Git Hook Guide](CLI_REFERENCE.md).**
+
+---
+
+## 🧠 Persistent Team Memory & Nit Suppression
+
+Review Yeti eliminates repetitive false-positive nit fatigue through **Persistent Team Memory** stored in an embedded SQLite WAL database (`.ct-memory/team_memory.db`).
+
+### SQLite WAL Storage (`.ct-memory/team_memory.db`)
+- **Engine**: Node 24 native SQLite (`DatabaseSync`) with Write-Ahead Logging (`PRAGMA journal_mode = WAL`).
+- **Learnings**: Records team-accepted conventions, patterns, and Architecture Decision Records (ADRs).
+- **Nit Suppression Engine**: Matches findings using path globs, rule IDs, substrings, and regular expressions, automatically silencing matching P2 nits on future PR reviews.
+
+### Non-Bypassable Security Safety Policy
+> ⛔ **SAFETY GUARANTEE**:
+> Security findings with severity **P0** (credentials, syntax errors) or **P1** (SQL injection, authorization bypass, tenant leaks) are **NEVER suppressed** by team memory rules. Merge gate integrity is unconditionally preserved.
+
+👉 **Read the complete [Team Memory Guide](TEAM_MEMORY.md).**
 
 ---
 
@@ -330,7 +448,7 @@ Developers can interact directly with `ct-review-bot` by posting comments on Pul
 
 ### Automated Mermaid Diagrams
 
-When complex changes span multiple files or contain interaction/branching logic, `ct-review-bot` automatically generates Markdown-fenced `mermaid` architecture diagrams inside the PR summary.
+When complex changes span multiple files or contain interaction/branching logic, Review Yeti automatically generates Markdown-fenced `mermaid` architecture diagrams inside the PR summary.
 
 #### Interaction Flow Diagram (`sequenceDiagram`)
 Generated when multi-component calls, webhooks, or asynchronous handlers are detected:
@@ -359,54 +477,17 @@ flowchart TD
 
 ### Confidence Scores (0-100%)
 
-Every inline finding generated by the persona panel includes a quantitative confidence rating (`0%` to `100%`). 
-
-```markdown
-### [sec-lane] Unsafe SQL Query Formatting — Severity: CRITICAL
-
-**Confidence**: 95%
-**Finding**: Direct string concatenation detected in SQL query formulation.
-[RECOMMENDATION] Use parameterized SQL queries to prevent SQL injection vulnerabilities.
-```
-
-Findings with confidence scores below the repository's configured `confidence_threshold` (e.g. `70%`) are automatically filtered out before publishing, ensuring high signal-to-noise ratio.
-
----
-
-### Ranked Fix Options (Option 1 vs Option 2)
-
-When a critical or major code finding is identified, `ct-review-bot` provides up to **2 ranked fix options** to give developers choice between optimal solutions and alternative trade-offs:
-
-```markdown
-### [arch-lane] High Memory Allocations in Event Loop — Severity: MAJOR
-
-**Confidence**: 88%
-**Finding**: Instantiating large object buffers inside the loop causes excessive GC pressure.
-[RECOMMENDATION] Refactor memory buffer allocation outside loop scope or use static buffer pooling.
-
-#### Option 1: Recommended Fix (Rank #1)
-Pre-allocate buffer pool prior to entering process loop.
-```suggestion
-const bufferPool = new BufferPool(1024);
-for (const item of items) {
-  bufferPool.process(item);
-}
-```
-
-#### Option 2: Alternative Approach (Rank #2)
-Stream items using AsyncIterable generators to minimize peak memory footprint.
-```suggestion
-for await (const chunk of streamItems(items)) {
-  processChunk(chunk);
-}
-```
-```
+Every inline finding generated by the persona panel includes a quantitative confidence rating (`0%` to `100%`). Findings below the configured `confidence_threshold` (e.g. `70%`) are automatically suppressed before publication.
 
 ---
 
 ## 📄 Support & Reference
 
-For additional details on schema definitions and configuration options, see:
+For additional details on schema definitions and operational procedures, see:
+- [Interactive PR Chat Guide](INTERACTIVE_CHAT.md)
+- [CLI Reference & Git Hook Guide](CLI_REFERENCE.md)
+- [Team Memory Guide](TEAM_MEMORY.md)
 - [Configuration Reference](CONFIGURATION_REFERENCE.md)
-- [Marketing & Feature Overview](MARKETING_OVERVIEW.md)
+- [Onboarding Guide](ONBOARDING_GUIDE.md)
+- [Helm Operations Guide](HELM_GUIDE.md)
 - [Architecture Blueprint](ARCHITECTURE.md)

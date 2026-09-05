@@ -17,3 +17,6 @@ public/_next/
 screenshots/
 .tmp/
 test-results/
+# Review Yeti secrets
+*.pem
+.review-yeti/
