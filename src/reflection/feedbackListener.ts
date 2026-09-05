@@ -72,6 +72,11 @@ export class FeedbackListener {
         '**',
         'User rejected nit via thumbs down reaction'
       );
+
+      const memStore = this.learningStore.getMemoryStore?.();
+      if (memStore && typeof (memStore as any).degradePatternConfidence === 'function') {
+        await (memStore as any).degradePatternConfidence(repo, pattern, 0.2).catch(() => {});
+      }
     }
 
     await this.learningStore.recordFeedback(repo, reactionStr);

@@ -15,6 +15,22 @@ export const DEFAULT_HONCHO_BASE_URL = "http://localhost:8000";
 export const DEFAULT_HONCHO_WORKSPACE = "default";
 export const DEFAULT_HONCHO_PEER = "review-yeti";
 export const DEFAULT_HONCHO_OBSERVED = "developer";
+export const DEFAULT_HONCHO_RECALL_DISTANCE = 0.35;
+
+export function inferDomainFromPath(filePath?: string): string {
+  if (!filePath) return "general";
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".ex") || lower.endsWith(".exs")) return "elixir";
+  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
+  if (lower.endsWith(".js") || lower.endsWith(".jsx") || lower.endsWith(".mjs")) return "javascript";
+  if (lower.endsWith(".py")) return "python";
+  if (lower.endsWith(".tf") || lower.endsWith(".hcl")) return "terraform";
+  if (lower.endsWith(".yaml") || lower.endsWith(".yml") || lower.includes("dockerfile")) return "infra";
+  if (lower.endsWith(".go")) return "golang";
+  if (lower.endsWith(".rs")) return "rust";
+  if (lower.endsWith(".java")) return "java";
+  return "general";
+}
 
 export function sanitizeSessionId(raw: string): string {
   const sanitized = raw.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 500);
@@ -28,6 +44,8 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
   private workspace: string;
   private peer: string;
   private observed: string;
+  private recallPeers: string[];
+  private recallDistance: number;
   private fetchImpl: typeof fetch;
   private timeoutMs: number;
   private inMemoryCache: {
@@ -42,6 +60,13 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
     this.workspace = config?.workspace || process.env.HONCHO_WORKSPACE || DEFAULT_HONCHO_WORKSPACE;
     this.peer = config?.peer || process.env.HONCHO_PEER || DEFAULT_HONCHO_PEER;
     this.observed = config?.observed || process.env.HONCHO_OBSERVED || DEFAULT_HONCHO_OBSERVED;
+    this.recallDistance = config?.recallDistance ?? (process.env.HONCHO_RECALL_DISTANCE ? parseFloat(process.env.HONCHO_RECALL_DISTANCE) : DEFAULT_HONCHO_RECALL_DISTANCE);
+
+    const envRecallPeers = process.env.HONCHO_RECALL_PEERS
+      ? process.env.HONCHO_RECALL_PEERS.split(",").map((p) => p.trim()).filter(Boolean)
+      : [];
+    this.recallPeers = config?.recallPeers || (envRecallPeers.length > 0 ? envRecallPeers : [this.peer]);
+
     this.fetchImpl = config?.fetchImpl || globalThis.fetch;
     this.timeoutMs = config?.timeoutMs || 5000;
 
@@ -62,6 +87,14 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
 
   public getPeer(): string {
     return this.peer;
+  }
+
+  public getRecallPeers(): string[] {
+    return [...this.recallPeers];
+  }
+
+  public getRecallDistance(): number {
+    return this.recallDistance;
   }
 
   public getBaseUrl(): string {
@@ -111,10 +144,16 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
 
     try {
       await this.ensurePeer(this.peer);
+      for (const p of this.recallPeers) {
+        if (p !== this.peer) {
+          await this.ensurePeer(p);
+        }
+      }
       await this.ensurePeer(this.observed);
       logger.info("HonchoMemoryAdapter initialized successfully", {
         workspace: this.workspace,
         peer: this.peer,
+        recallPeers: this.recallPeers,
         baseUrl: this.baseUrl,
       });
     } catch (err: any) {
@@ -157,6 +196,8 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
     const description = learning.description || (learning as any).rule || "Learned from PR review feedback";
     const category = learning.category || "convention";
 
+    const domain = learning.domain || inferDomainFromPath(learning.filePath) || category;
+
     const record: ReviewerLearning = {
       id,
       repo,
@@ -165,6 +206,7 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
       title,
       description,
       filePath: learning.filePath,
+      domain,
       confidence: learning.confidence ?? 1.0,
       createdAt,
       updatedAt,
@@ -194,7 +236,7 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
           confidence: record.confidence,
           observed_at: createdAt,
           repository: repo,
-          domain: category,
+          domain,
           evidence_refs: learning.filePath ? [learning.filePath] : [],
           metadata: {
             learningId: id,
@@ -202,7 +244,9 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
             title,
             description,
             filePath: learning.filePath,
+            domain,
             prNumber,
+            repo,
           },
         };
 
@@ -235,10 +279,15 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
   public async getLearnings(repo: string, options?: LearningQueryOptions): Promise<ReviewerLearning[]> {
     const cached = this.inMemoryCache.learnings.get(repo) || [];
 
+    const targetDomain = options?.domain || inferDomainFromPath(options?.filePath);
+
     if (!this.isConfigured()) {
       let results = [...cached];
       if (options?.category) {
         results = results.filter((l) => l.category === options.category);
+      }
+      if (options?.domain) {
+        results = results.filter((l) => !l.domain || l.domain === options.domain);
       }
       if (options?.filePath) {
         results = results.filter((l) => !l.filePath || matchesFilePath(l.filePath, options.filePath!));
@@ -253,42 +302,69 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
       const queryTopic = [
         "code-review convention learning",
         repo,
+        targetDomain !== "general" ? targetDomain : undefined,
         options?.category,
         options?.filePath,
       ].filter(Boolean).join(" ");
 
-      const response = await this.fetchHoncho(`/v3/workspaces/${encodeURIComponent(this.workspace)}/conclusions/query`, {
-        method: "POST",
-        body: JSON.stringify({
-          query: queryTopic,
-          top_k: options?.limit || 20,
-          distance: 0.5,
-          filters: {
-            observer_id: this.peer,
-            observed_id: this.observed,
-          },
-        }),
-      });
+      const rawItems: any[] = [];
+      const queryDistance = options?.distance ?? this.recallDistance;
 
-      const items: any[] = Array.isArray(response) ? response : (response?.items ?? response?.results ?? []);
+      for (const peerId of this.recallPeers) {
+        try {
+          const response = await this.fetchHoncho(`/v3/workspaces/${encodeURIComponent(this.workspace)}/conclusions/query`, {
+            method: "POST",
+            body: JSON.stringify({
+              query: queryTopic,
+              top_k: options?.limit || 20,
+              distance: queryDistance,
+              filters: {
+                observer_id: peerId,
+                observed_id: this.observed,
+              },
+            }),
+          });
+          const peerItems: any[] = Array.isArray(response) ? response : (response?.items ?? response?.results ?? []);
+          rawItems.push(...peerItems);
+        } catch (peerErr: any) {
+          logger.warn("Failed querying peer conclusions in Honcho", { peer: peerId, error: peerErr?.message });
+        }
+      }
+
       const remoteLearnings: ReviewerLearning[] = [];
 
-      for (const item of items) {
+      for (const item of rawItems) {
         try {
           const parsed = typeof item.content === "string" ? JSON.parse(item.content) : item.content;
           if (parsed?.metadata?.learningId) {
             const m = parsed.metadata;
             remoteLearnings.push({
               id: m.learningId,
-              repo,
+              repo: m.repo || parsed.repository || repo,
               prNumber: m.prNumber || 0,
               category: m.category || "convention",
               title: m.title || parsed.statement,
               description: m.description || parsed.statement,
               filePath: m.filePath,
+              domain: m.domain || parsed.domain || targetDomain,
               confidence: parsed.confidence ?? 1.0,
               createdAt: parsed.observed_at || new Date().toISOString(),
               updatedAt: parsed.observed_at || new Date().toISOString(),
+            });
+          } else if (parsed?.statement || typeof item.content === "string") {
+            // Decision/context from cross-peer (e.g. codex, dan)
+            const statement = parsed?.statement || item.content;
+            remoteLearnings.push({
+              id: item.id || `peer_${crypto.randomUUID().slice(0, 8)}`,
+              repo: parsed?.repository || repo,
+              prNumber: 0,
+              category: (parsed?.domain === "security" || parsed?.domain === "architecture") ? parsed.domain : "convention",
+              title: `[Cross-Peer ${item.observer_id || "decision"}] ${statement.slice(0, 50)}...`,
+              description: statement,
+              domain: parsed?.domain || targetDomain,
+              confidence: parsed?.confidence ?? 0.9,
+              createdAt: parsed?.observed_at || item.created_at || new Date().toISOString(),
+              updatedAt: parsed?.observed_at || item.created_at || new Date().toISOString(),
             });
           }
         } catch {
@@ -308,6 +384,9 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
       let results = Array.from(mergedMap.values());
       if (options?.category) {
         results = results.filter((l) => l.category === options.category);
+      }
+      if (options?.domain) {
+        results = results.filter((l) => !l.domain || l.domain === options.domain);
       }
       if (options?.filePath) {
         results = results.filter((l) => !l.filePath || matchesFilePath(l.filePath, options.filePath!));
@@ -420,23 +499,33 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
     }
 
     try {
-      const response = await this.fetchHoncho(`/v3/workspaces/${encodeURIComponent(this.workspace)}/conclusions/query`, {
-        method: "POST",
-        body: JSON.stringify({
-          query: `Dismissed nit suppression ${repo} ${filePath || ""}`,
-          top_k: 50,
-          distance: 0.5,
-          filters: {
-            observer_id: this.peer,
-            observed_id: this.observed,
-          },
-        }),
-      });
+      const rawItems: any[] = [];
+      const queryTopic = `Dismissed nit suppression ${repo} ${filePath || ""}`;
 
-      const items: any[] = Array.isArray(response) ? response : (response?.items ?? response?.results ?? []);
+      for (const peerId of this.recallPeers) {
+        try {
+          const response = await this.fetchHoncho(`/v3/workspaces/${encodeURIComponent(this.workspace)}/conclusions/query`, {
+            method: "POST",
+            body: JSON.stringify({
+              query: queryTopic,
+              top_k: 50,
+              distance: this.recallDistance,
+              filters: {
+                observer_id: peerId,
+                observed_id: this.observed,
+              },
+            }),
+          });
+          const peerItems: any[] = Array.isArray(response) ? response : (response?.items ?? response?.results ?? []);
+          rawItems.push(...peerItems);
+        } catch (peerErr: any) {
+          logger.warn("Failed querying peer nits in Honcho", { peer: peerId, error: peerErr?.message });
+        }
+      }
+
       const remoteNits: ResolvedNitPattern[] = [];
 
-      for (const item of items) {
+      for (const item of rawItems) {
         try {
           const parsed = typeof item.content === "string" ? JSON.parse(item.content) : item.content;
           if (parsed?.metadata?.nitId) {
@@ -567,6 +656,91 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
       return cached.filter((a) => a.status === status);
     }
     return cached;
+  }
+
+  public async deleteConclusion(id: string): Promise<boolean> {
+    if (!this.isConfigured()) return false;
+    try {
+      await this.fetchHoncho(`/v3/workspaces/${encodeURIComponent(this.workspace)}/conclusions/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      return true;
+    } catch (err: any) {
+      logger.warn("Failed to delete conclusion from Honcho", { id, error: err?.message });
+      return false;
+    }
+  }
+
+  public async forgetPattern(repo: string, pattern: string): Promise<boolean> {
+    const trimmed = pattern.trim();
+    let deletedAny = false;
+
+    // Purge local cache
+    const cachedLearnings = this.inMemoryCache.learnings.get(repo) || [];
+    const filteredLearnings = cachedLearnings.filter(
+      (l) => !l.title.toLowerCase().includes(trimmed.toLowerCase()) &&
+             !l.description.toLowerCase().includes(trimmed.toLowerCase())
+    );
+    if (filteredLearnings.length !== cachedLearnings.length) {
+      this.inMemoryCache.learnings.set(repo, filteredLearnings);
+      deletedAny = true;
+    }
+
+    const cachedNits = this.inMemoryCache.nits.get(repo) || [];
+    const filteredNits = cachedNits.filter(
+      (n) => !n.pattern.toLowerCase().includes(trimmed.toLowerCase())
+    );
+    if (filteredNits.length !== cachedNits.length) {
+      this.inMemoryCache.nits.set(repo, filteredNits);
+      deletedAny = true;
+    }
+
+    // Purge remote Honcho conclusions matching pattern
+    if (this.isConfigured()) {
+      try {
+        const response = await this.fetchHoncho(`/v3/workspaces/${encodeURIComponent(this.workspace)}/conclusions/query`, {
+          method: "POST",
+          body: JSON.stringify({
+            query: trimmed,
+            top_k: 10,
+            distance: this.recallDistance,
+            filters: {
+              observer_id: this.peer,
+              observed_id: this.observed,
+            },
+          }),
+        });
+        const items = Array.isArray(response) ? response : (response?.items ?? response?.results ?? []);
+        for (const item of items) {
+          if (item?.id) {
+            await this.deleteConclusion(item.id);
+            deletedAny = true;
+          }
+        }
+      } catch (err: any) {
+        logger.warn("Failed querying conclusions for forgetPattern in Honcho", { pattern: trimmed, error: err?.message });
+      }
+    }
+
+    logger.info("Forgot pattern from Honcho memory", { repo, pattern: trimmed, deletedAny });
+    return deletedAny;
+  }
+
+  public async degradePatternConfidence(repo: string, pattern: string, penalty: number = 0.2): Promise<void> {
+    const trimmed = pattern.trim().toLowerCase();
+    const cached = this.inMemoryCache.learnings.get(repo) || [];
+    for (const l of cached) {
+      if (l.title.toLowerCase().includes(trimmed) || l.description.toLowerCase().includes(trimmed)) {
+        l.confidence = Math.max(0, (l.confidence ?? 1.0) - penalty);
+      }
+    }
+    const nits = this.inMemoryCache.nits.get(repo) || [];
+    for (const n of nits) {
+      if (n.pattern.toLowerCase().includes(trimmed)) {
+        n.suppressionCount = (n.suppressionCount ?? 0) + 1;
+      }
+    }
+    logger.info("Degraded pattern confidence in Honcho cache", { repo, pattern: trimmed, penalty });
   }
 
   public async clear(repo?: string): Promise<void> {

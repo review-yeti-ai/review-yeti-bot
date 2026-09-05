@@ -219,6 +219,14 @@ inputs:
     description: 'Honcho observed peer ID for repository contributors.'
     required: false
     default: ''
+  honcho-recall-peers:
+    description: 'Comma-separated list of Honcho writer peers to recall decisions from.'
+    required: false
+    default: ''
+  honcho-recall-distance:
+    description: 'Maximum distance bound for Honcho semantic search (default 0.35).'
+    required: false
+    default: ''
   memory-provider:
     description: 'Memory backend provider: sqlite, honcho, composite, postgres, auto.'
     required: false
@@ -560,6 +568,8 @@ runs:
         HONCHO_WORKSPACE: ${{ inputs.honcho-workspace || env.HONCHO_WORKSPACE }}
         HONCHO_PEER: ${{ inputs.honcho-peer || env.HONCHO_PEER }}
         HONCHO_OBSERVED: ${{ inputs.honcho-observed || env.HONCHO_OBSERVED }}
+        HONCHO_RECALL_PEERS: ${{ inputs.honcho-recall-peers || env.HONCHO_RECALL_PEERS }}
+        HONCHO_RECALL_DISTANCE: ${{ inputs.honcho-recall-distance || env.HONCHO_RECALL_DISTANCE }}
         MEMORY_PROVIDER: ${{ inputs.memory-provider || env.MEMORY_PROVIDER }}
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
         OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
