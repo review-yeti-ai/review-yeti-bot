@@ -10,7 +10,9 @@ import baseConfig from './vitest.config';
 // Spread rather than `mergeConfig`: mergeConfig CONCATENATES array options, so merging an
 // `include` onto the base appends to it and the lane silently runs the entire suite (369 files
 // instead of 2). `include` here must replace the base's, not extend it.
-const base = baseConfig as ReturnType<typeof defineConfig>;
+// REL-582: `defineConfig` returns a Vite config union; narrow to the object form that
+// actually carries `test`, now that vite's types resolve under moduleResolution: bundler.
+const base = baseConfig as { test?: Record<string, unknown> } & Record<string, unknown>;
 
 export default defineConfig({
   ...base,
