@@ -1,0 +1,77 @@
+name: Review Yeti passthrough alarm
+
+# ADR-free standing patrol, same shape as v1-drift-alarm.yml: REVIEW_YETI_PASSTHROUGH is a
+# legitimate, real-incident escape hatch (see scripts/deliver-passthrough.sh and
+# scripts/publish-review-check-run.sh), but while it is true every consumer repository's
+# required Review Yeti check publishes a neutral "no review performed" result instead of a
+# real panel review -- and it has been toggled on and off repeatedly, so it is easy to forget
+# enabled. This workflow alarms hourly while the variable is true and opens/updates one
+# deduped issue naming the variable to unset. It never writes the variable itself; unsetting
+# REVIEW_YETI_PASSTHROUGH stays a deliberate human action, exactly like v1 promotion staying
+# the exclusive writer of the v1 ref.
+
+on:
+  schedule:
+    - cron: "37 * * * *" # hourly at :37, offset from v1-drift-alarm's :23 slot
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: passthrough-drift-alarm
+  cancel-in-progress: false
+
+jobs:
+  passthrough-check:
+    name: Alarm while Review Yeti passthrough is enabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Open alarm issue while passthrough is enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH }}
+        run: |
+          set -euo pipefail
+
+          echo "REVIEW_YETI_PASSTHROUGH=${PASSTHROUGH:-<unset>}"
+
+          if [ "${PASSTHROUGH:-}" != "true" ]; then
+            echo "Passthrough is not enabled."
+            exit 0
+          fi
+
+          title="Review Yeti passthrough is enabled: fleet is unreviewed"
+          body="The \`REVIEW_YETI_PASSTHROUGH\` repository variable is currently \`true\`. Every consumer repository's required Review Yeti check is publishing a **neutral, unreviewed** result -- no persona has run a real review on any PR in the fleet while this is set.\n\nThis is a legitimate maintenance escape hatch for real incidents, not a standing configuration. Unset it as soon as the incident that required it is resolved:\n\n\`gh variable set REVIEW_YETI_PASSTHROUGH --body false -R exampleorg/example-review-actions\`\n\nThis workflow never changes the variable itself."
+
+          existing="$(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=passthrough-drift" --jq 'length')"
+          if [ "$existing" -gt 0 ]; then
+            echo "Passthrough alarm issue already open — not duplicating."
+            exit 0
+          fi
+
+          gh api repos/exampleorg/example-review-actions/issues \
+            --method POST \
+            -f title="$title" \
+            -f body="$body" \
+            -f labels[]="passthrough-drift" \
+            --jq '.number'
+
+          echo "::error::REVIEW_YETI_PASSTHROUGH is enabled — fleet is unreviewed"
+
+      - name: Close stale alarm issue on convergence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH }}
+        run: |
+          set -euo pipefail
+          [ "${PASSTHROUGH:-}" != "true" ] || exit 0
+
+          for num in $(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=passthrough-drift" --jq '.[].number'); do
+            gh api "repos/exampleorg/example-review-actions/issues/$num/comments" \
+              --method POST -f body="REVIEW_YETI_PASSTHROUGH is no longer true — closing." --silent
+            gh api "repos/exampleorg/example-review-actions/issues/$num" \
+              --method PATCH -f state=closed --silent
+          done

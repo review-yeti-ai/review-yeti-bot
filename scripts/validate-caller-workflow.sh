@@ -49,5 +49,18 @@ if grep -Eq '^[[:space:]]+central-sha:' <<<"$workflow_content"; then
   echo "::error::${caller_workflow} must not duplicate the central release ref as central-sha."
   exit 1
 fi
+# A direct caller could otherwise self-serve a fabricated SHIP by passing
+# `with: passthrough: true`, bypassing the platform-owned REVIEW_YETI_PASSTHROUGH
+# repository variable entirely. Passthrough may only be enabled centrally.
+if grep -Eq '^[[:space:]]+passthrough:' <<<"$workflow_content"; then
+  echo "::error::${caller_workflow} must not set passthrough; only the platform-owned repository variable may enable it."
+  exit 1
+fi
+# execution_backend selects local vs. DOKS review execution; a consumer overriding it
+# could route its own reviews around the central policy's transport decision.
+if grep -Eq '^[[:space:]]+execution_backend:' <<<"$workflow_content"; then
+  echo "::error::${caller_workflow} must not override execution_backend; the central policy is the only authority for backend selection."
+  exit 1
+fi
 
 echo "Validated ${caller_workflow} at base ${EXPECTED_BASE_SHA} uses central Review Yeti ${central_ref}."

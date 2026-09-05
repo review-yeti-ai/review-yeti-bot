@@ -597,24 +597,132 @@ grep -Fq 'max-incremental-chain: ${{ steps.policy.outputs.max_incremental_chain 
 grep -Fq 'max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}' "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml"
 
+# The check-run publication logic is an extracted, independently invocable script (not an
+# inline YAML `run:` block) precisely so it can be behaviorally proven here instead of only
+# grepped. review-yeti.yml must delegate to it and must forward REVIEW_YETI_PASSTHROUGH so the
+# script can tell a fabricated passthrough SHIP apart from a real one.
+grep -Fq 'run: .exampleorg-review-actions/scripts/publish-review-check-run.sh' "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq 'REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}' "$repo_root/.github/workflows/review-yeti.yml"
+if grep -Fq 'Publishing Check Run' "$repo_root/.github/workflows/review-yeti.yml"; then
+  echo "check-run publication logic must live in publish-review-check-run.sh, not inline in review-yeti.yml" >&2
+  exit 1
+fi
+
 # DISPATCHED is not a verdict: the review was handed to the DOKS queue and the Review Yeti App
 # gate reports the real outcome on the same head. check-review-verdict.sh already treats
 # DISPATCHED + PENDING as a pass, but the check-run publisher used to map "anything not SHIP" to
 # `failure`, so a dispatched review published a red required check that nothing ever superseded.
 # It must publish an in-progress check instead -- still blocking, but not a false failure.
-grep -Fq 'if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then' "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq 'status: "in_progress",' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq 'if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then' "$repo_root/scripts/publish-review-check-run.sh"
+grep -Fq 'status: "in_progress",' "$repo_root/scripts/publish-review-check-run.sh"
 # ...and the in-progress payload must NOT carry a conclusion, or it stops being non-terminal.
-python3 - "$repo_root/.github/workflows/review-yeti.yml" <<'PYEOF'
-import re, sys, yaml
-wf = yaml.safe_load(open(sys.argv[1]))
-run = next(st['run'] for j in wf['jobs'].values() for st in (j.get('steps') or [])
-           if 'Publishing Check Run' in str(st.get('run', '')))
-block = run[run.index('== "DISPATCHED"'):run.index('conclusion="success"')]
+python3 - "$repo_root/scripts/publish-review-check-run.sh" <<'PY_PUBLISH_CONTRACT_EOF'
+import re, sys
+script = open(sys.argv[1]).read()
+block = script[script.index('== "DISPATCHED"'):script.index('REVIEW_YETI_PASSTHROUGH:-}" == "true"')]
 assert 'status: "in_progress"' in block, 'dispatched branch must publish in_progress'
 assert 'conclusion' not in block, 'in_progress check must not carry a conclusion'
 assert re.search(r'exit 0', block), 'dispatched branch must not fall through to the verdict mapping'
-print('  dispatched check-run contract ok')
-PYEOF
+
+# REVIEW_YETI_PASSTHROUGH must publish `neutral`, never `success` -- neutral does not block a
+# required check (preserving the escape hatch) but is honest that no review ran, unlike success
+# which is indistinguishable from a real approval.
+passthrough_block = script[script.index('REVIEW_YETI_PASSTHROUGH:-}" == "true"'):script.index('conclusion="success"')]
+assert 'conclusion: "neutral"' in passthrough_block, 'passthrough branch must publish neutral'
+assert '"success"' not in passthrough_block, 'passthrough branch must never publish success'
+assert 'PASSTHROUGH' in passthrough_block and 'no review performed' in passthrough_block.lower(), \
+    'passthrough title/summary must plainly say no review was performed'
+assert re.search(r'exit 0', passthrough_block), 'passthrough branch must not fall through to the verdict mapping'
+print('  dispatched + neutral-passthrough check-run contract ok')
+PY_PUBLISH_CONTRACT_EOF
+
+# Behavioral proof: invoke the real script (not a grep of its text) with a fake curl that
+# captures the actual JSON payload, for both a passthrough verdict and a normal SHIP verdict.
+publish_test_dir="$tmp_dir/publish-check-run"
+mkdir -p "$publish_test_dir/bin"
+cat >"$publish_test_dir/bin/curl" <<'FAKE_PUBLISH_CURL'
+#!/usr/bin/env bash
+for ((i=1; i<=$#; i++)); do
+  if [[ "${!i}" == "-d" ]]; then
+    j=$((i+1))
+    echo "${!j}" > "${FAKE_CURL_PAYLOAD:?}"
+  fi
+done
+FAKE_PUBLISH_CURL
+chmod +x "$publish_test_dir/bin/curl"
+
+passthrough_payload="$publish_test_dir/passthrough.json"
+PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$passthrough_payload" \
+  GH_TOKEN=test TARGET_REPO=exampleorg/example HEAD_SHA=deadbeef \
+  REVIEW_STATUS=SHIP REVIEW_YETI_PASSTHROUGH=true CENTRAL_RUN_URL=https://example/run/1 \
+  "$repo_root/scripts/publish-review-check-run.sh" >/dev/null
+jq -e '.conclusion == "neutral" and (.output.title | test("PASSTHROUGH"))' "$passthrough_payload" >/dev/null
+
+normal_ship_payload="$publish_test_dir/normal-ship.json"
+PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$normal_ship_payload" \
+  GH_TOKEN=test TARGET_REPO=exampleorg/example HEAD_SHA=deadbeef \
+  REVIEW_STATUS=SHIP CENTRAL_RUN_URL=https://example/run/1 \
+  "$repo_root/scripts/publish-review-check-run.sh" >/dev/null
+jq -e '.conclusion == "success"' "$normal_ship_payload" >/dev/null
+
+# Consumer callers must not be able to self-serve a passthrough approval or reroute execution.
+# Only the platform-owned REVIEW_YETI_PASSTHROUGH repository variable may enable passthrough.
+grep -Fq "'^[[:space:]]+passthrough:'" "$repo_root/scripts/validate-caller-workflow.sh"
+grep -Fq "'^[[:space:]]+execution_backend:'" "$repo_root/scripts/validate-caller-workflow.sh"
+grep -Fq 'must not set passthrough; only the platform-owned repository variable may enable it.' "$repo_root/scripts/validate-caller-workflow.sh"
+grep -Fq 'must not override execution_backend; the central policy is the only authority for backend selection.' "$repo_root/scripts/validate-caller-workflow.sh"
+
+# Behavioral proof: run the real validator against a crafted caller that smuggles
+# `with: passthrough: true`, and against the real compliant central self-review caller.
+caller_test_dir="$tmp_dir/validate-caller"
+mkdir -p "$caller_test_dir/bin"
+malicious_caller_b64="$(base64 <<'MALICIOUS_CALLER_FIXTURE' | tr -d '\n'
+name: Review Yeti
+on:
+  pull_request_target:
+    branches: [main]
+jobs:
+  review:
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1
+    with:
+      passthrough: true
+    secrets: inherit
+MALICIOUS_CALLER_FIXTURE
+)"
+compliant_caller_b64="$(base64 <"$repo_root/.github/workflows/self-review.yml" | tr -d '\n')"
+
+cat >"$caller_test_dir/bin/gh" <<FAKE_CALLER_GH
+#!/usr/bin/env bash
+set -euo pipefail
+request="\$*"
+case "\$request" in
+  *"repos/exampleorg/example/contents/.github/workflows/ct-review-bot.yml"*)
+    printf '{"content":"%s"}\\n' "$malicious_caller_b64"
+    ;;
+  *"repos/exampleorg/example-review-actions/contents/.github/workflows/self-review.yml"*)
+    printf '{"content":"%s"}\\n' "$compliant_caller_b64"
+    ;;
+  *)
+    echo "unexpected fake gh call: \$request" >&2
+    exit 1
+    ;;
+esac
+FAKE_CALLER_GH
+chmod +x "$caller_test_dir/bin/gh"
+
+if malicious_caller_output="$({
+  PATH="$caller_test_dir/bin:$PATH" GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example \
+    EXPECTED_BASE_SHA=1111111111111111111111111111111111111111 \
+    "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo "expected a caller smuggling passthrough: true to be rejected" >&2
+  exit 1
+fi
+grep -Fq 'must not set passthrough' <<<"$malicious_caller_output"
+
+PATH="$caller_test_dir/bin:$PATH" GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example-review-actions \
+  EXPECTED_BASE_SHA=1111111111111111111111111111111111111111 CENTRAL_REF=main \
+  "$repo_root/scripts/validate-caller-workflow.sh" >/dev/null
 
 echo "promote-v1 behavioral contract passed"
