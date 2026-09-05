@@ -240,6 +240,7 @@ export class ConfigResolver {
       ...(orgObj.dials || {}),
       ...(repoObj.dials || {}),
       memory_engine: repoObj.dials?.memory_engine ?? orgObj.dials?.memory_engine ?? sys.dials.memory_engine,
+      memory_provider: repoObj.dials?.memory_provider ?? orgObj.dials?.memory_provider ?? sys.dials?.memory_provider ?? 'auto',
       mascot: repoObj.dials?.mascot ?? orgObj.dials?.mascot ?? sys.dials.mascot,
       confidence_threshold: repoObj.dials?.confidence_threshold ?? orgObj.dials?.confidence_threshold ?? sys.dials.confidence_threshold,
       ...(persona_model ? { persona_model } : {}),
