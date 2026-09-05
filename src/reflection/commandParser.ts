@@ -16,7 +16,7 @@ export function parseLearnCommand(commentText: string): { isLearnCommand: boolea
     return { isLearnCommand: false, pattern: null };
   }
   const trimmed = commentText.trim();
-  const match = trimmed.match(/@(ct-review|ct-review-bot|bot)\s+learn\s+([\s\S]+)/i);
+  const match = trimmed.match(/@(ct-review|ct-review-bot|bot|review-yeti|review-yeti-bot)\s+(?:learn|remember)\s+([\s\S]+)/i);
   if (!match) {
     return { isLearnCommand: false, pattern: null };
   }
@@ -28,14 +28,29 @@ export function parseLearnCommand(commentText: string): { isLearnCommand: boolea
   };
 }
 
+export function parseForgetCommand(commentText: string): { isForgetCommand: boolean; pattern: string | null } {
+  if (!commentText) {
+    return { isForgetCommand: false, pattern: null };
+  }
+  const trimmed = commentText.trim();
+  const match = trimmed.match(/@(ct-review|ct-review-bot|bot|review-yeti|review-yeti-bot)\s+forget\s+([\s\S]+)/i);
+  if (!match) {
+    return { isForgetCommand: false, pattern: null };
+  }
+  return {
+    isForgetCommand: true,
+    pattern: match[2].trim(),
+  };
+}
+
 export class ReflectionCommandParser {
   public parse(text: string, context?: { filePath?: string }): ParsedReflectionCommand | null {
     if (!text || typeof text !== 'string') return null;
 
-    const match = text.match(/@(ct-review|ct-review-bot|bot)\s+learn\s+([\s\S]+)/i);
+    const match = text.match(/@(ct-review|ct-review-bot|bot|review-yeti|review-yeti-bot)\s+(?:learn|remember)\s+([\s\S]+)/i);
     if (!match) return null;
 
-    const body = match[2].trim();
+    const body = match[2]?.trim() || match[1]?.trim() || '';
     if (!body) return null;
 
     // 1. ADR Format: adr 42: Title | Description | path

@@ -346,17 +346,24 @@ Review Yeti features a pluggable **Memory Adapter Pattern** (`src/memory/adapter
     HONCHO_BASE_URL: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.example.com' }}
     HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
     HONCHO_WORKSPACE: 'core-platform'
+    HONCHO_PEER: 'review-yeti'
+    HONCHO_RECALL_PEERS: 'review-yeti,codex'
+    HONCHO_RECALL_DISTANCE: '0.35'
     MEMORY_PROVIDER: 'composite'
   with:
     openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
     github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-#### How Honcho Synchronization Works
-1. **Learnings & Conventions**: Saved as typed conclusions (`schema: "ct-honcho-conclusion.v1"`, `kind: "decision_context"`) scoped to the repository and domain.
-2. **Nit Suppressions**: Captured as corrections (`kind: "correction"`) with pattern and file path metadata.
-3. **ADR Constraints**: Preserved as architectural invariants (`kind: "invariant"`).
-4. **Resilience**: If the Honcho endpoint experiences a network timeout or outage, the `CompositeMemoryAdapter` seamlessly serves queries from the local SQLite cache without interrupting review workflows.
+#### How Honcho Synchronization & Cross-Peer Recall Works
+1. **Cross-Peer Memory Recall (`HONCHO_RECALL_PEERS`)**: Review Yeti can query architectural and operational decisions written by other development agents (e.g. `codex`, `dan`, `release-bot`) in the shared workspace, while keeping writes safely scoped to `review-yeti`.
+2. **Domain & Language Scoping**: Automatically infers technology domains (`elixir`, `typescript`, `python`, `terraform`, `infra`) from modified file extensions to scope semantic queries and prevent cross-stack false positives.
+3. **Precision Distance Tuning**: Limits semantic search distance to `0.35` by default (configurable via `HONCHO_RECALL_DISTANCE`) to ensure only tight, high-signal rules enter review prompts.
+4. **Interactive PR Commands (`@review-yeti remember` & `@review-yeti forget`)**:
+   - `@review-yeti remember convention: Wrap Membrane pipelines - Always use DynamicSupervisor`
+   - `@review-yeti forget <pattern>`: Physically removes obsolete rules or dismissed nits from team memory.
+5. **Decay & Invalidation**: Negative user feedback (thumbs down on comments) automatically triggers confidence degradation for matching patterns.
+6. **Resilience**: If the Honcho endpoint experiences a network timeout or outage, the `CompositeMemoryAdapter` seamlessly serves queries from the local SQLite cache without interrupting review workflows.
 
 ---
 
