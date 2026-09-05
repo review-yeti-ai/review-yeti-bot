@@ -253,7 +253,7 @@ describe('installationClient.ts — Comprehensive Unit Expansion Tests', () => {
       expect.objectContaining({ method: 'POST' })
     );
     const body = JSON.parse(String(mockFetch.mock.calls[0][1].body));
-    expect(body.name).toBe('Review Yeti / Gate');
+    expect(body.name).toBe('Review Yeti');
 
     vi.unstubAllGlobals();
   });
