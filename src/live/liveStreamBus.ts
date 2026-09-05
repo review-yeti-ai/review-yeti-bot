@@ -1,7 +1,18 @@
 import { EventEmitter } from 'events';
 import { Response } from 'express';
 import { logger } from '../utils/logger';
-import type { LiveStreamEventType, LiveStreamEvent, LiveJobSummary } from '../types/live';
+import type {
+  LiveStreamEventType,
+  LiveStreamEvent,
+  LiveJobSummary,
+  LiveStreamPersona,
+  PersonaProgress,
+  TokenMetrics,
+} from '../types/live';
+
+// REL-573: re-exported so existing `from '../live/liveStreamBus'` imports keep resolving.
+// The declarations live in src/types/live.ts, which this module depends on -- never the reverse.
+export type { LiveStreamPersona, PersonaProgress, TokenMetrics };
 
 // Re-exported so existing consumers importing these types from this module
 // keep working. `src/types/live.ts` is the single source of truth for
@@ -12,32 +23,6 @@ import type { LiveStreamEventType, LiveStreamEvent, LiveJobSummary } from '../ty
 // (exported but never imported anywhere) and has been removed in favor of
 // the canonical `src/types/live.ts` declaration.
 export type { LiveStreamEventType, LiveStreamEvent, LiveJobSummary };
-
-export type LiveStreamPersona =
-  | 'security'
-  | 'correctness'
-  | 'architecture'
-  | 'performance'
-  | 'quality'
-  | 'compliance'
-  | 'quorum'
-  | string;
-
-export interface PersonaProgress {
-  persona: LiveStreamPersona;
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
-  startedAt?: string;
-  completedAt?: string;
-  findingsCount?: number;
-  lastMessage?: string;
-}
-
-export interface TokenMetrics {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  estimatedCostUSD?: number;
-}
 
 export interface LiveQueueMetrics {
   activeJobsCount: number;
