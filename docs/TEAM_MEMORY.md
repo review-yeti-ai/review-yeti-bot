@@ -17,13 +17,19 @@ In addition, Review Yeti supports a **Community Persona Store** that enables sha
 3. [Persistent Team Memory (`.ct-memory/team_memory.db`)](#persistent-team-memory-ct-memoryteam_memorydb)
    - [WAL Mode Storage & Node 24 Native SQLite](#wal-mode-storage--node-24-native-sqlite)
    - [Database Schema & Entity Models](#database-schema--entity-models)
-4. [Nit Suppression Engine (`NitSuppressionEngine`)](#nit-suppression-engine-nitsuppressionengine)
+4. [CI/CD Persistence: Where is Memory Stored in CI/CD?](#-cicd-persistence-where-is-memory-stored-in-cicd)
+   - [Architecture Matrix: Storage by Execution Mode](#architecture-matrix-storage-by-execution-mode)
+   - [Strategy 1: GitHub Actions Cache (Zero Infrastructure)](#strategy-1-github-actions-cache-actionscachev4--zero-infrastructure)
+   - [Strategy 2: Self-Hosted Kubernetes / Cluster Mode (Persistent Volume)](#strategy-2-self-hosted-kubernetes--cluster-mode-persistent-volume)
+   - [Strategy 3: Central PostgreSQL Database (`DATABASE_URL`)](#strategy-3-central-postgresql-database-database_url)
+   - [Strategy 4: Local Pre-Commit CLI (`git yeti`)](#strategy-4-local-pre-commit-cli-git-yeti)
+5. [Nit Suppression Engine (`NitSuppressionEngine`)](#nit-suppression-engine-nitsuppressionengine)
    - [Multi-Strategy Matching Pipeline](#multi-strategy-matching-pipeline)
    - [Path Glob Matching](#path-glob-matching)
    - [Rule ID & Regex Pattern Matching](#rule-id--regex-pattern-matching)
-5. [The Non-Bypassable Security Safety Policy](#the-non-bypassable-security-safety-policy)
-6. [Team Memory Workflows](#team-memory-workflows)
-7. [Troubleshooting & Maintenance](#troubleshooting--maintenance)
+6. [The Non-Bypassable Security Safety Policy](#the-non-bypassable-security-safety-policy)
+7. [Team Memory Workflows](#team-memory-workflows)
+8. [Troubleshooting & Maintenance](#troubleshooting--maintenance)
 
 ---
 
@@ -215,6 +221,103 @@ Stores architectural conventions, design decisions, and team guidelines:
 #### 3. `adr_constraints` (Architecture Decision Records)
 Synchronizes codified constraints from repository ADRs:
 - `adr_number`, `title`, `status` (`'draft'`, `'accepted'`, `'deprecated'`), `rule`, `target_paths`.
+
+---
+
+## 🔄 CI/CD Persistence: Where is Memory Stored in CI/CD?
+
+A common question when running Review Yeti in CI/CD is: **"If GitHub Actions runners are ephemeral, where is team memory stored?"**
+
+Because standard GitHub Actions runners (`ubuntu-latest`) destroy their filesystem after every workflow job finishes, an un-cached `.ct-memory/team_memory.db` file would be lost across subsequent pull requests. Review Yeti provides **four distinct persistence strategies** depending on how your team runs Review Yeti:
+
+### Architecture Matrix: Storage by Execution Mode
+
+| Execution Mode | Where Memory Lives | Persistence Mechanism | Best For |
+|---|---|---|---|
+| **1. Standalone GitHub Action** | `.ct-memory/team_memory.db` (SQLite WAL) | **GitHub Actions Cache** (`actions/cache@v4`) | Zero-infrastructure single-repo workflows |
+| **2. Self-Hosted Kubernetes / Cluster** | Persistent Volume (`/app/.ct-memory`) | **Kubernetes PersistentVolumeClaim (PVC)** | Helm / Operator cluster deployments |
+| **3. Interactive Webhook Server** | Container volume or host mount | **Docker Volume / Host Path** (`CT_TEAM_MEMORY_DB`) | Dedicated GitHub App webhook nodes |
+| **4. Central Enterprise Database** | PostgreSQL instance | **`DATABASE_URL` Dual-Write Connection** | Multi-repo teams sharing org-wide memory |
+| **5. Git Repository / Metadata Branch** | Git commit in `.ct-memory/` | **Git Commit & Push** | Pure open-source repos with auditable history |
+
+---
+
+### Strategy 1: GitHub Actions Cache (`actions/cache@v4`) — Zero Infrastructure
+
+For teams running Review Yeti purely inside GitHub Actions without an external database, the easiest approach is GitHub Actions Cache. Caching `.ct-memory/` preserves `team_memory.db` and cached community persona charters between pull requests:
+
+```yaml
+# .github/workflows/review-yeti.yml
+name: Review Yeti PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 🧠 Restore Team Memory & Persona Cache across runs
+      - name: Restore Review Yeti Team Memory Cache
+        uses: actions/cache@v4
+        with:
+          path: .ct-memory/
+          key: review-yeti-memory-${{ github.repository }}-${{ github.run_id }}
+          restore-keys: |
+            review-yeti-memory-${{ github.repository }}-
+            review-yeti-memory-
+
+      - name: Run Review Yeti
+        uses: review-yeti-ai/review-yeti-bot@v1
+        with:
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+- When the PR is reviewed, Review Yeti loads existing dismissed nits and team conventions from `.ct-memory/team_memory.db`.
+- At the end of the job, `actions/cache` automatically saves the updated `.ct-memory/` directory back to GitHub's cache storage.
+
+---
+
+### Strategy 2: Self-Hosted Kubernetes / Cluster Mode (Persistent Volume)
+
+When running Review Yeti in cluster mode (via Helm or the Kubernetes Operator):
+- The `review-yeti-dispatcher` and workers mount a standard Kubernetes **PersistentVolumeClaim (PVC)** to `/app/.ct-memory` (or a designated mount path).
+- The Helm chart `charts/review-yeti/values.yaml` provisions a PVC for persistent storage:
+  ```yaml
+  persistence:
+    enabled: true
+    storageClass: "do-block-storage" # or gp3, standard
+    size: 10Gi
+    mountPath: /app/.ct-memory
+  ```
+- When developers reply `@review-yeti ignore` or `@review-yeti mute` on a PR, the GitHub App webhook receives the event immediately, writes the nit to the persistent volume, and it is instantly available for all future PR reviews.
+
+---
+
+### Strategy 3: Central PostgreSQL Database (`DATABASE_URL`)
+
+For enterprise environments or multi-repo teams that want a single shared brain across dozens of repositories:
+- Set the `DATABASE_URL` environment variable (e.g. `postgresql://user:pass@postgres.internal:5432/review_yeti`).
+- `PRMemoryStore` automatically detects PostgreSQL and enables **dual-write synchronization**:
+  - Writes to both local SQLite and central PostgreSQL.
+  - Queries check central PostgreSQL to resolve cross-repository team conventions, ADRs, and shared nit suppressions.
+
+---
+
+### Strategy 4: Local Pre-Commit CLI (`git yeti`)
+
+When developers run `git yeti pre-commit` locally:
+- Team memory is stored at `.ct-memory/team_memory.db` on their local machine.
+- Developers can optionally share rules across the team by checking in `.ct-review.yaml` or syncing via the central PostgreSQL / GitHub App instance.
 
 ---
 
