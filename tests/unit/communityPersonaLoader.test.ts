@@ -295,8 +295,8 @@ reviewers:
 `;
 
       const parsed = parseAndValidateConfig(yamlContent);
-      expect(parsed.personas.length).toBe(1);
-      expect(parsed.personas[0].uses).toBe('review-yeti/personas/django-security@v1');
+      expect((parsed as any).personas.length).toBe(1);
+      expect((parsed as any).personas[0].uses).toBe('review-yeti/personas/django-security@v1');
 
       // Resolve personas
       const resolvedConfig = await resolveConfigPersonas(parsed, {
