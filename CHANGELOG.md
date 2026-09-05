@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.31.1...v1.32.0) (2026-09-05)
+
+
+### Features
+
+* **memory:** support cross-peer recall, domain scoping, lifecycle invalidation, and remember/forget commands ([77f1543](https://github.com/review-yeti-ai/review-yeti-bot/commit/77f1543bd5d91c5354469555fb4913aeca597970))
+
 ## [1.31.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.31.0...v1.31.1) (2026-09-05)
 
 
