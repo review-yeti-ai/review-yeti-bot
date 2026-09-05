@@ -322,7 +322,7 @@ describe('Milestone 2 Challenger 2 Empirical Stress Test Suite', () => {
       );
 
       expect(client).toBeDefined();
-      expect(client.baseUrl).toBe('https://github-mock.internal');
+      expect((client as any).baseUrl).toBe('https://github-mock.internal');
     });
   });
 

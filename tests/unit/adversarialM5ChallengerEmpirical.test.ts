@@ -457,8 +457,8 @@ Freshly downloaded persona after cache corruption.`);
 
       it('handles concurrent batch nit suppression increments atomically', async () => {
         const repo = 'review-yeti-ai/batch-test';
-        const nit1 = await store.recordResolvedNit(repo, 1, { pattern: 'batch-pattern-1', filePath: 'src/**' });
-        const nit2 = await store.recordResolvedNit(repo, 2, { pattern: 'batch-pattern-2', filePath: 'src/**' });
+        const nit1 = await store.recordResolvedNit(repo, 1, { pattern: 'batch-pattern-1', filePath: 'src/**', reason: 'batch test 1' });
+        const nit2 = await store.recordResolvedNit(repo, 2, { pattern: 'batch-pattern-2', filePath: 'src/**', reason: 'batch test 2' });
 
         await Promise.all([
           store.incrementNitSuppressionBatch([nit1.id!, nit2.id!]),
