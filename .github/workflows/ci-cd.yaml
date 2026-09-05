@@ -78,6 +78,46 @@ jobs:
       - name: Verify TypeScript Build
         run: npm run build
 
+  typecheck:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    # REL-585. `tsconfig.json` stopped excluding `tests/` and `scripts/` (REL-570/REL-573), so
+    # `npm run lint:src` (tsc --noEmit) now typechecks the whole tree -- but nothing in CI ran it,
+    # so the 464 errors that were burned down to reach that state could silently return unnoticed.
+    # `npm run build` does not cover this: it compiles `tsconfig.server.json`, whose `include` is
+    # only `src/**/*`. Kept as its own job, not folded into `test`, so a type error is visible at a
+    # glance and does not wait on the ~9-13 minute full suite. Deliberately runs only `lint:src`,
+    # not the full `npm run lint`: `lint:tests` is `vitest list` and is documented in
+    # scripts/check-test-files-parse.mjs as a local-only gate (~1m48s on CI, close to the full
+    # suite's own runtime) that would erase the speed benefit of splitting this out. tsc --noEmit
+    # alone is ~20-40s and already covers src, tests, and scripts because tsconfig.json's exclude
+    # list no longer touches them.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Cache Node Modules & Vitest Results
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            node_modules
+            node_modules/.vitest
+          key: ${{ runner.os }}-${{ runner.arch }}-vitest-cache-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-vitest-cache-
+
+      - run: npm ci
+
+      - name: Typecheck (src, tests, scripts)
+        run: npm run lint:src
+
   legacy-runtime:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
