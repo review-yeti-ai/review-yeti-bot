@@ -239,6 +239,11 @@ jobs:
           OPENROUTER_PR_REVIEW_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
           SYNTHETIC_API_KEY: ${{ !inputs.central_execution && secrets.SYNTHETIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
+          HONCHO_BASE_URL: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.do.example.com' }}
+          HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
+          HONCHO_WORKSPACE: ${{ vars.HONCHO_WORKSPACE || 'exampleorg' }}
+          HONCHO_PEER: 'review-yeti'
+          MEMORY_PROVIDER: 'composite'
         with:
           github-token: ${{ steps.ry_token.outputs.token || github.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
@@ -269,6 +274,11 @@ jobs:
           personas: ${{ steps.policy.outputs.personas }}
           execution-backend: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'doks' }}
           doks-dispatch-url: https://review-bot.example.com/api/dispatch/action
+          honcho-api-key: ${{ secrets.HONCHO_API_KEY }}
+          honcho-base-url: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.do.example.com' }}
+          honcho-workspace: ${{ vars.HONCHO_WORKSPACE || 'exampleorg' }}
+          honcho-peer: 'review-yeti'
+          memory-provider: 'composite'
           # Library-documentation evidence tool (review-yeti-bot#101). The
           # action forwards this to CONTEXT7_API_KEY in the panel env; the
           # model never sees the key and cannot control the request target —
