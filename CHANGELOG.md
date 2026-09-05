@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.10...v1.29.11) (2026-09-05)
+
+
+### Bug Fixes
+
+* **types:** drop inert per-item identity fields from inline comment requests (REL-573) ([#495](https://github.com/review-yeti-ai/review-yeti-bot/issues/495)) ([eed40de](https://github.com/review-yeti-ai/review-yeti-bot/commit/eed40deba47d10cd8eeadb9234e598a60ccd5dc7))
+
 ## [1.29.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.9...v1.29.10) (2026-09-05)
 
 
