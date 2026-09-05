@@ -4,6 +4,8 @@
 
 **Date:** 2026-08-30
 
+> **REL-586 update:** the App's check run is named `Review Yeti` (not `Review Yeti / Gate` as this spec originally proposed) so its completion supersedes the central lane's `in_progress` check of the same name on the same head. See `src/github/installationClient.ts`.
+
 ## Purpose
 
 Move Review Yeti execution from per-review hosted GitHub Action runners to bounded Kubernetes Jobs on the existing DigitalOcean Kubernetes cluster without weakening review correctness, publication safety, or rollback. GitHub remains the event source and review UI. PostgreSQL is the durable lifecycle authority. Kubernetes is an execution substrate, not the source of truth for whether a review may publish.
@@ -16,8 +18,8 @@ The current `review-yeti-ai/review-yeti-actions` workflow remains the production
 - No scheduled, periodic, or four-hour canary is permitted. Qualification is manual, bounded, non-publishing, and tied to an explicit change or approval.
 - At most four review Jobs run concurrently until measured DOKS capacity supports a reviewed change.
 - Only the exact admitted pull-request head may publish. A newer head supersedes the older run.
-- Every admitted head receives one `Review Yeti / Gate` Check Run created by the Review Yeti GitHub App. The check is non-passing while the binding verdict blocks, required conversations are unresolved, execution fails, or the deadline expires.
-- Production rulesets require `Review Yeti / Gate` from the Review Yeti App integration and require review-thread resolution. The runtime App cannot modify repository rulesets or grant itself a bypass.
+- Every admitted head receives one `Review Yeti` Check Run created by the Review Yeti GitHub App. The check is non-passing while the binding verdict blocks, required conversations are unresolved, execution fails, or the deadline expires.
+- Production rulesets require `Review Yeti` from the Review Yeti App integration and require review-thread resolution. The runtime App cannot modify repository rulesets or grant itself a bypass.
 - The public webhook receiver has no Kubernetes Job, PVC, Lease, Secret, or custom-resource permissions.
 - Review workers never receive the GitHub App private key.
 - Images are pinned by immutable digest. Floating `latest` or moving release tags are rejected at admission.
@@ -86,7 +88,7 @@ A database-backed deadline sweeper claims every nonterminal run whose `terminalD
 
 The Kubernetes Job is runner-like execution capacity, but Review Yeti does not register it as a GitHub Actions self-hosted runner. GitHub integration is through the Checks API, which avoids a required workflow run while still exposing queued/in-progress/completed state, annotations, a details URL, re-request actions, and a branch-protection result.
 
-The exact check name is `Review Yeti / Gate`. The App creates one check per admitted `headSha` with `external_id=runId`, status `in_progress`, and a details URL to the durable run. It completes with only these conclusions:
+The exact check name is `Review Yeti`. The App creates one check per admitted `headSha` with `external_id=runId`, status `in_progress`, and a details URL to the durable run. It completes with only these conclusions:
 
 | Condition | Check conclusion | Merge effect when required |
 |---|---|---|
@@ -110,7 +112,7 @@ The App subscribes to `pull_request_review_thread` resolution events and relevan
 
 Production activation configures an organization or repository ruleset with:
 
-- required status check context `Review Yeti / Gate`;
+- required status check context `Review Yeti`;
 - expected source set to the Review Yeti GitHub App integration ID;
 - `required_review_thread_resolution: true`;
 - no Review Yeti App bypass actor;
@@ -346,7 +348,7 @@ Rollback removes the repository from the DOKS allowlist and restores the central
 - 0 runs exceed 15 minutes from webhook acceptance to check conclusion.
 - 0 duplicate executions from duplicate deliveries or dispatcher/operator restart.
 - 0 stale-head or duplicate publications.
-- `Review Yeti / Gate` is required from the Review Yeti App source; `action_required`, `failure`, and `timed_out` demonstrably block a test PR.
+- `Review Yeti` is required from the Review Yeti App source; `action_required`, `failure`, and `timed_out` demonstrably block a test PR.
 - A `SHIP` receipt cannot pass while any required review conversation is unresolved; resolving the final thread triggers gate-only reconciliation without a provider call.
 - A binding `BLOCK` verdict cannot be cleared by resolving its threads; a new exact-head `SHIP` receipt is required.
 - At least the currently approved review-quality gate; DOKS does not lower defect recall or increase clean false positives.
