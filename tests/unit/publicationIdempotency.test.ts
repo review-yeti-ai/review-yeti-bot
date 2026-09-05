@@ -3,7 +3,7 @@ import { CommentPublisher, PersonaFinding } from '../../src/github/commentPublis
 import { createPublicationReceipt, publicationRequestDigest } from '../../src/github/publicationReceipt';
 
 const finding: PersonaFinding = { persona: 'security', severity: 'P1', filePath: 'src/a.ts', lineNumber: 2, comment: 'issue' };
-const request = { owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 42, commitSha: 'a'.repeat(40), event: 'COMMENT' as const, body: 'review', inlineComments: [{ owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 42, commitSha: 'a'.repeat(40), path: 'src/a.ts', line: 2, finding }], idempotencyKey: 'run-1' };
+const request = { owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 42, commitSha: 'a'.repeat(40), event: 'COMMENT' as const, body: 'review', inlineComments: [{ path: 'src/a.ts', line: 2, finding }], idempotencyKey: 'run-1' };
 
 function response(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
