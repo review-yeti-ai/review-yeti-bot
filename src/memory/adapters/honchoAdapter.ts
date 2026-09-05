@@ -126,7 +126,7 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
     try {
       await this.fetchHoncho(`/v3/workspaces/${encodeURIComponent(this.workspace)}/peers`, {
         method: "POST",
-        body: JSON.stringify({ peer_id: peerId }),
+        body: JSON.stringify({ id: peerId }),
       });
     } catch (err: any) {
       // 409 Conflict or already exists is normal
@@ -137,7 +137,7 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
     try {
       await this.fetchHoncho(`/v3/workspaces/${encodeURIComponent(this.workspace)}/sessions`, {
         method: "POST",
-        body: JSON.stringify({ session_id: sessionId }),
+        body: JSON.stringify({ id: sessionId }),
       });
     } catch (err: any) {
       // 409 Conflict or already exists is normal
@@ -270,7 +270,7 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
         }),
       });
 
-      const items: any[] = response?.items ?? response?.results ?? [];
+      const items: any[] = Array.isArray(response) ? response : (response?.items ?? response?.results ?? []);
       const remoteLearnings: ReviewerLearning[] = [];
 
       for (const item of items) {
@@ -433,7 +433,7 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
         }),
       });
 
-      const items: any[] = response?.items ?? response?.results ?? [];
+      const items: any[] = Array.isArray(response) ? response : (response?.items ?? response?.results ?? []);
       const remoteNits: ResolvedNitPattern[] = [];
 
       for (const item of items) {
