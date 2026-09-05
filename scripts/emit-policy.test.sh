@@ -775,13 +775,13 @@ PY
 }
 
 write_incremental_policy allowlist-match
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$tmp_dir/incremental-match.output" node emit-policy.mjs >/dev/null)
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=local GITHUB_OUTPUT="$tmp_dir/incremental-match.output" node emit-policy.mjs >/dev/null)
 grep -A1 '^incremental_enabled<<' "$tmp_dir/incremental-match.output" | grep -qx 'true'
 grep -A1 '^max_incremental_chain<<' "$tmp_dir/incremental-match.output" | grep -qx '3'
 echo "[incremental-allowlist-match] passed"
 
 write_incremental_policy wildcard
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/anything GITHUB_OUTPUT="$tmp_dir/incremental-wildcard.output" node emit-policy.mjs >/dev/null)
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/anything REVIEW_YETI_RESOLVED_BACKEND=local GITHUB_OUTPUT="$tmp_dir/incremental-wildcard.output" node emit-policy.mjs >/dev/null)
 grep -A1 '^incremental_enabled<<' "$tmp_dir/incremental-wildcard.output" | grep -qx 'true'
 grep -A1 '^max_incremental_chain<<' "$tmp_dir/incremental-wildcard.output" | grep -qx '7'
 echo "[incremental-wildcard] passed"
@@ -830,5 +830,61 @@ for mode in malformed-chain-not-integer malformed-chain-zero; do
 done
 
 echo "emit-policy incremental repository allowlist contract passed"
+
+# incremental enabled => backend == local is an ENFORCED invariant, not a convention. Incremental
+# "trusted repair delta" review is implemented ONLY by the legacy local pipeline
+# (.github/workflows/pipelines/review-pipeline.js); the DOKS worker entrypoint
+# (dist/cli/runLiveReview.js) has zero references to the incremental scope or domain index and
+# would silently run a full review instead. REVIEW_YETI_RESOLVED_BACKEND mirrors review-yeti.yml's
+# `inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'doks'` resolution, so this
+# checks the run's actual backend (catching an execution_backend input override too), not just a
+# repository-level default; it defaults to "doks" (matching that same expression's tail) when unset.
+
+# 1. Today's committed policy carries no review_yeti.incremental block at all (the canary was
+#    narrowed to nothing in the same change that added this assertion, because DOKS -- today's
+#    fleet default -- cannot run it). Proves the current production combination is coherent: this
+#    must pass even with the fail-safe "doks" default and no repository override.
+write_incremental_policy missing
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks GITHUB_OUTPUT="$tmp_dir/backend-committed-policy.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^incremental_enabled<<' "$tmp_dir/backend-committed-policy.output" | grep -qx 'false'
+echo "[incremental-backend-committed-policy-doks] passed"
+if grep -Fq '"incremental"' "$repo_root/policy/review-yeti.json"; then
+  echo "policy/review-yeti.json must not re-enroll review_yeti.incremental while doks is the fleet default backend" >&2
+  exit 1
+fi
+echo "[incremental-backend-committed-policy-no-canary] passed"
+
+# 2. A repository enrolled in review_yeti.incremental while the resolved backend is doks must
+#    fail loudly, and the message must explain WHY the combination is impossible (DOKS has no
+#    incremental implementation) rather than a generic "invalid config".
+write_incremental_policy allowlist-match
+set +e
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks GITHUB_OUTPUT="$tmp_dir/backend-doks-blocked.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-blocked.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+grep -q 'review_yeti.incremental is enabled for exampleorg/example-api' "$tmp_dir/backend-doks-blocked.log"
+grep -q 'resolved execution-backend for this run is "doks", not "local"' "$tmp_dir/backend-doks-blocked.log"
+grep -q 'dist/cli/runLiveReview.js' "$tmp_dir/backend-doks-blocked.log"
+echo "[incremental-backend-doks-blocked] passed"
+
+# 2b. The same combination must also fail when REVIEW_YETI_RESOLVED_BACKEND is unset -- the
+#     fail-safe default mirrors the workflow's own trailing `|| 'doks'` -- proving the assertion
+#     cannot be bypassed by simply omitting the resolved-backend signal.
+set +e
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$tmp_dir/backend-doks-default-blocked.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-default-blocked.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+grep -q 'resolved execution-backend for this run is "doks", not "local"' "$tmp_dir/backend-doks-default-blocked.log"
+echo "[incremental-backend-doks-default-blocked] passed"
+
+# 3. The identical repository allowlist must pass once the resolved backend is local -- the only
+#    backend that implements incremental review.
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=local GITHUB_OUTPUT="$tmp_dir/backend-local-allowed.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^incremental_enabled<<' "$tmp_dir/backend-local-allowed.output" | grep -qx 'true'
+echo "[incremental-backend-local-allowed] passed"
+
+echo "emit-policy incremental-backend invariant contract passed"
 
 echo "emit-policy action channel and lane_call_budget contract passed"

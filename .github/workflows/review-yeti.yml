@@ -150,6 +150,12 @@ jobs:
         working-directory: .exampleorg-review-actions
         env:
           REVIEW_YETI_PASSTHROUGH: ${{ inputs.passthrough && 'true' || vars.REVIEW_YETI_PASSTHROUGH || '' }}
+          # Same resolution the "Run Review Yeti review panel" step below uses for
+          # execution-backend. emit-policy.mjs asserts review_yeti.incremental is only enabled
+          # when this resolves to "local" -- the only backend that implements incremental review --
+          # so an execution_backend input override is caught here too, not just the repository
+          # default.
+          REVIEW_YETI_RESOLVED_BACKEND: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'doks' }}
         run: node scripts/emit-policy.mjs
 
       - name: Validate encoded transport handoff

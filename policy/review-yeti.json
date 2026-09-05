@@ -194,10 +194,6 @@
       "max_investigation_turns": "2"
     },
     "max_diff_chars": "2000000",
-    "incremental": {
-      "repositories": ["exampleorg/example-api"],
-      "max_incremental_chain": "5"
-    },
     "max_incremental_diff_chars": "60000",
     "max_file_diff_chars": "60000",
     "max_passes": "1",

@@ -216,6 +216,33 @@ if (incrementalConfig !== undefined) {
   maxIncrementalChain = incrementalConfig.max_incremental_chain;
 }
 
+// The incremental "trusted repair delta" mode is implemented ONLY by the legacy local pipeline
+// (.github/workflows/pipelines/review-pipeline.js, selected by execution-backend: local). The
+// DOKS worker entrypoint (dist/cli/runLiveReview.js) has zero references to the incremental scope
+// or the domain index -- it silently ignores incremental-review and runs a full review instead.
+// review-yeti.yml resolves the backend for THIS run as
+// `inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'doks'` and forwards that
+// exact value here as REVIEW_YETI_RESOLVED_BACKEND so this check sees the run's actual backend,
+// not just a repository-level default. Enrolling a repository in review_yeti.incremental while
+// the resolved backend is not "local" is not a usable configuration: it silently ran zero
+// incremental reviews for five landed PRs (ADR 0512) before anyone noticed, because nothing
+// asserted the combination was coherent. Fail here, at policy load, before any provider spend.
+const resolvedExecutionBackend = (process.env.REVIEW_YETI_RESOLVED_BACKEND || 'doks').trim();
+if (incrementalEnabled && resolvedExecutionBackend !== 'local') {
+  throw new Error(
+    'review_yeti.incremental is enabled for '
+    + `${targetRepository || '(unresolved repository)'} (via review_yeti.incremental.repositories) `
+    + `but the resolved execution-backend for this run is "${resolvedExecutionBackend}", not "local". `
+    + 'Incremental/domain-scoped review is implemented ONLY by the legacy local pipeline '
+    + '(.github/workflows/pipelines/review-pipeline.js); the DOKS worker entrypoint '
+    + '(dist/cli/runLiveReview.js) has zero references to the incremental scope or domain index and '
+    + 'would silently run a full review instead of honoring incremental-review. Either remove this '
+    + 'repository from review_yeti.incremental.repositories (including the "*" wildcard), or set '
+    + 'execution-backend to "local" (workflow_dispatch input execution_backend, or the '
+    + 'REVIEW_YETI_EXECUTION_BACKEND repository variable) for this run.',
+  );
+}
+
 const outputs = {
   repository: review.repository,
   action_ref: review.action_channel,
