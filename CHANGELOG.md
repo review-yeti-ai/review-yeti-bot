@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.31.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.30.0...v1.31.0) (2026-09-05)
+
+
+### Features
+
+* **memory:** implement pluggable memory adapter pattern with Honcho support and documentation ([bcbee79](https://github.com/review-yeti-ai/review-yeti-bot/commit/bcbee79e347a1869ef1bac8ea36dfd6dff2486ae))
+
 ## [1.30.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.11...v1.30.0) (2026-09-05)
 
 
