@@ -29,6 +29,7 @@ export interface ReviewerLearning {
 
 export interface ResolvedNitPattern {
   id?: string;
+  ruleId?: string;
   repo: string;
   prNumber: number;
   pattern: string;
@@ -64,13 +65,47 @@ export interface RepoMemoryState {
   adrConstraints: ADRConstraint[];
 }
 
+export const DEFAULT_TEAM_MEMORY_PATH = path.join(process.cwd(), '.ct-memory', 'team_memory.db');
+
+export function getDefaultTeamMemoryPath(): string {
+  return process.env.CT_TEAM_MEMORY_DB || DEFAULT_TEAM_MEMORY_PATH;
+}
+
+function matchesFilePath(pattern: string | null | undefined, filePath: string): boolean {
+  if (!pattern || pattern === '' || pattern === '**' || pattern === '*') {
+    return true;
+  }
+  if (!filePath) {
+    return false;
+  }
+  if (pattern === filePath) {
+    return true;
+  }
+  let regStr = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '__GLOBSTAR__')
+    .replace(/\*/g, '__STAR__')
+    .replace(/\?/g, '__QUESTION__');
+
+  regStr = regStr
+    .replace(/__GLOBSTAR__/g, '.*')
+    .replace(/__STAR__/g, '[^/]*')
+    .replace(/__QUESTION__/g, '.');
+
+  return new RegExp(`^${regStr}$`).test(filePath);
+}
+
 export class PRMemoryStore {
   private db: DatabaseSync;
   private dbPath: string;
 
   constructor(dbPath?: string) {
-    const defaultPath = process.env.NODE_ENV === 'test' ? ':memory:' : path.join(process.env.CT_REVIEW_DATA_DIR || '/tmp/ct-review-bot', 'pr_memory.db');
-    this.dbPath = dbPath || process.env.CT_REVIEW_MEMORY_DB || defaultPath;
+    const defaultPath = process.env.NODE_ENV === 'test'
+      ? ':memory:'
+      : (process.env.CT_REVIEW_DATA_DIR
+        ? path.join(process.env.CT_REVIEW_DATA_DIR, 'team_memory.db')
+        : DEFAULT_TEAM_MEMORY_PATH);
+    this.dbPath = dbPath || process.env.CT_TEAM_MEMORY_DB || process.env.CT_REVIEW_MEMORY_DB || defaultPath;
     if (this.dbPath === ':memory:' || this.dbPath.startsWith(':memory:')) {
       this.db = new DatabaseSync(':memory:');
     } else {
@@ -81,6 +116,10 @@ export class PRMemoryStore {
       this.db = new DatabaseSync(this.dbPath);
     }
     this.initDatabase();
+  }
+
+  public getDbPath(): string {
+    return this.dbPath;
   }
 
   private initDatabase(): void {
@@ -119,7 +158,19 @@ export class PRMemoryStore {
         reason TEXT NOT NULL,
         head_sha TEXT,
         resolved_at TEXT NOT NULL,
-        suppression_count INTEGER DEFAULT 0
+        suppression_count INTEGER DEFAULT 0,
+        rule_id TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS team_rules (
+        id TEXT PRIMARY KEY,
+        repo TEXT NOT NULL,
+        rule_id TEXT,
+        pattern TEXT NOT NULL,
+        file_path TEXT,
+        reason TEXT,
+        category TEXT,
+        created_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS adr_constraints (
@@ -152,11 +203,17 @@ export class PRMemoryStore {
       CREATE INDEX IF NOT EXISTS idx_learnings_repo_cat_file ON learnings(repo, category, file_path);
       CREATE INDEX IF NOT EXISTS idx_nits_repo ON resolved_nits(repo);
       CREATE INDEX IF NOT EXISTS idx_nits_repo_file ON resolved_nits(repo, file_path);
+      CREATE INDEX IF NOT EXISTS idx_nits_rule_id ON resolved_nits(repo, rule_id);
+      CREATE INDEX IF NOT EXISTS idx_team_rules_repo ON team_rules(repo);
       CREATE INDEX IF NOT EXISTS idx_adr_repo ON adr_constraints(repo);
       CREATE INDEX IF NOT EXISTS idx_adr_repo_status ON adr_constraints(repo, status);
       CREATE INDEX IF NOT EXISTS idx_feedback_repo ON feedback_events(repo);
       CREATE INDEX IF NOT EXISTS idx_path_inst_repo ON path_instructions(repo);
     `);
+
+    try {
+      this.db.exec('ALTER TABLE resolved_nits ADD COLUMN rule_id TEXT;');
+    } catch (_) {}
   }
 
   public async recordLearning(
@@ -205,14 +262,15 @@ export class PRMemoryStore {
   public async recordResolvedNit(
     repo: string,
     prNumber: number,
-    nit: Omit<ResolvedNitPattern, 'repo' | 'prNumber'>
+    nit: Omit<ResolvedNitPattern, 'repo' | 'prNumber'> & { ruleId?: string }
   ): Promise<ResolvedNitPattern> {
     const id = nit.id || `nit_${crypto.randomUUID().slice(0, 8)}`;
     const resolvedAt = nit.resolvedAt || new Date().toISOString();
     const suppressionCount = nit.suppressionCount || 0;
+    const ruleId = nit.ruleId || null;
     const stmt = this.db.prepare(`
-      INSERT INTO resolved_nits (id, repo, pr_number, pattern, file_path, reason, head_sha, resolved_at, suppression_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO resolved_nits (id, repo, pr_number, pattern, file_path, reason, head_sha, resolved_at, suppression_count, rule_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       id,
@@ -223,20 +281,60 @@ export class PRMemoryStore {
       nit.reason !== undefined && nit.reason !== null ? nit.reason : '',
       nit.headSha || null,
       resolvedAt,
-      suppressionCount
+      suppressionCount,
+      ruleId
     );
 
-    const record = { id, repo, prNumber, suppressionCount, ...nit, resolvedAt };
+    const record: ResolvedNitPattern = {
+      id,
+      repo,
+      prNumber,
+      suppressionCount,
+      ...nit,
+      ruleId: ruleId || undefined,
+      resolvedAt,
+    };
 
     if (postgresStore.isConfigured()) {
       try {
-        await postgresStore.saveSuppressedNit(record);
+        await postgresStore.saveSuppressedNit(record as any);
       } catch (err: any) {
         logger.warn('Failed dual-write suppressed nit to PostgreSQL', { error: err?.message });
       }
     }
 
     return record;
+  }
+
+  public async recordTeamRule(
+    repo: string,
+    rule: { ruleId?: string; pattern: string; filePath?: string; reason?: string; prNumber?: number; category?: string }
+  ): Promise<ResolvedNitPattern> {
+    const id = `rule_${crypto.randomUUID().slice(0, 8)}`;
+    const now = new Date().toISOString();
+    try {
+      this.db.prepare(`
+        INSERT INTO team_rules (id, repo, rule_id, pattern, file_path, reason, category, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        repo,
+        rule.ruleId || null,
+        rule.pattern,
+        rule.filePath || '**',
+        rule.reason || 'Team-accepted rule',
+        rule.category || 'convention',
+        now
+      );
+    } catch (_) {}
+
+    return this.recordResolvedNit(repo, rule.prNumber || 0, {
+      id,
+      ruleId: rule.ruleId,
+      pattern: rule.pattern,
+      filePath: rule.filePath || '**',
+      reason: rule.reason || 'Team-accepted rule',
+    });
   }
 
   public async recordADRConstraint(
@@ -347,7 +445,7 @@ export class PRMemoryStore {
 
   public async queryLearnings(
     repo: string,
-    options: { category?: string; filePath?: string; query?: string } = {}
+    options: { category?: string; filePath?: string; query?: string; ruleId?: string } = {}
   ): Promise<RepoMemoryState> {
     if (postgresStore.isConfigured()) {
       try {
@@ -381,6 +479,10 @@ export class PRMemoryStore {
       nSql += " AND (file_path IS NULL OR file_path = '' OR file_path = ? OR file_path = '**')";
       nParams.push(options.filePath);
     }
+    if (options.ruleId) {
+      nSql += ' AND (rule_id = ? OR id = ? OR pattern = ?)';
+      nParams.push(options.ruleId, options.ruleId, options.ruleId);
+    }
     const nRows = this.db.prepare(nSql).all(...nParams) as any[];
 
     const aSql = "SELECT * FROM adr_constraints WHERE repo = ? AND status = 'accepted'";
@@ -401,6 +503,7 @@ export class PRMemoryStore {
 
     const resolvedNits: ResolvedNitPattern[] = nRows.map((r) => ({
       id: r.id,
+      ruleId: r.rule_id || undefined,
       repo: r.repo,
       prNumber: r.pr_number,
       pattern: r.pattern,
@@ -423,6 +526,22 @@ export class PRMemoryStore {
     }));
 
     return { learnings, resolvedNits, adrConstraints };
+  }
+
+  public async queryResolvedNits(
+    repo: string,
+    filter: { filePath?: string; ruleId?: string; pattern?: string } = {}
+  ): Promise<ResolvedNitPattern[]> {
+    const memory = await this.queryLearnings(repo, { ruleId: filter.ruleId });
+    let nits = memory.resolvedNits;
+    if (filter.filePath) {
+      nits = nits.filter((n) => !n.filePath || n.filePath === '**' || matchesFilePath(n.filePath, filter.filePath!));
+    }
+    if (filter.pattern) {
+      const p = filter.pattern.toLowerCase();
+      nits = nits.filter((n) => n.pattern.toLowerCase().includes(p));
+    }
+    return nits;
   }
 
   public async recordFeedback(repo: string, reaction: string, feedbackType: 'positive' | 'negative' = 'positive'): Promise<void> {

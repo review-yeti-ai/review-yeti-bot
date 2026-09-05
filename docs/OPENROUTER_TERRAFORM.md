@@ -1,14 +1,14 @@
 # Managed OpenRouter deployment
 
 > [!WARNING]
-> **Historical CallTelemetry infrastructure record; non-operational.** The resource identifiers,
+> **Historical infrastructure record; non-operational.** The resource identifiers,
 > Doppler paths, mutation commands, and secret handoffs below have not been revalidated. Do not run
-> them or use this file to change provider policy. Current CallTelemetry fleet authority is
+> them or use this file to change provider policy. Current fleet authority is
 > `centralized review actions`. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 This retained record described a direct OpenRouter deployment for the historical `CT Review Fleet`.
 Its provider template and reference stack were associated with the ct-meta
-[`ct-platform/openrouter` skill](OpenRouter skill documentation);
+`ct-platform/openrouter` skill;
 this repository's [`infra/openrouter/`](../infra/openrouter/) directory is a
 consumer template for operators who need the deployment beside the bot.
 

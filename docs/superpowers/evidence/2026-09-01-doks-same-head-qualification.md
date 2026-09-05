@@ -9,14 +9,14 @@ The production App gate remained `false` throughout.
 
 ## Exact review target and hosted baseline
 
-- Repository/PR: `calltelemetry/ct-pr-operator-sandbox#5`
+- Repository/PR: `review-yeti-ai/ct-pr-operator-sandbox#5`
 - Base: `01bb92b2294f5f9f77ae3e38a9a9672a5e9a8a2e`
 - Head: `4faa73aaf995279db95ff537b149a2a35c7b901b`
 - Full diff digest:
   `073cc4a9b4a34df110de96fc6c227f2ae23abaf3b6330dc647544b234cbfae58`
 - Hosted run:
-  <https://github.com/calltelemetry/ct-pr-operator-sandbox/actions/runs/33584627620>
-- Central Action source: `calltelemetry/ct-review-actions@2edadbd3d1fb1dac1ac1778ea4d75c278086a343`
+  <https://github.com/review-yeti-ai/ct-pr-operator-sandbox/actions/runs/33584627620>
+- Central Action source: `review-yeti-ai/review-yeti-actions@2edadbd3d1fb1dac1ac1778ea4d75c278086a343`
 
 The hosted run completed all six personas. It returned `FIX_FIRST` with one
 anchored P1 finding for the intentionally vulnerable repository-prefix check.
@@ -53,9 +53,9 @@ The deterministic synthetic full-panel profile remains low effort.
 ## Exact `v1.22.2` runtime
 
 - Operator (unchanged from the reviewed `v1.22.1` repair):
-  `registry.digitalocean.com/calltelemetry/review-yeti-operator@sha256:45303cb84606b9826665ee12a9acb8203a4afded71f4e6eb73982107e2fb5623`
+  `registry.digitalocean.com/review-yeti/review-yeti-operator@sha256:45303cb84606b9826665ee12a9acb8203a4afded71f4e6eb73982107e2fb5623`
 - Worker OCI index:
-  `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:2772f6b042dc373704bd6d65daab0d5a5e4eff94f088a5073549d678273c99aa`
+  `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:2772f6b042dc373704bd6d65daab0d5a5e4eff94f088a5073549d678273c99aa`
 - Worker amd64 manifest:
   `sha256:84ab2fbe01cbf637ff29169bfb74dfcc00e4afa10f2b1a675f6eb37217022973`
 - Attestation manifest:

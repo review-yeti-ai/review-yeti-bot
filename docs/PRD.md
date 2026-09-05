@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > **Optional service product record.** Service, OmniRoute, replay, and App claims here do not define
-> the public GitHub Action or CallTelemetry fleet. Verify current service source before treating any
+> the public GitHub Action or production fleet. Verify current service source before treating any
 > statement as an operational contract. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 `ct-review-bot` enforces repository-composed review teams. A repository defines

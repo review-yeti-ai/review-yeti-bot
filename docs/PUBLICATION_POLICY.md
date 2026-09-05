@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > **Optional service document.** This record describes a service/App publication design and is not
-> the public Action or CallTelemetry fleet publication contract. Verify it against current service
+> the public Action or internal fleet publication contract. Verify it against current service
 > source before operational use. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 Last updated: 2026-08-03

@@ -222,5 +222,103 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
         'Unrecognized command format'
       );
     });
+
+    it('dispatches "@review-yeti fix" and generates suggestion block in thread reply', async () => {
+      const inlineContext = { ...context, owner: 'test-org', repo: 'test-repo', commentId: 102 };
+      mockModelClient.complete.mockResolvedValueOnce({
+        content: '```suggestion\nconst hash = await bcrypt.hash(pass, 10);\n```',
+      });
+
+      const res = await dispatcher.dispatchCommand('@review-yeti fix replace with bcrypt hash', inlineContext);
+      expect(res.command).toBe('fix');
+      expect(res.success).toBe(true);
+      expect(res.output).toContain('```suggestion');
+      expect(res.output).toContain('const hash = await bcrypt.hash(pass, 10);');
+      expect(mockGithub.replyToReviewComment).toHaveBeenCalledWith(
+        'test-org',
+        'test-repo',
+        42,
+        102,
+        expect.stringContaining('```suggestion')
+      );
+    });
+
+    it('dispatches "@review-yeti ignore" and records suppressed nit in persistent team memory', async () => {
+      const memoryStore = new (await import('../../src/memory/prMemoryStore')).PRMemoryStore(':memory:');
+      const inlineContext = {
+        ...context,
+        owner: 'test-org',
+        repo: 'test-repo',
+        commentId: 101,
+        filePath: 'src/utils/helpers.ts',
+        memoryStore,
+      };
+
+      const res = await dispatcher.dispatchCommand('@review-yeti ignore false positive in utility', inlineContext);
+      expect(res.command).toBe('ignore');
+      expect(res.success).toBe(true);
+      expect(res.output).toContain('### Finding Suppressed');
+      expect(mockGithub.replyToReviewComment).toHaveBeenCalled();
+
+      const learnings = await memoryStore.queryLearnings('test-org/test-repo');
+      expect(learnings.resolvedNits.length).toBe(1);
+      expect(learnings.resolvedNits[0].pattern).toBe('Original inline comment: Potential bug here');
+      expect(learnings.resolvedNits[0].reason).toBe('false positive in utility');
+    });
+
+    it('dispatches "@review-yeti mute" and records muted rule in persistent team memory', async () => {
+      const memoryStore = new (await import('../../src/memory/prMemoryStore')).PRMemoryStore(':memory:');
+      const inlineContext = {
+        ...context,
+        owner: 'test-org',
+        repo: 'test-repo',
+        commentId: 101,
+        memoryStore,
+      };
+
+      const res = await dispatcher.dispatchCommand('@review-yeti mute no-eval', inlineContext);
+      expect(res.command).toBe('mute');
+      expect(res.success).toBe(true);
+      expect(res.output).toContain('### Finding Suppressed');
+
+      const learnings = await memoryStore.queryLearnings('test-org/test-repo');
+      expect(learnings.resolvedNits.length).toBe(1);
+      expect(learnings.resolvedNits[0].pattern).toBe('no-eval');
+      expect(learnings.resolvedNits[0].reason).toBe('Muted rule via chat command');
+    });
+
+    it('mints ephemeral installation token for chat actions without storing long-lived personal tokens', async () => {
+      const mockToken = 'ghs_ephemeralChatToken12345';
+      const fakeFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 201,
+        json: async () => ({ token: mockToken, expires_at: new Date(Date.now() + 600000).toISOString() }),
+      });
+
+      const { generateKeyPairSync } = await import('node:crypto');
+      const { privateKey } = generateKeyPairSync('rsa', {
+        modulusLength: 2048,
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      });
+
+      const { mintEphemeralChatToken, createEphemeralChatClient } = await import('../../src/github/appAuth');
+      const tokenResult = await mintEphemeralChatToken('inst-456', {
+        appId: 'app-999',
+        privateKey,
+      }, fakeFetch as any);
+
+      expect(tokenResult.token).toBe(mockToken);
+      expect(fakeFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/app/installations/inst-456/access_tokens'),
+        expect.objectContaining({ method: 'POST' })
+      );
+
+      const chatClient = await createEphemeralChatClient('inst-456', {
+        appId: 'app-999',
+        privateKey,
+      }, fakeFetch as any);
+      expect(chatClient).toBeDefined();
+    });
   });
 });

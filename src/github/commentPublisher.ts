@@ -27,6 +27,8 @@ export interface PersonaFinding {
   attackVector?: string;
   failureMode?: string;
   mitigation?: string;
+  startLine?: number;
+  isArchitectural?: boolean;
 }
 
 export interface CommentPublisherOptions {
@@ -116,11 +118,109 @@ export function formatDashboardFooter(liveStreamUrl: string, orgDashboardUrl: st
 }
 
 /**
+ * Wraps code into a clean GitHub 1-click suggestion block, avoiding markdown fence conflicts
+ * and cleaning line trimming.
+ */
+export function formatSuggestionBlock(code: string): string {
+  let clean = code;
+  const trimmed = clean.trim();
+  if (trimmed.startsWith('```')) {
+    clean = trimmed
+      .replace(/^```[^\r\n]*\r?\n?/, '')
+      .replace(/\r?\n?```$/, '')
+      .trim();
+  }
+  if (clean.trim() === '') {
+    return '```suggestion\n\n```\n';
+  }
+  const trimmedLines = clean.replace(/^\r?\n+/, '').replace(/\r?\n+$/, '');
+  return `\`\`\`suggestion\n${trimmedLines}\n\`\`\`\n`;
+}
+
+/**
+ * Renders a structured fallback markdown table for a single finding when no code suggestion is present,
+ * or when architectural / multi-file guidance is being rendered.
+ */
+export function formatFindingFallbackTable(finding: PersonaFinding): string {
+  const severityFormatted = (finding.severity || 'P2').toUpperCase();
+  const effectiveStart = finding.startLine;
+  const location = effectiveStart && effectiveStart > 0 && effectiveStart < finding.lineNumber
+    ? `\`${finding.filePath}:${effectiveStart}-${finding.lineNumber}\``
+    : `\`${finding.filePath}:${finding.lineNumber}\``;
+  const action = finding.recommendation || finding.suggestion || finding.comment;
+  const sanitizedAction = action.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
+  const sanitizedFinding = (finding.title || finding.comment.split('\n')[0]).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
+
+  return [
+    '| Severity | Location | Finding | Recommended Action |',
+    '|---|---|---|---|',
+    `| **${severityFormatted}** | ${location} | ${sanitizedFinding} | ${sanitizedAction} |`,
+  ].join('\n');
+}
+
+/**
+ * Formats a list of inline comments into a structured fallback markdown table
+ * for top-level review summaries when HTTP 422 or unmappable lines occur.
+ */
+export function formatInlineFindingsFallbackTable(
+  inlineComments: PublishInlineCommentRequest[]
+): string {
+  if (!inlineComments || inlineComments.length === 0) return '';
+
+  const rows: string[] = [
+    '### 📝 Actionable Findings (Diff Line Resolution Fallback)',
+    '',
+    '| Severity | Location | Finding | Recommended Action |',
+    '|---|---|---|---|',
+  ];
+
+  for (const ic of inlineComments) {
+    const f = ic.finding;
+    const severity = (f.severity || 'P2').toUpperCase();
+    const effectiveStartLine = ic.startLine ?? f.startLine;
+    const location = effectiveStartLine && effectiveStartLine > 0 && effectiveStartLine < ic.line
+      ? `\`${ic.path}:${effectiveStartLine}-${ic.line}\``
+      : `\`${ic.path}:${ic.line}\``;
+
+    const rawFinding = f.title || f.comment.split('\n')[0] || 'Issue detected';
+    const cleanFinding = rawFinding.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
+
+    let action = '';
+    if (f.fixOptions && f.fixOptions.length > 0) {
+      const sorted = [...f.fixOptions].sort((a, b) => (a.rank ?? 1) - (b.rank ?? 1));
+      if (sorted[0].suggestionCode) {
+        action = sorted[0].suggestionCode;
+      }
+    }
+    if (!action) {
+      if (f.suggestion) {
+        action = f.suggestion;
+      } else if (f.codeSnippet) {
+        action = f.codeSnippet;
+      } else if (f.recommendation) {
+        action = f.recommendation;
+      } else {
+        action = f.comment;
+      }
+    }
+
+    const cleanAction = action
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n/g, '<br/>')
+      .trim();
+
+    rows.push(`| **${severity}** | ${location} | ${cleanFinding} | ${cleanAction} |`);
+  }
+
+  return rows.join('\n');
+}
+
+/**
  * Formats a PersonaFinding into a rich GitHub inline comment body with optional suggestion block.
  */
 export function formatInlineCommentBody(
   finding: PersonaFinding,
-  options?: { mascot?: boolean }
+  options?: { mascot?: boolean; fallbackTable?: boolean }
 ): string {
   let body = '';
 
@@ -149,24 +249,32 @@ export function formatInlineCommentBody(
     }
   }
 
-  if (finding.fixOptions && finding.fixOptions.length > 0) {
+  if (!finding.isArchitectural && finding.fixOptions && finding.fixOptions.length > 0) {
     body += '\n';
-    const optionsToFormat = finding.fixOptions.slice(0, 2);
+    const ranks = finding.fixOptions.map(f => f.rank).filter((r): r is number => typeof r === 'number');
+    const isDistinctRanks = ranks.length === finding.fixOptions.length && new Set(ranks).size === ranks.length;
+    const sorted = isDistinctRanks
+      ? [...finding.fixOptions].sort((a, b) => (a.rank ?? 1) - (b.rank ?? 1))
+      : finding.fixOptions;
+    const optionsToFormat = sorted.slice(0, 2);
     optionsToFormat.forEach((fix, i) => {
-      const rankNum = fix.rank ?? i + 1;
-      const defaultTitle = rankNum === 1 ? 'Recommended Fix' : 'Alternative Approach';
+      const displayNum = i + 1;
+      const rankNum = isDistinctRanks ? (fix.rank ?? displayNum) : displayNum;
+      const defaultTitle = displayNum === 1 ? 'Recommended Fix' : 'Alternative Approach';
       const optionTitle = fix.title || defaultTitle;
-      body += `#### Option ${rankNum}: ${optionTitle} (Rank #${rankNum})\n`;
+      body += `#### Option ${displayNum}: ${optionTitle} (Rank #${rankNum})\n`;
       if (fix.explanation) {
         body += `${fix.explanation}\n`;
       }
       if (fix.suggestionCode) {
-        body += `\`\`\`suggestion\n${fix.suggestionCode}\n\`\`\`\n`;
+        body += formatSuggestionBlock(fix.suggestionCode);
       }
     });
-  } else if (finding.suggestion || finding.codeSnippet) {
+  } else if (!finding.isArchitectural && (finding.suggestion || finding.codeSnippet)) {
     const code = finding.suggestion || finding.codeSnippet;
-    body += `\n\`\`\`suggestion\n${code}\n\`\`\`\n`;
+    body += `\n${formatSuggestionBlock(code!)}`;
+  } else if (finding.isArchitectural || options?.fallbackTable || finding.recommendation) {
+    body += '\n' + formatFindingFallbackTable(finding) + '\n';
   }
 
   return body;
@@ -320,13 +428,17 @@ export class CommentPublisher {
         body: finalBody,
         event,
         commit_id: commitSha,
-        comments: inlineComments.map(({ path, line, side = 'RIGHT', startLine, finding }) => ({
-          path,
-          line,
-          side,
-          ...(startLine ? { start_line: startLine, start_side: side } : {}),
-          body: formatInlineCommentBody(finding, { mascot: req.mascot }),
-        })),
+        comments: inlineComments.map(({ path, line, side = 'RIGHT', startLine, finding }) => {
+          const effectiveStartLine = startLine ?? finding.startLine;
+          const hasRange = Number.isInteger(effectiveStartLine) && effectiveStartLine! > 0 && effectiveStartLine! < line;
+          return {
+            path,
+            line,
+            side,
+            ...(hasRange ? { start_line: effectiveStartLine, start_side: side } : {}),
+            body: formatInlineCommentBody(finding, { mascot: req.mascot }),
+          };
+        }),
       };
 
       await this.assertCurrentHead(commitSha);
@@ -345,9 +457,8 @@ export class CommentPublisher {
         if ((res.status === 422 || errorText.includes('Line could not be resolved') || errorText.includes('Unprocessable Entity')) && inlineComments.length > 0) {
           logger.info(`Retrying review publication without inline comments due to line resolution error`);
           retriedWithoutInline = true;
-          const fallbackBody = finalBody + '\n\n### 📝 Inline Findings (Fallback)\n\n' + inlineComments.map(ic => {
-            return `#### 📄 File: \`${ic.path}\` (Line ${ic.line})\n${formatInlineCommentBody(ic.finding, { mascot: false })}`
-          }).join('\n\n---\n\n');
+          const fallbackTable = formatInlineFindingsFallbackTable(inlineComments);
+          const fallbackBody = `${finalBody}\n\n${fallbackTable}`;
 
           await this.assertCurrentHead(commitSha);
           res = await this.fetchWithRetry(url, {
@@ -368,10 +479,10 @@ export class CommentPublisher {
         if (errorText.includes('Can not approve your own pull request')) {
           // Fallback to issue comment API
           const issueUrl = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments`;
-          const fallbackBody = (inlineComments.length > 0 && retriedWithoutInline) ?
-            finalBody + '\n\n### 📝 Inline Findings (Fallback)\n\n' + inlineComments.map(ic => {
-              return `#### 📄 File: \`${ic.path}\` (Line ${ic.line})\n${formatInlineCommentBody(ic.finding, { mascot: false })}`
-            }).join('\n\n---\n\n') : finalBody;
+          const fallbackTable = formatInlineFindingsFallbackTable(inlineComments);
+          const fallbackBody = (inlineComments.length > 0 && retriedWithoutInline)
+            ? `${finalBody}\n\n${fallbackTable}`
+            : finalBody;
 
           await this.assertCurrentHead(commitSha);
           const issueRes = await this.fetchWithRetry(issueUrl, {

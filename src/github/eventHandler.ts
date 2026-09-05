@@ -15,6 +15,8 @@ export interface ParsedPRPayload {
   commandText?: string;
   commentId?: number;
   inReplyToId?: number;
+  diffHunk?: string;
+  filePath?: string;
   deliveryId: string;
   isDraft?: boolean;
   isMerged?: boolean;
@@ -82,12 +84,12 @@ export class GitHubEventHandler {
   private readonly triggerLabels: Set<string>;
 
   constructor(options: EventHandlerOptions = {}) {
-    this.triggerLabels = new Set(options.triggerLabels || ['ct-review', 'ai-review', 'needs-review', 'bot-review']);
+    this.triggerLabels = new Set(options.triggerLabels || ['review-yeti', 'ct-review', 'ai-review', 'needs-review', 'bot-review']);
   }
 
   public evaluateTrigger(eventName: string, payload: any, deliveryId = ''): TriggerResult {
     const sender = payload.sender?.login || '';
-    if (sender.endsWith('[bot]') || sender === 'ct-review-bot') {
+    if (sender.endsWith('[bot]') || sender === 'ct-review-bot' || sender === 'review-yeti-bot' || sender === 'review-yeti') {
       return { shouldTrigger: false, reason: `Ignored bot action from sender: ${sender}` };
     }
 
@@ -182,7 +184,7 @@ export class GitHubEventHandler {
     if (eventName === 'issue_comment' || eventName === 'pull_request_review_comment') {
       const commentBody = payload.comment?.body || '';
       const inReplyToId = payload.comment?.in_reply_to_id || payload.comment?.inReplyToId;
-      const isBotMention = /@(ct-review|bot|ct-review-bot)(\[[^\]]+\])?\b/i.test(commentBody);
+      const isBotMention = /@(review-yeti|review-yeti-bot|ct-review|bot|ct-review-bot)(\[[^\]]+\])?\b/i.test(commentBody);
       const isInlineReply = Boolean(inReplyToId);
 
       if (!isBotMention && !isInlineReply) {
@@ -206,6 +208,8 @@ export class GitHubEventHandler {
         commandText: commentBody,
         commentId: payload.comment?.id,
         inReplyToId: inReplyToId ? Number(inReplyToId) : undefined,
+        diffHunk: payload.comment?.diff_hunk,
+        filePath: payload.comment?.path,
         deliveryId,
       };
 

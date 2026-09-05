@@ -11,7 +11,7 @@ ceiling and `ACTION_DISPATCH_ALLOW_APP_GATE=false`.
 
 ## v1.24.0 fingerprinted known-defect follow-up
 
-The v1.24.0 follow-up used `calltelemetry/ct-pr-operator-sandbox#5`, base
+The v1.24.0 follow-up used `review-yeti-ai/ct-pr-operator-sandbox#5`, base
 `01bb92b2294f5f9f77ae3e38a9a9672a5e9a8a2e`, head
 `4faa73aaf995279db95ff537b149a2a35c7b901b`, and diff digest
 `073cc4a9b4a34df110de96fc6c227f2ae23abaf3b6330dc647544b234cbfae58`.
@@ -21,7 +21,7 @@ The fixture contains a deliberate starts-with scope bypass at
 
 Both paths ran the exact v1.24.0 worker image:
 
-`registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:af6297cd5ecd9241b8b3fa16af2f8d0913d159dfd22ed3b2b1d15585efb8f0e2`
+`registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:af6297cd5ecd9241b8b3fa16af2f8d0913d159dfd22ed3b2b1d15585efb8f0e2`
 
 The shared execution identity was:
 
@@ -58,7 +58,7 @@ This observes the configured 30-minute idle retention plus reconciliation lag,
 rather than relying only on manifest configuration.
 
 The first comparable hosted run was
-<https://github.com/calltelemetry/ct-review-actions/actions/runs/33658537502>:
+<https://github.com/review-yeti-ai/ct-review-actions/actions/runs/33658537502>:
 
 - dispatch to review-engine start: 20 seconds;
 - review-engine duration: 124.151 seconds;
@@ -94,8 +94,8 @@ pair. Provider-generation variance dominated the total: the DOKS model panel
 took 41.858 seconds longer.
 
 The hosted harness landed through
-<https://github.com/calltelemetry/ct-review-actions/pull/188>. A first dispatch,
-<https://github.com/calltelemetry/ct-review-actions/actions/runs/33658368293>,
+<https://github.com/review-yeti-ai/ct-review-actions/pull/188>. A first dispatch,
+<https://github.com/review-yeti-ai/ct-review-actions/actions/runs/33658368293>,
 failed before Docker/provider execution because the temporary registry secrets
 were absent. This was a harness credential-plumbing failure and produced no
 receipt. After a short-lived read-only registry credential was installed, the
@@ -103,8 +103,8 @@ comparable run passed.
 
 GitHub's token action then reported that numeric `app-id` was deprecated. The
 official `client-id` migration landed through
-<https://github.com/calltelemetry/ct-review-actions/pull/191>. Post-migration run
-<https://github.com/calltelemetry/ct-review-actions/actions/runs/33659280689>
+<https://github.com/review-yeti-ai/ct-review-actions/pull/191>. Post-migration run
+<https://github.com/review-yeti-ai/ct-review-actions/actions/runs/33659280689>
 passed in 40 seconds dispatch-to-finish and 13.593 seconds inside the engine,
 with 8 calls, zero retries, zero writes, `BLOCK`, and the same P0 0/P1 4/P2 5
 distribution. It emitted no App-ID deprecation warning. The obsolete App-ID
@@ -120,16 +120,16 @@ requires separate approval plus clean- and larger-fixture evidence.
 
 ## Exact execution identity
 
-- Repository/PR: `calltelemetry/ct-review-actions#183`
+- Repository/PR: `review-yeti-ai/review-yeti-actions#183`
 - Base: `6bf3a84b4f7c26649faf640e0d21d9596b548a68`
 - Head: `e6b0a418c4140555a8c2c1e59f6bf80ca23cfd9e`
 - Diff digest: `95d8fef4ebc8f4c9cfb8b1d3da998d80d3a88c57aab65cb81c152d019a3d8ffb`
 - Review Yeti release: `v1.23.0`, commit
   `c885dde208b38d8b0c3c01402e6ddace60ece31d`
 - Worker:
-  `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:002b8f1dd3070b1f8a8ca48738954fdcf2ed4cfcd2bed5607520fe7161e04a1b`
+  `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:002b8f1dd3070b1f8a8ca48738954fdcf2ed4cfcd2bed5607520fe7161e04a1b`
 - Operator:
-  `registry.digitalocean.com/calltelemetry/review-yeti-operator@sha256:a393ef864b51c7ba639e26c210fbf6207c434421cdde25b92878a66655872afb`
+  `registry.digitalocean.com/review-yeti/review-yeti-operator@sha256:a393ef864b51c7ba639e26c210fbf6207c434421cdde25b92878a66655872afb`
 - Policy digest:
   `7d517a7bffba5264c12699f2bf67b1a183522c69874ac7857f64499502494a81`
 - Config digest:
@@ -145,21 +145,21 @@ retries.
 ## Hosted qualification harness
 
 The one-time hosted workflow landed through
-`calltelemetry/ct-review-actions#183` (merge
+`review-yeti-ai/review-yeti-actions#183` (merge
 `743444236adf18f639cd719b0ea7260ff225e327`). It is `workflow_dispatch` only,
 read-only, non-publishing, digest-pinned, and capped at 15 minutes.
 
 Initial run
-<https://github.com/calltelemetry/ct-review-actions/actions/runs/33642757291>
+<https://github.com/review-yeti-ai/ct-review-actions/actions/runs/33642757291>
 failed in 13 seconds before a GitHub read or model call because the workflow
 used `/workspace/receipt.json` instead of the worker's fail-closed canonical
 path `/workspace/.review-yeti/receipt.json`. The regression repair landed
-through `calltelemetry/ct-review-actions#184` (merge
+through `review-yeti-ai/review-yeti-actions#184` (merge
 `4d408600d73468d6ae6081537eaa5b011d425fbe`); post-merge validation passed in
 30 seconds.
 
 The first model-backed hosted attempt after the repair,
-<https://github.com/calltelemetry/ct-review-actions/actions/runs/33643882034>,
+<https://github.com/review-yeti-ai/ct-review-actions/actions/runs/33643882034>,
 failed closed after 241.166 seconds. It made nine calls. Five personas
 completed normally; `testing` hit a 195.004-second total deadline and its two
 fast retries returned invalid native JSON objects. Completed attempts reported
@@ -168,7 +168,7 @@ lower bound. The failure receipt recorded three GitHub reads, zero writes, the
 exact engine/topology identity, and no review content or credential.
 
 The final hosted attempt,
-<https://github.com/calltelemetry/ct-review-actions/actions/runs/33646032754>,
+<https://github.com/review-yeti-ai/ct-review-actions/actions/runs/33646032754>,
 passed in 73 seconds end to end. Its panel took 52.698 seconds with eight calls,
 zero retries, 63,167 tokens, and `$0.01392855`. It returned the canonical
 `FIX_FIRST` verdict with P0 0, P1 0, and P2 7.
@@ -212,7 +212,7 @@ readback. The PR-scoped PVC and Lease were left for the reviewed 1,800-second
 same-PR reuse/expiry controller.
 
 The Review Yeti App credential available to the Action-dispatch deployment
-could not resolve an installation for `calltelemetry/ct-review-actions` and
+could not resolve an installation for `review-yeti-ai/review-yeti-actions` and
 GitHub returned 404. The manual qualification used the existing Multica App to
 mint a repository-restricted read token. This is valid for the isolated proof,
 but production activation must first establish the intended App installation

@@ -7,7 +7,7 @@ false-positive rate, panel arbitration, or production routing.
 ## Landed contract
 
 - PR #344 merged at `57d2d1e1a52a432196298d8ccc276dd0a30dd0a2`.
-- Worker image: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:64afa61b06e33c42239267cc1512f87eb6893dc9ae29d134396f6827d388f23b`.
+- Worker image: `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:64afa61b06e33c42239267cc1512f87eb6893dc9ae29d134396f6827d388f23b`.
 - The worker uses `REVIEW_PROVIDER_QUALIFICATION_ONLY=true`, requires
   `REVIEW_PUBLICATION_MODE=disabled`, rejects `openrouter/auto`, and makes exactly one
   bounded `stream: true` request. Invalid mode combinations fail closed instead of falling
@@ -52,7 +52,7 @@ The qualification Jobs and temporary OpenRouter Secret were deleted by exact nam
 `ct-review-system` readback contained only the pre-existing `ct-review-action-dispatch`
 Deployment and its two Pods. Its image remained:
 
-`registry.digitalocean.com/calltelemetry/ct-review-bot@sha256:59f19384715ed75a587543687256bb807b3cc2044c0f67921fece27062b164e6`
+`registry.digitalocean.com/review-yeti/ct-review-bot@sha256:59f19384715ed75a587543687256bb807b3cc2044c0f67921fece27062b164e6`
 
 No operator Deployment, CRD, PVC, Lease, scheduled canary, traffic split, provider policy, or
 production review route was changed.
