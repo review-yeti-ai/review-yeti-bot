@@ -1,4 +1,7 @@
-import '@testing-library/jest-dom';
+// REL-582: the bare '@testing-library/jest-dom' entry pulls in types/jest.d.ts, which references
+// a 'jest' type package this project does not (and should not) install. The '/vitest' entry is
+// the supported one for a Vitest project and registers the same matchers.
+import '@testing-library/jest-dom/vitest';
 import * as matchers from '@testing-library/jest-dom/matchers';
 import { expect, beforeEach, afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
