@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.29.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.8...v1.29.9) (2026-09-05)
+
+
+### Bug Fixes
+
+* **live:** drive personaProgress from job:queued/dispatched events (REL-573) ([#491](https://github.com/review-yeti-ai/review-yeti-bot/issues/491)) ([876585c](https://github.com/review-yeti-ai/review-yeti-bot/commit/876585c32c82cfe82812bb25634681d6670b83a0))
+* **types:** consolidate duplicated LiveJobSummary and LiveStreamEventData (REL-573) ([#490](https://github.com/review-yeti-ai/review-yeti-bot/issues/490)) ([2cb7b35](https://github.com/review-yeti-ai/review-yeti-bot/commit/2cb7b35b1ffaf3ea90457791b80d8eb296f38346))
+
 ## [1.29.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.29.7...v1.29.8) (2026-09-04)
 
 
