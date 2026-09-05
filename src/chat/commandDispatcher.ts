@@ -7,7 +7,7 @@ import { PRMemoryStore } from '../memory/prMemoryStore';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { logger } from '../utils/logger';
 
-export type CommandType = 'review' | 'explain' | 'fix' | 'refactor' | 'ignore' | 'mute' | 'summarize' | 'ask' | 'learn';
+export type CommandType = 'review' | 'explain' | 'fix' | 'refactor' | 'ignore' | 'mute' | 'summarize' | 'ask' | 'learn' | 'remember' | 'forget';
 
 export interface ParsedCommand {
   command: CommandType;
@@ -52,7 +52,7 @@ export interface DispatchResult {
 export function parseCommand(commandStr: string): ParsedCommand | null {
   if (!commandStr || typeof commandStr !== 'string') return null;
   const match = commandStr.match(
-    /(?:^|\s)@(review-yeti|review-yeti-bot|ct-review|ct-review-bot|bot)(?:\[bot\])?\s+(review|explain|fix|refactor|ignore|mute|summarize|ask|learn)(?:\s+([\s\S]*))?$/i
+    /(?:^|\s)@(review-yeti|review-yeti-bot|ct-review|ct-review-bot|bot)(?:\[bot\])?\s+(review|explain|fix|refactor|ignore|mute|summarize|ask|learn|remember|forget)(?:\s+([\s\S]*))?$/i
   );
   if (!match) return null;
   return {
@@ -108,7 +108,10 @@ export class CommandDispatcher {
       case 'ask':
         return this.handleAsk(parsed, context);
       case 'learn':
+      case 'remember':
         return this.handleLearn(parsed, context);
+      case 'forget':
+        return this.handleForget(parsed, context);
       default:
         throw new Error(`Unsupported command: ${parsed.command}`);
     }
@@ -443,11 +446,13 @@ export class CommandDispatcher {
       return { command: 'learn', success: false, output: errorMsg };
     }
 
-    const learningStore = new LearningStore();
+    const learningStore = new LearningStore(context.memoryStore);
     try {
       await learningStore.saveCommandLearning(`${context.owner}/${context.repo}`, context.prNumber, parsedCmd);
     } finally {
-      learningStore.close();
+      if (!context.memoryStore) {
+        learningStore.close();
+      }
     }
 
     const replyBody = `### Team Memory Updated\n\nRecorded learning rule to repository persistent memory:\n- **Type**: \`${parsedCmd.type}\`\n- **Category**: \`${parsedCmd.category}\`\n- **Title**: ${parsedCmd.title}\n- **Details**: ${parsedCmd.description}`;
@@ -458,7 +463,43 @@ export class CommandDispatcher {
       await context.github.postIssueComment(context.owner, context.repo, context.prNumber, replyBody);
     }
 
-    return { command: 'learn', success: true, output: replyBody };
+    return { command: parsed.command, success: true, output: replyBody };
+  }
+
+  private async handleForget(parsed: ParsedCommand, context: ChatContext): Promise<DispatchResult> {
+    const pattern = parsed.args.trim();
+    if (!pattern) {
+      const errorMsg = 'Please specify a pattern, rule title, or topic to forget. Usage:\n`@review-yeti forget <pattern>`';
+      if (context.commentId) {
+        await context.github.replyToReviewComment(context.owner, context.repo, context.prNumber, context.commentId, errorMsg);
+      } else {
+        await context.github.postIssueComment(context.owner, context.repo, context.prNumber, errorMsg);
+      }
+      return { command: 'forget', success: false, output: errorMsg };
+    }
+
+    const repoFull = `${context.owner}/${context.repo}`;
+    const store = context.memoryStore || new PRMemoryStore();
+    let deleted = false;
+    try {
+      deleted = await store.forgetPattern(repoFull, pattern);
+    } finally {
+      if (!context.memoryStore) {
+        store.close();
+      }
+    }
+
+    const replyBody = deleted
+      ? `### Memory Removed\n\nPattern \`${pattern}\` has been removed from persistent team memory for \`${repoFull}\`. Future reviews will no longer enforce or suppress this finding.`
+      : `### Memory Not Found\n\nNo matching memory rule or nit suppression found for pattern \`${pattern}\` in \`${repoFull}\`.`;
+
+    if (context.commentId) {
+      await context.github.replyToReviewComment(context.owner, context.repo, context.prNumber, context.commentId, replyBody);
+    } else {
+      await context.github.postIssueComment(context.owner, context.repo, context.prNumber, replyBody);
+    }
+
+    return { command: 'forget', success: true, output: replyBody };
   }
 }
 

@@ -422,6 +422,31 @@ export class SQLiteMemoryAdapter implements MemoryAdapter {
     return instructions;
   }
 
+  public async deleteConclusion(id: string): Promise<boolean> {
+    const d1 = this.db.prepare("DELETE FROM learnings WHERE id = ?").run(id);
+    const d2 = this.db.prepare("DELETE FROM resolved_nits WHERE id = ?").run(id);
+    const d3 = this.db.prepare("DELETE FROM adr_constraints WHERE id = ?").run(id);
+    return (Number(d1.changes) + Number(d2.changes) + Number(d3.changes)) > 0;
+  }
+
+  public async forgetPattern(repo: string, pattern: string): Promise<boolean> {
+    const trimmed = pattern.trim();
+    const likePattern = `%${trimmed}%`;
+    const d1 = this.db.prepare("DELETE FROM resolved_nits WHERE repo = ? AND (pattern = ? OR pattern LIKE ?)").run(repo, trimmed, likePattern);
+    const d2 = this.db.prepare("DELETE FROM learnings WHERE repo = ? AND (title LIKE ? OR description LIKE ?)").run(repo, likePattern, likePattern);
+    const totalDeleted = Number(d1.changes) + Number(d2.changes);
+    logger.info("Forgot pattern from SQLite memory", { repo, pattern: trimmed, deletedCount: totalDeleted });
+    return totalDeleted > 0;
+  }
+
+  public async degradePatternConfidence(repo: string, pattern: string, penalty: number = 0.2): Promise<void> {
+    const trimmed = pattern.trim();
+    const likePattern = `%${trimmed}%`;
+    this.db.prepare("UPDATE learnings SET confidence = MAX(0.0, confidence - ?) WHERE repo = ? AND (title LIKE ? OR description LIKE ?)").run(penalty, repo, likePattern, likePattern);
+    this.db.prepare("UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE repo = ? AND (pattern = ? OR pattern LIKE ?)").run(repo, trimmed, likePattern);
+    logger.info("Degraded pattern confidence in SQLite memory", { repo, pattern: trimmed, penalty });
+  }
+
   public async clear(repo?: string): Promise<void> {
     if (repo) {
       this.db.prepare("DELETE FROM learnings WHERE repo = ?").run(repo);

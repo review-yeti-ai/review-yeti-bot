@@ -150,6 +150,23 @@ export class CompositeMemoryAdapter implements MemoryAdapter {
     return await this.secondary.getAdrConstraints(repo, status).catch(() => primaryResults);
   }
 
+  public async deleteConclusion(id: string): Promise<boolean> {
+    const p = await this.primary.deleteConclusion?.(id).catch(() => false) ?? false;
+    const s = await this.secondary.deleteConclusion?.(id).catch(() => false) ?? false;
+    return p || s;
+  }
+
+  public async forgetPattern(repo: string, pattern: string): Promise<boolean> {
+    const p = await this.primary.forgetPattern?.(repo, pattern).catch(() => false) ?? false;
+    const s = await this.secondary.forgetPattern?.(repo, pattern).catch(() => false) ?? false;
+    return p || s;
+  }
+
+  public async degradePatternConfidence(repo: string, pattern: string, penalty: number = 0.2): Promise<void> {
+    await this.primary.degradePatternConfidence?.(repo, pattern, penalty).catch(() => {});
+    await this.secondary.degradePatternConfidence?.(repo, pattern, penalty).catch(() => {});
+  }
+
   public async clear(repo?: string): Promise<void> {
     await this.primary.clear?.(repo);
     await this.secondary.clear?.(repo);

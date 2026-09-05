@@ -773,6 +773,52 @@ export class PRMemoryStore {
     }
   }
 
+  public async forgetPattern(repo: string, pattern: string): Promise<boolean> {
+    const trimmed = pattern.trim();
+    let localDeleted = false;
+    try {
+      const like = `%${trimmed}%`;
+      const d1 = this.db.prepare('DELETE FROM resolved_nits WHERE repo = ? AND (pattern = ? OR pattern LIKE ?)').run(repo, trimmed, like);
+      const d2 = this.db.prepare('DELETE FROM learnings WHERE repo = ? AND (title LIKE ? OR description LIKE ?)').run(repo, like, like);
+      localDeleted = (Number(d1.changes) + Number(d2.changes)) > 0;
+    } catch (_) {}
+
+    if (this.adapter && this.adapter.forgetPattern) {
+      const adapterDeleted = await this.adapter.forgetPattern(repo, pattern).catch(() => false);
+      return localDeleted || adapterDeleted;
+    }
+    return localDeleted;
+  }
+
+  public async degradePatternConfidence(repo: string, pattern: string, penalty: number = 0.2): Promise<void> {
+    const trimmed = pattern.trim();
+    try {
+      const like = `%${trimmed}%`;
+      this.db.prepare('UPDATE learnings SET confidence = MAX(0.0, confidence - ?) WHERE repo = ? AND (title LIKE ? OR description LIKE ?)').run(penalty, repo, like, like);
+      this.db.prepare('UPDATE resolved_nits SET suppression_count = suppression_count + 1 WHERE repo = ? AND (pattern = ? OR pattern LIKE ?)').run(repo, trimmed, like);
+    } catch (_) {}
+
+    if (this.adapter && this.adapter.degradePatternConfidence) {
+      await this.adapter.degradePatternConfidence(repo, pattern, penalty).catch(() => {});
+    }
+  }
+
+  public async deleteConclusion(id: string): Promise<boolean> {
+    let localDeleted = false;
+    try {
+      const d1 = this.db.prepare('DELETE FROM learnings WHERE id = ?').run(id);
+      const d2 = this.db.prepare('DELETE FROM resolved_nits WHERE id = ?').run(id);
+      const d3 = this.db.prepare('DELETE FROM adr_constraints WHERE id = ?').run(id);
+      localDeleted = (Number(d1.changes) + Number(d2.changes) + Number(d3.changes)) > 0;
+    } catch (_) {}
+
+    if (this.adapter && this.adapter.deleteConclusion) {
+      const adapterDeleted = await this.adapter.deleteConclusion(id).catch(() => false);
+      return localDeleted || adapterDeleted;
+    }
+    return localDeleted;
+  }
+
   public getCounts(): { learningsCount: number; suppressedNitsCount: number; adrConstraintsCount: number } {
     if (this.adapter && typeof (this.adapter as any).getCounts === 'function') {
       return (this.adapter as any).getCounts();
