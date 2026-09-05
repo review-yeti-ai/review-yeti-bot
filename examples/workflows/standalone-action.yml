@@ -18,6 +18,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Restore Review Yeti Team Memory Cache
+        uses: actions/cache@v4
+        with:
+          path: .ct-memory/
+          key: review-yeti-memory-${{ github.repository }}-${{ github.run_id }}
+          restore-keys: |
+            review-yeti-memory-${{ github.repository }}-
+            review-yeti-memory-
+
       - name: Run Review Yeti Review
         id: review-yeti
         uses: review-yeti-ai/review-yeti-bot@v1
