@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.32.2...v1.32.3) (2026-09-05)
+
+
+### Bug Fixes
+
+* **incremental-review:** harden carry-forward trust and close coverage gaps (REL-586) ([#514](https://github.com/review-yeti-ai/review-yeti-bot/issues/514)) ([1b791e2](https://github.com/review-yeti-ai/review-yeti-bot/commit/1b791e22b061873c80e156abb8c1f988b1316afd))
+
 ## [1.32.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.32.1...v1.32.2) (2026-09-05)
 
 
