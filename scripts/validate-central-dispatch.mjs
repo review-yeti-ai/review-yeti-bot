@@ -35,6 +35,9 @@ export const DEFAULT_GLOBAL_CONCURRENCY_CAP = 8;
 // number keeps a legitimate review moving without pretending the lane is empty.
 export const DEGRADED_CONCURRENCY_ALLOWANCE = 1;
 
+// A dispatched-but-not-started run is `queued` and still consumes a slot.
+export const CAPACITY_RUN_STATUSES = Object.freeze(['queued', 'in_progress']);
+
 function positiveIntegerFromEnv(raw, name, fallback) {
   if (raw === undefined || raw === '') return fallback;
   const parsed = Number(raw);
@@ -175,21 +178,40 @@ export async function assertRepositoryCapacity({
   globalCap = globalConcurrencyCap(),
   selfRunId = process.env.GITHUB_RUN_ID,
 }) {
-  const url = `https://api.github.com/repos/${CENTRAL_REPOSITORY}`
+  // A dispatched run that has not yet started a job is `queued`, not
+  // `in_progress`, and it will still consume an upstream slot. Counting only
+  // in-progress runs undercounts exactly during the burst the cap exists for,
+  // making the cap advisory when it matters most. Count both states.
+  const listUrl = (status) => `https://api.github.com/repos/${CENTRAL_REPOSITORY}`
     + '/actions/workflows/repository-dispatch.yml/runs'
-    + '?status=in_progress&per_page=100';
+    + `?status=${status}&per_page=100`;
 
-  // One listing answers both caps, so the global bound costs no extra request.
-  // Retry once: the preceding identity lookups already proved the API reachable,
-  // so a single failure here is far more likely transient than an outage.
-  let runs = null;
-  for (let attempt = 0; attempt < 2 && runs === null; attempt += 1) {
-    try {
-      runs = await githubJson(url, token, fetchImpl);
-    } catch {
-      runs = null;
+  // Both listings answer both caps, so the global bound costs no extra
+  // round-trip beyond the states it must observe. Retry once: the preceding
+  // identity lookups already proved the API reachable, so a single failure here
+  // is far more likely transient than an outage.
+  async function listRuns() {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const pages = await Promise.all(
+          CAPACITY_RUN_STATUSES.map((status) => githubJson(listUrl(status), token, fetchImpl)),
+        );
+        return pages;
+      } catch {
+        // fall through to retry
+      }
     }
+    return null;
   }
+
+  const pages = await listRuns();
+  const runs = pages === null ? null : {
+    // Dedupe by id: a run can change state between the two listings.
+    workflow_runs: [...new Map(
+      pages.flatMap((page) => (Array.isArray(page?.workflow_runs) ? page.workflow_runs : []))
+        .map((run) => [run?.id, run]),
+    ).values()],
+  };
 
   if (runs === null) {
     // Degraded: no count is available. Rejecting outright would fail a required

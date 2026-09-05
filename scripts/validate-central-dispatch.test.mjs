@@ -6,6 +6,7 @@ import {
   CENTRAL_REPOSITORY,
   DEFAULT_GLOBAL_CONCURRENCY_CAP,
   DEFAULT_REPOSITORY_CONCURRENCY_CAP,
+  CAPACITY_RUN_STATUSES,
   DEGRADED_CONCURRENCY_ALLOWANCE,
   DISPATCH_EVENT_TYPE,
   TARGET_REPOSITORY,
@@ -199,17 +200,22 @@ test('validates exact live PR identity and the immutable base-owned caller with 
   assert.match(result.caller_workflow_sha256, /^[0-9a-f]{64}$/u);
   assert.equal(result.caller_run_id, callerRunId);
   assert.equal(result.caller_run_attempt, callerRunAttempt);
-  // 4 calls: PR identity, caller run, capacity listing, caller workflow bytes.
-  // Capacity is checked after identity so an invalid request reports the
-  // validation failure, not a capacity message.
-  assert.equal(calls.length, 4);
+  // 5 calls: PR identity, caller run, two capacity listings (queued and
+  // in_progress), caller workflow bytes. Capacity is checked after identity so
+  // an invalid request reports the validation failure, not a capacity message.
+  assert.equal(calls.length, 5);
   assert.equal(calls[0].init.headers.authorization, 'Bearer central-token');
   assert.equal(calls[1].url.endsWith(`/actions/runs/${callerRunId}`), true);
   // The fixture PR targets 0.8.8-stable while the default branch is 0.8.7-stable: the caller
   // bytes must be read from the default branch (what GitHub executes), never from base.ref.
-  assert.equal(calls[2].url.includes('/actions/workflows/repository-dispatch.yml/runs'), true);
-  assert.equal(calls[3].url.endsWith('?ref=0.8.7-stable'), true);
-  assert.equal(calls[3].url.includes('0.8.8-stable'), false);
+  const listings = calls.filter((call) => call.url.includes('/actions/workflows/repository-dispatch.yml/runs'));
+  assert.equal(listings.length, 2);
+  assert.deepEqual(
+    listings.map((call) => new URL(call.url).searchParams.get('status')).sort(),
+    ['in_progress', 'queued'],
+  );
+  assert.equal(calls[4].url.endsWith('?ref=0.8.7-stable'), true);
+  assert.equal(calls[4].url.includes('0.8.8-stable'), false);
   assert.equal(calls.some((call) => call.url.includes('central-token')), false);
 });
 
@@ -463,16 +469,70 @@ test('global cap bounds the shared lane across repositories', async () => {
 });
 
 test('a transient listing failure is retried before degrading', async () => {
-  let attempts = 0;
+  // Each attempt lists both statuses, so a round is two calls. The first round
+  // fails, the second succeeds.
+  let calls = 0;
   const flaky = async () => {
-    attempts += 1;
-    if (attempts === 1) return { ok: false, status: 502 };
+    calls += 1;
+    if (calls <= CAPACITY_RUN_STATUSES.length) return { ok: false, status: 502 };
     return { ok: true, json: async () => ({ workflow_runs: [] }) };
   };
   const result = await assertRepositoryCapacity({
     repositoryName: 'example-workspace', token: 't', fetchImpl: flaky, cap: 6, globalCap: 8, selfRunId: '0',
   });
-  assert.equal(attempts, 2);
   assert.equal(result.degraded, false);
   assert.equal(result.globalInFlight, 0);
+  assert.ok(calls > CAPACITY_RUN_STATUSES.length, 'expected a second listing round');
+});
+
+// A dispatched run that has not started a job is `queued`. Counting only
+// in-progress runs undercounts during exactly the burst the cap exists for.
+test('capacity counts queued runs, not only in-progress', async () => {
+  assert.deepEqual([...CAPACITY_RUN_STATUSES], ['queued', 'in_progress']);
+
+  const seen = [];
+  const byStatus = (queued, inProgress) => async (url) => {
+    seen.push(url);
+    const status = new URL(url).searchParams.get('status');
+    const count = status === 'queued' ? queued : inProgress;
+    const offset = status === 'queued' ? 0 : 1000;
+    return {
+      ok: true,
+      json: async () => ({
+        workflow_runs: Array.from({ length: count }, (_, index) => ({
+          id: offset + index,
+          display_title: `Review Yeti central / example-workspace:1:${headSha}:1:1`,
+        })),
+      }),
+    };
+  };
+
+  // Both states are listed.
+  const counted = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace', token: 't', fetchImpl: byStatus(2, 3), cap: 6, globalCap: 8, selfRunId: '-1',
+  });
+  assert.equal(counted.globalInFlight, 5);
+  assert.equal(seen.filter((u) => u.includes('status=queued')).length, 1);
+  assert.equal(seen.filter((u) => u.includes('status=in_progress')).length, 1);
+
+  // Queued alone can saturate the per-repository cap. Under the old
+  // in-progress-only listing this admitted.
+  await assert.rejects(
+    assertRepositoryCapacity({
+      repositoryName: 'example-workspace', token: 't', fetchImpl: byStatus(6, 0), cap: 6, globalCap: 8, selfRunId: '-1',
+    }),
+    /repository example-workspace already has 6/u,
+  );
+
+  // A run appearing in both listings (state changed mid-check) counts once.
+  const dupe = async () => ({
+    ok: true,
+    json: async () => ({
+      workflow_runs: [{ id: 77, display_title: `Review Yeti central / example-workspace:1:${headSha}:1:1` }],
+    }),
+  });
+  const deduped = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace', token: 't', fetchImpl: dupe, cap: 6, globalCap: 8, selfRunId: '-1',
+  });
+  assert.equal(deduped.globalInFlight, 1);
 });
