@@ -1,12 +1,37 @@
 # 🚀 Review Yeti — Friendly Onboarding Guide
 
-Welcome to **Review Yeti**! This guide walks you through setting up multi-persona AI code reviews on your GitHub repositories in under 5 minutes.
+Welcome to **Review Yeti**! This guide walks you through setting up multi-persona AI code reviews, local pre-commit security gates, and interactive PR chat mentoring on your repositories in under 60 seconds.
 
 ---
 
-## ⚡ Quickstart: Zero to AI Review in 60 Seconds
+## ⚡ Quickstart Option A: 30-Second GitHub App Wizard (Recommended)
 
-The fastest way to get started is with the standalone GitHub Action. You don't need to install any apps, configure webhooks, or host any infrastructure.
+The fastest, zero-friction way to set up Review Yeti with full superpowers—native Check Runs, 1-click commit suggestions, and interactive PR chat—is using the automated CLI onboarding wizard:
+
+```bash
+# Run the 30-second GitHub App Setup Wizard
+npx review-yeti init
+```
+
+### What `review-yeti init` Does Automatically:
+1. Generates an exact **least-privilege GitHub App manifest** (`checks: write`, `pull_requests: write`, `contents: read`, `issues: write`).
+2. Launches your browser to GitHub's pre-configured app creation page.
+3. Automatically exchanges the callback authorization code for your **App ID**, **Private Key PEM**, and **Webhook Secret**.
+4. Writes a restricted local `.env` configuration (`mode 0o600`) and updates `.gitignore` to prevent credential leaks.
+5. (Optional) With `--gh-secrets`, synchronizes credentials directly into your GitHub repository secrets via the GitHub CLI (`gh secret set`).
+
+```bash
+# Example: Non-interactive setup for an organization
+npx review-yeti init --org my-org --gh-secrets --repo my-org/my-repo
+```
+
+👉 **For all CLI options and flags, see the [CLI Reference](CLI_REFERENCE.md).**
+
+---
+
+## ⚡ Quickstart Option B: 60-Second Standalone GitHub Action
+
+If you prefer a pure YAML setup without creating a GitHub App, you can run Review Yeti directly inside GitHub Actions runners:
 
 ### 1. Add the Workflow File
 
@@ -44,10 +69,28 @@ jobs:
 ### 3. Open a Pull Request! 🎉
 
 Open a pull request on your repository. Review Yeti will automatically:
-1. Inspect the pull request diff.
+1. Inspect the pull request diff over the GitHub API (no git checkout needed!).
 2. Evaluate it in parallel across 5 built-in expert personas (Security, Architecture, Performance, QA, Dependencies).
 3. Reconcile findings through automated arbitration.
 4. Post a clean, consolidated review comment with clear severity ratings (P0, P1, P2) and an actionable verdict (`SHIP`, `FIX_FIRST`, or `BLOCK`).
+
+---
+
+## 💻 Local Developer Superpowers: Pre-Commit CLI & Hooks
+
+Catch credentials and code defects locally before they reach GitHub:
+
+```bash
+# 1. Run local pre-commit check on staged files (< 5 seconds)
+npx review-yeti pre-commit
+
+# 2. Install as an automated git pre-commit hook
+npx review-yeti install-hook
+```
+
+- **Sub-10ms Credential Checks**: Scans for AWS keys, GitHub tokens, and private keys.
+- **Blocking P0 Exits**: Automatically cancels `git commit` if critical blockers are found.
+- **Husky Integration**: Supports `npx review-yeti install-hook --husky`.
 
 ---
 
@@ -227,7 +270,11 @@ A GitHub App provides native Check Runs API access, independent API rate limits 
 
 ## 📚 Next Steps
 
-- [GitHub App Setup Guide](GITHUB_APP_SETUP.md) — Configure your GitHub App for native check runs and higher rate limits.
+- [CLI Reference & Git Hook Guide](CLI_REFERENCE.md) — Fast pre-commit checks, 30-second setup wizard, and hook installers.
+- [Interactive PR Chat Guide](INTERACTIVE_CHAT.md) — Conversational code mentoring with `@review-yeti explain`, `fix`, and `ignore`.
+- [Team Memory & Nit Suppression Guide](TEAM_MEMORY.md) — Persistent SQLite WAL reflection and community persona charters.
+- [GitHub App Setup Guide](GITHUB_APP_SETUP.md) — Manual GitHub App registration and permissions matrix.
+- [Helm 3 Operations Guide](HELM_GUIDE.md) — Production Kubernetes cluster deployment.
 - [Kubernetes & DOKS Execution Mode](KUBERNETES_MODE.md) — Offload review workloads to your cluster and eliminate runner waste.
 - [Configuration Reference](CONFIGURATION_REFERENCE.md) — Complete `.ct-review.yaml` schema and options.
 - [Architecture Deep Dive](ARCHITECTURE.md) — How Review Yeti's consensus and arbitration engine works.

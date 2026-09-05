@@ -2,6 +2,10 @@ import express, { Express, Router, Request, Response, NextFunction } from 'expre
 import { logger } from '../utils/logger';
 import { verifyGitHubSignatureDetailed } from './signature';
 import { dashboardStore } from '../persistence/dashboardStore';
+import { GitHubEventHandler, ParsedPRPayload } from './eventHandler';
+import { CommandDispatcher, defaultDispatcher, ChatContext, DispatchResult } from '../chat/commandDispatcher';
+import { createEphemeralChatClient } from './appAuth';
+import { ReviewModelClient } from '../gateway/openRouterClient';
 
 export interface RequestWithRawBody extends Request {
   rawBody?: Buffer;
@@ -14,6 +18,18 @@ export interface WebhookServerOptions {
   path?: string;
   /** Pluggable event handler callback function */
   onEvent?: (req: RequestWithRawBody) => Promise<any>;
+  /** Optional GitHubEventHandler instance */
+  eventHandler?: GitHubEventHandler;
+  /** Optional CommandDispatcher instance */
+  commandDispatcher?: CommandDispatcher;
+  /** Optional model client for chat completions */
+  modelClient?: ReviewModelClient;
+  /** Optional GitHub App configuration for minting ephemeral tokens */
+  appAuthConfig?: {
+    appId?: string;
+    privateKey?: string;
+    baseUrl?: string;
+  };
 }
 
 /**
@@ -67,10 +83,10 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
     }
     if (err && (err instanceof SyntaxError || err.type === 'entity.parse.failed' || err.status === 400)) {
       const sigHeader = req.headers['x-hub-signature-256'] as string | undefined;
-      if (sigHeader && req.rawBody) {
+      if (sigHeader) {
         const verification = verifyGitHubSignatureDetailed({
           signatureHeader: sigHeader,
-          rawBody: req.rawBody,
+          rawBody: req.rawBody || '',
           secret: resolveWebhookSecret(options.secret),
         });
         if (!verification.isValid) {
@@ -129,6 +145,32 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
         }
       }
 
+      // 4. Handle chat command webhook routing if eventHandler is provided
+      if (options.eventHandler) {
+        const deliveryId = (req.headers['x-github-delivery'] as string) || '';
+        const trigger = options.eventHandler.evaluateTrigger(event, req.body, deliveryId);
+
+        if (trigger.shouldTrigger && trigger.parsedPayload) {
+          const payload = trigger.parsedPayload;
+
+          if (payload.triggerSource === 'comment_command' && payload.commandText) {
+            const result = await handleWebhookChatEvent(payload, {
+              commandDispatcher: options.commandDispatcher,
+              modelClient: options.modelClient,
+              appAuthConfig: options.appAuthConfig,
+            });
+
+            if (result) {
+              return res.status(200).json({ status: 'dispatched', trigger, result });
+            }
+          }
+
+          return res.status(200).json({ status: 'triggered', trigger });
+        }
+
+        return res.status(200).json({ status: 'ignored', reason: trigger.reason });
+      }
+
       return res.status(200).json({ status: 'received', event });
     } catch (err: any) {
       logger.error('Unhandled exception during webhook processing', { error: err?.message || err });
@@ -155,6 +197,60 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
   }
 
   return router;
+}
+
+/**
+ * Processes a parsed comment command payload, minting an ephemeral token if needed,
+ * and dispatching the chat mentoring command.
+ */
+export async function handleWebhookChatEvent(
+  payload: ParsedPRPayload,
+  options: {
+    commandDispatcher?: CommandDispatcher;
+    modelClient?: ReviewModelClient;
+    github?: any;
+    appAuthConfig?: { appId?: string; privateKey?: string; baseUrl?: string };
+  } = {}
+): Promise<DispatchResult | null> {
+  if (payload.triggerSource !== 'comment_command' || !payload.commandText) {
+    return null;
+  }
+
+  let githubClient = options.github;
+  if (!githubClient && payload.installationId && (options.appAuthConfig?.appId || process.env.GITHUB_APP_ID)) {
+    try {
+      githubClient = await createEphemeralChatClient(payload.installationId, {
+        appId: options.appAuthConfig?.appId,
+        privateKey: options.appAuthConfig?.privateKey,
+        baseUrl: options.appAuthConfig?.baseUrl,
+      });
+    } catch (err: any) {
+      logger.warn('Failed to mint ephemeral token for chat event', { error: err?.message });
+    }
+  }
+
+  if (!githubClient) {
+    return null;
+  }
+
+  const dispatcher = options.commandDispatcher || defaultDispatcher;
+  const chatContext: ChatContext = {
+    owner: payload.owner,
+    repo: payload.repo,
+    prNumber: payload.prNumber,
+    commentId: payload.commentId,
+    inReplyToId: payload.inReplyToId,
+    diffHunk: payload.diffHunk,
+    filePath: payload.filePath,
+    headSha: payload.headSha,
+    baseSha: payload.baseSha,
+    sender: payload.sender,
+    github: githubClient,
+    modelClient: options.modelClient,
+    payload,
+  };
+
+  return dispatcher.dispatchCommand(payload.commandText, chatContext);
 }
 
 /**

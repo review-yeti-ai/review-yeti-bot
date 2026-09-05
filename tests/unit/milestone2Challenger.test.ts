@@ -1,8 +1,13 @@
 import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import crypto from 'node:crypto';
 import { CommandDispatcher, parseCommand, ChatContext } from '../../src/chat/commandDispatcher';
 import { GitHubEventHandler } from '../../src/github/eventHandler';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { createWebhookServer, handleWebhookChatEvent } from '../../src/github/webhookServer';
+import { getGitHubAppInstallationToken, mintEphemeralChatToken } from '../../src/github/appAuth';
+import { computeGitHubSignature } from '../../src/github/signature';
+import { PRMemoryStore } from '../../src/memory/prMemoryStore';
 
 describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Command Dispatcher', () => {
   let dispatcher: CommandDispatcher;
@@ -338,4 +343,317 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       expect(parsedC).toBeNull(); // parseCommand returns NULL!
     });
   });
+
+  describe('3. @review-yeti Mention & Subcommand Boundary Conditions & Edge Cases', () => {
+    it('parses @review-yeti commands with excessive leading, trailing, and inter-token whitespace', () => {
+      const inputs = [
+        { text: '   @review-yeti    explain    why is this slow?   ', cmd: 'explain', args: 'why is this slow?' },
+        { text: '\t\t@review-yeti\t\tfix\t\tuse const instead of let\t\t', cmd: 'fix', args: 'use const instead of let' },
+        { text: '   @review-yeti    ignore   no-eval - legacy code   ', cmd: 'ignore', args: 'no-eval - legacy code' },
+        { text: '   @review-yeti    mute     rule/security-check     ', cmd: 'mute', args: 'rule/security-check' },
+        { text: '   @review-yeti-bot    ask   How is latency measured?  ', cmd: 'ask', args: 'How is latency measured?' },
+      ];
+
+      for (const item of inputs) {
+        const parsed = parseCommand(item.text);
+        expect(parsed, `Failed to parse: "${item.text}"`).not.toBeNull();
+        expect(parsed?.command).toBe(item.cmd);
+        expect(parsed?.args).toBe(item.args);
+      }
+    });
+
+    it('parses @review-yeti mentions separated by single or multiple newlines and CRLF', () => {
+      const inputs = [
+        { text: '@review-yeti\nexplain why is this slow?', cmd: 'explain', args: 'why is this slow?' },
+        { text: '@review-yeti\r\nfix\r\nreplace with map()', cmd: 'fix', args: 'replace with map()' },
+        { text: '@review-yeti\n\nignore\n\nno-console: debug statement', cmd: 'ignore', args: 'no-console: debug statement' },
+        { text: '@review-yeti\r\n\r\nmute\r\n\r\nperf/no-sync', cmd: 'mute', args: 'perf/no-sync' },
+      ];
+
+      for (const item of inputs) {
+        const parsed = parseCommand(item.text);
+        expect(parsed, `Failed to parse CRLF/newlines: "${item.text}"`).not.toBeNull();
+        expect(parsed?.command).toBe(item.cmd);
+        expect(parsed?.args).toBe(item.args);
+      }
+    });
+
+    it('parses case-insensitive @review-yeti mentions and commands (UPPERCASE, lowercase, MixedCase)', () => {
+      expect(parseCommand('@REVIEW-YETI EXPLAIN this vulnerability')?.command).toBe('explain');
+      expect(parseCommand('@Review-Yeti FIX replace md5')?.command).toBe('fix');
+      expect(parseCommand('@review-yeti-bot IGNORE test-nit')?.command).toBe('ignore');
+      expect(parseCommand('@REVIEW-YETI-BOT MUTE rule-1')?.command).toBe('mute');
+      expect(parseCommand('@REVIEW-YETI[BOT] EXPLAIN architecture')?.command).toBe('explain');
+    });
+
+    it('handles missing arguments across all @review-yeti subcommands without throwing or crashing', async () => {
+      // 1. @review-yeti explain (missing args)
+      const resExplain = await dispatcher.dispatchCommand('@review-yeti explain', context);
+      expect(resExplain.command).toBe('explain');
+      expect(resExplain.success).toBe(true);
+      expect(resExplain.output).toContain('### Code Explanation');
+      expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
+        'calltelemetry',
+        'ct-review-bot',
+        42,
+        expect.stringContaining('### Code Explanation')
+      );
+
+      // 2. @review-yeti fix (missing args)
+      const resFix = await dispatcher.dispatchCommand('@review-yeti fix', context);
+      expect(resFix.command).toBe('fix');
+      expect(resFix.success).toBe(true);
+      expect(resFix.output).toContain('```suggestion');
+      expect(resFix.output).toContain('### Code Fix Suggestion');
+
+      // 3. @review-yeti ignore (missing args)
+      const resIgnore = await dispatcher.dispatchCommand('@review-yeti ignore', context);
+      expect(resIgnore.command).toBe('ignore');
+      expect(resIgnore.success).toBe(true);
+      expect(resIgnore.output).toContain('### Finding Suppressed');
+      expect(resIgnore.output).toContain('Suppressed Nit');
+
+      // 4. @review-yeti mute (missing args)
+      const resMute = await dispatcher.dispatchCommand('@review-yeti mute', context);
+      expect(resMute.command).toBe('mute');
+      expect(resMute.success).toBe(true);
+      expect(resMute.output).toContain('### Finding Suppressed');
+
+      // 5. @review-yeti ask (missing args) -> returns success: false with informative message without throwing
+      const resAsk = await dispatcher.dispatchCommand('@review-yeti ask', context);
+      expect(resAsk.command).toBe('ask');
+      expect(resAsk.success).toBe(false);
+      expect(resAsk.output).toContain('Please provide a question');
+    });
+  });
+
+  describe('4. Unknown & Malformed Commands Resilience (@review-yeti unknownCommand)', () => {
+    it('parseCommand returns null for unknown commands and bare mentions', () => {
+      expect(parseCommand('@review-yeti unknownCommand')).toBeNull();
+      expect(parseCommand('@review-yeti fooBar')).toBeNull();
+      expect(parseCommand('@review-yeti 12345')).toBeNull();
+      expect(parseCommand('@review-yeti')).toBeNull();
+      expect(parseCommand('@review-yeti-bot')).toBeNull();
+    });
+
+    it('dispatchCommand throws informative error for unknown command instead of silent corruption', async () => {
+      await expect(
+        dispatcher.dispatchCommand('@review-yeti unknownCommand', context)
+      ).rejects.toThrow('Unrecognized command format: "@review-yeti unknownCommand"');
+    });
+
+    it('EMPIRICAL MISMATCH: handleWebhookChatEvent propagates unrecognized command error when dispatcher rejects', async () => {
+      const payloadUnknown = {
+        triggerSource: 'comment_command' as const,
+        triggerAction: 'created',
+        deliveryId: 'deliv-unknown',
+        commandText: '@review-yeti unknownCommand',
+        owner: 'calltelemetry',
+        repo: 'ct-review-bot',
+        prNumber: 42,
+        sender: 'developer1',
+        title: 'PR',
+        body: 'body',
+        headSha: 'h',
+        baseSha: 'b',
+        labels: [],
+        installationId: 'inst-1',
+      };
+
+      // When passed to handleWebhookChatEvent with pre-authenticated github client,
+      // it rejects with the commandDispatcher error rather than silently swallowing
+      await expect(
+        handleWebhookChatEvent(payloadUnknown, {
+          commandDispatcher: dispatcher,
+          github: mockGithub,
+        })
+      ).rejects.toThrow('Unrecognized command format: "@review-yeti unknownCommand"');
+    });
+
+    it('handleWebhookChatEvent returns null safely when payload is not a comment_command or missing commandText', async () => {
+      const payloadNonCommand = {
+        triggerSource: 'pr_event' as const,
+        triggerAction: 'opened',
+        commandText: '@review-yeti explain',
+        installationId: 'inst-1',
+        owner: 'org',
+        repo: 'repo',
+        prNumber: 1,
+        deliveryId: 'd1',
+        sender: 'dev',
+        headSha: 'h',
+        baseSha: 'b',
+        title: 't',
+        body: 'b',
+        labels: [],
+      };
+      const result = await handleWebhookChatEvent(payloadNonCommand);
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('5. Bot Self-Loop Suppression Stress Tests', () => {
+    let eventHandler: GitHubEventHandler;
+
+    beforeEach(() => {
+      eventHandler = new GitHubEventHandler();
+    });
+
+    it('suppresses events from review-yeti-bot, review-yeti, ct-review-bot, and [bot] accounts', () => {
+      const botSenders = [
+        'review-yeti-bot',
+        'review-yeti',
+        'review-yeti[bot]',
+        'review-yeti-bot[bot]',
+        'ct-review-bot',
+        'ct-review-bot[bot]',
+        'github-actions[bot]',
+      ];
+
+      for (const senderLogin of botSenders) {
+        const payload = {
+          action: 'created',
+          issue: { number: 42, pull_request: {} },
+          comment: { id: 100, body: '@review-yeti explain' },
+          repository: { name: 'ct-review-bot', owner: { login: 'calltelemetry' } },
+          sender: { login: senderLogin },
+        };
+
+        const result = eventHandler.evaluateTrigger('issue_comment', payload);
+        expect(result.shouldTrigger, `Sender ${senderLogin} should be suppressed`).toBe(false);
+        expect(result.reason).toContain(`Ignored bot action from sender: ${senderLogin}`);
+      }
+    });
+
+    it('EMPIRICAL EDGE CASE: detects case sensitivity vulnerability in bot self-loop suppression', () => {
+      // In eventHandler.ts line 92:
+      // sender === 'review-yeti-bot' || sender === 'review-yeti' || sender === 'ct-review-bot' || sender.endsWith('[bot]')
+      // Notice: sender is NOT lowercased!
+      const mixedCaseSender = 'Review-Yeti';
+      const payload = {
+        action: 'created',
+        issue: { number: 42, pull_request: {} },
+        comment: { id: 101, body: '@review-yeti explain' },
+        repository: { name: 'ct-review-bot', owner: { login: 'calltelemetry' } },
+        sender: { login: mixedCaseSender },
+      };
+
+      const result = eventHandler.evaluateTrigger('issue_comment', payload);
+      // Demonstrates that 'Review-Yeti' is NOT suppressed because sender comparison is case-sensitive!
+      expect(result.shouldTrigger).toBe(true);
+    });
+  });
+
+  describe('6. Mocked GitHub API Error Propagation (401 / 403 / 422)', () => {
+    let failingGithub: any;
+    let failingContext: ChatContext;
+    const { privateKey: testPrivateKey } = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
+
+    beforeEach(() => {
+      failingGithub = {
+        getReviewCommentThread: vi.fn().mockResolvedValue([{ id: 101, body: 'Nit' }]),
+        getChangedFiles: vi.fn().mockResolvedValue([{ path: 'src/file.ts', patch: '@@ ... @@' }]),
+        replyToReviewComment: vi.fn(),
+        postIssueComment: vi.fn(),
+      };
+
+      failingContext = {
+        owner: 'calltelemetry',
+        repo: 'ct-review-bot',
+        prNumber: 42,
+        commentId: 101,
+        github: failingGithub,
+      };
+    });
+
+    it('propagates HTTP 401 Unauthorized error when GitHub API credentials/token are invalid', async () => {
+      failingGithub.replyToReviewComment.mockRejectedValue(
+        new Error('GitHub API 401 /repos/calltelemetry/ct-review-bot/pulls/42/comments/101/replies: {"message":"Bad credentials"}')
+      );
+
+      await expect(
+        dispatcher.dispatchCommand('@review-yeti explain', failingContext)
+      ).rejects.toThrow('GitHub API 401');
+    });
+
+    it('propagates HTTP 403 Forbidden error when GitHub App lacks review comment permissions or hits rate limits', async () => {
+      failingGithub.replyToReviewComment.mockRejectedValue(
+        new Error('GitHub API 403 /repos/calltelemetry/ct-review-bot/pulls/42/comments/101/replies: {"message":"Resource not accessible by integration"}')
+      );
+
+      await expect(
+        dispatcher.dispatchCommand('@review-yeti fix', failingContext)
+      ).rejects.toThrow('GitHub API 403');
+    });
+
+    it('propagates HTTP 422 Unprocessable Entity error when comment thread is locked or line is invalid', async () => {
+      failingGithub.replyToReviewComment.mockRejectedValue(
+        new Error('GitHub API 422 /repos/calltelemetry/ct-review-bot/pulls/42/comments/101/replies: {"message":"Validation Failed"}')
+      );
+
+      await expect(
+        dispatcher.dispatchCommand('@review-yeti ignore', failingContext)
+      ).rejects.toThrow('GitHub API 422');
+    });
+
+    it('propagates HTTP 401/403/422 on postIssueComment when commentId is omitted', async () => {
+      const topLevelContext = { ...failingContext, commentId: undefined };
+      failingGithub.postIssueComment.mockRejectedValue(
+        new Error('GitHub API 403 /repos/calltelemetry/ct-review-bot/issues/42/comments: {"message":"Resource not accessible by integration"}')
+      );
+
+      await expect(
+        dispatcher.dispatchCommand('@review-yeti explain', topLevelContext)
+      ).rejects.toThrow('GitHub API 403');
+    });
+
+    it('mintEphemeralChatToken throws informative error when installation token exchange fails with 401/403/422', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401, statusText: 'Unauthorized' })
+      );
+
+      await expect(
+        mintEphemeralChatToken('12345', {
+          appId: 'test-app',
+          privateKey: testPrivateKey,
+        }, mockFetch as any)
+      ).rejects.toThrow(/GitHub App installation token exchange failed HTTP 401/);
+    });
+
+    it('handleWebhookChatEvent gracefully returns null when ephemeral token minting fails', async () => {
+      const payload = {
+        triggerSource: 'comment_command' as const,
+        triggerAction: 'created',
+        deliveryId: 'deliv-fail-token',
+        commandText: '@review-yeti explain',
+        owner: 'calltelemetry',
+        repo: 'ct-review-bot',
+        prNumber: 42,
+        sender: 'developer1',
+        title: 'PR',
+        body: 'body',
+        headSha: 'h',
+        baseSha: 'b',
+        labels: [],
+        installationId: 'inst-fail',
+      };
+
+      // App auth with an invalid appId/privateKey that throws
+      const result = await handleWebhookChatEvent(payload, {
+        commandDispatcher: dispatcher,
+        appAuthConfig: {
+          appId: '', // triggers error: GITHUB_APP_ID is required
+          privateKey: '',
+        },
+      });
+
+      // handleWebhookChatEvent catches token error and safely returns null without unhandled crash
+      expect(result).toBeNull();
+    });
+  });
 });
+

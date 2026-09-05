@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { logger } from '../utils/logger';
+import { GitHubInstallationClient } from './installationClient';
 
 export interface GitHubAppAuthConfig {
   appId: string;
@@ -179,3 +180,42 @@ export async function getGitHubAppRepositoryReadToken(
     permissions: permissions as Record<string, string>,
   };
 }
+
+/**
+ * Mints an ephemeral GitHub App installation token for chat actions without storing long-lived personal access tokens.
+ */
+export async function mintEphemeralChatToken(
+  installationId: string,
+  options: { appId?: string; privateKey?: string; baseUrl?: string } = {},
+  fetchFn: typeof fetch = globalThis.fetch
+): Promise<InstallationTokenResult> {
+  const appId = options.appId || process.env.GITHUB_APP_ID || '';
+  const privateKey = options.privateKey || process.env.GITHUB_APP_PRIVATE_KEY || '';
+  const baseUrl = options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com';
+
+  if (!appId) {
+    throw new Error('GITHUB_APP_ID is required to mint ephemeral chat token');
+  }
+  if (!privateKey) {
+    throw new Error('GITHUB_APP_PRIVATE_KEY is required to mint ephemeral chat token');
+  }
+
+  return getGitHubAppInstallationToken({ appId, privateKey, installationId, baseUrl }, fetchFn);
+}
+
+/**
+ * Creates an authenticated GitHubInstallationClient using an ephemeral installation token.
+ */
+export async function createEphemeralChatClient(
+  installationId: string,
+  options: { appId?: string; privateKey?: string; baseUrl?: string } = {},
+  fetchFn: typeof fetch = globalThis.fetch
+): Promise<GitHubInstallationClient> {
+  const tokenResult = await mintEphemeralChatToken(installationId, options, fetchFn);
+  const baseUrl = options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com';
+  return new GitHubInstallationClient({
+    token: tokenResult.token,
+    baseUrl,
+  });
+}
+

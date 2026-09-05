@@ -50,7 +50,7 @@ reviewed App-installation and required-check rollout decision. See
 
 - [x] **Step 1: Write the failing restricted-token test**
 
-Call `getGitHubAppRepositoryReadToken` with a fake fetch implementation. Assert the first request resolves `/repos/calltelemetry/ct-pr-operator-sandbox/installation` and the second posts to `/app/installations/42/access_tokens` with exactly:
+Call `getGitHubAppRepositoryReadToken` with a fake fetch implementation. Assert the first request resolves `/repos/review-yeti-ai/ct-pr-operator-sandbox/installation` and the second posts to `/app/installations/42/access_tokens` with exactly:
 
 ```json
 {
@@ -352,7 +352,7 @@ work is a narrowly reviewed rollout boundary, not an automatic fleet flip:
 
 1. Qualify the production GitHub App installation against every intended
    repository with repository-scoped `contents: read` and `pull_requests: read`.
-   The current proof covers `calltelemetry/ct-pr-operator-sandbox` only.
+   The current proof covers `review-yeti-ai/ct-pr-operator-sandbox` only.
 2. Run manual, non-publishing replays for at least one clean fixture and one
    larger multi-file defect fixture. Require terminal completion, zero writes,
    expected finding direction, and comparable identity. Do not add a timer or

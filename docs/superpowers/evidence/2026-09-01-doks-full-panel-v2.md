@@ -8,7 +8,7 @@ designed. No review was published and no production workload was changed.
 
 - Job: `ct-review-full-panel-3afd91f`
 - Run: `run_3afd91f3cdc5320d55678c45b2272d53`
-- Worker image: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:d7166346c05554dd585f90e43ea1830b7f17aff0b2899bd103e7446ad860c2e7`
+- Worker image: `registry.digitalocean.com/review-yeti/review-yeti-worker@sha256:d7166346c05554dd585f90e43ea1830b7f17aff0b2899bd103e7446ad860c2e7`
 - Requested model: `deepseek/deepseek-v4-flash-0731`
 - Qualification timeout: 780 seconds (195 seconds per request)
 - Kubernetes Job deadline: 840 seconds

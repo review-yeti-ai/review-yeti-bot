@@ -1,6 +1,6 @@
 # DOKS Review Dispatch Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Execute in order, preserve the production `calltelemetry/ct-review-actions` route until the explicit activation task, and stop at every approval gate. Do not create a scheduled canary.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Execute in order, preserve the production `review-yeti-ai/review-yeti-actions` route until the explicit activation task, and stop at every approval gate. Do not create a scheduled canary.
 
 **Goal:** Run Review Yeti reviews as bounded DOKS Jobs with durable dispatch, exact-head publication, and a same-PR reusable workspace PVC that is removed after 30 idle minutes.
 
@@ -16,7 +16,7 @@
 
 - Work on an isolated branch/worktree. Never reset or overwrite unrelated work.
 - Use failing tests before each behavior change and make focused commits after green verification.
-- Keep `calltelemetry/ct-review-actions` unchanged until Task 12's explicit activation approval.
+- Keep `review-yeti-ai/review-yeti-actions` unchanged until Task 12's explicit activation approval.
 - No scheduled/time-based canary, no automatic traffic split, and no silent provider/model failover.
 - Preserve the 15-minute webhook-to-terminal limit in every task. A Kubernetes Job timeout is not allowed to reset that clock.
 - PostgreSQL is the run/publication source of truth. Kubernetes resources are execution projections.
@@ -194,7 +194,7 @@ Run: `git add src/github/webhookServer.ts src/github/eventHandler.ts src/app.ts 
 - Modify: `k8s-operator/api/v1alpha1/zz_generated.deepcopy.go`
 - Modify: `k8s-operator/api/v1alpha1/prreviewjob_types_test.go`
 - Modify: `k8s-operator/api/v1alpha1/crd_schema_validation_test.go`
-- Modify: `k8s-operator/config/crd/bases/review.calltelemetry.com_prreviewjobs.yaml`
+- Modify: `k8s-operator/config/crd/bases/review.review-yeti.ai_prreviewjobs.yaml`
 
 **Step 1: Write failing API validation tests**
 
@@ -247,7 +247,7 @@ Expected: PASS.
 
 **Step 5: Commit**
 
-Run: `git add k8s-operator/api/v1alpha1 k8s-operator/config/crd/bases/review.calltelemetry.com_prreviewjobs.yaml && git commit -m "feat(operator): define immutable review job projection"`
+Run: `git add k8s-operator/api/v1alpha1 k8s-operator/config/crd/bases/review.review-yeti.ai_prreviewjobs.yaml && git commit -m "feat(operator): define immutable review job projection"`
 
 ---
 
@@ -751,7 +751,7 @@ Only after explicit approval, dispatch one real PR through both paths. The centr
 
 Fill the evidence template with exact commit/image digests, cluster/context, commands, run IDs, timestamps, provider routes, costs, PVC/PV/volume identities, and pass/fail outcomes. Link the proposed service design from the optional-service documentation while preserving its non-authoritative status.
 
-Stop here. Do not modify `calltelemetry/ct-review-actions`, required checks, fleet allowlists, or consumer repositories without a new explicit production activation approval.
+Stop here. Do not modify `review-yeti-ai/review-yeti-actions`, required checks, fleet allowlists, or consumer repositories without a new explicit production activation approval.
 
 Run: `git add scripts/verify-doks-review-dispatch.sh scripts/qualify-doks-review-dispatch.ts docs/superpowers/evidence/doks-review-dispatch-evidence-template.md docs/DOCUMENTATION_AUTHORITY.md docs/ARCHITECTURE.md && git commit -m "docs(ops): add DOKS review qualification and rollback gates"`
 
@@ -761,7 +761,7 @@ Run: `git add scripts/verify-doks-review-dispatch.sh scripts/qualify-doks-review
 
 **Files:**
 
-- Modify in central control-plane repository: `calltelemetry/ct-review-actions` allowlist/routing files discovered at execution time
+- Modify in central control-plane repository: `review-yeti-ai/review-yeti-actions` allowlist/routing files discovered at execution time
 - Modify: `docs/DOKS_REVIEW_OPERATIONS.md`
 - Add: exact-head protected review and activation evidence
 

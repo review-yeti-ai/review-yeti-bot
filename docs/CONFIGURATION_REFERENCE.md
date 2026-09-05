@@ -1,9 +1,9 @@
-# ⚙️ ct-review-bot — Configuration Reference
+# ⚙️ Review Yeti — Configuration Reference
 
 > [!IMPORTANT]
 > **Public Action reference.** [`action.yml`](../action.yml) and the base-ref configuration loader
 > are authoritative when this guide disagrees with executable behavior. Sections explicitly scoped
-> to the self-hosted service do not configure the Action. CallTelemetry fleet policy is external;
+> to the self-hosted service do not configure the Action. Fleet policy is external;
 > see [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 This is a mixed reference: it documents the narrow public Action configuration boundary and
@@ -150,7 +150,7 @@ run identity.
 
 ## Historical OpenRouter infrastructure record
 
-[`OPENROUTER_TERRAFORM.md`](OPENROUTER_TERRAFORM.md) preserves an earlier CallTelemetry fleet
+[`OPENROUTER_TERRAFORM.md`](OPENROUTER_TERRAFORM.md) preserves an earlier historical fleet
 workspace, guardrail, budget, Doppler, and secret-handoff procedure. It is non-operational and its
 commands must not be executed without a separate current infrastructure audit. A direct standalone
 Action uses reviewed Action inputs and repository secrets; a managed fleet inherits provider policy
@@ -352,24 +352,63 @@ personas:
 
 | Key | Required | Description |
 | :--- | :--- | :--- |
-| `id` | yes | Built-in id, or a new id for a custom persona. |
-| `charter` | for custom personas | Instructions used as the reviewer's system prompt. |
-| `name` | no | Display name in the review comment. Defaults to the built-in's name, or the id. |
+| `id` | no | Persona identifier (auto-derived from `name` or `uses` if omitted). |
+| `name` | no | Display name in the review comment. |
+| `uses` | no | Reference to an external, community, or local charter (e.g. `review-yeti/personas/django-security@v1`). |
+| `charter` | for custom inline personas | Instructions used as the reviewer's system prompt (not required when `uses` is specified). |
 | `enabled` | no | Set `false` to exclude. Defaults to `true`. |
+| `required` | no | Whether finding consensus requires this persona. Defaults to `false`. |
+| `paths` | no | Array of path globs this persona evaluates (e.g. `["src/api/**"]`). Defaults to `["**"]`. |
+| `providers` | no | Provider IDs allocated to this persona. Defaults to `["openrouter"]`. |
 | `model` | no | Per-persona model override. Defaults to the workflow's model. |
+| `effort` | no | Reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). |
+| `maxTurns` | no | Maximum conversational turns (1-20). |
 
-### Persona Files (`.ct-review/personas/*.md`)
+### External & Community Charters (`uses:`)
+
+Review Yeti supports loading persona charters from external repositories, local folders, or bundled community charters:
+
+```yaml
+personas:
+  # 1. Bundled community persona (from domains/personas/ or examples/personas/)
+  - name: "🏢 Multi-Tenant Isolation"
+    uses: tenancy
+
+  # 2. Local relative file
+  - name: "🗄️ SQL Migration Safety"
+    uses: ./charters/sql-migrations.md
+
+  # 3. Remote GitHub repository reference with semantic version tag
+  - name: "🔒 Django Security Specialist"
+    uses: review-yeti/personas/django-security@v1
+```
+
+#### 3-Tier Resolution Precedence
+1. **Bundled**: Looks up pre-compiled personas in `domains/personas/` and `examples/personas/`.
+2. **Local**: Relative paths starting with `./` or `../` resolved against repository root.
+3. **Remote**: Formatted as `owner/repo/path@ref`, fetched via HTTPS, validated, and cached in `.ct-memory/cache/personas/`.
+
+👉 **See the [Team Memory Guide](TEAM_MEMORY.md) for full details on community charters and caching.**
+
+### Persona Files & Frontmatter (`.ct-review/personas/*.md`)
 
 A charter long enough to be useful is awkward as a YAML string. Each reviewer may instead live
-in its own markdown file, where optional YAML frontmatter carries the metadata and the body is
+in its own markdown file, where YAML frontmatter carries the metadata and the body is
 the charter:
 
 ```markdown
 <!-- .ct-review/personas/tenancy.md -->
 ---
-name: "🏢 Multi-Tenant Isolation"
+name: "🏢 Multi-Tenant Isolation Guardian"
+id: tenancy
+model: openrouter/deepseek/deepseek-v4-flash-0731
 enabled: true
-model: anthropic/claude-sonnet-4
+reasoning_effort: high
+paths:
+  - "src/api/**"
+  - "src/db/**"
+providers:
+  - openrouter
 ---
 
 Every query that touches customer data must be scoped by `orgId`.
@@ -381,34 +420,24 @@ Every query that touches customer data must be scoped by `orgId`.
 - Admin-only endpoints under `src/admin/**`, which are intentionally cross-tenant
 ```
 
-| Frontmatter key | Required | Description |
+| Frontmatter key | Type | Description |
 | :--- | :--- | :--- |
-| `id` | no | Defaults to the filename without its extension. |
-| `name` | no | Display name. Falls back to a built-in's name when overriding one, else the id. |
-| `enabled` | no | Set `false` to keep the file without running the reviewer. |
-| `model` | no | Per-persona model override. |
+| `name` | `string` | Display name in PR review comments. |
+| `id` | `string` | Optional unique identifier; defaults to the filename without `.md`. |
+| `model` | `string` | Model identifier override (e.g. `openrouter/deepseek/deepseek-v4-flash-0731`). |
+| `enabled` | `boolean` | Set `false` to keep the file without running the reviewer. |
+| `reasoning_effort` / `effort` | `enum` | Reasoning depth (`low`, `medium`, `high`, `xhigh`, `max`). |
+| `paths` | `string[]` | Path globs scoped for evaluation (e.g. `["src/**", "!src/vendor/**"]`). |
+| `providers` | `string[]` | Ordered provider IDs. |
+| `maxTurns` | `number` | Multi-turn ceiling (1-20). |
+| `description` | `string` | Short description of reviewer mission. |
 
 Rules:
-
-- **Frontmatter is optional.** A file containing only prose is a valid persona; its id comes from
-  the filename.
-- **Files extend the default roster.** Adding one persona file does not switch the twelve
-  built-ins off. Narrow the roster with a `personas:` list or the action's `personas:` input.
+- **Frontmatter is optional.** A file containing only prose is a valid persona; its id comes from the filename.
+- **Files extend the default roster.** Adding one persona file does not switch the default built-ins off.
 - **A file may override a built-in** by using its id; the body replaces that reviewer's charter.
-- **Declaring one id in two places is an error.** A file and an inline `personas:` entry with the
-  same id fails the run rather than silently picking a winner.
-- **An empty body is an error**, as is malformed frontmatter. Both fail the run rather than
-  dropping the reviewer silently.
-
-> **Unknown ids are fatal.** An id that is neither a built-in nor accompanied by a `charter`
-> fails the run with a non-zero exit and a message listing the valid ids. This is deliberate:
-> an unrecognised id previously selected zero reviewers, and a review with zero reviewers
-> reports `SHIP` — a typo would silently turn the bot into a rubber stamp.
-
-> **Not implemented on the Action path.** Earlier revisions of this document described
-> `paths:`, `providers:` and `required:` keys, and a `charter: "builtin:security"` indirection.
-> Those belong to the `src/panel/panelEngine.ts` configuration schema, not to the GitHub Action,
-> and are ignored by it. Path scoping for personas is not currently available.
+- **Declaring one id in two places is an error.** A file and an inline `personas:` entry with the same id fails the run rather than silently picking a winner.
+- **An empty body is an error**, as is malformed frontmatter. Both fail the run rather than dropping the reviewer silently.
 
 ### Reviewers & Arbiter Definition (`reviewers`)
 Defines execution mode, provider pool details, and binding arbiter order:
