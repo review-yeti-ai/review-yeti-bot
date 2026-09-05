@@ -1,8 +1,3 @@
-import type {
-  PersonaProgress as BusPersonaProgress,
-  TokenMetrics as BusTokenMetrics,
-} from '../live/liveStreamBus';
-
 export type LiveStreamEventType =
   | 'persona:start'
   | 'persona:chunk'
@@ -40,6 +35,32 @@ export type LiveStreamPersona =
   | 'compliance'
   | 'quorum'
   | string;
+
+/**
+ * The bus-side persona/token shapes. REL-573: these previously lived in `src/live/liveStreamBus.ts`
+ * and were imported back into this module, which made the canonical type module depend on a
+ * concrete infrastructure module and created a `types/live` <-> `liveStreamBus` import cycle.
+ * They live here now and the bus imports them, restoring the documented direction: this file is
+ * the single source of truth, and infrastructure depends on it, never the reverse.
+ *
+ * They remain distinct from `PersonaProgressState` / `StreamingTokenMetrics` below, which are the
+ * richer frontend shapes -- two legitimate producers, not a duplication.
+ */
+export interface PersonaProgress {
+  persona: LiveStreamPersona;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  startedAt?: string;
+  completedAt?: string;
+  findingsCount?: number;
+  lastMessage?: string;
+}
+
+export interface TokenMetrics {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  estimatedCostUSD?: number;
+}
 
 export interface LiveStreamEventData {
   personaId?: string;
@@ -155,11 +176,11 @@ export interface LiveJobSummary {
   // status strings); front-end producers (useSSE) populate it with the
   // richer `PersonaProgressState` shape. Both are legitimate producers, so
   // the survivor type accepts either rather than narrowing to one.
-  personaProgress: Record<string, PersonaProgressState | BusPersonaProgress>;
+  personaProgress: Record<string, PersonaProgressState | PersonaProgress>;
   // Widened union: LiveStreamBus's own `TokenMetrics` omits
   // tokensPerSec/latencyMs/astNodes/nitsFound, which useSSE's
   // `StreamingTokenMetrics` always populates.
-  tokenMetrics: StreamingTokenMetrics | BusTokenMetrics;
+  tokenMetrics: StreamingTokenMetrics | TokenMetrics;
   startTime: string;
   endTime?: string;
   eventCount: number;
