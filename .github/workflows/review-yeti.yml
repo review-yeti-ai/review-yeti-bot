@@ -243,6 +243,9 @@ jobs:
           HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
           HONCHO_WORKSPACE: ${{ vars.HONCHO_WORKSPACE || 'exampleorg' }}
           HONCHO_PEER: 'review-yeti'
+          HONCHO_OBSERVED: ${{ vars.HONCHO_OBSERVED || 'jason' }}
+          HONCHO_RECALL_PEERS: ${{ vars.HONCHO_RECALL_PEERS || 'review-yeti,codex' }}
+          HONCHO_RECALL_DISTANCE: ${{ vars.HONCHO_RECALL_DISTANCE || '0.35' }}
           MEMORY_PROVIDER: 'composite'
         with:
           github-token: ${{ steps.ry_token.outputs.token || github.token }}
@@ -278,6 +281,9 @@ jobs:
           honcho-base-url: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.do.example.com' }}
           honcho-workspace: ${{ vars.HONCHO_WORKSPACE || 'exampleorg' }}
           honcho-peer: 'review-yeti'
+          honcho-observed: ${{ vars.HONCHO_OBSERVED || 'jason' }}
+          honcho-recall-peers: ${{ vars.HONCHO_RECALL_PEERS || 'review-yeti,codex' }}
+          honcho-recall-distance: ${{ vars.HONCHO_RECALL_DISTANCE || '0.35' }}
           memory-provider: 'composite'
           # Library-documentation evidence tool (review-yeti-bot#101). The
           # action forwards this to CONTEXT7_API_KEY in the panel env; the
