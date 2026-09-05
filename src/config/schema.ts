@@ -238,6 +238,7 @@ export const enforcementPolicySchema = z.object({
 
 export const dialsSchema = z.object({
   memory_engine: z.boolean().default(true),
+  memory_provider: z.enum(['sqlite', 'honcho', 'composite', 'postgres', 'auto']).optional(),
   mascot: z.boolean().default(true),
   confidence_threshold: z.number().min(0).max(100).default(70),
   ticket_enforcement: z.boolean().default(false),

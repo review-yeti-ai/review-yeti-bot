@@ -278,6 +278,7 @@ High-level control knobs providing clean, top-level overrides across the platfor
 | Knob | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `memory_engine` | `boolean` | `true` | Master switch for `.ct-memory/` Graph Learning Engine and nit suppression. |
+| `memory_provider` | `enum` | `'auto'` | Memory backend adapter: `'sqlite'`, `'honcho'`, `'composite'`, `'postgres'`, `'auto'`. |
 | `mascot` | `boolean` | `true` | Master toggle for ASCII mascot output across reviews and chats. |
 | `confidence_threshold` | `number` | `70` | Global finding confidence cutoff rating (0-100). |
 | `ticket_enforcement` | `boolean` | `false` | Master toggle for Linear / Jira / GitHub ticket validation. |
@@ -286,6 +287,7 @@ High-level control knobs providing clean, top-level overrides across the platfor
 ```yaml
 dials:
   memory_engine: true
+  memory_provider: "composite"
   mascot: true
   confidence_threshold: 80
   ticket_enforcement: true
@@ -301,6 +303,7 @@ dials:
 `ct-review-bot` supports direct, clean configuration toggles that map cleanly into the underlying engine:
 
 - **`memory_engine`** (`boolean`): Enables/disables `.ct-memory/` SQLite learning graph and duplicate nit suppression.
+- **`memory_provider`** (`enum`): Memory backend adapter (`'sqlite'`, `'honcho'`, `'composite'`, `'postgres'`, `'auto'`). Automatically routes to composite synchronization when `HONCHO_API_KEY` is present.
 - **`mascot`** (`boolean`): Controls whether ASCII art mascot headers are rendered in comments.
 - **`persona_model`** (`string`): OpenRouter model identifier used by the
   persona in the optional service. A direct standalone Action uses the explicit
