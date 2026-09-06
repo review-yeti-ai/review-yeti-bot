@@ -278,6 +278,14 @@ publishing:
   model: ""
   gatewaySecretName: "review-yeti-gateway-credentials"
   gatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY"
+  # Per-run publish credentials. When enabled, the job dispatcher mints a token
+  # from the installed GitHub App -- one repository, checks: write, short-lived --
+  # and writes it to the run's Secret. Off by default: it grants the dispatcher
+  # create/delete on secrets in this namespace, which no non-publishing install
+  # needs. The grant deliberately omits get/list so the dispatcher can write run
+  # credentials without being able to read any other Secret here.
+  runSecrets:
+    enabled: false
 
 # Doppler-operator credential projection.
 #
