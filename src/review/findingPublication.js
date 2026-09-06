@@ -219,6 +219,26 @@ function comparePublicationItems(a, b) {
 }
 
 /**
+ * Folds one finding's fields into another that has already been judged the same claim.
+ *
+ * Shared by the exact-key dedupe in `planFindingPublication` and by `mergeClaimInto`'s
+ * near-duplicate clustering. Both used to carry their own copy of these rules, so any field added
+ * to a publication finding had to be merged in two places and the two were free to drift.
+ */
+function mergeFindingFields(merged, candidate) {
+  if (SEVERITY_RANK[candidate.severity] < SEVERITY_RANK[merged.severity]) merged.severity = candidate.severity;
+  merged.personas = [...new Set([...merged.personas, ...candidate.personas])].sort((a, b) => a.localeCompare(b));
+  merged.body = chooseRicher(merged.body, candidate.body);
+  merged.suggestion = chooseRicher(merged.suggestion, candidate.suggestion);
+  merged.replacementCode = chooseRicher(merged.replacementCode, candidate.replacementCode);
+  merged.recommendation = chooseRicher(merged.recommendation, candidate.recommendation);
+  if (candidate.confidence !== undefined) {
+    merged.confidence = merged.confidence === undefined ? candidate.confidence : Math.max(merged.confidence, candidate.confidence);
+  }
+  return merged;
+}
+
+/**
  * Folds `entry` into `target`, which has already been judged to be the same claim.
  *
  * Nothing is discarded that a reader would miss: the richest wording of each field survives, both
@@ -230,15 +250,7 @@ function mergeClaimInto(target, entry) {
   const merged = target.finding;
   const candidate = entry.finding;
 
-  if (SEVERITY_RANK[candidate.severity] < SEVERITY_RANK[merged.severity]) merged.severity = candidate.severity;
-  merged.personas = [...new Set([...merged.personas, ...candidate.personas])].sort((a, b) => a.localeCompare(b));
-  merged.body = chooseRicher(merged.body, candidate.body);
-  merged.suggestion = chooseRicher(merged.suggestion, candidate.suggestion);
-  merged.replacementCode = chooseRicher(merged.replacementCode, candidate.replacementCode);
-  merged.recommendation = chooseRicher(merged.recommendation, candidate.recommendation);
-  if (candidate.confidence !== undefined) {
-    merged.confidence = merged.confidence === undefined ? candidate.confidence : Math.max(merged.confidence, candidate.confidence);
-  }
+  mergeFindingFields(merged, candidate);
 
   const titles = new Set(merged.mergedTitles || []);
   for (const title of candidate.mergedTitles || []) titles.add(title);
@@ -371,16 +383,7 @@ function planFindingPublication(input, changedFiles, options = {}) {
       continue;
     }
 
-    const merged = existing.finding;
-    if (SEVERITY_RANK[candidate.severity] < SEVERITY_RANK[merged.severity]) merged.severity = candidate.severity;
-    merged.personas = [...new Set([...merged.personas, ...candidate.personas])].sort((a, b) => a.localeCompare(b));
-    merged.body = chooseRicher(merged.body, candidate.body);
-    merged.suggestion = chooseRicher(merged.suggestion, candidate.suggestion);
-    merged.replacementCode = chooseRicher(merged.replacementCode, candidate.replacementCode);
-    merged.recommendation = chooseRicher(merged.recommendation, candidate.recommendation);
-    if (candidate.confidence !== undefined) {
-      merged.confidence = merged.confidence === undefined ? candidate.confidence : Math.max(merged.confidence, candidate.confidence);
-    }
+    mergeFindingFields(existing.finding, candidate);
   }
 
   // Deterministic order first: the surviving anchor and title of every merge is the most severe,
