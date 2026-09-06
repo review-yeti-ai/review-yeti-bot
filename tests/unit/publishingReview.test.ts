@@ -215,3 +215,27 @@ describe('worker dispatch ordering (safety critical)', () => {
     expect(live).not.toHaveBeenCalled();
   });
 });
+
+describe('the worker never holds the App private key', () => {
+  it('refuses to publish without a ghs_ scoped token', async () => {
+    // The operator asserts the same boundary. This pod parses untrusted diffs and
+    // executes model output; an App private key here would let a compromised
+    // worker mint tokens for every installation.
+    const { runWorker } = await import('../../src/cli/runLiveReview');
+    const noop = vi.fn(async () => {});
+    await expect(runWorker(
+      env({ GITHUB_PUBLISH_TOKEN: '' }),
+      noop, noop, noop, noop, noop,
+    )).rejects.toThrow(/requires a ghs_ installation token/u);
+  });
+
+  it('refuses a token that is not an installation token', async () => {
+    const { runWorker } = await import('../../src/cli/runLiveReview');
+    const noop = vi.fn(async () => {});
+    // A PAT or App JWT would carry far broader scope than one repository.
+    await expect(runWorker(
+      env({ GITHUB_PUBLISH_TOKEN: 'ghp_personal_access_token' }),
+      noop, noop, noop, noop, noop,
+    )).rejects.toThrow(/requires a ghs_ installation token/u);
+  });
+});
