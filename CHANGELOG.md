@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.37.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.36.0...v1.37.0) (2026-09-06)
+
+
+### Features
+
+* **dispatch:** mint the publish token from the installed App (REL-586) ([#528](https://github.com/review-yeti-ai/review-yeti-bot/issues/528)) ([d242730](https://github.com/review-yeti-ai/review-yeti-bot/commit/d242730254813568b6b5c7fa2b369f0007405f9c))
+
 ## [1.36.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.35.0...v1.36.0) (2026-09-06)
 
 
