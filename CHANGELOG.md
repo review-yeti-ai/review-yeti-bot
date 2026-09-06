@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.34.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.34.0...v1.34.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* **worker:** resolve the publishing lane's installation from App creds, not env (REL-586) ([#520](https://github.com/review-yeti-ai/review-yeti-bot/issues/520)) ([465f3a6](https://github.com/review-yeti-ai/review-yeti-bot/commit/465f3a60cae1bc61290856a32e5cba50a33c19b8))
+
 ## [1.34.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.33.0...v1.34.0) (2026-09-06)
 
 
