@@ -1,8 +1,13 @@
 import { kubernetesStatusCode } from './kubernetesReviewJobProjector';
 import type { RunSecretProvisioner } from './reviewJobDispatchEngine';
-import { getGitHubAppRepositoryPublishToken } from '../github/appAuth';
+import { getGitHubAppRepositoryPublishToken, getGitHubAppRepositoryReadToken } from '../github/appAuth';
 
 export const PUBLISH_TOKEN_KEY = 'GITHUB_PUBLISH_TOKEN';
+// The operator wires GH_TOKEN from this key, non-optionally, for the publishing
+// lane. Omitting it leaves every app-gate pod in CreateContainerConfigError with
+// backoffLimit 0 -- it never starts, never creates a check run, and the pull
+// request sees nothing at all.
+export const READ_TOKEN_KEY = 'GITHUB_READ_TOKEN';
 const SECRET_NAME_PATTERN = /^ct-review-run-[a-f0-9]{32}$/u;
 
 export interface CoreSecretClient {
@@ -21,6 +26,7 @@ export interface KubernetesRunSecretProvisionerOptions {
   privateKey: string;
   fieldManager?: string;
   mintToken?: typeof getGitHubAppRepositoryPublishToken;
+  mintReadToken?: typeof getGitHubAppRepositoryReadToken;
 }
 
 /**
@@ -35,6 +41,7 @@ export interface KubernetesRunSecretProvisionerOptions {
 export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
   private readonly fieldManager: string;
   private readonly mintToken: typeof getGitHubAppRepositoryPublishToken;
+  private readonly mintReadToken: typeof getGitHubAppRepositoryReadToken;
 
   constructor(private readonly options: KubernetesRunSecretProvisionerOptions) {
     if (!options.appId.trim() || !options.privateKey.trim()) {
@@ -42,6 +49,7 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
     }
     this.fieldManager = options.fieldManager || 'ct-review-job-dispatcher';
     this.mintToken = options.mintToken || getGitHubAppRepositoryPublishToken;
+    this.mintReadToken = options.mintReadToken || getGitHubAppRepositoryReadToken;
   }
 
   async provision(request: {
@@ -58,12 +66,19 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
     }
     if (!request.owner || !request.repo) throw new Error('run secret provisioner requires owner and repo');
 
-    const minted = await this.mintToken({
+    const credentials = {
       appId: this.options.appId,
       privateKey: this.options.privateKey,
       owner: request.owner,
       repo: request.repo,
-    });
+    };
+    // Two separately-scoped tokens rather than one broad grant: the panel reads the
+    // pull request with contents+pull_requests read, and publishes the check with
+    // checks: write. Neither can do the other's job.
+    const [minted, readMinted] = await Promise.all([
+      this.mintToken(credentials),
+      this.mintReadToken(credentials),
+    ]);
 
     const body = {
       apiVersion: 'v1',
@@ -77,7 +92,10 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
         },
       },
       type: 'Opaque',
-      stringData: { [PUBLISH_TOKEN_KEY]: minted.token },
+      stringData: {
+        [PUBLISH_TOKEN_KEY]: minted.token,
+        [READ_TOKEN_KEY]: readMinted.token,
+      },
     };
 
     try {
