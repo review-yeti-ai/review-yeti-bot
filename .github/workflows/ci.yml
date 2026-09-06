@@ -122,6 +122,20 @@ jobs:
           grep -Fq 'secrets.REVIEW_YETI_BIFROST_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'OLLAMA_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OLLAMA_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
+          # Policy-derived, not another hardcoded name: every ENABLED transport's api_key_env must
+          # be wired into the telemetry probe. Hardcoded greps are what let this drift -- the five
+          # disabled transports were all wired while `bifrost`, the only enabled one, was not, so
+          # it recorded `skipped: no_credential` on every run and the ledger carried no evidence
+          # for the transport actually serving reviews. Deriving the list from policy means
+          # enabling a transport now fails CI until its credential reaches the probe.
+          missing=""
+          for env_name in $(jq -r '.review_yeti.transports[] | select(.enabled == true) | .api_key_env' policy/review-yeti.json); do
+            grep -Fq "${env_name}:" .github/workflows/transport-telemetry.yml || missing="${missing} ${env_name}"
+          done
+          if [ -n "${missing}" ]; then
+            echo "::error::enabled transport credential(s) not wired into transport-telemetry.yml:${missing}"
+            exit 1
+          fi
           grep -Fq 'GEMINI_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.GEMINI_API_KEY' .github/workflows/review-yeti.yml
           grep -Fq 'SYNTHETIC_API_KEY:' .github/workflows/review-yeti.yml
