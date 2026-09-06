@@ -7,11 +7,11 @@ const path = require('path');
 const MANIFEST_PATH = path.resolve(__dirname, '../../../src/config/openrouter-review-policy.json');
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENROUTER_AUTO_MODEL = 'openrouter/auto';
-const OPENROUTER_DIRECT_PRIMARY_MODEL = 'deepseek/deepseek-v4-flash-0731';
-const OPENROUTER_DIRECT_FALLBACK_MODEL = 'z-ai/glm-5.3-flash';
+const OPENROUTER_DIRECT_PRIMARY_MODEL = 'z-ai/glm-5.3-flash';
+const OPENROUTER_DIRECT_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
 const CANONICAL_ALLOWED_MODELS = Object.freeze([
-  'deepseek/deepseek-v4-flash-0731',
   'z-ai/glm-5.3-flash',
+  'deepseek/deepseek-v4-flash-0731',
   'openai/gpt-5.6-luna',
   'moonshotai/kimi-k2.6',
   'tencent/hy3',
