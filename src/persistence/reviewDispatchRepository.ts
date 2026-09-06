@@ -75,6 +75,23 @@ function validateAdmission(input: ReviewAdmissionInput): void {
   }
 }
 
+/**
+ * A publishing run that reached its terminal deadline without a verdict.
+ *
+ * REL-586: the ONLY component that creates a check run is the worker. Any failure
+ * before its pod starts -- token mint, RBAC, capacity, workspace contention, CR
+ * conflict, deadline expiry -- therefore leaves the head with no check at all. On a
+ * required gate that is a silent block: merges stop and nothing is red. These rows
+ * are what the reaper publishes a fail-closed conclusion for.
+ */
+export interface AbandonedPublishingRun {
+  runId: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+}
+
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null>;
@@ -82,6 +99,8 @@ export interface ReviewDispatchRepository {
   markProjected(runId: string, workerId: string, projectionName: string, now: number): Promise<boolean>;
   releaseForRetry(runId: string, workerId: string, now: number, availableAt: number): Promise<boolean>;
   markTerminal(runId: string, workerId: string, now: number, error: string): Promise<boolean>;
+  /** REL-586: sweep publishing runs whose deadline passed without ever publishing. */
+  claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
 }
 
 export class PostgresReviewDispatchRepository implements ReviewDispatchRepository {
@@ -286,6 +305,43 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       leaseOwner: row.lease_owner,
       leaseExpiresAt: milliseconds(row.lease_expires_at) || 0,
     } : null;
+  }
+
+  async claimAbandonedPublishingRuns(
+    workerId: string,
+    now: number,
+    limit: number,
+  ): Promise<AbandonedPublishingRun[]> {
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('reaper limit must be a positive integer');
+    // Marks terminal in the same statement it selects, under SKIP LOCKED, so two
+    // reapers cannot both publish for one run. A row is only swept once: after this
+    // its status is no longer 'queued'.
+    const result = await this.queryable.query(
+      `WITH candidate AS (
+         SELECT run_id
+           FROM review_runs
+          WHERE status = 'queued'
+            AND publication_mode = 'app-gate'
+            AND terminal_deadline <= to_timestamp($2 / 1000.0)
+          ORDER BY terminal_deadline
+          FOR UPDATE SKIP LOCKED
+          LIMIT $3
+       )
+       UPDATE review_runs AS runs
+          SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
+              last_error = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1
+         FROM candidate
+        WHERE runs.run_id = candidate.run_id
+       RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha`,
+      [workerId, now, limit],
+    );
+    return result.rows.map((row: Record<string, unknown>) => ({
+      runId: String(row.run_id),
+      owner: String(row.owner),
+      repo: String(row.repo),
+      prNumber: Number(row.pr_number),
+      headSha: String(row.head_sha),
+    }));
   }
 
   async heartbeat(runId: string, workerId: string, now: number, leaseMs: number): Promise<boolean> {
