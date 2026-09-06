@@ -18,9 +18,9 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     expect(content).toContain('#!/usr/bin/env node');
   });
 
-  it('2. Loads 12 persona charters with the direct DeepSeek default model', () => {
+  it('2. Loads 12 persona charters with the direct GLM default model', () => {
     const { PERSONA_CHARTERS, DEFAULT_MODEL } = pipeline;
-    expect(DEFAULT_MODEL).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(DEFAULT_MODEL).toBe('z-ai/glm-5.3-flash');
     expect(PERSONA_CHARTERS).toHaveLength(12);
 
     const expectedPersonas = [
@@ -126,7 +126,7 @@ index 123456..789abc 100644
     expect(formattedComment).toContain('## 🟢 **Verdict: SHIP**');
     expect(formattedComment).toContain('```mermaid');
     expect(formattedComment).toContain('flowchart TD');
-    expect(formattedComment).toContain('deepseek/deepseek-v4-flash-0731');
+    expect(formattedComment).toContain('z-ai/glm-5.3-flash');
     expect(formattedComment).toContain('🛡️ Security & Tenancy Guardian');
   });
 

@@ -147,18 +147,18 @@ describe('resolveModelConfig', () => {
     expect(cfg.enabled).toBe(true);
     expect(cfg.apiKey).toBe('sk-test');
     expect(cfg.baseUrl).toContain('openrouter.ai');
-    expect(cfg.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(cfg.model).toBe('z-ai/glm-5.3-flash');
     expect(cfg.transports).toMatchObject([
       {
-        name: 'openrouter-deepseek-v4-flash-0731',
-        model: 'deepseek/deepseek-v4-flash-0731',
+        name: 'openrouter-glm-5.3-flash',
+        model: 'z-ai/glm-5.3-flash',
         models: [],
         stream: true,
         reasoningEffort: 'high',
       },
       {
-        name: 'openrouter-glm-5.3-flash-fallback',
-        model: 'z-ai/glm-5.3-flash',
+        name: 'openrouter-deepseek-v4-flash-fallback',
+        model: 'deepseek/deepseek-v4-flash-0731',
         models: [],
         stream: true,
         reasoningEffort: 'high',
@@ -184,12 +184,12 @@ describe('resolveModelConfig', () => {
     });
     expect(cfg.enabled).toBe(true);
     expect(cfg.transports).toHaveLength(2);
-    expect(cfg.transports[0].name).toBe('openrouter-deepseek-v4-flash-0731');
+    expect(cfg.transports[0].name).toBe('openrouter-glm-5.3-flash');
     expect(cfg.transports[0].apiKey).toBe('sk-or-789');
-    expect(cfg.transports[0].model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(cfg.transports[1].name).toBe('openrouter-glm-5.3-flash-fallback');
+    expect(cfg.transports[0].model).toBe('z-ai/glm-5.3-flash');
+    expect(cfg.transports[1].name).toBe('openrouter-deepseek-v4-flash-fallback');
     expect(cfg.transports[1].apiKey).toBe('sk-or-789');
-    expect(cfg.transports[1].model).toBe('z-ai/glm-5.3-flash');
+    expect(cfg.transports[1].model).toBe('deepseek/deepseek-v4-flash-0731');
   });
 
   it('appends explicitly provisioned Ollama and Synthetic fallbacks after the direct OpenRouter pair', () => {
@@ -200,14 +200,14 @@ describe('resolveModelConfig', () => {
     });
 
     expect(cfg.transports.map((transport: any) => transport.name)).toEqual([
-      'openrouter-deepseek-v4-flash-0731',
-      'openrouter-glm-5.3-flash-fallback',
+      'openrouter-glm-5.3-flash',
+      'openrouter-deepseek-v4-flash-fallback',
       'ollama',
       'synthetic',
     ]);
     expect(cfg.transports[2]).toMatchObject({
       baseUrl: 'https://ollama.com/v1',
-      model: 'deepseek-v4-flash:cloud',
+      model: 'glm-5.3-flash',
       stream: true,
       reasoningEffort: 'high',
     });
@@ -280,7 +280,7 @@ describe('resolveModelConfig', () => {
     });
 
     expect(cfg.transports[0]).toMatchObject({
-      model: 'deepseek/deepseek-v4-flash-0731',
+      model: 'z-ai/glm-5.3-flash',
       models: [],
       stream: true,
     });
@@ -416,7 +416,7 @@ describe('reviewWithModel', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe('https://openrouter.ai/api/v1/chat/completions');
     expect(calls[0].body).toMatchObject({
-      model: 'deepseek/deepseek-v4-flash-0731',
+      model: 'z-ai/glm-5.3-flash',
       temperature: 0.1,
       response_format: { type: 'json_object' },
       provider: { data_collection: 'deny' },
