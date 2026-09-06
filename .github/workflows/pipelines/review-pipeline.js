@@ -98,8 +98,8 @@ try {
   }
 }
 
-const OPENROUTER_DIRECT_PRIMARY_MODEL = 'deepseek/deepseek-v4-flash-0731';
-const OPENROUTER_DIRECT_FALLBACK_MODEL = 'z-ai/glm-5.3-flash';
+const OPENROUTER_DIRECT_PRIMARY_MODEL = 'z-ai/glm-5.3-flash';
+const OPENROUTER_DIRECT_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
 const OPENROUTER_AUTO_MODEL = 'openrouter/auto';
 const OPENROUTER_PROMPT_CACHE_VERSION = 'review-yeti-v1';
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL && process.env.OPENROUTER_MODEL !== OPENROUTER_AUTO_MODEL
@@ -1485,7 +1485,7 @@ function resolveModelConfig(env = process.env) {
     // provider fallbacks, preserving the direct OpenRouter pair as the primary route.
     if (apiKey && isOpenRouterEndpoint(baseUrl)) {
       autoTransports.push({
-        name: 'openrouter-deepseek-v4-flash-0731',
+        name: 'openrouter-glm-5.3-flash',
         baseUrl,
         apiKey,
         model: OPENROUTER_DIRECT_PRIMARY_MODEL,
@@ -1499,7 +1499,7 @@ function resolveModelConfig(env = process.env) {
         connectTimeoutMs: 30_000,
       });
       autoTransports.push({
-        name: 'openrouter-glm-5.3-flash-fallback',
+        name: 'openrouter-deepseek-v4-flash-fallback',
         baseUrl,
         apiKey,
         model: OPENROUTER_DIRECT_FALLBACK_MODEL,
@@ -1532,7 +1532,7 @@ function resolveModelConfig(env = process.env) {
         name: 'fireworks',
         baseUrl: (env.FIREWORKS_BASE_URL || 'https://api.fireworks.ai/inference/v1').replace(/\/+$/, ''),
         apiKey: env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY,
-        model: env.FIREWORKS_MODEL || 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        model: env.FIREWORKS_MODEL || 'accounts/fireworks/models/glm-5.3-flash',
         timeoutMs: 120_000,
       });
     }
@@ -1546,7 +1546,7 @@ function resolveModelConfig(env = process.env) {
         name: 'ollama',
         baseUrl: (env.OLLAMA_BASE_URL || 'https://ollama.com/v1').replace(/\/+$/, ''),
         apiKey: env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY,
-        model: env.OLLAMA_MODEL || 'deepseek-v4-flash:cloud',
+        model: env.OLLAMA_MODEL || 'glm-5.3-flash',
         stream: true,
         reasoningEffort: 'high',
         timeoutMs: 90_000,
@@ -1734,7 +1734,7 @@ function resolveActionReviewPolicy(localConfig, env = process.env) {
   const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object'
     ? localConfig.parsed
     : (localConfig && typeof localConfig === 'object' ? localConfig : {});
-  const effectiveModel = env.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731:low';
+  const effectiveModel = env.OPENROUTER_MODEL || DEFAULT_MODEL;
   const dynamicDefaultDiff = calculateSafeDiffCapacity(effectiveModel);
   const limits = parsed.limits && typeof parsed.limits === 'object' ? parsed.limits : {};
   const configuredDiff = Number(limits.max_diff_bytes);
@@ -5865,8 +5865,9 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     });
   }
 
+  const activeModel = personaResults.find((r) => r && r.model)?.model || modelConfig.model || DEFAULT_MODEL;
   const reviewMode = modelConfig.enabled
-    ? `Model-backed (\`${modelConfig.model}\`)`
+    ? `Model-backed (\`${activeModel}\`)`
     : '⚠️ Static heuristics only — no model configured, findings are regex-level';
 
   const failedLanes = personaResults.filter((r) => r.decision === 'ERROR');
