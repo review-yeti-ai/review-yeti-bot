@@ -35,25 +35,37 @@ function documents(relativePath: string): Array<Record<string, any>> {
   return (yaml.loadAll(source) as Array<Record<string, any>>).filter(Boolean);
 }
 
+/**
+ * A rule grants create on PRReviewJob if it names the resource *or wildcards it*.
+ * `resources: ['*'], verbs: ['*']` is a materially equivalent grant, and matching
+ * only the literal resource name would let that form walk straight past the pin --
+ * the same evasion class `documents()` refuses elsewhere.
+ */
+function grantsCreate(rule: Record<string, any>): boolean {
+  const resources: string[] = rule.resources || [];
+  const verbs: string[] = rule.verbs || [];
+  const apiGroups: string[] = rule.apiGroups || [];
+  const groupMatches = apiGroups.includes('review-yeti.ai') || apiGroups.includes('*');
+  const resourceMatches = resources.includes('prreviewjobs') || resources.includes('*');
+  const verbMatches = verbs.includes('create') || verbs.includes('*');
+  return groupMatches && resourceMatches && verbMatches;
+}
+
 function createSubjectsFor(docs: Array<Record<string, any>>): string[] {
   const rolesGrantingCreate = new Set<string>();
   for (const doc of docs) {
     if (doc?.kind !== 'Role' && doc?.kind !== 'ClusterRole') continue;
-    for (const rule of doc.rules || []) {
-      const resources: string[] = rule.resources || [];
-      const verbs: string[] = rule.verbs || [];
-      if (resources.includes('prreviewjobs') && (verbs.includes('create') || verbs.includes('*'))) {
-        rolesGrantingCreate.add(String(doc.metadata?.name));
-      }
-    }
+    if ((doc.rules || []).some(grantsCreate)) rolesGrantingCreate.add(String(doc.metadata?.name));
   }
-  const subjects: string[] = [];
+  const subjects = new Set<string>();
   for (const doc of docs) {
     if (doc?.kind !== 'RoleBinding' && doc?.kind !== 'ClusterRoleBinding') continue;
     if (!rolesGrantingCreate.has(String(doc.roleRef?.name))) continue;
-    for (const subject of doc.subjects || []) subjects.push(String(subject.name));
+    // Deduplicated: binding the same account twice is a valid configuration and
+    // must not read as two creators.
+    for (const subject of doc.subjects || []) subjects.add(String(subject.name));
   }
-  return subjects;
+  return [...subjects].sort();
 }
 
 /**
@@ -85,13 +97,14 @@ describe('PRReviewJob create authority (REL-586)', () => {
     expect(createSubjectsFor(operatorDocs)).toEqual([]);
   });
 
-  it('is never granted cluster-wide', () => {
-    // A ClusterRole would extend the authority past ct-review-system.
+  it('is never granted cluster-wide, by name or by wildcard', () => {
+    // A ClusterRole would extend the authority past ct-review-system. Wildcards
+    // count: resources: ['*'] reaches prreviewjobs just as surely as naming it.
     for (const file of manifests) {
       for (const doc of documents(file)) {
         if (doc?.kind !== 'ClusterRole') continue;
         for (const rule of doc.rules || []) {
-          expect(rule.resources || []).not.toContain('prreviewjobs');
+          expect(grantsCreate(rule), `${file} ClusterRole ${doc.metadata?.name} grants create`).toBe(false);
         }
       }
     }
