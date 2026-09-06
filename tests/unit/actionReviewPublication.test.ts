@@ -888,3 +888,190 @@ describe('resolving the publishing identity', () => {
     expect(state.posted.every((post) => post.method !== 'PATCH')).toBe(true);
   });
 });
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('repairing a partially published round', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+  const marker = '<!-- review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action -->';
+  const resultMarker = '<!-- review-yeti-bot:result:v1:review-yeti-ai/review-yeti-bot#42:newhead:earlier-attempt -->';
+
+  const hunk = `@@ -0,0 +1,20 @@\n${Array.from({ length: 20 }, (_, i) => `+l${i}`).join('\n')}`;
+
+  // Two line-anchored findings and one that can only be anchored to a file (empty patch).
+  const plan = () => planFindingPublication([{
+    displayName: 'Security',
+    findings: [
+      { severity: 'P1' as const, path: 'src/alpha.ts', line: 4, title: 'Tenant id reaches the query builder unvalidated', body: 'The alpha handler interpolates the caller-supplied tenant id straight into the predicate, widening the row set beyond the caller.' },
+      { severity: 'P1' as const, path: 'src/beta.ts', line: 4, title: 'Session token is written to the request log', body: 'The beta handler logs the bearer token verbatim on each authenticated request, so log readers can replay a live session.' },
+      { severity: 'P0' as const, path: 'config/secrets.yaml', line: 1, title: 'Signing key committed in cleartext', body: 'The session signing key is checked in verbatim, so anyone with repository read access can mint valid sessions.' },
+    ],
+  }], [
+    { path: 'src/alpha.ts', patch: hunk },
+    { path: 'src/beta.ts', patch: hunk },
+    { path: 'config/secrets.yaml', patch: '' },
+  ]);
+
+  const threadFor = (item: any) => ({
+    id: `thread-${item.markerKey}`,
+    isResolved: false,
+    isOutdated: false,
+    path: item.path,
+    line: Number.isInteger(item.line) ? item.line : null,
+    diffSide: item.side || 'RIGHT',
+    comments: {
+      nodes: [{
+        databaseId: 4000,
+        body: `${item.body}\n\n<!-- review-yeti-bot:finding:v1:newhead:${item.markerKey} -->`,
+        createdAt: '2026-09-06T00:00:00Z',
+        author: { login: 'github-actions[bot]' },
+        commit: { oid: 'newhead' },
+      }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+  });
+
+  function runner(seedThreads: any[], options: { mirrorWrites?: boolean } = {}) {
+    const mirrorWrites = options.mirrorWrites !== false;
+    const reviews = [{ id: 777, commit_id: 'newhead', user: { login: 'github-actions[bot]' }, body: `**Verdict: SHIP**\n\n${marker}\n\n${resultMarker}` }];
+    const state = { reviews, threads: [...seedThreads], posted: [] as any[], comments: [] as any[], nextId: 5000 };
+    const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
+      if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
+      if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: false, endCursor: null } } } } } }]), stderr: '' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'api' && args.includes('--method')) {
+        const endpoint = args[3];
+        const payload = JSON.parse(commandOptions.input);
+        state.posted.push({ method: args[args.indexOf('--method') + 1], endpoint, payload });
+        state.nextId += 1;
+        if (endpoint.endsWith('/issues/42/comments')) state.comments.push({ id: state.nextId, body: payload.body, user: { login: 'github-actions[bot]' } });
+        if (mirrorWrites && endpoint.endsWith('/pulls/42/comments')) {
+          state.threads.push({
+            id: `thread-created-${state.nextId}`,
+            isResolved: false,
+            path: payload.path,
+            line: payload.line ?? null,
+            diffSide: payload.side || 'RIGHT',
+            comments: { nodes: [{ databaseId: state.nextId, body: payload.body, createdAt: '2026-09-06T00:00:00Z', author: { login: 'github-actions[bot]' }, commit: { oid: 'newhead' } }], pageInfo: { hasNextPage: false, endCursor: null } },
+          });
+        }
+        return { status: 0, stdout: JSON.stringify({ id: state.nextId, user: { login: 'github-actions[bot]' } }), stderr: '' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/pulls/42/reviews')) return { status: 0, stdout: JSON.stringify([state.reviews]), stderr: '' };
+      return { status: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    };
+    return { state, commandRunner };
+  }
+
+  it('creates only the conversations the prior round did not manage to open', () => {
+    const publicationPlan = plan();
+    const already = publicationPlan.lineComments[0];
+    const { state, commandRunner } = runner([threadFor(already)]);
+
+    const result = postOrOutputComment('body', context, publicationPlan, { commandRunner });
+
+    expect(result.success).toBe(true);
+    // The terminal receipt for this head is reused, not re-posted.
+    expect(state.posted.filter((post) => post.endpoint.endsWith('/pulls/42/reviews'))).toHaveLength(0);
+
+    const created = state.posted.filter((post) => post.endpoint.endsWith('/pulls/42/comments'));
+    expect(created).toHaveLength(2);
+    expect(created.map((post) => post.payload.path).sort()).toEqual(['config/secrets.yaml', 'src/beta.ts']);
+    expect(created.every((post) => post.payload.commit_id === 'newhead')).toBe(true);
+    // The already-published conversation is not opened a second time.
+    expect(created.some((post) => post.payload.path === already.path)).toBe(false);
+  });
+
+  it('opens the unanchorable finding as a file conversation', () => {
+    const publicationPlan = plan();
+    const { state, commandRunner } = runner([]);
+
+    postOrOutputComment('body', context, publicationPlan, { commandRunner });
+
+    const fileComment = state.posted.find((post) => post.endpoint.endsWith('/pulls/42/comments') && post.payload.path === 'config/secrets.yaml');
+    expect(fileComment.payload.subject_type).toBe('file');
+    expect(fileComment.payload.line).toBeUndefined();
+  });
+
+  it('does not report a repair round as deduplicated', () => {
+    const publicationPlan = plan();
+    const { commandRunner } = runner([threadFor(publicationPlan.lineComments[0])]);
+
+    expect(postOrOutputComment('body', context, publicationPlan, { commandRunner }).deduplicated).toBeUndefined();
+  });
+
+  it('reports deduplicated only when every conversation was already open', () => {
+    const publicationPlan = plan();
+    const seeded = [...publicationPlan.lineComments, ...publicationPlan.fileComments].map(threadFor);
+    const { state, commandRunner } = runner(seeded);
+
+    const result = postOrOutputComment('body', context, publicationPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, deduplicated: true });
+    expect(state.posted.filter((post) => post.endpoint.endsWith('/pulls/42/comments'))).toHaveLength(0);
+  });
+
+  // Distinct from the review-readback failure: here the review is visible but a conversation the
+  // run just wrote is not, so the round cannot claim the findings were published.
+  it('fails closed when a written conversation is not visible afterwards', () => {
+    const publicationPlan = plan();
+    const { commandRunner } = runner([], { mirrorWrites: false });
+
+    const result = postOrOutputComment('body', context, publicationPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('failed exact-head verification');
+  });
+});
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('bounding the sticky summary history', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+
+  const roundsIn = (body: string) => splitStickySummaryBody(body).entries.length;
+
+  // Successive rounds accumulate into collapsed history; without the slice and the shift loop the
+  // comment grows until GitHub refuses the write and publication fails outright.
+  const renderRounds = (count: number, bodyFor: (i: number) => string) => {
+    let body: string | undefined;
+    for (let i = 0; i < count; i += 1) {
+      body = renderStickySummaryBody(bodyFor(i), { ...context, headSha: `head${i}` }, body, { publicationAttemptId: `attempt-${i}` }).body;
+    }
+    return body as string;
+  };
+
+  it('keeps only the newest eight rounds', () => {
+    const body = renderRounds(12, (i) => `Round body ${i}`);
+
+    expect(roundsIn(body)).toBe(8);
+    expect(body).toContain('Round body 11');
+    expect(body).not.toContain('Round body 0');
+    expect(body).not.toContain('Round body 2');
+  });
+
+  it('drops further rounds when eight of them would still be too large', () => {
+    const body = renderRounds(10, (i) => `Round ${i} ${'x'.repeat(9_000)}`);
+
+    expect(roundsIn(body)).toBeLessThan(8);
+    expect(body.length).toBeLessThan(120_000);
+  });
+
+  it('clips a single oversized round and says so', () => {
+    const body = renderRounds(2, (i) => (i === 0 ? `huge ${'y'.repeat(20_000)}` : 'small follow-up round'));
+
+    expect(body).toContain('This historical round was clipped to keep the sticky summary bounded.');
+    expect(body).toContain('small follow-up round');
+  });
+
+  it('never drops the round currently being published', () => {
+    const body = renderRounds(9, (i) => `Round ${i} ${'z'.repeat(30_000)}`);
+
+    expect(body).toContain('Round 8');
+  });
+});
