@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.36.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.35.0...v1.36.0) (2026-09-06)
+
+
+### Features
+
+* **operator:** supply the app-gate transport config from deployment env (REL-586) ([#524](https://github.com/review-yeti-ai/review-yeti-bot/issues/524)) ([cdc9473](https://github.com/review-yeti-ai/review-yeti-bot/commit/cdc947363d8b2a857a9f23523a17a8bd76664a12))
+
 ## [1.35.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.34.1...v1.35.0) (2026-09-06)
 
 
