@@ -263,43 +263,6 @@ secrets:
   openRouterApiKey: ""
   openRouterBaseUrl: ""
 
-# Job dispatcher: claims admitted reviews and projects PRReviewJob resources.
-#
-# Distinct from `dispatcher` above, which is the action-dispatch API -- same image,
-# different entrypoint, different service account. Only this component provisions
-# per-run publish secrets, which is why the App credentials belong here.
-#
-# Off by default because this Deployment has historically been applied outside
-# Helm; enabling it makes the chart the owner. Set `image` to the digest already
-# running before enabling, so turning it on is not also a version change.
-jobDispatcher:
-  enabled: false
-  name: "ct-review-job-dispatcher"
-  serviceAccountName: "ct-review-job-dispatcher"
-  configMapName: "ct-review-job-dispatcher"
-  appSecretName: "ct-review-action-dispatch-runtime"
-  image: ""
-  imagePullPolicy: IfNotPresent
-  resources:
-    requests:
-      cpu: 25m
-      memory: 64Mi
-    limits:
-      cpu: 250m
-      memory: 256Mi
-  podSecurityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    runAsGroup: 1000
-    fsGroup: 1000
-    seccompProfile:
-      type: RuntimeDefault
-  securityContext:
-    allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: true
-    capabilities:
-      drop: ["ALL"]
-
 # App-gate publishing lane transport (ADR 0527).
 #
 # Both gatewayBaseUrl and model are EMPTY by default and are deliberately not
@@ -315,19 +278,9 @@ publishing:
   model: ""
   gatewaySecretName: "review-yeti-gateway-credentials"
   gatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY"
-  # Per-run publish credentials. When enabled, the job dispatcher mints a token
-  # from the installed GitHub App -- one repository, checks: write, short-lived --
-  # and writes it to the run's Secret. Off by default: it grants the dispatcher
-  # create/delete on secrets in this namespace, which no non-publishing install
-  # needs. The grant deliberately omits get/list so the dispatcher can write run
-  # credentials without being able to read any other Secret here.
-  runSecrets:
-    enabled: false
-    # Service account of the JOB dispatcher (node dist/reviewJobDispatcherIndex.js),
-    # which is the component that provisions run secrets -- not the action-dispatch
-    # API under .Values.dispatcher. Named rather than derived because that
-    # Deployment is not currently rendered by this chart.
-    serviceAccountName: "ct-review-job-dispatcher"
+  # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
+  # which already defines that component's ServiceAccount, Role, RoleBinding and
+  # Deployment. Defining them here too would give the same resources two owners.
 
 # Doppler-operator credential projection.
 #
