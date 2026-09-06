@@ -122,3 +122,15 @@ export function planFindingPublication(
   changedFiles: PublicationChangedFile[],
   options?: PlanFindingPublicationOptions,
 ): FindingPublicationPlan;
+
+/** Max resolve-required review threads one publish may open. */
+export const MAX_PUBLISHED_REVIEW_THREADS: number;
+
+/**
+ * Trims a plan to `max` review threads, ranked across line and file comments together.
+ * Everything past the cap moves to `overflow` for the caller to render.
+ */
+export function capPublicationThreads<T extends FindingPublicationPlan>(
+  publicationPlan: T,
+  max?: number,
+): T & { overflow: PublicationComment[] };

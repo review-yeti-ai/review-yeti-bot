@@ -21,7 +21,11 @@ const {
   sha256,
   validateReviewFindings,
 } = require('../../../src/review/reviewCore');
-const { planFindingPublication } = require('../../../src/review/findingPublication');
+const {
+  capPublicationThreads,
+  MAX_PUBLISHED_REVIEW_THREADS,
+  planFindingPublication,
+} = require('../../../src/review/findingPublication');
 const { applyFalsificationOutcomes, runFindingFalsification } = require('../../../src/review/findingFalsification');
 const {
   resolveOpenRouterReviewPolicy,
@@ -6623,57 +6627,26 @@ function emptyReviewBodyGuardError(body, prContext) {
  * and skipped, so a retry repairs partial publication without duplicating successful threads.
  */
 /**
- * Max resolve-required review threads one run may open.
+ * Guards the parameter that changed meaning when review threads came back.
  *
- * `required_conversation_resolution` turns every unresolved thread into a merge block, so an
- * uncapped panel can wedge a pull request behind dozens of them. The App path has capped this at
- * ten P0/P1 threads since the 2026-08-03 publication policy; the Action matches it so both
- * surfaces behave the same way. Overflow is never dropped -- it is listed in the summary body.
+ * This function used to be `(commentBody, prContext, options)`. It is exported, so a caller still
+ * passing the old options object third would have it read as a publication plan: the plan fields
+ * would default to empty and the injected `commandRunner`/`fileSystem` would be ignored in favour
+ * of the real `gh` binary -- a silent loss of the test boundary rather than an error.
  */
-const MAX_PUBLISHED_REVIEW_THREADS = 10;
-
-/**
- * Trims the plan to `max` review threads, most severe first.
- *
- * `planFindingPublication` sorts line and file comments into two already-severity-ordered lists,
- * so neither list alone gives the global order: taking the head of each would publish a P1 line
- * finding while pushing a P0 file-level finding into overflow. Rank across both lists instead, and
- * keep each list's own order for what survives. Everything past the cap moves to `overflow`, which
- * `postOrOutputComment` renders in the summary body rather than dropping.
- */
-function capPublicationThreads(publicationPlan, max = MAX_PUBLISHED_REVIEW_THREADS) {
-  const lineComments = publicationPlan.lineComments || [];
-  const fileComments = publicationPlan.fileComments || [];
-  const total = lineComments.length + fileComments.length;
-  if (!Number.isInteger(max) || max < 0 || total <= max) return publicationPlan;
-
-  const severityRank = (item) => {
-    const severity = item?.finding?.severity || item?.severity;
-    return severity === 'P0' ? 0 : severity === 'P1' ? 1 : 2;
-  };
-  // A line anchor is the more actionable of the two, so it wins a tie at equal severity.
-  const ranked = [
-    ...lineComments.map((item, index) => ({ item, kindRank: 0, index })),
-    ...fileComments.map((item, index) => ({ item, kindRank: 1, index })),
-  ].sort((a, b) => (
-    severityRank(a.item) - severityRank(b.item)
-    || a.kindRank - b.kindRank
-    || a.index - b.index
-  ));
-
-  const kept = new Set(ranked.slice(0, max).map((entry) => entry.item));
-  return {
-    ...publicationPlan,
-    lineComments: lineComments.filter((item) => kept.has(item)),
-    fileComments: fileComments.filter((item) => kept.has(item)),
-    overflow: [
-      ...(publicationPlan.overflow || []),
-      ...ranked.slice(max).map((entry) => entry.item),
-    ],
-  };
+function assertPublicationPlanArgument(publicationPlan) {
+  if (!publicationPlan || typeof publicationPlan !== 'object') return;
+  const optionKeys = ['commandRunner', 'fileSystem', 'now', 'tempDirectory', 'cwd'];
+  const planKeys = ['lineComments', 'fileComments', 'advisories', 'rejected', 'overflow'];
+  const looksLikeOptions = optionKeys.some((key) => key in publicationPlan);
+  const looksLikePlan = planKeys.some((key) => key in publicationPlan);
+  if (looksLikeOptions && !looksLikePlan) {
+    throw new TypeError('postOrOutputComment(commentBody, prContext, publicationPlan, options): the third argument looks like an options object. Publication options moved to the fourth argument when inline review threads were restored.');
+  }
 }
 
 function postOrOutputComment(commentBody, prContext, publicationPlan = {}, options = {}) {
+  assertPublicationPlanArgument(publicationPlan);
   const emptyBodyError = emptyReviewBodyGuardError(commentBody, prContext);
   if (emptyBodyError) {
     console.error(`[Publish] ${emptyBodyError}`);

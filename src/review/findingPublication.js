@@ -435,7 +435,61 @@ function planFindingPublication(input, changedFiles, options = {}) {
   return { lineComments, fileComments, advisories, rejected };
 }
 
+/**
+ * Max resolve-required review threads one run may open.
+ *
+ * `required_conversation_resolution` turns every unresolved thread into a merge block, so an
+ * uncapped panel can wedge a pull request behind dozens of them. The App path has capped this at
+ * ten P0/P1 threads since the 2026-08-03 publication policy. It lives here, beside the planner,
+ * so the Action and the App read one definition of the cap and its ranking rather than keeping
+ * hand-maintained copies that drift. Overflow is never dropped -- callers render it.
+ */
+const MAX_PUBLISHED_REVIEW_THREADS = 10;
+
+/**
+ * Trims the plan to `max` review threads, most severe first.
+ *
+ * `planFindingPublication` sorts line and file comments into two already-severity-ordered lists,
+ * so neither list alone gives the global order: taking the head of each would publish a P1 line
+ * finding while pushing a P0 file-level finding into overflow. Rank across both lists instead, and
+ * keep each list's own order for what survives. Everything past the cap moves to `overflow`, which
+ * `postOrOutputComment` renders in the summary body rather than dropping.
+ */
+function capPublicationThreads(publicationPlan, max = MAX_PUBLISHED_REVIEW_THREADS) {
+  const lineComments = publicationPlan.lineComments || [];
+  const fileComments = publicationPlan.fileComments || [];
+  const total = lineComments.length + fileComments.length;
+  if (!Number.isInteger(max) || max < 0 || total <= max) return publicationPlan;
+
+  const severityRank = (item) => {
+    const severity = item?.finding?.severity || item?.severity;
+    return severity === 'P0' ? 0 : severity === 'P1' ? 1 : 2;
+  };
+  // A line anchor is the more actionable of the two, so it wins a tie at equal severity.
+  const ranked = [
+    ...lineComments.map((item, index) => ({ item, kindRank: 0, index })),
+    ...fileComments.map((item, index) => ({ item, kindRank: 1, index })),
+  ].sort((a, b) => (
+    severityRank(a.item) - severityRank(b.item)
+    || a.kindRank - b.kindRank
+    || a.index - b.index
+  ));
+
+  const kept = new Set(ranked.slice(0, max).map((entry) => entry.item));
+  return {
+    ...publicationPlan,
+    lineComments: lineComments.filter((item) => kept.has(item)),
+    fileComments: fileComments.filter((item) => kept.has(item)),
+    overflow: [
+      ...(publicationPlan.overflow || []),
+      ...ranked.slice(max).map((entry) => entry.item),
+    ],
+  };
+}
+
 module.exports = {
+  capPublicationThreads,
+  MAX_PUBLISHED_REVIEW_THREADS,
   parsePatchAnchors,
   findingDedupeKey,
   findingMarkerKey,
