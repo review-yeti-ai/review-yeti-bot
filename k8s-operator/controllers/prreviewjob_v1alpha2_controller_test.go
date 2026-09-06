@@ -622,49 +622,108 @@ func TestPRReviewJobV1Alpha2ReconcilerKeepsItsOwnAppGateWorker(t *testing.T) {
 	}
 }
 
-// A tampered app-gate worker must still be rejected: widening the matcher to admit
-// the lane must not turn it into a lane that accepts anything.
-func TestPRReviewJobV1Alpha2ReconcilerStillRejectsTamperedAppGateWorker(t *testing.T) {
-	now := time.Date(2026, 9, 1, 20, 0, 0, 0, time.UTC)
-	scheme := v1alpha2Scheme(t)
-	review := v1alpha2Review(now)
-	review.UID = types.UID("app-gate-tampered")
-	review.Spec.PublicationMode = "app-gate"
-	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
-	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
-		Client: kube,
-		Scheme: scheme,
-		Now:    func() time.Time { return now },
-		Publishing: job.PublishingConfig{
-			GatewayBaseURL:    "https://llm-gateway.calltelemetry.com/v1",
-			Model:             "ollama/glm-5.3-flash",
-			GatewaySecretName: "review-yeti-gateway-credentials",
-			GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+// A tampered app-gate worker must still be rejected. Widening the matcher to admit
+// the lane must not turn it into a lane that accepts anything -- and this PR exists
+// because a matcher and a builder drifted apart untested, so the matcher's own
+// constraints get the same treatment.
+func TestPRReviewJobV1Alpha2ReconcilerStopsTamperedAppGateWorkers(t *testing.T) {
+	cases := map[string]func(env []corev1.EnvVar) []corev1.EnvVar{
+		"app private key injected": func(env []corev1.EnvVar) []corev1.EnvVar {
+			return append(env, corev1.EnvVar{Name: "GITHUB_APP_PRIVATE_KEY", Value: "leaked"})
+		},
+		"provider key injected": func(env []corev1.EnvVar) []corev1.EnvVar {
+			return append(env, corev1.EnvVar{Name: "OPENROUTER_API_KEY", Value: "leaked"})
+		},
+		"publish token missing": func(env []corev1.EnvVar) []corev1.EnvVar {
+			return withoutEnv(env, "GITHUB_PUBLISH_TOKEN")
+		},
+		"read token missing": func(env []corev1.EnvVar) []corev1.EnvVar {
+			return withoutEnv(env, "GH_TOKEN")
+		},
+		"read token points at the publish key": func(env []corev1.EnvVar) []corev1.EnvVar {
+			out := withoutEnv(env, "GH_TOKEN")
+			return append(out, secretEnv("GH_TOKEN", runSecretNameOf(env), "GITHUB_PUBLISH_TOKEN"))
+		},
+		"publish token points at a foreign secret": func(env []corev1.EnvVar) []corev1.EnvVar {
+			out := withoutEnv(env, "GITHUB_PUBLISH_TOKEN")
+			return append(out, secretEnv("GITHUB_PUBLISH_TOKEN", "ct-review-action-dispatch-runtime", "GITHUB_PUBLISH_TOKEN"))
+		},
+		"publish token duplicated": func(env []corev1.EnvVar) []corev1.EnvVar {
+			return append(env, secretEnv("GITHUB_PUBLISH_TOKEN", runSecretNameOf(env), "GITHUB_PUBLISH_TOKEN"))
+		},
+		"receipt-only marker injected": func(env []corev1.EnvVar) []corev1.EnvVar {
+			return append(env, corev1.EnvVar{Name: job.ReceiptOnlyEnv, Value: "true"})
+		},
+		"qualification marker injected": func(env []corev1.EnvVar) []corev1.EnvVar {
+			return append(env, corev1.EnvVar{Name: job.SameHeadQualificationEnv, Value: "true"})
 		},
 	}
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
-	for attempt := 0; attempt < 2; attempt++ {
-		if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
-			t.Fatal(err)
+	for name, tamper := range cases {
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 9, 1, 20, 0, 0, 0, time.UTC)
+			scheme := v1alpha2Scheme(t)
+			review := v1alpha2Review(now)
+			review.UID = types.UID("app-gate-tampered")
+			review.Spec.PublicationMode = "app-gate"
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).
+				WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+			reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+				Client: kube, Scheme: scheme, Now: func() time.Time { return now },
+				Publishing: job.PublishingConfig{
+					GatewayBaseURL:    "https://llm-gateway.calltelemetry.com/v1",
+					Model:             "ollama/glm-5.3-flash",
+					GatewaySecretName: "review-yeti-gateway-credentials",
+					GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+				},
+			}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+			for attempt := 0; attempt < 2; attempt++ {
+				if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
+			var worker batchv1.Job
+			if err := kube.Get(context.Background(), workerKey, &worker); err != nil {
+				t.Fatal(err)
+			}
+			container := &worker.Spec.Template.Spec.Containers[0]
+			container.Env = tamper(container.Env)
+			if err := kube.Update(context.Background(), &worker); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("tampered app-gate worker (%s) was not stopped: %v", name, err)
+			}
+		})
+	}
+}
+
+func withoutEnv(env []corev1.EnvVar, name string) []corev1.EnvVar {
+	out := make([]corev1.EnvVar, 0, len(env))
+	for _, variable := range env {
+		if variable.Name != name {
+			out = append(out, variable)
 		}
 	}
-	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
-	var worker batchv1.Job
-	if err := kube.Get(context.Background(), workerKey, &worker); err != nil {
-		t.Fatal(err)
+	return out
+}
+
+func secretEnv(name, secret, key string) corev1.EnvVar {
+	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+		LocalObjectReference: corev1.LocalObjectReference{Name: secret},
+		Key:                  key,
+	}}}
+}
+
+func runSecretNameOf(env []corev1.EnvVar) string {
+	for _, variable := range env {
+		if variable.Name == "GITHUB_PUBLISH_TOKEN" && variable.ValueFrom != nil && variable.ValueFrom.SecretKeyRef != nil {
+			return variable.ValueFrom.SecretKeyRef.Name
+		}
 	}
-	// Inject an App credential: the publishing worker must never hold one.
-	worker.Spec.Template.Spec.Containers[0].Env = append(
-		worker.Spec.Template.Spec.Containers[0].Env,
-		corev1.EnvVar{Name: "GITHUB_APP_PRIVATE_KEY", Value: "leaked"},
-	)
-	if err := kube.Update(context.Background(), &worker); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
-		t.Fatal(err)
-	}
-	if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("tampered app-gate worker was not stopped: %v", err)
-	}
+	return ""
 }
