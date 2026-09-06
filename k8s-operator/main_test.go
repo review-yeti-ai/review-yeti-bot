@@ -39,10 +39,10 @@ func TestPublishingConfigFromEnvDefaultsRefuseAppGate(t *testing.T) {
 }
 
 func TestPublishingConfigFromEnvReadsTransport(t *testing.T) {
-	t.Setenv("REVIEW_YETI_GATEWAY_BASE_URL", "https://llm-gateway.calltelemetry.com/v1")
+	t.Setenv("REVIEW_YETI_GATEWAY_BASE_URL", "https://gateway.example.invalid/v1")
 	t.Setenv("REVIEW_YETI_REVIEW_MODEL", "ollama/glm-5.3-flash")
 	config := publishingConfigFromEnv()
-	if config.GatewayBaseURL != "https://llm-gateway.calltelemetry.com/v1" || config.Model != "ollama/glm-5.3-flash" {
+	if config.GatewayBaseURL != "https://gateway.example.invalid/v1" || config.Model != "ollama/glm-5.3-flash" {
 		t.Fatalf("transport not read: %+v", config)
 	}
 }

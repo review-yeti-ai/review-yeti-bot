@@ -296,12 +296,15 @@ publishing:
 # redeploy -- a chart-pinned literal would go stale silently.
 doppler:
   enabled: false
-  # Doppler project/config holding REVIEW_YETI_BIFROST_API_KEY.
-  project: "ct-llm-gateway"
-  config: "prd"
+  # Doppler project and config holding the gateway credential. Empty by default:
+  # this repository is public, and a concrete project name maps the operator's
+  # secret-store layout for anyone reading it. Set them in the private deployment
+  # values, alongside gatewayBaseUrl and model.
+  project: ""
+  config: ""
   host: "https://api.doppler.com"
   verifyTLS: true
-  # 60s matches the ct-llm-gateway projection already running in this cluster.
+  # 60s matches the credential projection already running alongside this operator.
   resyncSeconds: 60
   # Service-token Secret (key: serviceToken). Provisioned out of band; the chart
   # never renders a Doppler token into a manifest.
