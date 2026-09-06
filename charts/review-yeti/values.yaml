@@ -262,5 +262,28 @@ secrets:
   # LLM Provider API Keys
   openRouterApiKey: ""
   openRouterBaseUrl: ""
+
+# Doppler-operator credential projection.
+#
+# Off by default: enabling it requires the Doppler Kubernetes Operator to be
+# installed in the cluster and a service-token Secret (doppler.tokenSecretName)
+# present in this namespace. When enabled, the operator continuously syncs the
+# named Doppler config into a managed Secret, so rotating the Bifrost virtual
+# key upstream repairs the cluster on the next resync instead of requiring a
+# redeploy -- a chart-pinned literal would go stale silently.
+doppler:
+  enabled: false
+  # Doppler project/config holding REVIEW_YETI_BIFROST_API_KEY.
+  project: "ct-llm-gateway"
+  config: "prd"
+  host: "https://api.doppler.com"
+  verifyTLS: true
+  # 60s matches the ct-llm-gateway projection already running in this cluster.
+  resyncSeconds: 60
+  # Service-token Secret (key: serviceToken). Provisioned out of band; the chart
+  # never renders a Doppler token into a manifest.
+  tokenSecretName: "doppler-token-secret"
+  # Secret the operator writes and the review worker reads.
+  managedSecretName: "review-yeti-gateway-credentials"
   anthropicApiKey: ""
   openaiApiKey: ""
