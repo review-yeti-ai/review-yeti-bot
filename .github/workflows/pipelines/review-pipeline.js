@@ -18,8 +18,10 @@ const { spawnSync, execSync } = require('child_process');
 const {
   computeArbitration: computeCanonicalArbitration,
   sanitizeFindings: sanitizeCanonicalFindings,
+  sha256,
   validateReviewFindings,
 } = require('../../../src/review/reviewCore');
+const { planFindingPublication } = require('../../../src/review/findingPublication');
 const { applyFalsificationOutcomes, runFindingFalsification } = require('../../../src/review/findingFalsification');
 const {
   resolveOpenRouterReviewPolicy,
@@ -5995,119 +5997,884 @@ function writeStepSummary(arbitration, personaResults, prContext, coverage) {
   }
 }
 
+const REVIEW_THREADS_QUERY = `
+query ReviewThreads($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 50, after: $endCursor) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          diffSide
+          comments(first: 10) {
+            nodes { databaseId body createdAt author { login } commit { oid } }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
+const REVIEW_THREAD_COMMENTS_QUERY = `
+query ReviewThreadComments($threadId: ID!, $endCursor: String) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $endCursor) {
+        nodes { databaseId body createdAt author { login } commit { oid } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}`;
+
+const MAX_DECISION_SNAPSHOT_COMMENTS = 500;
+const MAX_DECISION_SNAPSHOT_THREADS = 500;
+const MAX_DECISION_SNAPSHOT_API_PAGES = 10;
+
+function actionReviewMarker(prContext) {
+  return prContext.repo && prContext.prNumber && prContext.headSha
+    ? `<!-- review-yeti-bot:v2:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:action -->`
+    : '';
+}
+
+function publicationAttemptId(options, commentBody) {
+  const explicitAttemptId = options?.publicationAttemptId;
+  if (typeof explicitAttemptId === 'string' && /^[A-Za-z0-9._:-]{1,120}$/u.test(explicitAttemptId)) return explicitAttemptId;
+  const runId = process.env.GITHUB_RUN_ID;
+  if (typeof runId === 'string' && /^[A-Za-z0-9._:-]{1,100}$/u.test(runId)) {
+    const runAttempt = process.env.GITHUB_RUN_ATTEMPT;
+    const normalizedAttempt = typeof runAttempt === 'string' && /^[1-9][0-9]{0,9}$/u.test(runAttempt)
+      ? runAttempt
+      : 'unknown';
+    // GitHub keeps GITHUB_RUN_ID stable across a re-run and increments only
+    // GITHUB_RUN_ATTEMPT. Bind the durable result to both identities so a prior attempt can
+    // never satisfy this attempt's post-write readback.
+    return `${runId}:attempt-${normalizedAttempt}`;
+  }
+  // Local/offline callers have no run identity. The content-derived fallback preserves
+  // idempotence for an unchanged result; hosted runs always use the immutable GitHub run id.
+  return `body-${sha256(String(commentBody || '')).slice(0, 16)}`;
+}
+
+function actionResultMarker(prContext, attemptId) {
+  return prContext.repo && prContext.prNumber && prContext.headSha && attemptId
+    ? `<!-- review-yeti-bot:result:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:${attemptId} -->`
+    : '';
+}
+
+function reviewRequiresResultRepublish(review) {
+  const body = String(review?.body || '');
+  // A generic exact-head marker identifies the review *target*, not its result. Retain a later
+  // durable result whenever the prior result can block/partially gate the pull request. Unknown
+  // legacy bodies remain idempotent to avoid review spam, but are never used as a SHIP claim.
+  const retryable = '(?:BLOCK|FIX_FIRST|PARTIAL(?:_REVIEW)?|INCOMPLETE_REVIEW|INCOMPLETE_INFRA|DEGRADED|ERROR)';
+  return new RegExp('\\*\\*Verdict:\\s*(?:`)?' + retryable + '(?:`)?\\*\\*', 'iu').test(body)
+    || new RegExp('\\*\\*(?:Review Status|Quorum Status)\\*\\*:\\s*`' + retryable + '`', 'iu').test(body);
+}
+
+function latestActionReview(reviews) {
+  const ordered = [...reviews];
+  ordered.sort((left, right) => {
+    const leftTime = Date.parse(left?.submitted_at || left?.submittedAt || '') || 0;
+    const rightTime = Date.parse(right?.submitted_at || right?.submittedAt || '') || 0;
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    const leftId = Number(left?.id) || 0;
+    const rightId = Number(right?.id) || 0;
+    if (leftId !== rightId) return leftId - rightId;
+    return 0;
+  });
+  return ordered.at(-1);
+}
+
+function reviewResultMarker(prContext, review) {
+  const prefix = `<!-- review-yeti-bot:result:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:`;
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return String(review?.body || '').match(new RegExp(`${escapedPrefix}[^\\s>]{1,120} -->`, 'u'))?.[0] || '';
+}
+
+function actionFindingMarker(prContext, item) {
+  return `<!-- review-yeti-bot:finding:v1:${prContext.headSha}:${item.markerKey} -->`;
+}
+
+function ghApi(commandRunner, args, input) {
+  return commandRunner('gh', args, {
+    encoding: 'utf-8',
+    env: process.env,
+    ...(input === undefined ? {} : { input: JSON.stringify(input) }),
+  });
+}
+
+function normalizedPublisherLogin(login) {
+  return typeof login === 'string' && login.endsWith('[bot]') ? login.slice(0, -5) : login;
+}
+
+function isExpectedPublisherLogin(login, expectedLogin) {
+  return Boolean(expectedLogin) && normalizedPublisherLogin(login) === normalizedPublisherLogin(expectedLogin);
+}
+
+function requirePublisherLogin(login) {
+  if (typeof login !== 'string' || login.length === 0) {
+    throw new Error('Action review publication response did not identify its publisher');
+  }
+  return login;
+}
+
+function readActionReviews(commandRunner, prContext) {
+  const result = ghApi(commandRunner, [
+    'api',
+    `repos/${prContext.repo}/pulls/${prContext.prNumber}/reviews?per_page=100`,
+    '--paginate', '--slurp',
+  ]);
+  if (!result || result.status !== 0) {
+    throw new Error(`gh api could not verify existing pull request reviews: ${result?.stderr || result?.stdout || 'unknown error'}`);
+  }
+  try {
+    const pages = JSON.parse(result.stdout || '[]');
+    return (Array.isArray(pages) ? pages : [pages]).flat().filter(Boolean);
+  } catch (error) {
+    throw new Error(`GitHub returned malformed pull request reviews JSON: ${error.message}`);
+  }
+}
+
+function readActionReviewThreads(commandRunner, prContext) {
+  const [owner, name] = String(prContext.repo || '').split('/');
+  const threads = [];
+  let retainedComments = 0;
+  let complete = true;
+  const decodePages = (result, label) => {
+    if (!result || result.status !== 0) {
+      throw new Error(`gh api could not verify ${label}: ${result?.stderr || result?.stdout || 'unknown error'}`);
+    }
+    try {
+      const decoded = JSON.parse(result.stdout || '{}');
+      const pages = Array.isArray(decoded) ? decoded : [decoded];
+      const graphError = pages.flatMap((page) => page?.errors || [])[0];
+      if (graphError) throw new Error(graphError.message || 'GraphQL returned an error');
+      return pages;
+    } catch (error) {
+      throw new Error(`GitHub returned malformed ${label} JSON: ${error.message}`);
+    }
+  };
+
+  const normalizeThread = (thread) => {
+    let comments = [...(thread?.comments?.nodes || [])];
+    let pageInfo = thread?.comments?.pageInfo || { hasNextPage: false, endCursor: null };
+    let commentsComplete = true;
+
+    let commentPageCount = 0;
+    while (pageInfo.hasNextPage
+      && retainedComments + comments.length < MAX_DECISION_SNAPSHOT_COMMENTS
+      && commentPageCount < MAX_DECISION_SNAPSHOT_API_PAGES) {
+      const requestedCursor = pageInfo.endCursor;
+      let pages;
+      try {
+        pages = decodePages(ghApi(commandRunner, [
+          'api', 'graphql',
+          '-F', `threadId=${thread.id}`,
+          '-F', `endCursor=${pageInfo.endCursor}`,
+          '-f', `query=${REVIEW_THREAD_COMMENTS_QUERY}`,
+        ]), 'reviewThread comments');
+      } catch (_) {
+        commentsComplete = false;
+        break;
+      }
+      commentPageCount += 1;
+      for (const page of pages) comments.push(...(page?.data?.node?.comments?.nodes || []));
+      pageInfo = pages.at(-1)?.data?.node?.comments?.pageInfo || { hasNextPage: false, endCursor: null };
+      if (pageInfo.hasNextPage && (!pageInfo.endCursor || pageInfo.endCursor === requestedCursor)) {
+        commentsComplete = false;
+        break;
+      }
+    }
+    if (pageInfo.hasNextPage) commentsComplete = false;
+
+    const unique = [...new Map(comments.map((comment) => [
+      Number.isInteger(comment?.databaseId) ? comment.databaseId : JSON.stringify(comment),
+      comment,
+    ])).values()].sort((a, b) => (
+      String(a?.createdAt || '').localeCompare(String(b?.createdAt || ''))
+      || Number(a?.databaseId || 0) - Number(b?.databaseId || 0)
+    ));
+    const remaining = Math.max(0, MAX_DECISION_SNAPSHOT_COMMENTS - retainedComments);
+    const bounded = unique.slice(0, remaining);
+    retainedComments += bounded.length;
+    if (bounded.length !== unique.length) commentsComplete = false;
+    if (!commentsComplete) complete = false;
+    return {
+      ...thread,
+      commentsComplete,
+      comments: { ...thread.comments, nodes: bounded },
+    };
+  };
+
+  let endCursor = null;
+  let hasNextPage = true;
+  let threadPageCount = 0;
+  while (hasNextPage
+    && retainedComments < MAX_DECISION_SNAPSHOT_COMMENTS
+    && threads.length < MAX_DECISION_SNAPSHOT_THREADS
+    && threadPageCount < MAX_DECISION_SNAPSHOT_API_PAGES) {
+    const args = [
+      'api', 'graphql',
+      '-F', `owner=${owner}`,
+      '-F', `name=${name}`,
+      '-F', `number=${Number(prContext.prNumber)}`,
+      ...(endCursor ? ['-F', `endCursor=${endCursor}`] : []),
+      '-f', `query=${REVIEW_THREADS_QUERY}`,
+    ];
+    const pages = decodePages(ghApi(commandRunner, args), 'reviewThreads');
+    threadPageCount += 1;
+    for (const page of pages) {
+      for (const thread of page?.data?.repository?.pullRequest?.reviewThreads?.nodes || []) {
+        threads.push(normalizeThread(thread));
+        if (retainedComments >= MAX_DECISION_SNAPSHOT_COMMENTS || threads.length >= MAX_DECISION_SNAPSHOT_THREADS) break;
+      }
+      if (retainedComments >= MAX_DECISION_SNAPSHOT_COMMENTS || threads.length >= MAX_DECISION_SNAPSHOT_THREADS) break;
+    }
+    const pageInfo = pages.at(-1)?.data?.repository?.pullRequest?.reviewThreads?.pageInfo;
+    hasNextPage = Boolean(pageInfo?.hasNextPage);
+    endCursor = pageInfo?.endCursor || null;
+    if (hasNextPage && (!endCursor || args.includes(`endCursor=${endCursor}`))) {
+      complete = false;
+      break;
+    }
+  }
+  if (hasNextPage
+    || retainedComments >= MAX_DECISION_SNAPSHOT_COMMENTS
+    || threads.length >= MAX_DECISION_SNAPSHOT_THREADS) complete = false;
+
+  return { threads, complete };
+}
+
 /**
- * Posts formatted PR comment via `gh pr comment` CLI when PR number is available,
- * or outputs to stdout/file.
+ * Stable per-pull-request anchor for the sticky full summary issue comment.
+ *
+ * The stable anchor links summaries for one pull request. The exact-head marker still deliberately
+ * changes on every push: GitHub review `commit_id` is immutable, so every new reviewed head needs
+ * a distinct review while retries of that same head remain idempotent.
  */
-function postOrOutputComment(commentBody, prContext, options = {}) {
+function actionSummaryAnchor(prContext) {
+  return prContext.repo && prContext.prNumber
+    ? `<!-- review-yeti-bot:summary:v1:${prContext.repo}#${prContext.prNumber} -->`
+    : '';
+}
+
+const SUMMARY_HISTORY_START = '<!-- review-yeti-bot:summary-history:v1:start -->';
+const SUMMARY_HISTORY_END = '<!-- review-yeti-bot:summary-history:v1:end -->';
+const SUMMARY_ROUND_START_PREFIX = '<!-- review-yeti-bot:summary-round:v1:start:';
+const SUMMARY_ROUND_END = '<!-- review-yeti-bot:summary-round:v1:end -->';
+const MAX_SUMMARY_HISTORY_ROUNDS = 8;
+const MAX_SUMMARY_HISTORY_CHARS = 40_000;
+const MAX_SUMMARY_ROUND_CHARS = 12_000;
+
+function summaryRoundDigest(commentBody) {
+  return sha256(String(commentBody || '')).slice(0, 16);
+}
+
+function summaryRoundMarker(prContext, commentBody) {
+  const digest = summaryRoundDigest(commentBody);
+  return prContext.repo && prContext.prNumber && prContext.headSha
+    ? `<!-- review-yeti-bot:summary-round:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:${digest} -->`
+    : '';
+}
+
+function summaryRoundStart(digest) {
+  return `${SUMMARY_ROUND_START_PREFIX}${digest} -->`;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function readIssueComments(commandRunner, prContext) {
+  if (!prContext?.repo || !prContext?.prNumber) return [];
+  const result = ghApi(commandRunner, [
+    'api',
+    `repos/${prContext.repo}/issues/${prContext.prNumber}/comments?per_page=100`,
+    '--paginate',
+    '--jq',
+    '.[] | {id, body, user: .user.login} | tostring',
+  ]);
+  if (!result || result.status !== 0) {
+    throw new Error(`gh api could not read pull request issue comments: ${result?.stderr || result?.stdout || 'unknown error'}`);
+  }
+  const raw = String(result.stdout || '').trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    const values = Array.isArray(parsed) ? parsed.flat() : [parsed];
+    if (values.every((value) => value && typeof value === 'object')) return values.filter(Boolean);
+  } catch (_) {
+    // `--jq ... | tostring` normally returns one JSON object per line. Parse that shape below.
+  }
+  const comments = [];
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed === 'object') comments.push(parsed);
+    } catch (_) {
+      throw new Error('GitHub returned malformed pull request issue comments JSON');
+    }
+  }
+  return comments;
+}
+
+function issueCommentBelongsToPublisher(comment, expectedPublisherLogin) {
+  return !comment?.user?.login || !expectedPublisherLogin
+    || isExpectedPublisherLogin(comment.user.login, expectedPublisherLogin);
+}
+
+function splitStickySummaryBody(body) {
+  const text = String(body || '').trim();
+  const historyStart = text.indexOf(SUMMARY_HISTORY_START);
+  if (historyStart < 0) return { current: text, entries: [] };
+  const historyEnd = text.indexOf(SUMMARY_HISTORY_END, historyStart + SUMMARY_HISTORY_START.length);
+  if (historyEnd < 0) return { current: text.slice(0, historyStart).trim(), entries: [] };
+  const history = text.slice(historyStart + SUMMARY_HISTORY_START.length, historyEnd);
+  const entries = [];
+  const entryPattern = new RegExp(
+    `${escapeRegExp(SUMMARY_ROUND_START_PREFIX)}([a-f0-9]{16}) -->[\\s\\S]*?${escapeRegExp(SUMMARY_ROUND_END)}`,
+    'gu',
+  );
+  for (const match of history.matchAll(entryPattern)) entries.push(match[0]);
+  return { current: text.slice(0, historyStart).trim(), entries };
+}
+
+function summaryRoundTitle(body, roundNumber) {
+  const parsed = parsePriorSummaryReview(body);
+  const verdict = parsed.verdict || 'REVIEW';
+  const head = parsed.headSha ? parsed.headSha.slice(0, 7) : 'unknown head';
+  return `Round ${roundNumber} · ${verdict} · ${head}`;
+}
+
+function renderSummaryHistoryEntry(body, roundNumber) {
+  const digest = summaryRoundDigest(body);
+  const clipped = String(body || '').length > MAX_SUMMARY_ROUND_CHARS
+    ? `${String(body || '').slice(0, MAX_SUMMARY_ROUND_CHARS)}\n\n> _This historical round was clipped to keep the sticky summary bounded._`
+    : String(body || '');
+  return [
+    summaryRoundStart(digest),
+    '<details>',
+    `<summary>${summaryRoundTitle(body, roundNumber)}</summary>`,
+    '',
+    clipped,
+    '',
+    '</details>',
+    SUMMARY_ROUND_END,
+  ].join('\n');
+}
+
+function renderStickySummaryBody(commentBody, prContext, priorBody, options = {}) {
+  const summaryAnchor = actionSummaryAnchor(prContext);
+  const actionMarker = actionReviewMarker(prContext);
+  const resultMarker = actionResultMarker(prContext, publicationAttemptId(options, commentBody));
+  const roundMarker = summaryRoundMarker(prContext, commentBody);
+  const currentBody = [
+    String(commentBody || '').trim(),
+    summaryAnchor,
+    actionMarker,
+    resultMarker,
+    roundMarker,
+  ].filter(Boolean).join('\n\n');
+
+  if (!priorBody) return { body: currentBody, deduplicated: false, historyRounds: 0 };
+  const prior = splitStickySummaryBody(priorBody);
+  if (prior.current.includes(roundMarker)) {
+    return { body: priorBody, deduplicated: true, historyRounds: prior.entries.length };
+  }
+
+  let entries = [...prior.entries];
+  if (prior.current) entries.push(renderSummaryHistoryEntry(prior.current, entries.length + 1));
+  entries = entries.slice(-MAX_SUMMARY_HISTORY_ROUNDS);
+  while (entries.join('\n\n').length > MAX_SUMMARY_HISTORY_CHARS && entries.length > 1) entries.shift();
+
+  const history = entries.length > 0
+    ? [
+      SUMMARY_HISTORY_START,
+      '<details>',
+      `<summary>Previous review rounds (${entries.length})</summary>`,
+      '',
+      entries.join('\n\n'),
+      '',
+      '</details>',
+      SUMMARY_HISTORY_END,
+    ].join('\n')
+    : '';
+  return {
+    body: history ? `${currentBody}\n\n${history}` : currentBody,
+    deduplicated: false,
+    historyRounds: entries.length,
+  };
+}
+
+function compactReviewBody(commentBody, prContext, options = {}) {
+  const marker = Object.prototype.hasOwnProperty.call(options, 'marker') ? options.marker : actionReviewMarker(prContext);
+  const resultMarker = Object.prototype.hasOwnProperty.call(options, 'resultMarker')
+    ? options.resultMarker
+    : actionResultMarker(prContext, publicationAttemptId(options, commentBody));
+  return [
+    String(commentBody).match(/^## .*?\*\*Verdict:\s*(?:SHIP|FIX_FIRST|BLOCK)\*\*$/mu)?.[0]
+      || String(commentBody).match(/^## .*Verdict:\s*[^\n]+$/mu)?.[0]
+      || '## Review Yeti result',
+    String(commentBody).match(/^- \*\*Quorum Status\*\*:.*$/mu)?.[0] || '',
+    String(commentBody).match(/^- \*\*Review Status\*\*:.*$/mu)?.[0] || '',
+    'Full round details are maintained in the sticky Review Yeti summary comment.',
+    marker,
+    resultMarker,
+  ].filter(Boolean).join('\n');
+}
+
+function postStickySummaryComment(commentBody, prContext, options = {}) {
+  const prNumber = prContext?.prNumber;
+  const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
+  if (!prNumber || !prContext?.repo || !prContext?.headSha) return { success: false, skipped: true };
+  const anchor = actionSummaryAnchor(prContext);
+  if (!anchor) return { success: false, skipped: true };
+
+  try {
+    assertCurrentPullRequest(prContext, { commandRunner });
+    const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
+    const comments = readIssueComments(commandRunner, prContext);
+    const existingIssueComment = [...comments].reverse().find((comment) => (
+      typeof comment?.body === 'string'
+      && comment.body.includes(anchor)
+      && Number.isInteger(comment.id)
+      && issueCommentBelongsToPublisher(comment, expectedPublisherLogin)
+    ));
+    // Before sticky summaries existed, the full per-PR body lived in a root review. Migrate the
+    // newest bot-owned legacy body into the sticky issue comment so the first post after upgrade
+    // does not discard the historical round or create another expanded review surface.
+    const legacySummaryReview = existingIssueComment ? null : [...readActionReviews(commandRunner, prContext)]
+      .reverse()
+      .find((review) => (
+        typeof review?.body === 'string'
+        && review.body.includes(anchor)
+        && issueCommentBelongsToPublisher(review, expectedPublisherLogin)
+      ));
+    const priorBody = existingIssueComment?.body || legacySummaryReview?.body;
+    const rendered = renderStickySummaryBody(commentBody, prContext, priorBody, options);
+    if (rendered.deduplicated) {
+      return {
+        success: true,
+        postedViaGh: true,
+        deduplicated: true,
+        ...(existingIssueComment?.id ? { commentId: existingIssueComment.id } : {}),
+        historyRounds: rendered.historyRounds,
+      };
+    }
+
+    assertCurrentPullRequest(prContext, { commandRunner });
+    if (existingIssueComment) {
+      const updated = apiJson(commandRunner, 'PATCH', `repos/${prContext.repo}/issues/comments/${existingIssueComment.id}`, { body: rendered.body });
+      return {
+        success: true,
+        postedViaGh: true,
+        updatedInPlace: true,
+        commentId: updated.id || existingIssueComment.id,
+        historyRounds: rendered.historyRounds,
+      };
+    }
+
+    const created = postApiJson(commandRunner, `repos/${prContext.repo}/issues/${prNumber}/comments`, { body: rendered.body });
+    let compactedLegacyReview = false;
+    if (legacySummaryReview && Number.isInteger(legacySummaryReview.id)) {
+      try {
+        assertCurrentPullRequest(prContext, { commandRunner });
+        const legacyMarker = String(legacySummaryReview.body).match(/<!-- review-yeti-bot:v2:[^>]+ -->/u)?.[0] || '';
+        const legacyResultMarker = String(legacySummaryReview.body).match(/<!-- review-yeti-bot:result:v1:[^>]+ -->/u)?.[0] || '';
+        apiJson(commandRunner, 'PUT', `repos/${prContext.repo}/pulls/${prNumber}/reviews/${legacySummaryReview.id}`, {
+          body: compactReviewBody(legacySummaryReview.body, prContext, {
+            marker: legacyMarker,
+            resultMarker: legacyResultMarker,
+          }),
+        });
+        compactedLegacyReview = true;
+      } catch (err) {
+        console.warn(`[Publish] Could not compact legacy summary review ${legacySummaryReview.id}: ${err.message || err}`);
+      }
+    }
+    return {
+      success: true,
+      postedViaGh: true,
+      commentId: created.id,
+      historyRounds: rendered.historyRounds,
+      ...(legacySummaryReview ? { migratedLegacySummary: true } : {}),
+      ...(compactedLegacyReview ? { compactedLegacyReview: true } : {}),
+    };
+  } catch (err) {
+    return { success: false, postedViaGh: false, error: err.message || String(err) };
+  }
+}
+function findVerifiedThread(item, prContext, snapshot, expectedPublisherLogin) {
+  const marker = actionFindingMarker(prContext, item);
+  const expectedLine = Number.isInteger(item.line) ? item.line : null;
+  return snapshot.threads.find((thread) => {
+    if (thread.isResolved || thread.path !== item.path || (thread.line ?? null) !== expectedLine) return false;
+    return (thread.comments?.nodes || []).some((comment) => (
+      String(comment.body || '').includes(marker)
+      && isExpectedPublisherLogin(comment.author?.login, expectedPublisherLogin)
+      && comment.commit?.oid === prContext.headSha
+    ));
+  });
+}
+
+function expectedPublicationItems(publicationPlan) {
+  return [
+    ...(publicationPlan.lineComments || []),
+    ...(publicationPlan.fileComments || []),
+  ];
+}
+
+function commentBodyWithMarker(prContext, item) {
+  return `${item.body}\n\n${actionFindingMarker(prContext, item)}`;
+}
+
+function apiJson(commandRunner, method, endpoint, payload) {
+  const result = ghApi(commandRunner, ['api', '--method', method, endpoint, '--input', '-'], payload);
+  if (!result || result.status !== 0) {
+    throw new Error(`gh api ${method} ${endpoint} failed: ${result?.stderr || result?.stdout || 'unknown error'}`);
+  }
+  try {
+    return result.stdout ? JSON.parse(result.stdout) : {};
+  } catch (error) {
+    throw new Error(`GitHub returned malformed publication JSON for ${endpoint}: ${error.message}`);
+  }
+}
+
+function postApiJson(commandRunner, endpoint, payload) {
+  return apiJson(commandRunner, 'POST', endpoint, payload);
+}
+
+/**
+ * A published review whose body is empty or whitespace-only is a worse outcome than no
+ * publication at all: it satisfies an exact-head consumer's lookup while carrying zero verdict
+ * information, so a fail-closed gate reading it cannot distinguish "no verdict yet" from "ship."
+ * The panel can run entirely cleanly -- every persona lane `RAW_OK`, a verdict logged internally
+ * via `[Verdict] ...` -- and still lose that verdict on the way to GitHub if a future change to
+ * comment assembly regresses. Returns an error string naming what was about to be dropped when the
+ * body fails this check, or `null` when it is safe to publish. See review-yeti-bot#57.
+ */
+function emptyReviewBodyGuardError(body, prContext) {
+  if (typeof body === 'string' && body.trim().length > 0) return null;
+  const where = prContext?.repo && prContext?.prNumber
+    ? `${prContext.repo}#${prContext.prNumber}${prContext.headSha ? `@${String(prContext.headSha).slice(0, 7)}` : ''}`
+    : 'an unidentified pull request';
+  return `Refusing to publish an empty or whitespace-only review body for ${where}. A verdict was `
+    + 'computed internally (see the preceding [Verdict] log line) but no verdict text survived '
+    + 'into the body about to be sent to GitHub. Publishing it would be indistinguishable from '
+    + '"no verdict yet" to an exact-head consumer, which is worse than failing this run outright.';
+}
+
+/**
+ * Publishes one compact COMMENT review, with every P0/P1 finding represented by a resolvable line
+ * or file-level conversation. Existing exact-head finding markers are verified through GraphQL
+ * and skipped, so a retry repairs partial publication without duplicating successful threads.
+ */
+/**
+ * Max resolve-required review threads one run may open.
+ *
+ * `required_conversation_resolution` turns every unresolved thread into a merge block, so an
+ * uncapped panel can wedge a pull request behind dozens of them. The App path has capped this at
+ * ten P0/P1 threads since the 2026-08-03 publication policy; the Action matches it so both
+ * surfaces behave the same way. Overflow is never dropped -- it is listed in the summary body.
+ */
+const MAX_PUBLISHED_REVIEW_THREADS = 10;
+
+/**
+ * Trims the plan to `max` review threads, most severe first.
+ *
+ * `planFindingPublication` sorts line and file comments into two already-severity-ordered lists,
+ * so neither list alone gives the global order: taking the head of each would publish a P1 line
+ * finding while pushing a P0 file-level finding into overflow. Rank across both lists instead, and
+ * keep each list's own order for what survives. Everything past the cap moves to `overflow`, which
+ * `postOrOutputComment` renders in the summary body rather than dropping.
+ */
+function capPublicationThreads(publicationPlan, max = MAX_PUBLISHED_REVIEW_THREADS) {
+  const lineComments = publicationPlan.lineComments || [];
+  const fileComments = publicationPlan.fileComments || [];
+  const total = lineComments.length + fileComments.length;
+  if (!Number.isInteger(max) || max < 0 || total <= max) return publicationPlan;
+
+  const severityRank = (item) => {
+    const severity = item?.finding?.severity || item?.severity;
+    return severity === 'P0' ? 0 : severity === 'P1' ? 1 : 2;
+  };
+  // A line anchor is the more actionable of the two, so it wins a tie at equal severity.
+  const ranked = [
+    ...lineComments.map((item, index) => ({ item, kindRank: 0, index })),
+    ...fileComments.map((item, index) => ({ item, kindRank: 1, index })),
+  ].sort((a, b) => (
+    severityRank(a.item) - severityRank(b.item)
+    || a.kindRank - b.kindRank
+    || a.index - b.index
+  ));
+
+  const kept = new Set(ranked.slice(0, max).map((entry) => entry.item));
+  return {
+    ...publicationPlan,
+    lineComments: lineComments.filter((item) => kept.has(item)),
+    fileComments: fileComments.filter((item) => kept.has(item)),
+    overflow: [
+      ...(publicationPlan.overflow || []),
+      ...ranked.slice(max).map((entry) => entry.item),
+    ],
+  };
+}
+
+function postOrOutputComment(commentBody, prContext, publicationPlan = {}, options = {}) {
+  const emptyBodyError = emptyReviewBodyGuardError(commentBody, prContext);
+  if (emptyBodyError) {
+    console.error(`[Publish] ${emptyBodyError}`);
+    return { success: false, postedViaGh: false, error: emptyBodyError };
+  }
   const prNumber = prContext.prNumber;
-  const now = options.now || Date.now;
   const fileSystem = options.fileSystem || fs;
   const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
   const cwd = options.cwd || process.cwd();
+  const plan = {
+    lineComments: publicationPlan.lineComments || [],
+    fileComments: publicationPlan.fileComments || [],
+    advisories: publicationPlan.advisories || [],
+    rejected: publicationPlan.rejected || [],
+    overflow: publicationPlan.overflow || [],
+  };
 
   if (prNumber) {
-    const marker = prContext.repo && prContext.headSha
-      ? `<!-- ct-review-bot:v1:${prContext.repo}#${prNumber}:${prContext.headSha}:action -->`
+    if (!prContext.repo || !prContext.repo.includes('/') || !prContext.headSha) {
+      return { success: false, postedViaGh: false, error: 'GitHub review publication requires repo and exact head SHA.' };
+    }
+    const rejectedActionable = plan.rejected.filter((item) => item.severity === 'P0' || item.severity === 'P1');
+    // Keep the review fail-closed with respect to line anchors: never guess a nearby
+    // line. But do publish the exact finding metadata in the compact review body so
+    // an otherwise complete model verdict does not fail the required check merely
+    // because GitHub cannot accept one or more line locations.
+    const rejectedDetails = rejectedActionable.length > 0
+      ? `\n\n### Actionable findings without publishable anchors\n\n${rejectedActionable.map((item) => {
+        const path = String(item.path || '(unknown path)').replace(/\|/g, '\\|');
+        const location = Number.isInteger(item.line) ? `${path}:${item.line}` : path;
+        const title = String(item.title || 'Untitled finding').replace(/\|/g, '\\|');
+        const reason = String(item.reason || 'invalid or unpublishable anchor').replace(/\|/g, '\\|');
+        return `- **${item.severity}** \`${location}\` — ${title} (${reason})`;
+      }).join('\n')}\n\nThese findings were not moved to a nearby line; they require manual review at the stated path/location.`
       : '';
-    const bodyToPublish = marker && !commentBody.includes(marker)
-      ? `${commentBody}\n\n${marker}`
-      : commentBody;
+
+    // Findings past MAX_PUBLISHED_REVIEW_THREADS. They are real and anchored -- they simply did
+    // not fit under the merge-blocking cap, so they are reported here instead of silently lost.
+    const overflowDetails = plan.overflow.length > 0
+      ? `\n\n### Additional findings not opened as conversations\n\nThe ${plan.overflow.length + plan.lineComments.length + plan.fileComments.length} actionable finding(s) exceeded the ${MAX_PUBLISHED_REVIEW_THREADS}-conversation cap; the most severe were opened as threads and the rest are listed here.\n\n${plan.overflow.map((item) => {
+        const path = String(item.path || '(unknown path)').replace(/\|/g, '\\|');
+        const location = Number.isInteger(item.line) ? `${path}:${item.line}` : path;
+        const title = String(item.finding?.title || item.title || 'Untitled finding').replace(/\|/g, '\\|');
+        return `- **${item.finding?.severity || item.severity || 'P?'}** \`${location}\` — ${title}`;
+      }).join('\n')}`
+      : '';
+
+    const marker = actionReviewMarker(prContext);
+    const resultMarker = actionResultMarker(prContext, publicationAttemptId(options, commentBody));
+    const bodyWithRejected = `${commentBody}${rejectedDetails}${overflowDetails}`;
+    const compactReview = compactReviewBody(commentBody, prContext, {
+      marker,
+      resultMarker,
+      publicationAttemptId: options.publicationAttemptId,
+    });
+    const compactBodyError = emptyReviewBodyGuardError(compactReview, prContext);
+    if (compactBodyError) {
+      // Defense in depth: `compactReviewBody()` always falls back to non-empty placeholder text
+      // today, so this should be unreachable. Guarding it anyway means a future regression there
+      // fails this run loudly instead of quietly publishing an unreadable gate signal. Returned
+      // before the try block below, so no network call is ever made on this path.
+      console.error(`[Publish] ${compactBodyError}`);
+      return { success: false, postedViaGh: false, error: compactBodyError };
+    }
     try {
-      if (marker) {
-        const existing = commandRunner('gh', [
-          'api',
-          `repos/${prContext.repo}/issues/${prNumber}/comments?per_page=100`,
-          '--paginate',
-          '--jq',
-          '.[] | [.id, .body] | @tsv',
-        ], {
-          encoding: 'utf-8',
-          env: process.env,
+      // This is intentionally the first publication operation.  Reading prior reviews before a
+      // fresh exact-head fence leaves a TOCTOU gap in which stale work can reach a write path.
+      assertCurrentPullRequest(prContext, { commandRunner });
+      const existingReviews = readActionReviews(commandRunner, prContext);
+      const authenticatedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
+      const publishedByUs = (review) => (
+        typeof review?.body === 'string'
+        && typeof review.user?.login === 'string'
+        && isExpectedPublisherLogin(review.user.login, authenticatedPublisherLogin)
+      );
+      const existingReview = latestActionReview(existingReviews.filter((review) => (
+        publishedByUs(review)
+        && review.commit_id === prContext.headSha
+        && review.body.includes(marker)
+      )));
+      // GitHub binds a pull-request review to the commit supplied at creation. An edited review
+      // retains its earlier commit_id even if its body advertises a new SHA, which would make an
+      // exact-head consumer incorrectly see no verdict for the current push. Only a matching
+      // exact-head marker may deduplicate publication.
+      const existingResultMarker = reviewResultMarker(prContext, existingReview);
+      const reviewExists = Boolean(existingReview) && Boolean(existingResultMarker) && !reviewRequiresResultRepublish(existingReview);
+      let expectedPublisherLogin = authenticatedPublisherLogin;
+      const expectedItems = expectedPublicationItems(plan);
+      const existingThreads = expectedItems.length > 0 && expectedPublisherLogin
+        ? readActionReviewThreads(commandRunner, prContext)
+        : { threads: [] };
+      const missingLineComments = plan.lineComments.filter((item) => !findVerifiedThread(item, prContext, existingThreads, expectedPublisherLogin));
+      const missingFileComments = plan.fileComments.filter((item) => !findVerifiedThread(item, prContext, existingThreads, expectedPublisherLogin));
+      let reviewId;
+
+      if (!reviewExists) {
+        assertCurrentPullRequest(prContext, { commandRunner });
+        const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/reviews`, {
+          commit_id: prContext.headSha,
+          event: 'COMMENT',
+          body: compactReview,
+          comments: missingLineComments.map((item) => ({
+            path: item.path,
+            line: item.line,
+            side: item.side || 'RIGHT',
+            body: commentBodyWithMarker(prContext, item),
+          })),
         });
-        if (!existing || existing.status !== 0) {
-          const error = `gh api could not verify the existing review marker: ${existing?.stderr || existing?.stdout || 'unknown error'}`;
-          console.warn(`[Publish] ${error}`);
-          return { success: false, postedViaGh: false, error };
+        reviewId = created.id;
+        const createdPublisherLogin = requirePublisherLogin(created.user?.login);
+        if (expectedPublisherLogin && !isExpectedPublisherLogin(createdPublisherLogin, expectedPublisherLogin)) {
+          throw new Error('Action review publisher did not match the authenticated GitHub identity');
         }
-        const matchingComment = String(existing.stdout || '')
-          .split(/\r?\n/u)
-          .map((line) => {
-            const separator = line.indexOf('\t');
-            return separator === -1
-              ? { id: null, body: line }
-              : { id: line.slice(0, separator), body: line.slice(separator + 1) };
-          })
-          .find((comment) => comment.body.includes(marker));
-        if (matchingComment) {
-          if (!matchingComment.id) {
-            console.log(`[Publish] Exact-head review marker already exists for PR #${prNumber}; skipping duplicate.`);
-            return { success: true, postedViaGh: true, deduplicated: true };
-          }
-
-          const updated = commandRunner('gh', [
-            'api',
-            `repos/${prContext.repo}/issues/comments/${matchingComment.id}`,
-            '--method',
-            'PATCH',
-            '--field',
-            `body=${bodyToPublish}`,
-          ], {
-            encoding: 'utf-8',
-            env: process.env,
-          });
-          if (!updated || updated.status !== 0) {
-            const error = `gh api could not update the existing review marker: ${updated?.stderr || updated?.stdout || 'unknown error'}`;
-            console.warn(`[Publish] ${error}`);
-            return { success: false, postedViaGh: false, error };
-          }
-          console.log(`[Publish] Updated exact-head review marker for PR #${prNumber}.`);
-          return { success: true, postedViaGh: true, updated: true };
-        }
-      }
-
-      const tempPath = path.join(options.tempDirectory || '/tmp', `review-comment-${now()}.md`);
-      fileSystem.writeFileSync(tempPath, bodyToPublish, 'utf-8');
-
-      // --repo is required: the review runner checks out the central review repository, so the
-      // target PR is almost never the repository `gh` would infer from the working directory.
-      const args = ['pr', 'comment', String(prNumber), '--body-file', tempPath];
-      if (prContext.repo && prContext.repo.includes('/')) {
-        args.push('--repo', prContext.repo);
-      }
-
-      const result = commandRunner('gh', args, {
-        encoding: 'utf-8',
-        env: process.env,
-      });
-
-      try { fileSystem.unlinkSync(tempPath); } catch (_) {}
-
-      if (result.status === 0) {
-        console.log(`[Publish] Successfully posted PR comment to PR #${prNumber} via gh CLI.`);
-        return { success: true, postedViaGh: true };
+        expectedPublisherLogin = createdPublisherLogin;
       } else {
-        const error = `gh pr comment failed with status ${result.status}: ${result.stderr || result.stdout || 'unknown error'}`;
-        console.warn(`[Publish] ${error}`);
-        return { success: false, postedViaGh: false, error };
+        for (const item of missingLineComments) {
+          assertCurrentPullRequest(prContext, { commandRunner });
+          const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/comments`, {
+            commit_id: prContext.headSha,
+            path: item.path,
+            line: item.line,
+            side: item.side || 'RIGHT',
+            body: commentBodyWithMarker(prContext, item),
+          });
+          if (!isExpectedPublisherLogin(requirePublisherLogin(created.user?.login), expectedPublisherLogin)) {
+            throw new Error('Action review publisher changed during publication');
+          }
+        }
       }
+
+      for (const item of missingFileComments) {
+        assertCurrentPullRequest(prContext, { commandRunner });
+        const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/comments`, {
+          commit_id: prContext.headSha,
+          path: item.path,
+          subject_type: 'file',
+          body: commentBodyWithMarker(prContext, item),
+        });
+        if (!isExpectedPublisherLogin(requirePublisherLogin(created.user?.login), expectedPublisherLogin)) {
+          throw new Error('Action review publisher changed during publication');
+        }
+      }
+
+      const verifiedReviews = readActionReviews(commandRunner, prContext);
+      const requiredResultMarker = reviewExists ? existingResultMarker : resultMarker;
+      if (!verifiedReviews.some((review) => (
+        typeof review?.body === 'string'
+        && review.body.includes(requiredResultMarker)
+        && review.commit_id === prContext.headSha
+        && isExpectedPublisherLogin(review.user?.login, expectedPublisherLogin)
+      ))) {
+        throw new Error('exact-head compact review was not visible after publication');
+      }
+      const verified = expectedItems.length > 0
+        ? readActionReviewThreads(commandRunner, prContext)
+        : { threads: [] };
+      const missingAfterWrite = expectedItems.filter((item) => !findVerifiedThread(item, prContext, verified, expectedPublisherLogin));
+      if (missingAfterWrite.length > 0) {
+        throw new Error(`${missingAfterWrite.length} expected unresolved review thread(s) failed exact-head verification`);
+      }
+
+      const summaryPublication = postStickySummaryComment(bodyWithRejected, prContext, {
+        commandRunner,
+        publicationAttemptId: options.publicationAttemptId,
+      });
+      if (!summaryPublication.success) {
+        throw new Error(`sticky summary publication failed: ${summaryPublication.error || 'unknown error'}`);
+      }
+
+      const matchedThreads = expectedItems.map((item) => findVerifiedThread(item, prContext, verified, expectedPublisherLogin)).filter(Boolean);
+      const reviewCommentIds = matchedThreads.flatMap((thread) => (thread.comments?.nodes || [])
+        .filter((comment) => String(comment.body || '').includes('<!-- review-yeti-bot:finding:v1:'))
+        .map((comment) => comment.databaseId)
+        .filter(Number.isInteger));
+      console.log(`[Publish] Published compact review with ${expectedItems.length} unresolved P0/P1 conversation(s) to PR #${prNumber}.`);
+      return {
+        success: true,
+        postedViaGh: true,
+        ...(reviewId ? { reviewId } : {}),
+        ...(summaryPublication.commentId ? { summaryCommentId: summaryPublication.commentId } : {}),
+        ...(summaryPublication.historyRounds !== undefined ? { summaryHistoryRounds: summaryPublication.historyRounds } : {}),
+        reviewCommentIds,
+        threadIds: matchedThreads.map((thread) => thread.id),
+        ...(reviewExists && missingLineComments.length === 0 && missingFileComments.length === 0 ? { deduplicated: true } : {}),
+      };
     } catch (err) {
-      const error = `gh pr comment failed: ${err.message}`;
+      const error = `GitHub review publication failed: ${err.message}`;
       console.warn(`[Publish] ${error}`);
       return { success: false, postedViaGh: false, error };
     }
   } else {
-    console.log('[Publish] No PR_NUMBER found in event context; skipping `gh pr comment` invocation.');
+    console.log('[Publish] No PR_NUMBER found in event context; writing local review artifacts.');
   }
 
-  // Fallback to outputting comment to file & stdout
   const commentFilePath = path.join(cwd, 'review-comment.md');
+  const planFilePath = path.join(cwd, 'review-publication.json');
   try {
     fileSystem.writeFileSync(commentFilePath, commentBody, 'utf-8');
+    fileSystem.writeFileSync(planFilePath, JSON.stringify(plan, null, 2), 'utf-8');
     console.log(`[Publish] Saved formatted review comment to ${commentFilePath}`);
+    console.log(`[Publish] Saved review publication plan to ${planFilePath}`);
   } catch (_) {}
 
-  return { success: true, postedViaGh: false };
+  return { success: true, postedViaGh: false, commentFilePath, planFilePath };
+}
+
+function parsePriorSummaryReview(body) {
+  const text = String(body || '');
+  const counts = text.match(/Total Findings\*\*:\s*P0:\s*`(\d+)`\s*\|\s*P1:\s*`(\d+)`\s*\|\s*P2[^`]*`(\d+)`/);
+  const personas = text.match(/Parallel Personas Evaluated\*\*:\s*`(\d+)\/(\d+)`/);
+  return {
+    verdict: (text.match(/\*\*Verdict:\s*(SHIP|FIX_FIRST|BLOCK)\*\*/) || [])[1] || null,
+    headSha: (text.match(/review-yeti-bot:v2:\S*?:([0-9a-f]{7,40}):action/) || [])[1] || null,
+    metrics: counts
+      ? {
+        p0Count: Number(counts[1]),
+        p1Count: Number(counts[2]),
+        p2Count: Number(counts[3]),
+        totalFindings: Number(counts[1]) + Number(counts[2]) + Number(counts[3]),
+      }
+      : null,
+    completedPersonas: personas ? Number(personas[1]) : 0,
+    totalPersonas: personas ? Number(personas[2]) : 0,
+    coverageIdentity: (text.match(/review-yeti-bot:coverage:v1:([0-9a-f]{64})/) || [])[1] || null,
+  };
+}
+
+function cleanGhScalar(stdout) {
+  return String(stdout || '').trim().replace(/^"|"$/g, '');
+}
+
+function readAuthenticatedPublisherLogin(commandRunner) {
+  const result = ghApi(commandRunner, ['api', 'user', '--jq', '.login']);
+  if (result && result.status === 0) {
+    const login = cleanGhScalar(result.stdout);
+    if (login) return login;
+  }
+
+  // Installation tokens cannot call GET /user. Their installation metadata identifies the App
+  // whose reviews must be trusted; GitHub exposes that App's comments as `<app_slug>[bot]`.
+  const installation = ghApi(commandRunner, ['api', 'installation', '--jq', '.app_slug']);
+  if (installation && installation.status === 0) {
+    const slug = cleanGhScalar(installation.stdout);
+    if (slug) return slug.endsWith('[bot]') ? slug : `${slug}[bot]`;
+  }
+
+  return process.env.GITHUB_ACTIONS === 'true' ? 'github-actions[bot]' : null;
 }
 
 /**
@@ -6864,8 +7631,11 @@ async function main() {
   console.log('[Formatting] Formatting GitHub PR comment output with Mermaid diagram and MCP telemetry...');
   const commentMarkdown = formatPRComment(arbitration, personaResults, prContext, mcpFleetInfo, modelConfig, coverage);
 
+  const publicationPlan = capPublicationThreads(planFindingPublication(personaResults, reviewDiffFiles));
+  console.log(`[Formatting] Planned ${publicationPlan.lineComments.length} line conversation(s), ${publicationPlan.fileComments.length} file conversation(s), ${publicationPlan.advisories.length} P2 advisory item(s), ${(publicationPlan.overflow || []).length} over-cap finding(s), and ${publicationPlan.rejected.length} rejected finding(s).`);
+
   console.log('[Publishing] Executing PR comment publishing...');
-  const publication = postOrOutputComment(commentMarkdown, prContext);
+  const publication = postOrOutputComment(commentMarkdown, prContext, publicationPlan);
   if (!publication.success) {
     console.error(`[Publishing] ${publication.error || 'GitHub publication failed'}`);
     process.exitCode = 1;
@@ -6996,6 +7766,13 @@ module.exports = {
   emitWorkflowAnnotations,
   writeStepSummary,
   postOrOutputComment,
+  postStickySummaryComment,
+  actionSummaryAnchor,
+  renderStickySummaryBody,
+  splitStickySummaryBody,
+  parsePriorSummaryReview,
+  capPublicationThreads,
+  MAX_PUBLISHED_REVIEW_THREADS,
   isSubscriptionTransport,
   isDirectReasoningTransport,
   isOllamaTransport,

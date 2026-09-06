@@ -1,11 +1,11 @@
 # Panel publication policy
 
 > [!IMPORTANT]
-> **Optional service document.** This record describes a service/App publication design and is not
-> the public Action or internal fleet publication contract. Verify it against current service
-> source before operational use. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+> **Optional service document.** This record describes the publication design shared by the App
+> and the public Action. It is not the internal fleet publication contract. Verify it against
+> current source before operational use. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
-Last updated: 2026-08-03
+Last updated: 2026-09-06
 
 ## Problem this solves
 
@@ -25,11 +25,34 @@ Publishing **one `COMMENT` review per persona with inline findings** created:
 
 Personas must **never** call `POST .../pulls/{n}/reviews` with inline comments.
 
+## The Action surface
+
+The Action publishes the same shape from a single lane rather than a persona panel:
+
+| Artifact | GitHub surface | Purpose |
+|----------|----------------|---------|
+| Sticky summary | **One** issue comment per pull request | Full summary. Anchor: `<!-- review-yeti-bot:summary:v1:{repo}#{pr} -->` — stable across pushes, so later rounds patch it and earlier rounds collapse into `<details>` history (max 8 rounds / 40k chars) |
+| Exact-head receipt | **One** `COMMENT` review per reviewed head | Compact gate signal. A review's `commit_id` is immutable, so each reviewed head needs its own; retries of one head deduplicate rather than re-post. Marker: `<!-- review-yeti-bot:v2:... -->` |
+| Findings | **Inline review comments** (capped) | Only **P0/P1**, near-duplicate **deduped** across personas, max **10** threads. Over-cap findings are listed in the sticky summary, never dropped |
+
+Findings without a publishable line anchor become file-level conversations or, failing that, a
+named section in the summary. The Action never relocates a finding to a nearby line to make it
+publishable.
+
 ## Implementation
 
-- Helpers: `src/github/panelPublication.ts`
-- Pipeline: `src/app.ts` publish stage
-- Tests: `tests/unit/panelPublication.test.ts`, `tests/integration/personaAppPipelineV3.test.ts`
+| | App | Action |
+|---|---|---|
+| Helpers | `src/github/panelPublication.ts` | `src/review/findingPublication.js`, `src/review/claimSimilarity.js` |
+| Pipeline | `src/app.ts` publish stage | `.github/workflows/pipelines/review-pipeline.js` (`postOrOutputComment`) |
+| Thread cap | `MAX_FINAL_INLINE_COMMENTS` | `MAX_PUBLISHED_REVIEW_THREADS` |
+| Tests | `tests/unit/panelPublication.test.ts`, `tests/integration/personaAppPipelineV3.test.ts` | `tests/unit/actionReviewPublication.test.ts`, `tests/unit/findingPublication.test.ts` |
+
+## Known gap
+
+Resolving a conversation does not yet suppress that finding on the next run: the Action has no
+decision ledger, so a still-present defect is re-reported under a new thread after each push.
+`src/review/decisionLedger.js` covered this before `2f28719a` and has not been restored.
 
 ## Deploy note
 

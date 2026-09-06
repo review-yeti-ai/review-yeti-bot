@@ -270,7 +270,52 @@ describe('Dispatch path: OpenRouter is the only model boundary', () => {
 });
 
 describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () => {
-  it('runs gh pr comment with an explicit --repo and injected filesystem/clock', () => {
+  // These pin the boundary contract only -- that publication goes through the injected command
+  // runner, names the repository explicitly, leaves no temp file behind, and fails closed. The
+  // publication semantics themselves (sticky anchor, exact-head receipt, thread dedupe, the
+  // conversation cap) belong to tests/unit/actionReviewPublication.test.ts.
+  const publishContext = {
+    prNumber: '42',
+    repo: 'calltelemetry/ct-review-bot',
+    headSha: 'exact-head',
+    baseSha: 'exact-base',
+  };
+
+  const emptyPlan = { lineComments: [], fileComments: [], advisories: [], rejected: [] };
+
+  function recordingRunner(commands: Array<{ executable: string; args: string[]; options: any }>) {
+    const reviews: any[] = [];
+    const issueComments: any[] = [];
+    return (executable: string, args: string[], options: any) => {
+      commands.push({ executable, args, options });
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { status: 0, stdout: JSON.stringify({ headRefOid: 'exact-head', baseRefOid: 'exact-base' }), stderr: '' };
+      }
+      if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }]), stderr: '' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: issueComments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'api' && args.includes('--method')) {
+        const payload = JSON.parse(options.input);
+        const endpoint = args[3];
+        if (endpoint.endsWith('/issues/42/comments')) {
+          issueComments.push({ id: 900, body: payload.body, user: { login: 'github-actions[bot]' } });
+        } else if (endpoint.endsWith('/reviews')) {
+          reviews.push({ id: 901, body: payload.body, commit_id: payload.commit_id, user: { login: 'github-actions[bot]' } });
+        }
+        return { status: 0, stdout: JSON.stringify({ id: 901, user: { login: 'github-actions[bot]' } }), stderr: '' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/pulls/42/reviews')) {
+        return { status: 0, stdout: JSON.stringify([reviews]), stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    };
+  }
+
+  it('names the repository on every GitHub call and leaves no temp file behind', () => {
     const writes = new Map<string, string>();
     const commands: Array<{ executable: string; args: string[]; options: any }> = [];
     const fileSystem = {
@@ -281,96 +326,26 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
         writes.delete(filePath);
       },
     };
-    const commandRunner = (executable: string, args: string[], options: any) => {
-      commands.push({ executable, args, options });
-      if (args[0] === 'api') return { status: 0, stdout: '', stderr: '' };
-      return { status: 0, stdout: '', stderr: '' };
-    };
 
-    const result = pipeline.postOrOutputComment('replayed body', {
-      prNumber: '42',
-      repo: 'calltelemetry/ct-review-bot',
-      headSha: 'exact-head',
-      baseSha: 'exact-base',
-    }, {
+    const result = pipeline.postOrOutputComment('replayed body', publishContext, emptyPlan, {
       now: () => 1_700_000_000_000,
       tempDirectory: '/tmp',
       fileSystem,
-      commandRunner,
+      commandRunner: recordingRunner(commands),
     });
 
-    expect(result).toEqual({ success: true, postedViaGh: true });
-    expect(commands[0]).toMatchObject({
-      executable: 'gh',
-      args: ['api', 'repos/calltelemetry/ct-review-bot/issues/42/comments?per_page=100', '--paginate', '--jq', '.[] | [.id, .body] | @tsv'],
-    });
-    expect(commands[1]).toMatchObject({
-      executable: 'gh',
-      args: ['pr', 'comment', '42', '--body-file', '/tmp/review-comment-1700000000000.md', '--repo', 'calltelemetry/ct-review-bot'],
-    });
+    expect(result).toMatchObject({ success: true, postedViaGh: true });
+    expect(commands.every((command) => command.executable === 'gh')).toBe(true);
+    // Nothing may address the pull request by an inferred repository: the runner checks out the
+    // central review repository, so the target is almost never the one `gh` would infer.
+    const addressed = commands.filter((command) => command.args.some((arg) => /\/(?:pulls|issues)\/42\b/u.test(arg))
+      || (command.args[0] === 'pr' && command.args[1] === 'view'));
+    expect(addressed.length).toBeGreaterThan(0);
+    expect(addressed.every((command) => command.args.some((arg) => arg.includes('calltelemetry/ct-review-bot')))).toBe(true);
     expect(writes.size).toBe(0);
   });
 
-  it('does not publish a duplicate exact-head action comment', () => {
-    const commands: string[][] = [];
-    const commandRunner = (_executable: string, args: string[]) => {
-      commands.push(args);
-      if (args[0] === 'api') {
-        return {
-          status: 0,
-          stdout: '<!-- ct-review-bot:v1:calltelemetry/ct-review-bot#42:exact-head:action -->',
-          stderr: '',
-        };
-      }
-      throw new Error('publish command must not run for a duplicate');
-    };
-
-    const result = pipeline.postOrOutputComment('replayed body', {
-      prNumber: '42',
-      repo: 'calltelemetry/ct-review-bot',
-      headSha: 'exact-head',
-    }, { commandRunner });
-
-    expect(result).toMatchObject({ success: true, postedViaGh: true, deduplicated: true });
-    expect(commands).toHaveLength(1);
-  });
-
-  it('updates the existing exact-head action comment on a later terminal rerun', () => {
-    const commands: string[][] = [];
-    const commandRunner = (_executable: string, args: string[]) => {
-      commands.push(args);
-      if (args[0] === 'api' && args[1].includes('/comments?')) {
-        return {
-          status: 0,
-          stdout: '123\told BLOCK body <!-- ct-review-bot:v1:calltelemetry/ct-review-bot#42:exact-head:action -->',
-          stderr: '',
-        };
-      }
-      if (args[0] === 'api' && args[1].endsWith('/comments/123')) {
-        return { status: 0, stdout: '', stderr: '' };
-      }
-      throw new Error('unexpected publish command');
-    };
-
-    const result = pipeline.postOrOutputComment('new SHIP body', {
-      prNumber: '42',
-      repo: 'calltelemetry/ct-review-bot',
-      headSha: 'exact-head',
-    }, { commandRunner });
-
-    expect(result).toMatchObject({ success: true, postedViaGh: true, updated: true });
-    expect(commands).toHaveLength(2);
-    expect(commands[1]).toEqual([
-      'api',
-      'repos/calltelemetry/ct-review-bot/issues/comments/123',
-      '--method',
-      'PATCH',
-      '--field',
-      expect.stringContaining('body=new SHIP body'),
-    ]);
-  });
-
-  it('fails closed when gh cannot publish a PR comment', () => {
+  it('fails closed when gh cannot publish', () => {
     const writes = new Map<string, string>();
     const fileSystem = {
       writeFileSync(filePath: string, body: string) {
@@ -381,10 +356,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       },
     };
 
-    const result = pipeline.postOrOutputComment('unpublished body', {
-      prNumber: '42',
-      repo: 'calltelemetry/ct-review-bot',
-    }, {
+    const result = pipeline.postOrOutputComment('unpublished body', publishContext, emptyPlan, {
       now: () => 1_700_000_000_000,
       tempDirectory: '/tmp',
       fileSystem,
@@ -394,6 +366,38 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     expect(result).toMatchObject({ success: false, postedViaGh: false });
     expect(result.error).toContain('permission denied');
     expect(writes.size).toBe(0);
+  });
+
+  it('refuses to publish without a repository and an exact head SHA', () => {
+    const result = pipeline.postOrOutputComment('body', { prNumber: '42', repo: 'calltelemetry/ct-review-bot' }, emptyPlan, {
+      commandRunner: () => {
+        throw new Error('must not reach GitHub without an exact head');
+      },
+    });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('exact head SHA');
+  });
+
+  it('writes the body to disk instead of GitHub when there is no pull request', () => {
+    const writes = new Map<string, string>();
+    const result = pipeline.postOrOutputComment('local body', { repo: 'calltelemetry/ct-review-bot' }, emptyPlan, {
+      cwd: '/workspace',
+      fileSystem: {
+        writeFileSync(filePath: string, body: string) {
+          writes.set(filePath, body);
+        },
+        unlinkSync(filePath: string) {
+          writes.delete(filePath);
+        },
+      },
+      commandRunner: () => {
+        throw new Error('must not reach GitHub without a pull request');
+      },
+    });
+
+    expect(result).toMatchObject({ success: true, postedViaGh: false });
+    expect(writes.get('/workspace/review-comment.md')).toBe('local body');
   });
 
   it('binds the action review to the authoritative GitHub head SHA', () => {
