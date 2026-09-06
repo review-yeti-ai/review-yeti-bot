@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.33.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.32.3...v1.33.0) (2026-09-06)
+
+
+### Features
+
+* **chart:** project the Bifrost gateway credential via the Doppler operator (REL-586) ([#516](https://github.com/review-yeti-ai/review-yeti-bot/issues/516)) ([9d0e8a2](https://github.com/review-yeti-ai/review-yeti-bot/commit/9d0e8a2f4e4663c33676cbb2757b8d352c462046))
+
 ## [1.32.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.32.2...v1.32.3) (2026-09-05)
 
 
