@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.2...v1.38.3) (2026-09-06)
+
+
+### Bug Fixes
+
+* **operator:** make the app-gate lane actually runnable (REL-586) ([#538](https://github.com/review-yeti-ai/review-yeti-bot/issues/538)) ([28e7de4](https://github.com/review-yeti-ai/review-yeti-bot/commit/28e7de49957d474bbd6772186a58e668b71392fc))
+
 ## [1.38.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.1...v1.38.2) (2026-09-06)
 
 
