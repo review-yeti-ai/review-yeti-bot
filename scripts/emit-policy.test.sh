@@ -106,10 +106,10 @@ if openrouter is None:
     raise SystemExit('policy must define the openrouter-primary transport (declared, disabled)')
 if openrouter.get('stream') is not True:
     raise SystemExit('openrouter-primary must use streaming for provider attribution')
-if openrouter.get('model') != 'deepseek/deepseek-v4-flash-0731':
-    raise SystemExit('openrouter-primary must use the explicit DeepSeek V4 Flash 0731 route')
-if openrouter.get('models') != ['z-ai/glm-5.3-flash']:
-    raise SystemExit('openrouter-primary must use GLM-5.3 Flash as its only model fallback')
+if openrouter.get('model') != 'z-ai/glm-5.3-flash':
+    raise SystemExit('openrouter-primary must use the explicit GLM-5.3 Flash route')
+if openrouter.get('models') != ['deepseek/deepseek-v4-flash-0731']:
+    raise SystemExit('openrouter-primary must use DeepSeek V4 Flash 0731 as its only model fallback')
 if (openrouter.get('max_in_flight'), openrouter.get('capacity_wait_timeout_ms')) != (2, 180000):
     raise SystemExit('openrouter-primary must bound large-diff concurrency and queue admission at 2/180000ms')
 if 'plugins' in openrouter:
