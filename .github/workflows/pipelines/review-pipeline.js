@@ -6291,29 +6291,21 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
-function readIssueComments(commandRunner, prContext) {
-  if (!prContext?.repo || !prContext?.prNumber) return [];
-  const result = ghApi(commandRunner, [
-    'api',
-    `repos/${prContext.repo}/issues/${prContext.prNumber}/comments?per_page=100`,
-    '--paginate',
-    '--jq',
-    '.[] | {id, body, user: .user.login} | tostring',
-  ]);
-  if (!result || result.status !== 0) {
-    throw new Error(`gh api could not read pull request issue comments: ${result?.stderr || result?.stdout || 'unknown error'}`);
-  }
-  const raw = String(result.stdout || '').trim();
-  if (!raw) return [];
+/** Pages of issue comments one publication run may read while hunting for the sticky summary. */
+const MAX_SUMMARY_COMMENT_PAGES = 5;
+
+function decodeIssueCommentPage(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return [];
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(text);
     const values = Array.isArray(parsed) ? parsed.flat() : [parsed];
     if (values.every((value) => value && typeof value === 'object')) return values.filter(Boolean);
   } catch (_) {
     // `--jq ... | tostring` normally returns one JSON object per line. Parse that shape below.
   }
   const comments = [];
-  for (const line of raw.split('\n')) {
+  for (const line of text.split('\n')) {
     if (!line.trim()) continue;
     try {
       const parsed = JSON.parse(line);
@@ -6325,9 +6317,53 @@ function readIssueComments(commandRunner, prContext) {
   return comments;
 }
 
+/**
+ * The newest issue comment on the pull request satisfying `predicate`.
+ *
+ * Reads newest-first in bounded pages and stops at the first match. The previous implementation
+ * `--paginate`d every comment on the pull request into memory to find one anchored summary; a busy
+ * pull request accumulates thousands of human and CI comments, none of which are needed once the
+ * latest anchor match is in hand.
+ */
+function findLatestIssueComment(commandRunner, prContext, predicate, options = {}) {
+  if (!prContext?.repo || !prContext?.prNumber) return null;
+  const maxPages = options.maxPages ?? MAX_SUMMARY_COMMENT_PAGES;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const result = ghApi(commandRunner, [
+      'api',
+      `repos/${prContext.repo}/issues/${prContext.prNumber}/comments?per_page=100&sort=created&direction=desc&page=${page}`,
+      '--jq',
+      '.[] | {id, body, user: {login: .user.login}} | tostring',
+    ]);
+    if (!result || result.status !== 0) {
+      throw new Error(`gh api could not read pull request issue comments: ${result?.stderr || result?.stdout || 'unknown error'}`);
+    }
+    const comments = decodeIssueCommentPage(result.stdout);
+    const match = comments.find((comment) => predicate(comment));
+    if (match) return match;
+    if (comments.length < 100) return null;
+  }
+  return null;
+}
+
+/**
+ * Whether an existing comment or review was written by this run's publisher.
+ *
+ * Fails closed. This used to return true when either login was missing, which made an
+ * undeterminable publisher identity authorize adoption of *any* comment carrying the summary
+ * anchor -- and that anchor is `<!-- review-yeti-bot:summary:v1:{repo}#{pr} -->`, fully
+ * constructible by anyone who can read the pull request URL. A planted comment could therefore
+ * either be overwritten in place by `PATCH .../issues/comments/{id}` or silently suppress the real
+ * summary through the dedupe path. `isExpectedPublisherLogin` already requires a truthy expected
+ * login, so deferring to it is the whole fix.
+ */
+function commentPublisherLogin(entry) {
+  const user = entry?.user;
+  return typeof user === 'string' ? user : user?.login;
+}
+
 function issueCommentBelongsToPublisher(comment, expectedPublisherLogin) {
-  return !comment?.user?.login || !expectedPublisherLogin
-    || isExpectedPublisherLogin(comment.user.login, expectedPublisherLogin);
+  return isExpectedPublisherLogin(commentPublisherLogin(comment), expectedPublisherLogin);
 }
 
 function splitStickySummaryBody(body) {
@@ -6440,8 +6476,13 @@ function postStickySummaryComment(commentBody, prContext, options = {}) {
   try {
     assertCurrentPullRequest(prContext, { commandRunner });
     const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
-    const comments = readIssueComments(commandRunner, prContext);
-    const existingIssueComment = [...comments].reverse().find((comment) => (
+    // Without an identity nothing can be matched (issueCommentBelongsToPublisher fails closed), so
+    // every run would post a fresh summary and the comment would stop being sticky. Say so instead
+    // of quietly reintroducing the comment-per-push behaviour this surface exists to prevent.
+    if (!expectedPublisherLogin) {
+      return { success: false, postedViaGh: false, error: 'could not determine the publishing GitHub identity; refusing to adopt or patch an unverified summary comment' };
+    }
+    const existingIssueComment = findLatestIssueComment(commandRunner, prContext, (comment) => (
       typeof comment?.body === 'string'
       && comment.body.includes(anchor)
       && Number.isInteger(comment.id)
@@ -6450,7 +6491,12 @@ function postStickySummaryComment(commentBody, prContext, options = {}) {
     // Before sticky summaries existed, the full per-PR body lived in a root review. Migrate the
     // newest bot-owned legacy body into the sticky issue comment so the first post after upgrade
     // does not discard the historical round or create another expanded review surface.
-    const legacySummaryReview = existingIssueComment ? null : [...readActionReviews(commandRunner, prContext)]
+    // `options.existingReviews` is the caller's post-write snapshot. Reusing it matters: this
+    // lookup only runs on the one migration publish where no sticky comment exists yet, and
+    // re-paginating the pull request's whole review history for it made that run read the same
+    // unbounded list a third time.
+    const knownReviews = options.existingReviews || readActionReviews(commandRunner, prContext);
+    const legacySummaryReview = existingIssueComment ? null : [...knownReviews]
       .reverse()
       .find((review) => (
         typeof review?.body === 'string'
@@ -6792,6 +6838,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       const summaryPublication = postStickySummaryComment(bodyWithRejected, prContext, {
         commandRunner,
         publicationAttemptId: options.publicationAttemptId,
+        existingReviews: verifiedReviews,
       });
       if (!summaryPublication.success) {
         throw new Error(`sticky summary publication failed: ${summaryPublication.error || 'unknown error'}`);
@@ -7773,6 +7820,9 @@ module.exports = {
   parsePriorSummaryReview,
   capPublicationThreads,
   MAX_PUBLISHED_REVIEW_THREADS,
+  readActionReviewThreads,
+  reviewRequiresResultRepublish,
+  findLatestIssueComment,
   isSubscriptionTransport,
   isDirectReasoningTransport,
   isOllamaTransport,

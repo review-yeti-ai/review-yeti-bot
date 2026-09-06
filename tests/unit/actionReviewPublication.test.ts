@@ -23,10 +23,13 @@ const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/rev
 const {
   actionSummaryAnchor,
   capPublicationThreads,
+  findLatestIssueComment,
   MAX_PUBLISHED_REVIEW_THREADS,
   postOrOutputComment,
   postStickySummaryComment,
+  readActionReviewThreads,
   renderStickySummaryBody,
+  reviewRequiresResultRepublish,
   splitStickySummaryBody,
 } = pipeline;
 
@@ -312,6 +315,47 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
     expect(state.posted.filter((post) => post.method === 'PATCH')).toHaveLength(1);
   });
 
+  // A prior receipt for this head is only reusable if it recorded a terminal result. A retryable
+  // one (BLOCK/FIX_FIRST/INCOMPLETE/...) must be republished, or a re-run silently inherits the
+  // stale verdict as its own gate signal.
+  const seededReview = (verdict: string) => ({
+    id: 777,
+    commit_id: 'newhead',
+    user: { login: 'github-actions[bot]' },
+    body: [
+      `**Verdict: ${verdict}**`,
+      '<!-- review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action -->',
+      '<!-- review-yeti-bot:result:v1:review-yeti-ai/review-yeti-bot#42:newhead:earlier-attempt -->',
+    ].join('\n\n'),
+  });
+
+  it('republishes the receipt when the prior exact-head result was retryable', () => {
+    const { state, commandRunner } = githubRunner([seededReview('BLOCK')]);
+
+    const result = postOrOutputComment('body', context, emptyPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: true });
+    expect(result.deduplicated).toBeUndefined();
+    expect(state.reviews).toHaveLength(2);
+  });
+
+  it('reuses the receipt when the prior exact-head result was terminal', () => {
+    const { state, commandRunner } = githubRunner([seededReview('SHIP')]);
+
+    const result = postOrOutputComment('body', context, emptyPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: true, deduplicated: true });
+    expect(state.reviews).toHaveLength(1);
+  });
+
+  it('classifies which verdicts force a republish', () => {
+    for (const verdict of ['BLOCK', 'FIX_FIRST', 'INCOMPLETE_REVIEW', 'DEGRADED', 'ERROR']) {
+      expect(reviewRequiresResultRepublish({ body: `**Verdict: ${verdict}**` })).toBe(true);
+    }
+    expect(reviewRequiresResultRepublish({ body: '**Verdict: SHIP**' })).toBe(false);
+    expect(reviewRequiresResultRepublish({ body: 'no verdict at all' })).toBe(false);
+  });
+
   it('fails closed when GitHub exposes the compact review at a different commit than the requested head', () => {
     const { commandRunner } = githubRunner([], { createdReviewCommitId: 'oldhead' });
 
@@ -500,5 +544,224 @@ describe('the merge-blocking cap on review threads', () => {
     const sticky = state.comments[0].body;
     expect(sticky).toContain('Additional findings not opened as conversations');
     for (const item of capped.overflow) expect(sticky).toContain(item.path);
+  });
+});
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('reading existing review threads', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+
+  const thread = (id: string, overrides: any = {}) => ({
+    id,
+    isResolved: false,
+    isOutdated: false,
+    path: `src/${id}.ts`,
+    line: 4,
+    diffSide: 'RIGHT',
+    comments: {
+      nodes: [{ databaseId: Number(id.replace(/\D/gu, '')) || 1, body: `body ${id}`, createdAt: '2026-09-06T00:00:00Z', author: { login: 'github-actions[bot]' }, commit: { oid: 'newhead' } }],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    },
+    ...overrides,
+  });
+
+  const threadPage = (nodes: any[], pageInfo: any) => JSON.stringify([
+    { data: { repository: { pullRequest: { reviewThreads: { nodes, pageInfo } } } } },
+  ]);
+
+  const isCommentQuery = (args: string[]) => args.some((arg) => arg.startsWith('threadId='));
+
+  it('collects threads across every page', () => {
+    let call = 0;
+    const commandRunner = (_exe: string, args: string[]) => {
+      if (args[0] !== 'api' || args[1] !== 'graphql') return { status: 1, stdout: '', stderr: 'unexpected' };
+      call += 1;
+      if (call === 1) return { status: 0, stdout: threadPage([thread('t1'), thread('t2')], { hasNextPage: true, endCursor: 'cursor-1' }), stderr: '' };
+      return { status: 0, stdout: threadPage([thread('t3')], { hasNextPage: false, endCursor: null }), stderr: '' };
+    };
+
+    const snapshot = readActionReviewThreads(commandRunner, context);
+
+    expect(snapshot.threads.map((entry: any) => entry.id)).toEqual(['t1', 't2', 't3']);
+    expect(snapshot.complete).toBe(true);
+  });
+
+  // A server that keeps claiming another page while handing back the same cursor would spin
+  // forever; the reader has to stop and say the snapshot is partial.
+  it('stops on a repeated cursor instead of looping, and reports the snapshot as partial', () => {
+    let calls = 0;
+    const commandRunner = (_exe: string, args: string[]) => {
+      if (args[0] !== 'api' || args[1] !== 'graphql') return { status: 1, stdout: '', stderr: 'unexpected' };
+      calls += 1;
+      return { status: 0, stdout: threadPage([thread(`t${calls}`)], { hasNextPage: true, endCursor: 'stuck' }), stderr: '' };
+    };
+
+    const snapshot = readActionReviewThreads(commandRunner, context);
+
+    expect(snapshot.complete).toBe(false);
+    expect(calls).toBeLessThanOrEqual(10);
+  });
+
+  it('marks the snapshot partial when a thread has comments it could not finish reading', () => {
+    let commentCalls = 0;
+    const commandRunner = (_exe: string, args: string[]) => {
+      if (args[0] !== 'api' || args[1] !== 'graphql') return { status: 1, stdout: '', stderr: 'unexpected' };
+      if (isCommentQuery(args)) {
+        commentCalls += 1;
+        return {
+          status: 0,
+          stdout: JSON.stringify([{ data: { node: { comments: { nodes: [], pageInfo: { hasNextPage: true, endCursor: 'stuck' } } } } }]),
+          stderr: '',
+        };
+      }
+      return {
+        status: 0,
+        stdout: threadPage(
+          [thread('t1', { comments: { nodes: [], pageInfo: { hasNextPage: true, endCursor: 'stuck' } } })],
+          { hasNextPage: false, endCursor: null },
+        ),
+        stderr: '',
+      };
+    };
+
+    const snapshot = readActionReviewThreads(commandRunner, context);
+
+    expect(commentCalls).toBeGreaterThan(0);
+    expect(snapshot.complete).toBe(false);
+    expect(snapshot.threads[0].commentsComplete).toBe(false);
+  });
+
+  it('surfaces a GraphQL error rather than treating it as an empty snapshot', () => {
+    const commandRunner = () => ({ status: 0, stdout: JSON.stringify([{ errors: [{ message: 'Resource not accessible' }] }]), stderr: '' });
+
+    expect(() => readActionReviewThreads(commandRunner, context)).toThrow('Resource not accessible');
+  });
+});
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('the sticky summary refuses to adopt a comment it did not write', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+  const anchor = '<!-- review-yeti-bot:summary:v1:review-yeti-ai/review-yeti-bot#42 -->';
+
+  // The anchor is derived entirely from the repository and pull request number, so anyone who can
+  // read the PR URL can write a comment containing it.
+  function runner(seedComments: any[], options: { publisher?: string | null } = {}) {
+    const publisher = options.publisher === undefined ? 'github-actions[bot]' : options.publisher;
+    const state = { comments: [...seedComments], posted: [] as any[], nextId: 700 };
+    const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
+      }
+      if (args[0] === 'api' && (args[1] === 'user' || args[1] === 'installation')) {
+        return publisher ? { status: 0, stdout: `${publisher}\n`, stderr: '' } : { status: 1, stdout: '', stderr: 'no identity' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'api' && args.includes('--method')) {
+        const method = args[args.indexOf('--method') + 1];
+        const endpoint = args[3];
+        state.posted.push({ method, endpoint, payload: JSON.parse(commandOptions.input) });
+        // GitHub echoes the patched comment, so a PATCH keeps its own id rather than minting one.
+        const patched = method === 'PATCH' ? state.comments.find((comment) => endpoint.endsWith(`/${comment.id}`)) : null;
+        if (patched) return { status: 0, stdout: JSON.stringify({ id: patched.id, user: { login: publisher } }), stderr: '' };
+        state.nextId += 1;
+        return { status: 0, stdout: JSON.stringify({ id: state.nextId, user: { login: publisher } }), stderr: '' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/pulls/42/reviews')) {
+        return { status: 0, stdout: JSON.stringify([[]]), stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    };
+    return { state, commandRunner };
+  }
+
+  it('posts its own comment instead of overwriting a planted one carrying the anchor', () => {
+    const planted = { id: 6001, body: `looks fine to me ${anchor}`, user: { login: 'drive-by-contributor' } };
+    const { state, commandRunner } = runner([planted]);
+
+    const result = postStickySummaryComment('real summary', context, { commandRunner, existingReviews: [] });
+
+    expect(result.success).toBe(true);
+    expect(state.posted.every((post) => post.method !== 'PATCH')).toBe(true);
+    expect(state.posted.some((post) => post.method === 'POST' && post.endpoint.endsWith('/issues/42/comments'))).toBe(true);
+  });
+
+  it('is not silenced by a planted comment claiming to be an existing round', () => {
+    const planted = { id: 6002, body: `${anchor}\n<!-- review-yeti-bot:summary-round:v1:review-yeti-ai/review-yeti-bot#42:newhead:deadbeefdeadbeef -->`, user: { login: 'drive-by-contributor' } };
+    const { state, commandRunner } = runner([planted]);
+
+    const result = postStickySummaryComment('real summary', context, { commandRunner, existingReviews: [] });
+
+    expect(result.deduplicated).toBeFalsy();
+    expect(state.posted.some((post) => post.method === 'POST')).toBe(true);
+  });
+
+  it('still patches its own prior comment', () => {
+    const own = { id: 6003, body: `earlier round ${anchor}`, user: { login: 'github-actions[bot]' } };
+    const { state, commandRunner } = runner([own]);
+
+    const result = postStickySummaryComment('later round', context, { commandRunner, existingReviews: [] });
+
+    expect(result).toMatchObject({ success: true, updatedInPlace: true, commentId: 6003 });
+    expect(state.posted.filter((post) => post.method === 'PATCH')).toHaveLength(1);
+  });
+
+  it('fails loudly when the publishing identity cannot be established', () => {
+    const { state, commandRunner } = runner([], { publisher: null });
+
+    const result = postStickySummaryComment('summary', context, { commandRunner, existingReviews: [] });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('could not determine the publishing GitHub identity');
+    expect(state.posted).toHaveLength(0);
+  });
+});
+
+describe('finding the sticky comment without reading the whole conversation', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42 };
+
+  const page = (count: number, matchAt = -1) => Array.from({ length: count }, (_, i) => JSON.stringify({
+    id: 1000 + i,
+    body: i === matchAt ? 'ANCHORED' : 'ordinary comment',
+    user: { login: 'github-actions[bot]' },
+  })).join('\n');
+
+  it('stops requesting pages once it has a match', () => {
+    const requested: string[] = [];
+    const commandRunner = (_exe: string, args: string[]) => {
+      requested.push(args[1]);
+      return { status: 0, stdout: page(100, 3), stderr: '' };
+    };
+
+    const match = findLatestIssueComment(commandRunner, context, (comment: any) => comment.body === 'ANCHORED');
+
+    expect(match).toMatchObject({ body: 'ANCHORED' });
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toContain('direction=desc');
+  });
+
+  it('stops at a short page rather than asking for one that cannot exist', () => {
+    const requested: string[] = [];
+    const commandRunner = (_exe: string, args: string[]) => {
+      requested.push(args[1]);
+      return { status: 0, stdout: page(12), stderr: '' };
+    };
+
+    expect(findLatestIssueComment(commandRunner, context, () => false)).toBeNull();
+    expect(requested).toHaveLength(1);
+  });
+
+  it('gives up after a bounded number of full pages', () => {
+    const requested: string[] = [];
+    const commandRunner = (_exe: string, args: string[]) => {
+      requested.push(args[1]);
+      return { status: 0, stdout: page(100), stderr: '' };
+    };
+
+    expect(findLatestIssueComment(commandRunner, context, () => false)).toBeNull();
+    expect(requested.length).toBeLessThanOrEqual(5);
   });
 });

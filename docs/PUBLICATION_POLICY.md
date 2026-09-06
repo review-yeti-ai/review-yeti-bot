@@ -39,6 +39,12 @@ Findings without a publishable line anchor become file-level conversations or, f
 named section in the summary. The Action never relocates a finding to a nearby line to make it
 publishable.
 
+**Publisher identity is required, and matching fails closed.** The summary anchor is derived from
+the repository and pull request number alone, so anyone who can read the pull request URL can write
+a comment containing it. A comment or review is only adopted — patched in place, or treated as an
+existing round for dedupe — when its author matches this run's authenticated publisher. If that
+identity cannot be established, publication fails rather than adopting an unverified comment.
+
 ## Implementation
 
 | | App | Action |

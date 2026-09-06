@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   findingDedupeKey,
   formatFindingCommentBody,
+  mergeNearDuplicateClaims,
   parsePatchAnchors,
   planFindingPublication,
 } from '../../src/review/findingPublication';
@@ -167,5 +168,51 @@ describe('shared finding publication planner', () => {
 
     expect(forward).toEqual(reverse);
     expect(forward.lineComments.map((comment) => comment.finding.title)).toEqual(['C', 'A', 'B']);
+  });
+});
+
+
+describe('merging a file-anchored claim with a line-anchored one', () => {
+  const claim = {
+    severity: 'P1' as const,
+    path: 'src/inventory.ts',
+    title: 'Cancel bypasses the inventory-access entitlement check',
+    body: 'The cancel endpoint checks only stock Update permission and never calls HasInventoryAccessAsync, so a tenant whose module is disabled can still mutate inventory-audit records.',
+    personas: ['Security'],
+  };
+
+  // `mergeClaimInto` promotes a file-level conversation to a line anchor when the same claim also
+  // arrived anchored to a line. `planFindingPublication` cannot currently produce that pair on its
+  // own -- it holds one file object per path, so every finding on a path takes the same
+  // file-vs-line branch -- so the exported merge step is where the rule is reachable and tested.
+  it('keeps the line anchor, because it is the more useful place for the conversation', () => {
+    const [merged] = mergeNearDuplicateClaims([
+      { subjectType: 'file', finding: { ...claim, line: 1, side: 'RIGHT' } },
+      { subjectType: 'line', finding: { ...claim, line: 248, side: 'RIGHT', body: `${claim.body} Every other endpoint calls it.` } },
+    ] as any);
+
+    expect(merged.subjectType).toBe('line');
+    expect(merged.finding.line).toBe(248);
+    expect(merged.finding.side).toBe('RIGHT');
+  });
+
+  it('does not downgrade a line anchor when the file-level report arrives second', () => {
+    const [merged] = mergeNearDuplicateClaims([
+      { subjectType: 'line', finding: { ...claim, line: 248, side: 'RIGHT' } },
+      { subjectType: 'file', finding: { ...claim, line: 1, side: 'RIGHT', body: `${claim.body} Every other endpoint calls it.` } },
+    ] as any);
+
+    expect(merged.subjectType).toBe('line');
+    expect(merged.finding.line).toBe(248);
+  });
+
+  it('credits both reviewers and keeps the richer body across the upgrade', () => {
+    const [merged] = mergeNearDuplicateClaims([
+      { subjectType: 'file', finding: { ...claim, line: 1, side: 'RIGHT', personas: ['Architecture'] } },
+      { subjectType: 'line', finding: { ...claim, line: 248, side: 'RIGHT', body: `${claim.body} Every other endpoint calls it.`, personas: ['Security'] } },
+    ] as any);
+
+    expect(merged.finding.personas).toEqual(['Architecture', 'Security']);
+    expect(merged.finding.body).toContain('Every other endpoint calls it.');
   });
 });
