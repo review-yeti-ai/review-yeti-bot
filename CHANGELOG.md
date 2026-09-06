@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.3...v1.38.4) (2026-09-06)
+
+
+### Bug Fixes
+
+* **dispatch:** close the silent-block hole and drop the default-SA escalation (REL-586) ([#541](https://github.com/review-yeti-ai/review-yeti-bot/issues/541)) ([636f4f5](https://github.com/review-yeti-ai/review-yeti-bot/commit/636f4f5d13e2ea70b7c1086631807042f890138f))
+
 ## [1.38.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.2...v1.38.3) (2026-09-06)
 
 
