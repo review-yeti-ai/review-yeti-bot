@@ -23,6 +23,7 @@ const {
 } = require('../../../src/review/reviewCore');
 const {
   capPublicationThreads,
+  isActionableSeverity,
   MAX_PUBLISHED_REVIEW_THREADS,
   planFindingPublication,
 } = require('../../../src/review/findingPublication');
@@ -6708,7 +6709,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
     if (!prContext.repo || !prContext.repo.includes('/') || !prContext.headSha) {
       return { success: false, postedViaGh: false, error: 'GitHub review publication requires repo and exact head SHA.' };
     }
-    const rejectedActionable = plan.rejected.filter((item) => item.severity === 'P0' || item.severity === 'P1');
+    const rejectedActionable = plan.rejected.filter((item) => isActionableSeverity(item.severity));
     // Keep the review fail-closed with respect to line anchors: never guess a nearby
     // line. But do publish the exact finding metadata in the compact review body so
     // an otherwise complete model verdict does not fail the required check merely
