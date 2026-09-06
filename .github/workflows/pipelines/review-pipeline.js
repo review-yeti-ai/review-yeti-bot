@@ -7831,6 +7831,7 @@ module.exports = {
   renderStickySummaryBody,
   splitStickySummaryBody,
   parsePriorSummaryReview,
+  compactReviewBody,
   capPublicationThreads,
   MAX_PUBLISHED_REVIEW_THREADS,
   readActionReviewThreads,

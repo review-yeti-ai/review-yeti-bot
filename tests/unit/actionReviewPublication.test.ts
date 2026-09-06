@@ -419,6 +419,19 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
     // The same rendered body must remain readable by the other two parsers of that contract.
     expect(parsePriorSummaryReview(render('BLOCK')).verdict).toBe('BLOCK');
     expect(parsePriorSummaryReview(render('SHIP')).verdict).toBe('SHIP');
+
+    // compactReviewBody lifts the verdict heading out of the same markdown. Its fallback is the
+    // generic '## Review Yeti result', so a heading change degrades silently into a receipt that
+    // states no verdict at all rather than failing.
+    for (const verdict of ['SHIP', 'FIX_FIRST', 'BLOCK']) {
+      const compact = pipeline.compactReviewBody(render(verdict), context, { marker: '', resultMarker: '' });
+      expect(compact).toContain(`**Verdict: ${verdict}**`);
+      expect(compact).not.toContain('## Review Yeti result');
+    }
+
+    // And the fallback still exists for a body that carries no heading at all.
+    expect(pipeline.compactReviewBody('no heading here', context, { marker: '', resultMarker: '' }))
+      .toContain('## Review Yeti result');
   });
 
   it('fails closed when GitHub exposes the compact review at a different commit than the requested head', () => {
