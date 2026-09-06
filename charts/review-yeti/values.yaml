@@ -263,6 +263,43 @@ secrets:
   openRouterApiKey: ""
   openRouterBaseUrl: ""
 
+# Job dispatcher: claims admitted reviews and projects PRReviewJob resources.
+#
+# Distinct from `dispatcher` above, which is the action-dispatch API -- same image,
+# different entrypoint, different service account. Only this component provisions
+# per-run publish secrets, which is why the App credentials belong here.
+#
+# Off by default because this Deployment has historically been applied outside
+# Helm; enabling it makes the chart the owner. Set `image` to the digest already
+# running before enabling, so turning it on is not also a version change.
+jobDispatcher:
+  enabled: false
+  name: "ct-review-job-dispatcher"
+  serviceAccountName: "ct-review-job-dispatcher"
+  configMapName: "ct-review-job-dispatcher"
+  appSecretName: "ct-review-action-dispatch-runtime"
+  image: ""
+  imagePullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
 # App-gate publishing lane transport (ADR 0527).
 #
 # Both gatewayBaseUrl and model are EMPTY by default and are deliberately not

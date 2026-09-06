@@ -64,6 +64,16 @@ app.kubernetes.io/component: operator
 {{/*
 Dispatcher full name
 */}}
+{{/*
+Job dispatcher selector labels. A distinct component from the action-dispatch API:
+same image, different entrypoint, different service account.
+*/}}
+{{- define "review-yeti.jobDispatcher.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "review-yeti.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: job-dispatcher
+{{- end }}
+
 {{- define "review-yeti.dispatcher.fullname" -}}
 {{- printf "%s-dispatcher" (include "review-yeti.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}

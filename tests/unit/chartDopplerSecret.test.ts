@@ -127,3 +127,48 @@ describe('review-yeti chart run-secret RBAC', () => {
     expect(preceding.lastIndexOf('kind: Role')).toBeGreaterThan(preceding.lastIndexOf('kind: ClusterRole'));
   });
 });
+
+describe('review-yeti chart job dispatcher', () => {
+  it('is absent by default', () => {
+    // This Deployment has historically been applied outside Helm; enabling it makes
+    // the chart the owner, which is a deliberate adoption step.
+    expect(render()).not.toContain('ct-review-job-dispatcher');
+  });
+
+  it('runs the job dispatcher entrypoint, not the action-dispatch API', () => {
+    // Same image, different entrypoint. Only this component provisions run secrets.
+    const rendered = render(
+      '--set', 'jobDispatcher.enabled=true',
+      '--set', 'jobDispatcher.image=ghcr.io/x@sha256:abc',
+    );
+    expect(rendered).toContain('dist/reviewJobDispatcherIndex.js');
+  });
+
+  it('refuses to render without a pinned image', () => {
+    // Defaulting to the chart appVersion would make adopting the existing
+    // Deployment into Helm a silent version change as well.
+    expect(() => render('--set', 'jobDispatcher.enabled=true'))
+      .toThrow(/jobDispatcher\.image is required/u);
+  });
+
+  it('supplies App credentials only when run-secret provisioning is on', () => {
+    const base = ['--set', 'jobDispatcher.enabled=true', '--set', 'jobDispatcher.image=ghcr.io/x@sha256:abc'];
+    // Without provisioning there is nothing to mint, so the credential would be an
+    // unnecessary grant sitting in a pod.
+    expect(render(...base)).not.toContain('GITHUB_APP_PRIVATE_KEY');
+    const withSecrets = render(...base, '--set', 'publishing.runSecrets.enabled=true');
+    expect(withSecrets).toContain('GITHUB_APP_ID');
+    expect(withSecrets).toContain('GITHUB_APP_PRIVATE_KEY');
+  });
+
+  it('never renders a credential value into the manifest', () => {
+    const rendered = render(
+      '--set', 'jobDispatcher.enabled=true',
+      '--set', 'jobDispatcher.image=ghcr.io/x@sha256:abc',
+      '--set', 'publishing.runSecrets.enabled=true',
+    );
+    // Referenced by Secret name and key only.
+    expect(rendered).toContain('secretKeyRef');
+    expect(rendered).not.toMatch(/BEGIN [A-Z ]*PRIVATE KEY/u);
+  });
+});
