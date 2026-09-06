@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.0...v1.38.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* **review:** derive active model in PR comment header and default to GLM-5.3-Flash ([#531](https://github.com/review-yeti-ai/review-yeti-bot/issues/531)) ([e938967](https://github.com/review-yeti-ai/review-yeti-bot/commit/e93896791277d1375cfcf315c2a45ad445fd7823))
+
 ## [1.38.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.37.0...v1.38.0) (2026-09-06)
 
 
