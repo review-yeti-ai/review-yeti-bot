@@ -2191,8 +2191,8 @@ function analyzeFindingsPayload(content) {
   }
 
   const unwrapped = content
-    .replace(/^[\s\S]*?<\/think>/i, '')
-    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^[\s\S]*?<\/(?:think|thinking|thought|reasoning)>/i, '')
+    .replace(/<(?:think|thinking|thought|reasoning)>[\s\S]*?<\/(?:think|thinking|thought|reasoning)>/gi, '')
     .trim();
   if (unwrapped && unwrapped !== content.trim()) {
     const unwrappedFenced = unwrapped.match(/```(?:json)?\s*([\s\S]*?)```/iu);
