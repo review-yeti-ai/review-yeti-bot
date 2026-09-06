@@ -52,6 +52,19 @@ describe.skipIf(!helmAvailable() || !existsSync(chartDir))('review-yeti chart Do
     expect(rendered).toMatch(/resyncSeconds:\s*\d+/u);
   });
 
+  it.each([
+    ['neither project nor config', ['--set', 'doppler.enabled=true']],
+    ['only project', ['--set', 'doppler.enabled=true', '--set', 'doppler.project=example-project']],
+    ['only config', ['--set', 'doppler.enabled=true', '--set', 'doppler.config=example-config']],
+  ])('refuses to render with %s', (_label, args) => {
+    // Both operands are covered independently: collapsing them into one case would
+    // leave a regression that drops half the condition invisible, and the chart
+    // would then render a DopplerSecret pointing at an empty project or config --
+    // the exact misconfiguration the guard exists to prevent.
+    expect(() => render(...(args as string[])))
+      .toThrow(/doppler\.project and doppler\.config are required/u);
+  });
+
   it('never renders a Doppler token into a manifest', () => {
     // The token is referenced by Secret name only. Rendering one into the chart
     // would put a long-lived credential into Helm release history and any values
