@@ -61,7 +61,6 @@ export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
 });
 export const EXPECTED_OPENROUTER_MODELS = Object.freeze([
   'z-ai/glm-5.3-flash',
-  'deepseek/deepseek-v4-flash-0731',
 ]);
 export const EXPECTED_OPENROUTER_MODEL = EXPECTED_OPENROUTER_MODELS[0];
 
@@ -231,7 +230,7 @@ export function validatePolicy(policy, repository = '') {
   }
   if (openrouter?.model !== EXPECTED_OPENROUTER_MODEL
       || JSON.stringify(openrouter?.models) !== JSON.stringify(EXPECTED_OPENROUTER_MODELS.slice(1))) {
-    throw new Error('OpenRouter must use only the approved GLM-5.3 Flash primary and DeepSeek V4 Flash 0731 fallback models');
+    throw new Error('OpenRouter must use only the approved GLM-5.3 Flash primary route with no unapproved fallback models');
   }
   if (openrouter?.dispatch_weight !== 2
       || openrouter?.max_in_flight !== 2

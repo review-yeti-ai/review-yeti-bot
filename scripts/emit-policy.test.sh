@@ -108,8 +108,20 @@ if openrouter.get('stream') is not True:
     raise SystemExit('openrouter-primary must use streaming for provider attribution')
 if openrouter.get('model') != 'z-ai/glm-5.3-flash':
     raise SystemExit('openrouter-primary must use the explicit GLM-5.3 Flash route')
-if openrouter.get('models') != ['deepseek/deepseek-v4-flash-0731']:
-    raise SystemExit('openrouter-primary must use DeepSeek V4 Flash 0731 as its only model fallback')
+if openrouter.get('models') != []:
+    raise SystemExit('openrouter-primary must not declare unapproved fallback models')
+for t in configured_transports:
+    t_name = t.get('name', '<unnamed>')
+    for required_field in ('name', 'enabled', 'base_url', 'api_key_env', 'model', 'compat', 'stream', 'timeout_ms'):
+        if required_field not in t:
+            raise SystemExit(f'transport {t_name} is missing required field: {required_field}')
+    t_json = json.dumps(t).lower()
+    if 'deepseek' in t_json:
+        raise SystemExit(f'transport {t_name} contains forbidden legacy deepseek reference: {t_json}')
+    if ':latest' in str(t.get('model', '')) or t.get('model', '').endswith('/latest'):
+        raise SystemExit(f'transport {t_name} uses unpinned latest model tag: {t.get("model")}')
+    if t.get('stream') is not True:
+        raise SystemExit(f'transport {t_name} must declare stream: true')
 if (openrouter.get('max_in_flight'), openrouter.get('capacity_wait_timeout_ms')) != (2, 180000):
     raise SystemExit('openrouter-primary must bound large-diff concurrency and queue admission at 2/180000ms')
 if 'plugins' in openrouter:
