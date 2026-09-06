@@ -7,7 +7,7 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { computeAppVerdict } from '../review/reviewAdapters';
 import { CommentPublisher } from '../github/commentPublisher';
-import { getGitHubAppInstallationToken, getGitHubAppInstallationIdForRepository } from '../github/appAuth';
+import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
@@ -1683,26 +1683,17 @@ export async function runWorker(
     });
   },
   publishingRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
-    // REL-586: resolve the installation from the App credentials and the admitted
-    // repository rather than requiring GITHUB_INSTALLATION_ID. The operator has no
-    // installation id to give -- the CRD carries none, and the dispatch API resolves
-    // it per repository without persisting it -- so requiring the env var would make
-    // every publishing run fail its auth contract before reaching the panel.
-    const appId = requiredWorkerEnv(workerEnv, 'GITHUB_APP_ID');
-    const privateKey = requiredWorkerEnv(workerEnv, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
-    const [owner, repoName] = String(workerEnv.REVIEW_REPO || '').split('/');
-    if (!owner || !repoName) throw new Error('publishing review worker contract is invalid');
-    const installationId = String(await getGitHubAppInstallationIdForRepository({
-      appId,
-      privateKey,
-      owner,
-      repo: repoName,
-    }));
-    const tokenRes = await getGitHubAppInstallationToken({ appId, privateKey, installationId });
-    if (!tokenRes.token.startsWith('ghs_')) {
-      throw new Error('GitHub App token exchange returned a non-installation token');
+    // REL-586: the worker publishes with a short-lived token scoped to this one
+    // repository, minted upstream and delivered in the per-run Secret. It must never
+    // hold the App private key -- this pod parses untrusted pull-request diffs and
+    // executes model output, so an App key here would let a compromised worker mint
+    // tokens for every installation. The operator asserts the same boundary
+    // (TestBuildWorkerJobAcceptsAppGatePublicationMode).
+    const token = String(workerEnv.GITHUB_PUBLISH_TOKEN || '').trim();
+    if (!token.startsWith('ghs_')) {
+      throw new Error('publishing review worker requires a ghs_ installation token');
     }
-    const checkClient = new GitHubInstallationClient({ token: tokenRes.token });
+    const checkClient = new GitHubInstallationClient({ token });
     const receipt = await runPublishingReviewWorker(workerEnv, { checkClient });
     logger.info('Publishing review worker completed', {
       runId: receipt.runId,
