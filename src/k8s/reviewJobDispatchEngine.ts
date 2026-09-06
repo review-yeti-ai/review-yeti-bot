@@ -10,12 +10,31 @@ export interface ReviewJobProjector {
   ensure(projection: PRReviewJobProjection): Promise<void>;
 }
 
+/**
+ * Provisions the per-run Secret a publishing review needs, before its PRReviewJob
+ * exists. REL-586: the worker must never hold the App private key, so the control
+ * plane mints a short-lived token scoped to the one repository with `checks: write`
+ * from the App already installed, and delivers only that.
+ */
+export interface RunSecretProvisioner {
+  /** Idempotent for the same run; must reject rather than reuse a foreign Secret. */
+  provision(request: {
+    runId: string;
+    secretName: string;
+    namespace: string;
+    owner: string;
+    repo: string;
+  }): Promise<void>;
+}
+
 export interface ReviewJobDispatchEngineOptions {
   repository: Pick<
     ReviewDispatchRepository,
     'claimNext' | 'markProjected' | 'releaseForRetry' | 'markTerminal'
   >;
   projector: ReviewJobProjector;
+  /** Required to dispatch an app-gate review; absent, publishing runs are refused. */
+  runSecretProvisioner?: RunSecretProvisioner;
   workerId: string;
   workerImage: string;
   namespace: string;
@@ -28,7 +47,7 @@ export interface ReviewJobDispatchEngineOptions {
 export type ReviewJobDispatchOutcome =
   | { status: 'idle' }
   | { status: 'projected'; runId: string; projectionName: string }
-  | { status: 'terminal'; runId: string; reason: 'projection-rejected' }
+  | { status: 'terminal'; runId: string; reason: 'projection-rejected' | 'run-secret-unavailable' }
   | { status: 'retry'; runId: string; availableAt: number }
   | { status: 'lease-lost'; runId: string };
 
@@ -80,6 +99,49 @@ export class ReviewJobDispatchEngine {
       return marked
         ? { status: 'terminal', runId: claim.runId, reason: 'projection-rejected' }
         : { status: 'lease-lost', runId: claim.runId };
+    }
+
+    // A publishing review needs its credential in place before the Job can start.
+    // Provision first and fail closed: creating the PRReviewJob without the Secret
+    // would start a worker that cannot publish, and because the lane fails closed
+    // that surfaces as a failed check on the pull request rather than a dispatch
+    // error anyone would look at.
+    if (projection.spec.publicationMode === 'app-gate') {
+      const provisioner = this.options.runSecretProvisioner;
+      if (!provisioner) {
+        const marked = await this.options.repository.markTerminal(
+          claim.runId,
+          this.options.workerId,
+          now,
+          'publishing review dispatched without a run secret provisioner',
+        );
+        return marked
+          ? { status: 'terminal', runId: claim.runId, reason: 'run-secret-unavailable' }
+          : { status: 'lease-lost', runId: claim.runId };
+      }
+      const [owner, repoName] = claim.repo.split('/');
+      try {
+        await provisioner.provision({
+          runId: claim.runId,
+          secretName: projection.spec.runSecretName,
+          namespace: this.options.namespace,
+          owner,
+          repo: repoName,
+        });
+      } catch {
+        // Retry rather than terminate: a token mint is a network call and GitHub
+        // rate limits are transient. The terminal deadline still bounds it.
+        const availableAt = now + this.retryDelayMs;
+        const released = await this.options.repository.releaseForRetry(
+          claim.runId,
+          this.options.workerId,
+          now,
+          availableAt,
+        );
+        return released
+          ? { status: 'retry', runId: claim.runId, availableAt }
+          : { status: 'lease-lost', runId: claim.runId };
+      }
     }
 
     try {
