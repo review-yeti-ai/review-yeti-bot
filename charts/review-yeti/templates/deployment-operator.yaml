@@ -48,6 +48,18 @@ spec:
               value: {{ .Values.operator.config.healthAddr | quote }}
             - name: REVIEW_YETI_OPERATOR_MAX_CONCURRENT_JOBS
               value: {{ .Values.operator.config.maxConcurrentJobs | quote }}
+            {{- if .Values.publishing.gatewayBaseUrl }}
+            - name: REVIEW_YETI_GATEWAY_BASE_URL
+              value: {{ .Values.publishing.gatewayBaseUrl | quote }}
+            {{- end }}
+            {{- if .Values.publishing.model }}
+            - name: REVIEW_YETI_REVIEW_MODEL
+              value: {{ .Values.publishing.model | quote }}
+            {{- end }}
+            - name: REVIEW_YETI_GATEWAY_SECRET_NAME
+              value: {{ .Values.publishing.gatewaySecretName | quote }}
+            - name: REVIEW_YETI_GATEWAY_SECRET_KEY
+              value: {{ .Values.publishing.gatewaySecretKey | quote }}
             - name: REVIEW_YETI_WORKER_IMAGE
               value: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default .Chart.AppVersion }}"
             - name: REVIEW_YETI_WORKER_CPU_REQUEST
