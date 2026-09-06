@@ -233,7 +233,8 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
   };
 
   function repositoryWith(rows: unknown[]) {
-    const query = vi.fn(async () => ({ rows, rowCount: rows.length }));
+    // Typed parameters so the call assertions below can read sql/values.
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows, rowCount: rows.length }));
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as never, { query } as never);
     return { repository, query };
   }
