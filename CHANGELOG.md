@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.1...v1.38.2) (2026-09-06)
+
+
+### Reverts
+
+* **chart:** remove duplicated job-dispatcher resources (REL-586) ([#535](https://github.com/review-yeti-ai/review-yeti-bot/issues/535)) ([46ac2f0](https://github.com/review-yeti-ai/review-yeti-bot/commit/46ac2f054758a856039f761770153c21593c4dd8))
+
 ## [1.38.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.0...v1.38.1) (2026-09-06)
 
 
