@@ -23,6 +23,7 @@ package job
 import (
 	"errors"
 	"math"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -49,6 +50,9 @@ const (
 	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
 	ReceiptPathEnv                = "REVIEW_RECEIPT_PATH"
 	ReceiptPath                   = "/workspace/.review-yeti/receipt.json"
+	PublicationModeAppGate        = "app-gate"
+	PublicationModeDisabled       = "disabled"
+	PublishingWorkerComponent     = "publishing-worker"
 	FullPanelQualificationProfile = "full-panel"
 	SameHeadQualificationProfile  = "same-head"
 	ReceiptOnlyWorkerComponent    = "receipt-only-worker"
@@ -85,6 +89,21 @@ type Input struct {
 	WorkspacePVCName string
 	WorkspaceLease   workspace.LeaseAcquireResult
 	Now              time.Time
+	// Publishing carries the non-secret settings the app-gate lane needs. It is
+	// required only for PublicationModeAppGate and, consistent with this builder's
+	// contract, holds Secret *names and keys* -- never a credential value.
+	Publishing PublishingConfig
+}
+
+// PublishingConfig configures the app-gate publishing lane. Bifrost is the only
+// admitted transport (ADR 0527): there is no second provider and no default, so a
+// missing or malformed field refuses the Job rather than silently reviewing
+// against something else.
+type PublishingConfig struct {
+	GatewayBaseURL    string
+	Model             string
+	GatewaySecretName string
+	GatewaySecretKey  string
 }
 
 // BuildWorkerJob builds one non-retrying worker Job. The default projection is
@@ -178,6 +197,53 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				},
 			)
 		}
+	} else if spec.PublicationMode == PublicationModeAppGate {
+		// REL-586 / ADR 0527: the app-gate publishing lane. Deliberately does NOT set
+		// ReceiptOnlyEnv -- that is the single reason every real dispatch previously
+		// produced a receipt-only pod that made no provider or GitHub call.
+		//
+		// Bifrost is the only admitted transport. The worker requires the base URL,
+		// model and key with no defaults, so an incomplete configuration must refuse
+		// the Job here rather than emit one that fails at runtime: a fail-closed lane
+		// turns a misconfiguration into a failed check on every pull request.
+		if err := validatePublishing(input.Publishing); err != nil {
+			return nil, err
+		}
+		labels["review-yeti.ai/component"] = PublishingWorkerComponent
+		templateLabels["review-yeti.ai/component"] = PublishingWorkerComponent
+		env = append(env,
+			corev1.EnvVar{Name: "BIFROST_BASE_URL", Value: input.Publishing.GatewayBaseURL},
+			corev1.EnvVar{Name: "REVIEW_MODEL", Value: input.Publishing.Model},
+			corev1.EnvVar{
+				Name: "BIFROST_PR_REVIEW_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: input.Publishing.GatewaySecretName},
+					Key:                  input.Publishing.GatewaySecretKey,
+				}},
+			},
+			// The lane resolves its own installation from these two plus the admitted
+			// repository; the CRD carries no installation id to project.
+			// The worker never holds the App private key. TestBuildWorkerJobAcceptsApp
+			// GatePublicationMode asserts that invariant deliberately: this pod parses
+			// untrusted pull-request diffs and executes model output, so an App key
+			// here would let a compromised worker mint tokens for every installation.
+			// The dispatcher mints a short-lived token scoped to this one repository
+			// with checks: write, and the worker only ever sees that.
+			corev1.EnvVar{
+				Name: "GITHUB_PUBLISH_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
+					Key:                  "GITHUB_PUBLISH_TOKEN",
+				}},
+			},
+			corev1.EnvVar{
+				Name: "GH_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
+					Key:                  "GITHUB_READ_TOKEN",
+				}},
+			},
+		)
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
 	}
@@ -291,6 +357,13 @@ func validateInput(input Input) error {
 	if err := validateQualification(spec.QualificationProfile, spec.QualificationModel); err != nil {
 		return err
 	}
+	// Both qualification lanes assert REVIEW_PUBLICATION_MODE == "disabled" in the
+	// worker and hardcode githubWrites: 0. Admitting a profile alongside app-gate
+	// would build a Job whose two halves disagree about whether it may publish, so
+	// refuse the combination here rather than letting the worker discover it.
+	if spec.QualificationProfile != "" && spec.PublicationMode != PublicationModeDisabled {
+		return ErrJobConfiguration
+	}
 	if spec.TerminalDeadline.Sub(spec.ReceivedAt.Time) != 15*time.Minute || input.Now.Before(spec.ReceivedAt.Time) {
 		return ErrJobDeadline
 	}
@@ -302,6 +375,26 @@ func validateInput(input Input) error {
 		return workspace.ErrLeaseHeld
 	}
 	return workspace.ValidateLeaseForUse(lease.Lease, review.Namespace, spec.RepositoryID, spec.PRNumber, spec.RunID, input.Now)
+}
+
+// validatePublishing refuses an app-gate Job whose transport is not fully and
+// safely specified. https is required because the gateway carries the diff.
+func validatePublishing(config PublishingConfig) error {
+	if config.GatewayBaseURL == "" || config.Model == "" || config.GatewaySecretName == "" ||
+		config.GatewaySecretKey == "" {
+		return ErrJobConfiguration
+	}
+	if strings.ContainsAny(config.GatewayBaseURL+config.Model, "\r\n\t ") {
+		return ErrJobConfiguration
+	}
+	parsed, err := url.Parse(config.GatewayBaseURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return ErrJobConfiguration
+	}
+	if len(validation.IsDNS1123Subdomain(config.GatewaySecretName)) != 0 {
+		return ErrJobConfiguration
+	}
+	return nil
 }
 
 func validateQualification(profile, model string) error {

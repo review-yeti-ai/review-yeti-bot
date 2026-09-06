@@ -202,7 +202,9 @@ func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	review := reviewFixture(now)
 	review.Spec.PublicationMode = "app-gate"
-	result, err := job.BuildWorkerJob(buildInput(review, now))
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	result, err := job.BuildWorkerJob(input)
 	if err != nil {
 		t.Fatalf("build app-gate job: %v", err)
 	}
@@ -471,3 +473,100 @@ func TestBuildWorkerJobGenericRunnerMode(t *testing.T) {
 }
 
 var _ = batchv1.Job{}
+
+func publishingFixture() job.PublishingConfig {
+	return job.PublishingConfig{
+		GatewayBaseURL:    "https://llm-gateway.calltelemetry.com/v1",
+		Model:             "ollama/glm-5.3-flash",
+		GatewaySecretName: "review-yeti-gateway-credentials",
+		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+	}
+}
+
+// The app-gate lane exists to publish, so it must not be receipt-only. This is the
+// single behaviour that made every real dispatch a no-op before REL-586.
+func TestBuildWorkerJobAppGateIsNotReceiptOnly(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	result, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job: %v", err)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if envValue(container, "REVIEW_RECEIPT_ONLY") != "" {
+		t.Fatalf("app-gate job must not be receipt-only")
+	}
+	if envValue(container, "BIFROST_BASE_URL") != "https://llm-gateway.calltelemetry.com/v1" {
+		t.Fatalf("gateway base url = %q", envValue(container, "BIFROST_BASE_URL"))
+	}
+	if envValue(container, "REVIEW_MODEL") != "ollama/glm-5.3-flash" {
+		t.Fatalf("review model = %q", envValue(container, "REVIEW_MODEL"))
+	}
+	if !hasEnv(container, "BIFROST_PR_REVIEW_API_KEY") || !hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
+		t.Fatalf("app-gate job is missing its gateway key or publish token")
+	}
+}
+
+// A disabled dispatch must keep producing a receipt-only pod.
+func TestBuildWorkerJobDisabledStaysReceiptOnly(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "disabled"
+	result, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("build disabled job: %v", err)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if envValue(container, "REVIEW_RECEIPT_ONLY") != "true" {
+		t.Fatalf("disabled job must stay receipt-only")
+	}
+	if hasEnv(container, "BIFROST_PR_REVIEW_API_KEY") || hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
+		t.Fatalf("receipt-only job must not receive publishing credentials")
+	}
+}
+
+// Fail closed at build time: an incompletely configured transport must refuse the
+// Job rather than emit one that fails at runtime, which -- because the lane fails
+// closed -- would conclude failure on every pull request.
+func TestBuildWorkerJobRefusesIncompletePublishingConfig(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for name, mutate := range map[string]func(*job.PublishingConfig){
+		"no gateway url":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "" },
+		"no model":        func(c *job.PublishingConfig) { c.Model = "" },
+		"no secret name":  func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
+		"no secret key":   func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
+		"plaintext http":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://llm-gateway.calltelemetry.com/v1" },
+		"whitespace":      func(c *job.PublishingConfig) { c.Model = "ollama/glm 5.3" },
+		"bad secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "Not_A_Subdomain" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.PublicationMode = "app-gate"
+			input := buildInput(review, now)
+			config := publishingFixture()
+			mutate(&config)
+			input.Publishing = config
+			if _, err := job.BuildWorkerJob(input); err == nil {
+				t.Fatalf("expected refusal for %s", name)
+			}
+		})
+	}
+}
+
+// The qualification lanes assert publication mode is disabled and write nothing.
+// Admitting a profile alongside app-gate would build a Job whose halves disagree.
+func TestBuildWorkerJobRefusesQualificationWithAppGate(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+	review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	if _, err := job.BuildWorkerJob(input); err == nil {
+		t.Fatalf("expected refusal of a qualification profile under app-gate")
+	}
+}
