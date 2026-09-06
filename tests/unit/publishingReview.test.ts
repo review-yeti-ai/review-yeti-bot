@@ -23,7 +23,7 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    BIFROST_BASE_URL: 'https://llm-gateway.calltelemetry.com/v1',
+    BIFROST_BASE_URL: 'https://gateway.example.invalid/v1',
     BIFROST_PR_REVIEW_API_KEY: 'vk-test',
     GH_TOKEN: 'ghs_test',
     ...overrides,
@@ -70,7 +70,7 @@ describe('publishing review lane admission', () => {
 
 describe('Bifrost is the only transport', () => {
   it('accepts the gateway', () => {
-    expect(bifrostTransport(env()).baseUrl).toBe('https://llm-gateway.calltelemetry.com/v1');
+    expect(bifrostTransport(env()).baseUrl).toBe('https://gateway.example.invalid/v1');
   });
 
   it.each(['BIFROST_BASE_URL', 'BIFROST_PR_REVIEW_API_KEY', 'REVIEW_MODEL'])(
@@ -83,7 +83,7 @@ describe('Bifrost is the only transport', () => {
   );
 
   it('refuses a non-https gateway', () => {
-    expect(() => bifrostTransport(env({ BIFROST_BASE_URL: 'http://llm-gateway.calltelemetry.com/v1' })))
+    expect(() => bifrostTransport(env({ BIFROST_BASE_URL: 'http://gateway.example.invalid/v1' })))
       .toThrow(/contract is invalid/u);
   });
 });

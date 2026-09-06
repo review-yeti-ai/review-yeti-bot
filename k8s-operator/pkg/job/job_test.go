@@ -476,7 +476,7 @@ var _ = batchv1.Job{}
 
 func publishingFixture() job.PublishingConfig {
 	return job.PublishingConfig{
-		GatewayBaseURL:    "https://llm-gateway.calltelemetry.com/v1",
+		GatewayBaseURL:    "https://gateway.example.invalid/v1",
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
 		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
@@ -499,7 +499,7 @@ func TestBuildWorkerJobAppGateIsNotReceiptOnly(t *testing.T) {
 	if envValue(container, "REVIEW_RECEIPT_ONLY") != "" {
 		t.Fatalf("app-gate job must not be receipt-only")
 	}
-	if envValue(container, "BIFROST_BASE_URL") != "https://llm-gateway.calltelemetry.com/v1" {
+	if envValue(container, "BIFROST_BASE_URL") != "https://gateway.example.invalid/v1" {
 		t.Fatalf("gateway base url = %q", envValue(container, "BIFROST_BASE_URL"))
 	}
 	if envValue(container, "REVIEW_MODEL") != "ollama/glm-5.3-flash" {
@@ -538,7 +538,7 @@ func TestBuildWorkerJobRefusesIncompletePublishingConfig(t *testing.T) {
 		"no model":        func(c *job.PublishingConfig) { c.Model = "" },
 		"no secret name":  func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
 		"no secret key":   func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
-		"plaintext http":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://llm-gateway.calltelemetry.com/v1" },
+		"plaintext http":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://gateway.example.invalid/v1" },
 		"whitespace":      func(c *job.PublishingConfig) { c.Model = "ollama/glm 5.3" },
 		"bad secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "Not_A_Subdomain" },
 	} {
