@@ -7,17 +7,21 @@ import { describe, expect, it } from 'vitest';
 const root = path.resolve(__dirname, '../..');
 
 /**
- * Every tracked manifest under k8s/, at any depth.
+ * Every tracked file under k8s/, at any depth and whatever it is named.
  *
- * A non-recursive pathspec (`k8s/*.yaml`) would leave a nested manifest --
- * `k8s/rbac/dispatcher-role.yaml`, say -- unaudited, and an unaudited grant is
- * indistinguishable from no grant. Enumerate the whole tree and filter by
- * extension so depth cannot hide a subject.
+ * No path or extension filter, deliberately. Both narrowings are the same
+ * fail-open shape: a non-recursive pathspec hides a nested manifest, and an
+ * extension allowlist hides a JSON manifest (Kubernetes accepts those) or one
+ * saved under an unusual name. An unaudited grant is indistinguishable from no
+ * grant, so the audit set is defined by "tracked under k8s/" and nothing else.
+ *
+ * Everything here is a manifest today. If a non-manifest ever lands, `documents()`
+ * raises rather than skipping, and whoever adds it decides explicitly.
  */
 function trackedManifests(): string[] {
   return execFileSync('git', ['ls-files', 'k8s/'], { cwd: root, encoding: 'utf8' })
     .split('\n')
-    .filter((file) => file.endsWith('.yaml') || file.endsWith('.yml') || file.endsWith('.tpl'));
+    .filter(Boolean);
 }
 
 /**
@@ -94,15 +98,21 @@ describe('PRReviewJob create authority (REL-586)', () => {
   const manifests = trackedManifests();
 
   it('is granted by exactly one subject across every tracked manifest', () => {
-    const subjects = manifests.flatMap((file) => createSubjectsFor(documents(file)));
+    // Resolved across the WHOLE tree at once, not per file. RBAC binds a
+    // RoleBinding to a Role by name, and the two need not share a file -- so a
+    // per-file scan never connects them and a grant split across two files evades
+    // the check completely. That is the same fail-open class as skipping an
+    // unparseable file, just expressed structurally.
+    const subjects = createSubjectsFor(manifests.flatMap(documents));
     expect(subjects).toEqual(['ct-review-job-dispatcher']);
   });
 
   it('is never granted to the operator, which only reconciles existing reviews', () => {
     // The operator trusts the CR's publication mode. If it could also create one it
     // would be able to select its own lane, collapsing the separation entirely.
-    const operatorDocs = documents('k8s/operator-deployment.yaml.tpl');
-    expect(createSubjectsFor(operatorDocs)).toEqual([]);
+    // Resolved tree-wide so a Role here bound from elsewhere still counts.
+    expect(createSubjectsFor(manifests.flatMap(documents)))
+      .not.toContain('ct-review-yeti-operator');
   });
 
   it('is never granted cluster-wide, by name or by wildcard', () => {
