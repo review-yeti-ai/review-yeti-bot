@@ -222,3 +222,75 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(source).toMatch(/publication_mode IN \('disabled', 'app-gate'\)/u);
   });
 });
+
+describe('claimAbandonedPublishingRuns (REL-586)', () => {
+  const swept = {
+    run_id: `run_${'1'.repeat(32)}`,
+    owner: 'calltelemetry',
+    repo: 'ct-meta',
+    pr_number: 2795,
+    head_sha: 'a'.repeat(40),
+  };
+
+  function repositoryWith(rows: unknown[]) {
+    const query = vi.fn(async () => ({ rows, rowCount: rows.length }));
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as never, { query } as never);
+    return { repository, query };
+  }
+
+  it('sweeps only queued app-gate runs whose deadline has passed', async () => {
+    // These three predicates are what keep the reaper from force-failing live
+    // traffic. Dropping publication_mode would fail non-publishing runs; dropping
+    // the status guard would fail runs a worker still owns; dropping the deadline
+    // comparison would fail runs that are simply in flight.
+    const { repository, query } = repositoryWith([swept]);
+    await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
+    const sql = String(query.mock.calls[0][0]);
+    expect(sql).toMatch(/status\s*=\s*'queued'/u);
+    expect(sql).toMatch(/publication_mode\s*=\s*'app-gate'/u);
+    expect(sql).toMatch(/terminal_deadline\s*<=\s*to_timestamp\(\$2/u);
+  });
+
+  it('claims and marks terminal in a single statement, under SKIP LOCKED', async () => {
+    // Two reapers must never both publish for one run. Splitting the SELECT and
+    // UPDATE would lose that guarantee silently.
+    const { repository, query } = repositoryWith([swept]);
+    await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
+    const sql = String(query.mock.calls[0][0]);
+    expect(query).toHaveBeenCalledOnce();
+    expect(sql).toMatch(/FOR UPDATE SKIP LOCKED/u);
+    expect(sql).toMatch(/SET status = 'terminal'/u);
+    expect(sql).toMatch(/RETURNING/u);
+  });
+
+  it('records which reaper swept the run', async () => {
+    const { repository, query } = repositoryWith([swept]);
+    await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
+    expect(String(query.mock.calls[0][0])).toMatch(/last_error/u);
+    expect(query.mock.calls[0][1]).toEqual(['reaper-a', 1_700_000_000_000, 20]);
+  });
+
+  it('maps returned rows to the identity the reaper publishes against', async () => {
+    const { repository } = repositoryWith([swept]);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, 20)).resolves.toEqual([{
+      runId: swept.run_id,
+      owner: 'calltelemetry',
+      repo: 'ct-meta',
+      prNumber: 2795,
+      headSha: swept.head_sha,
+    }]);
+  });
+
+  it('returns nothing when no run is abandoned', async () => {
+    const { repository } = repositoryWith([]);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, 20)).resolves.toEqual([]);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])('refuses a non-positive-integer limit (%s)', async (limit) => {
+    // An unbounded or malformed sweep could mint tokens without limit.
+    const { repository, query } = repositoryWith([]);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, limit as number))
+      .rejects.toThrow(/positive integer/u);
+    expect(query).not.toHaveBeenCalled();
+  });
+});
