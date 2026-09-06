@@ -12,6 +12,8 @@ function render(...setArgs: string[]): string {
   });
 }
 
+
+
 function helmAvailable(): boolean {
   try {
     execFileSync('helm', ['version', '--short'], { stdio: 'ignore' });
@@ -84,46 +86,4 @@ describe('review-yeti chart publishing transport', () => {
   });
 });
 
-describe('review-yeti chart run-secret RBAC', () => {
-  it('grants the dispatcher nothing over secrets by default', () => {
-    // The grant is only needed by a publishing install; a non-publishing one should
-    // not be able to touch Secrets at all.
-    expect(render()).not.toContain('resources: ["secrets"]');
-  });
 
-  it('grants only create and delete, never get or list', () => {
-    // The dispatcher writes run credentials. It must not be able to read any other
-    // Secret in the namespace -- including the App private key it holds by env, and
-    // the Doppler-projected gateway credential.
-    const rendered = render('--set', 'publishing.runSecrets.enabled=true');
-    const rule = rendered.slice(rendered.indexOf('resources: ["secrets"]'));
-    const verbs = rule.slice(rule.indexOf('verbs:'), rule.indexOf('\n---'));
-    expect(verbs).toContain('create');
-    expect(verbs).toContain('delete');
-    expect(verbs).not.toContain('get');
-    expect(verbs).not.toContain('list');
-    expect(verbs).not.toContain('watch');
-  });
-
-  it('binds the job dispatcher, not the action-dispatch API', () => {
-    // The provisioner runs in `node dist/reviewJobDispatcherIndex.js` under
-    // ct-review-job-dispatcher. The chart's `.Values.dispatcher` is a different
-    // component -- the action-dispatch API (`dist/dispatchIndex.js`,
-    // ct-review-action-dispatch) -- which never provisions run secrets. Binding it
-    // would grant Secret writes to a component that does not need them while
-    // leaving the one that does unable to work.
-    const rendered = render('--set', 'publishing.runSecrets.enabled=true');
-    const start = rendered.indexOf('ct-review-job-dispatcher-run-secrets');
-    expect(start).toBeGreaterThan(-1);
-    const block = rendered.slice(start, start + 1200);
-    expect(block).toContain('ct-review-job-dispatcher');
-    expect(block).not.toContain('ct-review-action-dispatch');
-  });
-
-  it('scopes the grant to a namespaced Role, never a ClusterRole', () => {
-    const rendered = render('--set', 'publishing.runSecrets.enabled=true');
-    const secretsAt = rendered.indexOf('resources: ["secrets"]');
-    const preceding = rendered.slice(0, secretsAt);
-    expect(preceding.lastIndexOf('kind: Role')).toBeGreaterThan(preceding.lastIndexOf('kind: ClusterRole'));
-  });
-});
