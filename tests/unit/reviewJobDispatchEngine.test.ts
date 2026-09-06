@@ -30,9 +30,13 @@ function fixture(overrides: Record<string, any> = {}) {
     ...overrides.repository,
   };
   const projector = { ensure: vi.fn(async () => undefined), ...overrides.projector };
+  const runSecretProvisioner = overrides.runSecretProvisioner === null
+    ? undefined
+    : { provision: vi.fn(async () => undefined), ...overrides.runSecretProvisioner };
   const engine = new ReviewJobDispatchEngine({
     repository,
     projector,
+    runSecretProvisioner,
     workerId: 'dispatcher-a',
     workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     namespace: 'ct-review-qualification',
@@ -40,7 +44,7 @@ function fixture(overrides: Record<string, any> = {}) {
     leaseMs: 30_000,
     retryDelayMs: 5_000,
   });
-  return { engine, repository, projector };
+  return { engine, repository, projector, runSecretProvisioner };
 }
 
 describe('ReviewJobDispatchEngine', () => {
@@ -69,7 +73,7 @@ describe('ReviewJobDispatchEngine', () => {
   });
 
   it('projects an app-gate claim instead of terminating it', async () => {
-    const { engine, projector, repository } = fixture({
+    const { engine, projector, repository, runSecretProvisioner } = fixture({
       repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })) },
     });
     await expect(engine.runOnce()).resolves.toEqual({
@@ -80,6 +84,54 @@ describe('ReviewJobDispatchEngine', () => {
     expect(projector.ensure).toHaveBeenCalledWith(expect.objectContaining({
       spec: expect.objectContaining({ publicationMode: 'app-gate' }),
     }));
+    expect(repository.markTerminal).not.toHaveBeenCalled();
+    // The credential must be in place before the Job exists, not after.
+    expect(runSecretProvisioner?.provision).toHaveBeenCalledWith(expect.objectContaining({
+      runId: claim.runId,
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+    }));
+    expect((runSecretProvisioner!.provision as any).mock.invocationCallOrder[0])
+      .toBeLessThan((projector.ensure as any).mock.invocationCallOrder[0]);
+  });
+
+  it('never provisions a run secret for a non-publishing claim', async () => {
+    // A receipt-only worker makes no GitHub call, so minting it a token would be
+    // an unnecessary credential with no consumer.
+    const { engine, runSecretProvisioner } = fixture();
+    await engine.runOnce();
+    expect(runSecretProvisioner?.provision).not.toHaveBeenCalled();
+  });
+
+  it('terminates an app-gate claim when no provisioner is configured', async () => {
+    // Fail closed. Projecting without the Secret would start a worker that cannot
+    // publish, and the fail-closed lane turns that into a failed check on the pull
+    // request rather than a dispatch error anyone would look at.
+    const { engine, projector, repository } = fixture({
+      repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })) },
+      runSecretProvisioner: null,
+    });
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'terminal',
+      runId: claim.runId,
+      reason: 'run-secret-unavailable',
+    });
+    expect(projector.ensure).not.toHaveBeenCalled();
+  });
+
+  it('retries rather than terminates when the token mint fails', async () => {
+    // Minting is a network call and GitHub rate limits are transient; the terminal
+    // deadline still bounds how long this can go on.
+    const { engine, projector, repository } = fixture({
+      repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })) },
+      runSecretProvisioner: { provision: vi.fn(async () => { throw new Error('429 rate limit'); }) },
+    });
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'retry',
+      runId: claim.runId,
+      availableAt: now + 5_000,
+    });
+    expect(projector.ensure).not.toHaveBeenCalled();
     expect(repository.markTerminal).not.toHaveBeenCalled();
   });
 
