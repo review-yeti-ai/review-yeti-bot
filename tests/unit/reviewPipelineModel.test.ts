@@ -98,6 +98,11 @@ describe('bounded model output-shape telemetry', () => {
     ['<think>Code: ```ts\nconst a = { x: 1 };\n```</think>\n\n```json\n{"findings":[]}\n```', 'fenced_json_object'],
     ['<think>Thinking...</think>\nReview completed. Findings:\n{"findings":[]}', 'embedded_json_object'],
     ['<think>Thinking...</think>\n{"findings": [', 'truncated_json'],
+    ['<thinking>Claude thinking with { "bracket": true } inside</thinking>\n\n```json\n{"findings":[]}\n```', 'fenced_json_object'],
+    ['<thought>Reasoning with { key: "val" }</thought>\nResult:\n{"findings":[]}', 'embedded_json_object'],
+    ['<reasoning>Multi-step reasoning</reasoning>\n{"findings":[]}', 'embedded_json_object'],
+    ['<think>Step 1</think><think>Step 2 with { braces }</think>\n\n```json\n{"findings":[]}\n```', 'fenced_json_object'],
+    ['<thinking>Unclosed thinking tag with { braces }', 'no_json'],
     ['{"answer":[]}', 'valid_json_wrong_shape'],
     ['{"findings":[', 'truncated_json'],
     ['review completed without a JSON result', 'no_json'],
@@ -2781,5 +2786,84 @@ describe('reviewWithModel', () => {
     }, { apiKey: 'k', fetchImpl: impl });
     const evidence = calls[0].body.messages.find((m: any) => m.role === 'user' && m.content.includes('Unified diff under review:')).content;
     expect(evidence).toContain('PREVIOUS TURN');
+  });
+
+  describe('standardized reasoning model support (GLM, Claude Thinking, DeepSeek R1)', () => {
+    it('extracts structured findings when reasoning models emit thinking blocks with code and braces', () => {
+      const rawPayloads = [
+        // GLM-5.3-Flash style
+        `<think>
+The user wants to review authentication logic.
+Let's look at the changes:
+\`\`\`ts
+function check(user: { id: string }) {
+  if (!user.id) return { error: "missing" };
+}
+\`\`\`
+The findings are clear.
+</think>
+
+\`\`\`json
+{
+  "findings": [
+    {
+      "severity": "P1",
+      "path": "src/api/user.ts",
+      "line": 2,
+      "title": "Missing tenant isolation",
+      "body": "No tenant check found.",
+      "suggestion": "Add tenant scoping."
+    }
+  ]
+}
+\`\`\``,
+        // Claude Thinking style
+        `<thinking>
+Analyzing patch against security checklist.
+1. Multi-tenant: { tenantId: null }
+2. SQL injection: clean
+Emitting findings JSON.
+</thinking>
+
+{
+  "findings": [
+    {
+      "severity": "P1",
+      "path": "src/api/user.ts",
+      "line": 2,
+      "title": "Missing tenant isolation",
+      "body": "No tenant check found.",
+      "suggestion": "Add tenant scoping."
+    }
+  ]
+}`,
+        // DeepSeek R1 style
+        `<think>
+Thinking trace starts directly without markdown.
+Checking AST nodes { type: "CallExpression" }.
+Finished analysis.
+</think>
+Review Findings:
+{
+  "findings": [
+    {
+      "severity": "P1",
+      "path": "src/api/user.ts",
+      "line": 2,
+      "title": "Missing tenant isolation",
+      "body": "No tenant check found.",
+      "suggestion": "Add tenant scoping."
+    }
+  ]
+}`
+      ];
+
+      for (const raw of rawPayloads) {
+        const result = analyzeFindingsPayload(raw);
+        expect(result.findings).not.toBeNull();
+        expect(result.findings).toHaveLength(1);
+        expect(result.findings![0].title).toBe('Missing tenant isolation');
+      }
+    });
   });
 });
