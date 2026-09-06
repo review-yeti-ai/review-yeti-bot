@@ -63,9 +63,11 @@ The cap and its ranking (`capPublicationThreads`, `MAX_PUBLISHED_REVIEW_THREADS`
 `src/review/findingPublication.js` beside the planner, so the size of the cap and the rule for
 which findings survive versus overflow exist in one place rather than one copy per surface. The
 App's `MAX_FINAL_INLINE_COMMENTS` is an alias of that constant, not a second definition, so the two
-surfaces cannot be given different merge-blocking behaviour by editing one of them. The App's
-ranking still lives in `dedupeActionableFindings`; converging it onto `capPublicationThreads` is
-the remaining step.
+surfaces cannot be given different merge-blocking behaviour by editing one of them. The companion
+rule — which severities are actionable — is likewise one definition (`ACTIONABLE_SEVERITIES` /
+`isActionableSeverity`), read by the Action's rejected/overflow filtering and by the App's
+`ACTIONABLE_SEVERITIES` set. The App's *ranking* still lives in `dedupeActionableFindings`;
+converging it onto `capPublicationThreads` is the remaining step.
 
 ## Known gap
 

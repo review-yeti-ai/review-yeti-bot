@@ -134,3 +134,9 @@ export function capPublicationThreads<T extends FindingPublicationPlan>(
   publicationPlan: T,
   max?: number,
 ): T & { overflow: PublicationComment[] };
+
+/** Severities that may become resolve-required review threads. */
+export const ACTIONABLE_SEVERITIES: readonly PublicationSeverity[];
+
+/** Whether a severity may open a resolve-required review thread. */
+export function isActionableSeverity(severity: unknown): boolean;

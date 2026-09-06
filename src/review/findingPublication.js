@@ -436,6 +436,19 @@ function planFindingPublication(input, changedFiles, options = {}) {
 }
 
 /**
+ * Severities that may become resolve-required review threads.
+ *
+ * The single definition of "actionable". It sits beside the cap because the two decide the same
+ * thing together -- which findings can block a merge -- and both publication surfaces read it, so
+ * widening the blocking set cannot leave one surface gating on the old pair.
+ */
+const ACTIONABLE_SEVERITIES = Object.freeze(['P0', 'P1']);
+
+function isActionableSeverity(severity) {
+  return ACTIONABLE_SEVERITIES.includes(String(severity || '').toUpperCase());
+}
+
+/**
  * Max resolve-required review threads one run may open.
  *
  * `required_conversation_resolution` turns every unresolved thread into a merge block, so an
@@ -488,6 +501,8 @@ function capPublicationThreads(publicationPlan, max = MAX_PUBLISHED_REVIEW_THREA
 }
 
 module.exports = {
+  ACTIONABLE_SEVERITIES,
+  isActionableSeverity,
   capPublicationThreads,
   MAX_PUBLISHED_REVIEW_THREADS,
   parsePatchAnchors,

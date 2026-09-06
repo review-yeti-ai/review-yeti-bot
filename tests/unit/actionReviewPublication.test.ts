@@ -1356,3 +1356,134 @@ describe('identifying one publication attempt', () => {
     expect(publish()).toMatch(/:body-[0-9a-f]{16} -->/u);
   });
 });
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('the publisher must stay the same identity throughout', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+  const emptyPlan = { lineComments: [], fileComments: [], advisories: [], rejected: [] };
+
+  const hunk = `@@ -0,0 +1,20 @@\n${Array.from({ length: 20 }, (_, i) => `+l${i}`).join('\n')}`;
+  const onePlan = () => planFindingPublication([{
+    displayName: 'Security',
+    findings: [{ severity: 'P1' as const, path: 'src/alpha.ts', line: 4, title: 'Tenant id reaches the query builder unvalidated', body: 'The handler interpolates the caller-supplied tenant id into the predicate, widening the row set beyond the caller.' }],
+  }], [{ path: 'src/alpha.ts', patch: hunk }]);
+
+  // The authenticated identity is read before writing; if what GitHub attributes the write to is
+  // someone else, the run cannot claim it published this review.
+  function runner(options: { reviewAuthor?: string; commentAuthor?: string; seedReview?: boolean } = {}) {
+    const state = { reviews: [] as any[], comments: [] as any[], threads: [] as any[], nextId: 100 };
+    if (options.seedReview) {
+      state.reviews.push({
+        id: 99,
+        commit_id: 'newhead',
+        user: { login: 'github-actions[bot]' },
+        body: '**Verdict: SHIP**\n\n<!-- review-yeti-bot:v2:review-yeti-ai/review-yeti-bot#42:newhead:action -->\n\n<!-- review-yeti-bot:result:v1:review-yeti-ai/review-yeti-bot#42:newhead:earlier -->',
+      });
+    }
+    const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
+      if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
+      if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage(state.reviews), stderr: '' };
+        return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads } } } } }]), stderr: '' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'api' && args.includes('--method')) {
+        const endpoint = args[3];
+        const payload = JSON.parse(commandOptions.input);
+        state.nextId += 1;
+        // `??` not `||`: an empty login is a distinct case (GitHub named no publisher) and must
+        // not fall back to the expected identity.
+        const author = endpoint.endsWith('/reviews')
+          ? (options.reviewAuthor ?? 'github-actions[bot]')
+          : endpoint.endsWith('/pulls/42/comments')
+            ? (options.commentAuthor ?? 'github-actions[bot]')
+            : 'github-actions[bot]';
+        if (endpoint.endsWith('/reviews')) state.reviews.push({ id: state.nextId, body: payload.body, commit_id: payload.commit_id, user: { login: author } });
+        if (endpoint.endsWith('/issues/42/comments')) state.comments.push({ id: state.nextId, body: payload.body, user: { login: author } });
+        return { status: 0, stdout: JSON.stringify({ id: state.nextId, user: { login: author } }), stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    };
+    return { state, commandRunner };
+  }
+
+  it('publishes normally when the write is attributed to the expected identity', () => {
+    const { commandRunner } = runner();
+
+    expect(postOrOutputComment('body', context, emptyPlan, { commandRunner })).toMatchObject({ success: true });
+  });
+
+  it('refuses when the created review is attributed to someone else', () => {
+    const { commandRunner } = runner({ reviewAuthor: 'someone-else' });
+
+    const result = postOrOutputComment('body', context, emptyPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('did not match the authenticated GitHub identity');
+  });
+
+  it('refuses when a conversation is created under a different identity mid-publication', () => {
+    const { commandRunner } = runner({ commentAuthor: 'someone-else', seedReview: true });
+
+    const result = postOrOutputComment('body', context, onePlan(), { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('publisher changed during publication');
+  });
+
+  it('refuses when the write response names no publisher at all', () => {
+    const { commandRunner } = runner({ reviewAuthor: '' });
+
+    const result = postOrOutputComment('body', context, emptyPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('did not identify its publisher');
+  });
+});
+
+describe('decoding an issue-comment page', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42 };
+
+  const comment = (i: number, body: string) => ({ id: 900 + i, body, user: { login: 'github-actions[bot]' } });
+
+  // gh emits one JSON object per line for this jq projection, but a top-level array is also
+  // accepted. Only the line form was covered.
+  it('finds the match when the page arrives as a JSON array', () => {
+    const commandRunner = () => ({
+      status: 0,
+      stdout: JSON.stringify([comment(0, 'ordinary'), comment(1, 'ANCHORED'), comment(2, 'ordinary')]),
+      stderr: '',
+    });
+
+    expect(findLatestIssueComment(commandRunner, context, (entry: any) => entry.body === 'ANCHORED'))
+      .toMatchObject({ id: 901, body: 'ANCHORED' });
+  });
+
+  it('still bounds paging for the array shape', () => {
+    const requested: string[] = [];
+    const full = JSON.stringify(Array.from({ length: 100 }, (_, i) => comment(i, 'ordinary')));
+    const commandRunner = (_exe: string, args: string[]) => {
+      requested.push(args[1]);
+      return { status: 0, stdout: full, stderr: '' };
+    };
+
+    expect(findLatestIssueComment(commandRunner, context, () => false)).toBeNull();
+    expect(requested.length).toBeLessThanOrEqual(5);
+  });
+
+  it('treats an empty page as no match rather than throwing', () => {
+    expect(findLatestIssueComment(() => ({ status: 0, stdout: '', stderr: '' }), context, () => true)).toBeNull();
+    expect(findLatestIssueComment(() => ({ status: 0, stdout: '[]', stderr: '' }), context, () => true)).toBeNull();
+  });
+
+  it('fails loudly on a malformed page instead of reporting no match', () => {
+    expect(() => findLatestIssueComment(() => ({ status: 0, stdout: '{oops', stderr: '' }), context, () => true))
+      .toThrow(/malformed/u);
+    expect(() => findLatestIssueComment(() => ({ status: 1, stdout: '', stderr: 'Bad credentials' }), context, () => true))
+      .toThrow('Bad credentials');
+  });
+});

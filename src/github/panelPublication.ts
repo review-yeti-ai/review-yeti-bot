@@ -9,7 +9,7 @@
  *   (P0/P1 only by default).
  */
 
-import { MAX_PUBLISHED_REVIEW_THREADS } from '../review/findingPublication';
+import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS } from '../review/findingPublication';
 import type { PanelFinding, PersonaLaneResult } from '../panel/panelEngine';
 import type { PublishInlineCommentRequest } from './commentPublisher';
 
@@ -26,8 +26,13 @@ export const FINAL_REVIEW_MARKER_PREFIX = '<!-- ct-review-final';
  */
 export const MAX_FINAL_INLINE_COMMENTS = MAX_PUBLISHED_REVIEW_THREADS;
 
-/** Severities that may become resolve-required review threads. */
-export const ACTIONABLE_SEVERITIES = new Set(['P0', 'P1']);
+/**
+ * Severities that may become resolve-required review threads.
+ *
+ * Derived from the shared list for the same reason the cap is: widening the blocking set must not
+ * be possible on one publication surface only.
+ */
+export const ACTIONABLE_SEVERITIES = new Set<string>(SHARED_ACTIONABLE_SEVERITIES);
 
 export type FindingWithPersona = PanelFinding & { persona: string };
 
