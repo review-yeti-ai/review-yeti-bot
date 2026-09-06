@@ -5,7 +5,11 @@ const rootRepoDir = path.resolve(__dirname, '../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 const policyModule = require(path.join(rootRepoDir, '.github/workflows/pipelines/openrouter-policy.js'));
 
-export const openRouterReplayPolicy = policyModule.resolveOpenRouterReviewPolicy({});
+export const openRouterReplayPolicy = policyModule.resolveOpenRouterReviewPolicy({
+  actionInputs: {
+    model: 'deepseek/deepseek-v4-flash-0731',
+  },
+});
 
 export const openRouterReplayDiffFiles = [{
   path: 'src/api/user.ts',
