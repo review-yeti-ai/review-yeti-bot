@@ -14,6 +14,12 @@ on:
 
 permissions:
   contents: read
+  # Both halves of this patrol write issues: the drift path opens a `v1-drift`
+  # issue, and the convergence path comments on and closes it. With contents-only
+  # permissions both are 403, so the alarm could never report drift and went red
+  # on `set -euo pipefail` precisely when v1 and main agreed -- a patrol that
+  # cannot patrol, whose only visible signal was a false red.
+  issues: write
 
 concurrency:
   group: v1-drift-alarm
@@ -72,7 +78,11 @@ jobs:
           main="$(gh api repos/exampleorg/example-review-actions/commits/main --jq .sha)"
           [ "$v1" = "$main" ] || exit 0
 
-          for num in $(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=v1-drift" --jq '.[].number'); do
+          # No open drift issue is the healthy steady state, not an error.
+          open_issues="$(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=v1-drift" --jq '.[].number' || true)"
+          [ -n "$open_issues" ] || { echo "v1 == main and no open drift issue — nothing to close."; exit 0; }
+
+          for num in $open_issues; do
             gh api "repos/exampleorg/example-review-actions/issues/$num/comments" \
               --method POST -f body="v1 == main again at $v1 — drift resolved, closing." --silent
             gh api "repos/exampleorg/example-review-actions/issues/$num" \
