@@ -25,10 +25,10 @@ describe('openrouter review policy', () => {
     expect(DEFAULT_OPENROUTER_REVIEW_POLICY).toEqual(manifest);
     expect(resolved).toMatchObject({
       base_url: 'https://openrouter.ai/api/v1',
-      model: 'deepseek/deepseek-v4-flash-0731',
+      model: 'z-ai/glm-5.3-flash',
       allowed_models: [
-        'deepseek/deepseek-v4-flash-0731',
         'z-ai/glm-5.3-flash',
+        'deepseek/deepseek-v4-flash-0731',
       ],
       data_collection: 'deny',
       cost_quality_tradeoff: 7,
@@ -38,10 +38,10 @@ describe('openrouter review policy', () => {
 
   it('uses the direct two-model fleet as the default execution policy', () => {
     const resolved = resolveOpenRouterReviewPolicy({});
-    expect(resolved.model).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(resolved.model).toBe('z-ai/glm-5.3-flash');
     expect(resolved.allowed_models).toEqual([
-      'deepseek/deepseek-v4-flash-0731',
       'z-ai/glm-5.3-flash',
+      'deepseek/deepseek-v4-flash-0731',
     ]);
     expect(resolved.allowed_models).not.toContain('openrouter/auto');
     expect(resolved.allowed_models).not.toContain('openrouter/openai/gpt-4o');
@@ -190,12 +190,12 @@ describe('openrouter review policy', () => {
     });
 
     expect(resolved).toMatchObject({
-      model: 'deepseek/deepseek-v4-flash-0731',
-      allowed_models: ['deepseek/deepseek-v4-flash-0731', 'z-ai/glm-5.3-flash'],
+      model: 'z-ai/glm-5.3-flash',
+      allowed_models: ['z-ai/glm-5.3-flash', 'deepseek/deepseek-v4-flash-0731'],
     });
     expect(buildOpenRouterRequestOptions(resolved)).toEqual({
       baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'deepseek/deepseek-v4-flash-0731',
+      model: 'z-ai/glm-5.3-flash',
       policyFingerprint: resolved.policy_fingerprint,
       provider: {
         data_collection: 'deny',
