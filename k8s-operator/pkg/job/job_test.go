@@ -570,3 +570,44 @@ func TestBuildWorkerJobRefusesQualificationWithAppGate(t *testing.T) {
 		t.Fatalf("expected refusal of a qualification profile under app-gate")
 	}
 }
+
+// The builder stamps this label and the controller selects pods by it. Deriving
+// both from one function is what keeps them from drifting apart -- the drift that
+// made observeWorkerPod blind to every publishing pod.
+func TestWorkerComponentForTracksTheLane(t *testing.T) {
+	if got := job.WorkerComponentFor("app-gate", ""); got != job.PublishingWorkerComponent {
+		t.Fatalf("app-gate component = %q", got)
+	}
+	for _, spec := range [][2]string{
+		{"disabled", ""},
+		{"disabled", job.FullPanelQualificationProfile},
+		// A qualification profile never publishes, whatever the mode claims.
+		{"app-gate", job.FullPanelQualificationProfile},
+		{"app-gate", job.SameHeadQualificationProfile},
+	} {
+		if got := job.WorkerComponentFor(spec[0], spec[1]); got != job.ReceiptOnlyWorkerComponent {
+			t.Fatalf("WorkerComponentFor(%q,%q) = %q", spec[0], spec[1], got)
+		}
+	}
+}
+
+// The label the builder actually stamps must equal what the shared function says.
+func TestBuildWorkerJobStampsTheSharedComponent(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, mode := range []string{"disabled", "app-gate"} {
+		review := reviewFixture(now)
+		review.Spec.PublicationMode = mode
+		input := buildInput(review, now)
+		input.Publishing = publishingFixture()
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("build %s: %v", mode, err)
+		}
+		want := job.WorkerComponentFor(mode, "")
+		for _, labels := range []map[string]string{built.Labels, built.Spec.Template.Labels} {
+			if labels["review-yeti.ai/component"] != want {
+				t.Fatalf("%s component = %q, want %q", mode, labels["review-yeti.ai/component"], want)
+			}
+		}
+	}
+}
