@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.37.0...v1.38.0) (2026-09-06)
+
+
+### Features
+
+* **dispatch:** provision per-run publish secrets from the installed App (REL-586) ([#530](https://github.com/review-yeti-ai/review-yeti-bot/issues/530)) ([5a1a5ea](https://github.com/review-yeti-ai/review-yeti-bot/commit/5a1a5ea878ac9c89f6d92238deecf6444dae6498))
+
 ## [1.37.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.36.0...v1.37.0) (2026-09-06)
 
 
