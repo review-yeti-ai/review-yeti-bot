@@ -12,17 +12,27 @@ function trackedFiles(...patterns: string[]): string[] {
     .filter(Boolean);
 }
 
-/** Render a template's placeholders so it parses as YAML. */
+/**
+ * Render a template's placeholders so it parses as YAML.
+ *
+ * Deliberately has no fallback. An earlier version returned [] for anything it
+ * could not parse and for anything containing `{{`, which is an evasion hole in a
+ * security guard: a manifest widening `prreviewjobs: create` that also carried a
+ * syntax error or a stray Go-template snippet would be dropped from the audit and
+ * the assertion would pass with fewer subjects scanned. A guard must fail when it
+ * cannot evaluate its input, not treat unevaluable input as clean.
+ */
 function documents(relativePath: string): Array<Record<string, any>> {
-  let source = readFileSync(path.join(root, relativePath), 'utf8');
-  source = source.replace(/\$\{[A-Z_]+(:-[^}]*)?\}/gu, 'placeholder');
-  // Helm templates are not YAML; those are covered by the chart render test below.
-  if (source.includes('{{')) return [];
-  try {
-    return (yaml.loadAll(source) as Array<Record<string, any>>).filter(Boolean);
-  } catch {
-    return [];
+  const source = readFileSync(path.join(root, relativePath), 'utf8')
+    .replace(/\$\{[A-Z_]+(:-[^}]*)?\}/gu, 'placeholder');
+  if (source.includes('{{')) {
+    throw new Error(
+      `${relativePath} contains Go-template syntax and cannot be audited as YAML. `
+      + 'Helm templates belong in charts/, which is audited separately by rendering. '
+      + 'If this file must live here, extend this guard deliberately rather than skipping it.',
+    );
   }
+  return (yaml.loadAll(source) as Array<Record<string, any>>).filter(Boolean);
 }
 
 function createSubjectsFor(docs: Array<Record<string, any>>): string[] {
