@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "af3e90b447d98eb50bb81946bd48ee522b6649310efd096a0e8a4321bd1c0e8e",
+  "normalized_plan_sha256": "2cdedcc26668539af01909fb014075d993bc3dfec2fc271abd35d80727ada850",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -42,7 +42,7 @@
         "streaming": true,
         "structured_output": "runtime-default-uncharacterized",
         "reasoning": {
-          "effort": "none",
+          "effort": "medium",
           "wire_shape": "reasoning_effort"
         },
         "request_extensions": {

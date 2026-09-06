@@ -155,7 +155,11 @@ jobs:
           # when this resolves to "local" -- the only backend that implements incremental review --
           # so an execution_backend input override is caught here too, not just the repository
           # default.
-          REVIEW_YETI_RESOLVED_BACKEND: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'doks' }}
+          REVIEW_YETI_RESOLVED_BACKEND: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
+          # emit-policy.mjs refuses a "doks" backend whose publish mode is not
+          # "enabled": that combination accepts the dispatch and never reports a
+          # verdict, leaving the DISPATCHED placeholder as the head's only evidence.
+          REVIEW_YETI_DOKS_PUBLISH_MODE: ${{ vars.REVIEW_YETI_DOKS_PUBLISH_MODE || 'disabled' }}
         run: node scripts/emit-policy.mjs
 
       - name: Validate encoded transport handoff
@@ -281,8 +285,9 @@ jobs:
           max-incremental-chain: ${{ steps.policy.outputs.max_incremental_chain }}
           max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}
           personas: ${{ steps.policy.outputs.personas }}
-          execution-backend: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'doks' }}
+          execution-backend: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
           doks-dispatch-url: https://review-bot.example.com/api/dispatch/action
+          doks-publish-mode: ${{ steps.policy.outputs.doks_publish_mode }}
           honcho-api-key: ${{ secrets.HONCHO_API_KEY }}
           honcho-base-url: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.do.example.com' }}
           honcho-workspace: ${{ vars.HONCHO_WORKSPACE || 'exampleorg' }}

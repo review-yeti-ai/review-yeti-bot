@@ -227,7 +227,10 @@ if (incrementalConfig !== undefined) {
 // the resolved backend is not "local" is not a usable configuration: it silently ran zero
 // incremental reviews for five landed PRs (ADR 0512) before anyone noticed, because nothing
 // asserted the combination was coherent. Fail here, at policy load, before any provider spend.
-const resolvedExecutionBackend = (process.env.REVIEW_YETI_RESOLVED_BACKEND || 'doks').trim();
+// Defaults to "local", not "doks". An unset backend must fall back to the mode that
+// actually produces a verdict; falling back to a dispatch-only backend means an
+// unconfigured repository silently stops being reviewed.
+const resolvedExecutionBackend = (process.env.REVIEW_YETI_RESOLVED_BACKEND || 'local').trim();
 if (incrementalEnabled && resolvedExecutionBackend !== 'local') {
   throw new Error(
     'review_yeti.incremental is enabled for '
@@ -243,7 +246,37 @@ if (incrementalEnabled && resolvedExecutionBackend !== 'local') {
   );
 }
 
+// A DOKS run that cannot publish cannot review. review-yeti.yml forwards the
+// publish mode to the action as `doks-publish-mode`; when it is not "enabled" the
+// worker accepts the dispatch and never reports a verdict back, so the head's only
+// evidence is the DISPATCHED placeholder, forever. Every repository on the central
+// lane was in exactly that state: REVIEW_YETI_EXECUTION_BACKEND=doks, publish mode
+// never plumbed (so the action's "disabled" default won), and
+// doks-action-qualification.yml -- the admission workflow that was supposed to
+// qualify this path -- never ran once. example-meta and example-api PRs merged for days
+// against a check that had never judged them.
+//
+// This is the same failure shape as the incremental assertion above, and it gets
+// the same treatment: assert the combination is coherent at policy load, before any
+// provider spend, instead of discovering it from an empty verdict later.
+const resolvedDoksPublishMode = (process.env.REVIEW_YETI_DOKS_PUBLISH_MODE || 'disabled').trim();
+if (resolvedExecutionBackend === 'doks' && resolvedDoksPublishMode !== 'enabled') {
+  throw new Error(
+    `The resolved execution-backend for this run is "doks" but its publish mode is `
+    + `"${resolvedDoksPublishMode}", not "enabled". A dispatched DOKS review that cannot `
+    + 'publish never reports a verdict for the head, so the check would stay at the '
+    + 'DISPATCHED placeholder and no persona would ever judge this commit -- an absent '
+    + 'review that presents as a completed one. Either set the '
+    + 'REVIEW_YETI_DOKS_PUBLISH_MODE repository variable to "enabled" once the worker is '
+    + 'qualified to publish (see .github/workflows/doks-action-qualification.yml), or set '
+    + 'execution-backend to "local" (workflow_dispatch input execution_backend, or the '
+    + 'REVIEW_YETI_EXECUTION_BACKEND repository variable) so the panel runs inline and '
+    + 'returns a real verdict.',
+  );
+}
+
 const outputs = {
+  doks_publish_mode: resolvedDoksPublishMode,
   repository: review.repository,
   action_ref: review.action_channel,
   personas: review.personas,

@@ -841,11 +841,11 @@ echo "emit-policy incremental repository allowlist contract passed"
 # repository-level default; it defaults to "doks" (matching that same expression's tail) when unset.
 
 # 1. Today's committed policy carries no review_yeti.incremental block at all (the canary was
-#    narrowed to nothing in the same change that added this assertion, because DOKS -- today's
-#    fleet default -- cannot run it). Proves the current production combination is coherent: this
-#    must pass even with the fail-safe "doks" default and no repository override.
+#    narrowed to nothing in the same change that added this assertion, because DOKS cannot
+#    run it). Proves the combination is coherent. The backend is set explicitly here: the
+#    fail-safe default is now "local", and a "doks" run must also declare a publish mode.
 write_incremental_policy missing
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks GITHUB_OUTPUT="$tmp_dir/backend-committed-policy.output" node emit-policy.mjs >/dev/null)
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=enabled GITHUB_OUTPUT="$tmp_dir/backend-committed-policy.output" node emit-policy.mjs >/dev/null)
 grep -A1 '^incremental_enabled<<' "$tmp_dir/backend-committed-policy.output" | grep -qx 'false'
 echo "[incremental-backend-committed-policy-doks] passed"
 if grep -Fq '"incremental"' "$repo_root/policy/review-yeti.json"; then
@@ -859,7 +859,7 @@ echo "[incremental-backend-committed-policy-no-canary] passed"
 #    incremental implementation) rather than a generic "invalid config".
 write_incremental_policy allowlist-match
 set +e
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks GITHUB_OUTPUT="$tmp_dir/backend-doks-blocked.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-blocked.log" 2>&1
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=enabled GITHUB_OUTPUT="$tmp_dir/backend-doks-blocked.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-blocked.log" 2>&1
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]]
@@ -868,16 +868,37 @@ grep -q 'resolved execution-backend for this run is "doks", not "local"' "$tmp_d
 grep -q 'dist/cli/runLiveReview.js' "$tmp_dir/backend-doks-blocked.log"
 echo "[incremental-backend-doks-blocked] passed"
 
-# 2b. The same combination must also fail when REVIEW_YETI_RESOLVED_BACKEND is unset -- the
-#     fail-safe default mirrors the workflow's own trailing `|| 'doks'` -- proving the assertion
-#     cannot be bypassed by simply omitting the resolved-backend signal.
+# 2b. An unset REVIEW_YETI_RESOLVED_BACKEND now resolves to "local", mirroring the workflow's
+#     trailing `|| 'local'`. The old fail-safe was `doks`, which meant an unconfigured
+#     repository fell back to a dispatch-only backend and silently stopped being reviewed --
+#     the default itself was the outage. Omitting the signal must land on the backend that
+#     returns a verdict, and incremental is therefore coherent under it.
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$tmp_dir/backend-default-local.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^incremental_enabled<<' "$tmp_dir/backend-default-local.output" | grep -qx 'true'
+echo "[incremental-backend-default-is-local] passed"
+
+# 2c. The publish axis cannot be bypassed by omitting its signal either: a doks run with no
+#     REVIEW_YETI_DOKS_PUBLISH_MODE must fail, because the action's own default is "disabled"
+#     and such a run accepts the dispatch and never reports a verdict for the head.
+#     Incremental is cleared first so this isolates the publish axis: the incremental guard
+#     runs earlier and would otherwise report its own (different) incoherence.
+write_incremental_policy missing
 set +e
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$tmp_dir/backend-doks-default-blocked.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-default-blocked.log" 2>&1
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks GITHUB_OUTPUT="$tmp_dir/backend-doks-nopublish.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-nopublish.log" 2>&1
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]]
-grep -q 'resolved execution-backend for this run is "doks", not "local"' "$tmp_dir/backend-doks-default-blocked.log"
-echo "[incremental-backend-doks-default-blocked] passed"
+grep -q 'publish mode is "disabled", not "enabled"' "$tmp_dir/backend-doks-nopublish.log"
+grep -q 'never reports a verdict for the head' "$tmp_dir/backend-doks-nopublish.log"
+echo "[backend-doks-without-publish-blocked] passed"
+
+# 2d. A doks run that DOES declare publishing is accepted -- the guard gates the incoherent
+#     combination, it does not ban the backend.
+write_incremental_policy missing
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=enabled GITHUB_OUTPUT="$tmp_dir/backend-doks-publishing.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^doks_publish_mode<<' "$tmp_dir/backend-doks-publishing.output" | grep -qx 'enabled'
+echo "[backend-doks-with-publish-allowed] passed"
+write_incremental_policy allowlist-match
 
 # 3. The identical repository allowlist must pass once the resolved backend is local -- the only
 #    backend that implements incremental review.
