@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.34.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.33.0...v1.34.0) (2026-09-06)
+
+
+### Features
+
+* **worker:** add the fail-closed Bifrost publishing lane (REL-586) ([#518](https://github.com/review-yeti-ai/review-yeti-bot/issues/518)) ([6aa4b2e](https://github.com/review-yeti-ai/review-yeti-bot/commit/6aa4b2ed2564ba3402312e163e4e09f3bce9606e))
+
 ## [1.33.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.32.3...v1.33.0) (2026-09-06)
 
 
