@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.4...v1.38.5) (2026-09-06)
+
+
+### Bug Fixes
+
+* **action:** restore sticky summary comment and resolvable inline review threads ([#546](https://github.com/review-yeti-ai/review-yeti-bot/issues/546)) ([2695a1f](https://github.com/review-yeti-ai/review-yeti-bot/commit/2695a1ffc817022c6c8545463bd10b92c649ef9a))
+
 ## [1.38.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.3...v1.38.4) (2026-09-06)
 
 
