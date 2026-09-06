@@ -259,21 +259,30 @@ if (incrementalEnabled && resolvedExecutionBackend !== 'local') {
 // This is the same failure shape as the incremental assertion above, and it gets
 // the same treatment: assert the combination is coherent at policy load, before any
 // provider spend, instead of discovering it from an empty verdict later.
+// The publishing value is "app-gate", not "enabled". The action admits exactly two
+// values -- `dispatch-doks-action.mjs` throws "DOKS publish mode must be disabled or
+// app-gate" -- and review-yeti.yml forwards this resolved value straight through as
+// `doks-publish-mode`. Gating on "enabled" would have made the documented recovery
+// path unusable: setting REVIEW_YETI_DOKS_PUBLISH_MODE=enabled passes this check and
+// then hard-fails at dispatch on a value the action cannot accept.
+const DOKS_PUBLISH_MODE_APP_GATE = 'app-gate';
 const resolvedDoksPublishMode = (process.env.REVIEW_YETI_DOKS_PUBLISH_MODE || 'disabled').trim();
-if (resolvedExecutionBackend === 'doks' && resolvedDoksPublishMode !== 'enabled') {
+if (resolvedExecutionBackend === 'doks' && resolvedDoksPublishMode !== DOKS_PUBLISH_MODE_APP_GATE) {
   throw new Error(
     `The resolved execution-backend for this run is "doks" but its publish mode is `
-    + `"${resolvedDoksPublishMode}", not "enabled". A dispatched DOKS review that cannot `
-    + 'publish never reports a verdict for the head, so the check would stay at the '
-    + 'DISPATCHED placeholder and no persona would ever judge this commit -- an absent '
-    + 'review that presents as a completed one. Either set the '
-    + 'REVIEW_YETI_DOKS_PUBLISH_MODE repository variable to "enabled" once the worker is '
-    + 'qualified to publish (see .github/workflows/doks-action-qualification.yml), or set '
-    + 'execution-backend to "local" (workflow_dispatch input execution_backend, or the '
-    + 'REVIEW_YETI_EXECUTION_BACKEND repository variable) so the panel runs inline and '
-    + 'returns a real verdict.',
+    + `"${resolvedDoksPublishMode}", not "${DOKS_PUBLISH_MODE_APP_GATE}". A dispatched DOKS `
+    + 'review that cannot publish never reports a verdict for the head, so the check would '
+    + 'stay at the DISPATCHED placeholder and no persona would ever judge this commit -- an '
+    + 'absent review that presents as a completed one. Either set the '
+    + `REVIEW_YETI_DOKS_PUBLISH_MODE repository variable to "${DOKS_PUBLISH_MODE_APP_GATE}" `
+    + 'once the worker is qualified to publish, or set execution-backend to "local" '
+    + '(workflow_dispatch input execution_backend, or the REVIEW_YETI_EXECUTION_BACKEND '
+    + 'repository variable) so the panel runs inline and returns a real verdict.',
   );
 }
+// Publish mode alone is not sufficient for a DOKS review to produce a verdict: the
+// operator must also admit the publishing lane. That landed in review-yeti-bot #522
+// and #524; before those, app-gate still built a receipt-only pod.
 
 const outputs = {
   doks_publish_mode: resolvedDoksPublishMode,

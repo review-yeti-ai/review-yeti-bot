@@ -845,7 +845,7 @@ echo "emit-policy incremental repository allowlist contract passed"
 #    run it). Proves the combination is coherent. The backend is set explicitly here: the
 #    fail-safe default is now "local", and a "doks" run must also declare a publish mode.
 write_incremental_policy missing
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=enabled GITHUB_OUTPUT="$tmp_dir/backend-committed-policy.output" node emit-policy.mjs >/dev/null)
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=app-gate GITHUB_OUTPUT="$tmp_dir/backend-committed-policy.output" node emit-policy.mjs >/dev/null)
 grep -A1 '^incremental_enabled<<' "$tmp_dir/backend-committed-policy.output" | grep -qx 'false'
 echo "[incremental-backend-committed-policy-doks] passed"
 if grep -Fq '"incremental"' "$repo_root/policy/review-yeti.json"; then
@@ -859,7 +859,7 @@ echo "[incremental-backend-committed-policy-no-canary] passed"
 #    incremental implementation) rather than a generic "invalid config".
 write_incremental_policy allowlist-match
 set +e
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=enabled GITHUB_OUTPUT="$tmp_dir/backend-doks-blocked.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-blocked.log" 2>&1
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=app-gate GITHUB_OUTPUT="$tmp_dir/backend-doks-blocked.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-blocked.log" 2>&1
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]]
@@ -888,15 +888,22 @@ set +e
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]]
-grep -q 'publish mode is "disabled", not "enabled"' "$tmp_dir/backend-doks-nopublish.log"
+grep -q 'publish mode is "disabled", not "app-gate"' "$tmp_dir/backend-doks-nopublish.log"
 grep -q 'never reports a verdict for the head' "$tmp_dir/backend-doks-nopublish.log"
 echo "[backend-doks-without-publish-blocked] passed"
 
 # 2d. A doks run that DOES declare publishing is accepted -- the guard gates the incoherent
 #     combination, it does not ban the backend.
 write_incremental_policy missing
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=enabled GITHUB_OUTPUT="$tmp_dir/backend-doks-publishing.output" node emit-policy.mjs >/dev/null)
-grep -A1 '^doks_publish_mode<<' "$tmp_dir/backend-doks-publishing.output" | grep -qx 'enabled'
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=app-gate GITHUB_OUTPUT="$tmp_dir/backend-doks-publishing.output" node emit-policy.mjs >/dev/null)
+# "enabled" is not a value the action accepts (dispatch-doks-action.mjs admits only
+# disabled|app-gate), so it must be refused here rather than passed through to fail
+# at dispatch on an unusable value.
+if (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=enabled GITHUB_OUTPUT="$tmp_dir/backend-doks-enabled.output" node emit-policy.mjs >/dev/null 2>&1); then
+  echo "emit-policy accepted publish mode 'enabled', which the action cannot accept" >&2
+  exit 1
+fi
+grep -A1 '^doks_publish_mode<<' "$tmp_dir/backend-doks-publishing.output" | grep -qx 'app-gate'
 echo "[backend-doks-with-publish-allowed] passed"
 write_incremental_policy allowlist-match
 
