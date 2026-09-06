@@ -20,3 +20,11 @@ test-results/
 # Review Yeti secrets
 *.pem
 .review-yeti/
+
+# Compiled operator binary. `make` writes it here (k8s-operator/Makefile:
+# BINARY_NAME ?= bin/manager), so it is build output, not source. A 30 MB
+# developer build was committed once and it was a macOS arm64 executable -- it
+# could not even run on the Linux cluster it was supposedly for. This repository
+# is public, so a committed binary is also unverifiable provenance and carries
+# whatever strings were baked in at build time.
+k8s-operator/bin/
