@@ -1734,7 +1734,7 @@ function resolveActionReviewPolicy(localConfig, env = process.env) {
   const parsed = localConfig?.parsed && typeof localConfig.parsed === 'object'
     ? localConfig.parsed
     : (localConfig && typeof localConfig === 'object' ? localConfig : {});
-  const effectiveModel = env.OPENROUTER_MODEL || 'z-ai/glm-5.3-flash';
+  const effectiveModel = env.OPENROUTER_MODEL || DEFAULT_MODEL;
   const dynamicDefaultDiff = calculateSafeDiffCapacity(effectiveModel);
   const limits = parsed.limits && typeof parsed.limits === 'object' ? parsed.limits : {};
   const configuredDiff = Number(limits.max_diff_bytes);

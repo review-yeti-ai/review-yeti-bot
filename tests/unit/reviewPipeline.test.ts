@@ -130,6 +130,63 @@ index 123456..789abc 100644
     expect(formattedComment).toContain('🛡️ Security & Tenancy Guardian');
   });
 
+  it('derives active model in the review mode header from personaResults over modelConfig.model', () => {
+    const { formatPRComment } = pipeline;
+    const arbitration = {
+      totalPersonas: 1,
+      completedPersonas: 1,
+      quorumSatisfied: true,
+      verdict: 'SHIP',
+      rationale: 'All clear',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    };
+    const personaResults = [
+      {
+        personaId: 'security',
+        displayName: 'Security',
+        model: 'ollama/glm-5.3-flash',
+        decision: 'APPROVE',
+        findings: [],
+      },
+    ];
+    const comment = formatPRComment(
+      arbitration,
+      personaResults,
+      { prNumber: '102', repo: 'calltelemetry/test' },
+      {},
+      { enabled: true, model: 'different-model/configured' },
+    );
+    expect(comment).toContain('- **Review Mode**: Model-backed (`ollama/glm-5.3-flash`)');
+  });
+
+  it('falls back to modelConfig.model in header when personaResults do not report a model', () => {
+    const { formatPRComment } = pipeline;
+    const arbitration = {
+      totalPersonas: 1,
+      completedPersonas: 1,
+      quorumSatisfied: true,
+      verdict: 'SHIP',
+      rationale: 'All clear',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    };
+    const personaResults = [
+      {
+        personaId: 'security',
+        displayName: 'Security',
+        decision: 'APPROVE',
+        findings: [],
+      },
+    ];
+    const comment = formatPRComment(
+      arbitration,
+      personaResults,
+      { prNumber: '103', repo: 'calltelemetry/test' },
+      {},
+      { enabled: true, model: 'configured/default-model' },
+    );
+    expect(comment).toContain('- **Review Mode**: Model-backed (`configured/default-model`)');
+  });
+
   it('formats provider, model, supported severity counts, and three-decimal costs', () => {
     const { formatPRComment } = pipeline;
     const results = [
