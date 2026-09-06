@@ -56,14 +56,16 @@ identity cannot be established, publication fails rather than adopting an unveri
 |---|---|---|
 | Helpers | `src/github/panelPublication.ts` | `src/review/findingPublication.js`, `src/review/claimSimilarity.js` |
 | Pipeline | `src/app.ts` publish stage | `.github/workflows/pipelines/review-pipeline.js` (`postOrOutputComment`) |
-| Thread cap | `MAX_FINAL_INLINE_COMMENTS` | `MAX_PUBLISHED_REVIEW_THREADS` (shared, in `findingPublication.js`) |
+| Thread cap | `MAX_FINAL_INLINE_COMMENTS` (alias) | `MAX_PUBLISHED_REVIEW_THREADS` |
 | Tests | `tests/unit/panelPublication.test.ts`, `tests/integration/personaAppPipelineV3.test.ts` | `tests/unit/actionReviewPublication.test.ts`, `tests/unit/findingPublication.test.ts` |
 
 The cap and its ranking (`capPublicationThreads`, `MAX_PUBLISHED_REVIEW_THREADS`) live in
 `src/review/findingPublication.js` beside the planner, so the size of the cap and the rule for
 which findings survive versus overflow exist in one place rather than one copy per surface. The
-App's `MAX_FINAL_INLINE_COMMENTS` is the remaining second copy and should be migrated onto the
-shared function.
+App's `MAX_FINAL_INLINE_COMMENTS` is an alias of that constant, not a second definition, so the two
+surfaces cannot be given different merge-blocking behaviour by editing one of them. The App's
+ranking still lives in `dedupeActionableFindings`; converging it onto `capPublicationThreads` is
+the remaining step.
 
 ## Known gap
 

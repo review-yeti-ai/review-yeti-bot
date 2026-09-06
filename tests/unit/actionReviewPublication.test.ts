@@ -1193,3 +1193,153 @@ describe('reading the existing reviews', () => {
     expect(() => readActionReviews(malformed, context)).toThrow(/malformed/u);
   });
 });
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('findings GitHub cannot anchor', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+
+  function runner() {
+    const state = { reviews: [] as any[], comments: [] as any[], threads: [] as any[], posted: [] as any[], nextId: 300 };
+    const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
+      if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
+      if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage(state.reviews), stderr: '' };
+        return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads } } } } }]), stderr: '' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'api' && args.includes('--method')) {
+        const endpoint = args[3];
+        const payload = JSON.parse(commandOptions.input);
+        state.posted.push({ endpoint, payload });
+        state.nextId += 1;
+        if (endpoint.endsWith('/issues/42/comments')) state.comments.push({ id: state.nextId, body: payload.body, user: { login: 'github-actions[bot]' } });
+        if (endpoint.endsWith('/reviews')) state.reviews.push({ id: state.nextId, body: payload.body, commit_id: payload.commit_id, user: { login: 'github-actions[bot]' } });
+        return { status: 0, stdout: JSON.stringify({ id: state.nextId, user: { login: 'github-actions[bot]' } }), stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    };
+    return { state, commandRunner };
+  }
+
+  const rejected = (severity: string, reason: string) => ({
+    path: 'src/handler.ts',
+    line: 4200,
+    side: 'RIGHT',
+    severity,
+    title: 'Tenant check is missing on the cancel path',
+    reason,
+  });
+
+  // A finding is never moved to a nearby line to make it publishable, so an unanchorable P0/P1
+  // would vanish entirely if the summary did not name it.
+  it('names actionable findings it could not anchor, in the sticky summary', () => {
+    const { state, commandRunner } = runner();
+    const plan = {
+      lineComments: [], fileComments: [], advisories: [],
+      rejected: [rejected('P0', 'finding line is not an exact changed RIGHT line')],
+    };
+
+    expect(postOrOutputComment('summary body', context, plan, { commandRunner }).success).toBe(true);
+
+    const sticky = state.comments[0].body;
+    expect(sticky).toContain('Actionable findings without publishable anchors');
+    expect(sticky).toContain('src/handler.ts:4200');
+    expect(sticky).toContain('finding line is not an exact changed RIGHT line');
+    expect(sticky).toContain('they require manual review at the stated path/location');
+  });
+
+  it('leaves the section out entirely when only nits were unanchorable', () => {
+    const { state, commandRunner } = runner();
+    const plan = { lineComments: [], fileComments: [], advisories: [], rejected: [rejected('P2', 'nit')] };
+
+    postOrOutputComment('summary body', context, plan, { commandRunner });
+
+    expect(state.comments[0].body).not.toContain('Actionable findings without publishable anchors');
+  });
+
+  it('keeps the section out of the compact gate receipt', () => {
+    const { state, commandRunner } = runner();
+    const plan = { lineComments: [], fileComments: [], advisories: [], rejected: [rejected('P1', 'unresolvable')] };
+
+    postOrOutputComment('summary body', context, plan, { commandRunner });
+
+    expect(state.reviews[0].body).not.toContain('Actionable findings without publishable anchors');
+  });
+});
+
+describe('identifying one publication attempt', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const resultMarkerIn = (body: string) => body.match(/<!-- review-yeti-bot:result:v1:[^>]*-->/u)?.[0] || '';
+
+  const publish = () => {
+    const state = { reviews: [] as any[], comments: [] as any[], posted: [] as any[], nextId: 200 };
+    const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
+      if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
+      if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage(state.reviews), stderr: '' };
+        return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }]), stderr: '' };
+      }
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'api' && args.includes('--method')) {
+        const endpoint = args[3];
+        const payload = JSON.parse(commandOptions.input);
+        state.nextId += 1;
+        if (endpoint.endsWith('/issues/42/comments')) state.comments.push({ id: state.nextId, body: payload.body, user: { login: 'github-actions[bot]' } });
+        if (endpoint.endsWith('/reviews')) state.reviews.push({ id: state.nextId, body: payload.body, commit_id: payload.commit_id, user: { login: 'github-actions[bot]' } });
+        return { status: 0, stdout: JSON.stringify({ id: state.nextId, user: { login: 'github-actions[bot]' } }), stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    };
+    postOrOutputComment('summary body', context, { lineComments: [], fileComments: [], advisories: [], rejected: [] }, { commandRunner });
+    return resultMarkerIn(state.reviews[0].body);
+  };
+
+  // GitHub keeps GITHUB_RUN_ID stable across a re-run and only increments GITHUB_RUN_ATTEMPT, so
+  // the durable result has to be bound to both or a previous attempt satisfies this attempt's
+  // post-write readback.
+  it('binds the result to the run and the attempt on a hosted run', () => {
+    vi.stubEnv('GITHUB_RUN_ID', '12345');
+    vi.stubEnv('GITHUB_RUN_ATTEMPT', '2');
+
+    expect(publish()).toContain('12345:attempt-2');
+  });
+
+  it('distinguishes a re-run of the same run id', () => {
+    vi.stubEnv('GITHUB_RUN_ID', '12345');
+    vi.stubEnv('GITHUB_RUN_ATTEMPT', '1');
+    const first = publish();
+
+    vi.stubEnv('GITHUB_RUN_ATTEMPT', '3');
+    const rerun = publish();
+
+    expect(first).toContain('12345:attempt-1');
+    expect(rerun).toContain('12345:attempt-3');
+    expect(rerun).not.toBe(first);
+  });
+
+  it('marks an unusable attempt number rather than trusting it', () => {
+    vi.stubEnv('GITHUB_RUN_ID', '12345');
+    vi.stubEnv('GITHUB_RUN_ATTEMPT', 'not-a-number');
+
+    expect(publish()).toContain('12345:attempt-unknown');
+  });
+
+  it('falls back to a content-derived id when there is no run identity', () => {
+    vi.stubEnv('GITHUB_RUN_ID', '');
+    vi.stubEnv('GITHUB_RUN_ATTEMPT', '');
+
+    expect(publish()).toMatch(/:body-[0-9a-f]{16} -->/u);
+  });
+});
