@@ -216,3 +216,56 @@ describe('merging a file-anchored claim with a line-anchored one', () => {
     expect(merged.finding.body).toContain('Every other endpoint calls it.');
   });
 });
+
+
+describe('anchoring against blank context lines', () => {
+  // GitHub prefixes context with a space, but blank context often arrives with the prefix stripped.
+  // If such a line did not advance both images, every anchor after it would be off by one and
+  // findings below a blank line would be rejected as "not an exact changed line".
+  it('advances both images across unprefixed blank context', () => {
+    const patch = [
+      '@@ -10,4 +10,4 @@',
+      ' const before = 1;',
+      '',
+      '-const removed = 2;',
+      '+const added = 2;',
+    ].join('\n');
+
+    const anchors = parsePatchAnchors(patch);
+
+    expect(anchors.hasHunks).toBe(true);
+    expect([...anchors.right]).toEqual([12]);
+    expect([...anchors.left]).toEqual([12]);
+
+    // Same hunk without the blank line: the anchors sit one line earlier, which is precisely what
+    // would be reported for the patch above if the blank line stopped advancing the images.
+    const withoutBlank = parsePatchAnchors(['@@ -10,4 +10,4 @@', ' const before = 1;', '-const removed = 2;', '+const added = 2;'].join('\n'));
+    expect([...withoutBlank.right]).toEqual([11]);
+  });
+
+  it('does not count a trailing newline as a context line', () => {
+    const withTrailing = parsePatchAnchors('@@ -1,2 +1,2 @@\n+added\n');
+    const withoutTrailing = parsePatchAnchors('@@ -1,2 +1,2 @@\n+added');
+
+    expect([...withTrailing.right]).toEqual([...withoutTrailing.right]);
+    expect([...withTrailing.right]).toEqual([1]);
+  });
+
+  it('publishes a finding anchored below unprefixed blank context', () => {
+    const patch = ['@@ -1,4 +1,4 @@', ' first', '', '+third'].join('\n');
+    const plan = planFindingPublication([{
+      displayName: 'Security',
+      findings: [{
+        severity: 'P1' as const,
+        path: 'src/handler.ts',
+        line: 3,
+        title: 'Tenant identifier reaches the query builder unvalidated',
+        body: 'The handler interpolates the caller-supplied tenant id into the predicate, widening the row set beyond the caller.',
+      }],
+    }], [{ path: 'src/handler.ts', patch }]);
+
+    expect(plan.rejected).toEqual([]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0]?.line).toBe(3);
+  });
+});
