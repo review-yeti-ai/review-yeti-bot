@@ -1,0 +1,99 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import yaml from 'js-yaml';
+import { describe, expect, it } from 'vitest';
+
+const root = path.resolve(__dirname, '../..');
+
+function trackedFiles(...patterns: string[]): string[] {
+  return execFileSync('git', ['ls-files', ...patterns], { cwd: root, encoding: 'utf8' })
+    .split('\n')
+    .filter(Boolean);
+}
+
+/** Render a template's placeholders so it parses as YAML. */
+function documents(relativePath: string): Array<Record<string, any>> {
+  let source = readFileSync(path.join(root, relativePath), 'utf8');
+  source = source.replace(/\$\{[A-Z_]+(:-[^}]*)?\}/gu, 'placeholder');
+  // Helm templates are not YAML; those are covered by the chart render test below.
+  if (source.includes('{{')) return [];
+  try {
+    return (yaml.loadAll(source) as Array<Record<string, any>>).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function createSubjectsFor(docs: Array<Record<string, any>>): string[] {
+  const rolesGrantingCreate = new Set<string>();
+  for (const doc of docs) {
+    if (doc?.kind !== 'Role' && doc?.kind !== 'ClusterRole') continue;
+    for (const rule of doc.rules || []) {
+      const resources: string[] = rule.resources || [];
+      const verbs: string[] = rule.verbs || [];
+      if (resources.includes('prreviewjobs') && (verbs.includes('create') || verbs.includes('*'))) {
+        rolesGrantingCreate.add(String(doc.metadata?.name));
+      }
+    }
+  }
+  const subjects: string[] = [];
+  for (const doc of docs) {
+    if (doc?.kind !== 'RoleBinding' && doc?.kind !== 'ClusterRoleBinding') continue;
+    if (!rolesGrantingCreate.has(String(doc.roleRef?.name))) continue;
+    for (const subject of doc.subjects || []) subjects.push(String(subject.name));
+  }
+  return subjects;
+}
+
+/**
+ * REL-586 / the P1 raised on #538.
+ *
+ * The operator performs no authorisation check of its own: it reads
+ * `Spec.PublicationMode` off the PRReviewJob and, for `app-gate`, builds a worker
+ * that receives a `checks: write` token. That is only safe because the CR is not a
+ * user-writable surface — exactly one service account may create one, and the value
+ * it writes traces back through Postgres to an OIDC-validated admission gated by
+ * `allowAppGate`.
+ *
+ * That control was defended by RBAC and asserted nowhere, so widening
+ * `prreviewjobs: create` would silently turn publication mode into an
+ * attacker-chosen input. This pins it.
+ */
+describe('PRReviewJob create authority (REL-586)', () => {
+  const manifests = trackedFiles('k8s/*.yaml', 'k8s/*.tpl');
+
+  it('is granted by exactly one subject across every tracked manifest', () => {
+    const subjects = manifests.flatMap((file) => createSubjectsFor(documents(file)));
+    expect(subjects).toEqual(['ct-review-job-dispatcher']);
+  });
+
+  it('is never granted to the operator, which only reconciles existing reviews', () => {
+    // The operator trusts the CR's publication mode. If it could also create one it
+    // would be able to select its own lane, collapsing the separation entirely.
+    const operatorDocs = documents('k8s/operator-deployment.yaml.tpl');
+    expect(createSubjectsFor(operatorDocs)).toEqual([]);
+  });
+
+  it('is never granted cluster-wide', () => {
+    // A ClusterRole would extend the authority past ct-review-system.
+    for (const file of manifests) {
+      for (const doc of documents(file)) {
+        if (doc?.kind !== 'ClusterRole') continue;
+        for (const rule of doc.rules || []) {
+          expect(rule.resources || []).not.toContain('prreviewjobs');
+        }
+      }
+    }
+  });
+
+  it('is not granted by the Helm chart either', () => {
+    // The chart renders the operator's RBAC; it must not add a second creator.
+    const rendered = execFileSync('helm', ['template', 'rv', path.join(root, 'charts/review-yeti')], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const docs = (yaml.loadAll(rendered) as Array<Record<string, any>>).filter(Boolean);
+    expect(createSubjectsFor(docs)).toEqual([]);
+  });
+});
