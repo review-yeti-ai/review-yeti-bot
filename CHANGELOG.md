@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.35.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.34.1...v1.35.0) (2026-09-06)
+
+
+### Features
+
+* **operator:** admit the app-gate publishing lane with a scoped token (REL-586) ([#522](https://github.com/review-yeti-ai/review-yeti-bot/issues/522)) ([a88085d](https://github.com/review-yeti-ai/review-yeti-bot/commit/a88085d73698e1dbfa5f0f187f933540dae21c7a))
+
 ## [1.34.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.34.0...v1.34.1) (2026-09-06)
 
 
