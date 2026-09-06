@@ -2190,6 +2190,21 @@ function analyzeFindingsPayload(content) {
     candidates.push({ value: content.slice(firstBrace, lastBrace + 1), location: 'embedded' });
   }
 
+  const unwrapped = content
+    .replace(/^[\s\S]*?<\/think>/i, '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .trim();
+  if (unwrapped && unwrapped !== content.trim()) {
+    const unwrappedFenced = unwrapped.match(/```(?:json)?\s*([\s\S]*?)```/iu);
+    if (unwrappedFenced) candidates.push({ value: unwrappedFenced[1], location: 'fenced' });
+    candidates.push({ value: unwrapped, location: 'embedded' });
+    const uFirstBrace = unwrapped.indexOf('{');
+    const uLastBrace = unwrapped.lastIndexOf('}');
+    if (uFirstBrace !== -1 && uLastBrace > uFirstBrace) {
+      candidates.push({ value: unwrapped.slice(uFirstBrace, uLastBrace + 1), location: 'embedded' });
+    }
+  }
+
   let parsedJson = false;
   for (const candidate of candidates) {
     try {
@@ -2208,7 +2223,7 @@ function analyzeFindingsPayload(content) {
   }
 
   if (parsedJson) return { findings: null, outputShape: 'valid_json_wrong_shape' };
-  if (looksLikeTruncatedJson(content)) return { findings: null, outputShape: 'truncated_json' };
+  if (looksLikeTruncatedJson(content) || (unwrapped && looksLikeTruncatedJson(unwrapped))) return { findings: null, outputShape: 'truncated_json' };
   return { findings: null, outputShape: 'no_json' };
 }
 
