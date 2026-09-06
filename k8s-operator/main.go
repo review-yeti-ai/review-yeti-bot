@@ -84,6 +84,7 @@ func runOperator() error {
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		MaxConcurrentJobs: 4,
+		Publishing:        publishingConfigFromEnv(),
 	}
 	if err := v1alpha2.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup v1alpha2 reconciler: %w", err)
@@ -95,6 +96,19 @@ func runOperator() error {
 		return fmt.Errorf("register readiness check: %w", err)
 	}
 	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+// publishingConfigFromEnv reads the app-gate transport settings. Every value is
+// deployment configuration, not per-review input, so it lives here rather than on
+// the CRD. Unset fields leave the config incomplete and BuildWorkerJob refuses
+// app-gate reviews -- the safe default while the lane is being rolled out.
+func publishingConfigFromEnv() job.PublishingConfig {
+	return job.PublishingConfig{
+		GatewayBaseURL:    strings.TrimSpace(os.Getenv("REVIEW_YETI_GATEWAY_BASE_URL")),
+		Model:             strings.TrimSpace(os.Getenv("REVIEW_YETI_REVIEW_MODEL")),
+		GatewaySecretName: envOr("REVIEW_YETI_GATEWAY_SECRET_NAME", "review-yeti-gateway-credentials"),
+		GatewaySecretKey:  envOr("REVIEW_YETI_GATEWAY_SECRET_KEY", "REVIEW_YETI_BIFROST_API_KEY"),
+	}
 }
 
 func envOr(name, fallback string) string {
