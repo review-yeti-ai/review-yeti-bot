@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { KubernetesRunSecretProvisioner, PUBLISH_TOKEN_KEY } from '../../src/k8s/kubernetesRunSecretProvisioner';
+import { KubernetesRunSecretProvisioner, PUBLISH_TOKEN_KEY, READ_TOKEN_KEY } from '../../src/k8s/kubernetesRunSecretProvisioner';
 
 const request = {
   runId: `run_${'1'.repeat(32)}`,
@@ -20,11 +20,18 @@ function provisioner(over: Record<string, any> = {}) {
     expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     permissions: { checks: 'write' },
   }));
+  const mintReadToken = over.mintReadToken || vi.fn(async () => ({
+    token: 'ghs_read',
+    expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    permissions: { contents: 'read', pull_requests: 'read' },
+  }));
   return {
     client,
     mintToken,
+    mintReadToken,
     subject: new KubernetesRunSecretProvisioner({
-      client, appId: '123', privateKey: 'key', mintToken: mintToken as never,
+      client, appId: '123', privateKey: 'key',
+      mintToken: mintToken as never, mintReadToken: mintReadToken as never,
     }),
   };
 }
@@ -35,7 +42,14 @@ describe('KubernetesRunSecretProvisioner', () => {
     await subject.provision(request);
     expect(mintToken).toHaveBeenCalledWith(expect.objectContaining({ owner: 'calltelemetry', repo: 'ct-meta' }));
     const body = (client.createNamespacedSecret.mock.calls[0][0] as any).body;
-    expect(body.stringData).toEqual({ [PUBLISH_TOKEN_KEY]: 'ghs_minted' });
+    // Both keys are required: the operator wires GH_TOKEN from GITHUB_READ_TOKEN
+    // non-optionally, so a Secret carrying only the publish token leaves every
+    // app-gate pod in CreateContainerConfigError -- it never starts and the pull
+    // request never sees a check at all.
+    expect(body.stringData).toEqual({
+      [PUBLISH_TOKEN_KEY]: 'ghs_minted',
+      [READ_TOKEN_KEY]: 'ghs_read',
+    });
     expect(body.metadata.labels['review-yeti.ai/run-id']).toBe(request.runId);
   });
 
@@ -90,5 +104,23 @@ describe('KubernetesRunSecretProvisioner', () => {
     const client = { createNamespacedSecret: vi.fn(), deleteNamespacedSecret: vi.fn() };
     expect(() => new KubernetesRunSecretProvisioner({ client, appId: '', privateKey: 'k' }))
       .toThrow(/requires GitHub App credentials/u);
+  });
+
+  it('writes nothing when the read token cannot be minted', async () => {
+    // Partial credentials are worse than none: the pod would start and then fail
+    // mid-review, and this lane fails closed.
+    const { subject, client } = provisioner({
+      mintReadToken: vi.fn(async () => { throw new Error('unsafe contract'); }),
+    });
+    await expect(subject.provision(request)).rejects.toThrow(/unsafe contract/u);
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  it('mints both tokens for the same repository', async () => {
+    const { subject, mintToken, mintReadToken } = provisioner();
+    await subject.provision(request);
+    const expected = expect.objectContaining({ owner: 'calltelemetry', repo: 'ct-meta' });
+    expect(mintToken).toHaveBeenCalledWith(expected);
+    expect(mintReadToken).toHaveBeenCalledWith(expected);
   });
 });

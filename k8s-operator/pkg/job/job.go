@@ -106,6 +106,16 @@ type PublishingConfig struct {
 	GatewaySecretKey  string
 }
 
+// WorkerComponentFor returns the component label for a review's lane. The builder
+// stamps it and the controller selects pods by it, so the two must agree; deriving
+// both from this one function is what keeps them from drifting apart.
+func WorkerComponentFor(publicationMode, qualificationProfile string) string {
+	if publicationMode == PublicationModeAppGate && qualificationProfile == "" {
+		return PublishingWorkerComponent
+	}
+	return ReceiptOnlyWorkerComponent
+}
+
 // BuildWorkerJob builds one non-retrying worker Job. The default projection is
 // receipt-only; qualification is admitted only when the immutable profile/model
 // pair is explicit and publication is disabled. It refuses to
@@ -122,7 +132,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		return nil, err
 	}
 	labels, annotations := workspace.Metadata(spec.RepositoryID, spec.PRNumber)
-	labels["review-yeti.ai/component"] = ReceiptOnlyWorkerComponent
+	labels["review-yeti.ai/component"] = WorkerComponentFor(spec.PublicationMode, spec.QualificationProfile)
 	labels["review-yeti.ai/run-id"] = spec.RunID
 	labels["review-yeti.ai/publication-mode"] = spec.PublicationMode
 	annotations["review-yeti.ai/run-id"] = spec.RunID
@@ -209,8 +219,6 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		if err := validatePublishing(input.Publishing); err != nil {
 			return nil, err
 		}
-		labels["review-yeti.ai/component"] = PublishingWorkerComponent
-		templateLabels["review-yeti.ai/component"] = PublishingWorkerComponent
 		env = append(env,
 			corev1.EnvVar{Name: "BIFROST_BASE_URL", Value: input.Publishing.GatewayBaseURL},
 			corev1.EnvVar{Name: "REVIEW_MODEL", Value: input.Publishing.Model},
