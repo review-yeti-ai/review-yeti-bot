@@ -21,6 +21,11 @@ import {
   MAX_FINDING_FINGERPRINTS,
   type QualificationFindingFingerprint,
 } from '../qualification/findingFingerprint';
+import {
+  isPublishingReviewWorker,
+  runPublishingReviewWorker,
+} from './publishingReview';
+import { GitHubInstallationClient } from '../github/installationClient';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -1677,6 +1682,24 @@ export async function runWorker(
       costUSD: receipt.costUSD,
     });
   },
+  publishingRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
+    const auth = resolveWorkerAuthConfig(workerEnv);
+    const tokenRes = await getGitHubAppInstallationToken(auth);
+    if (!tokenRes.token.startsWith('ghs_')) {
+      throw new Error('GitHub App token exchange returned a non-installation token');
+    }
+    const checkClient = new GitHubInstallationClient({ token: tokenRes.token });
+    const receipt = await runPublishingReviewWorker(workerEnv, { checkClient });
+    logger.info('Publishing review worker completed', {
+      runId: receipt.runId,
+      repo: receipt.repo,
+      prNumber: receipt.prNumber,
+      verdict: receipt.verdict,
+      conclusion: receipt.conclusion,
+      transport: receipt.transport,
+      blockingFindingCount: receipt.blockingFindingCount,
+    });
+  },
 ): Promise<void> {
   if (sameHeadQualificationRequested(env)) {
     if (!isSameHeadQualificationWorker(env)) throw invalidSameHeadQualificationContract();
@@ -1705,6 +1728,15 @@ export async function runWorker(
       repositoryId: receipt.repositoryId,
       prNumber: receipt.prNumber,
     });
+    return;
+  }
+  // REL-586 / ADR 0527: the publishing lane must be dispatched before the legacy
+  // `liveRunner` fallthrough. `runLiveReviewMain` resolves its repository and PR
+  // from argv with a hardcoded fallback and defaults its base URL to openrouter.ai,
+  // so an app-gate dispatch reaching it would review the wrong repository against
+  // the wrong provider.
+  if (isPublishingReviewWorker(env)) {
+    await publishingRunner(env);
     return;
   }
   return liveRunner(env);
