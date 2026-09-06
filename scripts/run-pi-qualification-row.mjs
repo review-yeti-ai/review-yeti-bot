@@ -4,8 +4,8 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
+import { pathToFileURL } from 'node:url';
+import { isEntrypoint } from './entrypoint-guard.mjs';
 import {
   PI_AI_VERSION,
   PI_CODING_AGENT_VERSION,
@@ -250,7 +250,7 @@ async function main() {
   if (row.errored) process.exitCode = 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+if (isEntrypoint(import.meta.url)) {
   main().catch(() => {
     process.exitCode = 1;
   });

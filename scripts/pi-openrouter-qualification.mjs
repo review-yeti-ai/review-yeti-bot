@@ -14,6 +14,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
+
+
+import { isEntrypoint } from './entrypoint-guard.mjs';
 import {
   QUALIFICATION_CLEAN_FIXTURE_ID,
   verifyBotRelease,
@@ -601,7 +604,7 @@ async function main() {
   if (!result.receipt.integrity_gate.passed) process.exitCode = 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`::error::Pi OpenRouter qualification failed: ${safeLabel(error?.code) || 'qualification_error'}`);
     process.exitCode = 1;

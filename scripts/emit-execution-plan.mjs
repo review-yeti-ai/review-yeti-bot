@@ -7,6 +7,9 @@ import { resolvePolicyForRepository } from './repository-policy.mjs';
 import { validatePolicy } from './review-yeti-smoke.mjs';
 import { TRANSPORT_RATE_LIMIT_KEYS, validateTransportEnvelope } from './transport-envelope.mjs';
 
+
+
+import { isEntrypoint } from './entrypoint-guard.mjs';
 const DEFAULT_POLICY_PATH = fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url));
 const DEFAULT_FIXTURE_PATH = fileURLToPath(new URL('../policy/review-yeti-execution-plan.fixture.json', import.meta.url));
 
@@ -361,7 +364,7 @@ function main() {
   process.stdout.write(rendered);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntrypoint(import.meta.url)) {
   try {
     main();
   } catch (error) {

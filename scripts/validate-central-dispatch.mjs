@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+
 import { resolve } from 'node:path';
 
+import { isEntrypoint } from './entrypoint-guard.mjs';
 export const CENTRAL_REPOSITORY = 'exampleorg/example-review-actions';
 // Repositories admitted to the central dispatch boundary. ADR 0519 replaced the
 // fixed three-repository list with an owner check plus a per-repository
@@ -163,7 +164,6 @@ async function githubJson(url, token, fetchImpl) {
   if (!response?.ok) throw new Error(`GitHub target lookup failed with HTTP ${response?.status ?? 'unknown'}`);
   return response.json();
 }
-
 
 // ADR 0519: the shared Ollama lane is protected by a per-repository cap rather
 // than by a fixed repository allowlist. Count this repository's in-flight
@@ -345,7 +345,7 @@ async function main() {
   console.log(`Validated central Review Yeti request ${result.request_id} for ${result.repository}#${result.pr_number} at exact head ${result.head_sha}.`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`::error::Central Review Yeti dispatch rejected: ${error.message}`);
     process.exitCode = 1;

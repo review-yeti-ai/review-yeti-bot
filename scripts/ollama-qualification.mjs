@@ -11,11 +11,12 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+
 import path from 'node:path';
 
 import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
+import { isEntrypoint } from './entrypoint-guard.mjs';
 export const QUALIFICATION_SCHEMA = 'review-yeti.ollama-qualification.v7';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
 export const BASELINE_PROFILE = 'fireworks-high-150s-24576-control';
@@ -906,7 +907,7 @@ async function main() {
   if (!result.receipt.comparison_integrity_gate.passed) process.exitCode = 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`::error::Fireworks/Ollama comparison failed: ${error.message}`);
     process.exitCode = 1;

@@ -15,9 +15,10 @@
  */
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+
 import { resolve } from 'node:path';
 
+import { isEntrypoint } from './entrypoint-guard.mjs';
 export const DEFAULT_LOOKBACK_DAYS = 7;
 export const DEFAULT_LEDGER_BRANCH = 'telemetry';
 export const DEFAULT_LEDGER_FILE = 'transport-ledger.jsonl';
@@ -169,7 +170,7 @@ async function main() {
   console.log(formatReport(report));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`::error::Transport telemetry report failed: ${error.message}`);
     process.exitCode = 1;

@@ -15,6 +15,9 @@ import {
 } from './repository-policy.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
 
+
+
+import { isEntrypoint } from './entrypoint-guard.mjs';
 export {
   EXAMPLE_API_REPOSITORY,
   EXAMPLE_API_TRANSPORT_ORDER,
@@ -725,7 +728,7 @@ async function main() {
   void results;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`::error::Review Yeti transport smoke failed: ${error.message}`);
     process.exitCode = 1;

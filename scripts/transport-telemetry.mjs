@@ -17,10 +17,10 @@
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { loadPolicy, probeTransport } from './review-yeti-smoke.mjs';
 
+import { isEntrypoint } from './entrypoint-guard.mjs';
 export const TELEMETRY_SCHEMA = 'exampleorg.review-yeti.transport-telemetry.v1';
 export const DEFAULT_TELEMETRY_TIMEOUT_MS = 30_000;
 
@@ -126,7 +126,7 @@ async function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`::error::Transport telemetry failed: ${error.message}`);
     process.exitCode = 1;

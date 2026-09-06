@@ -6,9 +6,10 @@
  *
  * Never prints the API key. Reports HTTP status, TTFB, total ms, and 429s.
  */
-import { fileURLToPath } from 'node:url';
+
 import { resolve } from 'node:path';
 
+import { isEntrypoint } from './entrypoint-guard.mjs';
 const BASE = 'https://api.fireworks.ai/inference/v1';
 const MODEL = 'accounts/fireworks/models/deepseek-v4-flash-0731';
 
@@ -100,7 +101,7 @@ async function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`fireworks debug failed: ${error.name}`);
     process.exitCode = 1;

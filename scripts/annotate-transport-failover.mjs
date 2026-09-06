@@ -26,10 +26,11 @@
  * keep their existing ADR 0337 (stall-based timeout) handling and are never reported here as
  * `reason=malformed_output`, even when they also happen to cross a transport boundary.
  */
-import { readFileSync, appendFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { appendFileSync, readFileSync } from 'node:fs';
+
 import { resolve } from 'node:path';
 
+import { isEntrypoint } from './entrypoint-guard.mjs';
 export const MALFORMED_OUTPUT_REASON = 'malformed_output';
 
 /**
@@ -135,7 +136,7 @@ async function main() {
   run(path, { summaryWriter });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`::error::annotate-transport-failover failed: ${error.message}`);
     process.exitCode = 1;

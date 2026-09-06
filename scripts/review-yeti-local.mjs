@@ -4,11 +4,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 
 import { getEnabledTransports, loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 import { loadMcpConfig, summarizeMcpConfig, validateMcpConfig } from './review-yeti-mcp.mjs';
 
+import { isEntrypoint } from './entrypoint-guard.mjs';
 const SHA_PATTERN = /^[a-f0-9]{40,64}$/iu;
 const PR_PATTERN = /^[^/\s]+\/[^#\s]+#\d+$/u;
 const PR_URL_PATTERN = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+\/?$/u;
@@ -338,4 +338,4 @@ export function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = main();
+if (isEntrypoint(import.meta.url)) process.exitCode = main();

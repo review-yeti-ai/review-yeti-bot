@@ -10,11 +10,12 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+
 import path from 'node:path';
 
 import { loadPolicy, validatePolicy } from './review-yeti-smoke.mjs';
 
+import { isEntrypoint } from './entrypoint-guard.mjs';
 export const QUALIFICATION_SCHEMA = 'review-yeti.openrouter-qualification.v1';
 export const QUALIFY_CONFIRMATION = 'QUALIFY';
 export const OPENROUTER_PROFILE = 'openrouter-direct-90s-24576-evaluation';
@@ -831,7 +832,7 @@ async function main() {
   if (!result.receipt.integrity_gate.passed || !result.receipt.acceptance_gate.passed) process.exitCode = 1;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+if (isEntrypoint(import.meta.url)) {
   main().catch((error) => {
     console.error(`::error::OpenRouter qualification failed: ${error.message}`);
     process.exitCode = 1;
