@@ -785,3 +785,106 @@ describe('finding the sticky comment without reading the whole conversation', ()
     expect(requested.length).toBeLessThanOrEqual(5);
   });
 });
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('publication guards', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+  const emptyPlan = { lineComments: [], fileComments: [], advisories: [], rejected: [] };
+  const explode = () => { throw new Error('must not reach GitHub'); };
+
+  // The third parameter used to be `options`. A caller that missed the change would otherwise lose
+  // its injected boundary and shell out to the real gh binary without any error.
+  it('rejects an options object passed in the publication-plan position', () => {
+    expect(() => postOrOutputComment('body', context, { commandRunner: explode, tempDirectory: '/tmp' } as any))
+      .toThrow(/third argument looks like an options object/u);
+  });
+
+  it('accepts a plan that is empty, or that carries only plan keys', () => {
+    expect(() => postOrOutputComment('body', context, {}, { commandRunner: () => ({ status: 1, stdout: '', stderr: 'stop' }) })).not.toThrow();
+    expect(() => postOrOutputComment('body', context, emptyPlan, { commandRunner: () => ({ status: 1, stdout: '', stderr: 'stop' }) })).not.toThrow();
+  });
+
+  it.each([['empty', ''], ['whitespace only', '   \n\t  ']])('refuses to publish a %s review body, without calling GitHub', (_label, body) => {
+    const result = postOrOutputComment(body, context, emptyPlan, { commandRunner: explode });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toBeTruthy();
+  });
+
+  // The complement of the two cases above: a real body must get past the guard and reach GitHub.
+  it('lets a non-empty body through to GitHub', () => {
+    let reached = false;
+    const commandRunner = () => {
+      reached = true;
+      return { status: 1, stdout: '', stderr: 'stop here' };
+    };
+
+    postOrOutputComment('a real summary', context, emptyPlan, { commandRunner });
+
+    expect(reached).toBe(true);
+  });
+});
+
+describe('resolving the publishing identity', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+  const anchor = '<!-- review-yeti-bot:summary:v1:review-yeti-ai/review-yeti-bot#42 -->';
+
+  // Installation tokens cannot call GET /user, so App-identity runs resolve through
+  // `gh api installation --jq .app_slug` and must end up comparing against `<slug>[bot]`.
+  function installationRunner(seedComments: any[], appSlug: string) {
+    const state = { comments: [...seedComments], posted: [] as any[], nextId: 800 };
+    const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
+      }
+      if (args[0] === 'api' && args[1] === 'user') return { status: 1, stdout: '', stderr: 'Resource not accessible by integration' };
+      if (args[0] === 'api' && args[1] === 'installation') return { status: 0, stdout: `${appSlug}\n`, stderr: '' };
+      if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
+        return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
+      }
+      if (args[0] === 'api' && args.includes('--method')) {
+        const method = args[args.indexOf('--method') + 1];
+        const endpoint = args[3];
+        state.posted.push({ method, endpoint, payload: JSON.parse(commandOptions.input) });
+        const patched = method === 'PATCH' ? state.comments.find((comment) => endpoint.endsWith(`/${comment.id}`)) : null;
+        state.nextId += 1;
+        return { status: 0, stdout: JSON.stringify({ id: patched ? patched.id : state.nextId }), stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: `unexpected: ${args.join(' ')}` };
+    };
+    return { state, commandRunner };
+  }
+
+  it('adopts its own comment when the App slug already carries the [bot] suffix', () => {
+    const own = { id: 8001, body: `earlier round ${anchor}`, user: { login: 'review-yeti[bot]' } };
+    const { state, commandRunner } = installationRunner([own], 'review-yeti[bot]');
+
+    const result = postStickySummaryComment('later round', context, { commandRunner, existingReviews: [] });
+
+    expect(result).toMatchObject({ success: true, updatedInPlace: true, commentId: 8001 });
+    expect(state.posted.filter((post) => post.method === 'PATCH')).toHaveLength(1);
+  });
+
+  // The regression this pins: dropping the suffix would compare 'review-yeti' against
+  // 'review-yeti[bot]' and fail closed on every App-identity run.
+  it('adds the [bot] suffix when the App slug arrives without one', () => {
+    const own = { id: 8002, body: `earlier round ${anchor}`, user: { login: 'review-yeti[bot]' } };
+    const { state, commandRunner } = installationRunner([own], 'review-yeti');
+
+    const result = postStickySummaryComment('later round', context, { commandRunner, existingReviews: [] });
+
+    expect(result).toMatchObject({ success: true, updatedInPlace: true, commentId: 8002 });
+    expect(state.posted.filter((post) => post.method === 'PATCH')).toHaveLength(1);
+  });
+
+  it('does not adopt a comment written by a different App', () => {
+    const foreign = { id: 8003, body: `earlier round ${anchor}`, user: { login: 'some-other-app[bot]' } };
+    const { state, commandRunner } = installationRunner([foreign], 'review-yeti');
+
+    const result = postStickySummaryComment('later round', context, { commandRunner, existingReviews: [] });
+
+    expect(result.success).toBe(true);
+    expect(state.posted.every((post) => post.method !== 'PATCH')).toBe(true);
+  });
+});
