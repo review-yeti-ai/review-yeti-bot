@@ -83,3 +83,40 @@ roleRef:
   kind: Role
   name: {{ include "review-yeti.operator.fullname" . }}
 {{- end }}
+{{- if and .Values.dispatcher.serviceAccount.create .Values.publishing.runSecrets.enabled }}
+---
+# The job dispatcher provisions one Secret per publishing run, holding a token
+# minted from the installed GitHub App (REL-586). Scoped as tightly as the API
+# allows: namespace-local, secrets only, and no `get`/`list` -- it writes run
+# credentials and must not be able to read any other Secret in the namespace,
+# including the App private key it is given by env.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "review-yeti.dispatcher.serviceAccountName" . }}-run-secrets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "review-yeti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dispatcher
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "review-yeti.dispatcher.serviceAccountName" . }}-run-secrets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "review-yeti.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dispatcher
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "review-yeti.dispatcher.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "review-yeti.dispatcher.serviceAccountName" . }}-run-secrets
+{{- end }}
