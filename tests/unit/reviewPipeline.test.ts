@@ -18,9 +18,9 @@ describe('PI.dev Review Workflow Pipeline Script (.github/workflows/pipelines/re
     expect(content).toContain('#!/usr/bin/env node');
   });
 
-  it('2. Loads 12 persona charters with the direct DeepSeek default model', () => {
+  it('2. Loads 12 persona charters with the direct GLM default model', () => {
     const { PERSONA_CHARTERS, DEFAULT_MODEL } = pipeline;
-    expect(DEFAULT_MODEL).toBe('deepseek/deepseek-v4-flash-0731');
+    expect(DEFAULT_MODEL).toBe('z-ai/glm-5.3-flash');
     expect(PERSONA_CHARTERS).toHaveLength(12);
 
     const expectedPersonas = [
@@ -126,8 +126,65 @@ index 123456..789abc 100644
     expect(formattedComment).toContain('## 🟢 **Verdict: SHIP**');
     expect(formattedComment).toContain('```mermaid');
     expect(formattedComment).toContain('flowchart TD');
-    expect(formattedComment).toContain('deepseek/deepseek-v4-flash-0731');
+    expect(formattedComment).toContain('z-ai/glm-5.3-flash');
     expect(formattedComment).toContain('🛡️ Security & Tenancy Guardian');
+  });
+
+  it('derives active model in the review mode header from personaResults over modelConfig.model', () => {
+    const { formatPRComment } = pipeline;
+    const arbitration = {
+      totalPersonas: 1,
+      completedPersonas: 1,
+      quorumSatisfied: true,
+      verdict: 'SHIP',
+      rationale: 'All clear',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    };
+    const personaResults = [
+      {
+        personaId: 'security',
+        displayName: 'Security',
+        model: 'ollama/glm-5.3-flash',
+        decision: 'APPROVE',
+        findings: [],
+      },
+    ];
+    const comment = formatPRComment(
+      arbitration,
+      personaResults,
+      { prNumber: '102', repo: 'calltelemetry/test' },
+      {},
+      { enabled: true, model: 'different-model/configured' },
+    );
+    expect(comment).toContain('- **Review Mode**: Model-backed (`ollama/glm-5.3-flash`)');
+  });
+
+  it('falls back to modelConfig.model in header when personaResults do not report a model', () => {
+    const { formatPRComment } = pipeline;
+    const arbitration = {
+      totalPersonas: 1,
+      completedPersonas: 1,
+      quorumSatisfied: true,
+      verdict: 'SHIP',
+      rationale: 'All clear',
+      metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
+    };
+    const personaResults = [
+      {
+        personaId: 'security',
+        displayName: 'Security',
+        decision: 'APPROVE',
+        findings: [],
+      },
+    ];
+    const comment = formatPRComment(
+      arbitration,
+      personaResults,
+      { prNumber: '103', repo: 'calltelemetry/test' },
+      {},
+      { enabled: true, model: 'configured/default-model' },
+    );
+    expect(comment).toContain('- **Review Mode**: Model-backed (`configured/default-model`)');
   });
 
   it('formats provider, model, supported severity counts, and three-decimal costs', () => {
