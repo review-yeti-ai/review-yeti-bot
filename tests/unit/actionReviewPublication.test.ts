@@ -8,7 +8,7 @@
  * produced 65 inline findings); the publication cases pin the sticky anchor and the exact-head
  * compact review receipt.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 
@@ -709,7 +709,15 @@ describe('the sticky summary refuses to adopt a comment it did not write', () =>
     expect(state.posted.filter((post) => post.method === 'PATCH')).toHaveLength(1);
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // `readAuthenticatedPublisherLogin` falls back to 'github-actions[bot]' when GITHUB_ACTIONS is
+  // 'true', so the no-identity path only exists off-Actions. The runner sets that variable, so the
+  // test has to unset it explicitly rather than inherit whatever the host happens to be.
   it('fails loudly when the publishing identity cannot be established', () => {
+    vi.stubEnv('GITHUB_ACTIONS', '');
     const { state, commandRunner } = runner([], { publisher: null });
 
     const result = postStickySummaryComment('summary', context, { commandRunner, existingReviews: [] });
@@ -717,6 +725,18 @@ describe('the sticky summary refuses to adopt a comment it did not write', () =>
     expect(result.success).toBe(false);
     expect(result.error).toContain('could not determine the publishing GitHub identity');
     expect(state.posted).toHaveLength(0);
+  });
+
+  // The complement: on Actions the identity is always resolvable, so the guard must not fire.
+  it('uses the Actions identity fallback when the API cannot name the publisher', () => {
+    vi.stubEnv('GITHUB_ACTIONS', 'true');
+    const own = { id: 6004, body: `earlier round ${anchor}`, user: { login: 'github-actions[bot]' } };
+    const { state, commandRunner } = runner([own], { publisher: null });
+
+    const result = postStickySummaryComment('later round', context, { commandRunner, existingReviews: [] });
+
+    expect(result).toMatchObject({ success: true, updatedInPlace: true, commentId: 6004 });
+    expect(state.posted.filter((post) => post.method === 'PATCH')).toHaveLength(1);
   });
 });
 
