@@ -1,11 +1,11 @@
 # Panel publication policy
 
 > [!IMPORTANT]
-> **Optional service document.** This record describes a service/App publication design and is not
-> the public Action or internal fleet publication contract. Verify it against current service
-> source before operational use. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
+> **Optional service document.** This record describes the publication design shared by the App
+> and the public Action. It is not the internal fleet publication contract. Verify it against
+> current source before operational use. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
-Last updated: 2026-08-03
+Last updated: 2026-09-06
 
 ## Problem this solves
 
@@ -25,11 +25,55 @@ Publishing **one `COMMENT` review per persona with inline findings** created:
 
 Personas must **never** call `POST .../pulls/{n}/reviews` with inline comments.
 
+## The Action surface
+
+The Action publishes the same shape from a single lane rather than a persona panel:
+
+| Artifact | GitHub surface | Purpose |
+|----------|----------------|---------|
+| Sticky summary | **One** issue comment per pull request | Full summary. Anchor: `<!-- review-yeti-bot:summary:v1:{repo}#{pr} -->` — stable across pushes, so later rounds patch it and earlier rounds collapse into `<details>` history (max 8 rounds / 40k chars) |
+| Exact-head receipt | **One** `COMMENT` review per reviewed head | Compact gate signal. A review's `commit_id` is immutable, so each reviewed head needs its own; retries of one head deduplicate rather than re-post. Marker: `<!-- review-yeti-bot:v2:... -->` |
+| Findings | **Inline review comments** (capped) | Only **P0/P1**, near-duplicate **deduped** across personas, max **10** threads. Over-cap findings are listed in the sticky summary, never dropped |
+
+Findings without a publishable line anchor become file-level conversations or, failing that, a
+named section in the summary. The Action never relocates a finding to a nearby line to make it
+publishable.
+
+**Both lookups are bounded.** The sticky comment is found by reading issue comments newest-first
+and stopping at the first anchor match; existing reviews are read through the GraphQL `reviews`
+connection with `last:`, because the REST list is oldest-first with no `direction` and capping its
+pages would drop exactly the newest entries dedupe depends on.
+
+**Publisher identity is required, and matching fails closed.** The summary anchor is derived from
+the repository and pull request number alone, so anyone who can read the pull request URL can write
+a comment containing it. A comment or review is only adopted — patched in place, or treated as an
+existing round for dedupe — when its author matches this run's authenticated publisher. If that
+identity cannot be established, publication fails rather than adopting an unverified comment.
+
 ## Implementation
 
-- Helpers: `src/github/panelPublication.ts`
-- Pipeline: `src/app.ts` publish stage
-- Tests: `tests/unit/panelPublication.test.ts`, `tests/integration/personaAppPipelineV3.test.ts`
+| | App | Action |
+|---|---|---|
+| Helpers | `src/github/panelPublication.ts` | `src/review/findingPublication.js`, `src/review/claimSimilarity.js` |
+| Pipeline | `src/app.ts` publish stage | `.github/workflows/pipelines/review-pipeline.js` (`postOrOutputComment`) |
+| Thread cap | `MAX_FINAL_INLINE_COMMENTS` (alias) | `MAX_PUBLISHED_REVIEW_THREADS` |
+| Tests | `tests/unit/panelPublication.test.ts`, `tests/integration/personaAppPipelineV3.test.ts` | `tests/unit/actionReviewPublication.test.ts`, `tests/unit/findingPublication.test.ts` |
+
+The cap and its ranking (`capPublicationThreads`, `MAX_PUBLISHED_REVIEW_THREADS`) live in
+`src/review/findingPublication.js` beside the planner, so the size of the cap and the rule for
+which findings survive versus overflow exist in one place rather than one copy per surface. The
+App's `MAX_FINAL_INLINE_COMMENTS` is an alias of that constant, not a second definition, so the two
+surfaces cannot be given different merge-blocking behaviour by editing one of them. The companion
+rule — which severities are actionable — is likewise one definition (`ACTIONABLE_SEVERITIES` /
+`isActionableSeverity`), read by the Action's rejected/overflow filtering and by the App's
+`ACTIONABLE_SEVERITIES` set. The App's *ranking* still lives in `dedupeActionableFindings`;
+converging it onto `capPublicationThreads` is the remaining step.
+
+## Known gap
+
+Resolving a conversation does not yet suppress that finding on the next run: the Action has no
+decision ledger, so a still-present defect is re-reported under a new thread after each push.
+`src/review/decisionLedger.js` covered this before `2f28719a` and has not been restored.
 
 ## Deploy note
 
