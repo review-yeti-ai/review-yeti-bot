@@ -54,3 +54,32 @@ describe.skipIf(!helmAvailable() || !existsSync(chartDir))('review-yeti chart Do
     expect(rendered).not.toMatch(/dp\.st\./u);
   });
 });
+
+describe('review-yeti chart publishing transport', () => {
+  it('renders no transport by default so the operator refuses app-gate', () => {
+    // An unset transport leaves the operator's publishing config incomplete and
+    // BuildWorkerJob refuses every app-gate review. Defaulting a gateway URL here
+    // would dispatch reviews against a gateway nobody chose.
+    const rendered = render();
+    expect(rendered).not.toContain('REVIEW_YETI_GATEWAY_BASE_URL');
+    expect(rendered).not.toContain('REVIEW_YETI_REVIEW_MODEL');
+  });
+
+  it('passes the transport to the operator when configured', () => {
+    const rendered = render(
+      '--set', 'publishing.gatewayBaseUrl=https://llm-gateway.calltelemetry.com/v1',
+      '--set', 'publishing.model=ollama/glm-5.3-flash',
+    );
+    expect(rendered).toContain('REVIEW_YETI_GATEWAY_BASE_URL');
+    expect(rendered).toContain('https://llm-gateway.calltelemetry.com/v1');
+    expect(rendered).toContain('ollama/glm-5.3-flash');
+  });
+
+  it('always points the operator at the Doppler-projected secret', () => {
+    // The Secret name is a location, not a transport choice, so it may default --
+    // and it must line up with the DopplerSecret this chart projects.
+    const rendered = render();
+    expect(rendered).toContain('review-yeti-gateway-credentials');
+    expect(rendered).toContain('REVIEW_YETI_BIFROST_API_KEY');
+  });
+});

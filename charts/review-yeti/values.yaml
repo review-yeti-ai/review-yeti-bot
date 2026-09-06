@@ -263,6 +263,22 @@ secrets:
   openRouterApiKey: ""
   openRouterBaseUrl: ""
 
+# App-gate publishing lane transport (ADR 0527).
+#
+# Both gatewayBaseUrl and model are EMPTY by default and are deliberately not
+# defaulted: an unset transport leaves the operator's publishing config incomplete,
+# so BuildWorkerJob refuses every app-gate review rather than dispatching one
+# against a gateway nobody chose. Bifrost is the only admitted transport -- there is
+# no second provider and no failover (see ADR 0527), so this lane fails closed.
+#
+# The secret reference may default, because a Secret *name* is not a transport
+# choice; it points at the Doppler-projected credential below.
+publishing:
+  gatewayBaseUrl: ""
+  model: ""
+  gatewaySecretName: "review-yeti-gateway-credentials"
+  gatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY"
+
 # Doppler-operator credential projection.
 #
 # Off by default: enabling it requires the Doppler Kubernetes Operator to be
