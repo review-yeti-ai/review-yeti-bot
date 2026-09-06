@@ -13,22 +13,24 @@ if [[ -z "${TARGET_REPO:-}" || -z "${HEAD_SHA:-}" ]]; then
   exit 0
 fi
 
-# DISPATCHED is not a verdict -- it means the review was handed to the DOKS queue
-# and no persona has judged this head yet. scripts/check-review-verdict.sh already
-# treats DISPATCHED + PENDING as a pass for exactly that reason.
+# DISPATCHED is not a verdict: the review was handed to the DOKS queue and no
+# persona has judged this head.
 #
-# The publisher used to map "anything not SHIP" to `failure`, so a review that had
-# merely been queued was published as a failed review, and nothing superseded it.
-# Publishing `in_progress` instead replaced that false red with a check that never
-# completes: nothing in this repository finishes it, so every dispatched PR was
-# left with a permanently pending check.
+# This state has now been all three conclusions, and the first two were wrong for
+# opposite reasons. `failure` was a false red on a review that had merely been
+# queued. `in_progress` never completed, because nothing in this repository
+# finishes it, so every dispatched PR hung forever. `neutral` fixed the hang and
+# is honest in its text -- but neutral does not block a required check, so 29 PRs
+# across example-meta and example-api merged against a check that had never judged them.
 #
-# Publish it the way passthrough is published: `completed` with `neutral`. Neutral
-# asserts neither success nor failure and does not block a required check, so the
-# PR timeline honestly shows that this head was queued rather than judged, and the
-# check reaches a terminal state instead of hanging forever.
+# Honest and non-blocking is the worst combination available: it reads as a
+# completed review to the merge button while asserting nothing. An absent verdict
+# must block. `failure` is correct here precisely because it is not terminal in
+# practice -- when publishing is enabled the real verdict supersedes this check
+# run on the same head, and until then "no persona judged this commit" is a
+# reason not to merge, not a neutral fact.
 if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then
-  echo "Publishing Check Run 'Review Yeti' (neutral, dispatched) to ${TARGET_REPO} on ${HEAD_SHA}..."
+  echo "Publishing Check Run 'Review Yeti' (failure, dispatched — no verdict yet) to ${TARGET_REPO} on ${HEAD_SHA}..."
   curl -sS -X POST \
     -H "Accept: application/vnd.github+json" \
     -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -38,12 +40,12 @@ if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then
       --arg name "Review Yeti" \
       --arg head_sha "${HEAD_SHA}" \
       --arg details_url "${CENTRAL_RUN_URL}" \
-      --arg summary "Review Yeti dispatched this exact head to the DOKS queue; no persona verdict was published for it. This is a queue handoff, not an approval. See [central run](${CENTRAL_RUN_URL})." \
+      --arg summary "Review Yeti dispatched this exact head to the DOKS queue; no persona verdict was published for it. This is a queue handoff, not an approval, and it blocks until a verdict supersedes it. See [central run](${CENTRAL_RUN_URL})." \
       '{
         name: $name,
         head_sha: $head_sha,
         status: "completed",
-        conclusion: "neutral",
+        conclusion: "failure",
         details_url: $details_url,
         output: {
           title: "Review Yeti: DISPATCHED (no verdict for this head)",

@@ -620,11 +620,13 @@ fi
 # example-meta#2787, whose central runs both completed successfully while the consumer checks stayed
 # in_progress. A check stuck pending neither blocks nor informs.
 #
-# It must publish a TERMINAL neutral check, exactly as passthrough does: neutral asserts neither
-# success nor failure, does not block a required check, and says plainly that this head was
-# queued rather than judged.
+# It must publish a TERMINAL check that BLOCKS. `neutral` was the previous answer and it was
+# wrong in the most expensive way available: honest in its text, non-blocking to the merge
+# button. 29 PRs across example-meta and example-api merged against a check that had never judged them
+# (REL-612). An absent verdict is a reason not to merge, not a neutral fact -- and `failure` is
+# not permanent here, because the real verdict supersedes this check run on the same head once
+# publishing is enabled.
 grep -Fq 'if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then' "$repo_root/scripts/publish-review-check-run.sh"
-grep -Fq 'conclusion: "neutral",' "$repo_root/scripts/publish-review-check-run.sh"
 # ...and the dispatched payload must be terminal, never left in progress.
 python3 - "$repo_root/scripts/publish-review-check-run.sh" <<'PY_PUBLISH_CONTRACT_EOF'
 import re, sys
@@ -632,9 +634,10 @@ script = open(sys.argv[1]).read()
 block = script[script.index('== "DISPATCHED"'):script.index('REVIEW_YETI_PASSTHROUGH:-}" == "true"')]
 assert 'status: "completed"' in block, 'dispatched branch must publish a terminal check'
 assert 'in_progress' not in block, 'dispatched check must not be left pending; nothing completes it'
-assert 'conclusion: "neutral"' in block, 'dispatched branch must publish neutral'
-assert '"success"' not in block and '"failure"' not in block, \
-    'dispatched branch must assert neither success nor failure'
+assert 'conclusion: "failure"' in block, 'dispatched branch must BLOCK: an absent verdict is not a pass'
+assert 'conclusion: "neutral"' not in block, \
+    'dispatched must not be neutral: neutral does not block, which is how 29 PRs merged unjudged'
+assert '"success"' not in block, 'dispatched branch must never assert success'
 assert 'DISPATCHED' in block and 'no verdict' in block.lower(), \
     'dispatched title/summary must plainly say no verdict was published for this head'
 assert re.search(r'exit 0', block), 'dispatched branch must not fall through to the verdict mapping'
@@ -648,7 +651,7 @@ assert '"success"' not in passthrough_block, 'passthrough branch must never publ
 assert 'PASSTHROUGH' in passthrough_block and 'no review performed' in passthrough_block.lower(), \
     'passthrough title/summary must plainly say no review was performed'
 assert re.search(r'exit 0', passthrough_block), 'passthrough branch must not fall through to the verdict mapping'
-print('  terminal-neutral dispatched + neutral-passthrough check-run contract ok')
+print('  blocking-dispatched + neutral-passthrough check-run contract ok')
 PY_PUBLISH_CONTRACT_EOF
 
 # Behavioral proof: invoke the real script (not a grep of its text) with a fake curl that
