@@ -56,6 +56,10 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	Scheme            *runtime.Scheme
 	Now               func() time.Time
 	MaxConcurrentJobs int
+	// Publishing configures the app-gate lane. Left zero, BuildWorkerJob refuses
+	// every app-gate review -- deliberately, since this lane fails closed and a
+	// half-configured transport must not reach a running worker.
+	Publishing job.PublishingConfig
 }
 
 // +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch
@@ -165,6 +169,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		WorkspacePVCName: pvcName,
 		WorkspaceLease:   leaseResult,
 		Now:              now,
+		Publishing:       r.Publishing,
 	})
 	if err != nil {
 		// The lease was acquired for this attempt, but no Job exists. Release it
