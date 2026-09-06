@@ -6,10 +6,18 @@ import { describe, expect, it } from 'vitest';
 
 const root = path.resolve(__dirname, '../..');
 
-function trackedFiles(...patterns: string[]): string[] {
-  return execFileSync('git', ['ls-files', ...patterns], { cwd: root, encoding: 'utf8' })
+/**
+ * Every tracked manifest under k8s/, at any depth.
+ *
+ * A non-recursive pathspec (`k8s/*.yaml`) would leave a nested manifest --
+ * `k8s/rbac/dispatcher-role.yaml`, say -- unaudited, and an unaudited grant is
+ * indistinguishable from no grant. Enumerate the whole tree and filter by
+ * extension so depth cannot hide a subject.
+ */
+function trackedManifests(): string[] {
+  return execFileSync('git', ['ls-files', 'k8s/'], { cwd: root, encoding: 'utf8' })
     .split('\n')
-    .filter(Boolean);
+    .filter((file) => file.endsWith('.yaml') || file.endsWith('.yml') || file.endsWith('.tpl'));
 }
 
 /**
@@ -83,7 +91,7 @@ function createSubjectsFor(docs: Array<Record<string, any>>): string[] {
  * attacker-chosen input. This pins it.
  */
 describe('PRReviewJob create authority (REL-586)', () => {
-  const manifests = trackedFiles('k8s/*.yaml', 'k8s/*.tpl');
+  const manifests = trackedManifests();
 
   it('is granted by exactly one subject across every tracked manifest', () => {
     const subjects = manifests.flatMap((file) => createSubjectsFor(documents(file)));
