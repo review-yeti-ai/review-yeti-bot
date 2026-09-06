@@ -277,7 +277,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) observeWorkerPod(ctx context.Context, re
 	// pod at all for them and leave the lifecycle receipt permanently empty.
 	if err := r.List(ctx, &pods, client.InNamespace(review.Namespace), client.MatchingLabels{
 		"review-yeti.ai/run-id":    review.Spec.RunID,
-		"review-yeti.ai/component": workerComponentFor(review),
+		"review-yeti.ai/component": job.WorkerComponentFor(review.Spec.PublicationMode, review.Spec.QualificationProfile),
 	}); err != nil {
 		return false, err
 	}
@@ -608,16 +608,6 @@ func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1
 		}
 	}
 	return false
-}
-
-// workerComponentFor returns the component label the job builder stamps for this
-// review's lane. Keep in step with job.BuildWorkerJob.
-func workerComponentFor(review *reviewv1alpha2.PRReviewJob) string {
-	if review.Spec.PublicationMode == job.PublicationModeAppGate &&
-		review.Spec.QualificationProfile == "" {
-		return job.PublishingWorkerComponent
-	}
-	return job.ReceiptOnlyWorkerComponent
 }
 
 func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.EnvVar) bool {
