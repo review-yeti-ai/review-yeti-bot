@@ -83,3 +83,32 @@ describe('review-yeti chart publishing transport', () => {
     expect(rendered).toContain('REVIEW_YETI_BIFROST_API_KEY');
   });
 });
+
+describe('review-yeti chart run-secret RBAC', () => {
+  it('grants the dispatcher nothing over secrets by default', () => {
+    // The grant is only needed by a publishing install; a non-publishing one should
+    // not be able to touch Secrets at all.
+    expect(render()).not.toContain('resources: ["secrets"]');
+  });
+
+  it('grants only create and delete, never get or list', () => {
+    // The dispatcher writes run credentials. It must not be able to read any other
+    // Secret in the namespace -- including the App private key it holds by env, and
+    // the Doppler-projected gateway credential.
+    const rendered = render('--set', 'publishing.runSecrets.enabled=true');
+    const rule = rendered.slice(rendered.indexOf('resources: ["secrets"]'));
+    const verbs = rule.slice(rule.indexOf('verbs:'), rule.indexOf('\n---'));
+    expect(verbs).toContain('create');
+    expect(verbs).toContain('delete');
+    expect(verbs).not.toContain('get');
+    expect(verbs).not.toContain('list');
+    expect(verbs).not.toContain('watch');
+  });
+
+  it('scopes the grant to a namespaced Role, never a ClusterRole', () => {
+    const rendered = render('--set', 'publishing.runSecrets.enabled=true');
+    const secretsAt = rendered.indexOf('resources: ["secrets"]');
+    const preceding = rendered.slice(0, secretsAt);
+    expect(preceding.lastIndexOf('kind: Role')).toBeGreaterThan(preceding.lastIndexOf('kind: ClusterRole'));
+  });
+});
