@@ -67,17 +67,28 @@ describe('DOKS publish-mode contract (cross-repository, behavioural)', () => {
 
   it('treats an unset mode as disabled, never as publishing', () => {
     // The documented default. A missing value must never fall open to publishing.
+    // The variable is *deleted*, not set empty: a regression that defaulted a truly
+    // absent variable to a publishing mode while still mapping '' to 'disabled'
+    // would pass an empty-string test and leave this safety property unpinned.
+    const absent = environment('');
+    delete absent.DOKS_PUBLISH_MODE;
+    expect(buildDispatchRequest(absent).publishMode).toBe('disabled');
     expect(buildDispatchRequest(environment('')).publishMode).toBe('disabled');
   });
 
-  it('rejects the mode before building a dispatch payload', () => {
-    // A rejected mode must never reach a request body.
-    let built: unknown;
-    try {
-      built = buildDispatchRequest(environment('enabled'));
-    } catch {
-      built = undefined;
-    }
-    expect(built).toBeUndefined();
+  it('validates the mode before any other required field', () => {
+    // Observable ordering rather than a restatement of the throw: corrupt the fields
+    // validated *after* publishMode (repository id, pr number, shas) and assert the
+    // publish-mode error still wins. If the check moved below them, the error would
+    // name one of those fields instead.
+    const alsoInvalid = {
+      ...environment('enabled'),
+      REPOSITORY_ID: 'not-a-number',
+      PR_NUMBER: '-1',
+      HEAD_SHA: 'nope',
+      BASE_SHA: '',
+    };
+    expect(() => buildDispatchRequest(alsoInvalid))
+      .toThrow(/publish mode must be disabled or app-gate/u);
   });
 });
