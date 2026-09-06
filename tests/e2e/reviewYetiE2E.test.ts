@@ -331,7 +331,11 @@ describe('Review Yeti E2E Test Suite', () => {
           'service.yaml',
           'ingress.yaml',
           'rbac.yaml',
-          'worker-rbac.yaml',
+          // worker-rbac.yaml is deliberately absent (REL-586): it bound jobs:create
+          // and pods/exec:create to the DEFAULT ServiceAccount, so any pod running
+          // as default with a mounted token could create a pod mounting any Secret
+          // in the namespace -- the App private key, every run token, the gateway
+          // credential. Asserted absent below so it cannot return by inventory.
           'secrets.yaml',
           'configmap.yaml',
           'crd.yaml',
@@ -342,6 +346,18 @@ describe('Review Yeti E2E Test Suite', () => {
           const tmplPath = repoPath('charts/review-yeti/templates', tmpl);
           expect(fs.existsSync(tmplPath), `Template ${tmpl} must exist`).toBe(true);
         }
+      });
+
+      it.skipIf(!hasHelmChart)('Feature 18a: no template grants the default ServiceAccount pod access', () => {
+        // Removal is only durable if reintroduction fails. Scan every rendered
+        // template rather than just the deleted filename, so an equivalent grant
+        // added elsewhere is caught too.
+        const dir = repoPath('charts/review-yeti/templates');
+        const rendered = fs.readdirSync(dir)
+          .map((file) => fs.readFileSync(path.join(dir, file), 'utf8'))
+          .join('\n');
+        expect(rendered).not.toContain('pods/exec');
+        expect(rendered).not.toMatch(/name:\s*default\b/u);
       });
     });
   });

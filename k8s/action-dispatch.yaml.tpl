@@ -8,7 +8,11 @@ data:
   HOST: 0.0.0.0
   PORT: "3000"
   ACTION_DISPATCH_ENABLED: "true"
-  ACTION_DISPATCH_ALLOW_APP_GATE: "${ACTION_DISPATCH_ALLOW_APP_GATE:-true}"
+  # Defaults to false. Admission accepts app-gate the moment this is true, and an
+  # accepted publishing dispatch that cannot complete leaves the head with no check
+  # run at all -- a required gate that blocks with nothing red. Turn it on
+  # deliberately, per environment, once the lane is proven.
+  ACTION_DISPATCH_ALLOW_APP_GATE: "${ACTION_DISPATCH_ALLOW_APP_GATE:-false}"
   ACTION_DISPATCH_REPOSITORY_IDS: "${ACTION_DISPATCH_REPOSITORY_IDS}"
   ACTION_DISPATCH_OWNER_IDS: "${ACTION_DISPATCH_OWNER_IDS}"
   ACTION_DISPATCH_WORKFLOW_REFS: "${ACTION_DISPATCH_WORKFLOW_REFS}"
