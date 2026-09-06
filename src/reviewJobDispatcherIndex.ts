@@ -1,6 +1,7 @@
 import * as k8s from '@kubernetes/client-node';
 import { KubernetesReviewJobProjector } from './k8s/kubernetesReviewJobProjector';
 import { ReviewJobDispatchEngine } from './k8s/reviewJobDispatchEngine';
+import { KubernetesRunSecretProvisioner } from './k8s/kubernetesRunSecretProvisioner';
 import {
   reviewJobDispatcherConfigFromEnv,
   runReviewJobDispatcherLoop,
@@ -17,9 +18,49 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const kubeConfig = new k8s.KubeConfig();
   kubeConfig.loadFromCluster();
   const customObjects = kubeConfig.makeApiClient(k8s.CustomObjectsApi);
+
+  // Only constructed when App credentials are present. Absent, the engine refuses
+  // app-gate dispatches outright rather than projecting a Job whose worker could
+  // never publish -- and because that lane fails closed, an unpublishable worker
+  // would surface as a failed check on the pull request rather than a dispatch
+  // error anyone would look at.
+  const appId = String(environment.GITHUB_APP_ID || '').trim();
+  const privateKey = String(environment.GITHUB_APP_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+  const runSecretProvisioner = appId && privateKey
+    ? new KubernetesRunSecretProvisioner({
+      // Thin adapter rather than widening CoreSecretClient: the generated client
+      // types `body` as V1Secret, and loosening our interface to match would make
+      // it unusable as a test double.
+      client: (() => {
+        const core = kubeConfig.makeApiClient(k8s.CoreV1Api);
+        return {
+          createNamespacedSecret: (request: {
+            namespace: string;
+            body: unknown;
+            fieldManager: string;
+            fieldValidation: 'Strict';
+          }) => core.createNamespacedSecret({
+            namespace: request.namespace,
+            body: request.body as k8s.V1Secret,
+            fieldManager: request.fieldManager,
+            fieldValidation: request.fieldValidation,
+          }),
+          deleteNamespacedSecret: (request: { namespace: string; name: string }) =>
+            core.deleteNamespacedSecret({ namespace: request.namespace, name: request.name }),
+        };
+      })(),
+      appId,
+      privateKey,
+    })
+    : undefined;
+  if (!runSecretProvisioner) {
+    logger.warn('No GitHub App credentials: publishing (app-gate) reviews will be refused');
+  }
+
   const engine = new ReviewJobDispatchEngine({
     repository: new PostgresReviewDispatchRepository(store.getPool()),
     projector: new KubernetesReviewJobProjector(customObjects),
+    runSecretProvisioner,
     workerId: config.workerId,
     workerImage: config.workerImage,
     namespace: config.namespace,

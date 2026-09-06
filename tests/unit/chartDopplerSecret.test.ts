@@ -105,6 +105,21 @@ describe('review-yeti chart run-secret RBAC', () => {
     expect(verbs).not.toContain('watch');
   });
 
+  it('binds the job dispatcher, not the action-dispatch API', () => {
+    // The provisioner runs in `node dist/reviewJobDispatcherIndex.js` under
+    // ct-review-job-dispatcher. The chart's `.Values.dispatcher` is a different
+    // component -- the action-dispatch API (`dist/dispatchIndex.js`,
+    // ct-review-action-dispatch) -- which never provisions run secrets. Binding it
+    // would grant Secret writes to a component that does not need them while
+    // leaving the one that does unable to work.
+    const rendered = render('--set', 'publishing.runSecrets.enabled=true');
+    const start = rendered.indexOf('ct-review-job-dispatcher-run-secrets');
+    expect(start).toBeGreaterThan(-1);
+    const block = rendered.slice(start, start + 1200);
+    expect(block).toContain('ct-review-job-dispatcher');
+    expect(block).not.toContain('ct-review-action-dispatch');
+  });
+
   it('scopes the grant to a namespaced Role, never a ClusterRole', () => {
     const rendered = render('--set', 'publishing.runSecrets.enabled=true');
     const secretsAt = rendered.indexOf('resources: ["secrets"]');

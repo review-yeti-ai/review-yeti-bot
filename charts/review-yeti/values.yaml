@@ -286,6 +286,11 @@ publishing:
   # credentials without being able to read any other Secret here.
   runSecrets:
     enabled: false
+    # Service account of the JOB dispatcher (node dist/reviewJobDispatcherIndex.js),
+    # which is the component that provisions run secrets -- not the action-dispatch
+    # API under .Values.dispatcher. Named rather than derived because that
+    # Deployment is not currently rendered by this chart.
+    serviceAccountName: "ct-review-job-dispatcher"
 
 # Doppler-operator credential projection.
 #
