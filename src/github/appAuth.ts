@@ -182,6 +182,69 @@ export async function getGitHubAppRepositoryReadToken(
 }
 
 /**
+ * Mints a short-lived installation token constrained to one repository and the
+ * single write permission a publishing review worker needs.
+ *
+ * REL-586: the DOKS publishing lane must not hold the App private key -- that pod
+ * parses untrusted pull-request diffs and executes model output, so an App key
+ * there would let a compromised worker mint tokens for every installation. The
+ * control plane mints from the App we already have installed and hands the worker
+ * only this token.
+ *
+ * `checks: write` is the whole grant. It is deliberately not `contents` or
+ * `pull_requests: write`: the lane creates and completes one check run and does
+ * nothing else. The returned contract is asserted, so a broader grant than asked
+ * for is treated as a failure rather than silently accepted.
+ */
+export async function getGitHubAppRepositoryPublishToken(
+  config: GitHubRepositoryInstallationConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<InstallationTokenResult> {
+  const installationId = await getGitHubAppInstallationIdForRepository(config, fetchFn);
+  const { appId, privateKey, repo, baseUrl = 'https://api.github.com' } = config;
+  const jwt = generateGitHubAppJwt(appId, privateKey);
+  const url = `${baseUrl.replace(/\/+$/, '')}/app/installations/${installationId}/access_tokens`;
+  const response = await fetchFn(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${jwt}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'ct-review-bot[bot]',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: JSON.stringify({
+      repositories: [repo],
+      permissions: { checks: 'write' },
+    }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub App repository publish token exchange failed HTTP ${response.status}`);
+  }
+  const body = await response.json() as {
+    token?: unknown;
+    expires_at?: unknown;
+    permissions?: unknown;
+  };
+  const token = typeof body.token === 'string' ? body.token : '';
+  const expiresAt = typeof body.expires_at === 'string' ? body.expires_at : '';
+  const permissions = body.permissions && typeof body.permissions === 'object' && !Array.isArray(body.permissions)
+    ? body.permissions as Record<string, unknown>
+    : {};
+  const granted = Object.keys(permissions);
+  if (!token.startsWith('ghs_') || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now() ||
+      permissions.checks !== 'write' || granted.length !== 1) {
+    throw new Error('GitHub App repository publish token exchange returned an unsafe contract');
+  }
+  return {
+    token,
+    expiresAt,
+    permissions: permissions as Record<string, string>,
+  };
+}
+
+/**
  * Mints an ephemeral GitHub App installation token for chat actions without storing long-lived personal access tokens.
  */
 export async function mintEphemeralChatToken(
