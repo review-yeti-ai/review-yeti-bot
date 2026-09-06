@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import yaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 
 const chartDir = path.resolve(__dirname, '../../charts/review-yeti');
@@ -10,6 +11,18 @@ function render(...setArgs: string[]): string {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
   });
+}
+
+/** Parse the rendered manifests so assertions can target real fields, not substrings. */
+function renderDocs(...setArgs: string[]): Array<Record<string, any>> {
+  return (yaml.loadAll(render(...setArgs)) as Array<Record<string, any>>).filter(Boolean);
+}
+
+function jobDispatcherDeployment(...setArgs: string[]): Record<string, any> {
+  const found = renderDocs(...setArgs).find((doc) => doc.kind === 'Deployment'
+    && doc.metadata?.name === 'ct-review-job-dispatcher');
+  if (!found) throw new Error('job dispatcher Deployment not rendered');
+  return found;
 }
 
 function helmAvailable(): boolean {
@@ -155,10 +168,56 @@ describe('review-yeti chart job dispatcher', () => {
     const base = ['--set', 'jobDispatcher.enabled=true', '--set', 'jobDispatcher.image=ghcr.io/x@sha256:abc'];
     // Without provisioning there is nothing to mint, so the credential would be an
     // unnecessary grant sitting in a pod.
-    expect(render(...base)).not.toContain('GITHUB_APP_PRIVATE_KEY');
-    const withSecrets = render(...base, '--set', 'publishing.runSecrets.enabled=true');
-    expect(withSecrets).toContain('GITHUB_APP_ID');
-    expect(withSecrets).toContain('GITHUB_APP_PRIVATE_KEY');
+    const withoutSecrets = jobDispatcherDeployment(...base);
+    const names = (withoutSecrets.spec.template.spec.containers[0].env || [])
+      .map((entry: any) => entry.name);
+    expect(names).not.toContain('GITHUB_APP_PRIVATE_KEY');
+  });
+
+  it('resolves App credentials to the right secret and key names', () => {
+    // Asserting env-var *names* is not enough: a reference to the wrong secret (the
+    // action-dispatch runtime secret, say) or a mistyped key would render cleanly,
+    // pass a substring check, and only fail at pod start -- silently reinstating the
+    // 'runSecrets enabled but the component has nothing' failure this exists to fix.
+    const deployment = jobDispatcherDeployment(
+      '--set', 'jobDispatcher.enabled=true',
+      '--set', 'jobDispatcher.image=ghcr.io/x@sha256:abc',
+      '--set', 'publishing.runSecrets.enabled=true',
+      '--set', 'jobDispatcher.appSecretName=my-app-secret',
+    );
+    const env: any[] = deployment.spec.template.spec.containers[0].env || [];
+    const resolved = Object.fromEntries(env.map((entry) => [
+      entry.name,
+      { secret: entry.valueFrom?.secretKeyRef?.name, key: entry.valueFrom?.secretKeyRef?.key },
+    ]));
+    expect(resolved.GITHUB_APP_ID).toEqual({ secret: 'my-app-secret', key: 'GITHUB_APP_ID' });
+    expect(resolved.GITHUB_APP_PRIVATE_KEY).toEqual({ secret: 'my-app-secret', key: 'GITHUB_APP_PRIVATE_KEY' });
+    // No inline values: every credential must arrive by reference.
+    for (const entry of env) expect(entry.value).toBeUndefined();
+  });
+
+  it('runs under the job dispatcher service account, not the API one', () => {
+    // The RBAC grant is bound to this account. A mismatch means the pod cannot write
+    // run secrets even though the Role exists -- the defect shipped in #530.
+    const deployment = jobDispatcherDeployment(
+      '--set', 'jobDispatcher.enabled=true',
+      '--set', 'jobDispatcher.image=ghcr.io/x@sha256:abc',
+      '--set', 'jobDispatcher.serviceAccountName=custom-job-sa',
+    );
+    expect(deployment.spec.template.spec.serviceAccountName).toBe('custom-job-sa');
+    expect(deployment.spec.template.spec.serviceAccountName).not.toBe('ct-review-action-dispatch');
+  });
+
+  it('binds the run-secret Role to the same account the deployment runs as', () => {
+    // The two are configured independently, so they can drift apart. Assert they agree.
+    const docs = renderDocs(
+      '--set', 'jobDispatcher.enabled=true',
+      '--set', 'jobDispatcher.image=ghcr.io/x@sha256:abc',
+      '--set', 'publishing.runSecrets.enabled=true',
+    );
+    const deployment = docs.find((d) => d.kind === 'Deployment' && d.metadata?.name === 'ct-review-job-dispatcher');
+    const binding = docs.find((d) => d.kind === 'RoleBinding' && String(d.metadata?.name).endsWith('-run-secrets'));
+    expect(binding?.subjects?.[0]?.name).toBe(deployment?.spec.template.spec.serviceAccountName);
   });
 
   it('never renders a credential value into the manifest', () => {
