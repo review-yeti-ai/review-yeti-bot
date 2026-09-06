@@ -7,7 +7,7 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { computeAppVerdict } from '../review/reviewAdapters';
 import { CommentPublisher } from '../github/commentPublisher';
-import { getGitHubAppInstallationToken } from '../github/appAuth';
+import { getGitHubAppInstallationToken, getGitHubAppInstallationIdForRepository } from '../github/appAuth';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
@@ -1683,8 +1683,22 @@ export async function runWorker(
     });
   },
   publishingRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
-    const auth = resolveWorkerAuthConfig(workerEnv);
-    const tokenRes = await getGitHubAppInstallationToken(auth);
+    // REL-586: resolve the installation from the App credentials and the admitted
+    // repository rather than requiring GITHUB_INSTALLATION_ID. The operator has no
+    // installation id to give -- the CRD carries none, and the dispatch API resolves
+    // it per repository without persisting it -- so requiring the env var would make
+    // every publishing run fail its auth contract before reaching the panel.
+    const appId = requiredWorkerEnv(workerEnv, 'GITHUB_APP_ID');
+    const privateKey = requiredWorkerEnv(workerEnv, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
+    const [owner, repoName] = String(workerEnv.REVIEW_REPO || '').split('/');
+    if (!owner || !repoName) throw new Error('publishing review worker contract is invalid');
+    const installationId = String(await getGitHubAppInstallationIdForRepository({
+      appId,
+      privateKey,
+      owner,
+      repo: repoName,
+    }));
+    const tokenRes = await getGitHubAppInstallationToken({ appId, privateKey, installationId });
     if (!tokenRes.token.startsWith('ghs_')) {
       throw new Error('GitHub App token exchange returned a non-installation token');
     }
