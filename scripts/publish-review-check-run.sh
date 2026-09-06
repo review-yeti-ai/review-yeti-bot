@@ -83,9 +83,30 @@ if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
   exit 0
 fi
 
+# An ABSENT verdict is not a verdict. This block used to interpolate the verdict
+# with a shell default of SHIP, so when check-review-verdict.sh had just
+# errored with "Review Yeti did not produce a verdict; an earlier workflow step
+# failed", the published check still read "Review Yeti: SHIP" and its summary
+# still said "central evaluation finished with verdict: SHIP". The conclusion was
+# correctly `failure`, so the gate held -- but the text asserted an approval that
+# no persona ever gave, on a head no panel ever reviewed. Observed on
+# example-workspace#2554. That is manufactured evidence, and it reads as approval to
+# anyone scanning the PR rather than the run log.
+#
+# Name the absence instead, and keep it failing.
 conclusion="success"
-if [[ "${REVIEW_STATUS:-}" != "SHIP" ]]; then
+verdict="${REVIEW_STATUS:-}"
+if [[ -z "${verdict}" ]]; then
   conclusion="failure"
+  title="Review Yeti: NO VERDICT (no panel result for this head)"
+  summary="Review Yeti published no verdict for this head: an earlier step in the central run did not complete, so no persona judged this commit. This is a failure to review, not a review that failed, and it is not an approval. See [central run](${CENTRAL_RUN_URL})."
+elif [[ "${verdict}" != "SHIP" ]]; then
+  conclusion="failure"
+  title="Review Yeti: ${verdict}"
+  summary="Review Yeti central evaluation finished with verdict: ${verdict}. See details in [central run](${CENTRAL_RUN_URL})."
+else
+  title="Review Yeti: ${verdict}"
+  summary="Review Yeti central evaluation finished with verdict: ${verdict}. See details in [central run](${CENTRAL_RUN_URL})."
 fi
 
 echo "Publishing Check Run 'Review Yeti' (${conclusion}) to ${TARGET_REPO} on ${HEAD_SHA}..."
@@ -99,8 +120,8 @@ curl -sS -X POST \
     --arg head_sha "${HEAD_SHA}" \
     --arg conclusion "${conclusion}" \
     --arg details_url "${CENTRAL_RUN_URL}" \
-    --arg title "Review Yeti: ${REVIEW_STATUS:-SHIP}" \
-    --arg summary "Review Yeti central evaluation finished with verdict: ${REVIEW_STATUS:-SHIP}. See details in [central run](${CENTRAL_RUN_URL})." \
+    --arg title "${title}" \
+    --arg summary "${summary}" \
     '{
       name: $name,
       head_sha: $head_sha,

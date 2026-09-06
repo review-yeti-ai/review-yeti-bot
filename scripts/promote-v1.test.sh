@@ -680,6 +680,37 @@ PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$normal_ship_payload" \
   "$repo_root/scripts/publish-review-check-run.sh" >/dev/null
 jq -e '.conclusion == "success"' "$normal_ship_payload" >/dev/null
 
+# An absent verdict must never render as SHIP. The publisher used to interpolate
+# ${REVIEW_STATUS:-SHIP}, so a run whose panel never produced a verdict published
+# a check titled "Review Yeti: SHIP" whose summary claimed the evaluation had
+# "finished with verdict: SHIP" (observed on example-workspace#2554, moments after
+# check-review-verdict.sh errored with "did not produce a verdict"). The
+# conclusion was correctly `failure`, so this asserts BOTH: still failing, and no
+# longer claiming an approval that no persona gave.
+no_verdict_payload="$publish_test_dir/no-verdict.json"
+PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$no_verdict_payload" \
+  GH_TOKEN=test TARGET_REPO=exampleorg/example HEAD_SHA=deadbeef \
+  REVIEW_STATUS= CENTRAL_RUN_URL=https://example/run/1 \
+  "$repo_root/scripts/publish-review-check-run.sh" >/dev/null
+jq -e '.conclusion == "failure"' "$no_verdict_payload" >/dev/null
+jq -e '(.output.title | test("SHIP") | not)' "$no_verdict_payload" >/dev/null
+jq -e '(.output.summary | test("verdict: SHIP") | not)' "$no_verdict_payload" >/dev/null
+jq -e '(.output.title | test("NO VERDICT"))' "$no_verdict_payload" >/dev/null
+
+# A real non-SHIP verdict still fails and is still named accurately.
+block_payload="$publish_test_dir/block.json"
+PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$block_payload" \
+  GH_TOKEN=test TARGET_REPO=exampleorg/example HEAD_SHA=deadbeef \
+  REVIEW_STATUS=BLOCK CENTRAL_RUN_URL=https://example/run/1 \
+  "$repo_root/scripts/publish-review-check-run.sh" >/dev/null
+jq -e '.conclusion == "failure" and (.output.title | test("BLOCK"))' "$block_payload" >/dev/null
+
+# The literal default that caused it must not come back.
+if grep -Fq 'REVIEW_STATUS:-SHIP' "$repo_root/scripts/publish-review-check-run.sh"; then
+  echo "publish-review-check-run.sh must not default an absent verdict to SHIP" >&2
+  exit 1
+fi
+
 # Consumer callers must not be able to self-serve a passthrough approval or reroute execution.
 # Only the platform-owned REVIEW_YETI_PASSTHROUGH repository variable may enable passthrough.
 grep -Fq "'^[[:space:]]+passthrough:'" "$repo_root/scripts/validate-caller-workflow.sh"
