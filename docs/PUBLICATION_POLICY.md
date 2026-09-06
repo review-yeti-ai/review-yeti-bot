@@ -39,6 +39,11 @@ Findings without a publishable line anchor become file-level conversations or, f
 named section in the summary. The Action never relocates a finding to a nearby line to make it
 publishable.
 
+**Both lookups are bounded.** The sticky comment is found by reading issue comments newest-first
+and stopping at the first anchor match; existing reviews are read through the GraphQL `reviews`
+connection with `last:`, because the REST list is oldest-first with no `direction` and capping its
+pages would drop exactly the newest entries dedupe depends on.
+
 **Publisher identity is required, and matching fails closed.** The summary anchor is derived from
 the repository and pull request number alone, so anyone who can read the pull request URL can write
 a comment containing it. A comment or review is only adopted — patched in place, or treated as an

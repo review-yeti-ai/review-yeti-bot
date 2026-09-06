@@ -6128,21 +6128,61 @@ function requirePublisherLogin(login) {
   return login;
 }
 
+/** Newest reviews one publication run reads. One per pushed head, plus retry attempts. */
+const MAX_READ_ACTION_REVIEWS = 100;
+
+const REVIEW_LIST_QUERY = `
+query ActionReviews($owner: String!, $name: String!, $number: Int!, $last: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(last: $last) {
+        nodes { databaseId body submittedAt author { login } commit { oid } }
+      }
+    }
+  }
+}`;
+
+/**
+ * The most recent reviews on the pull request, in the REST shape the callers already expect.
+ *
+ * Only the newest bot-owned review for the current head is ever consumed, but a pull request
+ * accumulates one review per pushed head for its whole life, and this is read twice per publish.
+ * The REST list endpoint returns oldest-first and offers no `direction`, so capping its pages would
+ * drop exactly the newest entries the callers need -- which is why this reads the GraphQL
+ * connection instead, where `last:` bounds the request from the correct end.
+ */
 function readActionReviews(commandRunner, prContext) {
+  const [owner, name] = String(prContext.repo || '').split('/');
   const result = ghApi(commandRunner, [
-    'api',
-    `repos/${prContext.repo}/pulls/${prContext.prNumber}/reviews?per_page=100`,
-    '--paginate', '--slurp',
+    'api', 'graphql',
+    '-F', `owner=${owner}`,
+    '-F', `name=${name}`,
+    '-F', `number=${Number(prContext.prNumber)}`,
+    '-F', `last=${MAX_READ_ACTION_REVIEWS}`,
+    '-f', `query=${REVIEW_LIST_QUERY}`,
   ]);
   if (!result || result.status !== 0) {
     throw new Error(`gh api could not verify existing pull request reviews: ${result?.stderr || result?.stdout || 'unknown error'}`);
   }
+  let decoded;
   try {
-    const pages = JSON.parse(result.stdout || '[]');
-    return (Array.isArray(pages) ? pages : [pages]).flat().filter(Boolean);
+    decoded = JSON.parse(result.stdout || '{}');
   } catch (error) {
     throw new Error(`GitHub returned malformed pull request reviews JSON: ${error.message}`);
   }
+  const pages = Array.isArray(decoded) ? decoded : [decoded];
+  const graphError = pages.flatMap((page) => page?.errors || [])[0];
+  if (graphError) throw new Error(`gh api could not verify existing pull request reviews: ${graphError.message || 'GraphQL returned an error'}`);
+  return pages
+    .flatMap((page) => page?.data?.repository?.pullRequest?.reviews?.nodes || [])
+    .filter(Boolean)
+    .map((node) => ({
+      id: node.databaseId,
+      body: node.body,
+      commit_id: node.commit?.oid,
+      submitted_at: node.submittedAt,
+      user: { login: node.author?.login },
+    }));
 }
 
 function readActionReviewThreads(commandRunner, prContext) {
@@ -7794,6 +7834,8 @@ module.exports = {
   capPublicationThreads,
   MAX_PUBLISHED_REVIEW_THREADS,
   readActionReviewThreads,
+  readActionReviews,
+  MAX_READ_ACTION_REVIEWS,
   reviewRequiresResultRepublish,
   findLatestIssueComment,
   isSubscriptionTransport,

@@ -293,6 +293,30 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
       }
       if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
       if (args[0] === 'api' && args[1] === 'graphql') {
+        // Reviews and review threads are both GraphQL now, so answer by document.
+        if (args.some((arg) => arg.includes('query ActionReviews'))) {
+          return {
+            status: 0,
+            stdout: JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: {
+                    reviews: {
+                      nodes: reviews.map((review: any) => ({
+                        databaseId: review.id,
+                        body: review.body,
+                        submittedAt: null,
+                        author: { login: review.user?.login },
+                        commit: { oid: review.commit_id },
+                      })),
+                    },
+                  },
+                },
+              },
+            }),
+            stderr: '',
+          };
+        }
         return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }]), stderr: '' };
       }
       if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {

@@ -25,13 +25,40 @@ const {
   capPublicationThreads,
   findLatestIssueComment,
   MAX_PUBLISHED_REVIEW_THREADS,
+  parsePriorSummaryReview,
   postOrOutputComment,
   postStickySummaryComment,
+  MAX_READ_ACTION_REVIEWS,
+  readActionReviews,
   readActionReviewThreads,
   renderStickySummaryBody,
   reviewRequiresResultRepublish,
   splitStickySummaryBody,
 } = pipeline;
+
+/**
+ * `readActionReviews` and `readActionReviewThreads` both go through `gh api graphql`, so a stub has
+ * to answer by document rather than by endpoint.
+ */
+const isReviewListQuery = (args: string[]) => args.some((arg) => arg.includes('query ActionReviews'));
+
+const reviewListPage = (reviews: any[]) => JSON.stringify({
+  data: {
+    repository: {
+      pullRequest: {
+        reviews: {
+          nodes: reviews.map((review) => ({
+            databaseId: review.id,
+            body: review.body,
+            submittedAt: review.submitted_at || null,
+            author: { login: review.user?.login },
+            commit: { oid: review.commit_id },
+          })),
+        },
+      },
+    },
+  },
+});
 
 const CONTROLLER = 'server/ExampleApp/Controllers/InventoryAuditsController.cs';
 const SERVICE = 'server/ExampleApp/Services/InventoryAuditService.cs';
@@ -163,6 +190,7 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
         return { status: 0, stdout: JSON.stringify({ headRefOid: context.headSha, baseRefOid: 'base' }), stderr: '' };
       }
       if (args[0] === 'api' && args[1] === 'graphql') {
+        if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage(state.reviews), stderr: '' };
         return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads } } } } }]), stderr: '' };
       }
       if (args[0] === 'api' && args[1] === 'user') {
@@ -348,12 +376,49 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
     expect(state.reviews).toHaveLength(1);
   });
 
-  it('classifies which verdicts force a republish', () => {
-    for (const verdict of ['BLOCK', 'FIX_FIRST', 'INCOMPLETE_REVIEW', 'DEGRADED', 'ERROR']) {
+  const RETRYABLE = ['BLOCK', 'FIX_FIRST', 'PARTIAL', 'PARTIAL_REVIEW', 'INCOMPLETE_REVIEW', 'INCOMPLETE_INFRA', 'DEGRADED', 'ERROR'];
+
+  it('classifies which verdicts force a republish, in the heading format', () => {
+    for (const verdict of RETRYABLE) {
       expect(reviewRequiresResultRepublish({ body: `**Verdict: ${verdict}**` })).toBe(true);
+      expect(reviewRequiresResultRepublish({ body: `**Verdict: \`${verdict}\`**` })).toBe(true);
     }
     expect(reviewRequiresResultRepublish({ body: '**Verdict: SHIP**' })).toBe(false);
     expect(reviewRequiresResultRepublish({ body: 'no verdict at all' })).toBe(false);
+    expect(reviewRequiresResultRepublish({ body: '' })).toBe(false);
+  });
+
+  // The function accepts a second shape. Only the heading form was covered, so a typo in
+  // 'Quorum Status' or a change to the backtick pattern would let a stale BLOCK review be reused
+  // as this head's terminal gate signal with the suite still green.
+  it('classifies the status-line format too', () => {
+    for (const label of ['Review Status', 'Quorum Status']) {
+      for (const verdict of RETRYABLE) {
+        expect(reviewRequiresResultRepublish({ body: `**${label}**: \`${verdict}\`` })).toBe(true);
+      }
+      expect(reviewRequiresResultRepublish({ body: `**${label}**: \`SHIP\`` })).toBe(false);
+      // Backticks are part of the contract; without them this is prose, not a status line.
+      expect(reviewRequiresResultRepublish({ body: `**${label}**: BLOCK` })).toBe(false);
+    }
+  });
+
+  // The three regexes over rendered markdown are only correct while formatPRComment keeps
+  // rendering that markdown. Nothing bound the renderer to them, so a heading change would
+  // silently reclassify every gate signal. This pins the round trip.
+  it('matches what formatPRComment actually renders', () => {
+    const render = (verdict: string) => pipeline.formatPRComment(
+      { verdict, rationale: 'test rationale', quorumSatisfied: true, completedPersonas: 1, totalPersonas: 1, metrics: { p0Count: 0, p1Count: 0, p2Count: 0 } },
+      [],
+      { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead' },
+    );
+
+    expect(reviewRequiresResultRepublish({ body: render('BLOCK') })).toBe(true);
+    expect(reviewRequiresResultRepublish({ body: render('FIX_FIRST') })).toBe(true);
+    expect(reviewRequiresResultRepublish({ body: render('SHIP') })).toBe(false);
+
+    // The same rendered body must remain readable by the other two parsers of that contract.
+    expect(parsePriorSummaryReview(render('BLOCK')).verdict).toBe('BLOCK');
+    expect(parsePriorSummaryReview(render('SHIP')).verdict).toBe('SHIP');
   });
 
   it('fails closed when GitHub exposes the compact review at a different commit than the requested head', () => {
@@ -488,6 +553,7 @@ describe('the merge-blocking cap on review threads', () => {
           return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
         }
         if (args[0] === 'api' && args[1] === 'graphql') {
+          if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage(reviews), stderr: '' };
           return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: threads } } } } }]), stderr: '' };
         }
         if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
@@ -939,6 +1005,7 @@ describe('repairing a partially published round', () => {
       if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
       if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
       if (args[0] === 'api' && args[1] === 'graphql') {
+        if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage(state.reviews), stderr: '' };
         return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: false, endCursor: null } } } } } }]), stderr: '' };
       }
       if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
@@ -1073,5 +1140,56 @@ describe('bounding the sticky summary history', () => {
     const body = renderRounds(9, (i) => `Round ${i} ${'z'.repeat(30_000)}`);
 
     expect(body).toContain('Round 8');
+  });
+});
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('reading the existing reviews', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+
+  // A pull request accumulates one review per pushed head for its whole life and this is read
+  // twice per publish, so the request has to be bounded. The REST list is oldest-first with no
+  // direction parameter, which is why capping it there would drop the entries actually needed.
+  it('asks for a bounded window from the newest end', () => {
+    const seen: string[][] = [];
+    const commandRunner = (_exe: string, args: string[]) => {
+      seen.push(args);
+      return { status: 0, stdout: reviewListPage([]), stderr: '' };
+    };
+
+    readActionReviews(commandRunner, context);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('graphql');
+    expect(seen[0].some((arg) => arg === `last=${MAX_READ_ACTION_REVIEWS}`)).toBe(true);
+    expect(seen[0].every((arg) => !arg.includes('--paginate'))).toBe(true);
+  });
+
+  it('maps the connection onto the shape the publisher consumes', () => {
+    const commandRunner = () => ({
+      status: 0,
+      stdout: reviewListPage([
+        { id: 11, body: 'first', commit_id: 'abc', submitted_at: '2026-09-06T00:00:00Z', user: { login: 'github-actions[bot]' } },
+        { id: 12, body: 'second', commit_id: 'def', submitted_at: '2026-09-06T01:00:00Z', user: { login: 'github-actions[bot]' } },
+      ]),
+      stderr: '',
+    });
+
+    expect(readActionReviews(commandRunner, context)).toEqual([
+      { id: 11, body: 'first', commit_id: 'abc', submitted_at: '2026-09-06T00:00:00Z', user: { login: 'github-actions[bot]' } },
+      { id: 12, body: 'second', commit_id: 'def', submitted_at: '2026-09-06T01:00:00Z', user: { login: 'github-actions[bot]' } },
+    ]);
+  });
+
+  it('fails rather than reporting no reviews when GitHub errors', () => {
+    const failed = () => ({ status: 1, stdout: '', stderr: 'Bad credentials' });
+    expect(() => readActionReviews(failed, context)).toThrow('Bad credentials');
+
+    const graphError = () => ({ status: 0, stdout: JSON.stringify({ errors: [{ message: 'Resource not accessible' }] }), stderr: '' });
+    expect(() => readActionReviews(graphError, context)).toThrow('Resource not accessible');
+
+    const malformed = () => ({ status: 0, stdout: 'not json', stderr: '' });
+    expect(() => readActionReviews(malformed, context)).toThrow(/malformed/u);
   });
 });
