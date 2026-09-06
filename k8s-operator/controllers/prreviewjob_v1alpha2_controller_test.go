@@ -572,3 +572,99 @@ func TestPRReviewJobV1Alpha2ReconcilerQueuesAboveActiveJobLimit(t *testing.T) {
 		t.Fatal("queued review must not allocate a PVC")
 	}
 }
+
+// REL-586: no controller test exercised the app-gate lane, so the Job builder and
+// the reconciler's contract matcher drifted apart unnoticed. The matcher required
+// the publication-mode label to be "disabled" and rejected any env carrying
+// GH_TOKEN -- both true of every publishing Job the builder produces -- and a
+// rejected Job is DELETED. The operator destroyed each publishing worker it had
+// just created, so the lane could never have run once.
+func TestPRReviewJobV1Alpha2ReconcilerKeepsItsOwnAppGateWorker(t *testing.T) {
+	now := time.Date(2026, 9, 1, 20, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.UID = types.UID("app-gate-review")
+	review.Spec.PublicationMode = "app-gate"
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client: kube,
+		Scheme: scheme,
+		Now:    func() time.Time { return now },
+		Publishing: job.PublishingConfig{
+			GatewayBaseURL:    "https://llm-gateway.calltelemetry.com/v1",
+			Model:             "ollama/glm-5.3-flash",
+			GatewaySecretName: "review-yeti-gateway-credentials",
+			GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		},
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("reconcile %d: %v", attempt, err)
+		}
+	}
+
+	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
+	var worker batchv1.Job
+	if err := kube.Get(context.Background(), workerKey, &worker); err != nil {
+		t.Fatalf("app-gate worker was deleted by its own operator: %v", err)
+	}
+	if worker.Labels["review-yeti.ai/publication-mode"] != "app-gate" {
+		t.Fatalf("publication-mode label = %q", worker.Labels["review-yeti.ai/publication-mode"])
+	}
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase == reviewv1alpha2.PhaseFailed {
+		t.Fatalf("app-gate review failed its own contract: %s", updated.Status.Message)
+	}
+}
+
+// A tampered app-gate worker must still be rejected: widening the matcher to admit
+// the lane must not turn it into a lane that accepts anything.
+func TestPRReviewJobV1Alpha2ReconcilerStillRejectsTamperedAppGateWorker(t *testing.T) {
+	now := time.Date(2026, 9, 1, 20, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.UID = types.UID("app-gate-tampered")
+	review.Spec.PublicationMode = "app-gate"
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client: kube,
+		Scheme: scheme,
+		Now:    func() time.Time { return now },
+		Publishing: job.PublishingConfig{
+			GatewayBaseURL:    "https://llm-gateway.calltelemetry.com/v1",
+			Model:             "ollama/glm-5.3-flash",
+			GatewaySecretName: "review-yeti-gateway-credentials",
+			GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		},
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
+	var worker batchv1.Job
+	if err := kube.Get(context.Background(), workerKey, &worker); err != nil {
+		t.Fatal(err)
+	}
+	// Inject an App credential: the publishing worker must never hold one.
+	worker.Spec.Template.Spec.Containers[0].Env = append(
+		worker.Spec.Template.Spec.Containers[0].Env,
+		corev1.EnvVar{Name: "GITHUB_APP_PRIVATE_KEY", Value: "leaked"},
+	)
+	if err := kube.Update(context.Background(), &worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("tampered app-gate worker was not stopped: %v", err)
+	}
+}

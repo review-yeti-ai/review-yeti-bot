@@ -272,9 +272,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 // bound for image readiness and keeps the lifecycle receipt monotonic.
 func (r *PRReviewJobV1Alpha2Reconciler) observeWorkerPod(ctx context.Context, review *reviewv1alpha2.PRReviewJob, worker *batchv1.Job, now time.Time) (bool, error) {
 	var pods corev1.PodList
+	// The component label follows the lane: publishing workers carry
+	// PublishingWorkerComponent, so a hardcoded receipt-only filter would observe no
+	// pod at all for them and leave the lifecycle receipt permanently empty.
 	if err := r.List(ctx, &pods, client.InNamespace(review.Namespace), client.MatchingLabels{
 		"review-yeti.ai/run-id":    review.Spec.RunID,
-		"review-yeti.ai/component": job.ReceiptOnlyWorkerComponent,
+		"review-yeti.ai/component": workerComponentFor(review),
 	}); err != nil {
 		return false, err
 	}
@@ -575,7 +578,12 @@ func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1
 	if worker == nil || worker.Namespace != review.Namespace || worker.Name != review.Name+"-worker" {
 		return false
 	}
-	if worker.Labels["review-yeti.ai/run-id"] != review.Spec.RunID || worker.Labels["review-yeti.ai/publication-mode"] != "disabled" {
+	// The label must track the review's own publication mode. Hardcoding "disabled"
+	// predates the app-gate lane and would reject every publishing Job the builder
+	// produces -- and a rejected Job is DELETED by failWorkerContractMismatch, so the
+	// operator would destroy each publishing worker it had just created.
+	if worker.Labels["review-yeti.ai/run-id"] != review.Spec.RunID ||
+		worker.Labels["review-yeti.ai/publication-mode"] != review.Spec.PublicationMode {
 		return false
 	}
 	if worker.Spec.BackoffLimit == nil || *worker.Spec.BackoffLimit != 0 || worker.Spec.Parallelism == nil || *worker.Spec.Parallelism != 1 || worker.Spec.Completions == nil || *worker.Spec.Completions != 1 {
@@ -600,6 +608,16 @@ func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1
 		}
 	}
 	return false
+}
+
+// workerComponentFor returns the component label the job builder stamps for this
+// review's lane. Keep in step with job.BuildWorkerJob.
+func workerComponentFor(review *reviewv1alpha2.PRReviewJob) string {
+	if review.Spec.PublicationMode == job.PublicationModeAppGate &&
+		review.Spec.QualificationProfile == "" {
+		return job.PublishingWorkerComponent
+	}
+	return job.ReceiptOnlyWorkerComponent
 }
 
 func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.EnvVar) bool {
@@ -649,6 +667,38 @@ func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.En
 			}
 		}
 		return openRouterRefs == 1 && githubRefs == 1
+	}
+	if review.Spec.PublicationMode == job.PublicationModeAppGate {
+		// The publishing lane is not receipt-only and carries no qualification
+		// markers. It reads its gateway key and a repository-scoped publish token,
+		// and -- as with the same-head lane -- must never be handed App credentials:
+		// this pod parses untrusted pull-request diffs and executes model output.
+		if receiptOnly != "" || fullPanel != "" || sameHead != "" || model != "" {
+			return false
+		}
+		publishRefs := 0
+		githubRefs := 0
+		for _, variable := range env {
+			switch variable.Name {
+			case "GITHUB_PUBLISH_TOKEN":
+				publishRefs++
+				if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
+					variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName ||
+					variable.ValueFrom.SecretKeyRef.Key != "GITHUB_PUBLISH_TOKEN" {
+					return false
+				}
+			case "GH_TOKEN":
+				githubRefs++
+				if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
+					variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName ||
+					variable.ValueFrom.SecretKeyRef.Key != "GITHUB_READ_TOKEN" {
+					return false
+				}
+			case "GITHUB_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "GITHUB_INSTALLATION_ID", "OPENROUTER_API_KEY":
+				return false
+			}
+		}
+		return publishRefs == 1 && githubRefs == 1
 	}
 	if receiptOnly != "true" || fullPanel != "" || sameHead != "" || model != "" {
 		return false
