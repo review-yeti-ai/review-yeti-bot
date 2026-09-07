@@ -67,7 +67,7 @@ fi
 }
 
 describe('zero-replica review job dispatcher deployment', () => {
-  it('is inert by default and carries no review execution or publication credentials', () => {
+  it('is inert by default and carries no review execution credentials', () => {
     const docs = documents();
     expect(docs.some((document) => ['Service', 'Ingress', 'PersistentVolumeClaim'].includes(document.kind))).toBe(false);
     const deployment = docs.find((document) => document.kind === 'Deployment');
@@ -83,6 +83,9 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(container.envFrom).toEqual([
       { configMapRef: { name: 'ct-review-job-dispatcher' } },
     ]);
+    // Exact, not a superset: this pod's entire credential surface should be
+    // reviewable at a glance. REL-586 added the two App keys so it can mint per-run
+    // publish and read tokens; they come from a dedicated Secret (ADR 0539).
     expect(container.env).toEqual([
       {
         name: 'DATABASE_URL',
@@ -92,6 +95,14 @@ describe('zero-replica review job dispatcher deployment', () => {
         name: 'DATABASE_CA_CERT',
         valueFrom: { secretKeyRef: { name: 'ct-review-job-dispatcher-runtime', key: 'DATABASE_CA_CERT' } },
       },
+      {
+        name: 'GITHUB_APP_ID',
+        valueFrom: { secretKeyRef: { name: 'ct-review-job-dispatcher-github-app', key: 'GITHUB_APP_ID' } },
+      },
+      {
+        name: 'GITHUB_APP_PRIVATE_KEY',
+        valueFrom: { secretKeyRef: { name: 'ct-review-job-dispatcher-github-app', key: 'GITHUB_APP_PRIVATE_KEY' } },
+      },
     ]);
     expect(container.securityContext).toEqual(expect.objectContaining({
       allowPrivilegeEscalation: false,
@@ -100,8 +111,13 @@ describe('zero-replica review job dispatcher deployment', () => {
     }));
 
     const serialized = JSON.stringify(deployment!);
+    // REL-586 / ADR 0539: GITHUB_APP is no longer forbidden here. This component
+    // mints the per-run publish and read tokens, so it must hold the App key --
+    // see the dedicated assertions below for the shape that replaces the blanket
+    // ban. Every other credential class stays forbidden: it still performs no
+    // review execution and talks to no model provider.
     for (const forbidden of [
-      'GITHUB_APP', 'GITHUB_TOKEN', 'OPENROUTER', 'FIREWORKS', 'OLLAMA', 'OMNIROUTE',
+      'GITHUB_TOKEN', 'OPENROUTER', 'FIREWORKS', 'OLLAMA', 'OMNIROUTE',
       'SYNTHETIC_API', 'WEBHOOK_SECRET', 'workspace-pvc', 'provider',
     ]) {
       expect(serialized).not.toContain(forbidden);
@@ -113,11 +129,21 @@ describe('zero-replica review job dispatcher deployment', () => {
     const role = docs.find((document) => document.kind === 'Role');
     expect(role).toBeDefined();
     expect(role!.metadata.namespace).toBe('ct-review-system');
-    expect(role!.rules).toEqual([{
-      apiGroups: ['review-yeti.ai'],
-      resources: ['prreviewjobs'],
-      verbs: ['get', 'create'],
-    }]);
+    // Exact. The secrets rule is create-only by design: Kubernetes cannot scope a
+    // verb to one Secret name, so delete or patch would reach the App private key
+    // this pod holds, the gateway credential, and the ingress TLS key.
+    expect(role!.rules).toEqual([
+      {
+        apiGroups: ['review-yeti.ai'],
+        resources: ['prreviewjobs'],
+        verbs: ['get', 'create'],
+      },
+      {
+        apiGroups: [''],
+        resources: ['secrets'],
+        verbs: ['create'],
+      },
+    ]);
     const binding = docs.find((document) => document.kind === 'RoleBinding');
     expect(binding).toBeDefined();
     expect(binding!.subjects).toEqual([{
@@ -202,6 +228,44 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(source).not.toContain('loadFromDefault');
     for (const forbidden of ['github/appAuth', 'openRouter', 'fireworks', 'omniRoute', 'synthetic']) {
       expect(source).not.toContain(forbidden);
+    }
+  });
+});
+
+describe('publishing credential posture (REL-586, ADR 0539)', () => {
+  it('holds the App key in a dedicated secret, not the runtime one', () => {
+    // deploy-review-job-dispatcher.sh asserts the runtime Secret holds exactly the
+    // two database keys. Adding App credentials there would either break that
+    // assertion or silently weaken it.
+    const deployment = documents().find((doc) => doc.kind === 'Deployment');
+    const env: any[] = deployment?.spec.template.spec.containers[0].env || [];
+    const resolved = Object.fromEntries(env.map((entry) => [
+      entry.name,
+      { secret: entry.valueFrom?.secretKeyRef?.name, key: entry.valueFrom?.secretKeyRef?.key },
+    ]));
+    expect(resolved.GITHUB_APP_ID)
+      .toEqual({ secret: 'ct-review-job-dispatcher-github-app', key: 'GITHUB_APP_ID' });
+    expect(resolved.GITHUB_APP_PRIVATE_KEY)
+      .toEqual({ secret: 'ct-review-job-dispatcher-github-app', key: 'GITHUB_APP_PRIVATE_KEY' });
+    expect(resolved.DATABASE_URL.secret).toBe('ct-review-job-dispatcher-runtime');
+    // Never inline.
+    for (const entry of env) expect(entry.value).toBeUndefined();
+  });
+
+  it('can create secrets but never delete, patch, get or list them', () => {
+    // Kubernetes cannot scope a verb to one Secret name. `delete` or `patch` here
+    // would reach the App private key this pod is given, the gateway credential and
+    // the ingress TLS key. A 409 is treated as success instead, which is only sound
+    // because a run-secret name is written inside a single fifteen-minute window.
+    const role = documents().find((doc) => doc.kind === 'Role');
+    const secretRule = (role?.rules || []).find((rule: any) => (rule.resources || []).includes('secrets'));
+    expect(secretRule?.verbs).toEqual(['create']);
+  });
+
+  it('still grants no cluster-scoped access', () => {
+    for (const doc of documents()) {
+      expect(doc.kind).not.toBe('ClusterRole');
+      expect(doc.kind).not.toBe('ClusterRoleBinding');
     }
   });
 });
