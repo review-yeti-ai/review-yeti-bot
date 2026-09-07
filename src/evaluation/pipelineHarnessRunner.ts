@@ -241,7 +241,7 @@ Focus areas:
       'Do NOT flag subjective code style, indentation, or formatting if security posture is valid.',
       'Do NOT flag missing comments or docstrings if auth/tenant boundaries are functionally sound.',
     ],
-    proactiveToolStrategy: 'Search database queries for missing tenant bounds, check auth middleware headers and secrets.',
+    proactiveToolStrategy: 'Search database queries for missing tenant bounds, check auth middleware headers, boundary crossings, and secrets; inspect impact analysis tools if available.',
   },
   performance: {
     name: 'Performance Engineer',
@@ -283,7 +283,7 @@ Focus areas:
       'Do NOT flag local function implementation details unless they violate module contracts or layer boundaries.',
       'Suppress cosmetic refactoring suggestions that do not improve system stability.',
     ],
-    proactiveToolStrategy: 'Perform cross-folder code search to check callers affected by interface/schema shifts.',
+    proactiveToolStrategy: 'Check callers and downstream consumers affected by interface/schema shifts; perform cross-folder code search or use impact analysis tools if configured.',
   },
   testing: {
     name: 'Quality & Test Engineer',
@@ -304,7 +304,7 @@ Focus areas:
       'Do NOT flag test helper naming if assertions are comprehensive.',
       'Do NOT request redundant tests for trivial boilerplate getters/setters.',
     ],
-    proactiveToolStrategy: 'Search test/ directory for modified modules and inspect test coverage of error paths.',
+    proactiveToolStrategy: 'Search test/ directory for modified modules, verify test coverage of error paths and downstream integration tests.',
   },
   dependencies: {
     name: 'DevOps & Dependencies Engineer',
@@ -325,7 +325,7 @@ Focus areas:
       'Do NOT flag dependency ordering or manifest formatting if versions are secure.',
       'Suppress warnings on test/development manifests unless applied to production.',
     ],
-    proactiveToolStrategy: 'Read package.json, lockfiles, and imports across workspace.',
+    proactiveToolStrategy: 'Read package manifests, lockfiles, and imports across workspace; inspect dependency drift and downstream impacts.',
   },
 };
 

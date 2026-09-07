@@ -108,6 +108,44 @@ describe('McpFleetManager Unit Tests', () => {
     expect(result.output.status).toBe('Done');
   });
 
+  it('discovers and executes tools from stdio MCP server', async () => {
+    const serverId = `stdio_test_${Date.now()}`;
+    const serverScript = `
+      import readline from 'node:readline';
+      const rl = readline.createInterface({ input: process.stdin });
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        const req = JSON.parse(line);
+        if (req.method === 'tools/list') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { tools: [{ name: 'custom_stdio_echo', description: 'Echo test' }] } }) + '\\n');
+        } else if (req.method === 'tools/call') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: { content: [{ type: 'text', text: JSON.stringify({ echoed: req.params.arguments }) }] } }) + '\\n');
+        }
+      }
+    `;
+
+    await mcpFleetManager.registerServer({
+      id: serverId,
+      name: 'Stdio Test MCP Server',
+      transport: 'stdio',
+      command: 'node',
+      args: ['--input-type=module', '-e', serverScript],
+      enabled: true,
+      status: 'online',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const discovered = await mcpFleetManager.discoverTools(serverId);
+    expect(discovered).toContain('custom_stdio_echo');
+
+    const result = await mcpFleetManager.executeTool('custom_stdio_echo', { foo: 'bar' });
+    expect(result.success).toBe(true);
+    expect(result.output).toEqual({ echoed: { foo: 'bar' } });
+
+    await mcpFleetManager.unregisterServer(serverId);
+  });
+
   it('handles execution of unregistered tool gracefully', async () => {
     const result = await mcpFleetManager.executeTool('non_existent_tool_99', {});
 
@@ -115,3 +153,4 @@ describe('McpFleetManager Unit Tests', () => {
     expect(result.error).toContain('not found in registered MCP fleet');
   });
 });
+
