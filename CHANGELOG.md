@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.0...v1.41.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **publishing:** pass the full owner/repo to the qualification loader ([#572](https://github.com/review-yeti-ai/review-yeti-bot/issues/572)) ([44d5da1](https://github.com/review-yeti-ai/review-yeti-bot/commit/44d5da1e1f03c4732c354e61747e4a8757358252))
+
 ## [1.41.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.40.1...v1.41.0) (2026-09-07)
 
 
