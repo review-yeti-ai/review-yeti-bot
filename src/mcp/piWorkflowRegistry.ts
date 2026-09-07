@@ -82,8 +82,22 @@ export class PiWorkflowRegistry {
       { name: 'linear_close_issue', description: 'Close Linear issues associated with a pull request', serverId: 'builtin-linear' },
     ];
 
+    // Include dynamically registered tools from any configured MCP servers
+    const registeredToolDetails = typeof (mcpFleetManager as any).getRegisteredToolDetails === 'function'
+      ? mcpFleetManager.getRegisteredToolDetails()
+      : [];
+    for (const rTool of registeredToolDetails) {
+      if (!tools.some((t) => t.name === rTool.name)) {
+        tools.push({
+          name: rTool.name,
+          description: rTool.description || `Tool provided by MCP server '${rTool.serverId}'`,
+          serverId: rTool.serverId,
+        });
+      }
+    }
+
     for (const server of servers) {
-      if (server.transport === 'http' && server.url) {
+      if (server.transport === 'http' && server.url && !tools.some((t) => t.serverId === server.id)) {
         tools.push({
           name: `mcp_${server.id.replace(/[^a-zA-Z0-9]/g, '_')}_exec`,
           description: `Execute tool on custom MCP server '${server.name}' (${server.url})`,
