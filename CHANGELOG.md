@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.39.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.39.0...v1.39.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **action:** do not enforce review-publisher identity against an assumption ([#553](https://github.com/review-yeti-ai/review-yeti-bot/issues/553)) ([ceb323f](https://github.com/review-yeti-ai/review-yeti-bot/commit/ceb323fcfce397dd522db54b0cdbe388ca0a8e42))
+
 ## [1.39.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.6...v1.39.0) (2026-09-07)
 
 
