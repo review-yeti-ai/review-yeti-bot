@@ -128,6 +128,10 @@ describe('PRReviewJob create authority (REL-586)', () => {
     }
   });
 
+  // Shells out to `helm template`, so it is bounded by process startup rather than
+  // by anything this suite controls. The default 5s budget is a unit-test budget;
+  // on a loaded runner the subprocess exceeds it and the release pipeline fails on
+  // a timeout that says nothing about the RBAC property under test.
   it('is not granted by the Helm chart either', () => {
     // The chart renders the operator's RBAC; it must not add a second creator.
     const rendered = execFileSync('helm', ['template', 'rv', path.join(root, 'charts/review-yeti')], {
@@ -136,5 +140,5 @@ describe('PRReviewJob create authority (REL-586)', () => {
     });
     const docs = (yaml.loadAll(rendered) as Array<Record<string, any>>).filter(Boolean);
     expect(createSubjectsFor(docs)).toEqual([]);
-  });
+  }, 60_000);
 });
