@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.38.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.5...v1.38.6) (2026-09-07)
+
+
+### Bug Fixes
+
+* **publish:** keep the sticky comment small, and close conversations whose code is gone ([#548](https://github.com/review-yeti-ai/review-yeti-bot/issues/548)) ([64e01a9](https://github.com/review-yeti-ai/review-yeti-bot/commit/64e01a984014d6933593519c438cc1314c9cce0f))
+
 ## [1.38.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.4...v1.38.5) (2026-09-06)
 
 
