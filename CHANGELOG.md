@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.39.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.39.1...v1.39.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **action:** a publication failure must not discard a computed verdict ([#557](https://github.com/review-yeti-ai/review-yeti-bot/issues/557)) ([30093b5](https://github.com/review-yeti-ai/review-yeti-bot/commit/30093b5344c8d23301543f397c7677e2b8be0bc4))
+* **tests:** make the suite build its own prerequisites ([#556](https://github.com/review-yeti-ai/review-yeti-bot/issues/556)) ([d6992e4](https://github.com/review-yeti-ai/review-yeti-bot/commit/d6992e4ad97aa100802be5fbeba23ddd4041ba59))
+
 ## [1.39.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.39.0...v1.39.1) (2026-09-07)
 
 
