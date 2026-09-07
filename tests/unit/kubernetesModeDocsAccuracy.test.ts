@@ -26,6 +26,8 @@ const CLAIM_PATTERNS = [
   /\b(your|their)\s+(own\s+)?kubernetes\b/iu,
   /\bany\s+(vanilla\s+)?(K8s|Kubernetes)\s+clusters?\b/iu,
   /\bclusters?\s+(you|they)\s+(operate|run|own|manage|control)\b/iu,
+  // Passive voice: "a cluster operated by you" says the same thing.
+  /\bclusters?\s+(operated|run|owned|managed|controlled)\s+by\s+(you|them|your)\b/iu,
   // "self-hosted Ollama/vLLM endpoints" is about MODEL PROVIDERS, not clusters, and
   // is a true statement. Only match self-hosting that is about running the worker.
   /\bself[- ]host(ing|ed|s)?\b(?!\s+(Ollama|vLLM|model|endpoint))/iu,
@@ -81,10 +83,20 @@ describe('Kubernetes Mode documentation matches enforced behaviour', () => {
   it.each([
     ['docs/KUBERNETES_MODE.md'],
     ['README.md'],
-  ])('%s never promises the reader can point the worker at a cluster they operate', (file) => {
-    // Applied to BOTH documents. The README previously pinned only its removed
-    // heading, so "Self-Host the Worker Fleet" would have reintroduced the
-    // advertising without failing anything.
+  ])('%s carries no self-hosting promise in any phrasing this guard knows', (file) => {
+    // Applied to BOTH documents -- the README previously pinned only its removed
+    // heading, so a reworded one would have slipped through.
+    //
+    // SCOPE, stated honestly: this is a tripwire for known phrasings, NOT a proof
+    // that no promise can be written. A regex cannot decide meaning, and every
+    // round of hardening has found another wording -- passive voice, plurals,
+    // blockquotes, a claim sharing a paragraph with an unrelated negation. Each is
+    // now covered, and a determined edit will find the next one.
+    //
+    // What this reliably catches is the realistic regression: someone restoring
+    // the marketing language this PR removed, or writing the same claim afresh in
+    // ordinary prose. Treat a failure as certain, a pass as unproven, and review
+    // documentation changes on their meaning.
     expect(promisingBlocks(read(file))).toEqual([]);
   });
 
