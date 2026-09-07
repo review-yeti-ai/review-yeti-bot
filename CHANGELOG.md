@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.1...v1.41.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **doks:** bind publishing panel to Bifrost model ([#574](https://github.com/review-yeti-ai/review-yeti-bot/issues/574)) ([542083f](https://github.com/review-yeti-ai/review-yeti-bot/commit/542083f14e9e5e4c271b176f13c11de19f0319d9))
+
 ## [1.41.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.0...v1.41.1) (2026-09-07)
 
 
