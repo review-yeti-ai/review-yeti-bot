@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.40.1...v1.41.0) (2026-09-07)
+
+
+### Features
+
+* **mcp:** generic stdio MCP tool execution and downstream impact analysis integration ([#568](https://github.com/review-yeti-ai/review-yeti-bot/issues/568)) ([b8eaa57](https://github.com/review-yeti-ai/review-yeti-bot/commit/b8eaa57cfba94b85964f4ce6f43746c976b232da))
+
 ## [1.40.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.40.0...v1.40.1) (2026-09-07)
 
 
