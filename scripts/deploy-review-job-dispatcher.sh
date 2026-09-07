@@ -12,10 +12,23 @@ need kubectl
 need envsubst
 
 runner_mode="${CT_REVIEW_RUNNER_MODE:-${RUNNER_MODE:-prebaked}}"
+# Server-side apply refuses to take a field another manager owns. A field set once
+# by `kubectl patch` (manager "kubectl-patch") therefore wedges every later deploy:
+# the manifest can never reclaim it, and the script exits 1 with a conflict it
+# offers no way to resolve. Observed on .data.REVIEW_JOB_WORKER_IMAGE, which had
+# been hand-patched, blocking an otherwise valid rollout.
+#
+# Opt-in and off by default: forcing silently would let a deploy overwrite a
+# deliberate manual pin with no one noticing, which is the failure this guard is
+# protecting against in the first place.
+force_conflicts=""
 for arg in "$@"; do
   case "$arg" in
     --runner-mode=*)
       runner_mode="${arg#*=}"
+      ;;
+    --force-conflicts)
+      force_conflicts="--force-conflicts"
       ;;
   esac
 done
@@ -70,7 +83,11 @@ trap cleanup EXIT
 envsubst '${CT_REVIEW_JOB_DISPATCHER_IMAGE} ${CT_REVIEW_WORKER_IMAGE} ${CT_REVIEW_RUNNER_MODE}' \
   < k8s/review-job-dispatcher.yaml.tpl > "$render_dir/review-job-dispatcher.yaml"
 
-kubectl apply --server-side -f "$render_dir/review-job-dispatcher.yaml"
+if [[ -n "$force_conflicts" ]]; then
+  echo "deploy-review-job-dispatcher: --force-conflicts given; this manifest will take ownership of any field another manager holds" >&2
+fi
+# shellcheck disable=SC2086
+kubectl apply --server-side $force_conflicts -f "$render_dir/review-job-dispatcher.yaml"
 
 replicas="$(kubectl -n ct-review-system get deployment ct-review-job-dispatcher -o jsonpath='{.spec.replicas}')"
 if [[ "$replicas" != "0" ]]; then

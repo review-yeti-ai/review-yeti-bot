@@ -48,7 +48,7 @@ export type ReviewJobDispatchOutcome =
   | { status: 'idle' }
   | { status: 'projected'; runId: string; projectionName: string }
   | { status: 'terminal'; runId: string; reason: 'projection-rejected' | 'run-secret-unavailable' }
-  | { status: 'retry'; runId: string; availableAt: number }
+  | { status: 'retry'; runId: string; availableAt: number; reason: 'run-secret-provisioning' | 'projection' }
   | { status: 'lease-lost'; runId: string };
 
 export class ReviewJobDispatchEngine {
@@ -131,6 +131,13 @@ export class ReviewJobDispatchEngine {
       } catch {
         // Retry rather than terminate: a token mint is a network call and GitHub
         // rate limits are transient. The terminal deadline still bounds it.
+        //
+        // The stage is named, the upstream error text is not. A retry that reports
+        // nothing is indistinguishable from one that can never succeed -- a
+        // permanently failing mint looped here silently until someone read the
+        // source. A fixed label restores that signal; interpolating the caught
+        // error would not, because upstream failures can carry credential material.
+        const reason = 'run-secret-provisioning' as const;
         const availableAt = now + this.retryDelayMs;
         const released = await this.options.repository.releaseForRetry(
           claim.runId,
@@ -139,7 +146,7 @@ export class ReviewJobDispatchEngine {
           availableAt,
         );
         return released
-          ? { status: 'retry', runId: claim.runId, availableAt }
+          ? { status: 'retry', runId: claim.runId, availableAt, reason }
           : { status: 'lease-lost', runId: claim.runId };
       }
     }
@@ -147,6 +154,7 @@ export class ReviewJobDispatchEngine {
     try {
       await this.options.projector.ensure(projection);
     } catch {
+      const reason = 'projection' as const;
       const availableAt = now + this.retryDelayMs;
       const released = await this.options.repository.releaseForRetry(
         claim.runId,
@@ -155,7 +163,7 @@ export class ReviewJobDispatchEngine {
         availableAt,
       );
       return released
-        ? { status: 'retry', runId: claim.runId, availableAt }
+        ? { status: 'retry', runId: claim.runId, availableAt, reason }
         : { status: 'lease-lost', runId: claim.runId };
     }
 
