@@ -47,6 +47,29 @@ describe('App-minted publish token', () => {
     expect(body.permissions).toEqual({ checks: 'write' });
   });
 
+  it('accepts the implicit metadata: read GitHub attaches to every token', async () => {
+    // This is what real GitHub returns -- `metadata: read` is added server-side,
+    // cannot be excluded from the request, and conveys no write capability.
+    // Asserting an exact key count here rejected every genuine token and wedged
+    // the publishing lane in a silent retry loop.
+    const fetchFn = fetchStub({
+      token: 'ghs_ok',
+      expires_at: future(),
+      permissions: { checks: 'write', metadata: 'read' },
+    });
+    const result = await getGitHubAppRepositoryPublishToken(config, fetchFn);
+    expect(result.permissions).toEqual({ checks: 'write', metadata: 'read' });
+  });
+
+  it('still refuses a metadata grant that is not read-only', async () => {
+    const fetchFn = fetchStub({
+      token: 'ghs_ok',
+      expires_at: future(),
+      permissions: { checks: 'write', metadata: 'write' },
+    });
+    await expect(getGitHubAppRepositoryPublishToken(config, fetchFn)).rejects.toThrow(/unsafe contract/u);
+  });
+
   it('refuses a token granted more than it asked for', async () => {
     // GitHub returns the permissions actually granted. A broader grant than
     // requested must fail loudly rather than being used.

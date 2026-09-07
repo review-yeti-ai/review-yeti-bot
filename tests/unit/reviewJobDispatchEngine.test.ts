@@ -130,6 +130,7 @@ describe('ReviewJobDispatchEngine', () => {
       status: 'retry',
       runId: claim.runId,
       availableAt: now + 5_000,
+      reason: 'run-secret-provisioning',
     });
     expect(projector.ensure).not.toHaveBeenCalled();
     expect(repository.markTerminal).not.toHaveBeenCalled();
@@ -159,7 +160,9 @@ describe('ReviewJobDispatchEngine', () => {
       projector: { ensure: vi.fn(async () => { throw new Error('secret-bearing upstream failure'); }) },
     });
     const outcome = await engine.runOnce();
-    expect(outcome).toEqual({ status: 'retry', runId: claim.runId, availableAt: now + 5_000 });
+    // The stage is reported, the upstream text is not: naming which step failed is
+    // what makes a retry loop diagnosable, and it costs nothing in disclosure.
+    expect(outcome).toEqual({ status: 'retry', runId: claim.runId, availableAt: now + 5_000, reason: 'projection' });
     expect(JSON.stringify(outcome)).not.toContain('secret-bearing');
     expect(repository.releaseForRetry).toHaveBeenCalledWith(claim.runId, 'dispatcher-a', now, now + 5_000);
   });

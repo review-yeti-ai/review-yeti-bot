@@ -232,9 +232,15 @@ export async function getGitHubAppRepositoryPublishToken(
   const permissions = body.permissions && typeof body.permissions === 'object' && !Array.isArray(body.permissions)
     ? body.permissions as Record<string, unknown>
     : {};
-  const granted = Object.keys(permissions);
+  // GitHub attaches `metadata: read` to every installation token. It is implicit,
+  // it cannot be excluded from the request, and it conveys no write capability --
+  // so it is tolerated by name. Any *other* key is still a broader grant than was
+  // asked for and is still rejected, which is the property this assertion exists
+  // to hold. Requiring an exact key count instead would reject every real token.
+  const unexpected = Object.keys(permissions).filter((key) => key !== 'checks' && key !== 'metadata');
   if (!token.startsWith('ghs_') || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now() ||
-      permissions.checks !== 'write' || granted.length !== 1) {
+      permissions.checks !== 'write' || unexpected.length > 0 ||
+      (permissions.metadata !== undefined && permissions.metadata !== 'read')) {
     throw new Error('GitHub App repository publish token exchange returned an unsafe contract');
   }
   return {
