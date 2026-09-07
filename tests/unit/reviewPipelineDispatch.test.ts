@@ -586,10 +586,12 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
   });
 
   it('uses only the role-scoped review fleet secret for hosted OpenRouter calls', () => {
+    // A third workflow used to be listed here. It deployed a private instance from
+    // this public product repository and was removed; the assertion still covers
+    // every deployment workflow that remains.
     const deploymentWorkflows = [
       workflow,
       fs.readFileSync(path.join(rootRepoDir, '.github/workflows/ci-cd.yaml'), 'utf-8'),
-      fs.readFileSync(path.join(rootRepoDir, '.github/workflows/deploy-jbjmllc.yaml'), 'utf-8'),
     ];
 
     deploymentWorkflows.forEach((source) => {
