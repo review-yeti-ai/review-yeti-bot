@@ -69,14 +69,28 @@ describe('no private deployment lives in this public product repository', () => 
   });
 
   it('mentions no private instance anywhere', () => {
-    // Excludes this file, which necessarily contains the name it forbids.
+    // Exactly two exemptions, both named individually rather than by glob so a new
+    // file cannot inherit one:
+    //
+    //  1. this file, which necessarily contains the literal it forbids;
+    //  2. one dated plan document from 2026-08-02, a historical record of what was
+    //     planned at the time. It is not live configuration, and rewriting a dated
+    //     record to match today's naming would falsify it.
+    //
+    // A blanket docs/superpowers/** carve-out would let any future document name
+    // the instance while this still passed, which is the fail-open shape these
+    // guards exist to refuse.
+    const exempt = [
+      ':!tests/unit/noCommittedBinaries.test.ts',
+      ':!docs/superpowers/plans/2026-08-02-openrouter-terraform-guide.md',
+    ];
     let hits = '';
     try {
-      hits = execFileSync(
-        'git',
-        ['grep', '-il', 'jbjmllc', '--', '.', ':!tests/unit/noCommittedBinaries.test.ts', ':!docs/superpowers/**'],
-        { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
-      ).trim();
+      hits = execFileSync('git', ['grep', '-il', 'jbjmllc', '--', '.', ...exempt], {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
     } catch (error) {
       // git grep exits 1 on no match, which is the passing case; anything else is real.
       if ((error as { status?: number }).status !== 1) throw error;
