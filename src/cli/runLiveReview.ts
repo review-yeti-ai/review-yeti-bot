@@ -1505,7 +1505,7 @@ export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
   const repo = cliArgs.find((value) => value.startsWith('--repo='))?.slice('--repo='.length)
     || positionalArgs[1]
     || env.REPO
-    || 'JBJMLLC/ct-review-bot';
+    || 'review-yeti-ai/review-yeti-bot';
   const prNumber = parseInt(prValue, 10);
   if (!Number.isInteger(prNumber) || prNumber < 1) throw new Error(`invalid pull request number: ${prValue}`);
   const { owner: repoOwner, repo: repoName } = parseRepoArgument(repo);
