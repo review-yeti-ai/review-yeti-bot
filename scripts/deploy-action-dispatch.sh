@@ -40,7 +40,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-: "${ACTION_DISPATCH_ALLOW_APP_GATE:=true}"
+# No default. The manifest documents this as off-by-default and says to turn it on
+# deliberately once the lane is proven, but defaulting it here to `true` silently
+# overrode that on every deploy -- the safety default could never take effect,
+# because envsubst always received a value. Defaulting to `false` instead would be
+# the mirror-image bug: a routine redeploy would quietly disable publishing and
+# reviews would stop appearing with nothing red to explain it.
+#
+# Both silent directions are wrong for a flag that decides whether reviews publish,
+# so require the operator to say which one they mean.
+if [[ -z "${ACTION_DISPATCH_ALLOW_APP_GATE:-}" ]]; then
+  echo "deploy-action-dispatch: set ACTION_DISPATCH_ALLOW_APP_GATE=true|false explicitly." >&2
+  echo "  true  -- admission accepts app-gate dispatches; the DOKS lane publishes reviews" >&2
+  echo "  false -- app-gate dispatches are refused; receipt-only lanes are unaffected" >&2
+  exit 2
+fi
+if [[ "$ACTION_DISPATCH_ALLOW_APP_GATE" != "true" && "$ACTION_DISPATCH_ALLOW_APP_GATE" != "false" ]]; then
+  echo "deploy-action-dispatch: ACTION_DISPATCH_ALLOW_APP_GATE must be exactly true or false" >&2
+  exit 2
+fi
+echo "deploy-action-dispatch: app-gate admission = ${ACTION_DISPATCH_ALLOW_APP_GATE}"
 
 envsubst '${CT_REVIEW_DISPATCH_IMAGE} ${ACTION_DISPATCH_REPOSITORY_IDS} ${ACTION_DISPATCH_OWNER_IDS} ${ACTION_DISPATCH_WORKFLOW_REFS} ${ACTION_DISPATCH_WORKFLOW_SHAS} ${ACTION_DISPATCH_ALLOW_APP_GATE}' \
   < k8s/action-dispatch.yaml.tpl > "$render_dir/action-dispatch.yaml"
