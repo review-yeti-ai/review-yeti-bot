@@ -187,14 +187,19 @@ export async function runPublishingReviewWorker(
   const checkId = await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha);
 
   try {
+    // `repo` is the full `owner/repo`: the loader parses the slash itself and has
+    // no `owner` field. Passing the bare name made every app-gate run die on
+    // "GitHub qualification repository is invalid". The `as Parameters<...>` cast
+    // that used to sit here is deliberately gone -- it silenced both the unknown
+    // `owner` property and the shape mismatch, which is the only reason this
+    // shipped.
     const source = await sourceLoader({
-      owner: identity.owner,
-      repo: identity.repoName,
+      repo: identity.repo,
       prNumber: identity.prNumber,
       expectedBaseSha: identity.baseSha,
       expectedHeadSha: identity.headSha,
       token: value(env, 'GH_TOKEN'),
-    } as Parameters<typeof loadSameHeadReviewSource>[0]);
+    });
 
     const changedFiles = Array.from(
       String(source.diff).matchAll(/diff --git a\/(.*?) b\/(.*?)(?=\ndiff --git|\n$|$)/gs),
