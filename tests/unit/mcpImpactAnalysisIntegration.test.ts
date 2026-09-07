@@ -4,7 +4,7 @@ import { mcpFleetManager } from '../../src/mcp/mcpFleetManager';
 
 const require = createRequire(import.meta.url);
 const pipeline = require('../../.github/workflows/pipelines/review-pipeline.js');
-const { formatPRComment, initMcpFleet, setMcpFleetManager } = pipeline;
+const { formatPRComment, initMcpFleet, setMcpFleetManager, selectImpactTool, evaluateDownstreamImpact } = pipeline;
 
 describe('Generic MCP Impact Analysis Review Integration', () => {
   const mockServerId = 'custom-impact-server';
@@ -167,29 +167,21 @@ describe('Generic MCP Impact Analysis Review Integration', () => {
 
     let sessionContext = { previousTurn: 1, hasHistory: true, augmentedHeader: 'Prior Turn Context' };
 
-    // Find registered impact tool dynamically (same logic as main review-pipeline)
-    const registeredTools = mcpFleetManager.getRegisteredToolDetails();
-    const impactTool = registeredTools.find((t) =>
-      /(?:^|_)(?:impact|blast_radius|dependency_graph)(?:_|$)/i.test(t.name) ||
-      /(?:impact analysis|blast radius)/i.test(t.description || '')
-    );
-    expect(impactTool).toBeDefined();
-    expect(impactTool?.name).toBe('impact_analysis');
+    // Verify pipeline tool selector finds the tool dynamically
+    const detectedTool = selectImpactTool(mcpFleetManager);
+    expect(detectedTool).toBe('impact_analysis');
 
-    const filePaths = reviewDiffFiles.map((f) => f.path);
-    const impactResult = await mcpFleetManager.executeTool(impactTool!.name, { files: filePaths });
-    expect(impactResult.success).toBe(true);
+    // Evaluate downstream impact using the exported pipeline function
+    const result = await evaluateDownstreamImpact({
+      reviewDiffFiles,
+      mcpFleetManager,
+      sessionContext,
+      mcpFleetInfo,
+    });
 
-    const impactOutput = impactResult.output;
-    const markdown = impactOutput.markdown || impactOutput.text || (typeof impactOutput === 'string' ? impactOutput : null);
-    expect(markdown).toBeDefined();
-
-    mcpFleetInfo.impactAnalysisMarkdown = markdown;
-    const impactPromptSection = `### Downstream Impact & Blast Radius Analysis\n${markdown}`;
-    sessionContext.augmentedHeader = sessionContext.augmentedHeader
-      ? `${sessionContext.augmentedHeader}\n\n${impactPromptSection}`
-      : impactPromptSection;
-
+    expect(result.evaluated).toBe(true);
+    expect(result.toolName).toBe('impact_analysis');
+    expect(result.markdown).toContain('Downstream Impact');
     expect(mcpFleetInfo.impactAnalysisMarkdown).toContain('Downstream Impact');
     expect(sessionContext.augmentedHeader).toContain('Prior Turn Context');
     expect(sessionContext.augmentedHeader).toContain('### Downstream Impact & Blast Radius Analysis');

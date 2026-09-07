@@ -750,7 +750,8 @@ async function invoke(
 
   const started = Date.now();
 
-  const availableMcpTools = piWorkflowRegistry.getAvailableMcpTools();
+  const availableMcpTools = piWorkflowRegistry.getAvailableMcpTools()
+    .filter((tool) => tool.name === 'fetch_docs' || tool.name === 'context7_search');
   const mcpToolListStr = availableMcpTools.map((t) => `${t.name} (${t.description})`).join(', ');
 
   const maxTurns = Math.min(20, Math.max(1, options?.maxTurns ?? 20));
@@ -759,14 +760,14 @@ async function invoke(
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
     {
       role: 'system',
-      content: `You are an automated fail-closed PR review engine for ${repoStr}. Perform a rigorous code review for persona '${personaName}' based on the charter and diff provided.
+      content: `You are an automated fail-closed CallTelemetry PR review engine for ${repoStr}. Perform a rigorous code review for persona '${personaName}' based on the charter and diff provided.
 
 === MULTI-TURN EXPLORATION & TOOL INVOCATION PROTOCOL ===
 - Permitted Tool Categories:
   1. Code Reading: view_file, read_file, get_diff (read surrounding file lines within the repository)
   2. AST Context & Symbols: miller (AST context), symbol_search, search_code, grep_search, find_files
-  3. External Documentation & Code Intelligence (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}
-     Use Context7 when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Use available workspace code intelligence or impact analysis tools to inspect downstream consumers or dependency blast radius when investigating breaking changes. Do NOT call tools if the code is self-explanatory or contained in the repository.
+  3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}
+     Use Context7 when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Do NOT call Context7 if the code is self-explanatory or contained in the repository.
 - You are granted up to ${maxTurns} execution turns for active codebase exploration.
 - Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.
 ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
@@ -775,11 +776,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 - Autonomous Decision: You decide whether to investigate further using tool calls or render your final evaluation immediately. If the diff is clean or self-contained, emit your final findings right away without unnecessary tool calls.
 - When tool execution is required, output a valid JSON block specifying the tool name and arguments:
   \`\`\`json
-  { "tool": "context7_search", "args": { "library": "react", "query": "useSyncExternalStore" } }
-  \`\`\`
-  or
-  \`\`\`json
-  { "tool": "miller", "args": { "file": "src/controllers/userController.ts", "symbol": "updateUser" } }
+  { "tool": "context7_search", "args": { "library": "ecto", "query": "multi-tenant schema prefixes" } }
   \`\`\`
   or
   \`\`\`json
@@ -867,7 +864,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         const isMiller = tName === 'miller';
         const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code'].includes(tName);
         const readOnlyMcpNames = new Set(['fetch_docs', 'context7_search', 'mcp_context7_query', 'linear_get_issue']);
-        const isMcp = readOnlyMcpNames.has(tName) || (typeof (mcpFleetManager as any)?.hasTool === 'function' && mcpFleetManager.hasTool(tName));
+        const isMcp = readOnlyMcpNames.has(tName);
 
         const isAllowed = isCodeReading || isMiller || isSearching || isMcp;
 

@@ -1,9 +1,71 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { Context7Adapter } from './context7Adapter';
 import { ProductlaneMCPAdapter } from './productlaneAdapter';
 import { DopplerSecretManager } from './dopplerSecretManager';
 import { CustomMcpServerConfig, dashboardStore } from '../persistence/dashboardStore';
 import { logger } from '../utils/logger';
+
+async function execStdioRpc(
+  command: string,
+  args: string[] = [],
+  requestPayload: any,
+  timeoutMs = 15000,
+  extraEnv: Record<string, any> = {}
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const child = spawn(command, args, {
+      env: { ...process.env, ...extraEnv },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try { child.kill('SIGKILL'); } catch {}
+        reject(new Error(`Stdio command timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+
+    child.on('close', () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve({ stdout, stderr });
+      }
+    });
+
+    try {
+      child.stdin.write(JSON.stringify(requestPayload) + '\n');
+      child.stdin.end();
+    } catch (writeErr) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(writeErr);
+      }
+    }
+  });
+}
 
 export interface McpToolDefinition {
   serverId: string;
@@ -241,14 +303,15 @@ export class McpFleetManager {
     if (server.transport === 'stdio') {
       if (server.command) {
         try {
-          const child = spawnSync(server.command, server.args || [], {
-            input: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n',
-            encoding: 'utf8',
-            timeout: 5000,
-            env: { ...process.env, ...(server.env || {}) },
-          });
-          if (child.stdout) {
-            const lines = child.stdout.trim().split('\n');
+          const { stdout } = await execStdioRpc(
+            server.command,
+            server.args || [],
+            { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+            5000,
+            server.env || {}
+          );
+          if (stdout) {
+            const lines = stdout.trim().split('\n');
             for (const line of lines) {
               try {
                 const parsed = JSON.parse(line);
@@ -511,29 +574,21 @@ export class McpFleetManager {
       const server = this.getServer(tool.serverId);
       if (server && server.transport === 'stdio' && server.command) {
         try {
-          const child = spawnSync(server.command, server.args || [], {
-            input: JSON.stringify({
+          const { stdout } = await execStdioRpc(
+            server.command,
+            server.args || [],
+            {
               jsonrpc: '2.0',
               id: 1,
               method: 'tools/call',
               params: { name: toolName, arguments: params },
-            }) + '\n',
-            encoding: 'utf8',
-            timeout: 15000,
-            env: { ...process.env, ...(server.env || {}) },
-          });
+            },
+            15000,
+            server.env || {}
+          );
 
-          if (child.error) {
-            return {
-              success: false,
-              output: null,
-              error: child.error.message,
-              durationMs: Date.now() - start,
-            };
-          }
-
-          if (child.stdout) {
-            const lines = child.stdout.trim().split('\n');
+          if (stdout) {
+            const lines = stdout.trim().split('\n');
             for (const line of lines) {
               try {
                 const parsed = JSON.parse(line);
