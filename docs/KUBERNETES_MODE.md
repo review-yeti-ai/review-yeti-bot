@@ -1,8 +1,22 @@
 # ☸️ Kubernetes & DOKS Execution Mode
 
-This guide explains how to run Review Yeti in **Kubernetes Mode** (DigitalOcean Kubernetes / DOKS, EKS, GKE, AKS, or any vanilla K8s cluster).
+This guide explains **Kubernetes Mode**, in which the Action admits a review to a
+Kubernetes worker queue instead of running the panel on your GitHub Actions runner.
 
-Running Review Yeti in Kubernetes offloads multi-persona AI reviews from expensive GitHub Actions runner minutes to containerized worker pods in your own cluster, **eliminating 95%+ of billable CI runner wait time**.
+Kubernetes Mode moves multi-persona review off billable runner minutes: the Action
+dispatches and exits in seconds, and worker pods do the model work.
+
+> [!IMPORTANT]
+> **The dispatch endpoint is fixed, so this is not self-hosting today.**
+> `validateDispatchEndpoint` in `scripts/dispatch-doks-action.mjs` requires the
+> endpoint to be exactly the hosted Review Yeti queue — origin, path, and all —
+> and dispatch is additionally bound by GitHub Actions OIDC to an allowlisted
+> repository. Deploying `charts/review-yeti/` into your own cluster will not
+> receive reviews, because the Action cannot be pointed at it.
+>
+> The chart and operator in this repository are the components the hosted queue
+> runs. Kubernetes Mode cannot be pointed at a cluster you operate until the
+> endpoint becomes configurable, which is a change to the Action, not a setting.
 
 ---
 
@@ -169,7 +183,7 @@ jobs:
 ```
 
 > [!NOTE]
-> This job completes in **5 to 10 seconds**! The GitHub Check Run named **Review Yeti** will remain `in_progress` until your Kubernetes worker completes the analysis and posts the final verdict.
+> This job completes in **5 to 10 seconds**! The GitHub Check Run named **Review Yeti** will remain `in_progress` until the Kubernetes worker completes the analysis and posts the final verdict.
 
 ---
 

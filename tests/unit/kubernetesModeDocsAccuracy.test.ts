@@ -1,0 +1,118 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { validateDispatchEndpoint } from '../../scripts/dispatch-doks-action.mjs';
+
+const root = path.resolve(__dirname, '../..');
+const read = (file: string) => readFileSync(path.join(root, file), 'utf8');
+
+/**
+ * The Action pins its dispatch endpoint: `validateDispatchEndpoint` requires the
+ * exact hosted origin and path. Documentation promising a reader can point
+ * Kubernetes Mode at a cluster they operate therefore describes something the code
+ * refuses, and a reader following it deploys the chart and waits for reviews that
+ * can never arrive. This repository is public, so that reader may have no one to ask.
+ */
+/**
+ * The harm is *possession*, not mention. Naming EKS while describing what a guide
+ * covers is factual; telling a reader their EKS cluster will receive reviews is the
+ * promise the code refuses. Matching a bare platform name flagged a documentation
+ * index and would push maintainers to write worse prose to satisfy a test.
+ */
+const CLAIM_PATTERNS = [
+  // Allows intervening words, so "your EKS cluster" and "their own K8s clusters"
+  // are caught as surely as "your cluster".
+  /\b(your|their)\s+(\w+\s+){0,3}(clusters?|infrastructure)\b/iu,
+  /\b(your|their)\s+(own\s+)?kubernetes\b/iu,
+  /\bany\s+(vanilla\s+)?(K8s|Kubernetes)\s+clusters?\b/iu,
+  /\bclusters?\s+(you|they)\s+(operate|run|own|manage|control)\b/iu,
+  // Passive voice: "a cluster operated by you" says the same thing.
+  /\bclusters?\s+(operated|run|owned|managed|controlled)\s+by\s+(you|them|your)\b/iu,
+  // "self-hosted Ollama/vLLM endpoints" is about MODEL PROVIDERS, not clusters, and
+  // is a true statement. Only match self-hosting that is about running the worker.
+  /\bself[- ]host(ing|ed|s)?\b(?!\s+(Ollama|vLLM|model|endpoint))/iu,
+];
+
+/**
+ * Wording that marks a block as stating the limit rather than promising it works.
+ *
+ * KNOWN LIMIT, accepted deliberately: this is block-level, so a paragraph that
+ * contains a promise AND an unrelated negation passes. Narrowing to the sentence
+ * would reintroduce the opposite failure -- a bullet no longer inherits the
+ * limitation from its list intro, and the guard would demand the caveat be
+ * repeated on every line. Neither granularity is sound for all prose; this one
+ * fails toward permitting a badly-mixed paragraph rather than toward forcing
+ * worse writing. It is a tripwire for the obvious regression, not a proof.
+ *
+ * Detection is claim-minus-limitation rather than claim-outside-blockquote. An
+ * earlier version excluded every `>` line, which let a promise pass purely by
+ * being written as a callout — markdown syntax says nothing about meaning, but a
+ * negation does.
+ */
+const LIMITATION = /\b(not|cannot|can't|never|until|unless|is fixed|no longer)\b/iu;
+
+/**
+ * Blocks, not lines. A bullet inherits the limitation stated by its list intro --
+ * "these files configure the chart; they do NOT make a cluster you operate
+ * reachable" covers every platform bullet beneath it. Judging line by line would
+ * demand the caveat be repeated on each one, which is how a guard starts forcing
+ * worse prose than it protects.
+ */
+function promisingBlocks(markdown: string): string[] {
+  return markdown
+    .split(/\n\s*\n/u)
+    .filter((block) => CLAIM_PATTERNS.some((pattern) => pattern.test(block)))
+    .filter((block) => !LIMITATION.test(block))
+    .map((block) => block.trim().split('\n')[0].slice(0, 120));
+}
+
+describe('Kubernetes Mode documentation matches enforced behaviour', () => {
+  it('rejects an endpoint the reader operates — the premise for every claim below', () => {
+    // Calls the real validator rather than grepping its source. Matching source
+    // text duplicated the constraint in a second place and would fail on a
+    // behaviour-preserving refactor, training maintainers to re-pin the strings
+    // instead of checking the behaviour.
+    expect(() => validateDispatchEndpoint('https://review.example.invalid/api/dispatch/action'))
+      .toThrow(/must be exactly/u);
+    expect(() => validateDispatchEndpoint('http://review-bot.calltelemetry.com/api/dispatch/action'))
+      .toThrow(/must be exactly/u);
+    // If this ever stops throwing, self-hosting became real and these docs
+    // assertions should be revisited rather than mechanically satisfied.
+  });
+
+  it.each([
+    ['docs/KUBERNETES_MODE.md'],
+    ['README.md'],
+  ])('%s carries no self-hosting promise in any phrasing this guard knows', (file) => {
+    // Applied to BOTH documents -- the README previously pinned only its removed
+    // heading, so a reworded one would have slipped through.
+    //
+    // SCOPE, stated honestly: this is a tripwire for known phrasings, NOT a proof
+    // that no promise can be written. A regex cannot decide meaning, and every
+    // round of hardening has found another wording -- passive voice, plurals,
+    // blockquotes, a claim sharing a paragraph with an unrelated negation. Each is
+    // now covered, and a determined edit will find the next one.
+    //
+    // What this reliably catches is the realistic regression: someone restoring
+    // the marketing language this PR removed, or writing the same claim afresh in
+    // ordinary prose. Treat a failure as certain, a pass as unproven, and review
+    // documentation changes on their meaning.
+    expect(promisingBlocks(read(file))).toEqual([]);
+  });
+
+  it('states plainly that the endpoint is fixed, naming what enforces it', () => {
+    // A reader must be able to verify the constraint without reading the dispatch
+    // script to discover it exists.
+    const doc = read('docs/KUBERNETES_MODE.md');
+    expect(doc).toMatch(/dispatch endpoint is fixed/iu);
+    expect(doc).toContain('validateDispatchEndpoint');
+  });
+
+  it('links the README chart section to the constraint', () => {
+    // Semantic anchor, not exact prose: "...until the dispatch endpoint is
+    // configurable" is a correct edit and must not fail the suite.
+    const readme = read('README.md');
+    expect(readme).toMatch(/will not receive reviews/iu);
+    expect(readme).toContain('docs/KUBERNETES_MODE.md');
+  });
+});
