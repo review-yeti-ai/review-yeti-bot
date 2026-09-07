@@ -7858,17 +7858,27 @@ async function main() {
 
   console.log('[Publishing] Executing PR comment publishing...');
   const publication = postOrOutputComment(commentMarkdown, prContext, publicationPlan);
-  if (!publication.success) {
-    console.error(`[Publishing] ${publication.error || 'GitHub publication failed'}`);
-    process.exitCode = 1;
-    return;
-  }
 
+  // The verdict is computed work; publication is delivery. These used to sit behind
+  // an early return on publication failure, so a completed verdict was discarded
+  // before it reached GITHUB_OUTPUT -- which is why a consuming gate reported
+  // "Review Yeti did not produce a verdict" over a run whose log said SHIP. Emit the
+  // verdict first, then decide the run's exit status.
   const runReport = writeRunReport(arbitration, personaResults, prContext, process.env.RUNNER_TEMP, reviewScope);
   const providerTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
   writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport, providerTelemetry);
   emitWorkflowAnnotations(personaResults);
   writeStepSummary(arbitration, personaResults, prContext, coverage);
+
+  if (!publication.success) {
+    console.error(`[Publishing] ${publication.error || 'GitHub publication failed'}`);
+    // Still a failure: an unpublished review is not visible on the pull request.
+    // But the verdict above is now readable by `steps.<id>.outputs.verdict`, so a
+    // consumer can distinguish "could not deliver" from "did not judge".
+    console.error('::error::Review Yeti computed a verdict but could not publish it. The verdict is in this step\'s outputs and the run summary.');
+    process.exitCode = 1;
+    return;
+  }
 
   // Persist session log artifacts under sessions/ directory
   if (SessionLedger) {
