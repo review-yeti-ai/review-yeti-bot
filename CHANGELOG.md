@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.40.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.40.0...v1.40.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **operator:** name which setting rejected an app-gate Job, and stop defaulting admission ([#567](https://github.com/review-yeti-ai/review-yeti-bot/issues/567)) ([8f9f33e](https://github.com/review-yeti-ai/review-yeti-bot/commit/8f9f33eb1ecdbb85dfda80ec0dbebaf5be9e5c2c))
+
 ## [1.40.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.39.3...v1.40.0) (2026-09-07)
 
 
