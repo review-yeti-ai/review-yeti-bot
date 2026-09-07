@@ -140,6 +140,35 @@ export function bifrostTransport(env: NodeJS.ProcessEnv): { baseUrl: string; api
   return { baseUrl, apiKey, model };
 }
 
+/**
+ * The publishing worker is admitted with a single Bifrost transport. It must
+ * not fall back to the legacy default config, whose synthetic/claude providers
+ * are unavailable in the production gateway. Keep every persona, moderator,
+ * and arbiter call on the operator-injected model and fail closed on provider
+ * errors instead of attempting an undeclared route.
+ */
+export function createBifrostPublishingConfig(model: string): ReturnType<typeof createDefaultV3Config> {
+  const providerId = 'bifrost';
+  const config = createDefaultV3Config();
+  return {
+    ...config,
+    personas: config.personas.map((persona) => ({ ...persona, providers: [providerId] })),
+    reviewers: {
+      ...config.reviewers,
+      fallback: 'none',
+      providers: [{
+        id: providerId,
+        enabled: true,
+        model,
+        effort: 'medium',
+        review_timeout_s: 300,
+        arbiter_timeout_s: 300,
+      }],
+      arbiter: { order: [providerId] },
+    },
+  };
+}
+
 const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
@@ -211,7 +240,7 @@ export async function runPublishingReviewWorker(
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
     const panelResult = await panelRunner({
-      config: createDefaultV3Config(),
+      config: createBifrostPublishingConfig(transport.model),
       changedFiles,
       repository: identity.repo,
       headSha: identity.headSha,
