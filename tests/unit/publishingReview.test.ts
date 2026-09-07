@@ -44,7 +44,11 @@ function deps(over: Record<string, unknown> = {}) {
   return {
     checkClient: checkClient(),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
-    panelRunner: vi.fn(async () => ({ personas: [{ findings: [] }], arbiter: { verdict: 'SHIP' } })) as never,
+    panelRunner: vi.fn(async () => ({
+      personas: [{ findings: [] }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      arbiter: { verdict: 'SHIP' },
+    })) as never,
     client: {} as never,
     ...over,
   };
@@ -153,12 +157,30 @@ describe('runPublishingReviewWorker', () => {
     const d = deps({
       panelRunner: vi.fn(async () => ({
         personas: [{ findings: [{ severity: 'P1' }] }],
-        arbiter: { verdict: 'FIX_FIRST' },
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('failure');
     expect(receipt.blockingFindingCount).toBe(1);
+  });
+
+  it('keeps P2-only findings advisory even when the model arbiter says FIX_FIRST', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        personas: [{ findings: [{ severity: 'P2', path: 'docs/guide.md', line: 1, title: 'Advisory', body: 'Advisory' }] }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'FIX_FIRST' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.verdict).toBe('SHIP');
+    expect(receipt.conclusion).toBe('success');
+    expect(receipt.blockingFindingCount).toBe(0);
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ conclusion: 'success', title: 'Review Yeti: SHIP' }),
+    );
   });
 
   it('concludes failure — never neutral or success — when the provider fails', async () => {
