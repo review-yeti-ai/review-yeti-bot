@@ -50,6 +50,9 @@ export default defineConfig({
       },
     },
     setupFiles: ['./tests/setup.ts'],
+    // Runs once before the suite, independent of the npm `pretest` hook, which
+    // only fires for `npm test` and not for `npx vitest` / IDE / watch runs.
+    globalSetup: ['./tests/globalSetup.ts'],
     // REL-582: `environmentMatchGlobs` was removed in Vitest 3 and is silently ignored by
     // Vitest 4 -- it was dead config. It only looked load-bearing because `moduleResolution: node`
     // could not resolve vite's types, so `InlineConfig` was implicitly `any` and nothing flagged
