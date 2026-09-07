@@ -39,7 +39,10 @@ jobs:
 
           v1="$(gh api repos/exampleorg/example-review-actions/commits/v1 --jq .sha)"
           main="$(gh api repos/exampleorg/example-review-actions/commits/main --jq .sha)"
-          behind="$(gh api "repos/exampleorg/example-review-actions/compare/v1...main" --jq .behind_by)"
+          # compare/BASE...HEAD: ahead_by counts commits HEAD (main) has that BASE (v1)
+          # lacks -- which is how far v1 trails. behind_by is the opposite direction and
+          # reported 0 while v1 was genuinely stale, contradicting the alarm's own trigger.
+          behind="$(gh api "repos/exampleorg/example-review-actions/compare/v1...main" --jq .ahead_by)"
 
           echo "v1=$v1"
           echo "main=$main"
@@ -54,20 +57,31 @@ jobs:
           title="v1 promotion drift: v1 is $behind commit(s) behind main"
           body="The mutable \`v1\` branch that every consumer's required Review Yeti check resolves at job start is **$behind commit(s) behind \`main\`**. Consumers are validating against stale validator/policy bytes.\n\nv1 = $v1\nmain = $main\n\nPromotion is manual: \`gh workflow run promote-v1.yml -R exampleorg/example-review-actions --field sha=$main\` (or re-run the latest promotion attempt). Never force \`v1\` by hand."
 
-          existing="$(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=v1-drift" --jq 'length')"
-          if [ "$existing" -gt 0 ]; then
-            echo "Drift issue already open — not duplicating."
-            exit 0
+          # The issue is a convenience, not the alarm. Issues are disabled on this
+          # repository, so every POST here returns HTTP 410 and `set -e` killed the step
+          # before it could report anything -- the alarm failed with an opaque git error
+          # instead of naming the drift it had just measured. Filing is best effort now.
+          existing=0
+          if ! existing="$(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=v1-drift" --jq 'length' 2>/dev/null)"; then
+            existing=0
+            echo "::warning::could not read drift issues (Issues may be disabled); relying on this failing check as the alarm"
           fi
 
-          gh api repos/exampleorg/example-review-actions/issues \
+          if [ "${existing:-0}" -gt 0 ]; then
+            echo "Drift issue already open — not duplicating."
+          elif ! gh api repos/exampleorg/example-review-actions/issues \
             --method POST \
             -f title="$title" \
             -f body="$body" \
             -f labels[]="v1-drift" \
-            --jq '.number'
+            --jq '.number' 2>/dev/null; then
+            echo "::warning::could not file a drift issue (Issues may be disabled); relying on this failing check as the alarm"
+          fi
 
+          # Explicit: `::error::` annotates but does not fail a step. Without this the
+          # alarm exited 0 whenever the issue POST succeeded -- green while v1 was stale.
           echo "::error::v1 is $behind commit(s) behind main — promotion required"
+          exit 1
 
       - name: Close stale drift issue on convergence
         env:
