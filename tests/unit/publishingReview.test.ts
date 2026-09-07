@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   bifrostTransport,
   classifyFailure,
+  createBifrostPublishingConfig,
   isPublishingReviewWorker,
   publishingConclusion,
   publishingReviewIdentity,
@@ -103,6 +104,19 @@ describe('Bifrost is the only transport', () => {
   it('refuses a non-https gateway', () => {
     expect(() => bifrostTransport(env({ BIFROST_BASE_URL: 'http://gateway.example.invalid/v1' })))
       .toThrow(/contract is invalid/u);
+  });
+
+  it('builds a single-provider panel from the operator-injected model', () => {
+    const config = createBifrostPublishingConfig('ollama/glm-5.3-flash');
+
+    expect(config.reviewers.fallback).toBe('none');
+    expect(config.reviewers.providers).toEqual([expect.objectContaining({
+      id: 'bifrost',
+      enabled: true,
+      model: 'ollama/glm-5.3-flash',
+    })]);
+    expect(config.reviewers.arbiter.order).toEqual(['bifrost']);
+    expect(config.personas.every((persona) => persona.providers.every((provider) => provider === 'bifrost'))).toBe(true);
   });
 });
 
