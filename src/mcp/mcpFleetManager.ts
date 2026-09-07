@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { Context7Adapter } from './context7Adapter';
 import { ProductlaneMCPAdapter } from './productlaneAdapter';
 import { DopplerSecretManager } from './dopplerSecretManager';
@@ -139,6 +140,18 @@ export class McpFleetManager {
     return this.servers.get(id) || dashboardStore.getMcpServer(id);
   }
 
+  public hasTool(name: string): boolean {
+    return this.toolRegistry.has(name);
+  }
+
+  public getRegisteredTools(): string[] {
+    return Array.from(this.toolRegistry.keys());
+  }
+
+  public getRegisteredToolDetails(): Array<{ name: string; description?: string; serverId: string; inputSchema?: any }> {
+    return Array.from(this.toolRegistry.values());
+  }
+
   public async registerServer(config: CustomMcpServerConfig): Promise<void> {
     this.servers.set(config.id, config);
     dashboardStore.addMcpServer(config);
@@ -226,6 +239,43 @@ export class McpFleetManager {
     }
 
     if (server.transport === 'stdio') {
+      if (server.command) {
+        try {
+          const child = spawnSync(server.command, server.args || [], {
+            input: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n',
+            encoding: 'utf8',
+            timeout: 5000,
+            env: { ...process.env, ...(server.env || {}) },
+          });
+          if (child.stdout) {
+            const lines = child.stdout.trim().split('\n');
+            for (const line of lines) {
+              try {
+                const parsed = JSON.parse(line);
+                if (parsed.result?.tools && Array.isArray(parsed.result.tools)) {
+                  const tools = parsed.result.tools;
+                  const discoveredNames: string[] = [];
+                  for (const t of tools) {
+                    const tName = typeof t === 'string' ? t : t.name;
+                    discoveredNames.push(tName);
+                    this.toolRegistry.set(tName, {
+                      serverId,
+                      name: tName,
+                      description: (typeof t === 'object' && t.description) || `Stdio tool ${tName} from ${server.name}`,
+                      inputSchema: (typeof t === 'object' && t.inputSchema) || {},
+                    });
+                  }
+                  await this.updateServer(serverId, { toolsCount: discoveredNames.length, status: 'online' }, { skipDiscovery: true });
+                  return discoveredNames;
+                }
+              } catch {}
+            }
+          }
+        } catch (err: any) {
+          logger.warn(`Stdio tool discovery failed for server ${serverId}`, { error: err.message });
+        }
+      }
+
       const stdioTools = ['stdio_generic_tool'];
       for (const tName of stdioTools) {
         this.toolRegistry.set(tName, {
@@ -328,12 +378,13 @@ export class McpFleetManager {
         if (!server.command) {
           throw new Error('Stdio transport requires command');
         }
+        const discovered = await this.discoverTools(server.id || targetId || 'stdio');
         const latencyMs = Date.now() - start;
         return {
           success: true,
           latencyMs,
           status: 'online',
-          toolsDiscovered: ['stdio_generic_tool'],
+          toolsDiscovered: discovered.length > 0 ? discovered : ['stdio_generic_tool'],
           message: `Stdio process ${server.command} initialized successfully`,
         };
       }
@@ -455,6 +506,72 @@ export class McpFleetManager {
           error: `Tool "${toolName}" not found in registered MCP fleet`,
           durationMs: Date.now() - start,
         };
+      }
+
+      const server = this.getServer(tool.serverId);
+      if (server && server.transport === 'stdio' && server.command) {
+        try {
+          const child = spawnSync(server.command, server.args || [], {
+            input: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'tools/call',
+              params: { name: toolName, arguments: params },
+            }) + '\n',
+            encoding: 'utf8',
+            timeout: 15000,
+            env: { ...process.env, ...(server.env || {}) },
+          });
+
+          if (child.error) {
+            return {
+              success: false,
+              output: null,
+              error: child.error.message,
+              durationMs: Date.now() - start,
+            };
+          }
+
+          if (child.stdout) {
+            const lines = child.stdout.trim().split('\n');
+            for (const line of lines) {
+              try {
+                const parsed = JSON.parse(line);
+                if (parsed.result) {
+                  const isError = Boolean(parsed.result.isError);
+                  let data = parsed.result;
+                  if (parsed.result.content?.[0]?.text) {
+                    try {
+                      data = JSON.parse(parsed.result.content[0].text);
+                    } catch {
+                      data = parsed.result.content[0].text;
+                    }
+                  }
+                  return {
+                    success: !isError,
+                    output: data,
+                    durationMs: Date.now() - start,
+                  };
+                }
+                if (parsed.error) {
+                  return {
+                    success: false,
+                    output: null,
+                    error: parsed.error.message || 'JSON-RPC tool error',
+                    durationMs: Date.now() - start,
+                  };
+                }
+              } catch {}
+            }
+          }
+        } catch (execErr: any) {
+          return {
+            success: false,
+            output: null,
+            error: execErr.message || 'Stdio execution failed',
+            durationMs: Date.now() - start,
+          };
+        }
       }
 
       return {
