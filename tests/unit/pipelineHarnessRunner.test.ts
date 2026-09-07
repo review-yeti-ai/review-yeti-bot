@@ -474,7 +474,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
       expect(arb.verdict).toBe('SHIP');
     });
 
-    it('verdict is FIX_FIRST when 5 or more P2 findings exist (fixP2 threshold = 5 for 5 personas)', () => {
+    it('verdict stays SHIP however many P2 findings exist (P2 no longer gates)', () => {
       const p2Findings: HarnessPersonaFinding[] = Array.from({ length: 5 }, (_, i) => ({
         id: `p2-${i}`,
         persona: PERSONA_LIST[i % 5],
@@ -486,7 +486,9 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
         confidence: 0.8,
       }));
       const arb = evaluateQuorumArbitration(p2Findings, 5);
-      expect(arb.verdict).toBe('FIX_FIRST');
+      // P2 findings are reported, not gated on. They are still counted so the
+      // volume remains visible in the metrics.
+      expect(arb.verdict).toBe('SHIP');
       expect(arb.metrics.p2Count).toBe(5);
     });
 

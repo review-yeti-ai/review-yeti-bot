@@ -561,7 +561,7 @@ describe('Adversarial Scenario Catalog & Diff Fixtures Stress Harness (Tier 5)',
       expect(failedLaneResult.rationale).toContain('persona lane(s) failed');
     });
 
-    it('arbitration triggers FIX_FIRST on P2 nit flood exceeding threshold', () => {
+    it('a P2 nit flood does not change the verdict', () => {
       const diffFiles: DiffFile[] = [
         { path: 'src/a.ts', patch: '@@ -1,10 +1,20 @@\n' + Array.from({ length: 15 }, (_, i) => `+line ${i + 1}`).join('\n') },
       ];
@@ -580,8 +580,10 @@ describe('Adversarial Scenario Catalog & Diff Fixtures Stress Harness (Tier 5)',
         { changedFiles: diffFiles }
       );
 
-      expect(res.verdict).toBe('FIX_FIRST');
-      expect(res.rationale).toContain('P2 finding(s)');
+      // Reported, not gated: the nits still surface as comments, but a flood of
+      // them no longer holds a merge.
+      expect(res.verdict).toBe('SHIP');
+      expect(res.metrics.p2Count).toBe(6);
     });
 
     it('verifies multi-file scenario file path isolation during bipartite matching', () => {
