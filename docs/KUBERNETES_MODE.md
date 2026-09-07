@@ -183,7 +183,7 @@ jobs:
 ```
 
 > [!NOTE]
-> This job completes in **5 to 10 seconds**! The GitHub Check Run named **Review Yeti** will remain `in_progress` until your Kubernetes worker completes the analysis and posts the final verdict.
+> This job completes in **5 to 10 seconds**! The GitHub Check Run named **Review Yeti** will remain `in_progress` until the Kubernetes worker completes the analysis and posts the final verdict.
 
 ---
 

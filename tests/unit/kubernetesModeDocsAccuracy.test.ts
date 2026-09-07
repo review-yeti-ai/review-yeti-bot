@@ -24,10 +24,27 @@ describe('Kubernetes Mode documentation matches enforced behaviour', () => {
     expect(dispatch).toContain('url.pathname === expected.pathname');
   });
 
-  it('does not advertise self-hosting the worker in arbitrary clusters', () => {
+  it('does not advertise pointing the worker at a cluster the reader operates', () => {
+    // Pattern families, not the two literals this PR deleted. The property is
+    // "the docs must not promise the reader can point Kubernetes Mode at their own
+    // cluster", and a reworded claim -- "run the panel on worker pods in your EKS
+    // cluster", "deploy the chart into your infrastructure" -- reintroduces exactly
+    // that promise. Forbidding only the removed strings would be evaded by the very
+    // edit this guard exists to catch.
     const doc = read('docs/KUBERNETES_MODE.md');
-    expect(doc).not.toMatch(/EKS, GKE, AKS, or any vanilla K8s cluster/u);
-    expect(doc).not.toMatch(/worker pods in your own cluster/u);
+    const claims = [
+      /\b(your|their)\s+(own\s+)?(cluster|infrastructure|kubernetes)\b/iu,
+      /\b(EKS|GKE|AKS)\b/u,
+      /\bany\s+(vanilla\s+)?(K8s|Kubernetes)\s+cluster\b/iu,
+      /\bself[- ]host(ing|ed)?\b/iu,
+    ];
+    // Blockquotes are excluded wholesale: the callouts exist to say the endpoint is
+    // fixed, and stating the limitation necessarily names the thing being ruled out.
+    // Prose outside a callout has no such excuse.
+    const withoutCallout = doc.split('\n').filter((line) => !line.trimStart().startsWith('>')).join('\n');
+    for (const claim of claims) {
+      expect(withoutCallout, `docs promise matching ${claim}`).not.toMatch(claim);
+    }
   });
 
   it('states plainly that the endpoint is fixed', () => {
@@ -37,9 +54,14 @@ describe('Kubernetes Mode documentation matches enforced behaviour', () => {
     expect(doc).toContain('validateDispatchEndpoint');
   });
 
-  it('does not title the chart section as self-hosting', () => {
+  it('does not title the chart section as self-hosting, and says the chart alone is inert', () => {
+    // Semantic anchor, not exact prose: "…will not receive reviews until the
+    // endpoint is configurable" is a correct edit and must not fail. Pinning the
+    // sentence would train maintainers to update the test mechanically rather than
+    // check the property.
     const readme = read('README.md');
     expect(readme).not.toMatch(/Self-Hosting with Official Helm 3 Chart/u);
-    expect(readme).toMatch(/will not receive reviews yet/u);
+    expect(readme).toMatch(/will not receive reviews/iu);
+    expect(readme).toContain('docs/KUBERNETES_MODE.md');
   });
 });
