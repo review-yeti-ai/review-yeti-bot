@@ -1397,7 +1397,7 @@ describe('the publisher must stay the same identity throughout', () => {
 
   // The authenticated identity is read before writing; if what GitHub attributes the write to is
   // someone else, the run cannot claim it published this review.
-  function runner(options: { reviewAuthor?: string; commentAuthor?: string; seedReview?: boolean } = {}) {
+  function runner(options: { reviewAuthor?: string; commentAuthor?: string; seedReview?: boolean; unidentifiedToken?: boolean } = {}) {
     const state = { reviews: [] as any[], comments: [] as any[], threads: [] as any[], nextId: 100 };
     if (options.seedReview) {
       state.reviews.push({
@@ -1409,7 +1409,12 @@ describe('the publisher must stay the same identity throughout', () => {
     }
     const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
       if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
-      if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      if (args[0] === 'api' && args[1] === 'user') {
+        // An App installation token cannot call GET /user, and `gh api installation` is not
+        // stubbed here either, so resolution falls through to the GITHUB_ACTIONS assumption.
+        if (options.unidentifiedToken) return { status: 1, stdout: '', stderr: 'Resource not accessible by integration' };
+        return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
+      }
       if (args[0] === 'api' && args[1] === 'graphql') {
         if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage(state.reviews), stderr: '' };
         return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads } } } } }]), stderr: '' };
@@ -1441,6 +1446,30 @@ describe('the publisher must stay the same identity throughout', () => {
     const { commandRunner } = runner();
 
     expect(postOrOutputComment('body', context, emptyPlan, { commandRunner })).toMatchObject({ success: true });
+  });
+
+  // Regression: a custom App token publishes as `<app_slug>[bot]`, which never equals the
+  // `github-actions[bot]` value that resolution assumes when neither probe identifies the token.
+  // Enforcing equality against that assumption rejected every non-github-actions App and broke
+  // publication for every consumer at once, AFTER a verdict had already been computed.
+  it('publishes under a custom App when the token identity could not be verified', () => {
+    // Resolution only assumes `github-actions[bot]` while a workflow is running, which is
+    // the situation this regression occurs in.
+    vi.stubEnv('GITHUB_ACTIONS', 'true');
+    const { commandRunner } = runner({ unidentifiedToken: true, reviewAuthor: 'ct-review-bot[bot]' });
+
+    expect(postOrOutputComment('body', context, emptyPlan, { commandRunner })).toMatchObject({ success: true });
+  });
+
+  // The safety property still holds where it is meaningful: a verified identity that does not
+  // match the created review is still a refusal.
+  it('still refuses a mismatch when the identity was verified', () => {
+    const { commandRunner } = runner({ reviewAuthor: 'ct-review-bot[bot]' });
+
+    const result = postOrOutputComment('body', context, emptyPlan, { commandRunner });
+
+    expect(result).toMatchObject({ success: false, postedViaGh: false });
+    expect(result.error).toContain('did not match the authenticated GitHub identity');
   });
 
   it('refuses when the created review is attributed to someone else', () => {
