@@ -130,9 +130,15 @@ jobs:
           dispatch-token: ${{ secrets.REVIEW_DISPATCH_SECRET }}
 ```
 
-### 🚀 Self-Hosting with Official Helm 3 Chart
+### 🚀 Kubernetes Worker Chart
 
 Review Yeti provides a production-grade Helm 3 chart in [`charts/review-yeti/`](charts/review-yeti/):
+
+> [!NOTE]
+> This chart deploys the components the **hosted** Review Yeti queue runs. The
+> Action's dispatch endpoint is currently fixed to that queue, so installing this
+> chart into your own cluster will not receive reviews yet. See
+> [Kubernetes Mode](docs/KUBERNETES_MODE.md).
 
 ```bash
 # 1. Add and install Review Yeti using production values
