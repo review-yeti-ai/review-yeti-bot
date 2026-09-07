@@ -76,8 +76,8 @@ jobs:
       # CROSS_REPO_TOKEN shares its 5,000 req/hr bucket with interactive use,
       # which 403'd CI and the operator simultaneously on 2026-09-02).
       #
-      # TEMPORARY fail-open (2026-09-03): the App secrets
-      # (CT_REVIEW_DISPATCH_APP_ID / _PRIVATE_KEY) are not provisioned yet, so
+      # TEMPORARY fail-open (2026-09-03): added when the App secrets were not
+      # yet provisioned, so
       # create-github-app-token hard-fails here and EVERY central review dies
       # before checkout — observed live on main (runs 33704115643, 33704265666,
       # 33704210453). This step degrades to a loud warning and empty output;
@@ -87,14 +87,14 @@ jobs:
       - name: Detect Review Yeti App secret presence
         id: ry_app_presence
         env:
-          APP_ID_PRESENT: ${{ secrets.CT_REVIEW_BOT_APP_ID != '' || secrets.CT_REVIEW_DISPATCH_APP_ID != '' }}
-          APP_KEY_PRESENT: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY != '' || secrets.CT_REVIEW_DISPATCH_APP_PRIVATE_KEY != '' }}
+          APP_ID_PRESENT: ${{ secrets.CT_REVIEW_BOT_APP_ID != '' }}
+          APP_KEY_PRESENT: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY != '' }}
         run: |
           if [ "${APP_ID_PRESENT}" = "true" ] && [ "${APP_KEY_PRESENT}" = "true" ]; then
             echo "provisioned=true" >> "$GITHUB_OUTPUT"
           else
             echo "provisioned=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::CT_REVIEW_BOT_APP_ID / _PRIVATE_KEY (or the legacy CT_REVIEW_DISPATCH_APP_* names) are not provisioned - Review Yeti falls back to github.token for this run (shared rate bucket). Provision the App secrets to restore the dedicated rate bucket (REL-519)."
+            echo "::warning::CT_REVIEW_BOT_APP_ID / _PRIVATE_KEY are not readable here - Review Yeti falls back to github.token, which is not the App identity and loses the dedicated rate bucket (REL-519)."
           fi
 
       - name: Mint Review Yeti App token
@@ -102,8 +102,8 @@ jobs:
         if: ${{ steps.ry_app_presence.outputs.provisioned == 'true' }}
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
         with:
-          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID || secrets.CT_REVIEW_DISPATCH_APP_ID }}
-          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY || secrets.CT_REVIEW_DISPATCH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
           owner: exampleorg
 
       - name: Checkout central workflow tooling
