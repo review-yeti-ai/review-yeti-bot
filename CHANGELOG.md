@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.40.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.39.3...v1.40.0) (2026-09-07)
+
+
+### Features
+
+* **review:** P2 findings no longer gate a merge ([#563](https://github.com/review-yeti-ai/review-yeti-bot/issues/563)) ([eb6d529](https://github.com/review-yeti-ai/review-yeti-bot/commit/eb6d52959b65e865742b9f225900c8db07f65a65))
+
 ## [1.39.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.39.2...v1.39.3) (2026-09-07)
 
 
