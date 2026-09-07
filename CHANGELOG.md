@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.39.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.6...v1.39.0) (2026-09-07)
+
+
+### Features
+
+* **dispatch:** let the job dispatcher mint per-run publish credentials (REL-586) ([#551](https://github.com/review-yeti-ai/review-yeti-bot/issues/551)) ([e5a34f2](https://github.com/review-yeti-ai/review-yeti-bot/commit/e5a34f229ee085315eb97a9278c57c67de01c18d))
+
 ## [1.38.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.38.5...v1.38.6) (2026-09-07)
 
 
