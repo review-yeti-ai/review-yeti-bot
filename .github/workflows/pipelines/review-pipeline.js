@@ -6888,11 +6888,16 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       // fresh exact-head fence leaves a TOCTOU gap in which stale work can reach a write path.
       assertCurrentPullRequest(prContext, { commandRunner });
       const existingReviews = readActionReviews(commandRunner, prContext);
-      const authenticatedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
+      const authenticatedPublisher = resolveAuthenticatedPublisher(commandRunner);
+      const authenticatedPublisherLogin = authenticatedPublisher.login;
+      // When the identity is only assumed, author equality would reject our own prior
+      // reviews and make the summary non-sticky. Callers already require our exact-head
+      // marker in the body, which is the trustworthy signal here.
       const publishedByUs = (review) => (
         typeof review?.body === 'string'
         && typeof review.user?.login === 'string'
-        && isExpectedPublisherLogin(review.user.login, authenticatedPublisherLogin)
+        && (!authenticatedPublisher.verified
+          || isExpectedPublisherLogin(review.user.login, authenticatedPublisherLogin))
       );
       const existingReview = latestActionReview(existingReviews.filter((review) => (
         publishedByUs(review)
@@ -6929,8 +6934,10 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         });
         reviewId = created.id;
         const createdPublisherLogin = requirePublisherLogin(created.user?.login);
-        if (expectedPublisherLogin && !isExpectedPublisherLogin(createdPublisherLogin, expectedPublisherLogin)) {
-          throw new Error('Action review publisher did not match the authenticated GitHub identity');
+        if (authenticatedPublisher.verified
+          && expectedPublisherLogin
+          && !isExpectedPublisherLogin(createdPublisherLogin, expectedPublisherLogin)) {
+          throw new Error(`Action review publisher ${createdPublisherLogin} did not match the authenticated GitHub identity ${expectedPublisherLogin}`);
         }
         expectedPublisherLogin = createdPublisherLogin;
       } else {
@@ -7063,11 +7070,11 @@ function cleanGhScalar(stdout) {
   return String(stdout || '').trim().replace(/^"|"$/g, '');
 }
 
-function readAuthenticatedPublisherLogin(commandRunner) {
+function resolveAuthenticatedPublisher(commandRunner) {
   const result = ghApi(commandRunner, ['api', 'user', '--jq', '.login']);
   if (result && result.status === 0) {
     const login = cleanGhScalar(result.stdout);
-    if (login) return login;
+    if (login) return { login, verified: true };
   }
 
   // Installation tokens cannot call GET /user. Their installation metadata identifies the App
@@ -7075,10 +7082,21 @@ function readAuthenticatedPublisherLogin(commandRunner) {
   const installation = ghApi(commandRunner, ['api', 'installation', '--jq', '.app_slug']);
   if (installation && installation.status === 0) {
     const slug = cleanGhScalar(installation.stdout);
-    if (slug) return slug.endsWith('[bot]') ? slug : `${slug}[bot]`;
+    if (slug) return { login: slug.endsWith('[bot]') ? slug : `${slug}[bot]`, verified: true };
   }
 
-  return process.env.GITHUB_ACTIONS === 'true' ? 'github-actions[bot]' : null;
+  // Neither probe identified the token, so this is an ASSUMPTION, not an identity.
+  // GITHUB_ACTIONS only says a workflow is running -- it does not say which App the
+  // token belongs to. An installation token for any App other than github-actions
+  // publishes as `<slug>[bot]`, so enforcing equality against this value rejects every
+  // custom App. It must never be treated as authoritative.
+  return process.env.GITHUB_ACTIONS === 'true'
+    ? { login: 'github-actions[bot]', verified: false }
+    : { login: null, verified: false };
+}
+
+function readAuthenticatedPublisherLogin(commandRunner) {
+  return resolveAuthenticatedPublisher(commandRunner).login;
 }
 
 /**
