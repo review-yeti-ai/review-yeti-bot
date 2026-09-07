@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.39.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.39.2...v1.39.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* **deploy:** allow opt-in --force-conflicts so a hand-patched field cannot wedge deploys ([#560](https://github.com/review-yeti-ai/review-yeti-bot/issues/560)) ([45ef6b5](https://github.com/review-yeti-ai/review-yeti-bot/commit/45ef6b5ed2d1de269716ea26c05141252ef1c9c2))
+* **publishing:** accept the metadata grant GitHub attaches to every installation token ([#561](https://github.com/review-yeti-ai/review-yeti-bot/issues/561)) ([5d15da4](https://github.com/review-yeti-ai/review-yeti-bot/commit/5d15da443140b3d5b7ef33fd0725a9c00f673ae7))
+
 ## [1.39.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.39.1...v1.39.2) (2026-09-07)
 
 
