@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.2...v1.41.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* **doks:** enforce canonical advisory severity policy ([#576](https://github.com/review-yeti-ai/review-yeti-bot/issues/576)) ([efb4d7c](https://github.com/review-yeti-ai/review-yeti-bot/commit/efb4d7c5f388216220c0f3c80e1d1e6e11ce8677))
+
 ## [1.41.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.1...v1.41.2) (2026-09-07)
 
 
