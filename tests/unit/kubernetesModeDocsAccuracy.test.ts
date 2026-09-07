@@ -7,60 +7,84 @@ const read = (file: string) => readFileSync(path.join(root, file), 'utf8');
 
 /**
  * The Action pins its dispatch endpoint: `validateDispatchEndpoint` requires the
- * exact hosted origin and path. Documentation that promises a reader can point
- * Kubernetes Mode at "your own cluster" therefore describes something the code
+ * exact hosted origin and path. Documentation promising a reader can point
+ * Kubernetes Mode at a cluster they operate therefore describes something the code
  * refuses, and a reader following it deploys the chart and waits for reviews that
- * can never arrive.
- *
- * These assertions are deliberately narrow: they pin the *contradiction*, not the
- * prose. If the endpoint ever becomes configurable, the code change lands first
- * and these are updated with it.
+ * can never arrive. This repository is public, so that reader may have no one to ask.
  */
+/**
+ * The harm is *possession*, not mention. Naming EKS while describing what a guide
+ * covers is factual; telling a reader their EKS cluster will receive reviews is the
+ * promise the code refuses. Matching a bare platform name flagged a documentation
+ * index and would push maintainers to write worse prose to satisfy a test.
+ */
+const CLAIM_PATTERNS = [
+  // Allows intervening words, so "your EKS cluster" and "their own K8s clusters"
+  // are caught as surely as "your cluster".
+  /\b(your|their)\s+(\w+\s+){0,3}(clusters?|infrastructure)\b/iu,
+  /\b(your|their)\s+(own\s+)?kubernetes\b/iu,
+  /\bany\s+(vanilla\s+)?(K8s|Kubernetes)\s+clusters?\b/iu,
+  /\bclusters?\s+(you|they)\s+(operate|run|own|manage|control)\b/iu,
+  // "self-hosted Ollama/vLLM endpoints" is about MODEL PROVIDERS, not clusters, and
+  // is a true statement. Only match self-hosting that is about running the worker.
+  /\bself[- ]host(ing|ed|s)?\b(?!\s+(Ollama|vLLM|model|endpoint))/iu,
+];
+
+/**
+ * Wording that marks a line as stating the limit rather than promising it works.
+ *
+ * Detection is claim-minus-limitation rather than claim-outside-blockquote. An
+ * earlier version excluded every `>` line, which let a promise pass purely by
+ * being written as a callout — markdown syntax says nothing about meaning, but a
+ * negation does.
+ */
+const LIMITATION = /\b(not|cannot|can't|never|until|unless|is fixed|no longer)\b/iu;
+
+/**
+ * Blocks, not lines. A bullet inherits the limitation stated by its list intro --
+ * "these files configure the chart; they do NOT make a cluster you operate
+ * reachable" covers every platform bullet beneath it. Judging line by line would
+ * demand the caveat be repeated on each one, which is how a guard starts forcing
+ * worse prose than it protects.
+ */
+function promisingBlocks(markdown: string): string[] {
+  return markdown
+    .split(/\n\s*\n/u)
+    .filter((block) => CLAIM_PATTERNS.some((pattern) => pattern.test(block)))
+    .filter((block) => !LIMITATION.test(block))
+    .map((block) => block.trim().split('\n')[0].slice(0, 120));
+}
+
 describe('Kubernetes Mode documentation matches enforced behaviour', () => {
   it('pins the endpoint in code, so the docs must not promise arbitrary clusters', () => {
+    // The premise of every assertion below. If this stops being true, revisit them.
     const dispatch = read('scripts/dispatch-doks-action.mjs');
-    // The premise of the whole test: if this ever stops being true, revisit.
     expect(dispatch).toContain('url.origin === expected.origin');
     expect(dispatch).toContain('url.pathname === expected.pathname');
   });
 
-  it('does not advertise pointing the worker at a cluster the reader operates', () => {
-    // Pattern families, not the two literals this PR deleted. The property is
-    // "the docs must not promise the reader can point Kubernetes Mode at their own
-    // cluster", and a reworded claim -- "run the panel on worker pods in your EKS
-    // cluster", "deploy the chart into your infrastructure" -- reintroduces exactly
-    // that promise. Forbidding only the removed strings would be evaded by the very
-    // edit this guard exists to catch.
-    const doc = read('docs/KUBERNETES_MODE.md');
-    const claims = [
-      /\b(your|their)\s+(own\s+)?(cluster|infrastructure|kubernetes)\b/iu,
-      /\b(EKS|GKE|AKS)\b/u,
-      /\bany\s+(vanilla\s+)?(K8s|Kubernetes)\s+cluster\b/iu,
-      /\bself[- ]host(ing|ed)?\b/iu,
-    ];
-    // Blockquotes are excluded wholesale: the callouts exist to say the endpoint is
-    // fixed, and stating the limitation necessarily names the thing being ruled out.
-    // Prose outside a callout has no such excuse.
-    const withoutCallout = doc.split('\n').filter((line) => !line.trimStart().startsWith('>')).join('\n');
-    for (const claim of claims) {
-      expect(withoutCallout, `docs promise matching ${claim}`).not.toMatch(claim);
-    }
+  it.each([
+    ['docs/KUBERNETES_MODE.md'],
+    ['README.md'],
+  ])('%s never promises the reader can point the worker at a cluster they operate', (file) => {
+    // Applied to BOTH documents. The README previously pinned only its removed
+    // heading, so "Self-Host the Worker Fleet" would have reintroduced the
+    // advertising without failing anything.
+    expect(promisingBlocks(read(file))).toEqual([]);
   });
 
-  it('states plainly that the endpoint is fixed', () => {
-    // A reader must be able to learn this without reading the dispatch script.
+  it('states plainly that the endpoint is fixed, naming what enforces it', () => {
+    // A reader must be able to verify the constraint without reading the dispatch
+    // script to discover it exists.
     const doc = read('docs/KUBERNETES_MODE.md');
     expect(doc).toMatch(/dispatch endpoint is fixed/iu);
     expect(doc).toContain('validateDispatchEndpoint');
   });
 
-  it('does not title the chart section as self-hosting, and says the chart alone is inert', () => {
-    // Semantic anchor, not exact prose: "…will not receive reviews until the
-    // endpoint is configurable" is a correct edit and must not fail. Pinning the
-    // sentence would train maintainers to update the test mechanically rather than
-    // check the property.
+  it('links the README chart section to the constraint', () => {
+    // Semantic anchor, not exact prose: "...until the dispatch endpoint is
+    // configurable" is a correct edit and must not fail the suite.
     const readme = read('README.md');
-    expect(readme).not.toMatch(/Self-Hosting with Official Helm 3 Chart/u);
     expect(readme).toMatch(/will not receive reviews/iu);
     expect(readme).toContain('docs/KUBERNETES_MODE.md');
   });

@@ -15,8 +15,8 @@ dispatches and exits in seconds, and worker pods do the model work.
 > receive reviews, because the Action cannot be pointed at it.
 >
 > The chart and operator in this repository are the components the hosted queue
-> runs. Pointing Kubernetes Mode at a cluster you operate needs the endpoint to
-> become configurable, which is a change to the Action, not a setting.
+> runs. Kubernetes Mode cannot be pointed at a cluster you operate until the
+> endpoint becomes configurable, which is a change to the Action, not a setting.
 
 ---
 
