@@ -31,7 +31,7 @@ The Action publishes the same shape from a single lane rather than a persona pan
 
 | Artifact | GitHub surface | Purpose |
 |----------|----------------|---------|
-| Sticky summary | **One** issue comment per pull request | Full summary. Anchor: `<!-- review-yeti-bot:summary:v1:{repo}#{pr} -->` — stable across pushes, so later rounds patch it and earlier rounds collapse into `<details>` history (max 8 rounds / 40k chars) |
+| Sticky summary | **One** issue comment per pull request | Full summary. Anchor: `<!-- review-yeti-bot:summary:v1:{repo}#{pr} -->` — stable across pushes, so later rounds patch it. Earlier rounds collapse into `<details>` history as **digests** (verdict, head, counts, finding titles), max 8 rounds, and the whole comment is held under 60,000 characters against GitHub's 65,536 limit |
 | Exact-head receipt | **One** `COMMENT` review per reviewed head | Compact gate signal. A review's `commit_id` is immutable, so each reviewed head needs its own; retries of one head deduplicate rather than re-post. Marker: `<!-- review-yeti-bot:v2:... -->` |
 | Findings | **Inline review comments** (capped) | Only **P0/P1**, near-duplicate **deduped** across personas, max **10** threads. Over-cap findings are listed in the sticky summary, never dropped |
 
@@ -68,6 +68,16 @@ rule — which severities are actionable — is likewise one definition (`ACTION
 `isActionableSeverity`), read by the Action's rejected/overflow filtering and by the App's
 `ACTIONABLE_SEVERITIES` set. The App's *ranking* still lives in `dedupeActionableFindings`;
 converging it onto `capPublicationThreads` is the remaining step.
+
+## Outdated conversations
+
+A review thread goes outdated when the lines it was anchored to no longer exist — the code it
+objected to was rewritten or removed. It can never resolve itself, so under
+`required_conversation_resolution` it blocks the merge while pointing at code that is gone. Each
+publish resolves the threads that are outdated, unresolved, and written by this publisher, capped at
+50 per run. A person's thread is never touched, and a still-current bot thread stays open because
+its finding still stands. If the defect survived the rewrite, the next round reports it again at its
+new location.
 
 ## Known gap
 
