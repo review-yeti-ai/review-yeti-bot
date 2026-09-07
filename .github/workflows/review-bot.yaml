@@ -9,7 +9,7 @@ name: Review Bot
 #                            comments back on the originating PR.
 #
 # The review itself is delegated to this repository's own action.yml, so every run exercises the
-# same code path third-party consumers get via `uses: JBJMLLC/ct-review-bot@v1`.
+# same code path third-party consumers get via `uses: review-yeti-ai/review-yeti-bot@v1`.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
