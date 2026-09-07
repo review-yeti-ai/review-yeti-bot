@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 /**
  * Regression cover for the Action's review publication surface.
  *
@@ -1384,6 +1386,40 @@ describe('identifying one publication attempt', () => {
 });
 
 /* -------------------------------------------------------------------------------------------- */
+
+describe('a publication failure must not discard a computed verdict', () => {
+  // Structural rather than end-to-end: main() needs the full review pipeline to run,
+  // but the regression is purely an ordering one, so ordering is what this pins.
+  const source = readFileSync(
+    resolve(__dirname, '../../.github/workflows/pipelines/review-pipeline.js'),
+    'utf8',
+  );
+
+  it('writes the step outputs before acting on the publication result', () => {
+    const publish = source.indexOf('const publication = postOrOutputComment(');
+    const outputs = source.indexOf('writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT', publish);
+    const failureBranch = source.indexOf('if (!publication.success) {', publish);
+
+    expect(publish).toBeGreaterThan(-1);
+    expect(outputs).toBeGreaterThan(-1);
+    expect(failureBranch).toBeGreaterThan(-1);
+
+    // The verdict is computed work; publication is delivery. When these were
+    // reversed, a failed publication returned before GITHUB_OUTPUT was written, so
+    // a consuming gate reported "did not produce a verdict" over a run whose own
+    // log said SHIP. Every consumer was blocked by an undeliverable comment.
+    expect(outputs).toBeLessThan(failureBranch);
+  });
+
+  it('still fails the run when publication fails', () => {
+    const failureBranch = source.indexOf('if (!publication.success) {');
+    const block = source.slice(failureBranch, failureBranch + 900);
+
+    // Emitting the verdict must not soften the outcome: an unpublished review is
+    // not visible on the pull request and the run has to say so.
+    expect(block).toContain('process.exitCode = 1');
+  });
+});
 
 describe('the publisher must stay the same identity throughout', () => {
   const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
