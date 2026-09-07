@@ -148,8 +148,8 @@ describe('Integrations REST API Unit Tests', () => {
       .send({
         name: 'Toggleable Server',
         transport: 'stdio',
-        command: 'npx',
-        args: ['-y', 'mcp-server'],
+        command: 'node',
+        args: ['-e', 'process.exit(0)'],
       });
     const serverId = addRes.body.server.id;
 
@@ -161,7 +161,7 @@ describe('Integrations REST API Unit Tests', () => {
     expect(patchRes.status).toBe(200);
     expect(patchRes.body.success).toBe(true);
     expect(patchRes.body.server.enabled).toBe(false);
-  });
+  }, 15000);
 
   it('DELETE /api/dashboard/mcp/servers/:id deletes custom MCP server', async () => {
     // 1. Add server

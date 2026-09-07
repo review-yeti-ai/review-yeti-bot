@@ -48,7 +48,25 @@ try {
   try {
     const mcpModule = require('../../src/mcp/mcpFleetManager');
     mcpFleetManager = mcpModule.mcpFleetManager || mcpModule.McpFleetManager?.getInstance();
-  } catch (_) {}
+  } catch (_) {
+    try {
+      const mcpModule = require('../../../dist/mcp/mcpFleetManager');
+      mcpFleetManager = mcpModule.mcpFleetManager || mcpModule.McpFleetManager?.getInstance();
+    } catch (_) {
+      try {
+        const mcpModule = require('../../dist/mcp/mcpFleetManager');
+        mcpFleetManager = mcpModule.mcpFleetManager || mcpModule.McpFleetManager?.getInstance();
+      } catch (_) {}
+    }
+  }
+}
+
+function setMcpFleetManager(mgr) {
+  mcpFleetManager = mgr;
+}
+
+function getMcpFleetManager() {
+  return mcpFleetManager;
 }
 
 let SessionLedger = null;
@@ -3810,6 +3828,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     }
   }
 
+  const blastRadiusBlock = sessionContext?.blastRadius
+    ? `\nDownstream Impact & Affected Consumers:\n${sessionContext.blastRadius}`
+    : '';
+
   const userPrompt = [
     `Repository: ${prContext.repo || 'unknown'}`,
     prContext.prNumber ? `Pull request: #${prContext.prNumber}` : '',
@@ -3817,6 +3839,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     prContext.baseSha && prContext.headSha ? `Commit SHA Range: ${prContext.baseSha}...${prContext.headSha}` : '',
     '',
     diffContent,
+    blastRadiusBlock,
     priorFindingsBlock,
   ].filter(Boolean).join('\n');
   // priorFindingsBlock is already folded into `userPrompt` above (the untrusted user-content
@@ -4999,6 +5022,60 @@ async function initMcpFleet(clientPayload) {
   return { mcpServers, mcpStatusSummary, registeredCount };
 }
 
+function selectImpactTool(mcpFleetManager, configuredName = process.env.MCP_IMPACT_TOOL_NAME) {
+  if (configuredName) return configuredName;
+  if (!mcpFleetManager) return null;
+  const registeredTools = typeof mcpFleetManager.getRegisteredToolDetails === 'function'
+    ? mcpFleetManager.getRegisteredToolDetails()
+    : (typeof mcpFleetManager.getRegisteredTools === 'function' ? mcpFleetManager.getRegisteredTools() : []);
+  const match = registeredTools.find((t) => {
+    const name = typeof t === 'string' ? t : t.name;
+    const desc = typeof t === 'object' ? (t.description || '') : '';
+    return /(?:^|_)(?:impact|blast_radius|dependency_graph)(?:_|$)/i.test(name) ||
+           /(?:impact analysis|blast radius)/i.test(desc);
+  });
+  return match ? (typeof match === 'string' ? match : match.name) : null;
+}
+
+async function evaluateDownstreamImpact({
+  reviewDiffFiles = [],
+  mcpFleetManager = null,
+  sessionContext = null,
+  mcpFleetInfo = {},
+  impactToolName = null,
+}) {
+  const resolvedToolName = impactToolName || selectImpactTool(mcpFleetManager);
+  if (!resolvedToolName || !mcpFleetManager || typeof mcpFleetManager.executeTool !== 'function') {
+    return { evaluated: false, toolName: resolvedToolName, markdown: null };
+  }
+
+  try {
+    const filePaths = reviewDiffFiles.map((f) => f.path || f);
+    const impactResult = await mcpFleetManager.executeTool(resolvedToolName, { files: filePaths });
+    if (impactResult && impactResult.success && impactResult.output) {
+      const impactOutput = impactResult.output;
+      const markdown = impactOutput.markdown || impactOutput.text || (typeof impactOutput === 'string' ? impactOutput : null);
+      if (markdown) {
+        console.log(`[ImpactAnalysis] Successfully evaluated downstream impact via '${resolvedToolName}' tool (${filePaths.length} file(s) audited).`);
+        mcpFleetInfo.impactAnalysisMarkdown = markdown;
+        mcpFleetInfo.blastRadiusMarkdown = markdown;
+        if (sessionContext) {
+          sessionContext.blastRadius = markdown;
+          const impactPromptSection = `### Downstream Impact & Blast Radius Analysis\n${markdown}`;
+          sessionContext.augmentedHeader = sessionContext.augmentedHeader
+            ? `${sessionContext.augmentedHeader}\n\n${impactPromptSection}`
+            : impactPromptSection;
+        }
+        return { evaluated: true, toolName: resolvedToolName, markdown, output: impactOutput };
+      }
+    }
+  } catch (err) {
+    console.warn(`[ImpactAnalysis] Failed to execute '${resolvedToolName}' tool: ${err.message}`);
+  }
+
+  return { evaluated: false, toolName: resolvedToolName, markdown: null };
+}
+
 /**
  * Evaluates a single persona charter against changed files.
  * Performs deep pattern analysis and charter verification.
@@ -5949,6 +6026,11 @@ ${mermaidLines.join('\n')}
 ${breakdownRows}
 </details>`;
 
+  const impactMarkdown = mcpTelemetry.impactAnalysisMarkdown || mcpTelemetry.blastRadiusMarkdown;
+  const blastRadiusSection = impactMarkdown
+    ? `\n<details>\n<summary>🌐 <b>Downstream Impact & Blast Radius Analysis</b></summary>\n\n${impactMarkdown}\n</details>\n`
+    : '';
+
   const commentMarkdown = `## ${verdictBadge}
 
 ${alertHeader}
@@ -5964,6 +6046,7 @@ ${commitRangeLine}
 - **Rationale**: ${arbitration.rationale}${failureNote}${coverageNote}
 
 ${findingsDetails}
+${blastRadiusSection}
 ${telemetrySection}${partitionManifestSection}`;
 
   return commentMarkdown;
@@ -7569,6 +7652,15 @@ async function main() {
     return;
   }
 
+  // Evaluate downstream impact via registered impact/blast radius MCP tool if available
+  sessionContext = sessionContext || { previousTurn: 0, hasHistory: false };
+  await evaluateDownstreamImpact({
+    reviewDiffFiles,
+    mcpFleetManager,
+    sessionContext,
+    mcpFleetInfo,
+  });
+
   // REL-552: arbitration must sanitize carried (parent-report) findings against the FULL PR
   // file list, not just the reviewed delta -- otherwise a carried lane's finding on a file
   // outside the delta is silently dropped by sanitizeFinding and the carried evidence is lost.
@@ -7989,6 +8081,10 @@ module.exports = {
   writeProviderTelemetryReceipt,
   writeProviderTelemetryReceiptBestEffort,
   initMcpFleet,
+  setMcpFleetManager,
+  getMcpFleetManager,
+  selectImpactTool,
+  evaluateDownstreamImpact,
   evaluatePersonaLane,
   computeArbitrationQuorum,
   resolveFindingFalsificationPolicy,

@@ -231,6 +231,10 @@ inputs:
     description: 'Memory backend provider: sqlite, honcho, composite, postgres, auto.'
     required: false
     default: ''
+  mcp-config-json:
+    description: 'JSON string containing MCP server fleet configuration (transports, stdio scripts, and permissions).'
+    required: false
+    default: ''
   # Deprecated compatibility inputs retained for callers on the pre-v1 contract. The central
   # workflow now passes the supported policy/transport inputs above; these are intentionally
   # accepted and ignored so an older caller can finish its migration without changing review
@@ -571,6 +575,7 @@ runs:
         HONCHO_RECALL_PEERS: ${{ inputs.honcho-recall-peers || env.HONCHO_RECALL_PEERS }}
         HONCHO_RECALL_DISTANCE: ${{ inputs.honcho-recall-distance || env.HONCHO_RECALL_DISTANCE }}
         MEMORY_PROVIDER: ${{ inputs.memory-provider || env.MEMORY_PROVIDER }}
+        MCP_CONFIG_JSON: ${{ inputs.mcp-config-json || env.MCP_CONFIG_JSON }}
         OPENROUTER_ALLOWED_MODELS: ${{ inputs.openrouter-allowed-models }}
         OPENROUTER_COST_QUALITY_TRADEOFF: ${{ inputs.openrouter-cost-quality-tradeoff }}
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
