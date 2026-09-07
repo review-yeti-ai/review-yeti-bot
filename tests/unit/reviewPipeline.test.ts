@@ -1025,7 +1025,7 @@ index 123456..789abc 100644
   describe('Edge Cases & Quorum Thresholds: computeArbitrationQuorum', () => {
     const { computeArbitrationQuorum } = pipeline;
 
-    it('22. Computes FIX_FIRST for 1 P1 finding or 5+ P2 findings', () => {
+    it('22. Computes FIX_FIRST for 1 P1 finding; P2 volume alone does not gate', () => {
       const resultsP1 = [{ findings: [{ severity: 'P1' }] }];
       const quorumP1 = computeArbitrationQuorum(resultsP1 as any);
       expect(quorumP1.verdict).toBe('FIX_FIRST');
@@ -1040,7 +1040,11 @@ index 123456..789abc 100644
         ],
       }];
       const quorumP2 = computeArbitrationQuorum(resultsP2 as any);
-      expect(quorumP2.verdict).toBe('FIX_FIRST');
+      expect(quorumP2.verdict).toBe('SHIP');
+
+      // The old contract remains reachable behind an explicit opt-in.
+      const opted = computeArbitrationQuorum(resultsP2 as any, undefined, { p2BlocksMerge: true });
+      expect(opted.verdict).toBe('FIX_FIRST');
     });
 
     it('23. Computes BLOCK for 3+ P1 findings or 1 P0 finding', () => {

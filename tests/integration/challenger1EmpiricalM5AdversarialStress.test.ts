@@ -599,7 +599,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
       expect(arb.verdict).toBe('SHIP');
     });
 
-    it('returns FIX_FIRST when P2 findings reach threshold of 5', () => {
+    it('returns SHIP however many P2 findings arrive (P2 no longer gates)', () => {
       const p2List: HarnessPersonaFinding[] = Array.from({ length: 5 }, (_, i) => ({
         id: `p2-${i}`,
         persona: PERSONA_LIST[i % 5],
@@ -611,7 +611,7 @@ describe('Milestone M5 Challenger 1: Adversarial Hardening & Stress Verification
         confidence: 0.8,
       }));
       const arb = evaluateQuorumArbitration(p2List, 5);
-      expect(arb.verdict).toBe('FIX_FIRST');
+      expect(arb.verdict).toBe('SHIP');
       expect(arb.metrics.p2Count).toBe(5);
     });
 
