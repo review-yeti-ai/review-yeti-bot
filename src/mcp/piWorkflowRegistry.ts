@@ -83,7 +83,13 @@ export class PiWorkflowRegistry {
     ];
 
     for (const server of servers) {
-      if (server.transport === 'http' && server.url) {
+      if (server.id === 'ct-impact' || server.name.toLowerCase().includes('impact') || server.name.toLowerCase().includes('blast radius')) {
+        tools.push(
+          { name: 'ct_impact', description: 'Scout cross-repo blast radius across Phoenix routes, Vue components, NATS topics, and microservices', serverId: server.id },
+          { name: 'ct_mesh_query', description: 'Query nodes and relationships in the cross-repository AST code mesh', serverId: server.id },
+          { name: 'ct_mesh_stats', description: 'Aggregate statistics of the CallTelemetry cross-repo AST mesh', serverId: server.id }
+        );
+      } else if (server.transport === 'http' && server.url) {
         tools.push({
           name: `mcp_${server.id.replace(/[^a-zA-Z0-9]/g, '_')}_exec`,
           description: `Execute tool on custom MCP server '${server.name}' (${server.url})`,

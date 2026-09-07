@@ -241,7 +241,7 @@ Focus areas:
       'Do NOT flag subjective code style, indentation, or formatting if security posture is valid.',
       'Do NOT flag missing comments or docstrings if auth/tenant boundaries are functionally sound.',
     ],
-    proactiveToolStrategy: 'Search database queries for missing tenant bounds, check auth middleware headers and secrets.',
+    proactiveToolStrategy: 'Use ct_impact to scout cross-repo NATS topics and route ingress; search database queries for missing tenant bounds, check auth middleware headers and secrets.',
   },
   performance: {
     name: 'Performance Engineer',
@@ -283,7 +283,7 @@ Focus areas:
       'Do NOT flag local function implementation details unless they violate module contracts or layer boundaries.',
       'Suppress cosmetic refactoring suggestions that do not improve system stability.',
     ],
-    proactiveToolStrategy: 'Perform cross-folder code search to check callers affected by interface/schema shifts.',
+    proactiveToolStrategy: 'Use ct_impact to scout downstream blast radius across Phoenix routes, Quasar Vue components, and microservices; perform cross-folder code search to check callers affected by interface/schema shifts.',
   },
   testing: {
     name: 'Quality & Test Engineer',
@@ -304,7 +304,7 @@ Focus areas:
       'Do NOT flag test helper naming if assertions are comprehensive.',
       'Do NOT request redundant tests for trivial boilerplate getters/setters.',
     ],
-    proactiveToolStrategy: 'Search test/ directory for modified modules and inspect test coverage of error paths.',
+    proactiveToolStrategy: 'Use ct_impact to inspect impacted UAT scenarios and downstream components; search test/ directory for modified modules and inspect test coverage of error paths.',
   },
   dependencies: {
     name: 'DevOps & Dependencies Engineer',
@@ -325,7 +325,7 @@ Focus areas:
       'Do NOT flag dependency ordering or manifest formatting if versions are secure.',
       'Suppress warnings on test/development manifests unless applied to production.',
     ],
-    proactiveToolStrategy: 'Read package.json, lockfiles, and imports across workspace.',
+    proactiveToolStrategy: 'Use ct_impact to inspect downstream microservices and NATS topics; read package.json, lockfiles, and imports across workspace.',
   },
 };
 

@@ -41,7 +41,25 @@ try {
   try {
     const mcpModule = require('../../src/mcp/mcpFleetManager');
     mcpFleetManager = mcpModule.mcpFleetManager || mcpModule.McpFleetManager?.getInstance();
-  } catch (_) {}
+  } catch (_) {
+    try {
+      const mcpModule = require('../../../dist/mcp/mcpFleetManager');
+      mcpFleetManager = mcpModule.mcpFleetManager || mcpModule.McpFleetManager?.getInstance();
+    } catch (_) {
+      try {
+        const mcpModule = require('../../dist/mcp/mcpFleetManager');
+        mcpFleetManager = mcpModule.mcpFleetManager || mcpModule.McpFleetManager?.getInstance();
+      } catch (_) {}
+    }
+  }
+}
+
+function setMcpFleetManager(mgr) {
+  mcpFleetManager = mgr;
+}
+
+function getMcpFleetManager() {
+  return mcpFleetManager;
 }
 
 let SessionLedger = null;
@@ -917,6 +935,7 @@ Flag:
 - Authentication or authorisation checks that are missing, bypassable, or applied after the protected work has happened.
 - Data access that crosses a tenant, user or organisation boundary without a scoping predicate.
 - Secrets or personal data written to logs, error messages or telemetry.
+- Cross-service tenancy leaks: NATS topic publications or microservice payloads that omit tenant isolation bounds (orgId/tenantId).
 
 Do not flag:
 - Test fixtures, example values and obvious placeholders such as "sk-test", "changeme" or "user@example.com".
@@ -961,6 +980,8 @@ Flag:
 - New circular dependencies between modules.
 - Public interfaces changed in a way that silently breaks existing callers.
 - Logic placed in a layer that cannot test it, such as decisions embedded in a controller or a UI component.
+- Cross-repository contract breaks: modifications to backend routes, controllers, or event schemas that break downstream frontend components (e.g. Quasar Vue 3/Pinia) or microservices identified in the blast radius.
+- Architectural Decision Record (ADR) deviations: changes violating governing ADRs identified in the blast radius.
 
 Do not flag:
 - Patterns the surrounding code already uses consistently. Match the codebase rather than an ideal.
@@ -1003,6 +1024,7 @@ Flag:
 - Tests asserting on incidental detail rather than behaviour, so they pass when the feature is broken or fail when it is merely refactored.
 - Exclusive or skipped markers left active, which silently disable the rest of a suite.
 - Shared mutable state between tests, or dependence on execution order, clock or network.
+- Untested downstream impact: changes affecting routes, components, or microservices identified in the blast radius without corresponding unit, integration, or UAT scenario coverage.
 
   Before reporting a testing defect, establish:
     - Scope: the behaviour was introduced, changed, or explicitly claimed by the diff.
@@ -3773,6 +3795,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     '- Severity: P0 = exploitable, data-losing or outage-causing. P1 = a defect that must be fixed before merge. P2 = worth doing, safe to merge without.',
     '- P1 and P0 are rare. When unsure between two levels, choose the lower one.',
     '- If the diff is clean by your charter, return an empty findings array. Finding nothing is the expected result on most changes, and is more useful than a speculative finding.',
+    '- When "Cross-Repository Blast Radius & Downstream Consumers" is present in the prompt, assess whether diff changes break cited downstream consumers (Phoenix routes, Quasar Vue components, NATS subscribers, or microservices) or violate governing ADRs.',
     '',
     'Evidence boundary:',
     '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
@@ -3803,6 +3826,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     }
   }
 
+  const blastRadiusBlock = sessionContext?.blastRadius
+    ? `\nCross-Repository Blast Radius & Downstream Consumers:\n${sessionContext.blastRadius}`
+    : '';
+
   const userPrompt = [
     `Repository: ${prContext.repo || 'unknown'}`,
     prContext.prNumber ? `Pull request: #${prContext.prNumber}` : '',
@@ -3810,6 +3837,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     prContext.baseSha && prContext.headSha ? `Commit SHA Range: ${prContext.baseSha}...${prContext.headSha}` : '',
     '',
     diffContent,
+    blastRadiusBlock,
     priorFindingsBlock,
   ].filter(Boolean).join('\n');
   // priorFindingsBlock is already folded into `userPrompt` above (the untrusted user-content
@@ -5942,6 +5970,10 @@ ${mermaidLines.join('\n')}
 ${breakdownRows}
 </details>`;
 
+  const blastRadiusSection = mcpTelemetry.blastRadiusMarkdown
+    ? `\n<details>\n<summary>🌐 <b>Cross-Repository Blast Radius & Downstream Impact</b></summary>\n\n${mcpTelemetry.blastRadiusMarkdown}\n</details>\n`
+    : '';
+
   const commentMarkdown = `## ${verdictBadge}
 
 ${alertHeader}
@@ -5957,6 +5989,7 @@ ${commitRangeLine}
 - **Rationale**: ${arbitration.rationale}${failureNote}${coverageNote}
 
 ${findingsDetails}
+${blastRadiusSection}
 ${telemetrySection}${partitionManifestSection}`;
 
   return commentMarkdown;
@@ -6580,6 +6613,30 @@ async function main() {
     return;
   }
 
+  // Evaluate cross-repo blast radius via ct-impact MCP if available
+  if (mcpFleetManager && (mcpFleetManager.getServer('ct-impact') || (typeof mcpFleetManager.hasTool === 'function' && mcpFleetManager.hasTool('ct_impact')))) {
+    try {
+      const filePaths = reviewDiffFiles.map((f) => f.path);
+      const impactResult = await mcpFleetManager.executeTool('ct_impact', { files: filePaths });
+      if (impactResult && impactResult.success && impactResult.output) {
+        const impactOutput = impactResult.output;
+        const markdown = impactOutput.markdown || impactOutput.text || (typeof impactOutput === 'string' ? impactOutput : null);
+        if (markdown) {
+          console.log(`[BlastRadius] Successfully evaluated cross-repo blast radius via ct-impact MCP (${filePaths.length} file(s) audited).`);
+          mcpFleetInfo.blastRadiusMarkdown = markdown;
+          sessionContext = sessionContext || { previousTurn: 0, hasHistory: false };
+          sessionContext.blastRadius = markdown;
+          const blastRadiusPromptSection = `### Cross-Repository Blast Radius & Downstream Impact\n${markdown}`;
+          sessionContext.augmentedHeader = sessionContext.augmentedHeader
+            ? `${sessionContext.augmentedHeader}\n\n${blastRadiusPromptSection}`
+            : blastRadiusPromptSection;
+        }
+      }
+    } catch (err) {
+      console.warn(`[BlastRadius] Failed to execute ct_impact tool: ${err.message}`);
+    }
+  }
+
   // REL-552: arbitration must sanitize carried (parent-report) findings against the FULL PR
   // file list, not just the reviewed delta -- otherwise a carried lane's finding on a file
   // outside the delta is silently dropped by sanitizeFinding and the carried evidence is lost.
@@ -6987,6 +7044,8 @@ module.exports = {
   writeProviderTelemetryReceipt,
   writeProviderTelemetryReceiptBestEffort,
   initMcpFleet,
+  setMcpFleetManager,
+  getMcpFleetManager,
   evaluatePersonaLane,
   computeArbitrationQuorum,
   resolveFindingFalsificationPolicy,
