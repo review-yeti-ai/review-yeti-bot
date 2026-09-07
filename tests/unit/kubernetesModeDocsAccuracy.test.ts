@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { validateDispatchEndpoint } from '../../scripts/dispatch-doks-action.mjs';
 
 const root = path.resolve(__dirname, '../..');
 const read = (file: string) => readFileSync(path.join(root, file), 'utf8');
@@ -31,7 +32,15 @@ const CLAIM_PATTERNS = [
 ];
 
 /**
- * Wording that marks a line as stating the limit rather than promising it works.
+ * Wording that marks a block as stating the limit rather than promising it works.
+ *
+ * KNOWN LIMIT, accepted deliberately: this is block-level, so a paragraph that
+ * contains a promise AND an unrelated negation passes. Narrowing to the sentence
+ * would reintroduce the opposite failure -- a bullet no longer inherits the
+ * limitation from its list intro, and the guard would demand the caveat be
+ * repeated on every line. Neither granularity is sound for all prose; this one
+ * fails toward permitting a badly-mixed paragraph rather than toward forcing
+ * worse writing. It is a tripwire for the obvious regression, not a proof.
  *
  * Detection is claim-minus-limitation rather than claim-outside-blockquote. An
  * earlier version excluded every `>` line, which let a promise pass purely by
@@ -56,11 +65,17 @@ function promisingBlocks(markdown: string): string[] {
 }
 
 describe('Kubernetes Mode documentation matches enforced behaviour', () => {
-  it('pins the endpoint in code, so the docs must not promise arbitrary clusters', () => {
-    // The premise of every assertion below. If this stops being true, revisit them.
-    const dispatch = read('scripts/dispatch-doks-action.mjs');
-    expect(dispatch).toContain('url.origin === expected.origin');
-    expect(dispatch).toContain('url.pathname === expected.pathname');
+  it('rejects an endpoint the reader operates — the premise for every claim below', () => {
+    // Calls the real validator rather than grepping its source. Matching source
+    // text duplicated the constraint in a second place and would fail on a
+    // behaviour-preserving refactor, training maintainers to re-pin the strings
+    // instead of checking the behaviour.
+    expect(() => validateDispatchEndpoint('https://review.example.invalid/api/dispatch/action'))
+      .toThrow(/must be exactly/u);
+    expect(() => validateDispatchEndpoint('http://review-bot.calltelemetry.com/api/dispatch/action'))
+      .toThrow(/must be exactly/u);
+    // If this ever stops throwing, self-hosting became real and these docs
+    // assertions should be revisited rather than mechanically satisfied.
   });
 
   it.each([
