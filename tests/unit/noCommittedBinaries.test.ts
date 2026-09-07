@@ -48,3 +48,39 @@ describe('no compiled artefacts are tracked (public repository)', () => {
     expect(large.map((entry) => `${entry.path} (${Math.round(entry.bytes / 1048576)}MB)`)).toEqual([]);
   });
 });
+
+/**
+ * This is a public product repository under its own org and MIT licence. Call
+ * Telemetry's *own* deployment of the product does not belong in it: a private
+ * instance's manifests, namespaces and deploy workflow name internal
+ * infrastructure and an operating entity to anyone reading, and having them here
+ * is what made it natural to reach for real values as chart defaults and test
+ * fixtures in the first place.
+ *
+ * The product's own Kubernetes support -- charts/review-yeti, the operator,
+ * docs/KUBERNETES_MODE.md -- is deliberately public and stays.
+ */
+describe('no private deployment lives in this public product repository', () => {
+  it('tracks no path naming a private instance', () => {
+    const offending = tracked()
+      .map((entry) => entry.path)
+      .filter((file) => /jbjmllc/iu.test(file));
+    expect(offending).toEqual([]);
+  });
+
+  it('mentions no private instance anywhere', () => {
+    // Excludes this file, which necessarily contains the name it forbids.
+    let hits = '';
+    try {
+      hits = execFileSync(
+        'git',
+        ['grep', '-il', 'jbjmllc', '--', '.', ':!tests/unit/noCommittedBinaries.test.ts', ':!docs/superpowers/**'],
+        { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      ).trim();
+    } catch (error) {
+      // git grep exits 1 on no match, which is the passing case; anything else is real.
+      if ((error as { status?: number }).status !== 1) throw error;
+    }
+    expect(hits).toBe('');
+  });
+});
