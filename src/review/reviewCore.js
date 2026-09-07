@@ -236,6 +236,17 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const panelSize = Math.max(1, completedResults.length);
   const blockP1 = Math.max(3, Math.ceil(panelSize / 2));
   const fixP2 = Math.max(5, panelSize);
+  // P2 findings no longer decide the verdict. The threshold is still computed and
+  // reported so a reviewer can argue with it, but only P0 and P1 gate a merge.
+  //
+  // Evidence: a two-file change took five review cycles -- 2 P1 -> 1 P1 + 7 P2 ->
+  // 0 P1 + 7 P2 -> 6 P2 -> pass -- because each round raised fresh nits against
+  // the code the previous round had just added, including a valid nit about a fix
+  // for a nit. No evidence was ever recorded for the threshold itself; it was a
+  // proxy for review quality that measured review volume.
+  //
+  // Set `options.p2BlocksMerge` to restore the old contract without a revert.
+  const p2BlocksMerge = options.p2BlocksMerge === true;
   let candidateVerdict = 'SHIP';
   let rationale = `All ${completedResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
 
@@ -254,7 +265,7 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   } else if (p1Count > 0) {
     candidateVerdict = 'FIX_FIRST';
     rationale = `Changes requested for ${p1Count} P1 finding(s) and ${p2Count} P2 nit(s).`;
-  } else if (p2Count >= fixP2) {
+  } else if (p2BlocksMerge && p2Count >= fixP2) {
     candidateVerdict = 'FIX_FIRST';
     rationale = `Changes requested for ${p2Count} P2 finding(s) across ${panelSize} reviewer(s), at or above the nit threshold of ${fixP2}.`;
   }
