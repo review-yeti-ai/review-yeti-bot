@@ -25,12 +25,14 @@ const {
   capPublicationThreads,
   findLatestIssueComment,
   MAX_PUBLISHED_REVIEW_THREADS,
+  MAX_STICKY_COMMENT_CHARS,
   parsePriorSummaryReview,
   postOrOutputComment,
   postStickySummaryComment,
   MAX_READ_ACTION_REVIEWS,
   readActionReviews,
   readActionReviewThreads,
+  resolveOutdatedOwnThreads,
   renderStickySummaryBody,
   reviewRequiresResultRepublish,
   splitStickySummaryBody,
@@ -322,7 +324,9 @@ describe('work item 2 — each reviewed head gets an immutable summary, without 
     expect(second.deduplicated).toBe(false);
     expect(second.body).toContain('## 🔴 **Verdict: BLOCK**\nsecond round');
     expect(second.body).toContain('<details>\n<summary>Previous review rounds (1)</summary>');
-    expect(second.body).toContain('## 🟢 **Verdict: SHIP**\nfirst round');
+    // History keeps the round's identity and what it found, not its whole body.
+    expect(second.body).toContain('Round 1 · SHIP');
+    expect(second.body).not.toContain('first round');
     expect(splitStickySummaryBody(second.body).entries).toHaveLength(1);
     expect(renderStickySummaryBody('## 🔴 **Verdict: BLOCK**\nsecond round', context, second.body).deduplicated).toBe(true);
   });
@@ -1135,18 +1139,40 @@ describe('bounding the sticky summary history', () => {
     expect(body).not.toContain('Round body 2');
   });
 
-  it('drops further rounds when eight of them would still be too large', () => {
-    const body = renderRounds(10, (i) => `Round ${i} ${'x'.repeat(9_000)}`);
+  // A round's own text is large -- telemetry, mermaid, per-persona prose -- but history keeps only
+  // its findings, so eight rounds of a big body stay small once collapsed.
+  it('keeps history small even when the rounds themselves were large', () => {
+    const body = renderRounds(10, (i) => `## 🟡 **Verdict: FIX_FIRST**\nRound ${i} ${'x'.repeat(9_000)}`);
 
-    expect(roundsIn(body)).toBeLessThan(8);
-    expect(body.length).toBeLessThan(120_000);
+    expect(roundsIn(body)).toBe(8);
+    expect(body.length).toBeLessThan(MAX_STICKY_COMMENT_CHARS);
   });
 
-  it('clips a single oversized round and says so', () => {
-    const body = renderRounds(2, (i) => (i === 0 ? `huge ${'y'.repeat(20_000)}` : 'small follow-up round'));
+  // GitHub rejects a comment body over 65,536 characters. Bounding only the history left the total
+  // free to exceed that: a real pull request reached 51,029 characters this way.
+  it('never exceeds the comment size ceiling, whatever the rounds contain', () => {
+    const findings = (n: number) => Array.from({ length: n }, (_, i) => `🟡 **P2** · **Finding ${i} ${'d'.repeat(400)}**\n[\`src/file${i}.ts:${i}\`](https://example.invalid)`).join('\n\n');
+    const body = renderRounds(12, (i) => `## 🟡 **Verdict: FIX_FIRST**\n\n${findings(40)}\nround ${i}`);
 
-    expect(body).toContain('This historical round was clipped to keep the sticky summary bounded.');
-    expect(body).toContain('small follow-up round');
+    expect(body.length).toBeLessThanOrEqual(MAX_STICKY_COMMENT_CHARS + 100);
+  });
+
+  it('clips the current round rather than dropping it when it alone is too large', () => {
+    const body = renderRounds(1, () => `## 🔴 **Verdict: BLOCK**\n${'y'.repeat(MAX_STICKY_COMMENT_CHARS + 5_000)}`);
+
+    expect(body.length).toBeLessThanOrEqual(MAX_STICKY_COMMENT_CHARS + 100);
+    expect(body).toContain("clipped to fit GitHub's comment size limit");
+  });
+
+  it('names each finding a past round raised, and counts the rest', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `🟡 **P2** · **Finding number ${i}**\n[\`src/file${i}.ts:${i}\`](https://example.invalid)`).join('\n\n');
+    const first = `## 🟡 **Verdict: FIX_FIRST**\n\n- **Total Findings**: P0: \`0\` | P1: \`0\` | P2 / Nits: \`20\`\n\n${many}`;
+    const body = renderStickySummaryBody('## 🟢 **Verdict: SHIP**\nlater', { ...context, headSha: 'later' }, renderStickySummaryBody(first, context, undefined).body).body;
+
+    expect(body).toContain('Finding number 0');
+    expect(body).toContain('src/file0.ts:0');
+    expect(body).toContain('…and 8 more.');
+    expect(body).not.toContain('Finding number 15');
   });
 
   it('never drops the round currently being published', () => {
@@ -1485,5 +1511,114 @@ describe('decoding an issue-comment page', () => {
       .toThrow(/malformed/u);
     expect(() => findLatestIssueComment(() => ({ status: 1, stdout: '', stderr: 'Bad credentials' }), context, () => true))
       .toThrow('Bad credentials');
+  });
+});
+
+/* -------------------------------------------------------------------------------------------- */
+
+describe('tidying conversations whose code no longer exists', () => {
+  const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+
+  const thread = (id: string, overrides: any = {}) => ({
+    id,
+    isResolved: false,
+    isOutdated: false,
+    path: `src/${id}.ts`,
+    line: 4,
+    comments: { nodes: [{ databaseId: 1, body: 'finding', author: { login: 'github-actions[bot]' }, commit: { oid: 'old' } }], pageInfo: { hasNextPage: false } },
+    ...overrides,
+  });
+
+  const byHuman = (id: string, overrides: any = {}) => thread(id, {
+    comments: { nodes: [{ databaseId: 2, body: 'human note', author: { login: 'a-maintainer' } }], pageInfo: { hasNextPage: false } },
+    ...overrides,
+  });
+
+  function runner(threads: any[], options: { failResolve?: boolean } = {}) {
+    const resolved: string[] = [];
+    const commandRunner = (_exe: string, args: string[]) => {
+      if (args.some((arg) => arg.includes('mutation ResolveThread'))) {
+        const id = args[args.indexOf('-F') + 1].replace('threadId=', '');
+        if (options.failResolve) return { status: 1, stdout: '', stderr: 'Resource not accessible' };
+        resolved.push(id);
+        return { status: 0, stdout: JSON.stringify({ data: { resolveReviewThread: { thread: { isResolved: true } } } }), stderr: '' };
+      }
+      return { status: 1, stdout: '', stderr: 'unexpected' };
+    };
+    return { resolved, commandRunner, snapshot: { threads, complete: true } };
+  }
+
+  it('resolves its own outdated conversations', () => {
+    const { resolved, commandRunner, snapshot } = runner([
+      thread('stale', { isOutdated: true }),
+      thread('current'),
+    ]);
+
+    const result = resolveOutdatedOwnThreads(commandRunner, context, { expectedPublisherLogin: 'github-actions[bot]', snapshot });
+
+    expect(result).toMatchObject({ resolved: 1, candidates: 1 });
+    expect(resolved).toEqual(['stale']);
+  });
+
+  // A still-current thread's finding still stands; closing it would hide a live objection.
+  it('leaves a current conversation open', () => {
+    const { resolved, commandRunner, snapshot } = runner([thread('current')]);
+
+    expect(resolveOutdatedOwnThreads(commandRunner, context, { expectedPublisherLogin: 'github-actions[bot]', snapshot }))
+      .toMatchObject({ resolved: 0 });
+    expect(resolved).toEqual([]);
+  });
+
+  it("never closes a person's conversation, outdated or not", () => {
+    const { resolved, commandRunner, snapshot } = runner([
+      byHuman('human-stale', { isOutdated: true }),
+      byHuman('human-current'),
+    ]);
+
+    expect(resolveOutdatedOwnThreads(commandRunner, context, { expectedPublisherLogin: 'github-actions[bot]', snapshot }))
+      .toMatchObject({ resolved: 0 });
+    expect(resolved).toEqual([]);
+  });
+
+  it('leaves an already-resolved conversation alone', () => {
+    const { resolved, commandRunner, snapshot } = runner([thread('done', { isOutdated: true, isResolved: true })]);
+
+    resolveOutdatedOwnThreads(commandRunner, context, { expectedPublisherLogin: 'github-actions[bot]', snapshot });
+
+    expect(resolved).toEqual([]);
+  });
+
+  it('does nothing when the publisher identity is unknown', () => {
+    const { resolved, commandRunner, snapshot } = runner([thread('stale', { isOutdated: true })]);
+
+    expect(resolveOutdatedOwnThreads(commandRunner, context, { expectedPublisherLogin: null, snapshot }))
+      .toMatchObject({ resolved: 0, skipped: 'unknown publisher identity' });
+    expect(resolved).toEqual([]);
+  });
+
+  // Tidying is an improvement to the review, never a reason to fail one.
+  it('reports a failed resolve without throwing', () => {
+    const { commandRunner, snapshot } = runner([thread('stale', { isOutdated: true })], { failResolve: true });
+
+    const result = resolveOutdatedOwnThreads(commandRunner, context, { expectedPublisherLogin: 'github-actions[bot]', snapshot });
+
+    expect(result.resolved).toBe(0);
+    expect(result.failures?.[0]).toContain('Resource not accessible');
+  });
+
+  it('survives the thread snapshot being unreadable', () => {
+    const explode = () => { throw new Error('GitHub unavailable'); };
+
+    expect(() => resolveOutdatedOwnThreads(explode, context, { expectedPublisherLogin: 'github-actions[bot]' })).not.toThrow();
+    expect(resolveOutdatedOwnThreads(explode, context, { expectedPublisherLogin: 'github-actions[bot]' }).resolved).toBe(0);
+  });
+
+  it('bounds how many it will close in one run', () => {
+    const many = Array.from({ length: 80 }, (_, i) => thread(`stale-${i}`, { isOutdated: true }));
+    const { resolved, commandRunner, snapshot } = runner(many);
+
+    resolveOutdatedOwnThreads(commandRunner, context, { expectedPublisherLogin: 'github-actions[bot]', snapshot });
+
+    expect(resolved.length).toBeLessThanOrEqual(50);
   });
 });

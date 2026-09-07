@@ -6316,6 +6316,15 @@ const SUMMARY_ROUND_END = '<!-- review-yeti-bot:summary-round:v1:end -->';
 const MAX_SUMMARY_HISTORY_ROUNDS = 8;
 const MAX_SUMMARY_HISTORY_CHARS = 40_000;
 const MAX_SUMMARY_ROUND_CHARS = 12_000;
+/**
+ * Hard ceiling for the whole sticky comment.
+ *
+ * GitHub rejects an issue-comment body over 65,536 characters, and bounding only the history left
+ * the total unbounded: a real pull request reached 51,029 characters, and a larger current round on
+ * top of a full 40,000-character history would have pushed the PATCH past the limit and failed the
+ * publication outright. Held below the limit with room for the markers appended after this trim.
+ */
+const MAX_STICKY_COMMENT_CHARS = 60_000;
 
 function summaryRoundDigest(commentBody) {
   return sha256(String(commentBody || '')).slice(0, 16);
@@ -6434,21 +6443,71 @@ function summaryRoundTitle(body, roundNumber) {
   return `Round ${roundNumber} · ${verdict} · ${head}`;
 }
 
+/** Findings listed per historical round before the rest are counted rather than named. */
+const MAX_SUMMARY_ROUND_FINDINGS = 12;
+
+/**
+ * One line per finding a past round raised: severity, title, and where it was.
+ *
+ * History used to keep each round's whole body -- telemetry table, mermaid diagram, per-persona
+ * prose -- up to MAX_SUMMARY_ROUND_CHARS. On a real pull request that made three collapsed rounds
+ * 37KB of a 51KB comment, none of which anyone expands. What a reader wants from a past round is
+ * what it found, so that is what is kept.
+ */
+function summaryRoundFindingLines(body) {
+  const text = String(body || '');
+  const lines = [];
+  const pattern = /^([\u{1F534}\u{1F7E0}\u{1F7E1}])\s+\*\*(P[012])\*\*\s+·\s+\*\*(.+?)\*\*\s*$\n(?:\[`([^`]+)`\])?/gmu;
+  for (const match of text.matchAll(pattern)) {
+    const [, icon, severity, title, location] = match;
+    lines.push(`- ${icon} \`${severity}\` ${title}${location ? ` — \`${location}\`` : ''}`);
+    if (lines.length >= MAX_SUMMARY_ROUND_FINDINGS) break;
+  }
+  return lines;
+}
+
 function renderSummaryHistoryEntry(body, roundNumber) {
+  // The identity of a round is still the hash of what it actually said, not of this digest, so
+  // replaying the same round keeps deduplicating against the entry already in history.
   const digest = summaryRoundDigest(body);
-  const clipped = String(body || '').length > MAX_SUMMARY_ROUND_CHARS
-    ? `${String(body || '').slice(0, MAX_SUMMARY_ROUND_CHARS)}\n\n> _This historical round was clipped to keep the sticky summary bounded._`
-    : String(body || '');
+  const parsed = parsePriorSummaryReview(body);
+  const findings = summaryRoundFindingLines(body);
+  const named = summaryRoundFindingLines(body).length;
+  const total = parsed.metrics?.totalFindings ?? named;
+
+  const summaryLine = parsed.metrics
+    ? `**Findings:** P0 \`${parsed.metrics.p0Count}\` · P1 \`${parsed.metrics.p1Count}\` · P2 \`${parsed.metrics.p2Count}\``
+    : '';
+  const remainder = total > named ? `\n- _…and ${total - named} more._` : '';
+
+  const digestBody = [
+    summaryLine,
+    findings.length > 0 ? `${findings.join('\n')}${remainder}` : '_No findings recorded for this round._',
+  ].filter(Boolean).join('\n\n');
+
   return [
     summaryRoundStart(digest),
     '<details>',
     `<summary>${summaryRoundTitle(body, roundNumber)}</summary>`,
     '',
-    clipped,
+    digestBody.length > MAX_SUMMARY_ROUND_CHARS ? digestBody.slice(0, MAX_SUMMARY_ROUND_CHARS) : digestBody,
     '',
     '</details>',
     SUMMARY_ROUND_END,
   ].join('\n');
+}
+
+/**
+ * Last resort when even a single round exceeds what GitHub will store.
+ *
+ * Dropping history is always preferred; this only fires when the round being published is itself
+ * over the ceiling, in which case a clipped comment is still better than a failed PATCH.
+ */
+function clipToStickyLimit(body) {
+  const text = String(body || '');
+  if (text.length <= MAX_STICKY_COMMENT_CHARS) return text;
+  const notice = "\n\n> _This round was clipped to fit GitHub's comment size limit._";
+  return `${text.slice(0, MAX_STICKY_COMMENT_CHARS - notice.length)}${notice}`;
 }
 
 function renderStickySummaryBody(commentBody, prContext, priorBody, options = {}) {
@@ -6464,7 +6523,7 @@ function renderStickySummaryBody(commentBody, prContext, priorBody, options = {}
     roundMarker,
   ].filter(Boolean).join('\n\n');
 
-  if (!priorBody) return { body: currentBody, deduplicated: false, historyRounds: 0 };
+  if (!priorBody) return { body: clipToStickyLimit(currentBody), deduplicated: false, historyRounds: 0 };
   const prior = splitStickySummaryBody(priorBody);
   if (prior.current.includes(roundMarker)) {
     return { body: priorBody, deduplicated: true, historyRounds: prior.entries.length };
@@ -6475,23 +6534,27 @@ function renderStickySummaryBody(commentBody, prContext, priorBody, options = {}
   entries = entries.slice(-MAX_SUMMARY_HISTORY_ROUNDS);
   while (entries.join('\n\n').length > MAX_SUMMARY_HISTORY_CHARS && entries.length > 1) entries.shift();
 
-  const history = entries.length > 0
+  const renderHistory = (rounds) => (rounds.length > 0
     ? [
       SUMMARY_HISTORY_START,
       '<details>',
-      `<summary>Previous review rounds (${entries.length})</summary>`,
+      `<summary>Previous review rounds (${rounds.length})</summary>`,
       '',
-      entries.join('\n\n'),
+      rounds.join('\n\n'),
       '',
       '</details>',
       SUMMARY_HISTORY_END,
     ].join('\n')
-    : '';
-  return {
-    body: history ? `${currentBody}\n\n${history}` : currentBody,
-    deduplicated: false,
-    historyRounds: entries.length,
+    : '');
+  const compose = (rounds) => {
+    const history = renderHistory(rounds);
+    return history ? `${currentBody}\n\n${history}` : currentBody;
   };
+
+  // The round being published is never dropped to make room; history yields first, and if the
+  // current round alone is still over the ceiling it is the thing that gets clipped.
+  while (compose(entries).length > MAX_STICKY_COMMENT_CHARS && entries.length > 0) entries.shift();
+  return { body: clipToStickyLimit(compose(entries)), deduplicated: false, historyRounds: entries.length };
 }
 
 function compactReviewBody(commentBody, prContext, options = {}) {
@@ -6686,6 +6749,74 @@ function assertPublicationPlanArgument(publicationPlan) {
   }
 }
 
+/** Threads one run may resolve, so a pathological pull request cannot spend the whole job here. */
+const MAX_RESOLVED_OUTDATED_THREADS = 50;
+
+const RESOLVE_THREAD_MUTATION = `
+mutation ResolveThread($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) { thread { isResolved } }
+}`;
+
+/**
+ * Resolves this bot's own conversations that GitHub has marked outdated.
+ *
+ * A thread goes outdated when the lines it was anchored to no longer exist in the diff -- the code
+ * it objected to was rewritten or removed. The finding cannot be re-verified at that anchor and the
+ * thread can never resolve itself, so under `required_conversation_resolution` it blocks the merge
+ * forever while pointing at code that is gone. If the defect survived the rewrite, the next round
+ * reports it again at its new location.
+ *
+ * Deliberately narrow. Only threads that are outdated, unresolved, and whose first comment this
+ * publisher wrote are touched: a human's outdated thread is theirs to close, and a still-current
+ * bot thread stays open because its finding still stands.
+ *
+ * Never throws. Tidying old conversations is an improvement to the review, not a precondition for
+ * publishing one.
+ */
+function resolveOutdatedOwnThreads(commandRunner, prContext, options = {}) {
+  const expectedPublisherLogin = options.expectedPublisherLogin;
+  if (!expectedPublisherLogin) return { resolved: 0, skipped: 'unknown publisher identity' };
+
+  let snapshot;
+  try {
+    snapshot = options.snapshot || readActionReviewThreads(commandRunner, prContext);
+  } catch (err) {
+    return { resolved: 0, skipped: `could not read review threads: ${err.message || err}` };
+  }
+
+  const stale = (snapshot.threads || []).filter((thread) => (
+    thread?.isOutdated
+    && !thread.isResolved
+    && thread.id
+    && isExpectedPublisherLogin(thread.comments?.nodes?.[0]?.author?.login, expectedPublisherLogin)
+  )).slice(0, MAX_RESOLVED_OUTDATED_THREADS);
+
+  let resolved = 0;
+  const failures = [];
+  for (const thread of stale) {
+    try {
+      const result = ghApi(commandRunner, [
+        'api', 'graphql',
+        '-F', `threadId=${thread.id}`,
+        '-f', `query=${RESOLVE_THREAD_MUTATION}`,
+      ]);
+      if (!result || result.status !== 0) {
+        failures.push(result?.stderr || 'unknown error');
+        continue;
+      }
+      const decoded = JSON.parse(result.stdout || '{}');
+      if (decoded?.errors?.[0]) {
+        failures.push(decoded.errors[0].message || 'GraphQL error');
+        continue;
+      }
+      resolved += 1;
+    } catch (err) {
+      failures.push(err.message || String(err));
+    }
+  }
+  return { resolved, candidates: stale.length, ...(failures.length > 0 ? { failures } : {}) };
+}
+
 function postOrOutputComment(commentBody, prContext, publicationPlan = {}, options = {}) {
   assertPublicationPlanArgument(publicationPlan);
   const emptyBodyError = emptyReviewBodyGuardError(commentBody, prContext);
@@ -6847,6 +6978,18 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       const missingAfterWrite = expectedItems.filter((item) => !findVerifiedThread(item, prContext, verified, expectedPublisherLogin));
       if (missingAfterWrite.length > 0) {
         throw new Error(`${missingAfterWrite.length} expected unresolved review thread(s) failed exact-head verification`);
+      }
+
+      // Old conversations are tidied only after this round's own threads are verified present, so
+      // a failure here can never be mistaken for this round having published nothing.
+      const tidied = resolveOutdatedOwnThreads(commandRunner, prContext, {
+        expectedPublisherLogin,
+        snapshot: expectedItems.length > 0 ? verified : undefined,
+      });
+      if (tidied.resolved > 0) {
+        console.log(`[Publish] Resolved ${tidied.resolved} outdated review conversation(s) whose anchors no longer exist.`);
+      } else if (tidied.skipped) {
+        console.warn(`[Publish] Skipped outdated-conversation cleanup: ${tidied.skipped}`);
       }
 
       const summaryPublication = postStickySummaryComment(bodyWithRejected, prContext, {
@@ -7835,8 +7978,10 @@ module.exports = {
   compactReviewBody,
   capPublicationThreads,
   MAX_PUBLISHED_REVIEW_THREADS,
+  MAX_STICKY_COMMENT_CHARS,
   readActionReviewThreads,
   readActionReviews,
+  resolveOutdatedOwnThreads,
   MAX_READ_ACTION_REVIEWS,
   reviewRequiresResultRepublish,
   findLatestIssueComment,
