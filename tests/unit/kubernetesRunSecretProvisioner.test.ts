@@ -12,7 +12,6 @@ const request = {
 function provisioner(over: Record<string, any> = {}) {
   const client = {
     createNamespacedSecret: vi.fn(async () => undefined),
-    deleteNamespacedSecret: vi.fn(async () => undefined),
     ...over.client,
   };
   const mintToken = over.mintToken || vi.fn(async () => ({
@@ -53,25 +52,22 @@ describe('KubernetesRunSecretProvisioner', () => {
     expect(body.metadata.labels['review-yeti.ai/run-id']).toBe(request.runId);
   });
 
-  it('replaces an existing run secret rather than reusing it', async () => {
-    // A Secret from an earlier attempt may hold an expired token. Reusing it would
-    // fail the review, and this lane fails closed.
+  it('treats a 409 as success without deleting anything', async () => {
+    // A 409 means a sibling dispatcher provisioned this run moments ago with its own
+    // fresh tokens. It cannot be a stale Secret: the run id is identity-derived and
+    // re-admission does not reset terminal_deadline, so one name is only written
+    // inside a single fifteen-minute window.
+    //
+    // This is what lets the dispatcher hold `create` and NOT `delete` on secrets --
+    // a verb Kubernetes cannot scope to one name, which would otherwise reach the
+    // App private key and the gateway credential in this namespace.
     const conflict = Object.assign(new Error('exists'), { code: 409 });
-    let created = 0;
     const { subject, client } = provisioner({
-      client: {
-        createNamespacedSecret: vi.fn(async () => {
-          created += 1;
-          if (created === 1) throw conflict;
-          return undefined;
-        }),
-      },
+      client: { createNamespacedSecret: vi.fn(async () => { throw conflict; }) },
     });
-    await subject.provision(request);
-    expect(client.deleteNamespacedSecret).toHaveBeenCalledWith(
-      expect.objectContaining({ name: request.secretName }),
-    );
-    expect(created).toBe(2);
+    await expect(subject.provision(request)).resolves.toBeUndefined();
+    expect(client.createNamespacedSecret).toHaveBeenCalledOnce();
+    expect((client as Record<string, unknown>).deleteNamespacedSecret).toBeUndefined();
   });
 
   it('propagates a non-conflict Kubernetes failure', async () => {
@@ -80,7 +76,6 @@ describe('KubernetesRunSecretProvisioner', () => {
       client: { createNamespacedSecret: vi.fn(async () => { throw forbidden; }) },
     });
     await expect(subject.provision(request)).rejects.toThrow(/forbidden/u);
-    expect(client.deleteNamespacedSecret).not.toHaveBeenCalled();
   });
 
   it('never writes a secret when minting fails', async () => {

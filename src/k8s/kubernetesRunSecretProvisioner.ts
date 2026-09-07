@@ -17,7 +17,6 @@ export interface CoreSecretClient {
     fieldManager: string;
     fieldValidation: 'Strict';
   }): Promise<unknown>;
-  deleteNamespacedSecret(request: { namespace: string; name: string }): Promise<unknown>;
 }
 
 export interface KubernetesRunSecretProvisionerOptions {
@@ -105,24 +104,23 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
         fieldManager: this.fieldManager,
         fieldValidation: 'Strict',
       });
-      return;
     } catch (error) {
       if (kubernetesStatusCode(error) !== 409) throw error;
+      // A 409 means a sibling dispatcher already provisioned this run, moments ago
+      // and with its own freshly minted tokens -- so the existing Secret is good
+      // and this is success, not a conflict to resolve.
+      //
+      // It cannot be a stale Secret from an earlier attempt. The run id is derived
+      // from the review identity (`run_${sha256(identity).slice(0,32)}`), and
+      // re-admitting the same identity returns the existing row without resetting
+      // terminal_deadline (ON CONFLICT ... DO UPDATE SET updated_at =
+      // review_runs.updated_at), so one Secret name is only ever written inside a
+      // single fifteen-minute window -- well inside the token's hour.
+      //
+      // This is why the dispatcher needs `create` on secrets and NOT `delete`.
+      // Kubernetes cannot scope a verb to one Secret name, so `delete` here would
+      // also reach the App private key, the gateway credential and the ingress TLS
+      // key in this namespace. Treating 409 as success buys that reduction.
     }
-
-    // A Secret already exists for this run. It may hold a token from an earlier
-    // attempt that has since expired, so replace rather than reuse -- a stale token
-    // would fail the review, and this lane fails closed. Delete-then-create instead
-    // of patch so the replacement is whole and no stale key survives.
-    await this.options.client.deleteNamespacedSecret({
-      namespace: request.namespace,
-      name: request.secretName,
-    });
-    await this.options.client.createNamespacedSecret({
-      namespace: request.namespace,
-      body,
-      fieldManager: this.fieldManager,
-      fieldValidation: 'Strict',
-    });
   }
 }
