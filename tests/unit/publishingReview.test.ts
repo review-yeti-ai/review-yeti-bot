@@ -49,6 +49,24 @@ function deps(over: Record<string, unknown> = {}) {
   };
 }
 
+describe('qualification source arguments', () => {
+  it('passes the full owner/repo, and no owner field, to the source loader', async () => {
+    // The loader's input has no `owner` key and parses the slash out of `repo`
+    // itself. Passing the bare repo name made every real app-gate run die with
+    // "GitHub qualification repository is invalid" while this suite stayed green,
+    // because the mock accepted any arguments. Assert the arguments, not just the
+    // call.
+    const loader = vi.fn(async () => ({ diff: DIFF, githubReads: 1 }));
+    await runPublishingReviewWorker(env(), deps({ sourceLoader: loader as never }));
+
+    expect(loader).toHaveBeenCalledTimes(1);
+    const arg = (loader.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(arg.repo).toBe('calltelemetry/ct-meta');
+    expect(arg).not.toHaveProperty('owner');
+    expect(arg.prNumber).toBe(2795);
+  });
+});
+
 describe('publishing review lane admission', () => {
   it('admits only an app-gate dispatch', () => {
     expect(isPublishingReviewWorker(env())).toBe(true);
