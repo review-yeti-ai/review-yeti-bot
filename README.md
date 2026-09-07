@@ -108,9 +108,9 @@ jobs:
 For teams with high PR volume, running 5+ personas inside GitHub Actions runners can accumulate costly billable runner minutes. 
 
 Review Yeti's **Kubernetes Mode** uses an asynchronous dispatch handshake:
-1. The GitHub Action acts as a lightweight shim, calls your Kubernetes cluster, and exits in **< 10 seconds**.
+1. The GitHub Action acts as a lightweight shim, admits the review to the Kubernetes worker queue, and exits in **< 10 seconds**.
 2. The Action registers an initial check run: `review-status: DISPATCHED`, `gate-decision: PENDING`.
-3. An ephemeral worker pod in your Kubernetes cluster processes the review, posts the PR review comment, and updates the GitHub Check Run to `success` or `failure` directly using its GitHub App token.
+3. An ephemeral worker pod processes the review, posts the PR review comment, and updates the GitHub Check Run to `success` or `failure` directly using its GitHub App token.
 
 ```yaml
 # .github/workflows/review-yeti-k8s.yml
@@ -130,9 +130,15 @@ jobs:
           dispatch-token: ${{ secrets.REVIEW_DISPATCH_SECRET }}
 ```
 
-### 🚀 Self-Hosting with Official Helm 3 Chart
+### 🚀 Kubernetes Worker Chart
 
 Review Yeti provides a production-grade Helm 3 chart in [`charts/review-yeti/`](charts/review-yeti/):
+
+> [!NOTE]
+> This chart deploys the components the **hosted** Review Yeti queue runs. The
+> Action's dispatch endpoint is currently fixed to that queue, so installing this
+> chart into your own cluster will not receive reviews yet. See
+> [Kubernetes Mode](docs/KUBERNETES_MODE.md).
 
 ```bash
 # 1. Add and install Review Yeti using production values
@@ -142,7 +148,7 @@ helm install review-yeti charts/review-yeti \
   -f examples/k8s/values-doks.yaml
 ```
 
-Pre-configured cloud values files are available in [`examples/k8s/`](examples/k8s/):
+Pre-configured cloud values files are available in [`examples/k8s/`](examples/k8s/). They configure the chart for each platform; they do **not** make a cluster you operate reachable by the Action, which is bound to the hosted endpoint:
 - **DigitalOcean (DOKS)**: [`examples/k8s/values-doks.yaml`](examples/k8s/values-doks.yaml) (DO LoadBalancer + Block Storage)
 - **AWS EKS**: [`examples/k8s/values-eks.yaml`](examples/k8s/values-eks.yaml) (AWS Load Balancer Controller ALB + gp3)
 - **Local Dev**: [`examples/k8s/values-local.yaml`](examples/k8s/values-local.yaml) (Minikube / Kind / K3s with local Ollama)
