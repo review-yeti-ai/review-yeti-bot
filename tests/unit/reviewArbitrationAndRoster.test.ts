@@ -40,14 +40,30 @@ describe('Arbitration scales with the size of the panel', () => {
     expect(computeArbitrationQuorum(results(1, { P0: 1 }), 1).verdict).toBe('BLOCK');
   });
 
-  it('scales the nit threshold with the panel so twelve reviewers may each raise one', () => {
-    expect(computeArbitrationQuorum(results(12, { P2: 11 }), 12).verdict).toBe('SHIP');
-    expect(computeArbitrationQuorum(results(12, { P2: 12 }), 12).verdict).toBe('FIX_FIRST');
+  it('does not block a merge on P2 findings at any volume', () => {
+    // P2s no longer decide the verdict. A two-file change previously took five
+    // review cycles because each round raised fresh nits against the code the
+    // previous round had just added -- the threshold measured review volume, not
+    // review quality, and no evidence was ever recorded for the number itself.
+    expect(computeArbitrationQuorum(results(12, { P2: 12 }), 12).verdict).toBe('SHIP');
+    expect(computeArbitrationQuorum(results(12, { P2: 99 }), 12).verdict).toBe('SHIP');
+    expect(computeArbitrationQuorum(results(2, { P2: 5 }), 2).verdict).toBe('SHIP');
   });
 
-  it('keeps a nit floor of five for small panels', () => {
-    expect(computeArbitrationQuorum(results(2, { P2: 4 }), 2).verdict).toBe('SHIP');
-    expect(computeArbitrationQuorum(results(2, { P2: 5 }), 2).verdict).toBe('FIX_FIRST');
+  it('restores the old nit contract when explicitly opted in', () => {
+    // Rollback is a flag, not a revert.
+    const opts = { p2BlocksMerge: true };
+    expect(computeArbitrationQuorum(results(12, { P2: 11 }), 12, opts).verdict).toBe('SHIP');
+    expect(computeArbitrationQuorum(results(12, { P2: 12 }), 12, opts).verdict).toBe('FIX_FIRST');
+    expect(computeArbitrationQuorum(results(2, { P2: 4 }), 2, opts).verdict).toBe('SHIP');
+    expect(computeArbitrationQuorum(results(2, { P2: 5 }), 2, opts).verdict).toBe('FIX_FIRST');
+  });
+
+  it('still gates on P0 and P1 with P2 disarmed', () => {
+    // Removing the nit gate must not weaken the gates that carry evidence.
+    expect(computeArbitrationQuorum(results(6, { P0: 1, P2: 99 }), 6).verdict).toBe('BLOCK');
+    expect(computeArbitrationQuorum(results(6, { P1: 1, P2: 99 }), 6).verdict).toBe('FIX_FIRST');
+    expect(computeArbitrationQuorum(results(6, { P1: 3, P2: 99 }), 6).verdict).toBe('BLOCK');
   });
 
   it('reports the thresholds it applied so a verdict can be argued with', () => {
