@@ -32,6 +32,10 @@ function helmAvailable(): boolean {
 // throwaway values the way private deployment values would.
 const dopplerOn = ['--set', 'doppler.enabled=true', '--set', 'doppler.project=example-project', '--set', 'doppler.config=example-config'];
 
+// Every test below shells out to `helm template`, so each is bounded by external
+// process startup rather than by anything this suite controls. The suite-wide
+// default is 5s, which a loaded runner exceeds -- and a timeout here fails the
+// release pipeline while saying nothing about the property under test.
 describe.skipIf(!helmAvailable() || !existsSync(chartDir))('review-yeti chart Doppler projection', () => {
   it('renders no DopplerSecret by default', () => {
     // Enabling it requires the Doppler operator plus an out-of-band service-token
@@ -74,7 +78,7 @@ describe.skipIf(!helmAvailable() || !existsSync(chartDir))('review-yeti chart Do
     expect(rendered).not.toMatch(/serviceToken\s*:/u);
     expect(rendered).not.toMatch(/dp\.st\./u);
   });
-});
+}, 60_000);
 
 describe('review-yeti chart publishing transport', () => {
   it('renders no transport by default so the operator refuses app-gate', () => {
@@ -103,7 +107,7 @@ describe('review-yeti chart publishing transport', () => {
     expect(rendered).toContain('review-yeti-gateway-credentials');
     expect(rendered).toContain('REVIEW_YETI_BIFROST_API_KEY');
   });
-});
+}, 60_000);
 
 describe('this public repository ships no internal infrastructure identifiers', () => {
   it.each([
