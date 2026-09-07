@@ -27,6 +27,7 @@ import { OpenRouterClient } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
+import { computeArbitration } from '../review/reviewCore';
 import { logger } from '../utils/logger';
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
@@ -252,7 +253,16 @@ export async function runPublishingReviewWorker(
     const blocking = findings.filter(
       (finding) => BLOCKING_SEVERITIES.has(String((finding as { severity?: unknown })?.severity || 'P2').toUpperCase()),
     );
-    const verdict = String(panelResult.arbiter?.verdict || 'BLOCK');
+    // The model arbiter is evidence, not the policy boundary. The canonical
+    // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
+    // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
+    // Recompute from the exact persona findings and quorum so this lane shares
+    // the same fail-closed severity contract as the hosted review path.
+    const canonical = computeArbitration(panelResult.personas, panelResult.personas.length, {
+      changedFiles,
+      coverageComplete: panelResult.quorum.satisfied,
+    });
+    const verdict = canonical.verdict;
     const conclusion = publishingConclusion(verdict, blocking.length);
 
     await deps.checkClient.completeCheck({
