@@ -257,6 +257,7 @@ jobs:
           HONCHO_RECALL_PEERS: ${{ vars.HONCHO_RECALL_PEERS || 'review-yeti,codex' }}
           HONCHO_RECALL_DISTANCE: ${{ vars.HONCHO_RECALL_DISTANCE || '0.35' }}
           MEMORY_PROVIDER: 'composite'
+          MCP_CONFIG_JSON: ${{ steps.policy.outputs.mcp_config_json }}
         with:
           github-token: ${{ steps.ry_token.outputs.token || github.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}

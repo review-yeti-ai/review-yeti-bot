@@ -33,6 +33,7 @@ const ALLOWED_REVIEW_KEYS = [
   'max_incremental_diff_chars',
   'max_passes',
   'exclude',
+  'mcp_servers',
 ];
 const ALLOWED_INCREMENTAL_KEYS = ['repositories', 'max_incremental_chain'];
 const ALLOWED_BUDGET_KEYS = [

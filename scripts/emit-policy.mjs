@@ -319,13 +319,46 @@ const outputs = {
   max_passes: review.max_passes,
   exclude: review.exclude,
   passthrough: isPassthroughRepository(targetRepository) ? 'true' : 'false',
+  mcp_config_json: JSON.stringify({ servers: validateMcpServers(review.mcp_servers) }),
 };
 
-const outputPath = process.env.GITHUB_OUTPUT;
-if (!outputPath) throw new Error('GITHUB_OUTPUT is required');
-for (const [name, value] of Object.entries(outputs)) {
-  const delimiter = `CT_REVIEW_${name.toUpperCase()}_${process.pid}`;
-  appendFileSync(outputPath, `${name}<<${delimiter}\n${value}\n${delimiter}\n`);
+export function validateMcpServers(servers) {
+  if (!Array.isArray(servers)) return [];
+  const ALLOWED_COMMANDS = new Set(['node']);
+  const TRUSTED_PREFIX = '.exampleorg-review-actions/scripts/';
+  const validated = [];
+
+  for (const s of servers) {
+    if (!s || typeof s !== 'object') continue;
+    if (typeof s.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(s.id)) continue;
+    if (s.transport !== 'stdio') continue;
+    if (!ALLOWED_COMMANDS.has(s.command)) continue;
+    if (!Array.isArray(s.args) || s.args.length === 0) continue;
+
+    const scriptArg = s.args[0];
+    if (typeof scriptArg !== 'string' || !scriptArg.startsWith(TRUSTED_PREFIX) || scriptArg.includes('..')) {
+      continue;
+    }
+
+    validated.push({
+      id: s.id,
+      name: typeof s.name === 'string' ? s.name : s.id,
+      transport: 'stdio',
+      command: s.command,
+      args: s.args.filter((a) => typeof a === 'string'),
+      enabled: Boolean(s.enabled),
+    });
+  }
+
+  return validated;
 }
 
-console.log(`Loaded standard policy ${policy.schema} with ${enabledTransports.length} enabled transports and ${review.personas.split(',').length} personas.`);
+if (process.env.GITHUB_OUTPUT) {
+  const outputPath = process.env.GITHUB_OUTPUT;
+  for (const [name, value] of Object.entries(outputs)) {
+    const delimiter = `CT_REVIEW_${name.toUpperCase()}_${process.pid}`;
+    appendFileSync(outputPath, `${name}<<${delimiter}\n${value}\n${delimiter}\n`);
+  }
+
+  console.log(`Loaded standard policy ${policy.schema} with ${enabledTransports.length} enabled transports and ${review.personas.split(',').length} personas.`);
+}
