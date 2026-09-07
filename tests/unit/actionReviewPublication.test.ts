@@ -1411,6 +1411,38 @@ describe('a publication failure must not discard a computed verdict', () => {
     expect(outputs).toBeLessThan(failureBranch);
   });
 
+  it('has no early exit between computing the verdict and writing the outputs', () => {
+    // Stronger than the ordering assertion above, which only pins two markers and
+    // would not notice a NEW return inserted between them. This enumerates the
+    // window itself: any `return`, `process.exit` or bare `throw` reached after the
+    // verdict is computed but before it is written leaves a consumer observing a
+    // missing verdict for a decision that was actually made -- the exact shape of
+    // the outage this fix addressed.
+    const lines = source.split('\n');
+    const outputs = lines.findIndex((l) => l.includes('writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT'));
+    expect(outputs).toBeGreaterThan(-1);
+
+    // Walk back to where the arbitration this write publishes was produced.
+    let compute = -1;
+    for (let i = outputs; i >= 0; i -= 1) {
+      if (/\barbitration\s*=/.test(lines[i])) { compute = i; break; }
+    }
+    expect(compute).toBeGreaterThan(-1);
+
+    // Comments are stripped first: the explanatory comment in this very window
+    // contains the word "return" and would otherwise match. And the pattern is
+    // deliberately not anchored -- `if (cond) return;` is the common shape and an
+    // anchored `^return` misses it, which an earlier draft of this test proved by
+    // staying green against an injected early return.
+    const exits = lines
+      .slice(compute, outputs)
+      .map((line, offset) => ({ line: line.replace(/\/\/.*$/, '').trim(), at: compute + offset + 1 }))
+      .filter(({ line }) => /\breturn\b|process\.exit\(|\bthrow new Error/.test(line));
+
+    expect(exits, `early exit(s) between verdict computation and output write: ${JSON.stringify(exits)}`)
+      .toEqual([]);
+  });
+
   it('still fails the run when publication fails', () => {
     const failureBranch = source.indexOf('if (!publication.success) {');
     const block = source.slice(failureBranch, failureBranch + 900);
