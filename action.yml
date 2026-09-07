@@ -1,6 +1,6 @@
 name: 'AI PR Review Panel'
 description: 'Reviews a pull request with a panel of AI reviewer personas, posting a sticky summary comment and resolvable inline review threads for actionable findings.'
-author: 'JBJMLLC'
+author: 'review-yeti-ai'
 
 branding:
   icon: 'check-circle'
