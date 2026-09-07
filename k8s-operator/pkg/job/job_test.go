@@ -549,10 +549,45 @@ func TestBuildWorkerJobRefusesIncompletePublishingConfig(t *testing.T) {
 			config := publishingFixture()
 			mutate(&config)
 			input.Publishing = config
-			if _, err := job.BuildWorkerJob(input); err == nil {
+			_, err := job.BuildWorkerJob(input)
+			if err == nil {
 				t.Fatalf("expected refusal for %s", name)
 			}
+			if !errors.Is(err, job.ErrJobConfiguration) {
+				t.Fatalf("expected ErrJobConfiguration for %s, got %v", name, err)
+			}
+			// The controller copies this text into the CR condition, so it is the
+			// only signal an operator gets. A bare sentinel forced a real
+			// investigation to read the source to find which field was wrong.
+			if err.Error() == job.ErrJobConfiguration.Error() {
+				t.Fatalf("%s: error carries no reason, only the bare sentinel", name)
+			}
 		})
+	}
+}
+
+// The failure that actually happened: app-gate was enabled while the operator
+// carried no transport configuration at all. It reported "receipt-only Job
+// configuration mismatch", which is both undifferentiated and the wrong mode --
+// the investigation went looking at receipt-only plumbing that was not involved.
+func TestUnconfiguredPublishingNamesTheMissingSettings(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = job.PublishingConfig{}
+
+	_, err := job.BuildWorkerJob(input)
+	if err == nil {
+		t.Fatal("expected refusal when no publishing transport is configured")
+	}
+	for _, want := range []string{"REVIEW_YETI_GATEWAY_BASE_URL", "REVIEW_YETI_REVIEW_MODEL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error should name the unset setting %q, got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "receipt-only") {
+		t.Fatalf("an app-gate failure must not describe itself as receipt-only: %v", err)
 	}
 }
 

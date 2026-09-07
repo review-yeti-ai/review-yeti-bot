@@ -22,6 +22,7 @@ package job
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"net/url"
 	"regexp"
@@ -71,7 +72,7 @@ const (
 )
 
 var (
-	ErrJobConfiguration = errors.New("receipt-only Job configuration mismatch")
+	ErrJobConfiguration = errors.New("Job configuration rejected")
 	ErrJobDeadline      = errors.New("receipt-only Job deadline is invalid")
 
 	runIDPattern       = regexp.MustCompile(`^run_[a-f0-9]{32}$`)
@@ -347,20 +348,32 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	}, nil
 }
 
+// configErr names which check rejected the Job. The controller copies err.Error()
+// straight into the PRReviewJob condition, so this text is what an operator sees
+// in `kubectl describe`. One undifferentiated error across eleven distinct causes
+// sent a real investigation down the wrong path: an app-gate transport that was
+// never configured reported itself as a "receipt-only mismatch".
+//
+// The reasons name configuration fields, never their values -- the gateway
+// credential and run secret contents must not reach a CR status message.
+func configErr(reason string) error {
+	return fmt.Errorf("%w: %s", ErrJobConfiguration, reason)
+}
+
 func validateInput(input Input) error {
 	if input.Review == nil || input.Now.IsZero() || input.Review.Namespace != Namespace {
-		return ErrJobConfiguration
+		return configErr("review is nil, clock is zero, or namespace is not " + Namespace)
 	}
 	review := input.Review
 	spec := review.Spec
 	if len(validation.IsDNS1123Subdomain(review.Name)) != 0 || len(review.Name)+len("-worker") > 63 {
-		return ErrJobConfiguration
+		return configErr("review name is not a valid Kubernetes object name, or is too long for the -worker suffix")
 	}
 	if !runIDPattern.MatchString(spec.RunID) || len(spec.DeliveryID) == 0 || len(spec.DeliveryID) > 512 || spec.RepositoryID <= 0 ||
 		!repoPattern.MatchString(spec.Repo) || spec.PRNumber <= 0 || !shaPattern.MatchString(spec.HeadSHA) || !shaPattern.MatchString(spec.BaseSHA) ||
 		!digestPattern.MatchString(spec.PolicyDigest) || !digestPattern.MatchString(spec.ConfigDigest) || (spec.PublicationMode != "disabled" && spec.PublicationMode != "app-gate") ||
 		!workerImagePattern.MatchString(spec.WorkerImage) || !secretNamePattern.MatchString(spec.RunSecretName) {
-		return ErrJobConfiguration
+		return configErr("PRReviewJob spec failed identity validation (run/delivery/repo/PR/sha/digest/publication-mode/image/run-secret)")
 	}
 	if err := validateQualification(spec.QualificationProfile, spec.QualificationModel); err != nil {
 		return err
@@ -370,13 +383,13 @@ func validateInput(input Input) error {
 	// would build a Job whose two halves disagree about whether it may publish, so
 	// refuse the combination here rather than letting the worker discover it.
 	if spec.QualificationProfile != "" && spec.PublicationMode != PublicationModeDisabled {
-		return ErrJobConfiguration
+		return configErr("a qualification profile cannot be combined with publication mode " + spec.PublicationMode)
 	}
 	if spec.TerminalDeadline.Sub(spec.ReceivedAt.Time) != 15*time.Minute || input.Now.Before(spec.ReceivedAt.Time) {
 		return ErrJobDeadline
 	}
 	if input.WorkspacePVCName != workspace.PVCName(spec.RepositoryID, spec.PRNumber) {
-		return ErrJobConfiguration
+		return configErr("workspace PVC name does not match the repository and PR it claims")
 	}
 	lease := input.WorkspaceLease
 	if !lease.Acquired || lease.Lease == nil || lease.HolderIdentity != spec.RunID {
@@ -388,19 +401,31 @@ func validateInput(input Input) error {
 // validatePublishing refuses an app-gate Job whose transport is not fully and
 // safely specified. https is required because the gateway carries the diff.
 func validatePublishing(config PublishingConfig) error {
-	if config.GatewayBaseURL == "" || config.Model == "" || config.GatewaySecretName == "" ||
-		config.GatewaySecretKey == "" {
-		return ErrJobConfiguration
+	var missing []string
+	if config.GatewayBaseURL == "" {
+		missing = append(missing, "REVIEW_YETI_GATEWAY_BASE_URL")
+	}
+	if config.Model == "" {
+		missing = append(missing, "REVIEW_YETI_REVIEW_MODEL")
+	}
+	if config.GatewaySecretName == "" {
+		missing = append(missing, "REVIEW_YETI_GATEWAY_SECRET_NAME")
+	}
+	if config.GatewaySecretKey == "" {
+		missing = append(missing, "REVIEW_YETI_GATEWAY_SECRET_KEY")
+	}
+	if len(missing) > 0 {
+		return configErr("app-gate publishing transport is not configured on the operator; unset: " + strings.Join(missing, ", "))
 	}
 	if strings.ContainsAny(config.GatewayBaseURL+config.Model, "\r\n\t ") {
-		return ErrJobConfiguration
+		return configErr("publishing gateway URL or model contains whitespace")
 	}
 	parsed, err := url.Parse(config.GatewayBaseURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return ErrJobConfiguration
+		return configErr("publishing gateway URL must be an absolute https URL")
 	}
 	if len(validation.IsDNS1123Subdomain(config.GatewaySecretName)) != 0 {
-		return ErrJobConfiguration
+		return configErr("publishing gateway secret name is not a valid Kubernetes object name")
 	}
 	return nil
 }
@@ -408,13 +433,13 @@ func validatePublishing(config PublishingConfig) error {
 func validateQualification(profile, model string) error {
 	if profile == "" {
 		if model != "" {
-			return ErrJobConfiguration
+			return configErr("a qualification model was set without a qualification profile")
 		}
 		return nil
 	}
 	if (profile != FullPanelQualificationProfile && profile != SameHeadQualificationProfile) || model == "" || len(model) > 256 || model != strings.TrimSpace(model) ||
 		strings.EqualFold(model, "auto") || strings.EqualFold(model, "openrouter/auto") || strings.ContainsAny(model, "\r\n\t") {
-		return ErrJobConfiguration
+		return configErr("qualification profile or model is unknown, empty, whitespace-bearing, or an auto-routing alias")
 	}
 	return nil
 }
