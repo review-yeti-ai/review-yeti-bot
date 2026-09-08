@@ -17,6 +17,10 @@ export interface ReviewFinding {
   reporters?: number;
   /** Present when arbitration re-filed a P1 as P2 on an advisory-claim title. */
   severityAdjusted?: { from: 'P1'; reason: string };
+  /** Original severity before an unverified-premise downgrade; present only with downgrade_reason. */
+  downgradedFrom?: 'P0' | 'P1';
+  /** Present when arbitration re-filed a P0/P1 as P2 because its body hedged on an unverified premise. */
+  downgrade_reason?: 'unverified_premise';
 }
 
 export interface ReviewChangedFile {
@@ -80,6 +84,10 @@ export function changedLineNumbers(patch?: string): Set<number> | null;
 export function sanitizeFinding(raw: unknown, changedFiles?: ReviewChangedFile[]): ReviewFinding | null;
 export function sanitizeFindings(raw: unknown, changedFiles?: ReviewChangedFile[]): ReviewFinding[];
 export function calibrateSeverity(finding: ReviewFinding): ReviewFinding;
+/** The one exported, reviewable phrase list that drives `downgradeUnverifiedPremise`. */
+export const UNVERIFIED_PREMISE_PHRASES: readonly string[];
+export function hasUnverifiedPremise(text: string): boolean;
+export function downgradeUnverifiedPremise(finding: ReviewFinding): ReviewFinding;
 export function clusterFindings(findings: ReviewFinding[]): ReviewFinding[];
 export interface ReviewFindingsValidation {
   valid: boolean;

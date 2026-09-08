@@ -1,4 +1,7 @@
 node_modules/
+# Also the bare name: a symlink named node_modules is not matched by the
+# directory-only pattern above and was committed once (review-yeti-bot#589).
+node_modules
 dist/
 coverage/
 .agents/
