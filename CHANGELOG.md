@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.42.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.6...v1.42.0) (2026-09-08)
+
+
+### Features
+
+* publish inline findings with one sticky review overview ([#584](https://github.com/review-yeti-ai/review-yeti-bot/issues/584)) ([192b0f1](https://github.com/review-yeti-ai/review-yeti-bot/commit/192b0f1b569a22c8619e7d389f5e6a7ca769a2b0))
+
 ## [1.41.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.5...v1.41.6) (2026-09-08)
 
 
