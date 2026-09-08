@@ -18,6 +18,7 @@ export interface PersonaFinding {
   confidence?: number;
   recommendation?: string;
   suggestion?: string;
+  replacementCode?: string;
   codeSnippet?: string;
   fixOptions?: FixOption[];
   isRedTeam?: boolean;
@@ -272,13 +273,18 @@ export function formatInlineCommentBody(
         body += formatSuggestionBlock(fix.suggestionCode);
       }
     });
-  } else if (!finding.isArchitectural && (finding.suggestion || finding.codeSnippet)) {
-    const code = finding.suggestion || finding.codeSnippet;
-    body += `\n${formatSuggestionBlock(code!)}`;
+  } else if (!finding.isArchitectural && typeof finding.replacementCode === 'string') {
+    const fence = '`'.repeat(Math.max(3, ...(finding.replacementCode.match(/`+/g) || []).map(run => run.length + 1)));
+    body += `\n${fence}suggestion\n${finding.replacementCode}\n${fence}\n`;
+  } else if (!finding.isArchitectural && finding.codeSnippet) {
+    body += `\n${formatSuggestionBlock(finding.codeSnippet)}`;
   } else if (finding.isArchitectural || options?.fallbackTable || finding.recommendation) {
     body += '\n' + formatFindingFallbackTable(finding) + '\n';
   }
 
+  if (finding.suggestion && !finding.isArchitectural) {
+    body += `\n**Suggested fix**\n\n${finding.suggestion}\n`;
+  }
   return body;
 }
 

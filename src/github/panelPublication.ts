@@ -9,7 +9,8 @@
  *   (P0/P1 only by default).
  */
 
-import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS } from '../review/findingPublication';
+import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS, planFindingPublication } from '../review/findingPublication';
+import type { PublicationChangedFile } from '../review/findingPublication';
 import type { PanelFinding, PersonaLaneResult } from '../panel/panelEngine';
 import type { PublishInlineCommentRequest } from './commentPublisher';
 
@@ -75,6 +76,7 @@ export function dedupeActionableFindings(
 
   const severityRank: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const byKey = new Map<string, FindingWithPersona & { personas: string[] }>();
+  const conflictingReplacements = new Set<string>();
 
   for (const raw of findings) {
     const severity = String(raw.severity || 'P2').toUpperCase();
@@ -103,7 +105,17 @@ export function dedupeActionableFindings(
     } else if (finding.suggestion && !existing.suggestion) {
       existing.suggestion = finding.suggestion;
     }
-    if (!existing.startLine && finding.startLine) {
+    if (typeof existing.replacementCode === 'string' && typeof finding.replacementCode === 'string'
+      && (existing.replacementCode !== finding.replacementCode
+        || (existing.startLine ?? existing.line) !== (finding.startLine ?? finding.line))) {
+      conflictingReplacements.add(key);
+      delete existing.replacementCode;
+    }
+    if (!conflictingReplacements.has(key) && typeof existing.replacementCode !== 'string' && typeof finding.replacementCode === 'string') {
+      existing.replacementCode = finding.replacementCode;
+      existing.startLine = finding.startLine;
+    }
+    if (typeof existing.replacementCode !== 'string' && !existing.startLine && finding.startLine) {
       existing.startLine = finding.startLine;
     }
     if (!existing.fixOptions && finding.fixOptions) {
@@ -137,6 +149,7 @@ export function dedupeActionableFindings(
       title: entry.title,
       body: `${entry.body || ''}${attribution}`,
       ...(entry.startLine !== undefined ? { startLine: entry.startLine } : {}),
+      ...(typeof entry.replacementCode === 'string' ? { replacementCode: entry.replacementCode } : {}),
       ...(entry.suggestion ? { suggestion: entry.suggestion } : {}),
       ...(entry.confidence !== undefined ? { confidence: entry.confidence } : {}),
       ...(entry.recommendation ? { recommendation: entry.recommendation } : {}),
@@ -204,6 +217,7 @@ export function formatPersonaIssueComment(
 
 export function buildFinalInlineComments(options: {
   findings: FindingWithPersona[];
+  changedFiles?: PublicationChangedFile[];
   max?: number;
   owner?: string;
   repo?: string;
@@ -211,29 +225,45 @@ export function buildFinalInlineComments(options: {
   commitSha?: string;
 }): PublishInlineCommentRequest[] {
   const deduped = dedupeActionableFindings(options.findings, { max: options.max });
-  return deduped.map((finding) => ({
-    ...(options.owner ? { owner: options.owner } : {}),
-    ...(options.repo ? { repo: options.repo } : {}),
-    ...(options.prNumber !== undefined ? { prNumber: options.prNumber } : {}),
-    ...(options.commitSha ? { commitSha: options.commitSha } : {}),
-    path: finding.path,
-    line: finding.line,
-    ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
-    finding: {
-      persona: finding.persona as any,
-      severity: finding.severity === 'P0' ? 'critical' : finding.severity === 'P1' ? 'major' : 'minor',
-      filePath: finding.path,
-      lineNumber: finding.line,
+  return deduped.map((rawFinding) => {
+    const finding = { ...rawFinding };
+    if (typeof finding.replacementCode === 'string') {
+      const validated = options.changedFiles
+        ? planFindingPublication([finding], options.changedFiles, { mergeNearDuplicates: false }).lineComments[0]
+        : undefined;
+      if (validated?.side === 'RIGHT' && typeof validated.finding.replacementCode === 'string') {
+        finding.replacementCode = validated.finding.replacementCode;
+        finding.startLine = validated.finding.startLine;
+      } else {
+        delete finding.replacementCode;
+        delete finding.startLine;
+      }
+    }
+    return {
+      ...(options.owner ? { owner: options.owner } : {}),
+      ...(options.repo ? { repo: options.repo } : {}),
+      ...(options.prNumber !== undefined ? { prNumber: options.prNumber } : {}),
+      ...(options.commitSha ? { commitSha: options.commitSha } : {}),
+      path: finding.path,
+      line: finding.line,
       ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
-      title: finding.title,
-      comment: `${finding.title}\n\n${finding.body}`,
-      suggestion: finding.suggestion,
-      confidence: finding.confidence,
-      recommendation: finding.recommendation,
-      fixOptions: finding.fixOptions,
-      isArchitectural: finding.isArchitectural,
-    },
-  }));
+      finding: {
+        persona: finding.persona as any,
+        severity: finding.severity === 'P0' ? 'critical' : finding.severity === 'P1' ? 'major' : 'minor',
+        filePath: finding.path,
+        lineNumber: finding.line,
+        ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
+        title: finding.title,
+        comment: `${finding.title}\n\n${finding.body}`,
+        suggestion: finding.suggestion,
+        replacementCode: finding.replacementCode,
+        confidence: finding.confidence,
+        recommendation: finding.recommendation,
+        fixOptions: finding.fixOptions,
+        isArchitectural: finding.isArchitectural,
+      },
+    };
+  });
 }
 
 export function formatFinalReviewBody(options: {

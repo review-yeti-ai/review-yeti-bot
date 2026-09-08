@@ -36,13 +36,22 @@ describe('Milestone 1: Native 1-Click Suggestion Diffs & Fallback Table (R1)', (
         lineNumber: 42,
         title: 'Deprecated JWT Algorithm',
         comment: 'Algorithm HS256 is deprecated for service tokens; use RS256.',
-        suggestion: 'const algorithm = "RS256";',
+        replacementCode: 'const algorithm = "RS256";',
       };
 
       const formatted = formatInlineCommentBody(finding);
 
       expect(formatted).toContain('### [correctness] Deprecated JWT Algorithm — Severity: P1');
       expect(formatted).toContain('```suggestion\nconst algorithm = "RS256";\n```');
+    });
+
+    it('renders prose as guidance and preserves exact explicit replacements including deletions', () => {
+      const finding: PersonaFinding = { persona: 'security', severity: 'P1', filePath: 'x.ts', lineNumber: 1, comment: 'Unsafe code', suggestion: 'Validate the input.' };
+      expect(formatInlineCommentBody(finding)).not.toContain('```suggestion');
+      expect(formatInlineCommentBody(finding)).toContain('**Suggested fix**');
+      expect(formatInlineCommentBody({ ...finding, replacementCode: '  safe();\n' })).toContain('```suggestion\n  safe();\n\n```');
+      expect(formatInlineCommentBody({ ...finding, replacementCode: '' })).toContain('```suggestion\n\n```');
+      expect(formatInlineCommentBody({ ...finding, replacementCode: 'const fence = "```";' })).toContain('````suggestion\nconst fence = "```";\n````');
     });
 
     it('formatSuggestionBlock cleanly strips outer markdown fences and trims extraneous whitespace', () => {
@@ -105,7 +114,7 @@ describe('Milestone 1: Native 1-Click Suggestion Diffs & Fallback Table (R1)', (
         startLine: 45,
         title: 'Missing Type Guard',
         comment: 'Config parsing lacks object type guard, leading to unhandled TypeError.',
-        suggestion: multiLineReplacement,
+        replacementCode: multiLineReplacement,
       };
 
       const formatted = formatInlineCommentBody(finding);
@@ -138,7 +147,7 @@ describe('Milestone 1: Native 1-Click Suggestion Diffs & Fallback Table (R1)', (
         startLine: 25,
         title: 'SQL Injection Risk',
         comment: 'Escape user query parameters.',
-        suggestion: 'const res = await db.query("SELECT * FROM users WHERE id = $1", [userId]);',
+        replacementCode: 'const res = await db.query("SELECT * FROM users WHERE id = $1", [userId]);',
       };
 
       const result = await publisher.publishReview({
@@ -200,7 +209,7 @@ describe('Milestone 1: Native 1-Click Suggestion Diffs & Fallback Table (R1)', (
         startLine: 10,
         title: 'Use Strict Equality',
         comment: 'Use === instead of ==',
-        suggestion: 'if (x === 1) return;',
+        replacementCode: 'if (x === 1) return;',
       };
 
       await publisher.publishReview({

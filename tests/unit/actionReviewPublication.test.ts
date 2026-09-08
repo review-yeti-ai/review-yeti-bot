@@ -1004,6 +1004,8 @@ describe('repairing a partially published round', () => {
     path: item.path,
     line: Number.isInteger(item.line) ? item.line : null,
     diffSide: item.side || 'RIGHT',
+    startLine: item.startLine ?? null,
+    startDiffSide: item.startLine != null ? 'RIGHT' : null,
     comments: {
       nodes: [{
         databaseId: 4000,
@@ -1016,10 +1018,10 @@ describe('repairing a partially published round', () => {
     },
   });
 
-  function runner(seedThreads: any[], options: { mirrorWrites?: boolean } = {}) {
+  function runner(seedThreads: any[], options: { mirrorWrites?: boolean; freshReview?: boolean } = {}) {
     const mirrorWrites = options.mirrorWrites !== false;
     const reviews = [{ id: 777, commit_id: 'newhead', user: { login: 'github-actions[bot]' }, body: `**Verdict: SHIP**\n\n${marker}\n\n${resultMarker}` }];
-    const state = { reviews, threads: [...seedThreads], posted: [] as any[], comments: [] as any[], nextId: 5000 };
+    const state = { reviews: options.freshReview ? [] : reviews, threads: [...seedThreads], posted: [] as any[], comments: [] as any[], nextId: 5000 };
     const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
       if (args[0] === 'pr' && args[1] === 'view') return { status: 0, stdout: JSON.stringify({ headRefOid: 'newhead', baseRefOid: 'base' }), stderr: '' };
       if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
@@ -1036,6 +1038,15 @@ describe('repairing a partially published round', () => {
         state.posted.push({ method: args[args.indexOf('--method') + 1], endpoint, payload });
         state.nextId += 1;
         if (endpoint.endsWith('/issues/42/comments')) state.comments.push({ id: state.nextId, body: payload.body, user: { login: 'github-actions[bot]' } });
+        if (mirrorWrites && endpoint.endsWith('/pulls/42/reviews')) {
+          state.reviews.push({ id: state.nextId, commit_id: payload.commit_id, body: payload.body, user: { login: 'github-actions[bot]' } });
+          state.threads.push(...payload.comments.map((comment: any) => ({
+            id: `thread-${comment.path}`, isResolved: false, path: comment.path, line: comment.line,
+            startLine: comment.start_line ?? null, startDiffSide: comment.start_side ?? null,
+            diffSide: comment.side,
+            comments: { nodes: [{ body: comment.body, author: { login: 'github-actions[bot]' }, commit: { oid: 'newhead' } }] },
+          })));
+        }
         if (mirrorWrites && endpoint.endsWith('/pulls/42/comments')) {
           state.threads.push({
             id: `thread-created-${state.nextId}`,
@@ -1043,6 +1054,8 @@ describe('repairing a partially published round', () => {
             path: payload.path,
             line: payload.line ?? null,
             diffSide: payload.side || 'RIGHT',
+            startLine: payload.start_line ?? null,
+            startDiffSide: payload.start_side ?? null,
             comments: { nodes: [{ databaseId: state.nextId, body: payload.body, createdAt: '2026-09-06T00:00:00Z', author: { login: 'github-actions[bot]' }, commit: { oid: 'newhead' } }], pageInfo: { hasNextPage: false, endCursor: null } },
           });
         }
@@ -1053,6 +1066,46 @@ describe('repairing a partially published round', () => {
     };
     return { state, commandRunner };
   }
+
+  it.each([true, false])('publishes generated replacements with exact GitHub ranges (fresh review=%s)', (freshReview) => {
+    const files = [
+      { path: 'src/alpha.ts', patch: hunk }, { path: 'src/beta.ts', patch: hunk },
+      { path: 'src/delete.ts', patch: hunk }, { path: 'src/fallback.ts', patch: '' },
+    ];
+    const generated = pipeline.sanitizeFindings([
+      { severity: 'P1', path: 'src/alpha.ts', line: 4, startLine: null, title: 'Scope tenant query', body: 'Caller input bypasses tenant filtering.', replacementCode: '  return scoped;  ' },
+      { severity: 'P1', path: 'src/beta.ts', line: 6, startLine: 4, title: 'Validate session before access', body: 'Expired sessions allow access.', replacementCode: '  validate();\n  access();' },
+      { severity: 'P1', path: 'src/delete.ts', line: 3, startLine: null, title: 'Remove exposed credential', body: 'A secret is logged.', replacementCode: '' },
+      { severity: 'P1', path: 'src/fallback.ts', line: 3, startLine: null, title: 'Restrict account lookup', body: 'Missing scope exposes accounts.', suggestion: 'Scope the lookup.', replacementCode: 'return scoped;' },
+    ], files);
+    const publicationPlan = planFindingPublication([{ displayName: 'Security', findings: generated }], files);
+    const { state, commandRunner } = runner([], { freshReview });
+    expect(postOrOutputComment('body', context, publicationPlan, { commandRunner }).success).toBe(true);
+    const payloads = state.posted.flatMap((post) => post.endpoint.endsWith('/pulls/42/reviews')
+      ? post.payload.comments : post.endpoint.endsWith('/pulls/42/comments') ? [post.payload] : []);
+    const single = payloads.find((comment) => comment.path === 'src/alpha.ts');
+    expect(single).toMatchObject({ line: 4, side: 'RIGHT' });
+    expect(single).not.toHaveProperty('start_line');
+    expect(single.body).toContain('```suggestion\n  return scoped;  \n```');
+    expect(payloads.find((comment) => comment.path === 'src/beta.ts')).toMatchObject({ line: 6, start_line: 4, start_side: 'RIGHT' });
+    expect(payloads.find((comment) => comment.path === 'src/delete.ts').body).toContain('```suggestion\n\n```');
+    const fallback = payloads.find((comment) => comment.path === 'src/fallback.ts');
+    expect(fallback).toMatchObject({ subject_type: 'file' });
+    expect(fallback.body).not.toContain('```suggestion');
+    expect(fallback.body).toContain('Scope the lookup.');
+  });
+
+  it('repairs a matching marked thread whose replacement range is wrong', () => {
+    const publicationPlan = planFindingPublication([{ displayName: 'Security', findings: [{
+      severity: 'P1', path: 'src/alpha.ts', line: 6, startLine: 4,
+      title: 'Scope tenant access', body: 'Tenant input bypasses access controls.', replacementCode: '  scoped();',
+    }] }], [{ path: 'src/alpha.ts', patch: hunk }]);
+    const wrongRange = { ...threadFor(publicationPlan.lineComments[0]), startLine: 5 };
+    const { state, commandRunner } = runner([wrongRange]);
+    expect(postOrOutputComment('body', context, publicationPlan, { commandRunner }).success).toBe(true);
+    expect(state.posted.filter((post) => post.endpoint.endsWith('/pulls/42/comments'))).toHaveLength(1);
+    expect(state.posted.find((post) => post.endpoint.endsWith('/pulls/42/comments')).payload.start_line).toBe(4);
+  });
 
   it('creates only the conversations the prior round did not manage to open', () => {
     const publicationPlan = plan();

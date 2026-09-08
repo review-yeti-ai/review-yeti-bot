@@ -169,6 +169,76 @@ describe('shared finding publication planner', () => {
     expect(forward).toEqual(reverse);
     expect(forward.lineComments.map((comment) => comment.finding.title)).toEqual(['C', 'A', 'B']);
   });
+
+  const patchFinding = {
+    severity: 'P1' as const, path: 'src/app.ts', line: 22,
+    title: 'Unsafe fallback', body: 'The fallback bypasses validation.',
+    suggestion: 'Validate the fallback.',
+  };
+
+  it.each(['    validate();\n    run();\n', '', '  ', 'const fence = "```";'])('preserves exact replacement text %j', (replacementCode) => {
+    const plan = planFindingPublication([{ ...patchFinding, replacementCode }], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments[0].finding.replacementCode).toBe(replacementCode);
+    expect(plan.lineComments[0].body).toContain(`suggestion\n${replacementCode}\n`);
+  });
+
+  it('anchors a replacement range including context within the same new-file hunk', () => {
+    const plan = planFindingPublication([{ ...patchFinding, startLine: 20, replacementCode: '  guarded();' }], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments[0]).toMatchObject({ startLine: 20, line: 22, side: 'RIGHT' });
+    expect(plan.lineComments[0].body).toContain('```suggestion\n  guarded();\n```');
+  });
+
+  it.each([
+    { startLine: 19 }, { startLine: 23 }, { startLine: 0 }, { startLine: 20.5 },
+    { startLine: '20' }, { startLine: 21, line: 51 },
+  ])('keeps prose but suppresses unsafe replacement range %j', (range) => {
+    const plan = planFindingPublication([{ ...patchFinding, replacementCode: 'guarded();', ...range } as any], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0].startLine).toBeUndefined();
+    expect(plan.lineComments[0].finding.replacementCode).toBeUndefined();
+    expect(plan.lineComments[0].body).not.toContain('```suggestion');
+    expect(plan.lineComments[0].body).toContain('Validate the fallback.');
+  });
+
+  it('does not offer replacements on deleted lines or file-level comments', () => {
+    const left = planFindingPublication([{ ...patchFinding, line: 11, side: 'LEFT', replacementCode: 'guarded();' }], [{ path: 'src/app.ts', patch: textPatch }]);
+    const file = planFindingPublication([{ ...patchFinding, replacementCode: 'guarded();' }], [{ path: 'src/app.ts' }]);
+    for (const comment of [...left.lineComments, ...file.fileComments]) {
+      expect(comment.finding.replacementCode).toBeUndefined();
+      expect(comment.body).not.toContain('```suggestion');
+      expect(comment.body).toContain('Validate the fallback.');
+    }
+  });
+
+  it('never borrows a replacement from a nearby merged finding', () => {
+    const plan = planFindingPublication([
+      { ...patchFinding, line: 21 },
+      { ...patchFinding, replacementCode: 'onlyCorrectAtLine22();' },
+    ], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0].line).toBe(21);
+    expect(plan.lineComments[0].body).not.toContain('```suggestion');
+  });
+
+  it('drops conflicting patches from duplicate reports, including later matching reports', () => {
+    const plan = planFindingPublication([
+      { ...patchFinding, replacementCode: 'first();' },
+      { ...patchFinding, replacementCode: 'second();' },
+      { ...patchFinding, replacementCode: 'first();' },
+    ], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0].body).not.toContain('```suggestion');
+  });
+
+  it('preserves conflict suppression when merging differently titled duplicate groups', () => {
+    const plan = planFindingPublication([
+      { ...patchFinding, title: 'Tenant query bypasses validation', replacementCode: 'first();' },
+      { ...patchFinding, title: 'Tenant query skips validation', replacementCode: 'second();' },
+      { ...patchFinding, title: 'Tenant query skips validation', replacementCode: 'third();' },
+    ], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0].body).not.toContain('```suggestion');
+  });
 });
 
 
