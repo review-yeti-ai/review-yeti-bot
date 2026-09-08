@@ -177,6 +177,10 @@ describe('Review Yeti Platform Superpowers E2E Test Suite', () => {
           repo: 'test-repo',
           prNumber: 42,
           commitSha: 'a'.repeat(40),
+          changedFiles: [{
+            path: 'src/api/auth.ts',
+            patch: '@@ -19,0 +20,6 @@\n' + Array.from({ length: 6 }, (_, i) => `+auth line ${20 + i}`).join('\n'),
+          }],
           findings: deduped,
         });
 

@@ -1,15 +1,6 @@
-/**
- * Panel publication policy (2026-08-03):
- *
- * - Persona lanes publish as **issue comments** (PR conversation). They must NOT
- *   open pull-request review threads — those block merge under
- *   required_conversation_resolution and spam CI recompute.
- * - The **final** arbiter phase publishes one Pull Request Review and may attach
- *   a capped, cross-persona-deduped set of actionable inline review comments
- *   (P0/P1 only by default).
- */
+/** Final publication puts every deduplicated finding in a review thread, at every severity. */
 
-import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS, planFindingPublication } from '../review/findingPublication';
+import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS, mergeReplacementMetadata, planFindingPublication } from '../review/findingPublication';
 import type { PublicationChangedFile } from '../review/findingPublication';
 import type { PanelFinding, PersonaLaneResult } from '../panel/panelEngine';
 import type { PublishInlineCommentRequest } from './commentPublisher';
@@ -17,23 +8,12 @@ import type { PublishInlineCommentRequest } from './commentPublisher';
 export const PERSONA_ISSUE_MARKER_PREFIX = '<!-- ct-review-persona';
 export const FINAL_REVIEW_MARKER_PREFIX = '<!-- ct-review-final';
 
-/**
- * Max inline review threads opened by the final (arbiter) phase.
- *
- * Aliases the shared cap rather than restating it. Both publication surfaces are bound by the same
- * merge-blocking rule under `required_conversation_resolution`, and two hand-maintained copies of
- * that number drift: raising one without the other silently gives the App and the Action different
- * merge behaviour for identical findings.
- */
+/** Default publication is uncapped; callers may opt into an explicit limit. */
 export const MAX_FINAL_INLINE_COMMENTS = MAX_PUBLISHED_REVIEW_THREADS;
 
-/**
- * Severities that may become resolve-required review threads.
- *
- * Derived from the shared list for the same reason the cap is: widening the blocking set must not
- * be possible on one publication surface only.
- */
+/** Arbitration severity remains independent from eligibility for inline publication. */
 export const ACTIONABLE_SEVERITIES = new Set<string>(SHARED_ACTIONABLE_SEVERITIES);
+const INLINE_SEVERITIES = ['P0', 'P1', 'P2'];
 
 export type FindingWithPersona = PanelFinding & { persona: string };
 
@@ -71,12 +51,11 @@ export function dedupeActionableFindings(
   const allowed = new Set(
     options.severities
       ? [...options.severities].map((s) => String(s).toUpperCase())
-      : [...ACTIONABLE_SEVERITIES],
+      : INLINE_SEVERITIES,
   );
 
   const severityRank: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
   const byKey = new Map<string, FindingWithPersona & { personas: string[] }>();
-  const conflictingReplacements = new Set<string>();
 
   for (const raw of findings) {
     const severity = String(raw.severity || 'P2').toUpperCase();
@@ -105,19 +84,7 @@ export function dedupeActionableFindings(
     } else if (finding.suggestion && !existing.suggestion) {
       existing.suggestion = finding.suggestion;
     }
-    if (typeof existing.replacementCode === 'string' && typeof finding.replacementCode === 'string'
-      && (existing.replacementCode !== finding.replacementCode
-        || (existing.startLine ?? existing.line) !== (finding.startLine ?? finding.line))) {
-      conflictingReplacements.add(key);
-      delete existing.replacementCode;
-    }
-    if (!conflictingReplacements.has(key) && typeof existing.replacementCode !== 'string' && typeof finding.replacementCode === 'string') {
-      existing.replacementCode = finding.replacementCode;
-      existing.startLine = finding.startLine;
-    }
-    if (typeof existing.replacementCode !== 'string' && !existing.startLine && finding.startLine) {
-      existing.startLine = finding.startLine;
-    }
+    mergeReplacementMetadata(existing, finding);
     if (!existing.fixOptions && finding.fixOptions) {
       existing.fixOptions = finding.fixOptions;
     }
@@ -225,20 +192,18 @@ export function buildFinalInlineComments(options: {
   commitSha?: string;
 }): PublishInlineCommentRequest[] {
   const deduped = dedupeActionableFindings(options.findings, { max: options.max });
-  return deduped.map((rawFinding) => {
-    const finding = { ...rawFinding };
-    if (typeof finding.replacementCode === 'string') {
-      const validated = options.changedFiles
-        ? planFindingPublication([finding], options.changedFiles, { mergeNearDuplicates: false }).lineComments[0]
-        : undefined;
-      if (validated?.side === 'RIGHT' && typeof validated.finding.replacementCode === 'string') {
-        finding.replacementCode = validated.finding.replacementCode;
-        finding.startLine = validated.finding.startLine;
-      } else {
-        delete finding.replacementCode;
-        delete finding.startLine;
-      }
-    }
+  const changedFiles = options.changedFiles ?? deduped.map(finding => ({ path: finding.path }));
+  return deduped.flatMap((rawFinding) => {
+    const plan = planFindingPublication([rawFinding], changedFiles, { mergeNearDuplicates: false });
+    const validated = plan.lineComments[0] ?? plan.fileComments[0];
+    if (!validated) return [];
+    const fileComment = plan.fileComments.length > 0;
+    const finding = { ...rawFinding, ...validated.finding };
+    // A spread cannot clear metadata deliberately suppressed by the planner.
+    delete finding.replacementCode;
+    delete finding.startLine;
+    if (typeof validated.finding.replacementCode === 'string') finding.replacementCode = validated.finding.replacementCode;
+    if (validated.finding.startLine !== undefined) finding.startLine = validated.finding.startLine;
     return {
       ...(options.owner ? { owner: options.owner } : {}),
       ...(options.repo ? { repo: options.repo } : {}),
@@ -246,6 +211,7 @@ export function buildFinalInlineComments(options: {
       ...(options.commitSha ? { commitSha: options.commitSha } : {}),
       path: finding.path,
       line: finding.line,
+      ...(fileComment ? { subjectType: 'file' as const } : { side: validated.side }),
       ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
       finding: {
         persona: finding.persona as any,
@@ -254,7 +220,7 @@ export function buildFinalInlineComments(options: {
         lineNumber: finding.line,
         ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
         title: finding.title,
-        comment: `${finding.title}\n\n${finding.body}`,
+        comment: `${finding.title}\n\n${finding.body}${fileComment ? `\n\nReported location: line ${finding.line} (${finding.side}).` : ''}`,
         suggestion: finding.suggestion,
         replacementCode: finding.replacementCode,
         confidence: finding.confidence,
@@ -275,21 +241,13 @@ export function formatFinalReviewBody(options: {
   totalActionableCandidates: number;
   maxInline: number;
 }): string {
-  const threadNote =
-    options.inlineCount > 0
-      ? `Opening **${options.inlineCount}** actionable review thread(s) (P0/P1, deduped, cap ${options.maxInline}). ` +
-        `Persona reports were posted as issue comments only.`
-      : `No P0/P1 actionable threads after cross-persona dedupe (candidates considered: ${options.totalActionableCandidates}). ` +
-        `Persona reports were posted as issue comments only.`;
-
   return [
     `${FINAL_REVIEW_MARKER_PREFIX} head=${options.headSha.slice(0, 12)} -->`,
-    `## Binding arbiter verdict: ${options.verdict}`,
+    `## Review verdict: ${options.verdict}`,
     '',
     options.rationale,
     '',
-    threadNote,
-    '',
-    options.summary,
+    `Findings published inline: **${options.inlineCount}**.`,
+    `Head: \`${options.headSha}\``,
   ].join('\n');
 }

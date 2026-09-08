@@ -28,24 +28,24 @@ describe('panelPublication', () => {
       { ...baseFinding, severity: 'P2', title: 'nit', persona: 'consistency' },
     ]);
 
-    expect(result).toHaveLength(1);
+    expect(result).toHaveLength(2);
     expect(result[0].severity).toBe('P1');
     expect(result[0].body).toContain('security-tenancy');
     expect(result[0].body).toContain('policy-compliance');
     expect(result[0].body).not.toContain('nit');
   });
 
-  it('drops P2 from actionable threads and ranks P0 before P1', () => {
+  it('publishes every severity and ranks P0 before P1 before P2', () => {
     const result = dedupeActionableFindings([
       { ...baseFinding, severity: 'P2', title: 'style', persona: 'consistency' },
       { ...baseFinding, severity: 'P1', title: 'p1-a', path: 'b.ts', persona: 'a' },
       { ...baseFinding, severity: 'P0', title: 'p0-a', path: 'a.ts', persona: 'b' },
     ]);
-    expect(result.map((f) => f.severity)).toEqual(['P0', 'P1']);
+    expect(result.map((f) => f.severity)).toEqual(['P0', 'P1', 'P2']);
     expect(result[0].path).toBe('a.ts');
   });
 
-  it('caps final inline comments', () => {
+  it('publishes every finding by default and honors an explicit cap', () => {
     const many = Array.from({ length: 30 }, (_, i) => ({
       ...baseFinding,
       path: `src/f${i}.ts`,
@@ -55,7 +55,8 @@ describe('panelPublication', () => {
     }));
     const result = dedupeActionableFindings(many, { max: 5 });
     expect(result).toHaveLength(5);
-    expect(MAX_FINAL_INLINE_COMMENTS).toBe(10);
+    expect(MAX_FINAL_INLINE_COMMENTS).toBe(Infinity);
+    expect(buildFinalInlineComments({ findings: many })).toHaveLength(30);
     expect(ACTIONABLE_SEVERITIES.has('P0')).toBe(true);
     expect(ACTIONABLE_SEVERITIES.has('P2')).toBe(false);
   });
@@ -85,7 +86,7 @@ describe('panelPublication', () => {
     expect(body).not.toMatch(/event:\s*COMMENT/);
   });
 
-  it('buildFinalInlineComments maps only deduped actionable findings', () => {
+  it('buildFinalInlineComments maps every deduped finding', () => {
     const comments = buildFinalInlineComments({
       findings: [
         { ...baseFinding, persona: 'security-tenancy' },
@@ -93,13 +94,13 @@ describe('panelPublication', () => {
         { ...baseFinding, severity: 'P2', title: 'nit', persona: 'consistency' },
       ],
     });
-    expect(comments).toHaveLength(1);
+    expect(comments).toHaveLength(2);
     expect(comments[0].path).toBe('src/a.ts');
     expect(comments[0].finding.severity).toBe('major');
     expect(comments[0].finding.comment).toContain('Seen by personas');
   });
 
-  it('formatFinalReviewBody documents deferred persona surface', () => {
+  it('formatFinalReviewBody stays compact without the finding ledger', () => {
     const body = formatFinalReviewBody({
       verdict: 'FIX_FIRST',
       rationale: 'P1 remains',
@@ -109,9 +110,10 @@ describe('panelPublication', () => {
       totalActionableCandidates: 5,
       maxInline: 10,
     });
-    expect(body).toContain('Binding arbiter verdict: FIX_FIRST');
+    expect(body).toContain('Review verdict: FIX_FIRST');
     expect(body).toContain('2');
-    expect(body).toContain('issue comments only');
+    expect(body).not.toContain('ledger');
+    expect(body).toContain('Head: `abc123`');
   });
 
   it('findingDedupeKey is stable for same path/line/severity/title', () => {
@@ -159,13 +161,34 @@ describe('panelPublication', () => {
     expect(formatInlineCommentBody(comments[0].finding)).toContain('Fix the unsafe code.');
   });
 
+  it('uses a file conversation when no patch is available', () => {
+    const comments = buildFinalInlineComments({
+      findings: [{ ...baseFinding, persona: 'security', replacementCode: 'safe();' }],
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ path: baseFinding.path, subjectType: 'file' });
+    expect(comments[0].finding.replacementCode).toBeUndefined();
+    expect(comments[0].finding.comment).toContain('Reported location: line 10');
+  });
+
+  it('preserves a deleted-line LEFT anchor without allowing a replacement', () => {
+    const comments = buildFinalInlineComments({
+      findings: [{ ...baseFinding, persona: 'security', replacementCode: 'safe();' }],
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -10 +10,0 @@\n-old' }],
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ path: baseFinding.path, line: 10, side: 'LEFT' });
+    expect(comments[0].finding.replacementCode).toBeUndefined();
+  });
+
   it('withholds conflicting replacement proposals for the same finding', () => {
     const result = dedupeActionableFindings([
-      { ...baseFinding, persona: 'a', replacementCode: 'first();' },
-      { ...baseFinding, persona: 'b', replacementCode: 'second();' },
-      { ...baseFinding, persona: 'c', replacementCode: 'first();' },
+      { ...baseFinding, persona: 'a', startLine: 9, replacementCode: 'first();' },
+      { ...baseFinding, persona: 'b', startLine: 9, replacementCode: 'second();' },
+      { ...baseFinding, persona: 'c', startLine: 9, replacementCode: 'first();' },
     ]);
     expect(result[0].replacementCode).toBeUndefined();
+    expect(result[0].startLine).toBeUndefined();
   });
 
   it('keeps a duplicate replacement tied to its original range', () => {

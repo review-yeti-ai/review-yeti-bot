@@ -89,20 +89,31 @@ describe('shared finding publication planner', () => {
     expect(findingDedupeKey(plan.lineComments[0].finding)).not.toContain('P0');
   });
 
-  it('keeps P2 findings advisory and title-only at the plan boundary', () => {
+  it('publishes P2 findings inline with their full body and safe replacement', () => {
     const plan = planFindingPublication([{
       severity: 'P2', path: 'src/app.ts', line: 21, title: 'Prefer a clearer name',
-      body: 'A detailed advisory body that must not become a thread.', persona: 'consistency',
+      body: 'The name obscures which account owns this value.', persona: 'consistency',
+      replacementCode: 'const accountId = account.id;',
     }], [{ path: 'src/app.ts', patch: textPatch }]);
 
-    expect(plan.lineComments).toEqual([]);
-    expect(plan.fileComments).toEqual([]);
-    expect(plan.advisories).toHaveLength(1);
-    expect(plan.advisories[0]).toMatchObject({ path: 'src/app.ts', line: 21, title: 'Prefer a clearer name' });
-    expect(Object.prototype.hasOwnProperty.call(plan.advisories[0], 'body')).toBe(false);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0]).toMatchObject({ path: 'src/app.ts', line: 21 });
+    expect(plan.lineComments[0].body).toContain('The name obscures');
+    expect(plan.lineComments[0].body).toContain('```suggestion');
+    expect(plan.advisories).toEqual([]);
   });
 
-  it('uses file-level conversations only for patchless, binary, and gitlink changed files', () => {
+  it('publishes P2 findings on patchless files as file conversations', () => {
+    const plan = planFindingPublication([{
+      severity: 'P2', path: 'assets/logo.png', line: 1, title: 'Logo has low contrast',
+      body: 'Increase contrast against the navigation background.',
+    }], [{ path: 'assets/logo.png' }]);
+    expect(plan.fileComments).toHaveLength(1);
+    expect(plan.fileComments[0].body).toContain('Increase contrast');
+    expect(plan.advisories).toEqual([]);
+  });
+
+  it('uses file-level conversations for patchless, binary, and gitlink changed files', () => {
     const findings = [
       { severity: 'P1' as const, path: 'assets/logo.png', line: 1, title: 'Binary issue', body: 'Replace it.' },
       { severity: 'P0' as const, path: 'vendor/lib', line: 99, title: 'Gitlink issue', body: 'Pin it.' },
@@ -117,7 +128,7 @@ describe('shared finding publication planner', () => {
     expect(plan.rejected).toEqual([]);
   });
 
-  it('rejects wrong hunk lines, invalid paths, and missing lines without inventing line 1', () => {
+  it('falls back to a file conversation for context lines while rejecting invalid paths and missing lines', () => {
     const plan = planFindingPublication([
       { severity: 'P1', path: 'src/app.ts', line: 20, title: 'Context line', body: 'Not changed.' },
       { severity: 'P1', path: 'src/malformed.ts', line: 1, title: 'Malformed', body: 'No hunk.' },
@@ -129,15 +140,32 @@ describe('shared finding publication planner', () => {
     ]);
 
     expect(plan.lineComments).toEqual([]);
-    expect(plan.fileComments).toHaveLength(1);
-    expect(plan.fileComments[0].path).toBe('src/malformed.ts');
-    expect(plan.rejected).toHaveLength(3);
+    expect(plan.fileComments).toHaveLength(2);
+    expect(plan.fileComments.map(comment => comment.path)).toEqual(['src/app.ts', 'src/malformed.ts']);
+    expect(plan.fileComments[0].line).toBeUndefined();
+    expect(plan.fileComments[0].body).toContain('Reported location: line 20');
+    expect(plan.rejected).toHaveLength(2);
     expect(plan.rejected.map((item) => item.reason)).toEqual(expect.arrayContaining([
-      'finding line is not an exact changed RIGHT line',
       'finding path is not present in the changed files',
       'finding line must be a positive integer',
     ]));
     expect(plan.rejected.find((item) => item.title === 'No line')?.line).toBeUndefined();
+  });
+
+  it.each([20, 500])('publishes an unanchored finding at reported line %i as file prose without a replacement', (line) => {
+    const plan = planFindingPublication([{
+      severity: 'P2', path: 'src/app.ts', line, title: 'Clarify account ownership',
+      body: 'This value belongs to the current account.', startLine: line - 1,
+      replacementCode: 'const accountId = account.id;', suggestion: 'Use an account-specific name.',
+    }], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toEqual([]);
+    expect(plan.rejected).toEqual([]);
+    expect(plan.fileComments).toHaveLength(1);
+    expect(plan.fileComments[0].line).toBeUndefined();
+    expect(plan.fileComments[0].finding.replacementCode).toBeUndefined();
+    expect(plan.fileComments[0].finding.startLine).toBeUndefined();
+    expect(plan.fileComments[0].body).toContain('Use an account-specific name.');
+    expect(plan.fileComments[0].body).not.toContain('```suggestion');
   });
 
   it('treats suggestion as prose and only explicit replacementCode as a suggestion block', () => {
