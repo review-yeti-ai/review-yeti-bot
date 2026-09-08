@@ -190,6 +190,102 @@ export function createBifrostPublishingConfig(model: string): ReturnType<typeof 
   };
 }
 
+/**
+ * Git writes a diff header as `diff --git a/<src> b/<dst>`. With no quoting and
+ * a path containing a space that line is genuinely ambiguous -- `a/x y b/z` can
+ * be split more than one way -- so the header is the LAST source consulted, not
+ * the first. `+++`/`---`/`rename to` each carry exactly one path on their own
+ * line and are unambiguous.
+ *
+ * The previous `(\S+)` header match stopped at the first space, so
+ * `a/sip message.txt` yielded no usable path at all. That failed OPEN and
+ * silently: the file dropped out of `changedFiles`, was never sent to the panel,
+ * and any finding on it was discarded during arbitration. cisco-cdr has eight
+ * such paths today.
+ */
+function unquoteGitPath(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"') || trimmed.length < 2) return trimmed;
+  const inner = trimmed.slice(1, -1);
+  const simple: Record<string, number> = { n: 10, t: 9, r: 13, '"': 34, '\\': 92 };
+  const bytes: number[] = [];
+  for (let index = 0; index < inner.length; index += 1) {
+    if (inner[index] !== '\\') {
+      // Re-encode so a literal multi-byte character survives the Buffer round trip.
+      bytes.push(...Buffer.from(inner[index], 'utf8'));
+      continue;
+    }
+    const octal = /^[0-7]{3}/u.exec(inner.slice(index + 1, index + 4));
+    if (octal) {
+      bytes.push(parseInt(octal[0], 8));
+      index += 3;
+      continue;
+    }
+    const next = inner[index + 1];
+    if (next && Object.prototype.hasOwnProperty.call(simple, next)) {
+      bytes.push(simple[next]);
+      index += 1;
+      continue;
+    }
+    bytes.push(...Buffer.from(inner[index], 'utf8'));
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+function stripSidePrefix(path: string): string {
+  return /^[ab]\//u.test(path) ? path.slice(2) : path;
+}
+
+/** Reads the one path a finding could be anchored to, or '' if the chunk is unreadable. */
+function pathFromChunk(chunk: string): string {
+  const line = (pattern: RegExp): string => {
+    const match = pattern.exec(chunk);
+    return match ? unquoteGitPath(match[1].replace(/\r$/u, '')) : '';
+  };
+
+  // The post-image first: a finding anchors to an added line, which only the
+  // destination path can carry.
+  const plus = line(/^\+\+\+ (.+)$/mu);
+  if (plus && plus !== '/dev/null') return stripSidePrefix(plus);
+
+  // A pure rename or a binary change has no `+++` line.
+  const renamed = line(/^rename to (.+)$/mu);
+  if (renamed) return stripSidePrefix(renamed);
+
+  const minus = line(/^--- (.+)$/mu);
+  if (minus && minus !== '/dev/null') return stripSidePrefix(minus);
+
+  // Last resort. Only trustworthy when the header is unambiguous: either both
+  // sides are quoted, or neither path contains a space.
+  const quoted = /^diff --git ("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*")/u.exec(chunk);
+  if (quoted) return stripSidePrefix(unquoteGitPath(quoted[2]));
+  const plain = /^diff --git a\/(\S+) b\/(\S+)[ \t]*$/mu.exec(chunk);
+  if (plain) return stripSidePrefix(`b/${plain[2]}`);
+  return '';
+}
+
+export interface ChangedFile {
+  path: string;
+  patch: string;
+}
+
+/**
+ * Splits a unified diff into per-file chunks. `unreadable` carries the header of
+ * every chunk no path could be read from -- an unreviewable file, which the
+ * caller must surface rather than drop.
+ */
+export function parseChangedFiles(diff: string): { files: ChangedFile[]; unreadable: string[] } {
+  const files: ChangedFile[] = [];
+  const unreadable: string[] = [];
+  for (const chunk of String(diff).split(/^(?=diff --git )/mu)) {
+    if (!chunk.startsWith('diff --git ')) continue;
+    const path = pathFromChunk(chunk);
+    if (path && path !== '/dev/null') files.push({ path, patch: chunk });
+    else unreadable.push((chunk.split('\n', 1)[0] || '').slice(0, 200));
+  }
+  return { files, unreadable };
+}
+
 const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
@@ -277,22 +373,7 @@ export async function runPublishingReviewWorker(
       token: value(env, 'GH_TOKEN'),
     });
 
-    // Split on the file-header boundary, then match the header against a
-    // single line. The previous expression used a dot-all lazy group for the
-    // `b/` path with a lookahead to the next header, so the captured "path" ran
-    // to the end of the whole file patch -- an 80+ character string containing
-    // newlines. Every finding was then compared against that pseudo-path,
-    // matched nothing, and was discarded during arbitration, which is why this
-    // lane returned `SHIP` on every review regardless of what the panel found.
-    const changedFiles = String(source.diff)
-      .split(/^(?=diff --git )/mu)
-      .filter((chunk) => chunk.startsWith('diff --git '))
-      .map((chunk) => {
-        const header = /^diff --git a\/(\S+) b\/(\S+)/u.exec(chunk);
-        return header ? { path: header[2] || header[1], patch: chunk } : null;
-      })
-      .filter((file): file is { path: string; patch: string } =>
-        file !== null && file.path.length > 0 && file.path !== '/dev/null');
+    const { files: changedFiles, unreadable } = parseChangedFiles(String(source.diff));
     // An empty changed-file set must not be read as "nothing to review, ship".
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
@@ -324,10 +405,17 @@ export async function runPublishingReviewWorker(
     // canonical set is the one the verdict is computed from, so it is the only
     // set the conclusion may be computed from.
     const findings = (canonical.findings || []) as ReviewFinding[];
+    const discardedFindingCount = Math.max(0, rawFindings.length - findings.length);
     const blocking = findings.filter(
       (finding) => BLOCKING_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
     );
-    const conclusion = publishingConclusion(verdict, blocking.length);
+    // A file whose header could not be read was never sent to the panel, so no
+    // finding can exist for it and the verdict describes less than the diff. That
+    // is the "absent capability, green check" shape: fail closed and name the
+    // headers, rather than publish a verdict over a partial review.
+    const conclusion = unreadable.length > 0
+      ? ('failure' as const)
+      : publishingConclusion(verdict, blocking.length);
 
     // A count with nothing attached is not reviewable. Until now the check
     // published only a title and a summary, so a run could report four blocking
@@ -345,12 +433,26 @@ export async function runPublishingReviewWorker(
       summary: [
         `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
         `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}).`,
+        // Arbitration drops a finding it cannot anchor to a changed line. That is
+        // deliberate -- an unanchorable finding cannot be rendered -- but doing it
+        // silently would make a real blocking finding the model mislocated simply
+        // disappear, so the count is published.
+        ...(discardedFindingCount > 0
+          ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
+          : []),
+        ...(unreadable.length > 0
+          ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
+          : []),
         `Transport: bifrost \`${transport.model}\`.`,
       ].join('\n\n'),
       text: renderFindingsMarkdown(findings, blocking.length),
-      // GitHub rejects an annotation whose path is not in the diff, which would
-      // fail the whole PATCH and take the verdict with it. Drop off-diff
-      // findings from the annotation set only; they remain in the text body.
+      // Redundant today and deliberately kept: `sanitizeFinding` already drops
+      // any finding whose path is not in `changedFiles`, so this filter removes
+      // nothing. It stays because GitHub rejects an annotation whose path is not
+      // in the diff and fails the whole PATCH -- which would take the verdict
+      // with it -- so a future change to arbitration must not be able to turn a
+      // stray path into a lost verdict. It is a guard, not a behaviour: do not
+      // write a test that claims it moves a finding to the text body.
       annotations: findings
         .filter((finding) => changedPaths.has(String(finding?.path || '')))
         .slice(0, 50)
