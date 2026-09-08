@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { planFindingPublication } from '../../src/review/findingPublication';
 import { changedLineNumbers, sanitizeFinding, validateReviewFindings } from '../../src/review/reviewCore';
 
 describe('review core diff parsing', () => {
@@ -167,4 +168,61 @@ describe('review core diff parsing', () => {
     expect(result.valid).toBe(false);
     expect(result.error).toMatch(/changed file/);
   });
+});
+
+
+describe('review core replacement metadata', () => {
+  const base = { severity: 'P1', path: 'src/review.ts', line: 10, title: 'Issue', body: 'Explanation.' };
+  const files = [{ path: base.path, patch: '@@ -8,3 +8,3 @@\n context\n+old();\n+broken();' }];
+  const boundaries = {
+    validation: (raw: unknown) => {
+      const result = validateReviewFindings([raw], files);
+      expect(result.valid).toBe(true);
+      return result.findings[0];
+    },
+    sanitization: (raw: unknown) => sanitizeFinding(raw, files),
+    'sanitization without diff': (raw: unknown) => sanitizeFinding(raw),
+  };
+  for (const [name, normalize] of Object.entries(boundaries)) {
+    describe(name, () => {
+      it.each(['  fixed();\n  done();\n', '', ' ', 'x'.repeat(10_000)])('preserves exact replacement bytes', (replacementCode) => {
+        expect(normalize({ ...base, replacementCode, startLine: 9 })).toMatchObject({
+          ...base, replacementCode, startLine: 9,
+        });
+      });
+      it.each([undefined, null])('allows absent or null startLine as a single-line replacement', (startLine) => {
+        const result = normalize({ ...base, replacementCode: 'fixed();', startLine });
+        expect(result).toMatchObject({ ...base, replacementCode: 'fixed();' });
+        expect(result).not.toHaveProperty('startLine');
+      });
+      it.each([0, -1, 11, 9.5, '9', Number.NaN, Number.POSITIVE_INFINITY])('drops unsafe patch metadata for invalid startLine %s', (startLine) => {
+        const result = normalize({ ...base, replacementCode: 'fixed();', startLine });
+        expect(result).toMatchObject(base);
+        expect(result).not.toHaveProperty('replacementCode');
+        expect(result).not.toHaveProperty('startLine');
+      });
+      it.each([42, {}, null, 'x'.repeat(10_001)])('drops invalid or oversized replacement without discarding finding', (replacementCode) => {
+        const result = normalize({ ...base, replacementCode });
+        expect(result).toMatchObject(base);
+        expect(result).not.toHaveProperty('replacementCode');
+      });
+      it.each(['LEFT', 'left', 'right', 'INVALID', null, 0])('does not turn explicit side %s into a RIGHT replacement', (side) => {
+        const result = normalize({ ...base, side, replacementCode: 'fixed();', startLine: 10 });
+        expect(result).toMatchObject(base);
+        expect(result).not.toHaveProperty('replacementCode');
+        expect(result).not.toHaveProperty('startLine');
+        if (!result) throw new Error('Expected retained finding');
+        const plan = planFindingPublication([result], [{ path: base.path, patch: '@@ -10,1 +10,1 @@\n-old();\n+broken();' }]);
+        if (side === 'LEFT' || name !== 'sanitization without diff') expect(plan.lineComments).toHaveLength(1);
+        expect(plan.lineComments.every((comment) => !comment.body.includes('```suggestion'))).toBe(true);
+      });
+      it('retains an explicit RIGHT replacement', () => {
+        const result = normalize({ ...base, side: 'RIGHT', replacementCode: 'fixed();' });
+        expect(result).toMatchObject({ replacementCode: 'fixed();' });
+      });
+      it('preserves valid prose finding ranges without replacement code', () => {
+        expect(normalize({ ...base, startLine: 9 })).toMatchObject({ ...base, startLine: 9 });
+      });
+    });
+  }
 });

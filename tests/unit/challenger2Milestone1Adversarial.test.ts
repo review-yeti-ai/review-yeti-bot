@@ -93,7 +93,7 @@ describe('Challenger 2 Empirical Adversarial Suite: Arbiter & Panel Publication 
       expect(deduped[0].body).toContain('**Seen by personas:** `crypto`, `security`');
     });
 
-    it('1.3 preserves startLine when first duplicate has undefined startLine and second has startLine', () => {
+    it('1.3 does not adopt a duplicate range without an accompanying replacement', () => {
       const findings: FindingWithPersona[] = [
         {
           persona: 'persona-a',
@@ -116,7 +116,7 @@ describe('Challenger 2 Empirical Adversarial Suite: Arbiter & Panel Publication 
 
       const deduped = dedupeActionableFindings(findings);
       expect(deduped).toHaveLength(1);
-      expect(deduped[0].startLine).toBe(20);
+      expect(deduped[0].startLine).toBeUndefined();
       expect(deduped[0].line).toBe(30);
     });
 
@@ -300,6 +300,10 @@ describe('Challenger 2 Empirical Adversarial Suite: Arbiter & Panel Publication 
         repo: 'review-yeti-bot',
         prNumber: 100,
         commitSha: '11223344556677889900aabbccddeeff11223344',
+        changedFiles: [{
+          path: 'src/api/handler.ts',
+          patch: '@@ -34,0 +35,11 @@\n' + Array.from({ length: 11 }, (_, i) => `+handler line ${35 + i}`).join('\n'),
+        }],
         findings,
       });
 
@@ -608,7 +612,7 @@ describe('Challenger 2 Empirical Adversarial Suite: Arbiter & Panel Publication 
         isArchitectural: false,
         title: 'Missing Null Check',
         comment: 'Check customer object before accessing customer.id.',
-        suggestion: 'if (!customer) throw new Error("Customer not found");',
+        replacementCode: 'if (!customer) throw new Error("Customer not found");',
       };
 
       const body = formatInlineCommentBody(codeFinding);
@@ -624,7 +628,7 @@ describe('Challenger 2 Empirical Adversarial Suite: Arbiter & Panel Publication 
         lineNumber: 12,
         title: 'Unnecessary Cloning',
         comment: 'Do not clone array before iteration.',
-        suggestion: 'items.forEach(item => process(item));',
+        replacementCode: 'items.forEach(item => process(item));',
       };
 
       const body = formatInlineCommentBody(standardFinding);

@@ -216,7 +216,7 @@ diff --git a/src/github/commentPublisher.ts b/src/github/commentPublisher.ts
         lineNumber: 10,
         comment: 'Empty fix options array',
         fixOptions: [],
-        suggestion: 'const x = 1;',
+        replacementCode: 'const x = 1;',
       };
       expect(formatInlineCommentBody(fEmptyOpts)).toContain('```suggestion\nconst x = 1;\n```');
 

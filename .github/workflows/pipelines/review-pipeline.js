@@ -18,6 +18,7 @@ const { spawnSync, execSync } = require('child_process');
 const {
   computeArbitration: computeCanonicalArbitration,
   sanitizeFindings: sanitizeCanonicalFindings,
+  normalizeFindingReplacement,
   sha256,
   validateReviewFindings,
 } = require('../../../src/review/reviewCore');
@@ -2130,6 +2131,17 @@ const OUTPUT_CONTRACT_MODES = new Set(['json_object', 'json_schema', 'prompt_val
 const OUTPUT_CONTRACT_SUPPORT = new Set(['accepted', 'rejected', 'unreported']);
 // Keep the schema deliberately small and stable.  It is opt-in per transport so a provider or
 // model that only supports JSON mode can continue using the existing compatibility path.
+const CLICKABLE_FIX_CONTRACT_LINES = Object.freeze([
+  'Clickable fix contract:',
+  '- suggestion is prose explaining the fix; replacementCode is exact replacement source code without Markdown fences, or null.',
+  '- Supply replacementCode only for a certain, self-contained fix entirely within one visible RIGHT/new-file diff hunk. Use null for architectural advice, uncertain fixes, or changes requiring other files.',
+  '- replacementCode replaces the inclusive RIGHT/new-file range startLine..line; line is the last replaced line. startLine is null for a single-line replacement. Include every line needed for the replacement and preserve indentation and whitespace.',
+  '- An empty replacementCode string deletes the selected lines. Never use placeholders or ellipses; use null when the complete replacement exceeds 10000 characters. Set startLine to null when replacementCode is null.',
+  '',
+  'Respond with JSON only, in exactly this shape:',
+  '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>","replacementCode":null,"startLine":null}]}',
+]);
+
 const FINDINGS_RESPONSE_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
@@ -2144,8 +2156,10 @@ const FINDINGS_RESPONSE_SCHEMA = Object.freeze({
           title: { type: 'string' },
           body: { type: 'string' },
           suggestion: { type: ['string', 'null'] },
+          replacementCode: { type: ['string', 'null'], maxLength: 10_000 },
+          startLine: { type: ['integer', 'null'], minimum: 1 },
         },
-        required: ['severity', 'path', 'line', 'title', 'body', 'suggestion'],
+        required: ['severity', 'path', 'line', 'title', 'body', 'suggestion', 'replacementCode', 'startLine'],
         additionalProperties: false,
       },
     },
@@ -2472,6 +2486,7 @@ function sanitizeFindings(rawFindings, diffFiles) {
       title: String(f.title || 'Review finding').slice(0, 200),
       body: String(f.body || f.title || '').slice(0, 2_000),
       suggestion: f.suggestion ? String(f.suggestion).slice(0, 2_000) : undefined,
+      ...normalizeFindingReplacement(f),
     }));
 }
 
@@ -3644,8 +3659,7 @@ function buildOpenRouterReviewMessages(persona, reviewContextPrompt) {
     '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
     '- If the supplied evidence does not prove a defect, return no finding.',
     '',
-    'Respond with JSON only, in exactly this shape:',
-    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
+    ...CLICKABLE_FIX_CONTRACT_LINES,
   ].join('\n');
   const assignmentPrompt = [
     'Panel assignment:',
@@ -3803,8 +3817,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
     '- If the supplied evidence does not prove a defect, return no finding.',
     '',
-    'Respond with JSON only, in exactly this shape:',
-    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
+    ...CLICKABLE_FIX_CONTRACT_LINES,
   ].join('\n');
 
   let diffContent = '';
@@ -5952,8 +5965,6 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
           const trimmed = f.suggestion.trim();
           if (trimmed.startsWith('```')) {
             findingsDetails += `\n${trimmed}\n`;
-          } else if (trimmed.includes('\n') || /[;{}()=>]/.test(trimmed) || /^(def |fn |function |const |let |var |import |export |Repo\.)/.test(trimmed)) {
-            findingsDetails += `\n\`\`\`suggestion\n${trimmed}\n\`\`\`\n`;
           } else {
             findingsDetails += `\n> **Suggested Fix:** ${trimmed}\n`;
           }
@@ -6097,6 +6108,8 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $endCursor: 
           path
           line
           diffSide
+          startLine
+          startDiffSide
           comments(first: 10) {
             nodes { databaseId body createdAt author { login } commit { oid } }
             pageInfo { hasNextPage endCursor }
@@ -6163,26 +6176,6 @@ function reviewRequiresResultRepublish(review) {
   const retryable = '(?:BLOCK|FIX_FIRST|PARTIAL(?:_REVIEW)?|INCOMPLETE_REVIEW|INCOMPLETE_INFRA|DEGRADED|ERROR)';
   return new RegExp('\\*\\*Verdict:\\s*(?:`)?' + retryable + '(?:`)?\\*\\*', 'iu').test(body)
     || new RegExp('\\*\\*(?:Review Status|Quorum Status)\\*\\*:\\s*`' + retryable + '`', 'iu').test(body);
-}
-
-function latestActionReview(reviews) {
-  const ordered = [...reviews];
-  ordered.sort((left, right) => {
-    const leftTime = Date.parse(left?.submitted_at || left?.submittedAt || '') || 0;
-    const rightTime = Date.parse(right?.submitted_at || right?.submittedAt || '') || 0;
-    if (leftTime !== rightTime) return leftTime - rightTime;
-    const leftId = Number(left?.id) || 0;
-    const rightId = Number(right?.id) || 0;
-    if (leftId !== rightId) return leftId - rightId;
-    return 0;
-  });
-  return ordered.at(-1);
-}
-
-function reviewResultMarker(prContext, review) {
-  const prefix = `<!-- review-yeti-bot:result:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:`;
-  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-  return String(review?.body || '').match(new RegExp(`${escapedPrefix}[^\\s>]{1,120} -->`, 'u'))?.[0] || '';
 }
 
 function actionFindingMarker(prContext, item) {
@@ -6396,9 +6389,6 @@ const SUMMARY_HISTORY_START = '<!-- review-yeti-bot:summary-history:v1:start -->
 const SUMMARY_HISTORY_END = '<!-- review-yeti-bot:summary-history:v1:end -->';
 const SUMMARY_ROUND_START_PREFIX = '<!-- review-yeti-bot:summary-round:v1:start:';
 const SUMMARY_ROUND_END = '<!-- review-yeti-bot:summary-round:v1:end -->';
-const MAX_SUMMARY_HISTORY_ROUNDS = 8;
-const MAX_SUMMARY_HISTORY_CHARS = 40_000;
-const MAX_SUMMARY_ROUND_CHARS = 12_000;
 /**
  * Hard ceiling for the whole sticky comment.
  *
@@ -6519,73 +6509,7 @@ function splitStickySummaryBody(body) {
   return { current: text.slice(0, historyStart).trim(), entries };
 }
 
-function summaryRoundTitle(body, roundNumber) {
-  const parsed = parsePriorSummaryReview(body);
-  const verdict = parsed.verdict || 'REVIEW';
-  const head = parsed.headSha ? parsed.headSha.slice(0, 7) : 'unknown head';
-  return `Round ${roundNumber} · ${verdict} · ${head}`;
-}
-
-/** Findings listed per historical round before the rest are counted rather than named. */
-const MAX_SUMMARY_ROUND_FINDINGS = 12;
-
-/**
- * One line per finding a past round raised: severity, title, and where it was.
- *
- * History used to keep each round's whole body -- telemetry table, mermaid diagram, per-persona
- * prose -- up to MAX_SUMMARY_ROUND_CHARS. On a real pull request that made three collapsed rounds
- * 37KB of a 51KB comment, none of which anyone expands. What a reader wants from a past round is
- * what it found, so that is what is kept.
- */
-function summaryRoundFindingLines(body) {
-  const text = String(body || '');
-  const lines = [];
-  const pattern = /^([\u{1F534}\u{1F7E0}\u{1F7E1}])\s+\*\*(P[012])\*\*\s+·\s+\*\*(.+?)\*\*\s*$\n(?:\[`([^`]+)`\])?/gmu;
-  for (const match of text.matchAll(pattern)) {
-    const [, icon, severity, title, location] = match;
-    lines.push(`- ${icon} \`${severity}\` ${title}${location ? ` — \`${location}\`` : ''}`);
-    if (lines.length >= MAX_SUMMARY_ROUND_FINDINGS) break;
-  }
-  return lines;
-}
-
-function renderSummaryHistoryEntry(body, roundNumber) {
-  // The identity of a round is still the hash of what it actually said, not of this digest, so
-  // replaying the same round keeps deduplicating against the entry already in history.
-  const digest = summaryRoundDigest(body);
-  const parsed = parsePriorSummaryReview(body);
-  const findings = summaryRoundFindingLines(body);
-  const named = summaryRoundFindingLines(body).length;
-  const total = parsed.metrics?.totalFindings ?? named;
-
-  const summaryLine = parsed.metrics
-    ? `**Findings:** P0 \`${parsed.metrics.p0Count}\` · P1 \`${parsed.metrics.p1Count}\` · P2 \`${parsed.metrics.p2Count}\``
-    : '';
-  const remainder = total > named ? `\n- _…and ${total - named} more._` : '';
-
-  const digestBody = [
-    summaryLine,
-    findings.length > 0 ? `${findings.join('\n')}${remainder}` : '_No findings recorded for this round._',
-  ].filter(Boolean).join('\n\n');
-
-  return [
-    summaryRoundStart(digest),
-    '<details>',
-    `<summary>${summaryRoundTitle(body, roundNumber)}</summary>`,
-    '',
-    digestBody.length > MAX_SUMMARY_ROUND_CHARS ? digestBody.slice(0, MAX_SUMMARY_ROUND_CHARS) : digestBody,
-    '',
-    '</details>',
-    SUMMARY_ROUND_END,
-  ].join('\n');
-}
-
-/**
- * Last resort when even a single round exceeds what GitHub will store.
- *
- * Dropping history is always preferred; this only fires when the round being published is itself
- * over the ceiling, in which case a clipped comment is still better than a failed PATCH.
- */
+/** Keep a malformed or unusually long current overview within GitHub's comment limit. */
 function clipToStickyLimit(body) {
   const text = String(body || '');
   if (text.length <= MAX_STICKY_COMMENT_CHARS) return text;
@@ -6593,51 +6517,28 @@ function clipToStickyLimit(body) {
   return `${text.slice(0, MAX_STICKY_COMMENT_CHARS - notice.length)}${notice}`;
 }
 
+function formatStickyOverview(commentBody) {
+  const lines = String(commentBody || '').trim().split('\n');
+  const heading = lines.find((line) => /^## .*Verdict:/.test(line));
+  if (!heading) return String(commentBody || '').trim();
+  const fields = lines.filter((line) => /^- \*\*(?:Commit SHA Range|Commit SHA|Reviewed Commit|Review Mode|Review Scope|Parallel Personas Evaluated|Quorum Status|Review Status|Total Findings|Rationale|Coverage|Degraded Lanes)\*\*:/.test(line));
+  const unavailable = String(commentBody).match(/\n\n### Actionable findings without publishable anchors[\s\S]*$/)?.[0] || '';
+  const coverageWarnings = lines.filter((line) => /^> .*This verdict covers part of the change/.test(line));
+  return [heading, '', ...fields, ...coverageWarnings, '', 'Findings are posted inline in **Files changed**. P2 findings do not change the verdict.', unavailable].filter((line) => line !== undefined).join('\n');
+}
+
 function renderStickySummaryBody(commentBody, prContext, priorBody, options = {}) {
-  const summaryAnchor = actionSummaryAnchor(prContext);
-  const actionMarker = actionReviewMarker(prContext);
-  const resultMarker = actionResultMarker(prContext, publicationAttemptId(options, commentBody));
-  const roundMarker = summaryRoundMarker(prContext, commentBody);
   const currentBody = [
-    String(commentBody || '').trim(),
-    summaryAnchor,
-    actionMarker,
-    resultMarker,
-    roundMarker,
+    formatStickyOverview(commentBody),
+    actionSummaryAnchor(prContext),
+    actionReviewMarker(prContext),
+    actionResultMarker(prContext, publicationAttemptId(options, commentBody)),
+    summaryRoundMarker(prContext, commentBody),
   ].filter(Boolean).join('\n\n');
-
-  if (!priorBody) return { body: clipToStickyLimit(currentBody), deduplicated: false, historyRounds: 0 };
-  const prior = splitStickySummaryBody(priorBody);
-  if (prior.current.includes(roundMarker)) {
-    return { body: priorBody, deduplicated: true, historyRounds: prior.entries.length };
-  }
-
-  let entries = [...prior.entries];
-  if (prior.current) entries.push(renderSummaryHistoryEntry(prior.current, entries.length + 1));
-  entries = entries.slice(-MAX_SUMMARY_HISTORY_ROUNDS);
-  while (entries.join('\n\n').length > MAX_SUMMARY_HISTORY_CHARS && entries.length > 1) entries.shift();
-
-  const renderHistory = (rounds) => (rounds.length > 0
-    ? [
-      SUMMARY_HISTORY_START,
-      '<details>',
-      `<summary>Previous review rounds (${rounds.length})</summary>`,
-      '',
-      rounds.join('\n\n'),
-      '',
-      '</details>',
-      SUMMARY_HISTORY_END,
-    ].join('\n')
-    : '');
-  const compose = (rounds) => {
-    const history = renderHistory(rounds);
-    return history ? `${currentBody}\n\n${history}` : currentBody;
-  };
-
-  // The round being published is never dropped to make room; history yields first, and if the
-  // current round alone is still over the ceiling it is the thing that gets clipped.
-  while (compose(entries).length > MAX_STICKY_COMMENT_CHARS && entries.length > 0) entries.shift();
-  return { body: clipToStickyLimit(compose(entries)), deduplicated: false, historyRounds: entries.length };
+  const body = clipToStickyLimit(currentBody);
+  // Replace the previous result, including legacy history. Identical retries deduplicate only
+  // when their exact-head and attempt evidence also match.
+  return { body, deduplicated: body === priorBody, historyRounds: 0 };
 }
 
 function compactReviewBody(commentBody, prContext, options = {}) {
@@ -6753,6 +6654,11 @@ function findVerifiedThread(item, prContext, snapshot, expectedPublisherLogin) {
   const expectedLine = Number.isInteger(item.line) ? item.line : null;
   return snapshot.threads.find((thread) => {
     if (thread.isResolved || thread.path !== item.path || (thread.line ?? null) !== expectedLine) return false;
+    // GitHub echoes the end line as startLine for standalone single-line comments,
+    // with a null startDiffSide. Only a distinct start identifies a multiline range.
+    const startLine = thread.startLine === expectedLine ? null : (thread.startLine ?? null);
+    if (startLine !== (item.startLine ?? null)) return false;
+    if (item.startLine != null && thread.startDiffSide !== (item.side || 'RIGHT')) return false;
     return (thread.comments?.nodes || []).some((comment) => (
       String(comment.body || '').includes(marker)
       && isExpectedPublisherLogin(comment.author?.login, expectedPublisherLogin)
@@ -6923,7 +6829,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
     if (!prContext.repo || !prContext.repo.includes('/') || !prContext.headSha) {
       return { success: false, postedViaGh: false, error: 'GitHub review publication requires repo and exact head SHA.' };
     }
-    const rejectedActionable = plan.rejected.filter((item) => isActionableSeverity(item.severity));
+    const rejectedActionable = plan.rejected;
     // Keep the review fail-closed with respect to line anchors: never guess a nearby
     // line. But do publish the exact finding metadata in the compact review body so
     // an otherwise complete model verdict does not fail the required check merely
@@ -6950,118 +6856,37 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       : '';
 
     const marker = actionReviewMarker(prContext);
-    const resultMarker = actionResultMarker(prContext, publicationAttemptId(options, commentBody));
+    const attemptId = publicationAttemptId(options, commentBody);
+    const resultMarker = actionResultMarker(prContext, attemptId);
     const bodyWithRejected = `${commentBody}${rejectedDetails}${overflowDetails}`;
-    const compactReview = compactReviewBody(commentBody, prContext, {
-      marker,
-      resultMarker,
-      publicationAttemptId: options.publicationAttemptId,
-    });
-    const compactBodyError = emptyReviewBodyGuardError(compactReview, prContext);
-    if (compactBodyError) {
-      // Defense in depth: `compactReviewBody()` always falls back to non-empty placeholder text
-      // today, so this should be unreachable. Guarding it anyway means a future regression there
-      // fails this run loudly instead of quietly publishing an unreadable gate signal. Returned
-      // before the try block below, so no network call is ever made on this path.
-      console.error(`[Publish] ${compactBodyError}`);
-      return { success: false, postedViaGh: false, error: compactBodyError };
-    }
     try {
-      // This is intentionally the first publication operation.  Reading prior reviews before a
-      // fresh exact-head fence leaves a TOCTOU gap in which stale work can reach a write path.
       assertCurrentPullRequest(prContext, { commandRunner });
-      const existingReviews = readActionReviews(commandRunner, prContext);
-      const authenticatedPublisher = resolveAuthenticatedPublisher(commandRunner);
-      const authenticatedPublisherLogin = authenticatedPublisher.login;
-      // When the identity is only assumed, author equality would reject our own prior
-      // reviews and make the summary non-sticky. Callers already require our exact-head
-      // marker in the body, which is the trustworthy signal here.
-      const publishedByUs = (review) => (
-        typeof review?.body === 'string'
-        && typeof review.user?.login === 'string'
-        && (!authenticatedPublisher.verified
-          || isExpectedPublisherLogin(review.user.login, authenticatedPublisherLogin))
-      );
-      const existingReview = latestActionReview(existingReviews.filter((review) => (
-        publishedByUs(review)
-        && review.commit_id === prContext.headSha
-        && review.body.includes(marker)
-      )));
-      // GitHub binds a pull-request review to the commit supplied at creation. An edited review
-      // retains its earlier commit_id even if its body advertises a new SHA, which would make an
-      // exact-head consumer incorrectly see no verdict for the current push. Only a matching
-      // exact-head marker may deduplicate publication.
-      const existingResultMarker = reviewResultMarker(prContext, existingReview);
-      const reviewExists = Boolean(existingReview) && Boolean(existingResultMarker) && !reviewRequiresResultRepublish(existingReview);
-      let expectedPublisherLogin = authenticatedPublisherLogin;
+      const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
+      if (!expectedPublisherLogin) throw new Error('could not determine the publishing GitHub identity');
       const expectedItems = expectedPublicationItems(plan);
-      const existingThreads = expectedItems.length > 0 && expectedPublisherLogin
+      const existingThreads = expectedItems.length > 0
         ? readActionReviewThreads(commandRunner, prContext)
         : { threads: [] };
       const missingLineComments = plan.lineComments.filter((item) => !findVerifiedThread(item, prContext, existingThreads, expectedPublisherLogin));
       const missingFileComments = plan.fileComments.filter((item) => !findVerifiedThread(item, prContext, existingThreads, expectedPublisherLogin));
-      let reviewId;
 
-      if (!reviewExists) {
-        assertCurrentPullRequest(prContext, { commandRunner });
-        const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/reviews`, {
-          commit_id: prContext.headSha,
-          event: 'COMMENT',
-          body: compactReview,
-          comments: missingLineComments.map((item) => ({
-            path: item.path,
-            line: item.line,
-            side: item.side || 'RIGHT',
-            body: commentBodyWithMarker(prContext, item),
-          })),
-        });
-        reviewId = created.id;
-        const createdPublisherLogin = requirePublisherLogin(created.user?.login);
-        if (authenticatedPublisher.verified
-          && expectedPublisherLogin
-          && !isExpectedPublisherLogin(createdPublisherLogin, expectedPublisherLogin)) {
-          throw new Error(`Action review publisher ${createdPublisherLogin} did not match the authenticated GitHub identity ${expectedPublisherLogin}`);
-        }
-        expectedPublisherLogin = createdPublisherLogin;
-      } else {
-        for (const item of missingLineComments) {
-          assertCurrentPullRequest(prContext, { commandRunner });
-          const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/comments`, {
-            commit_id: prContext.headSha,
-            path: item.path,
-            line: item.line,
-            side: item.side || 'RIGHT',
-            body: commentBodyWithMarker(prContext, item),
-          });
-          if (!isExpectedPublisherLogin(requirePublisherLogin(created.user?.login), expectedPublisherLogin)) {
-            throw new Error('Action review publisher changed during publication');
-          }
-        }
-      }
-
-      for (const item of missingFileComments) {
+      for (const item of [...missingLineComments, ...missingFileComments]) {
         assertCurrentPullRequest(prContext, { commandRunner });
         const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/comments`, {
           commit_id: prContext.headSha,
           path: item.path,
-          subject_type: 'file',
+          ...(Number.isInteger(item.line) ? {
+            line: item.line,
+            side: item.side || 'RIGHT',
+            ...(Number.isInteger(item.startLine) ? { start_line: item.startLine, start_side: item.side || 'RIGHT' } : {}),
+          } : { subject_type: 'file' }),
           body: commentBodyWithMarker(prContext, item),
         });
         if (!isExpectedPublisherLogin(requirePublisherLogin(created.user?.login), expectedPublisherLogin)) {
           throw new Error('Action review publisher changed during publication');
         }
       }
-
-      const verifiedReviews = readActionReviews(commandRunner, prContext);
-      const requiredResultMarker = reviewExists ? existingResultMarker : resultMarker;
-      if (!verifiedReviews.some((review) => (
-        typeof review?.body === 'string'
-        && review.body.includes(requiredResultMarker)
-        && review.commit_id === prContext.headSha
-        && isExpectedPublisherLogin(review.user?.login, expectedPublisherLogin)
-      ))) {
-        throw new Error('exact-head compact review was not visible after publication');
-      }
+      assertCurrentPullRequest(prContext, { commandRunner });
       const verified = expectedItems.length > 0
         ? readActionReviewThreads(commandRunner, prContext)
         : { threads: [] };
@@ -7084,28 +6909,38 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
 
       const summaryPublication = postStickySummaryComment(bodyWithRejected, prContext, {
         commandRunner,
-        publicationAttemptId: options.publicationAttemptId,
-        existingReviews: verifiedReviews,
+        publicationAttemptId: attemptId,
+        existingReviews: [],
       });
       if (!summaryPublication.success) {
         throw new Error(`sticky summary publication failed: ${summaryPublication.error || 'unknown error'}`);
       }
+
+      assertCurrentPullRequest(prContext, { commandRunner });
+      const visibleSummary = findLatestIssueComment(commandRunner, prContext, (comment) => (
+        comment.id === summaryPublication.commentId
+        && issueCommentBelongsToPublisher(comment, expectedPublisherLogin)
+        && String(comment.body || '').includes(actionSummaryAnchor(prContext))
+        && String(comment.body || '').includes(marker)
+        && String(comment.body || '').includes(resultMarker)
+        && comment.body === renderStickySummaryBody(bodyWithRejected, prContext, null, { publicationAttemptId: attemptId }).body
+      ));
+      if (!visibleSummary) throw new Error('exact-head sticky overview was not visible after publication');
 
       const matchedThreads = expectedItems.map((item) => findVerifiedThread(item, prContext, verified, expectedPublisherLogin)).filter(Boolean);
       const reviewCommentIds = matchedThreads.flatMap((thread) => (thread.comments?.nodes || [])
         .filter((comment) => String(comment.body || '').includes('<!-- review-yeti-bot:finding:v1:'))
         .map((comment) => comment.databaseId)
         .filter(Number.isInteger));
-      console.log(`[Publish] Published compact review with ${expectedItems.length} unresolved P0/P1 conversation(s) to PR #${prNumber}.`);
+      console.log(`[Publish] Updated sticky overview with ${expectedItems.length} inline conversation(s) to PR #${prNumber}.`);
       return {
         success: true,
         postedViaGh: true,
-        ...(reviewId ? { reviewId } : {}),
         ...(summaryPublication.commentId ? { summaryCommentId: summaryPublication.commentId } : {}),
         ...(summaryPublication.historyRounds !== undefined ? { summaryHistoryRounds: summaryPublication.historyRounds } : {}),
         reviewCommentIds,
         threadIds: matchedThreads.map((thread) => thread.id),
-        ...(reviewExists && missingLineComments.length === 0 && missingFileComments.length === 0 ? { deduplicated: true } : {}),
+        ...(summaryPublication.deduplicated && missingLineComments.length === 0 && missingFileComments.length === 0 ? { deduplicated: true } : {}),
       };
     } catch (err) {
       const error = `GitHub review publication failed: ${err.message}`;
