@@ -2,6 +2,8 @@ import type { CompareClaimsOptions } from './claimSimilarity';
 
 export type PublicationSeverity = 'P0' | 'P1' | 'P2';
 export type PublicationSide = 'RIGHT' | 'LEFT';
+export const INLINE_SEVERITIES: readonly PublicationSeverity[];
+export function codeFence(value: string): string;
 
 export interface PublicationFindingInput {
   severity: PublicationSeverity | 'critical' | 'major' | 'minor' | 'nit';

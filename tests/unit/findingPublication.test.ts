@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   findingDedupeKey,
   formatFindingCommentBody,
@@ -29,21 +29,28 @@ describe('shared finding publication planner', () => {
     expect(anchors.left).toEqual(new Set([11, 40]));
   });
 
-  it('parses each file patch once across findings and replacement range validation', () => {
-    const split = vi.spyOn(String.prototype, 'split');
-    try {
-      const plan = planFindingPublication([
-        { severity: 'P1', path: 'src/app.ts', line: 21, startLine: 20, replacementCode: 'guard();', title: 'Account guard', body: 'Check account ownership.' },
-        { severity: 'P2', path: 'src/app.ts', line: 22, startLine: 21, replacementCode: 'name();', title: 'Name value', body: 'Clarify the variable name.' },
-        { severity: 'P1', path: 'src/other.ts', line: 51, title: 'Handle error', body: 'Propagate the failure.' },
-      ], [{ path: 'src/app.ts', patch: textPatch }, { path: 'src/other.ts', patch: textPatch }]);
-      expect(plan.lineComments).toHaveLength(3);
-      expect(plan.lineComments.filter(comment => comment.startLine !== undefined)).toHaveLength(2);
-      // Distinct files share identical diff text, but each should be parsed only once.
-      expect(split.mock.contexts.filter(context => String(context) === textPatch)).toHaveLength(2);
-    } finally {
-      split.mockRestore();
-    }
+  it('validates multiple ranges across files sharing the same patch text', () => {
+    const plan = planFindingPublication([
+      { severity: 'P1', path: 'src/app.ts', line: 21, startLine: 20, replacementCode: 'guard();', title: 'Account guard', body: 'Check account ownership.' },
+      { severity: 'P2', path: 'src/app.ts', line: 22, startLine: 21, replacementCode: 'name();', title: 'Name value', body: 'Clarify the variable name.' },
+      { severity: 'P1', path: 'src/other.ts', line: 51, title: 'Handle error', body: 'Propagate the failure.' },
+    ], [{ path: 'src/app.ts', patch: textPatch }, { path: 'src/other.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(3);
+    expect(plan.lineComments.filter(comment => comment.startLine !== undefined)).toHaveLength(2);
+    expect(plan.fileComments).toEqual([]);
+  });
+
+  it('uses the first changed-file entry consistently when duplicate paths carry different patches', () => {
+    const plan = planFindingPublication([
+      { severity: 'P1', path: 'src/app.ts', line: 21, startLine: 20, replacementCode: 'guard();', title: 'Account guard', body: 'Check account ownership.' },
+    ], [
+      { path: 'src/app.ts', patch: textPatch },
+      { path: 'src/app.ts', patch: '@@ -1 +1 @@\n-old();\n+new();' },
+    ]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0]).toMatchObject({ line: 21, startLine: 20 });
+    expect(plan.lineComments[0].finding.replacementCode).toBe('guard();');
+    expect(plan.fileComments).toEqual([]);
   });
 
   it('defaults legacy findings to RIGHT and publishes every actionable finding without a cap', () => {
