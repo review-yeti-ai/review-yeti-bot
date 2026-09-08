@@ -1,3 +1,5 @@
+import { normalizeRepositoryVisibility, RepositoryVisibility } from '../panel/panelEngine';
+
 export interface ParsedPRPayload {
   installationId: string;
   owner: string;
@@ -22,6 +24,15 @@ export interface ParsedPRPayload {
   isMerged?: boolean;
   mergedAt?: string;
   targetBranch?: string;
+  /**
+   * Whether `repository` (the CT-owned repo the PR lives in, not a submodule
+   * referenced by the diff) is PRIVATE/PUBLIC per the webhook's `repository.private`
+   * boolean or `repository.visibility` string. 'UNKNOWN' when the webhook payload
+   * carries neither -- never omitted, so every downstream consumer must handle the
+   * unresolved case explicitly rather than silently treating a missing field as public
+   * or private.
+   */
+  repositoryVisibility?: RepositoryVisibility;
 }
 
 export interface TriggerResult {
@@ -80,6 +91,27 @@ function extractOwnerRepo(payload: any): { owner: string; repo: string } {
   return { owner, repo };
 }
 
+/**
+ * GitHub's `repository` webhook object carries a `private` boolean on every event
+ * type this handler parses (pull_request, issue_comment, pull_request_review_comment).
+ * Some installations additionally expose `visibility` ('public' | 'private' | 'internal').
+ * Prefer `visibility` when present -- it distinguishes 'internal' (GHEC), which this
+ * repo's disclosure posture treats the same as 'private' -- and fall back to `private`.
+ * Returns 'UNKNOWN' rather than guessing when the webhook carries neither field; this
+ * function never throws.
+ */
+function extractRepositoryVisibility(payload: any): RepositoryVisibility {
+  const repository = payload?.repository;
+  if (!repository || typeof repository !== 'object') return 'UNKNOWN';
+  if (typeof repository.visibility === 'string') {
+    return normalizeRepositoryVisibility(repository.visibility);
+  }
+  if (typeof repository.private === 'boolean') {
+    return normalizeRepositoryVisibility(repository.private);
+  }
+  return 'UNKNOWN';
+}
+
 export class GitHubEventHandler {
   private readonly triggerLabels: Set<string>;
 
@@ -94,6 +126,7 @@ export class GitHubEventHandler {
     }
 
     const { owner, repo } = extractOwnerRepo(payload);
+    const repositoryVisibility = extractRepositoryVisibility(payload);
 
     if (eventName === 'pull_request') {
       const action = payload.action;
@@ -123,6 +156,7 @@ export class GitHubEventHandler {
           isMerged: true,
           mergedAt: pr.merged_at || new Date().toISOString(),
           targetBranch: pr.base?.ref || 'main',
+          repositoryVisibility,
         };
 
         if (!parsedPayload.owner || !parsedPayload.repo) {
@@ -167,6 +201,7 @@ export class GitHubEventHandler {
         triggerAction: action,
         deliveryId,
         ...(pr.draft === true ? { isDraft: true } : {}),
+        repositoryVisibility,
       };
 
       if (!parsedPayload.owner || !parsedPayload.repo) {
@@ -211,6 +246,7 @@ export class GitHubEventHandler {
         diffHunk: payload.comment?.diff_hunk,
         filePath: payload.comment?.path,
         deliveryId,
+        repositoryVisibility,
       };
 
       if (!parsedPayload.owner || !parsedPayload.repo) {

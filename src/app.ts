@@ -130,6 +130,7 @@ function checkSummary(result: PanelResult): string {
   );
   return [
     `Exact head: \`${result.headSha}\``,
+    `Repository visibility: ${result.repositoryVisibility || 'UNKNOWN'}.`,
     '',
     '| Persona | Required | Provider | Model | Decision | Duration | Tokens | Cost |',
     '|---|---:|---|---|---|---:|---|---|',
@@ -294,6 +295,24 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         },
       });
       githubRef.client = github;
+      // The webhook payload usually already carries `repository.private`/`repository.visibility`
+      // (see GitHubEventHandler.extractRepositoryVisibility); this is only a fallback for a run
+      // mode whose payload did not. getRepositoryVisibility() never throws on its own, but a
+      // lookup failure must never be allowed to fail or block the review it was requested for,
+      // so this is also defensively wrapped.
+      let repositoryVisibility = payload.repositoryVisibility;
+      if (!repositoryVisibility || repositoryVisibility === 'UNKNOWN') {
+        try {
+          repositoryVisibility = await github.getRepositoryVisibility(owner, repo);
+        } catch (error: any) {
+          logger.warn('Repository visibility fallback lookup threw unexpectedly; continuing as UNKNOWN', {
+            owner,
+            repo,
+            error: error?.message || error,
+          });
+          repositoryVisibility = 'UNKNOWN';
+        }
+      }
       let checkId: number | undefined;
       try {
         const snapshot = await github.getPullRequest(owner, repo, prNumber);
@@ -436,6 +455,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           changedFiles: reviewChangedFiles,
           repository: repoFull,
           headSha,
+          repositoryVisibility,
           client: openRouterClient(),
           isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
         }), config.reviewers.overall_timeout_s);

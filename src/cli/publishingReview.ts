@@ -22,7 +22,7 @@
  *    deliberate: a `neutral` check does not block a merge, so an outage that
  *    published `neutral` would silently stop enforcing.
  */
-import { executePersonaPanel } from '../panel/panelEngine';
+import { executePersonaPanel, normalizeRepositoryVisibility } from '../panel/panelEngine';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
@@ -368,6 +368,11 @@ export async function runPublishingReviewWorker(
   if (!isPublishingReviewWorker(env)) throw invalidPublishingReviewContract();
   const identity = publishingReviewIdentity(env);
   const transport = bifrostTransport(env);
+  // This lane's admitted identity is entirely env-driven (no GitHub client is available to
+  // look the repository up); the dispatching workflow is the only source of visibility here.
+  // Absent or unrecognised input normalizes to 'UNKNOWN', never to a guess, and never blocks
+  // the run (ct-meta#2884: visibility must be told to the persona, not guessed).
+  const repositoryVisibility = normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY'));
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
@@ -402,6 +407,7 @@ export async function runPublishingReviewWorker(
       changedFiles,
       repository: identity.repo,
       headSha: identity.headSha,
+      repositoryVisibility,
       client,
       jobId: identity.runId,
     } as Parameters<typeof executePersonaPanel>[0]);
@@ -463,6 +469,7 @@ export async function runPublishingReviewWorker(
           ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
           : []),
         `Transport: bifrost \`${transport.model}\`.`,
+        `Repository visibility: ${repositoryVisibility}.`,
       ].join('\n\n'),
       text: renderFindingsMarkdown(findings, blocking.length),
       // Redundant today and deliberately kept: `sanitizeFinding` already drops

@@ -1,4 +1,6 @@
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
+import { logger } from '../utils/logger';
+import { normalizeRepositoryVisibility, RepositoryVisibility } from '../panel/panelEngine';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -88,6 +90,7 @@ export class GitHubInstallationClient {
   private readonly publisher: CommentPublisher;
   private readonly now: () => number;
   private readonly fetchImplementation: FetchImplementation;
+  private readonly repositoryVisibilityCache = new Map<string, Promise<RepositoryVisibility>>();
 
   constructor(options: {
     token: string;
@@ -142,6 +145,36 @@ export class GitHubInstallationClient {
       title: String(data.title || ''),
       body: String(data.body || ''),
     };
+  }
+
+  /**
+   * Fallback source of repository visibility for run modes whose webhook payload
+   * did not carry `repository.private`/`repository.visibility` (ct-meta#2884). A
+   * lookup failure of any kind -- 404, rate limit, network error, malformed body --
+   * must never fail or block the review it was requested for, so every error path
+   * resolves to 'UNKNOWN' rather than rejecting. Memoised per client instance per
+   * `owner/repo` since a single review run may ask more than once (persona +
+   * moderator + arbiter) and visibility does not change mid-run.
+   */
+  async getRepositoryVisibility(owner: string, repo: string): Promise<RepositoryVisibility> {
+    const key = `${owner}/${repo}`;
+    const cached = this.repositoryVisibilityCache.get(key);
+    if (cached) return cached;
+    const lookup = (async (): Promise<RepositoryVisibility> => {
+      try {
+        const data = await this.request(`/repos/${owner}/${repo}`);
+        if (typeof data.visibility === 'string') return normalizeRepositoryVisibility(data.visibility);
+        if (typeof data.private === 'boolean') return normalizeRepositoryVisibility(data.private);
+        return 'UNKNOWN';
+      } catch (error: any) {
+        logger.warn(`Repository visibility lookup failed for ${key}; falling back to UNKNOWN`, {
+          error: error?.message || error,
+        });
+        return 'UNKNOWN';
+      }
+    })();
+    this.repositoryVisibilityCache.set(key, lookup);
+    return lookup;
   }
 
   async getBasePolicy(owner: string, repo: string, baseSha: string): Promise<string> {
