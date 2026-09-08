@@ -33,7 +33,7 @@ export interface ClassifyScopeOptions {
 const SAFE_DOC_OR_ASSET_EXTENSIONS = new Set([
   '.md', '.markdown', '.mdown', '.mkdn',
   '.txt', '.rst', '.adoc',
-  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp', '.avif', '.bmp',
+  '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.avif', '.bmp',
 ]);
 
 /**

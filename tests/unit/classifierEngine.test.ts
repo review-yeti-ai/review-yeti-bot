@@ -110,6 +110,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
       expect(containsExecutableOrSensitiveCode([{ path: 'cloudbuild.yaml' }])).toBe(true);
       expect(containsExecutableOrSensitiveCode([{ path: 'Dockerfile' }])).toBe(true);
       expect(containsExecutableOrSensitiveCode([{ path: 'docker-compose.yml' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'assets/logo.svg' }])).toBe(true);
     });
   });
 
@@ -390,6 +391,98 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
           isCurrentHead: () => false,
         })
       ).rejects.toThrow(/stale run aborted/);
+    });
+
+    it('falls through to full panel when config.quorum > 1 even if classifier suggested fastShip', async () => {
+      const baseConfig = buildTestConfig();
+      const configWithQuorum2: CtReviewConfigV3 = {
+        ...baseConfig,
+        quorum: 2,
+        personas: [
+          {
+            id: 'sec-lane',
+            enabled: true,
+            required: true,
+            charter: 'builtin:security',
+            paths: ['**/*'],
+            providers: ['claude'],
+          },
+          {
+            id: 'perf-lane',
+            enabled: true,
+            required: true,
+            charter: 'builtin:performance',
+            paths: ['**/*'],
+            providers: ['openai'],
+          },
+        ],
+        reviewers: {
+          ...baseConfig.reviewers,
+          providers: [
+            baseConfig.reviewers.providers[0],
+            {
+              id: 'openai',
+              enabled: true,
+              model: 'gpt-4o',
+              effort: 'medium',
+              review_timeout_s: 15,
+              arbiter_timeout_s: 15,
+            },
+          ],
+        },
+      };
+
+      (mockClient.complete as any).mockImplementation(async (opts: any) => {
+        if (opts.persona === 'classifier') {
+          return {
+            model: opts.model,
+            content: JSON.stringify({
+              fastShip: true,
+              selectedPersonas: [],
+              effortTier: 'low',
+              rationale: 'Docs change.',
+            }),
+            usage: { prompt: 50, completion: 20, total: 70 },
+          };
+        }
+
+        const prompt = (opts.messages[1]?.content as string) || '';
+        const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+        const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+
+        if (opts.persona === 'arbiter') {
+          return {
+            model: opts.model,
+            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Approved by arbiter' })}\nCT_REVIEW_END:${nonce}`,
+            usage: { prompt: 10, completion: 10, total: 20 },
+          };
+        } else if (opts.persona === 'moderator') {
+          return {
+            model: opts.model,
+            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+            usage: { prompt: 10, completion: 10, total: 20 },
+          };
+        } else {
+          return {
+            model: opts.model,
+            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+            usage: { prompt: 10, completion: 10, total: 20 },
+          };
+        }
+      });
+
+      const panelResult = await executePersonaPanel({
+        config: configWithQuorum2,
+        changedFiles: [{ path: 'docs/README.md', patch: '+ # Welcome' }],
+        repository: 'calltelemetry/ai-workspace',
+        headSha: 'sha-quorum-fallback',
+        client: mockClient,
+      });
+
+      // Verification: Did not take fast-ship shortcut; executed real personas because quorum > 1
+      expect(panelResult.personas.length).toBeGreaterThanOrEqual(1);
+      expect(panelResult.personas[0].id).not.toBe('fast-ship');
+      expect(panelResult.arbiter.verdict).toBe('SHIP');
     });
   });
 });

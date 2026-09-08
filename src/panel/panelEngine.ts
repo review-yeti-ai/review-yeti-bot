@@ -1449,7 +1449,7 @@ export async function executePersonaPanel(options: {
         const isSecurity = /sec|auth|tenan|perm/i.test(p.id) || /security|auth|vulnerability|tenant/i.test(p.charter || '');
         if (isSecurity) return true;
         // Keep personas with explicit path globs if any changed file matches
-        const hasSpecificGlobs = Array.isArray(p.paths) && p.paths.some((pattern) => pattern !== '**/*' && pattern !== '*');
+        const hasSpecificGlobs = Array.isArray(p.paths) && p.paths.some((pattern) => pattern !== '**/*' && pattern !== '*' && pattern !== '**');
         if (hasSpecificGlobs) return true;
         return selectedSet.has(p.id);
       });
