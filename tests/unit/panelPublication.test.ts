@@ -9,6 +9,8 @@ import {
   formatPersonaIssueComment,
   findingDedupeKey,
 } from '../../src/github/panelPublication';
+import { CommentPublisher, formatInlineCommentBody } from '../../src/github/commentPublisher';
+import { buildPanelResponseFormat, validateFindings } from '../../src/panel/panelEngine';
 
 describe('panelPublication', () => {
   const baseFinding = {
@@ -26,24 +28,24 @@ describe('panelPublication', () => {
       { ...baseFinding, severity: 'P2', title: 'nit', persona: 'consistency' },
     ]);
 
-    expect(result).toHaveLength(1);
+    expect(result).toHaveLength(2);
     expect(result[0].severity).toBe('P1');
     expect(result[0].body).toContain('security-tenancy');
     expect(result[0].body).toContain('policy-compliance');
     expect(result[0].body).not.toContain('nit');
   });
 
-  it('drops P2 from actionable threads and ranks P0 before P1', () => {
+  it('publishes every severity and ranks P0 before P1 before P2', () => {
     const result = dedupeActionableFindings([
       { ...baseFinding, severity: 'P2', title: 'style', persona: 'consistency' },
       { ...baseFinding, severity: 'P1', title: 'p1-a', path: 'b.ts', persona: 'a' },
       { ...baseFinding, severity: 'P0', title: 'p0-a', path: 'a.ts', persona: 'b' },
     ]);
-    expect(result.map((f) => f.severity)).toEqual(['P0', 'P1']);
+    expect(result.map((f) => f.severity)).toEqual(['P0', 'P1', 'P2']);
     expect(result[0].path).toBe('a.ts');
   });
 
-  it('caps final inline comments', () => {
+  it('publishes every finding by default and honors an explicit cap', () => {
     const many = Array.from({ length: 30 }, (_, i) => ({
       ...baseFinding,
       path: `src/f${i}.ts`,
@@ -53,7 +55,8 @@ describe('panelPublication', () => {
     }));
     const result = dedupeActionableFindings(many, { max: 5 });
     expect(result).toHaveLength(5);
-    expect(MAX_FINAL_INLINE_COMMENTS).toBe(10);
+    expect(MAX_FINAL_INLINE_COMMENTS).toBe(Infinity);
+    expect(buildFinalInlineComments({ findings: many })).toHaveLength(30);
     expect(ACTIONABLE_SEVERITIES.has('P0')).toBe(true);
     expect(ACTIONABLE_SEVERITIES.has('P2')).toBe(false);
   });
@@ -83,7 +86,7 @@ describe('panelPublication', () => {
     expect(body).not.toMatch(/event:\s*COMMENT/);
   });
 
-  it('buildFinalInlineComments maps only deduped actionable findings', () => {
+  it('buildFinalInlineComments maps every deduped finding', () => {
     const comments = buildFinalInlineComments({
       findings: [
         { ...baseFinding, persona: 'security-tenancy' },
@@ -91,13 +94,13 @@ describe('panelPublication', () => {
         { ...baseFinding, severity: 'P2', title: 'nit', persona: 'consistency' },
       ],
     });
-    expect(comments).toHaveLength(1);
+    expect(comments).toHaveLength(2);
     expect(comments[0].path).toBe('src/a.ts');
     expect(comments[0].finding.severity).toBe('major');
     expect(comments[0].finding.comment).toContain('Seen by personas');
   });
 
-  it('formatFinalReviewBody documents deferred persona surface', () => {
+  it('formatFinalReviewBody stays compact without the finding ledger', () => {
     const body = formatFinalReviewBody({
       verdict: 'FIX_FIRST',
       rationale: 'P1 remains',
@@ -107,9 +110,10 @@ describe('panelPublication', () => {
       totalActionableCandidates: 5,
       maxInline: 10,
     });
-    expect(body).toContain('Binding arbiter verdict: FIX_FIRST');
+    expect(body).toContain('Review verdict: FIX_FIRST');
     expect(body).toContain('2');
-    expect(body).toContain('issue comments only');
+    expect(body).not.toContain('ledger');
+    expect(body).toContain('Head: `abc123`');
   });
 
   it('findingDedupeKey is stable for same path/line/severity/title', () => {
@@ -117,4 +121,138 @@ describe('panelPublication', () => {
     const b = findingDedupeKey({ ...baseFinding, persona: 'b' });
     expect(a).toBe(b);
   });
+  it.each([['  return safe;', 9], ['  return safe;', null], ['', null]] as const)('carries structured replacement %j at start %j through to the GitHub payload', async (replacementCode, startLine) => {
+    const schema: any = buildPanelResponseFormat('persona');
+    const findingSchema = schema.json_schema.schema.properties.findings.items;
+    expect(findingSchema.required).toContain('replacementCode');
+    expect(findingSchema.required).toContain('startLine');
+    const findings = validateFindings([{ ...baseFinding, startLine, replacementCode }]);
+    const comments = buildFinalInlineComments({
+      findings: findings.map(finding => ({ ...finding, persona: 'correctness' })),
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -9,2 +9,2 @@\n-old\n-old\n+  const unsafe = true;\n+  return unsafe;' }],
+    });
+    let payload: any;
+    const publisher = new CommentPublisher({
+      githubToken: 'ghs_test', maxRetries: 0,
+      fetchImplementation: async (_url, init) => {
+        payload = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({ id: 1 }), { status: 200 });
+      },
+    });
+    const result = await publisher.publishReview({ owner: 'o', repo: 'r', prNumber: 1, commitSha: 'abc', event: 'COMMENT', body: 'Review', inlineComments: comments });
+    expect(result.success).toBe(true);
+    expect(payload.comments[0]).toMatchObject({ line: 10, side: 'RIGHT' });
+    expect(payload.comments[0].start_line).toBe(startLine ?? undefined);
+    expect(payload.comments[0].body).toContain('```suggestion\n' + replacementCode + '\n```');
+  });
+
+  it.each([
+    undefined,
+    [{ path: baseFinding.path }],
+    [{ path: baseFinding.path, patch: '@@ -10 +10,0 @@\n-old' }],
+    [{ path: baseFinding.path, patch: '@@ -10 +10 @@\n-old\n+new' }],
+  ])('withholds replacements without a proven complete RIGHT-side range (%j)', (changedFiles) => {
+    const comments = buildFinalInlineComments({
+      findings: [{ ...baseFinding, persona: 'security', startLine: 9, replacementCode: 'new', suggestion: 'Fix the unsafe code.' }],
+      changedFiles,
+    });
+    expect(comments[0].finding.replacementCode).toBeUndefined();
+    expect(formatInlineCommentBody(comments[0].finding)).not.toContain('```suggestion');
+    expect(formatInlineCommentBody(comments[0].finding)).toContain('Fix the unsafe code.');
+  });
+
+  it('plans the complete batch so severity duplicates collapse without losing App metadata or attribution', () => {
+    const fixOptions = [{ rank: 1, title: 'Guard account', suggestionCode: 'guard();' }];
+    const comments = buildFinalInlineComments({
+      findings: [
+        { ...baseFinding, severity: 'P2', persona: 'consistency', fixOptions, isArchitectural: true },
+        { ...baseFinding, severity: 'P0', persona: 'security', replacementCode: 'guard();' },
+        { ...baseFinding, title: 'Separate file observation', line: 99, persona: 'architecture', replacementCode: 'unsafe();' },
+      ],
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -10 +10 @@\n-old\n+new' }],
+    });
+    expect(comments).toHaveLength(2);
+    expect(comments[0]).toMatchObject({ line: 10, side: 'RIGHT', finding: {
+      severity: 'critical', replacementCode: 'guard();', fixOptions, isArchitectural: true,
+    } });
+    expect(comments[0].finding.comment).toContain('consistency');
+    expect(comments[0].finding.comment).toContain('security');
+    expect(comments[1]).toMatchObject({ subjectType: 'file', finding: { title: 'Separate file observation' } });
+    expect(comments[1].finding.replacementCode).toBeUndefined();
+  });
+
+  it('merges nearby reports while keeping replacement and fix options tied to the surviving anchor', () => {
+    const keptOptions = [{ title: 'Fix retained anchor', suggestionCode: 'at10();' }];
+    const comments = buildFinalInlineComments({
+      findings: [
+        { ...baseFinding, persona: 'security', fixOptions: keptOptions },
+        { ...baseFinding, line: 11, persona: 'architecture', replacementCode: 'onlyAt11();',
+          fixOptions: [{ title: 'Fix other anchor', suggestionCode: 'onlyAt11();' }] },
+      ],
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -10,2 +10,2 @@\n-old\n-old\n+new\n+new' }],
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ line: 10, finding: { fixOptions: keptOptions } });
+    expect(comments[0].finding.replacementCode).toBeUndefined();
+    expect(comments[0].finding.comment).toContain('security');
+    expect(comments[0].finding.comment).toContain('architecture');
+  });
+
+  it('preserves line metadata when a differently titled file report is promoted to its matching line claim', () => {
+    const body = 'The tenant query skips the account ownership guard and exposes records belonging to another tenant.';
+    const fixOptions = [{ title: 'Guard tenant query', suggestionCode: 'guardTenant();' }];
+    const comments = buildFinalInlineComments({
+      findings: [
+        { ...baseFinding, line: 1, persona: 'security', title: 'Tenant query bypasses validation', body },
+        { ...baseFinding, persona: 'architecture', title: 'Tenant query skips validation', body,
+          replacementCode: 'guardTenant();', fixOptions },
+      ],
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -10 +10 @@\n-old\n+new' }],
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ line: 10, side: 'RIGHT', finding: {
+      replacementCode: 'guardTenant();', fixOptions,
+    } });
+    expect(comments[0].subjectType).toBeUndefined();
+  });
+
+  it('uses a file conversation when no patch is available', () => {
+    const comments = buildFinalInlineComments({
+      findings: [{ ...baseFinding, persona: 'security', replacementCode: 'safe();' }],
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ path: baseFinding.path, subjectType: 'file' });
+    expect(comments[0].finding.replacementCode).toBeUndefined();
+    expect(comments[0].finding.comment).toContain('Reported location: line 10');
+  });
+
+  it('preserves a deleted-line LEFT anchor without allowing a replacement', () => {
+    const comments = buildFinalInlineComments({
+      findings: [{ ...baseFinding, persona: 'security', replacementCode: 'safe();' }],
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -10 +10,0 @@\n-old' }],
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ path: baseFinding.path, line: 10, side: 'LEFT' });
+    expect(comments[0].finding.replacementCode).toBeUndefined();
+  });
+
+  it('withholds conflicting replacement proposals for the same finding', () => {
+    const result = dedupeActionableFindings([
+      { ...baseFinding, persona: 'a', startLine: 9, replacementCode: 'first();' },
+      { ...baseFinding, persona: 'b', startLine: 9, replacementCode: 'second();' },
+      { ...baseFinding, persona: 'c', startLine: 9, replacementCode: 'first();' },
+    ]);
+    expect(result[0].replacementCode).toBeUndefined();
+    expect(result[0].startLine).toBeUndefined();
+  });
+
+  it('keeps a duplicate replacement tied to its original range', () => {
+    const result = dedupeActionableFindings([
+      { ...baseFinding, persona: 'a', replacementCode: '  safe();' },
+      { ...baseFinding, persona: 'b', startLine: 8 },
+    ]);
+    expect(result[0].replacementCode).toBe('  safe();');
+    expect(result[0].startLine).toBeUndefined();
+  });
+
 });

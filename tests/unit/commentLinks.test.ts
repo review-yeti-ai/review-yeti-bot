@@ -209,14 +209,14 @@ describe('Comment Publisher Dashboard Links & Markdown Suite', () => {
       expect(formatted).toContain('```suggestion\narr.sort();\n```');
     });
 
-    it('formats single suggestion code block when suggestion string is provided', () => {
+    it('formats single suggestion code block when replacementCode is provided', () => {
       const finding: PersonaFinding = {
         persona: 'Code Quality',
         severity: 'nit',
         filePath: 'src/utils.ts',
         lineNumber: 20,
         comment: 'Use const instead of let',
-        suggestion: 'const count = 0;',
+        replacementCode: 'const count = 0;',
       };
 
       const formatted = formatInlineCommentBody(finding);

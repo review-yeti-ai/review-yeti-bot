@@ -141,17 +141,17 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
       expect(result).toContain('#### Option 2: Alternative Approach (Rank #2)');
     });
 
-    it('falls back to single suggestion or codeSnippet when fixOptions is empty or missing', () => {
-      const findingWithSuggestion: PersonaFinding = {
+    it('uses explicit replacementCode or legacy codeSnippet when fixOptions is missing', () => {
+      const findingWithReplacement: PersonaFinding = {
         persona: 'contract',
         severity: 'P1',
         filePath: 'src/api.ts',
         lineNumber: 30,
         comment: 'Update return type',
-        suggestion: 'return { status: 200 };',
+        replacementCode: 'return { status: 200 };',
       };
 
-      const result1 = formatInlineCommentBody(findingWithSuggestion);
+      const result1 = formatInlineCommentBody(findingWithReplacement);
       expect(result1).toContain('```suggestion\nreturn { status: 200 };\n```');
       expect(result1).not.toContain('Option 1');
 
@@ -178,7 +178,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
         filePath: 'src/render.ts',
         lineNumber: 15,
         comment: 'Generic renderer',
-        suggestion: codeSnippet,
+        replacementCode: codeSnippet,
       };
 
       const result = formatInlineCommentBody(finding);
@@ -196,7 +196,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
         filePath: 'src/foo.ts',
         lineNumber: 1,
         comment: 'Multi-line function fix',
-        suggestion: multiLineCode,
+        replacementCode: multiLineCode,
       };
 
       const result = formatInlineCommentBody(finding);
@@ -211,14 +211,14 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
         filePath: 'src/label.ts',
         lineNumber: 40,
         comment: 'Unicode string check',
-        suggestion: unicodeCode,
+        replacementCode: unicodeCode,
       };
 
       const result = formatInlineCommentBody(finding);
       expect(result).toContain('```suggestion\n' + unicodeCode + '\n```');
     });
 
-    it('documents behavior when suggestion code contains triple backticks inside fence', () => {
+    it('uses a longer fence when replacement code contains triple backticks', () => {
       const codeWithBackticks = 'const md = "```js\\nconsole.log(1);\\n```";';
       const finding: PersonaFinding = {
         persona: 'docs',
@@ -226,11 +226,12 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
         filePath: 'src/doc.ts',
         lineNumber: 5,
         comment: 'Markdown template string',
-        suggestion: codeWithBackticks,
+        replacementCode: codeWithBackticks,
       };
 
       const result = formatInlineCommentBody(finding);
-      expect(result).toContain('```suggestion\n' + codeWithBackticks + '\n```');
+      expect(result).toContain('\n````suggestion\n' + codeWithBackticks + '\n````\n');
+      expect(result).not.toContain('\n```suggestion\n');
     });
   });
 

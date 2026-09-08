@@ -63,6 +63,26 @@ export function generateGitHubAppJwt(appId: string, privateKeyPem: string): stri
   return `${unsignedToken}.${signatureB64}`;
 }
 
+/** Resolve the authenticated App identity using the App JWT, never PR-provided metadata. */
+export async function getGitHubAppBotLogin(
+  config: Pick<GitHubAppAuthConfig, 'appId' | 'privateKey' | 'baseUrl'>,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<string> {
+  const jwt = generateGitHubAppJwt(config.appId, config.privateKey);
+  const response = await fetchFn(`${(config.baseUrl || 'https://api.github.com').replace(/\/+$/, '')}/app`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${jwt}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!response.ok) throw new Error(`GitHub App identity lookup failed HTTP ${response.status}`);
+  const app: unknown = await response.json();
+  if (!app || typeof app !== 'object' || !('slug' in app)
+    || typeof app.slug !== 'string' || !app.slug.trim()) throw new Error('GitHub App identity missing slug');
+  return `${app.slug}[bot]`;
+}
+
 /**
  * Exchanges a GitHub App JWT for a repository Installation Access Token (`ghs_...`).
  * Comments posted with this token display as `ct-review-bot[bot]`.
@@ -287,4 +307,3 @@ export async function createEphemeralChatClient(
     baseUrl,
   });
 }
-

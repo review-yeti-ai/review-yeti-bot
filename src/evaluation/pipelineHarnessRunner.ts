@@ -33,6 +33,7 @@ import {
   sanitizeFindings as coreSanitizeFindings,
   computeArbitration as coreComputeArbitration,
   changedLineNumbers,
+  normalizeFindingReplacement,
   ReviewChangedFile,
 } from '../review/reviewCore';
 import { TurnHistoryManager } from '../pipeline/turnHistoryManager';
@@ -70,6 +71,8 @@ export interface HarnessPersonaFinding {
   confidence: number;
   evidenceReceipts?: string[];
   suggestion?: string;
+  replacementCode?: string;
+  startLine?: number;
   rawText?: string;
 }
 
@@ -380,11 +383,15 @@ When your investigation is complete, output your final findings in this JSON for
       "title": "Clear concise summary of defect",
       "body": "Detailed technical rationale and impact",
       "suggestion": "Concrete code remediation",
+      "replacementCode": null,
+      "startLine": null,
       "confidence": 0.95
     }
   ]
 }
 \`\`\`
+For a safe, self-contained fix to known source, provide replacementCode as exact raw source (no Markdown fences or prose), preserving indentation and newlines, with at most 10000 characters. An empty string deletes the selected source. line is the last new-file line replaced; optional startLine is the first inclusive new-file line (omit or null for a single-line replacement). Replace only that contiguous range in one diff hunk. Omit replacementCode or use null when the fix depends on unseen source or changes elsewhere. Keep suggestion as explanatory prose.
+
 Severity definitions:
 - P0: Critical system outage, security breach, data loss, unauthenticated access, fatal race condition. (Blocks release)
 - P1: Significant bug, contract breakage, unhandled error path, performance regression. (Fix first)
@@ -577,6 +584,7 @@ export function parseFindingsFromText(
       body: bodyVal,
       confidence: typeof f.confidence === 'number' ? f.confidence : 0.9,
       suggestion: f.suggestion ? String(f.suggestion).trim() : undefined,
+      ...normalizeFindingReplacement(f),
       evidenceReceipts: Array.isArray(f.evidenceReceipts) ? f.evidenceReceipts : undefined,
     });
   };
@@ -683,8 +691,10 @@ export function sanitizeAndDeduplicateFindings(
       }
     }
 
+    const { replacementCode, startLine, ...finding } = f;
     sanitizedList.push({
-      ...f,
+      ...finding,
+      ...normalizeFindingReplacement(f),
       path: norm,
       line,
       severity,
@@ -735,6 +745,8 @@ export function sanitizeAndDeduplicateFindings(
         new Set([...(existing.evidenceReceipts || []), ...(f.evidenceReceipts || [])])
       );
 
+      // Retain replacement metadata from the retained finding only: nearby duplicates
+      // may target different source even when their root cause and title match.
       dedupMap.set(matchedKey, {
         ...existing,
         severity: highestSeverity,
@@ -916,6 +928,7 @@ export function evaluateQuorumArbitration(
         title: f.title,
         body: f.body,
         suggestion: f.suggestion,
+        ...normalizeFindingReplacement(f),
         confidence: f.confidence,
       })),
     };
@@ -931,6 +944,7 @@ export function evaluateQuorumArbitration(
       title: f.title,
       body: f.body,
       suggestion: f.suggestion,
+      ...normalizeFindingReplacement(f),
       confidence: f.confidence,
     }));
   }
@@ -1573,6 +1587,7 @@ ${partitionDiff}
         title: f.title,
         body: f.body,
         suggestion: f.suggestion,
+        ...normalizeFindingReplacement(f),
         confidence: f.confidence,
       })),
     };
