@@ -118,9 +118,9 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
         expect(res.arbiter.verdict).toBe('SHIP');
       }
 
-      // 15 panels * 12 calls (10 personas + moderator + arbiter) = 180 LLM completions
-      expect(mockClient.complete).toHaveBeenCalledTimes(180);
-      console.log(`Empirical Stress: Executed 15 parallel 10-persona panels (180 total LLM calls) in ${totalDuration} ms`);
+      // 15 panels * 13 calls (1 classifier + 10 personas + moderator + arbiter) = 195 LLM completions
+      expect(mockClient.complete).toHaveBeenCalledTimes(195);
+      console.log(`Empirical Stress: Executed 15 parallel 10-persona panels (195 total LLM calls) in ${totalDuration} ms`);
     });
 
     it('fails closed when distinct provider count is lower than quorum requirement (single provider mapped across all 10 personas)', async () => {
