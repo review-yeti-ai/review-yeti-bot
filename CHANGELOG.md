@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.42.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.2...v1.42.3) (2026-09-08)
+
+
+### Bug Fixes
+
+* **review:** give the panel repository visibility instead of letting it guess ([#594](https://github.com/review-yeti-ai/review-yeti-bot/issues/594)) ([698dac0](https://github.com/review-yeti-ai/review-yeti-bot/commit/698dac04af6da01e689d3431c62ece9657266d3a))
+
 ## [1.42.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.1...v1.42.2) (2026-09-08)
 
 
