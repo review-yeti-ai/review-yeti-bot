@@ -213,6 +213,15 @@ export class GitHubInstallationClient {
     return Number(data.id);
   }
 
+  /**
+   * `text` and `annotations` are part of the check-run output and need only
+   * `checks: write` -- the permission this token already holds. Publishing
+   * findings here rather than as a pull-request review is what keeps the
+   * app-gate worker inside its ADR 0541 boundary: it never needs
+   * `pull_requests: write`.
+   *
+   * GitHub accepts at most 50 annotations per request, so callers must batch.
+   */
   async completeCheck(options: {
     owner: string;
     repo: string;
@@ -220,14 +229,31 @@ export class GitHubInstallationClient {
     conclusion: 'success' | 'failure' | 'cancelled';
     title: string;
     summary: string;
+    text?: string;
+    annotations?: Array<{
+      path: string;
+      start_line: number;
+      end_line: number;
+      annotation_level: 'notice' | 'warning' | 'failure';
+      message: string;
+      title?: string;
+    }>;
   }): Promise<void> {
+    const output: Record<string, unknown> = {
+      title: options.title,
+      summary: options.summary.slice(0, 65_000),
+    };
+    if (options.text) output.text = options.text.slice(0, 65_000);
+    if (options.annotations && options.annotations.length > 0) {
+      output.annotations = options.annotations.slice(0, 50);
+    }
     await this.request(`/repos/${options.owner}/${options.repo}/check-runs/${options.checkId}`, {
       method: 'PATCH',
       body: JSON.stringify({
         status: 'completed',
         conclusion: options.conclusion,
         completed_at: new Date(this.now()).toISOString(),
-        output: { title: options.title, summary: options.summary.slice(0, 65_000) },
+        output,
       }),
     });
   }
