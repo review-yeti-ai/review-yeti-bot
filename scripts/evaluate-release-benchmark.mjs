@@ -450,12 +450,29 @@ export function formatReleaseDigest(markdownContent, options = {}) {
   const version = options.version || (options.saveBaseline ? options.saveBaseline : 'latest');
   const repository =
     options.repository || process.env.GITHUB_REPOSITORY || 'calltelemetry/ct-review-bot';
-  const table = extractExecutiveSummaryTable(markdownContent);
+  // extractExecutiveSummaryTable is still exported and still used by the
+  // regression gate; it is simply no longer rendered into release notes.
 
+  // Plan item 0.5. The executive-summary table is deliberately NOT published.
+  //
+  // Across releases it saturated: three of four models scored 100% with precision
+  // and recall of 1.0, and two reported identical token counts. A table that
+  // cannot separate its candidates does not inform a reader -- it invites them to
+  // trust a ranking that was never measured, and a skeptical engineer reads it as
+  // a red flag rather than as evidence.
+  //
+  // The benchmark still runs as a regression gate, and the raw artefacts are still
+  // linked below for anyone who wants to check the numbers themselves. What stops
+  // is presenting them as a ranking. A table returns when the corpus can produce
+  // separation; until then the honest statement is that precision is unmeasured.
   const lines = [
-    `## 🚀 Review Yeti Model Evaluation Matrix (${version})`,
+    `## 🔬 Review Yeti Benchmark Artefacts (${version})`,
     '',
-    table || '*No executive summary table available.*',
+    'Findings precision is **not yet measured**. A findings ledger is being turned',
+    'on; per-persona precision and false-positive rates will be published when the',
+    'sample is large enough to mean something. Until then no ranking table is',
+    'published, because the current benchmark corpus cannot separate candidate',
+    'models. Raw artefacts are linked below if you want to inspect them directly.',
     '',
     '### 📦 Evaluation Artifacts & Reports',
     `- 📈 **Pareto Frontier Plotted Chart (.svg)**: [Download pareto-frontier-accuracy-vs-cost-${version}.svg](https://github.com/${repository}/releases/download/${version}/pareto-frontier-accuracy-vs-cost-${version}.svg)`,
@@ -478,9 +495,14 @@ export function mergeReleaseNotes(existingNotes, benchmarkDigest) {
   }
 
   // If previous digest exists, strip it out cleanly
-  if (rawNotes.includes('Review Yeti Model Evaluation Matrix')) {
+  // Both headings are matched: release notes edited before plan item 0.5 still
+  // carry the old "Model Evaluation Matrix" block, and failing to strip it would
+  // leave a saturated table sitting above the statement that says there isn't one.
+  if (rawNotes.includes('Review Yeti Model Evaluation Matrix')
+    || rawNotes.includes('Review Yeti Benchmark Artefacts')) {
     let cleanedNotes = rawNotes
       .replace(/## 🚀 Review Yeti Model Evaluation Matrix[\s\S]*?(?=\n## (?!🚀)|$)/g, '')
+      .replace(/## 🔬 Review Yeti Benchmark Artefacts[\s\S]*?(?=\n## (?!🔬)|$)/g, '')
       .trim();
 
     // Strip trailing markdown horizontal rules ('---' or '***')
