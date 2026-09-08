@@ -321,7 +321,7 @@ export interface PublishingReviewDeps {
  * severity so the blocking ones are read first, and every entry carries its
  * file and line so a reader can navigate without the annotation view.
  */
-function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number): string {
+export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number): string {
   if (findings.length === 0) {
     return 'No findings survived canonical arbitration for this head.';
   }
@@ -335,11 +335,24 @@ function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number
       const body = String(finding?.body || '').trim();
       const reporters = Number((finding as { reporters?: number })?.reporters || 1);
       const adjusted = (finding as { severityAdjusted?: { from: string; reason: string } })?.severityAdjusted;
+      const unverified = finding as { downgradedFrom?: string; downgrade_reason?: string };
+      // A severity-downgrade marker renders immediately after the bold severity token itself
+      // (`**P2** (was P1 — unverified premise)`), not folded into the trailing `_(...)_` marks --
+      // it changes what the severity IS, not an incidental annotation about the finding.
+      //
+      // Keyed on the presence of `downgradedFrom`, not on the reason's literal value:
+      // the domain owns that vocabulary, and matching a copy of it here would go
+      // quietly stale if it were renamed or a second reason were added -- the marker
+      // would just stop rendering, with nothing red. The reason is rendered from the
+      // finding itself for the same reason.
+      const downgradeMarker = unverified.downgradedFrom
+        ? ` (was ${unverified.downgradedFrom} — ${String(unverified.downgrade_reason || 'downgraded').replace(/_/gu, ' ')})`
+        : '';
       const marks = [
         reporters > 1 ? `reported by ${reporters} lanes` : '',
         adjusted ? `filed ${adjusted.from}, re-filed ${severity}: ${adjusted.reason}` : '',
       ].filter(Boolean);
-      return `- **${severity}** ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
+      return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
     });
   return [
     `${findings.length} finding(s), ${blockingCount} blocking (P0/P1).`,
