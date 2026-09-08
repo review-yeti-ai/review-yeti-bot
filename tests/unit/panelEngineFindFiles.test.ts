@@ -224,6 +224,17 @@ describe('panelEngine find_files — bounded full-repository hit list', () => {
     expect(out.toLowerCase()).not.toContain('found anywhere in the repository');
   });
 
+  it('treats a provider without treeTruncated as a complete tree', async () => {
+    // `treeTruncated` is optional so simple stubs stay valid; the `?.` / `?? false`
+    // fallback on the zero-hit path was never exercised with the member absent.
+    const out = await runFindFilesScenario(
+      { findFiles: async () => [], readFile: async () => null },
+      { tool: 'find_files', args: { query: 'generated' } },
+    );
+    expect(out).toContain('found anywhere in the repository at the reviewed head');
+    expect(out).not.toContain('truncated');
+  });
+
   it('still reports a genuine absence when the tree was complete', async () => {
     const out = await runFindFilesScenario(
       { findFiles: async () => [], readFile: async () => null, treeTruncated: async () => false },
