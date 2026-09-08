@@ -32,6 +32,9 @@ case "$endpoint" in
     encoded="$(printf '%s' "$FAKE_WORKFLOW_CONTENT" | base64 | tr -d '\n')"
     body="$(printf '{"content":"%s"}' "$encoded")"
     ;;
+  repos/exampleorg/example-review-actions/compare/*)
+    body="$(printf '{"status":"%s"}' "${FAKE_COMPARE_STATUS:-ahead}")"
+    ;;
   *)
     echo "unexpected fake gh call: $endpoint" >&2
     exit 1
@@ -48,11 +51,17 @@ chmod +x "$tmp_dir/bin/gh"
 
 base_sha="deadbeefcafef00ddeadbeefcafef00ddeadbeef"
 valid_workflow=$'jobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1\n    secrets: inherit\n'
+immutable_workflow=$'jobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@89269f7918bee2ec4fcc48d61bde64346e6e865b\n    secrets: inherit\n'
 invalid_workflow="${valid_workflow}"$'    with:\n      central-sha: 0123456789012345678901234567890123456789\n'
 
 PATH="$tmp_dir/bin:$PATH" \
   GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
   FAKE_WORKFLOW_CONTENT="$valid_workflow" \
+  "$repo_root/scripts/validate-caller-workflow.sh"
+
+PATH="$tmp_dir/bin:$PATH" \
+  GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+  FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
   "$repo_root/scripts/validate-caller-workflow.sh"
 
 if output="$({
@@ -65,6 +74,17 @@ if output="$({
   exit 1
 fi
 grep -Fq "must not duplicate the central release ref as central-sha" <<<"$output"
+
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_COMPARE_STATUS=behind FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
+    "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo "expected an immutable pin outside the central release history to fail" >&2
+  exit 1
+fi
+grep -Fq "is not reachable from central v1" <<<"$output"
 
 # A different default branch is deliberately unavailable in the fake API. This pass proves the
 # validator uses the base commit supplied by pull_request_target rather than a default-branch ref.

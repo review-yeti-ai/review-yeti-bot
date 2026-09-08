@@ -39,11 +39,28 @@ workflow_content="$({
 workflow_content="$(sed -E 's/[[:space:]]+#.*$//' <<<"$workflow_content")"
 expected_uses="    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@${central_ref}"
 
-uses_count="$(grep -Fxc "$expected_uses" <<<"$workflow_content" || true)"
+release_uses_count="$(grep -Fxc "$expected_uses" <<<"$workflow_content" || true)"
+immutable_uses_count="$(grep -Ec '^    uses: exampleorg/example-review-actions/\.github/workflows/review-yeti\.yml@[0-9a-fA-F]{40}$' <<<"$workflow_content" || true)"
+uses_count=$((release_uses_count + immutable_uses_count))
 
 if [[ "$uses_count" -ne 1 ]]; then
-  echo "::error::${caller_workflow} must contain exactly one central Review Yeti ref at ${central_ref}."
+  echo "::error::${caller_workflow} must contain exactly one central Review Yeti ref at ${central_ref} or one immutable SHA pin."
   exit 1
+fi
+if [[ "$immutable_uses_count" -eq 1 ]]; then
+  immutable_pin="$(grep -E '^    uses: exampleorg/example-review-actions/\.github/workflows/review-yeti\.yml@[0-9a-fA-F]{40}$' <<<"$workflow_content" | sed -E 's/.*@([0-9a-fA-F]{40})$/\1/')"
+  central_comparison_status="$({
+    gh api "repos/exampleorg/example-review-actions/compare/${immutable_pin}...${central_ref}" |
+      jq -r '.status // empty'
+  } 2>&1)" || {
+    echo "::error::Could not verify immutable Review Yeti pin ${immutable_pin} against ${central_ref}."
+    echo "$central_comparison_status"
+    exit 1
+  }
+  if [[ "$central_comparison_status" != ahead && "$central_comparison_status" != identical ]]; then
+    echo "::error::Immutable Review Yeti pin ${immutable_pin} is not reachable from central ${central_ref}."
+    exit 1
+  fi
 fi
 if grep -Eq '^[[:space:]]+central-sha:' <<<"$workflow_content"; then
   echo "::error::${caller_workflow} must not duplicate the central release ref as central-sha."
@@ -63,4 +80,4 @@ if grep -Eq '^[[:space:]]+execution_backend:' <<<"$workflow_content"; then
   exit 1
 fi
 
-echo "Validated ${caller_workflow} at base ${EXPECTED_BASE_SHA} uses central Review Yeti ${central_ref}."
+echo "Validated ${caller_workflow} at base ${EXPECTED_BASE_SHA} uses central Review Yeti ${central_ref} or a reachable immutable SHA pin."
