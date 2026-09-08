@@ -17,25 +17,23 @@ import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { executeMillerTool } from '../services/millerTool';
 import { ASTParser } from '../indexer/astParser';
 import { classifyReviewScope, ClassifierResult, containsExecutableOrSensitiveCode } from './classifierEngine';
-
-export type FindingSeverity = 'P0' | 'P1' | 'P2';
-
-/**
- * REL-583: `fixOptions` on a panel finding was `any[]`, while the GitHub-publication sibling
- * already typed the identical payload as `FixOption[]` -- `panelPublication.ts` assigns one
- * straight into the other. The shape was never unknown, only unstated.
- *
- * Declared here rather than imported from `src/github/commentPublisher.ts` because the dependency
- * runs github -> panel (commentPublisher imports PanelFinding from this module); importing back
- * would invert it and create the same cycle repaired in #493. commentPublisher re-exports this
- * name so its existing importers are unaffected.
- */
-export interface FixOption {
-  rank?: number;
-  title?: string;
-  explanation?: string;
-  suggestionCode?: string;
-}
+import { buildFastShipPanelResult } from './fastShipResult';
+export type {
+  FindingSeverity,
+  FixOption,
+  PanelFinding,
+  PersonaLaneResult,
+  PanelResult,
+  PanelRequestPolicy,
+} from './types';
+import type {
+  FindingSeverity,
+  FixOption,
+  PanelFinding,
+  PersonaLaneResult,
+  PanelResult,
+  PanelRequestPolicy,
+} from './types';
 
 /**
  * Full-repository file access for persona tool calls (find_files / read_file), independent of the
@@ -70,72 +68,6 @@ export interface RepoFileProvider {
   treeTruncated?(): Promise<boolean>;
 }
 
-export interface PanelFinding {
-  severity: FindingSeverity;
-  path: string;
-  line: number;
-  startLine?: number;
-  title: string;
-  body: string;
-  suggestion?: string;
-  replacementCode?: string;
-  confidence?: number;
-  recommendation?: string;
-  fixOptions?: FixOption[];
-  isArchitectural?: boolean;
-}
-
-export interface PersonaLaneResult {
-  id: string;
-  required: boolean;
-  providerId: ProviderId;
-  model: string;
-  decision: 'APPROVE' | 'FINDINGS';
-  findings: PanelFinding[];
-  usage: TokensUsed | null;
-  costUSD: number | null;
-  durationMs: number;
-  turnsCount?: number;
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-  isRedTeam?: boolean;
-  crossExaminedModel?: string;
-  mermaidDiagram?: string;
-}
-
-export interface PanelResult {
-  headSha: string;
-  /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
-  repositoryVisibility?: RepositoryVisibility;
-  personas: PersonaLaneResult[];
-  optionalFailures: Array<{ id: string; error: string }>;
-  quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
-  moderator: {
-    providerId: ProviderId;
-    model: string;
-    decision: 'RECONCILED';
-    findings: PanelFinding[];
-    usage: TokensUsed | null;
-    costUSD: number | null;
-    durationMs: number;
-  };
-  arbiter: {
-    providerId: ProviderId;
-    model: string;
-    verdict: 'SHIP' | 'FIX_FIRST' | 'BLOCK';
-    rationale: string;
-    usage: TokensUsed | null;
-    costUSD: number | null;
-    durationMs: number;
-  };
-  mermaidDiagram?: string;
-}
-
-/** Provider request controls applied consistently to every persona, moderator, and arbiter call. */
-export type PanelRequestPolicy = Pick<OpenRouterRequest,
-  'stream' | 'ttftTimeoutMs' | 'maxTokens' | 'models' | 'temperature' |
-  'responseFormat' | 'provider' | 'plugins' | 'metadata'>;
 
 type StructuredOutputRole = 'persona' | 'moderator' | 'arbiter';
 
@@ -1481,19 +1413,8 @@ export async function executePersonaPanel(options: {
       }
 
       logger.info(`Fast-ship approved by classifier for ${repository}#${headSha}: ${classifierResult.rationale}`);
-      const fastShipLane: PersonaLaneResult = {
-        id: 'fast-ship',
-        required: true,
-        providerId: (classifierResult.providerId as ProviderId) || ('fast-ship' as ProviderId),
-        model: classifierResult.model || 'fast-ship-classifier',
-        decision: 'APPROVE',
-        findings: [],
-        usage: classifierResult.usage || null,
-        costUSD: classifierResult.costUSD || null,
-        durationMs: classifierResult.durationMs || 0,
-      };
+      const fastShipResult = buildFastShipPanelResult(classifierResult, headSha, config.quorum);
 
-      const distinctProviders = [fastShipLane.providerId];
       LiveStreamBus.getInstance().publishEvent({
         jobId: effectiveJobId,
         timestamp: new Date().toISOString(),
@@ -1502,7 +1423,7 @@ export async function executePersonaPanel(options: {
         data: {
           verdict: 'SHIP',
           quorumSatisfied: true,
-          distinctProviders,
+          distinctProviders: fastShipResult.quorum.distinctProviders,
           totalPersonasExecuted: 1,
           totalFindings: 0,
           totalDurationMs: classifierResult.durationMs || 0,
@@ -1510,35 +1431,21 @@ export async function executePersonaPanel(options: {
         },
       });
 
-      return {
-        headSha,
-        personas: [fastShipLane],
-        optionalFailures: [],
-        quorum: { required: config.quorum, distinctProviders, satisfied: true },
-        moderator: {
-          providerId: fastShipLane.providerId,
-          model: fastShipLane.model,
-          decision: 'RECONCILED',
-          findings: [],
-          usage: null,
-          costUSD: 0,
-          durationMs: 0,
-        },
-        arbiter: {
-          providerId: fastShipLane.providerId,
-          model: fastShipLane.model,
-          verdict: 'SHIP',
-          rationale: `Fast-ship auto-approved: ${classifierResult.rationale}`,
-          usage: classifierResult.usage || null,
-          costUSD: classifierResult.costUSD || null,
-          durationMs: classifierResult.durationMs || 0,
-        },
-      };
+      return fastShipResult;
     }
 
     if (classifierResult && !classifierResult.fastShip && classifierResult.selectedPersonas.length > 0) {
       const selectedSet = new Set(classifierResult.selectedPersonas);
-      const narrowed = applicable.filter((p) => p.required || selectedSet.has(p.id));
+      const narrowed = applicable.filter((p) => {
+        if (p.required) return true;
+        // Defense-in-depth: Never prune security, auth, or tenancy personas via classifier
+        const isSecurity = /sec|auth|tenan|perm/i.test(p.id) || /security|auth|vulnerability|tenant/i.test(p.charter || '');
+        if (isSecurity) return true;
+        // Keep personas with explicit path globs if any changed file matches
+        const hasSpecificGlobs = Array.isArray(p.paths) && p.paths.some((pattern) => pattern !== '**/*' && pattern !== '*');
+        if (hasSpecificGlobs) return true;
+        return selectedSet.has(p.id);
+      });
       if (narrowed.length > 0) {
         logger.info(`Classifier narrowed personas from ${applicable.length} to ${narrowed.length}`, {
           repository,

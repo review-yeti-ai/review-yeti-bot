@@ -277,8 +277,8 @@ describe('CallTelemetry Rank 2A execution plan through the real Action request p
             { role: 'user', content: '<panel-assignment-prompt>' },
           ],
           reasoning: { effort: 'high' },
-          session_id: 'review-yeti-v1-c0279bea380e170d0e399329275cb4c2e4807102a553c736',
-          prompt_cache_key: 'review-yeti-v1-c0279bea380e170d0e399329275cb4c2e4807102a553c736',
+          session_id: 'review-yeti-v1-e667c32550a7b7dc2330b4dd1a350d9ddef4ba86497382c1',
+          prompt_cache_key: 'review-yeti-v1-e667c32550a7b7dc2330b4dd1a350d9ddef4ba86497382c1',
           provider: {
             allow_fallbacks: true,
             require_parameters: true,

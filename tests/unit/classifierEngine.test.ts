@@ -90,6 +90,27 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
       expect(containsExecutableOrSensitiveCode([{ path: 'config/auth/secret.json' }])).toBe(true);
       expect(containsExecutableOrSensitiveCode([{ path: 'migrations/001.txt' }])).toBe(true);
     });
+
+    it('returns true for sensitive non-executable dotfiles and credentials', () => {
+      expect(containsExecutableOrSensitiveCode([{ path: '.env' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'config/.env' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: '.env.production' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'id_rsa' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: '.npmrc' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'secrets.txt' }])).toBe(true);
+    });
+
+    it('returns true for extension-less executables, build scripts, and alternative CI systems', () => {
+      expect(containsExecutableOrSensitiveCode([{ path: 'Makefile' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'bin/deploy' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'scripts/run' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: '.gitlab-ci.yml' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: '.circleci/config.yml' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'Jenkinsfile' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'cloudbuild.yaml' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'Dockerfile' }])).toBe(true);
+      expect(containsExecutableOrSensitiveCode([{ path: 'docker-compose.yml' }])).toBe(true);
+    });
   });
 
   describe('classifyReviewScope', () => {
@@ -344,6 +365,31 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
       expect(personaIds).toContain('perf-lane');
       expect(personaIds).not.toContain('db-lane');
       expect(panelResult.arbiter.verdict).toBe('SHIP');
+    });
+
+    it('aborts fast-ship and throws PanelConfigurationError when run is stale or superseded', async () => {
+      const config = buildTestConfig();
+
+      (mockClient.complete as any).mockResolvedValueOnce({
+        model: 'claude-5-sonnet',
+        content: JSON.stringify({
+          fastShip: true,
+          selectedPersonas: [],
+          effortTier: 'low',
+          rationale: 'Docs only change.',
+        }),
+      });
+
+      await expect(
+        executePersonaPanel({
+          config,
+          changedFiles: [{ path: 'docs/README.md', patch: '+ # Welcome' }],
+          repository: 'calltelemetry/ai-workspace',
+          headSha: 'sha-stale-head',
+          client: mockClient,
+          isCurrentHead: () => false,
+        })
+      ).rejects.toThrow(/stale run aborted/);
     });
   });
 });
