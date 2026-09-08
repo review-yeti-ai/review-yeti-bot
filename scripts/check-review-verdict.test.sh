@@ -388,26 +388,29 @@ grep -Fq "NO_REVIEWABLE_CONTENT" <<<"$output" || {
 }
 echo "[zero-lane-ship] passed (published SHIP honored as NO_REVIEWABLE_CONTENT, not fake review evidence, no crash)"
 
-# 3c-2. Passthrough mode: when REVIEW_YETI_PASSTHROUGH=true, zero-lane SHIP must exit 0
-#       and report PASSTHROUGH rather than NO_REVIEWABLE_CONTENT.
+# 3c-2. Passthrough mode: a zero-lane SHIP must be REJECTED.
+#       deliver-passthrough.sh emits NO_REVIEW, so a SHIP arriving here under
+#       passthrough is a synthetic verdict from some other path. This test used
+#       to assert exit 0 and a "Review Yeti: SHIP (Passthrough Mode)" heading --
+#       a heading that asserted an approval its own body denied.
 REVIEW_YETI_PASSTHROUGH="true" DISPATCH_REFLECTION_STATUS="" PROVIDER_RECEIPT_DIGEST="" \
   run_script "$(pr_json "$base_sha" "$head_sha")" '' "$zero_lane_report"
-if [[ "$rc" -ne 0 ]]; then
-  echo "[passthrough-mode] expected passthrough SHIP to exit 0, got $rc" >&2
+if [[ "$rc" -eq 0 ]]; then
+  echo "[passthrough-mode] a zero-lane SHIP under passthrough must not pass" >&2
   echo "$output" >&2
   exit 1
 fi
-grep -Fq "PASSTHROUGH" <<<"$output" || {
-  echo "[passthrough-mode] expected PASSTHROUGH message in output" >&2
+grep -Fq "NO_REVIEW" <<<"$output" || {
+  echo "[passthrough-mode] expected the NO_REVIEW message in output" >&2
   echo "$output" >&2
   exit 1
 }
-if grep -Fq "NO_REVIEWABLE_CONTENT" <<<"$output"; then
-  echo "[passthrough-mode] expected NO_REVIEWABLE_CONTENT to be absent in passthrough mode" >&2
+if grep -Eq "Review Yeti: SHIP" <<<"$output"; then
+  echo "[passthrough-mode] output must never announce SHIP for an unreviewed head" >&2
   echo "$output" >&2
   exit 1
 fi
-echo "[passthrough-mode] passed (passthrough mode honored with exit 0, PASSTHROUGH summary, and no NO_REVIEWABLE_CONTENT)"
+echo "[passthrough-mode] passed (zero-lane SHIP under passthrough is rejected, never announced as SHIP)"
 
 # 3c-3. Direct execution of deliver-passthrough.sh:
 #       Ensures required coordinate enforcement, zero-lane SHIP report generation,

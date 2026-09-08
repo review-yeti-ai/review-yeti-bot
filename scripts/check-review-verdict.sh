@@ -195,15 +195,20 @@ fi
 
 if [[ "$lane_count" -eq 0 ]]; then
   if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
-    summary_line="PASSTHROUGH: Review Yeti is in passthrough mode for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}. No review was completed (scheduled maintenance in progress)."
-    echo "::notice::${summary_line}"
+    # Passthrough emits NO_REVIEW and never reaches here, so a SHIP carrying zero
+    # lanes under passthrough is a synthetic verdict from some other path. This
+    # branch used to accept it and print "Review Yeti: SHIP (Passthrough Mode)"
+    # above a body stating no review was completed -- a heading that asserted an
+    # approval its own text denied. Reject it instead: nothing reviewed this head.
+    summary_line="NO_REVIEW: Review Yeti is in passthrough mode for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}. No review was completed, so this is not an approval."
+    echo "::error::${summary_line}"
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
       {
-        echo "### Review Yeti: SHIP (Passthrough Mode)"
+        echo "### 🛑 Review Yeti: NO_REVIEW (Passthrough Mode)"
         echo "${summary_line}"
       } >>"$GITHUB_STEP_SUMMARY"
     fi
-    echo "$summary_line"
+    exit 1
   else
     # A SHIP verdict with zero lanes means nothing was reviewed -- every
     # changed file was excluded by policy (e.g. example-api #4386: the PR's only

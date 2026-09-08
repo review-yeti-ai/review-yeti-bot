@@ -17,15 +17,19 @@ fi
 # default. Passthrough remains a legitimate maintenance escape hatch; what
 # changes is that using it can no longer be mistaken for a passing review.
 #
-# ON_NO_REVIEW=neutral lets an operator explicitly choose to unblock during a
-# planned outage. That is a deliberate, recorded decision -- not a silent SHIP.
-on_no_review="${ON_NO_REVIEW:-fail}"
+# There is deliberately no environment knob that unblocks. `ON_NO_REVIEW=neutral`
+# used to be documented here as an operator escape hatch; it never worked --
+# check-review-verdict.sh rejects any status that is not SHIP, so a NEUTRAL gate
+# decision from this script was overruled one step later regardless. A capability
+# that is described but does not exist is the exact failure this lane keeps
+# producing, so the knob is gone rather than plumbed: an absent review must
+# block, and the recorded operator path is a human review, not a flag.
 
 echo "====================================================="
 echo "Review Yeti: Passthrough Mode Active"
 echo "Target: ${target_repo}#${pr_number} at ${head_sha}"
 echo "No review was completed; scheduled maintenance in progress."
-echo "Verdict: NO_REVIEW (on-no-review=${on_no_review})"
+echo "Verdict: NO_REVIEW (blocks; passthrough is not an approval)"
 echo "====================================================="
 
 comment_body="### 🛑 Review Yeti: NO_REVIEW (Passthrough Mode)
@@ -87,15 +91,8 @@ echo "Emitted NO_REVIEW run report to ${report_path}"
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "run-report-path=${report_path}" >> "$GITHUB_OUTPUT"
   echo "review-status=NO_REVIEW" >> "$GITHUB_OUTPUT"
-  if [[ "$on_no_review" == "neutral" ]]; then
-    # Explicitly chosen by an operator for a planned outage. Still not SHIP:
-    # the verdict says no review happened, and only the gate is relaxed.
-    echo "gate-decision=NEUTRAL" >> "$GITHUB_OUTPUT"
-    echo "merge-eligible=true" >> "$GITHUB_OUTPUT"
-  else
-    echo "gate-decision=BLOCK" >> "$GITHUB_OUTPUT"
-    echo "merge-eligible=false" >> "$GITHUB_OUTPUT"
-  fi
+  echo "gate-decision=BLOCK" >> "$GITHUB_OUTPUT"
+  echo "merge-eligible=false" >> "$GITHUB_OUTPUT"
   echo "files-omitted=0" >> "$GITHUB_OUTPUT"
   echo "review-dispatch-reflection-status=complete" >> "$GITHUB_OUTPUT"
   echo "review-dispatch-provider-receipt-digest=" >> "$GITHUB_OUTPUT"

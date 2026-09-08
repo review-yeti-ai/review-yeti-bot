@@ -56,13 +56,18 @@ test('passthrough blocks the gate by default', () => {
   assert.match(outputs, /merge-eligible=false/);
 });
 
-test('an operator may explicitly neutralise the gate, but not turn it into SHIP', () => {
-  const { outputs, report } = run({ ON_NO_REVIEW: 'neutral' });
-  assert.match(outputs, /gate-decision=NEUTRAL/);
-  assert.match(outputs, /merge-eligible=true/);
-  // The relaxation is of the GATE, never of the verdict.
-  assert.equal(report.verdict, 'NO_REVIEW');
-  assert.doesNotMatch(outputs, /review-status=SHIP/);
+test('no environment value can unblock the gate', () => {
+  // ON_NO_REVIEW=neutral was documented as an operator escape hatch and never
+  // worked: check-review-verdict.sh rejects any status that is not SHIP, so the
+  // NEUTRAL gate decision was overruled one step later. The knob is gone; this
+  // asserts it cannot come back by accident.
+  for (const value of ['neutral', 'NEUTRAL', 'true', 'nuetral', 'fail']) {
+    const { outputs, report } = run({ ON_NO_REVIEW: value });
+    assert.match(outputs, /gate-decision=BLOCK/, `ON_NO_REVIEW=${value} must block`);
+    assert.match(outputs, /merge-eligible=false/, `ON_NO_REVIEW=${value} must block`);
+    assert.equal(report.verdict, 'NO_REVIEW');
+    assert.doesNotMatch(outputs, /review-status=SHIP/);
+  }
 });
 
 test('the run report still records that zero lanes ran', () => {
@@ -78,9 +83,3 @@ test('the step summary does not describe the result as an approval', () => {
   assert.doesNotMatch(summary, /SHIP/);
 });
 
-test('an unrecognised on-no-review value fails closed rather than passing', () => {
-  // Anything that is not exactly `neutral` must block. A typo must not unblock.
-  const { outputs } = run({ ON_NO_REVIEW: 'nuetral' });
-  assert.match(outputs, /gate-decision=BLOCK/);
-  assert.match(outputs, /merge-eligible=false/);
-});
