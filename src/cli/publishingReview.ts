@@ -46,6 +46,24 @@ export interface PublishingReviewIdentity {
   baseSha: string;
 }
 
+/** One canonical finding, as arbitration emits it. */
+export interface ReviewFinding {
+  severity?: string;
+  path?: string;
+  line?: number;
+  title?: string;
+  body?: string;
+}
+
+export interface CheckAnnotation {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: 'notice' | 'warning' | 'failure';
+  message: string;
+  title?: string;
+}
+
 export interface PublishingCheckClient {
   createCheck(owner: string, repo: string, headSha: string): Promise<number>;
   completeCheck(options: {
@@ -55,6 +73,8 @@ export interface PublishingCheckClient {
     conclusion: 'success' | 'failure' | 'cancelled';
     title: string;
     summary: string;
+    text?: string;
+    annotations?: CheckAnnotation[];
   }): Promise<void>;
 }
 
@@ -200,6 +220,32 @@ export interface PublishingReviewDeps {
   now?: () => number;
 }
 
+/**
+ * Renders the canonical findings into the check's `text` body. Ordered by
+ * severity so the blocking ones are read first, and every entry carries its
+ * file and line so a reader can navigate without the annotation view.
+ */
+function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number): string {
+  if (findings.length === 0) {
+    return 'No findings survived canonical arbitration for this head.';
+  }
+  const order = (severity: string): number => (severity === 'P0' ? 0 : severity === 'P1' ? 1 : 2);
+  const lines = [...findings]
+    .sort((a, b) => order(String(a?.severity || 'P2').toUpperCase()) - order(String(b?.severity || 'P2').toUpperCase()))
+    .map((finding) => {
+      const severity = String(finding?.severity || 'P2').toUpperCase();
+      const where = finding?.path ? `\`${String(finding.path)}${finding?.line ? `:${finding.line}` : ''}\`` : '_no file_';
+      const title = String(finding?.title || 'finding');
+      const body = String(finding?.body || '').trim();
+      return `- **${severity}** ${where} — ${title}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
+    });
+  return [
+    `${findings.length} finding(s), ${blockingCount} blocking (P0/P1).`,
+    '',
+    ...lines,
+  ].join('\n');
+}
+
 export async function runPublishingReviewWorker(
   env: NodeJS.ProcessEnv,
   deps: PublishingReviewDeps,
@@ -231,11 +277,22 @@ export async function runPublishingReviewWorker(
       token: value(env, 'GH_TOKEN'),
     });
 
-    const changedFiles = Array.from(
-      String(source.diff).matchAll(/diff --git a\/(.*?) b\/(.*?)(?=\ndiff --git|\n$|$)/gs),
-    )
-      .map((match) => ({ path: (match[2] || match[1] || '').trim(), patch: match[0] }))
-      .filter((file) => file.path.length > 0 && file.path !== '/dev/null');
+    // Split on the file-header boundary, then match the header against a
+    // single line. The previous expression used a dot-all lazy group for the
+    // `b/` path with a lookahead to the next header, so the captured "path" ran
+    // to the end of the whole file patch -- an 80+ character string containing
+    // newlines. Every finding was then compared against that pseudo-path,
+    // matched nothing, and was discarded during arbitration, which is why this
+    // lane returned `SHIP` on every review regardless of what the panel found.
+    const changedFiles = String(source.diff)
+      .split(/^(?=diff --git )/mu)
+      .filter((chunk) => chunk.startsWith('diff --git '))
+      .map((chunk) => {
+        const header = /^diff --git a\/(\S+) b\/(\S+)/u.exec(chunk);
+        return header ? { path: header[2] || header[1], patch: chunk } : null;
+      })
+      .filter((file): file is { path: string; patch: string } =>
+        file !== null && file.path.length > 0 && file.path !== '/dev/null');
     // An empty changed-file set must not be read as "nothing to review, ship".
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
@@ -249,10 +306,7 @@ export async function runPublishingReviewWorker(
       jobId: identity.runId,
     } as Parameters<typeof executePersonaPanel>[0]);
 
-    const findings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
-    const blocking = findings.filter(
-      (finding) => BLOCKING_SEVERITIES.has(String((finding as { severity?: unknown })?.severity || 'P2').toUpperCase()),
-    );
+    const rawFindings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
     // The model arbiter is evidence, not the policy boundary. The canonical
     // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
     // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
@@ -263,8 +317,25 @@ export async function runPublishingReviewWorker(
       coverageComplete: panelResult.quorum.satisfied,
     });
     const verdict = canonical.verdict;
+    // Count blocking findings from the canonical set, not the raw persona
+    // output. The two disagreed: the check reported a blocking count derived
+    // from unsanitized findings next to a verdict derived from the sanitized
+    // ones, so a run could read `SHIP` and `blocking P0/P1: 13` at once. The
+    // canonical set is the one the verdict is computed from, so it is the only
+    // set the conclusion may be computed from.
+    const findings = (canonical.findings || []) as ReviewFinding[];
+    const blocking = findings.filter(
+      (finding) => BLOCKING_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
+    );
     const conclusion = publishingConclusion(verdict, blocking.length);
 
+    // A count with nothing attached is not reviewable. Until now the check
+    // published only a title and a summary, so a run could report four blocking
+    // findings while the pull request carried no comment, no review and no
+    // annotation -- nothing an author could act on. Both fields below need only
+    // `checks: write`, so the findings become visible without widening the
+    // worker's token beyond its ADR 0541 boundary.
+    const changedPaths = new Set(changedFiles.map((file) => file.path));
     await deps.checkClient.completeCheck({
       owner: identity.owner,
       repo: identity.repoName,
@@ -276,6 +347,27 @@ export async function runPublishingReviewWorker(
         `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}).`,
         `Transport: bifrost \`${transport.model}\`.`,
       ].join('\n\n'),
+      text: renderFindingsMarkdown(findings, blocking.length),
+      // GitHub rejects an annotation whose path is not in the diff, which would
+      // fail the whole PATCH and take the verdict with it. Drop off-diff
+      // findings from the annotation set only; they remain in the text body.
+      annotations: findings
+        .filter((finding) => changedPaths.has(String(finding?.path || '')))
+        .slice(0, 50)
+        .map((finding) => {
+          const line = Number.isSafeInteger(Number(finding?.line)) && Number(finding?.line) > 0
+            ? Number(finding.line)
+            : 1;
+          const severity = String(finding?.severity || 'P2').toUpperCase();
+          return {
+            path: String(finding.path),
+            start_line: line,
+            end_line: line,
+            annotation_level: BLOCKING_SEVERITIES.has(severity) ? 'failure' as const : 'warning' as const,
+            title: `${severity}: ${String(finding?.title || 'finding').slice(0, 120)}`,
+            message: String(finding?.body || finding?.title || 'No detail provided.').slice(0, 4_000),
+          };
+        }),
     });
 
     const completedAt = new Date(now()).toISOString();
