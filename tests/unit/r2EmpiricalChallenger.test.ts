@@ -245,11 +245,11 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
     });
 
     it('executes grep_search cleanly', async () => {
-      await runAllowedToolTest('grep_search', { query: 'add' }, 'Matches found in: src/calculator.ts');
+      await runAllowedToolTest('grep_search', { query: 'add' }, 'Matches found in diff: src/calculator.ts');
     });
 
     it('executes find_files cleanly', async () => {
-      await runAllowedToolTest('find_files', { query: 'calculator' }, 'Files found: src/calculator.ts');
+      await runAllowedToolTest('find_files', { query: 'calculator' }, 'Files found in diff: src/calculator.ts');
     });
 
     it('executes symbol_search cleanly', async () => {
