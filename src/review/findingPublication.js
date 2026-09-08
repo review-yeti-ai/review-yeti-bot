@@ -4,6 +4,7 @@ const { canonicalJson, sha256, normalizeFindingReplacement } = require('./review
 const { compareClaims } = require('./claimSimilarity');
 
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2 });
+const INLINE_SEVERITIES = Object.freeze(Object.keys(SEVERITY_RANK));
 const SEVERITY_ALIASES = Object.freeze({
   P0: 'P0',
   P1: 'P1',
@@ -545,6 +546,8 @@ function capPublicationThreads(publicationPlan, max = MAX_PUBLISHED_REVIEW_THREA
 }
 
 module.exports = {
+  INLINE_SEVERITIES,
+  codeFence,
   ACTIONABLE_SEVERITIES,
   isActionableSeverity,
   capPublicationThreads,

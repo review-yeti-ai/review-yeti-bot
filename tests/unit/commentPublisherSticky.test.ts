@@ -164,6 +164,53 @@ describe('sticky App overview publication', () => {
     expect(f.writes.map(w => w.method)).toEqual(['POST', 'PATCH']);
   });
 
+  it.each([0, -1, 1.5, 3])('rejects invalid provided startLine %s before publishing a suggestion', async (startLine) => {
+    const f = fixture();
+    const result = await f.publisher.publishReview({ ...request, inlineComments: [{
+      path: 'src/a.ts', line: 2, startLine,
+      finding: { persona: 'design', severity: 'P2', filePath: 'src/a.ts', lineNumber: 2,
+        comment: 'Replace range', replacementCode: 'replacement' },
+    }] });
+    expect(result.success).toBe(false);
+    expect(result.errors?.[0]).toContain('Invalid inline comment range');
+    expect(f.writes).toHaveLength(0);
+  });
+
+  it('rejects an invalid finding startLine before publishing a suggestion', async () => {
+    const f = fixture();
+    const result = await f.publisher.publishReview({ ...request, inlineComments: [{
+      path: 'src/a.ts', line: 2,
+      finding: { persona: 'design', severity: 'P2', filePath: 'src/a.ts', lineNumber: 2,
+        startLine: 3, comment: 'Replace range', replacementCode: 'replacement' },
+    }] });
+    expect(result.success).toBe(false);
+    expect(f.writes).toHaveLength(0);
+  });
+
+  it('keeps equal start and end lines as a valid single-line suggestion', async () => {
+    const f = fixture();
+    const result = await f.publisher.publishReview({ ...request, inlineComments: [{
+      path: 'src/a.ts', line: 2, startLine: 2,
+      finding: { persona: 'design', severity: 'P2', filePath: 'src/a.ts', lineNumber: 2,
+        comment: 'Replace line', replacementCode: 'replacement' },
+    }] });
+    expect(result.success).toBe(true);
+    expect(f.inlineComments[0].line).toBe(2);
+    expect(f.inlineComments[0]).not.toHaveProperty('start_line');
+    expect(f.inlineComments[0].body).toContain('```suggestion\nreplacement');
+  });
+
+  it('rejects replacement code on LEFT instead of publishing an unsafe suggestion', async () => {
+    const f = fixture();
+    const result = await f.publisher.publishReview({ ...request, inlineComments: [{
+      path: 'src/a.ts', line: 2, side: 'LEFT',
+      finding: { persona: 'design', severity: 'P2', filePath: 'src/a.ts', lineNumber: 2,
+        comment: 'Old-side finding', replacementCode: 'replacement' },
+    }] });
+    expect(result.success).toBe(false);
+    expect(f.writes).toHaveLength(0);
+  });
+
   it('fails closed on invalid inline ranges instead of moving findings into the overview', async () => {
     const f = fixture();
     const original = f.fetchImplementation.getMockImplementation()!;

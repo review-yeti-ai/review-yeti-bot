@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { codeFence } from '../review/findingPublication';
+import { normalizeFindingReplacement } from '../review/reviewCore';
 import { logger } from '../utils/logger';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { PanelFinding, FixOption } from '../panel/panelEngine';
@@ -281,7 +283,7 @@ export function formatInlineCommentBody(
       }
     });
   } else if (!finding.isArchitectural && typeof finding.replacementCode === 'string') {
-    const fence = '`'.repeat(Math.max(3, ...(finding.replacementCode.match(/`+/g) || []).map(run => run.length + 1)));
+    const fence = codeFence(finding.replacementCode);
     body += `\n${fence}suggestion\n${finding.replacementCode}\n${fence}\n`;
   } else if (!finding.isArchitectural && finding.codeSnippet) {
     body += `\n${formatSuggestionBlock(finding.codeSnippet)}`;
@@ -488,7 +490,29 @@ export class CommentPublisher {
       throw new Error('GitHub inline lookup exceeded pagination limit');
     };
     let created = 0;
-    const inline = req.inlineComments || [];
+    const inline = (req.inlineComments || []).map(comment => {
+      if (comment.subjectType === 'file') return comment;
+      const side = comment.side ?? 'RIGHT';
+      if (side !== 'RIGHT' && side !== 'LEFT') throw new Error('Invalid inline comment side');
+      const startLine = comment.startLine ?? comment.finding.startLine;
+      const range = normalizeFindingReplacement({ line: comment.line, startLine });
+      if (!Number.isInteger(comment.line) || comment.line < 1
+        || (startLine != null && range.startLine !== startLine)) {
+        throw new Error('Invalid inline comment range');
+      }
+      const finding = { ...comment.finding };
+      const replacement = normalizeFindingReplacement({ ...finding, line: comment.line, startLine, side });
+      if (finding.replacementCode !== undefined && replacement.replacementCode === undefined) {
+        throw new Error('Invalid inline replacement metadata');
+      }
+      if (side !== 'RIGHT' && (finding.codeSnippet || finding.fixOptions?.some(fix => fix.suggestionCode))) {
+        throw new Error('Inline suggestions require the RIGHT side');
+      }
+      delete finding.startLine;
+      delete finding.replacementCode;
+      Object.assign(finding, replacement);
+      return { ...comment, side, startLine: range.startLine, finding };
+    });
     const existing = inline.length ? await listComments() : [];
     for (const comment of inline) {
       const finding = { ...comment.finding };

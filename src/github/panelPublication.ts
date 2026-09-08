@@ -1,6 +1,6 @@
 /** Final publication puts every deduplicated finding in a review thread, at every severity. */
 
-import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS, findingDedupeKey as publicationDedupeKey, mergeReplacementMetadata, planFindingPublication } from '../review/findingPublication';
+import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, INLINE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS, findingDedupeKey as publicationDedupeKey, mergeReplacementMetadata, planFindingPublication } from '../review/findingPublication';
 import type { PublicationChangedFile } from '../review/findingPublication';
 import type { PanelFinding, PersonaLaneResult } from '../panel/panelEngine';
 import type { PublishInlineCommentRequest } from './commentPublisher';
@@ -13,7 +13,6 @@ export const MAX_FINAL_INLINE_COMMENTS = MAX_PUBLISHED_REVIEW_THREADS;
 
 /** Arbitration severity remains independent from eligibility for inline publication. */
 export const ACTIONABLE_SEVERITIES = new Set<string>(SHARED_ACTIONABLE_SEVERITIES);
-const INLINE_SEVERITIES = ['P0', 'P1', 'P2'];
 
 export type FindingWithPersona = PanelFinding & { persona: string };
 
