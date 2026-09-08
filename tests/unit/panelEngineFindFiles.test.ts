@@ -259,3 +259,31 @@ describe('panelEngine symbol_search — scope-qualified miss', () => {
     expect(out).not.toMatch(/^Tool 'symbol_search' execution result:\nNo symbols found matching '[^']*'\.$/mu);
   });
 });
+
+describe('panelEngine — a diff hit always wins over the repository provider', () => {
+  // Every earlier case targets a path outside the diff, so the branch ordering was
+  // never exercised. Reordering the provider lookup ahead of the diff match would
+  // answer a read_file on a changed file with its head content and "not part of
+  // this PR's diff", instead of the patch under review.
+  const spy = () => ({
+    findFiles: vi.fn(async () => ['src/ledger/writer.ts', 'src/other/writer.ts']),
+    readFile: vi.fn(async () => 'HEAD CONTENT, NOT THE PATCH'),
+  });
+
+  it('read_file on a changed file returns the patch and never consults the provider', async () => {
+    const provider = spy();
+    const out = await runFindFilesScenario(provider, { tool: 'read_file', args: { path: 'src/ledger/writer.ts' } });
+    expect(out).toContain('import { checkEvidence }');
+    expect(out).not.toContain('HEAD CONTENT');
+    expect(out).not.toContain("not part of this PR's diff");
+    expect(provider.readFile).not.toHaveBeenCalled();
+  });
+
+  it('find_files with a diff hit reports the diff and never consults the provider', async () => {
+    const provider = spy();
+    const out = await runFindFilesScenario(provider, { tool: 'find_files', args: { query: 'writer' } });
+    expect(out).toContain('Files found in diff: src/ledger/writer.ts');
+    expect(out).not.toContain('src/other/writer.ts');
+    expect(provider.findFiles).not.toHaveBeenCalled();
+  });
+});
