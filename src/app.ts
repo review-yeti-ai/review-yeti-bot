@@ -44,6 +44,7 @@ import {
   type FindingWithPersona,
 } from './github/panelPublication';
 import { logger } from './utils/logger';
+import { resolveRepositoryVisibility } from './github/repositoryVisibility';
 import { LiveStreamBus } from './live/liveStreamBus';
 import {
   initTelemetry,
@@ -300,19 +301,10 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
       // mode whose payload did not. getRepositoryVisibility() never throws on its own, but a
       // lookup failure must never be allowed to fail or block the review it was requested for,
       // so this is also defensively wrapped.
-      let repositoryVisibility = payload.repositoryVisibility;
-      if (!repositoryVisibility || repositoryVisibility === 'UNKNOWN') {
-        try {
-          repositoryVisibility = await github.getRepositoryVisibility(owner, repo);
-        } catch (error: any) {
-          logger.warn('Repository visibility fallback lookup threw unexpectedly; continuing as UNKNOWN', {
-            owner,
-            repo,
-            error: error?.message || error,
-          });
-          repositoryVisibility = 'UNKNOWN';
-        }
-      }
+      const repositoryVisibility = await resolveRepositoryVisibility(payload.repositoryVisibility, {
+        lookup: () => github.getRepositoryVisibility(owner, repo),
+        warn: (message, meta) => logger.warn(message, { owner, repo, ...meta }),
+      });
       let checkId: number | undefined;
       try {
         const snapshot = await github.getPullRequest(owner, repo, prNumber);

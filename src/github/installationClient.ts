@@ -1,6 +1,6 @@
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 import { logger } from '../utils/logger';
-import { normalizeRepositoryVisibility, RepositoryVisibility } from '../panel/panelEngine';
+import { normalizeRepositoryVisibility, RepositoryVisibility } from './repositoryVisibility';
 
 export interface PullRequestSnapshot {
   headSha: string;

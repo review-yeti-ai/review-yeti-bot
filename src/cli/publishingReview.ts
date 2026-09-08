@@ -22,7 +22,8 @@
  *    deliberate: a `neutral` check does not block a merge, so an outage that
  *    published `neutral` would silently stop enforcing.
  */
-import { executePersonaPanel, normalizeRepositoryVisibility } from '../panel/panelEngine';
+import { executePersonaPanel } from '../panel/panelEngine';
+import { normalizeRepositoryVisibility } from '../github/repositoryVisibility';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';

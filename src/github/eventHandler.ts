@@ -1,4 +1,4 @@
-import { normalizeRepositoryVisibility, RepositoryVisibility } from '../panel/panelEngine';
+import { normalizeRepositoryVisibility, RepositoryVisibility } from './repositoryVisibility';
 
 export interface ParsedPRPayload {
   installationId: string;
