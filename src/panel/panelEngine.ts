@@ -46,6 +46,16 @@ export interface FixOption {
  * to the changedFiles-only search but says so explicitly so the persona cannot honestly claim
  * non-existence from a diff-scoped miss.
  */
+/**
+ * Bounds on what a full-repository tool result may inject into the model's next turn.
+ * The query is model-controlled, so a short substring can match thousands of tree
+ * entries, and a lockfile or minified bundle can run to megabytes: either would
+ * inflate the prompt, the latency and the cost of the follow-up turn, and can push
+ * the lane past its context window and fail it outright.
+ */
+export const REPO_FIND_FILES_MAX_HITS = 50;
+export const REPO_READ_FILE_MAX_CHARS = 48 * 1024;
+
 export interface RepoFileProvider {
   /** Case-insensitive substring match of `query` against every file path in the repository at the reviewed head. */
   findFiles(query: string): Promise<string[]>;
@@ -935,9 +945,16 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             } else if (options?.repoFileProvider) {
               try {
                 const content = await options.repoFileProvider.readFile(targetPath);
-                toolOutput += content !== null
-                  ? `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. Full current content:\n${content}`
-                  : `File '${targetPath}' does not exist in the repository at the reviewed head (checked the full repository tree, not just the diff).`;
+                if (content !== null) {
+                  const truncated = content.length > REPO_READ_FILE_MAX_CHARS;
+                  const shown = truncated ? content.slice(0, REPO_READ_FILE_MAX_CHARS) : content;
+                  toolOutput += `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. `
+                    + (truncated
+                      ? `Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${content.length} characters:\n${shown}\n[... content truncated: ${content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
+                      : `Full current content:\n${shown}`);
+                } else {
+                  toolOutput += `File '${targetPath}' does not exist in the repository at the reviewed head (checked the full repository tree, not just the diff).`;
+                }
               } catch (err: any) {
                 toolOutput += `Full-repository read of '${targetPath}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`;
               }
@@ -956,9 +973,13 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             } else if (options?.repoFileProvider) {
               try {
                 const repoHits = await options.repoFileProvider.findFiles(searchQ);
-                toolOutput += repoHits.length > 0
-                  ? `No matches in the diff, but found in the full repository at the reviewed head: ${repoHits.join(', ')}`
-                  : `No files matching '${searchQ}' found anywhere in the repository at the reviewed head (full-repository search, not just the diff).`;
+                if (repoHits.length > REPO_FIND_FILES_MAX_HITS) {
+                  toolOutput += `No matches in the diff, but ${repoHits.length} paths match in the full repository at the reviewed head. Showing the first ${REPO_FIND_FILES_MAX_HITS}; narrow the query for the rest: ${repoHits.slice(0, REPO_FIND_FILES_MAX_HITS).join(', ')}`;
+                } else if (repoHits.length > 0) {
+                  toolOutput += `No matches in the diff, but found in the full repository at the reviewed head: ${repoHits.join(', ')}`;
+                } else {
+                  toolOutput += `No files matching '${searchQ}' found anywhere in the repository at the reviewed head (full-repository search, not just the diff).`;
+                }
               } catch (err: any) {
                 toolOutput += `Full-repository file search for '${searchQ}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`;
               }

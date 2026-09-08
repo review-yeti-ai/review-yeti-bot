@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, RepoFileProvider } from '../../src/panel/panelEngine';
+import { executePersonaPanel, RepoFileProvider, REPO_FIND_FILES_MAX_HITS, REPO_READ_FILE_MAX_CHARS } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -58,7 +58,7 @@ const changedFiles = [
  * captures the exact tool-result text the harness fed back to the model on the following turn,
  * and lets the persona finish cleanly with an APPROVE so the panel run completes.
  */
-async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefined): Promise<string> {
+async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefined, toolCall: { tool: string; args: Record<string, string> } = { tool: 'find_files', args: { query: 'dark-factory-evidence-gate' } }): Promise<string> {
   const config = buildConfig();
   let personaTurn = 0;
   let capturedToolResult = '';
@@ -92,7 +92,7 @@ async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefin
       if (personaTurn === 1) {
         return {
           model: opts.model,
-          content: '```json\n{"tool": "find_files", "args": {"query": "dark-factory-evidence-gate"}}\n```',
+          content: '```json\n' + JSON.stringify(toolCall) + '\n```',
           usage: { prompt: 5, completion: 5, total: 10 },
         };
       }
@@ -151,5 +151,60 @@ describe('panelEngine find_files — full-repository scope for sibling (non-diff
     expect(toolResult.toLowerCase()).not.toContain('does not exist');
     expect(toolResult.toLowerCase()).toMatch(/changed files only/);
     expect(toolResult.toLowerCase()).toMatch(/may still exist elsewhere/);
+  });
+});
+
+describe('panelEngine read_file — full-repository fallback paths', () => {
+  const provider = (impl: Partial<RepoFileProvider>): RepoFileProvider => ({
+    findFiles: async () => [],
+    readFile: async () => null,
+    ...impl,
+  });
+  const readGate = { tool: 'read_file', args: { path: 'tools/dark-factory-evidence-gate.mjs' } };
+
+  it('returns the content of a non-diff file that exists at the reviewed head', async () => {
+    const out = await runFindFilesScenario(provider({ readFile: async () => 'export const X = 1;' }), readGate);
+    expect(out).toContain('exists in the repository at the reviewed head');
+    expect(out).toContain('export const X = 1;');
+  });
+
+  it('says a file does not exist only when the full-tree read returned null', async () => {
+    const out = await runFindFilesScenario(provider({ readFile: async () => null }), readGate);
+    expect(out).toContain('does not exist in the repository at the reviewed head');
+    expect(out).toContain('full repository tree');
+  });
+
+  it('reports a provider error as a lookup failure, never as absence', async () => {
+    const out = await runFindFilesScenario(provider({ readFile: async () => { throw new Error('boom 503'); } }), readGate);
+    expect(out).toContain('lookup failure');
+    expect(out).toContain('boom 503');
+    expect(out.toLowerCase()).not.toContain('does not exist');
+  });
+
+  it('truncates a large file and says so, instead of inlining megabytes into the prompt', async () => {
+    const big = 'x'.repeat(REPO_READ_FILE_MAX_CHARS + 1000);
+    const out = await runFindFilesScenario(provider({ readFile: async () => big }), readGate);
+    expect(out).toContain('content truncated');
+    expect(out).toContain(`${REPO_READ_FILE_MAX_CHARS} of ${big.length}`);
+    // The tool result must be bounded: the injected body cannot exceed the cap by more than the framing text.
+    expect(out.length).toBeLessThan(REPO_READ_FILE_MAX_CHARS + 2000);
+  });
+});
+
+describe('panelEngine find_files — bounded full-repository hit list', () => {
+  it('caps an unbounded hit list and reports the total, so a broad query cannot flood the prompt', async () => {
+    const many = Array.from({ length: 5000 }, (_, i) => `src/generated/file-${i}.ts`);
+    const out = await runFindFilesScenario({ findFiles: async () => many, readFile: async () => null }, { tool: 'find_files', args: { query: 'generated' } });
+    expect(out).toContain('5000 paths match');
+    expect(out).toContain(`first ${REPO_FIND_FILES_MAX_HITS}`);
+    expect(out).toContain('src/generated/file-0.ts');
+    expect(out).not.toContain('src/generated/file-4999.ts');
+  });
+
+  it('reports a provider error as a lookup failure, never as absence', async () => {
+    const out = await runFindFilesScenario({ findFiles: async () => { throw new Error('tree fetch 502'); }, readFile: async () => null });
+    expect(out).toContain('lookup failure');
+    expect(out).toContain('tree fetch 502');
+    expect(out.toLowerCase()).not.toMatch(/no files matching .* found anywhere/);
   });
 });
