@@ -333,7 +333,13 @@ function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number
       const where = finding?.path ? `\`${String(finding.path)}${finding?.line ? `:${finding.line}` : ''}\`` : '_no file_';
       const title = String(finding?.title || 'finding');
       const body = String(finding?.body || '').trim();
-      return `- **${severity}** ${where} — ${title}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
+      const reporters = Number((finding as { reporters?: number })?.reporters || 1);
+      const adjusted = (finding as { severityAdjusted?: { from: string; reason: string } })?.severityAdjusted;
+      const marks = [
+        reporters > 1 ? `reported by ${reporters} lanes` : '',
+        adjusted ? `filed ${adjusted.from}, re-filed ${severity}: ${adjusted.reason}` : '',
+      ].filter(Boolean);
+      return `- **${severity}** ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
     });
   return [
     `${findings.length} finding(s), ${blockingCount} blocking (P0/P1).`,
@@ -432,7 +438,7 @@ export async function runPublishingReviewWorker(
       title: `Review Yeti: ${verdict}`,
       summary: [
         `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
-        `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}).`,
+        `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
         // Arbitration drops a finding it cannot anchor to a changed line. That is
         // deliberate -- an unanchorable finding cannot be rendered -- but doing it
         // silently would make a real blocking finding the model mislocated simply
