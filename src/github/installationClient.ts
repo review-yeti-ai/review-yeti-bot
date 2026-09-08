@@ -348,6 +348,25 @@ export class GitHubInstallationClient {
     }
   }
 
+  /**
+   * List every file path in the repository at `ref` (recursive git tree), not just files changed
+   * in a PR. Backs the panel engine's full-repository `find_files`/`read_file` persona tools (see
+   * `RepoFileProvider` in `src/panel/panelEngine.ts`) so a persona can confirm whether a file the
+   * diff references, but does not itself change, actually exists.
+   *
+   * GitHub truncates this response (`truncated: true`) past ~100k entries / ~7MB for very large
+   * trees; callers should treat a truncated result as a best-effort partial index, not proof of
+   * absence, rather than paginating further (the Git Trees API has no pagination parameter).
+   */
+  async getFileTree(owner: string, repo: string, ref: string): Promise<{ paths: string[]; truncated: boolean }> {
+    const data = await this.request(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+    if (!Array.isArray(data.tree)) throw new Error('git tree response is not an array');
+    const paths = data.tree
+      .filter((entry: any) => entry && entry.type === 'blob' && typeof entry.path === 'string')
+      .map((entry: any) => String(entry.path));
+    return { paths, truncated: data.truncated === true };
+  }
+
   /** Get reference SHA for a branch */
   async getBranchRef(owner: string, repo: string, branch: string): Promise<string> {
     const data = await this.request(`/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`);
