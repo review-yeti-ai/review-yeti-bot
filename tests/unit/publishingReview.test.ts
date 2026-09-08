@@ -4,6 +4,7 @@ import {
   classifyFailure,
   createBifrostPublishingConfig,
   isPublishingReviewWorker,
+  parseChangedFiles,
   publishingConclusion,
   publishingReviewIdentity,
   runPublishingReviewWorker,
@@ -208,9 +209,67 @@ describe('runPublishingReviewWorker', () => {
     expect(annotations[0].annotation_level).toBe('failure');
   });
 
-  it('omits an off-diff finding from annotations but keeps it in the text', async () => {
-    // GitHub rejects an annotation whose path is not in the diff, and a rejected
-    // PATCH would take the verdict down with it.
+  it('fails the check when a diff header cannot be read, and names it', async () => {
+    // The headline safety behaviour of this change: a header no path can be read
+    // from means an UNREVIEWED file, so a verdict published over it describes
+    // less than the diff. Deleting the `unreadable` branch must not stay green.
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      sourceLoader: vi.fn(async () => ({
+        diff: `${DIFF}diff --git nonsense\n@@ -1 +1 @@\n-a\n+b\n`,
+        githubReads: 1,
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    // The panel still saw the readable file, and still said SHIP.
+    expect(receipt.verdict).toBe('SHIP');
+    expect(receipt.blockingFindingCount).toBe(0);
+    // The check does not.
+    expect(receipt.conclusion).toBe('failure');
+    const arg = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(arg.conclusion).toBe('failure');
+    expect(String(arg.summary)).toContain('diff --git nonsense');
+    expect(String(arg.summary)).toContain('were NOT reviewed');
+  });
+
+  it('reports the findings arbitration discarded', async () => {
+    // A discarded finding used to vanish with no trace. If the model locates a
+    // real blocking finding on the wrong line, the count is the only signal that
+    // anything was dropped.
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      panelRunner: vi.fn(async () => ({
+        personas: [{
+          findings: [
+            { severity: 'P2', path: 'src/a.ts', line: 1, title: 'Kept', body: 'anchored' },
+            { severity: 'P1', title: 'Dropped', body: 'no path, cannot be anchored' },
+          ],
+        }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    await runPublishingReviewWorker(env(), d as never);
+    const arg = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(String(arg.summary)).toContain('1 raw finding(s) were discarded as unanchorable');
+  });
+
+  it('does not mention discards when nothing was discarded', async () => {
+    const client = checkClient();
+    const d = deps({ checkClient: client });
+    await runPublishingReviewWorker(env(), d as never);
+    const arg = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(String(arg.summary)).not.toContain('discarded as unanchorable');
+  });
+
+  it('keeps every annotation path inside the diff', async () => {
+    // A guard, not a behaviour: sanitizeFinding already drops off-diff findings,
+    // so nothing should ever reach the annotation set with a foreign path.
+    // GitHub rejects such an annotation and fails the whole PATCH, which would
+    // take the verdict with it.
     const client = checkClient();
     const d = deps({
       checkClient: client,
@@ -352,5 +411,78 @@ describe('the worker never holds the App private key', () => {
       env({ GITHUB_PUBLISH_TOKEN: 'ghp_personal_access_token' }),
       noop, noop, noop, noop, noop,
     )).rejects.toThrow(/requires a ghs_ installation token/u);
+  });
+});
+
+describe('parseChangedFiles', () => {
+  it('reads a path containing spaces', () => {
+    // Regression: the header matcher used `(\S+)`, which stopped at the first
+    // space. `a/sip message.txt` produced no path, the file silently dropped out
+    // of the reviewed set, and any finding on it was discarded -- a review that
+    // reported success over a file it never saw. cisco-cdr has eight such paths.
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/test/sip message.txt b/test/sip message.txt\n' +
+      'index 111..222 100644\n--- a/test/sip message.txt\n+++ b/test/sip message.txt\n' +
+      '@@ -1 +1 @@\n-old\n+new\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files.map((f) => f.path)).toEqual(['test/sip message.txt']);
+  });
+
+  it('reads a rename, and reports the destination', () => {
+    const { files } = parseChangedFiles(
+      'diff --git a/old name.ts b/new name.ts\nsimilarity index 100%\n' +
+      'rename from old name.ts\nrename to new name.ts\n',
+    );
+    expect(files.map((f) => f.path)).toEqual(['new name.ts']);
+  });
+
+  it('reads a quoted non-ASCII path', () => {
+    const { files } = parseChangedFiles(
+      'diff --git "a/docs/caf\\303\\251.md" "b/docs/caf\\303\\251.md"\n' +
+      '--- "a/docs/caf\\303\\251.md"\n+++ "b/docs/caf\\303\\251.md"\n@@ -1 +1 @@\n-a\n+b\n',
+    );
+    expect(files.map((f) => f.path)).toEqual(['docs/café.md']);
+  });
+
+  it('decodes the simple escapes, not just octal ones', () => {
+    // `unquoteGitPath` has two decode paths: three-digit octal and a small table
+    // of `\\n \\t \\r \\" \\\\`. Only the octal path was covered, so removing an entry
+    // from the table stayed green while a real path stopped matching changedPaths.
+    const { files } = parseChangedFiles(
+      'diff --git "a/x\\\\y \\"q\\".md" "b/x\\\\y \\"q\\".md"\n' +
+      '--- "a/x\\\\y \\"q\\".md"\n+++ "b/x\\\\y \\"q\\".md"\n@@ -1 +1 @@\n-a\n+b\n',
+    );
+    expect(files.map((f) => f.path)).toEqual(['x\\y "q".md']);
+  });
+
+  it('reads a deletion from the pre-image', () => {
+    const { files } = parseChangedFiles(
+      'diff --git a/gone.ts b/gone.ts\ndeleted file mode 100644\n' +
+      '--- a/gone.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n',
+    );
+    expect(files.map((f) => f.path)).toEqual(['gone.ts']);
+  });
+
+  it('reads a binary file with no hunk lines', () => {
+    const { files } = parseChangedFiles(
+      'diff --git a/logo.png b/logo.png\nindex 111..222 100644\n' +
+      'Binary files a/logo.png and b/logo.png differ\n',
+    );
+    expect(files.map((f) => f.path)).toEqual(['logo.png']);
+  });
+
+  it('does not split on a diff header that appears inside a patch body', () => {
+    const { files } = parseChangedFiles(
+      'diff --git a/doc.md b/doc.md\n--- a/doc.md\n+++ b/doc.md\n' +
+      '@@ -1 +1,2 @@\n a\n+diff --git a/fake.ts b/fake.ts\n',
+    );
+    expect(files.map((f) => f.path)).toEqual(['doc.md']);
+  });
+
+  it('reports an unreadable header instead of dropping the file', () => {
+    const { files, unreadable } = parseChangedFiles('diff --git nonsense\n@@ -1 +1 @@\n-a\n+b\n');
+    expect(files).toEqual([]);
+    expect(unreadable).toEqual(['diff --git nonsense']);
   });
 });
