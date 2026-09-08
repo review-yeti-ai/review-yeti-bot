@@ -154,6 +154,26 @@ describe('runPublishingReviewWorker', () => {
   });
 
   it('publishes failure when the panel blocks', async () => {
+    // The finding must carry a path inside the diff. Arbitration drops findings
+    // it cannot attribute to a changed file, and the blocking count is now taken
+    // from that canonical set -- so a pathless finding is not blocking, it is
+    // unusable. See the sibling test below.
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        personas: [{ findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }] }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.blockingFindingCount).toBe(1);
+  });
+
+  it('does not count a finding that arbitration discarded', async () => {
+    // Regression: the blocking count came from raw persona output while the
+    // verdict came from the canonical set, so a check could read `SHIP` and
+    // `blocking P0/P1: 13` at once and publish nothing an author could act on.
     const d = deps({
       panelRunner: vi.fn(async () => ({
         personas: [{ findings: [{ severity: 'P1' }] }],
@@ -162,8 +182,49 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('failure');
-    expect(receipt.blockingFindingCount).toBe(1);
+    expect(receipt.blockingFindingCount).toBe(0);
+    expect(receipt.conclusion).toBe('success');
+  });
+
+  it('publishes the findings into the check output', async () => {
+    // A count with nothing attached is not reviewable. `text` and annotations
+    // need only `checks: write`, which this worker already holds.
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      panelRunner: vi.fn(async () => ({
+        personas: [{ findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Null deref', body: 'Crashes on empty input' }] }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    await runPublishingReviewWorker(env(), d as never);
+    const arg = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(String(arg.text)).toContain('Null deref');
+    expect(String(arg.text)).toContain('src/a.ts');
+    const annotations = arg.annotations as Array<Record<string, unknown>>;
+    expect(annotations).toHaveLength(1);
+    expect(annotations[0].path).toBe('src/a.ts');
+    expect(annotations[0].annotation_level).toBe('failure');
+  });
+
+  it('omits an off-diff finding from annotations but keeps it in the text', async () => {
+    // GitHub rejects an annotation whose path is not in the diff, and a rejected
+    // PATCH would take the verdict down with it.
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      panelRunner: vi.fn(async () => ({
+        personas: [{ findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'InDiff', body: 'x' }] }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    await runPublishingReviewWorker(env(), d as never);
+    const arg = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    for (const a of (arg.annotations as Array<Record<string, unknown>>)) {
+      expect(a.path).toBe('src/a.ts');
+    }
   });
 
   it('keeps P2-only findings advisory even when the model arbiter says FIX_FIRST', async () => {
