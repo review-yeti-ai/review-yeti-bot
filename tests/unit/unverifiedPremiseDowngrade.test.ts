@@ -3,6 +3,7 @@ const {
   computeArbitration,
   downgradeUnverifiedPremise,
   hasUnverifiedPremise,
+  UNVERIFIED_PREMISE_PHRASES,
 } = require('../../src/review/reviewCore.js');
 import { renderFindingsMarkdown } from '../../src/cli/publishingReview';
 
@@ -146,6 +147,19 @@ describe('downgradeUnverifiedPremise (unit)', () => {
     const filler = (n: number) => 'x'.repeat(n);
     expect(hasUnverifiedPremise(`if ${filler(198)} still references`)).toBe(true);
     expect(hasUnverifiedPremise(`if ${filler(199)} still references`)).toBe(false);
+  });
+
+  it('every entry of the exported phrase list is live', () => {
+    // The list is literal substrings. A typo'd or stale entry would silently stop
+    // downgrading exactly the findings that use it, and a hand-picked sample here
+    // would not notice. Derive the assertions from the constant itself.
+    expect(UNVERIFIED_PREMISE_PHRASES.length).toBeGreaterThan(0);
+    for (const phrase of UNVERIFIED_PREMISE_PHRASES as readonly string[]) {
+      const sample = phrase.includes('...')
+        ? phrase.replace('...', ' some intervening words ')
+        : phrase;
+      expect(hasUnverifiedPremise(`Note: ${sample} in this diff.`), phrase).toBe(true);
+    }
   });
 
   it('hasUnverifiedPremise matches every documented phrase category', () => {
