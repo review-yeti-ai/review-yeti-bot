@@ -338,6 +338,14 @@ function planFindingPublication(input, changedFiles, options = {}) {
     }
   }
 
+  // A run can report many findings (and replacement ranges) in the same large diff.
+  // Parse each referenced patch once, sharing its anchors across all those validations.
+  const anchorsByPath = new Map();
+  function anchorsFor(path, patch) {
+    if (!anchorsByPath.has(path)) anchorsByPath.set(path, parsePatchAnchors(patch));
+    return anchorsByPath.get(path);
+  }
+
   const rejected = [];
   const grouped = new Map();
   for (const { raw, personas } of flattenFindings(input)) {
@@ -384,7 +392,7 @@ function planFindingPublication(input, changedFiles, options = {}) {
       rejected.push(rejection(raw, personas, 'changed file patch is not usable'));
       continue;
     } else {
-      const anchors = parsePatchAnchors(patch);
+      const anchors = anchorsFor(path, patch);
       if (!anchors.hasHunks) {
         subjectType = 'file';
       } else {
@@ -403,7 +411,7 @@ function planFindingPublication(input, changedFiles, options = {}) {
       delete replacement.replacementCode;
       delete replacement.startLine;
     } else if (replacement.startLine !== undefined) {
-      const { rightHunks } = parsePatchAnchors(patch);
+      const { rightHunks } = anchorsFor(path, patch);
       const start = replacement.startLine;
       const hunk = rightHunks.get(line);
       // Every replaced line must be visible in the same new-file hunk, including context.

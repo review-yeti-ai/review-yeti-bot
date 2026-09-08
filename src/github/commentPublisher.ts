@@ -454,13 +454,19 @@ export class CommentPublisher {
       response = await write(recoveredId);
     }
     if (!response.ok) throw new Error(`GitHub overview publication returned HTTP ${response.status}`);
-    const id = Number((await response.json()).id);
-    if (!Number.isFinite(id)) throw new Error('GitHub overview write returned no comment ID');
+    const written: unknown = await response.json();
+    if (!written || typeof written !== 'object' || !('id' in written)
+      || typeof written.id !== 'number' || !Number.isSafeInteger(written.id) || written.id <= 0) {
+      throw new Error('GitHub overview write returned no comment ID');
+    }
+    const id = written.id;
     const verified = await this.fetchWithRetry(`${this.baseUrl}/repos/${req.owner}/${req.repo}/issues/comments/${id}`, { method: 'GET' });
     if (!verified.ok) throw new Error(`GitHub overview verification returned HTTP ${verified.status}`);
-    const saved = await verified.json();
+    const saved: unknown = await verified.json();
     await this.assertCurrentHead(req.commitSha);
-    if (saved.user?.login !== login || saved.body !== `${marker}\n${req.body}`) {
+    if (!saved || typeof saved !== 'object' || !('user' in saved) || !saved.user
+      || typeof saved.user !== 'object' || !('login' in saved.user) || saved.user.login !== login
+      || !('body' in saved) || saved.body !== `${marker}\n${req.body}`) {
       throw new Error('GitHub overview verification did not match the published body and author');
     }
     return id;

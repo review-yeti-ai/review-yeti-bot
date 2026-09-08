@@ -681,7 +681,7 @@ describe('repairing a partially published round', () => {
     },
   });
 
-  function runner(seedThreads: any[], options: { mirrorWrites?: boolean; freshReview?: boolean } = {}) {
+  function runner(seedThreads: any[], options: { mirrorWrites?: boolean; freshReview?: boolean; singleLineGraphqlShape?: boolean } = {}) {
     const mirrorWrites = options.mirrorWrites !== false;
     const reviews = [{ id: 777, commit_id: 'newhead', user: { login: 'github-actions[bot]' }, body: `**Verdict: SHIP**\n\n${marker}\n\n${resultMarker}` }];
     const state = { reviews: options.freshReview ? [] : reviews, threads: [...seedThreads], posted: [] as any[], comments: [] as any[], nextId: 5000 };
@@ -690,7 +690,12 @@ describe('repairing a partially published round', () => {
       if (args[0] === 'api' && args[1] === 'user') return { status: 0, stdout: 'github-actions[bot]\n', stderr: '' };
       if (args[0] === 'api' && args[1] === 'graphql') {
         if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage(state.reviews), stderr: '' };
-        return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: false, endCursor: null } } } } } }]), stderr: '' };
+        const threads = options.singleLineGraphqlShape ? state.threads.map(thread => (
+          thread.line != null && thread.startLine == null
+            ? { ...thread, startLine: thread.line, startDiffSide: null }
+            : thread
+        )) : state.threads;
+        return { status: 0, stdout: JSON.stringify([{ data: { repository: { pullRequest: { reviewThreads: { nodes: threads, pageInfo: { hasNextPage: false, endCursor: null } } } } } }]), stderr: '' };
       }
       if (args[0] === 'api' && String(args[1]).includes('/issues/42/comments') && !args.includes('--method')) {
         return { status: 0, stdout: state.comments.map((comment) => JSON.stringify(comment)).join('\n'), stderr: '' };
@@ -769,6 +774,21 @@ describe('repairing a partially published round', () => {
     expect(inline).toHaveLength(16);
     expect(inline.every(post => post.payload.line === 4 && post.payload.body.includes('P2'))).toBe(true);
     expect(state.posted.some(post => post.endpoint.endsWith('/reviews'))).toBe(false);
+  });
+
+  it('verifies newly published single-line comments when GitHub echoes startLine equal to line', () => {
+    const { state, commandRunner } = runner([], { singleLineGraphqlShape: true });
+    expect(postOrOutputComment('body', context, plan(), { commandRunner }).success).toBe(true);
+    expect(state.posted.filter(post => post.endpoint.endsWith('/pulls/42/comments'))).toHaveLength(3);
+    expect(state.comments).toHaveLength(1);
+  });
+
+  it('reuses single-line comments when GitHub echoes startLine equal to line', () => {
+    const publicationPlan = plan();
+    const seeded = [...publicationPlan.lineComments, ...publicationPlan.fileComments].map(threadFor);
+    const { state, commandRunner } = runner(seeded, { singleLineGraphqlShape: true });
+    expect(postOrOutputComment('body', context, publicationPlan, { commandRunner }).success).toBe(true);
+    expect(state.posted.filter(post => post.endpoint.endsWith('/pulls/42/comments'))).toHaveLength(0);
   });
 
   it('repairs a matching marked thread whose replacement range is wrong', () => {

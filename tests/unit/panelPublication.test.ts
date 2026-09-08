@@ -161,6 +161,61 @@ describe('panelPublication', () => {
     expect(formatInlineCommentBody(comments[0].finding)).toContain('Fix the unsafe code.');
   });
 
+  it('plans the complete batch so severity duplicates collapse without losing App metadata or attribution', () => {
+    const fixOptions = [{ rank: 1, title: 'Guard account', suggestionCode: 'guard();' }];
+    const comments = buildFinalInlineComments({
+      findings: [
+        { ...baseFinding, severity: 'P2', persona: 'consistency', fixOptions, isArchitectural: true },
+        { ...baseFinding, severity: 'P0', persona: 'security', replacementCode: 'guard();' },
+        { ...baseFinding, title: 'Separate file observation', line: 99, persona: 'architecture', replacementCode: 'unsafe();' },
+      ],
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -10 +10 @@\n-old\n+new' }],
+    });
+    expect(comments).toHaveLength(2);
+    expect(comments[0]).toMatchObject({ line: 10, side: 'RIGHT', finding: {
+      severity: 'critical', replacementCode: 'guard();', fixOptions, isArchitectural: true,
+    } });
+    expect(comments[0].finding.comment).toContain('consistency');
+    expect(comments[0].finding.comment).toContain('security');
+    expect(comments[1]).toMatchObject({ subjectType: 'file', finding: { title: 'Separate file observation' } });
+    expect(comments[1].finding.replacementCode).toBeUndefined();
+  });
+
+  it('merges nearby reports while keeping replacement and fix options tied to the surviving anchor', () => {
+    const keptOptions = [{ title: 'Fix retained anchor', suggestionCode: 'at10();' }];
+    const comments = buildFinalInlineComments({
+      findings: [
+        { ...baseFinding, persona: 'security', fixOptions: keptOptions },
+        { ...baseFinding, line: 11, persona: 'architecture', replacementCode: 'onlyAt11();',
+          fixOptions: [{ title: 'Fix other anchor', suggestionCode: 'onlyAt11();' }] },
+      ],
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -10,2 +10,2 @@\n-old\n-old\n+new\n+new' }],
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ line: 10, finding: { fixOptions: keptOptions } });
+    expect(comments[0].finding.replacementCode).toBeUndefined();
+    expect(comments[0].finding.comment).toContain('security');
+    expect(comments[0].finding.comment).toContain('architecture');
+  });
+
+  it('preserves line metadata when a differently titled file report is promoted to its matching line claim', () => {
+    const body = 'The tenant query skips the account ownership guard and exposes records belonging to another tenant.';
+    const fixOptions = [{ title: 'Guard tenant query', suggestionCode: 'guardTenant();' }];
+    const comments = buildFinalInlineComments({
+      findings: [
+        { ...baseFinding, line: 1, persona: 'security', title: 'Tenant query bypasses validation', body },
+        { ...baseFinding, persona: 'architecture', title: 'Tenant query skips validation', body,
+          replacementCode: 'guardTenant();', fixOptions },
+      ],
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -10 +10 @@\n-old\n+new' }],
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({ line: 10, side: 'RIGHT', finding: {
+      replacementCode: 'guardTenant();', fixOptions,
+    } });
+    expect(comments[0].subjectType).toBeUndefined();
+  });
+
   it('uses a file conversation when no patch is available', () => {
     const comments = buildFinalInlineComments({
       findings: [{ ...baseFinding, persona: 'security', replacementCode: 'safe();' }],
