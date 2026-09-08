@@ -339,8 +339,14 @@ export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount:
       // A severity-downgrade marker renders immediately after the bold severity token itself
       // (`**P2** (was P1 — unverified premise)`), not folded into the trailing `_(...)_` marks --
       // it changes what the severity IS, not an incidental annotation about the finding.
-      const downgradeMarker = unverified.downgrade_reason === 'unverified_premise' && unverified.downgradedFrom
-        ? ` (was ${unverified.downgradedFrom} — unverified premise)`
+      //
+      // Keyed on the presence of `downgradedFrom`, not on the reason's literal value:
+      // the domain owns that vocabulary, and matching a copy of it here would go
+      // quietly stale if it were renamed or a second reason were added -- the marker
+      // would just stop rendering, with nothing red. The reason is rendered from the
+      // finding itself for the same reason.
+      const downgradeMarker = unverified.downgradedFrom
+        ? ` (was ${unverified.downgradedFrom} — ${String(unverified.downgrade_reason || 'downgraded').replace(/_/gu, ' ')})`
         : '';
       const marks = [
         reporters > 1 ? `reported by ${reporters} lanes` : '',
