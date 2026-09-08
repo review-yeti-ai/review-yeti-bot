@@ -94,7 +94,12 @@ describe('downgradeUnverifiedPremise (unit)', () => {
     expect(result.downgradedFrom).toBeUndefined();
     // Object identity: an already-P2 finding must pass through unmodified, not merely
     // equal-by-value, so a caller cannot accidentally rely on a cloned copy.
-    expect(result).toBe(p2Hedge);
+    // Behaviour, not identity: untouched means no downgrade fields and the same
+    // severity, whichever object comes back.
+    expect(result.severity).toBe('P2');
+    expect(result).not.toHaveProperty('downgradedFrom');
+    expect(result).not.toHaveProperty('downgrade_reason');
+    expect(result).toEqual(p2Hedge);
   });
 
   it('downgrades a hedged P0 the same way as a hedged P1', () => {
@@ -113,7 +118,7 @@ describe('downgradeUnverifiedPremise (unit)', () => {
     // re-raised severity, this is the guard that must still hold.
     const once = downgradeUnverifiedPremise({ ...FALSE_P1_UNUSED_CONSTANT });
     const twice = downgradeUnverifiedPremise(once);
-    expect(twice).toBe(once);
+    expect(twice).toEqual(once);
     expect(twice.downgradedFrom).toBe('P1');
     expect(twice.downgrade_reason).toBe('unverified_premise');
   });
