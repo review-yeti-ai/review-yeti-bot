@@ -117,6 +117,37 @@ describe('downgradeUnverifiedPremise (unit)', () => {
     expect(twice.downgrade_reason).toBe('unverified_premise');
   });
 
+  it('matches a plain phrase regardless of capitalisation', () => {
+    // Every plain-phrase fixture was already lowercase, so `.toLowerCase()` was
+    // untested: deleting it kept the suite green while "Could Not Be Located" kept
+    // its blocking P1.
+    expect(hasUnverifiedPremise("The table's definition Could Not Be Located.")).toBe(true);
+    expect(hasUnverifiedPremise('UNABLE TO CONFIRM the export shape')).toBe(true);
+  });
+
+  it('matches a hedge that appears only in the title', () => {
+    // The haystack is title + body; every fixture hedged in the body only, so a
+    // body-only haystack passed the whole suite.
+    const out = downgradeUnverifiedPremise({
+      severity: 'P1',
+      path: 'src/x.js',
+      line: 1,
+      title: 'Could not confirm key names exist',
+      body: 'A key-name mismatch would yield undefined step IDs.',
+    });
+    expect(out.severity).toBe('P2');
+    expect(out.downgrade_reason).toBe('unverified_premise');
+  });
+
+  it('bounds the gap in the "if ... still references" pattern at 200 characters', () => {
+    // The gap is everything between the anchors "if" and "still references",
+    // including the two surrounding spaces -- so 198 filler characters is a gap
+    // of exactly 200, and 199 is one over.
+    const filler = (n: number) => 'x'.repeat(n);
+    expect(hasUnverifiedPremise(`if ${filler(198)} still references`)).toBe(true);
+    expect(hasUnverifiedPremise(`if ${filler(199)} still references`)).toBe(false);
+  });
+
   it('hasUnverifiedPremise matches every documented phrase category', () => {
     expect(hasUnverifiedPremise('could not be located anywhere in this repo')).toBe(true);
     expect(hasUnverifiedPremise('If any later code in the pipeline still references X')).toBe(true);
