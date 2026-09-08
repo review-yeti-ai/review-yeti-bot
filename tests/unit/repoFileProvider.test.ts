@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createRepoFileProvider } from '../../src/app';
+import { createRepoFileProvider } from '../../src/panel/repoFileProvider';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 
 // The only production implementation of RepoFileProvider. Every panelEngine test
@@ -37,6 +37,15 @@ describe('createRepoFileProvider', () => {
     await expect(provider.findFiles('a')).rejects.toThrow('tree 502');
     expect(await provider.findFiles('a')).toEqual(['tools/a.mjs']);
     expect(calls).toBe(2);
+  });
+
+  it('exposes tree truncation so the panel can refuse to claim absence', async () => {
+    const github = stubGitHub({ getFileTree: async () => ({ paths: ['a'], truncated: true }) });
+    const provider = createRepoFileProvider(github, 'o', 'r', 'deadbeef');
+    expect(await provider.treeTruncated!()).toBe(true);
+    expect(await provider.findFiles('zzz')).toEqual([]);
+    // One fetch serves both calls.
+    expect((github.getFileTree as any).mock.calls.length).toBe(1);
   });
 
   it('reads a single file through the not-found-is-null contract', async () => {

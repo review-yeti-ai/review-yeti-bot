@@ -211,10 +211,40 @@ describe('panelEngine find_files — bounded full-repository hit list', () => {
     expect(out).not.toContain('src/generated/file-4999.ts');
   });
 
+  it('does not claim absence when the repository tree was truncated', async () => {
+    // GitHub truncates recursive trees past ~100k entries. A zero-hit search over
+    // a truncated tree used to produce "found nowhere in the repository" -- a
+    // definitive absence claim that is false exactly when the repository is large.
+    const out = await runFindFilesScenario(
+      { findFiles: async () => [], readFile: async () => null, treeTruncated: async () => true },
+      { tool: 'find_files', args: { query: 'generated' } },
+    );
+    expect(out).toContain('truncated');
+    expect(out.toLowerCase()).toContain('may still exist');
+    expect(out.toLowerCase()).not.toContain('found anywhere in the repository');
+  });
+
+  it('still reports a genuine absence when the tree was complete', async () => {
+    const out = await runFindFilesScenario(
+      { findFiles: async () => [], readFile: async () => null, treeTruncated: async () => false },
+      { tool: 'find_files', args: { query: 'generated' } },
+    );
+    expect(out).toContain('found anywhere in the repository at the reviewed head');
+  });
+
   it('reports a provider error as a lookup failure, never as absence', async () => {
     const out = await runFindFilesScenario({ findFiles: async () => { throw new Error('tree fetch 502'); }, readFile: async () => null });
     expect(out).toContain('lookup failure');
     expect(out).toContain('tree fetch 502');
     expect(out.toLowerCase()).not.toMatch(/no files matching .* found anywhere/);
+  });
+});
+
+describe('panelEngine symbol_search — scope-qualified miss', () => {
+  it('never lets a diff-only symbol miss read as "the symbol does not exist"', async () => {
+    const out = await runFindFilesScenario(undefined, { tool: 'symbol_search', args: { query: 'checkEvidence' } });
+    expect(out.toLowerCase()).toMatch(/changed files|diff/);
+    expect(out.toLowerCase()).toMatch(/may (still )?(be defined|exist) elsewhere/);
+    expect(out).not.toMatch(/^Tool 'symbol_search' execution result:\nNo symbols found matching '[^']*'\.$/mu);
   });
 });

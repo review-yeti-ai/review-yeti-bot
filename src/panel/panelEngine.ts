@@ -61,6 +61,12 @@ export interface RepoFileProvider {
   findFiles(query: string): Promise<string[]>;
   /** Full content of a single file at the reviewed head, or null if it does not exist there. */
   readFile(path: string): Promise<string | null>;
+  /**
+   * Whether the repository tree behind findFiles was truncated by the API. GitHub
+   * truncates recursive trees past ~100k entries, and a zero-hit search over a
+   * truncated tree is not evidence of absence. Optional so simple stubs stay valid.
+   */
+  treeTruncated?(): Promise<boolean>;
 }
 
 export interface PanelFinding {
@@ -977,6 +983,10 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
                   toolOutput += `No matches in the diff, but ${repoHits.length} paths match in the full repository at the reviewed head. Showing the first ${REPO_FIND_FILES_MAX_HITS}; narrow the query for the rest: ${repoHits.slice(0, REPO_FIND_FILES_MAX_HITS).join(', ')}`;
                 } else if (repoHits.length > 0) {
                   toolOutput += `No matches in the diff, but found in the full repository at the reviewed head: ${repoHits.join(', ')}`;
+                } else if (await (options.repoFileProvider.treeTruncated?.() ?? Promise.resolve(false))) {
+                  // A zero-hit search over a truncated tree must not become a definitive
+                  // absence claim -- that is the exact false-P1 shape this tool exists to remove.
+                  toolOutput += `No files matching '${searchQ}' in the diff, and none in the PORTION of the repository tree the API returned -- the tree was truncated by GitHub, so the file may still exist. Do not report it as missing on this basis; read_file on the exact path is conclusive.`;
                 } else {
                   toolOutput += `No files matching '${searchQ}' found anywhere in the repository at the reviewed head (full-repository search, not just the diff).`;
                 }
