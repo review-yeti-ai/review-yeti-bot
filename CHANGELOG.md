@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.42.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.0...v1.42.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **review:** downgrade blocking findings that hedge their own premise ([#589](https://github.com/review-yeti-ai/review-yeti-bot/issues/589)) ([c1c7449](https://github.com/review-yeti-ai/review-yeti-bot/commit/c1c7449db0a1bedd2ca753af481fb6b03d1ac8f9))
+
 ## [1.42.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.6...v1.42.0) (2026-09-08)
 
 
