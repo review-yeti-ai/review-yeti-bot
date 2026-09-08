@@ -96,6 +96,27 @@ describe('downgradeUnverifiedPremise (unit)', () => {
     expect(result).toBe(p2Hedge);
   });
 
+  it('downgrades a hedged P0 the same way as a hedged P1', () => {
+    // The guard is `severity !== 'P0' && severity !== 'P1'`; only the P1 branch was
+    // exercised, so a regression that silently dropped P0 from the guard would stay green.
+    const p0 = { ...FALSE_P1_UNCONFIRMED_IMPORT, severity: 'P0' };
+    const out = downgradeUnverifiedPremise(p0);
+    expect(out.severity).toBe('P2');
+    expect(out.downgradedFrom).toBe('P0');
+    expect(out.downgrade_reason).toBe('unverified_premise');
+  });
+
+  it('is idempotent: an already-downgraded finding is returned unchanged', () => {
+    // The early return on an existing `downgrade_reason` was untested. Without it a second
+    // pass would read `severity: 'P2'` and skip anyway today -- but if a future pass ever
+    // re-raised severity, this is the guard that must still hold.
+    const once = downgradeUnverifiedPremise({ ...FALSE_P1_UNUSED_CONSTANT });
+    const twice = downgradeUnverifiedPremise(once);
+    expect(twice).toBe(once);
+    expect(twice.downgradedFrom).toBe('P1');
+    expect(twice.downgrade_reason).toBe('unverified_premise');
+  });
+
   it('hasUnverifiedPremise matches every documented phrase category', () => {
     expect(hasUnverifiedPremise('could not be located anywhere in this repo')).toBe(true);
     expect(hasUnverifiedPremise('If any later code in the pipeline still references X')).toBe(true);
