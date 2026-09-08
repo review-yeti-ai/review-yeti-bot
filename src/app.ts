@@ -44,6 +44,7 @@ import {
   type FindingWithPersona,
 } from './github/panelPublication';
 import { logger } from './utils/logger';
+import { resolveRepositoryVisibility } from './github/repositoryVisibility';
 import { createRepoFileProvider } from './panel/repoFileProvider';
 import { LiveStreamBus } from './live/liveStreamBus';
 import {
@@ -114,7 +115,7 @@ function cost(value: number | null): string {
   return value === null ? 'unavailable' : `$${value.toFixed(6)} USD`;
 }
 
-function checkSummary(result: PanelResult): string {
+export function checkSummary(result: PanelResult): string {
   const laneRows = result.personas.map((lane) =>
     `| ${lane.id} | ${lane.required ? 'yes' : 'no'} | ${lane.providerId} | \`${lane.model}\` | ${lane.decision} | ${lane.durationMs} ms | ${usage(lane.usage)} | ${cost(lane.costUSD)} |`,
   ).join('\n');
@@ -131,6 +132,7 @@ function checkSummary(result: PanelResult): string {
   );
   return [
     `Exact head: \`${result.headSha}\``,
+    `Repository visibility: ${result.repositoryVisibility || 'UNKNOWN'}.`,
     '',
     '| Persona | Required | Provider | Model | Decision | Duration | Tokens | Cost |',
     '|---|---:|---|---|---|---:|---|---|',
@@ -296,6 +298,15 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         },
       });
       githubRef.client = github;
+      // The webhook payload usually already carries `repository.private`/`repository.visibility`
+      // (see GitHubEventHandler.extractRepositoryVisibility); this is only a fallback for a run
+      // mode whose payload did not. getRepositoryVisibility() never throws on its own, but a
+      // lookup failure must never be allowed to fail or block the review it was requested for,
+      // so this is also defensively wrapped.
+      const repositoryVisibility = await resolveRepositoryVisibility(payload.repositoryVisibility, {
+        lookup: () => github.getRepositoryVisibility(owner, repo),
+        warn: (message, meta) => logger.warn(message, { owner, repo, ...meta }),
+      });
       let checkId: number | undefined;
       try {
         const snapshot = await github.getPullRequest(owner, repo, prNumber);
@@ -438,6 +449,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           changedFiles: reviewChangedFiles,
           repository: repoFull,
           headSha,
+          repositoryVisibility,
           client: openRouterClient(),
           isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
           repoFileProvider: createRepoFileProvider(github, owner, repo, headSha),
