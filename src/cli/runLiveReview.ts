@@ -1287,7 +1287,12 @@ export async function runSameHeadQualificationWorker(
       candidateVerdict: result.arbiter.verdict,
       rationale: result.arbiter.rationale,
     });
-    findingFingerprints = qualificationFindingFingerprints(completedSource.diffDigest, canonical.findings);
+    // Fingerprint the pre-clustering set. This bound guards receipt size against
+    // a runaway panel, so it must see raw output -- otherwise clustering could
+    // collapse 257 near-identical findings and bring a runaway back under it.
+    // It also keeps fingerprints stable across runs that cluster differently,
+    // which is what same-head receipt comparison depends on.
+    findingFingerprints = qualificationFindingFingerprints(completedSource.diffDigest, canonical.rawFindings);
   } catch (error) {
     const completedAt = new Date().toISOString();
     const failureClass = qualificationFailureClass(error);

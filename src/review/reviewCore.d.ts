@@ -9,6 +9,10 @@ export interface ReviewFinding {
   body: string;
   suggestion?: string;
   confidence?: number;
+  /** Number of persona lanes whose findings collapsed into this one (>= 1 after arbitration). */
+  reporters?: number;
+  /** Present when arbitration re-filed a P1 as P2 on an advisory-claim title. */
+  severityAdjusted?: { from: 'P1'; reason: string };
 }
 
 export interface ReviewChangedFile {
@@ -41,7 +45,8 @@ export interface CanonicalArbitration {
   status: ReviewStatus;
   rationale: string;
   thresholds: { blockP1: number; fixP2: number };
-  metrics: { p0Count: number; p1Count: number; p2Count: number; totalFindings: number };
+  rawFindings: CanonicalFinding[];
+  metrics: { p0Count: number; p1Count: number; p2Count: number; totalFindings: number; rawFindingCount: number };
   findings: ReviewFinding[];
 }
 
@@ -70,6 +75,8 @@ export function sha256(value: unknown): string;
 export function changedLineNumbers(patch?: string): Set<number> | null;
 export function sanitizeFinding(raw: unknown, changedFiles?: ReviewChangedFile[]): ReviewFinding | null;
 export function sanitizeFindings(raw: unknown, changedFiles?: ReviewChangedFile[]): ReviewFinding[];
+export function calibrateSeverity(finding: ReviewFinding): ReviewFinding;
+export function clusterFindings(findings: ReviewFinding[]): ReviewFinding[];
 export interface ReviewFindingsValidation {
   valid: boolean;
   findings: ReviewFinding[];
