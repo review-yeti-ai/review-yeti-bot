@@ -1,4 +1,4 @@
-import { normalizeRepositoryVisibility, RepositoryVisibility } from './repositoryVisibility';
+import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
 
 export interface ParsedPRPayload {
   installationId: string;
@@ -101,15 +101,7 @@ function extractOwnerRepo(payload: any): { owner: string; repo: string } {
  * function never throws.
  */
 function extractRepositoryVisibility(payload: any): RepositoryVisibility {
-  const repository = payload?.repository;
-  if (!repository || typeof repository !== 'object') return 'UNKNOWN';
-  if (typeof repository.visibility === 'string') {
-    return normalizeRepositoryVisibility(repository.visibility);
-  }
-  if (typeof repository.private === 'boolean') {
-    return normalizeRepositoryVisibility(repository.private);
-  }
-  return 'UNKNOWN';
+  return repositoryVisibilityFrom(payload?.repository);
 }
 
 export class GitHubEventHandler {

@@ -23,7 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { executePersonaPanel } from '../panel/panelEngine';
-import { normalizeRepositoryVisibility } from '../github/repositoryVisibility';
+import { normalizeRepositoryVisibility } from '../review/repositoryVisibility';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';

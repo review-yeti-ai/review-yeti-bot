@@ -1,6 +1,6 @@
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 import { logger } from '../utils/logger';
-import { normalizeRepositoryVisibility, RepositoryVisibility } from './repositoryVisibility';
+import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -162,10 +162,8 @@ export class GitHubInstallationClient {
     if (cached) return cached;
     const lookup = (async (): Promise<RepositoryVisibility> => {
       try {
-        const data = await this.request(`/repos/${owner}/${repo}`);
-        if (typeof data.visibility === 'string') return normalizeRepositoryVisibility(data.visibility);
-        if (typeof data.private === 'boolean') return normalizeRepositoryVisibility(data.private);
-        return 'UNKNOWN';
+        const data = await this.request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+        return repositoryVisibilityFrom(data);
       } catch (error: any) {
         logger.warn(`Repository visibility lookup failed for ${key}; falling back to UNKNOWN`, {
           error: error?.message || error,

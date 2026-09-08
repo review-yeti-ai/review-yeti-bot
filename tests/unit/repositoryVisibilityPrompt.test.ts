@@ -1,10 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import {
-  executePersonaPanel,
-  normalizeRepositoryVisibility,
-  repositoryVisibilityPromptLines,
-  REPOSITORY_VISIBILITY_INSTRUCTION,
-} from '../../src/panel/panelEngine';
+import { executePersonaPanel, repositoryVisibilityPromptLines } from '../../src/panel/panelEngine';
+import { normalizeRepositoryVisibility, REPOSITORY_VISIBILITY_INSTRUCTION } from '../../src/review/repositoryVisibility';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 

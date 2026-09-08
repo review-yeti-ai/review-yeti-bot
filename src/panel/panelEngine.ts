@@ -265,9 +265,8 @@ export const SEVERITY_CALIBRATION_LINES: readonly string[] = [
 ];
 
 /** Known repository-visibility states a review run can be told about. */
-export type { RepositoryVisibility } from '../github/repositoryVisibility';
-export { normalizeRepositoryVisibility, REPOSITORY_VISIBILITY_INSTRUCTION } from '../github/repositoryVisibility';
-import { REPOSITORY_VISIBILITY_INSTRUCTION, normalizeRepositoryVisibility, type RepositoryVisibility } from '../github/repositoryVisibility';
+import { REPOSITORY_VISIBILITY_INSTRUCTION, normalizeRepositoryVisibility, type RepositoryVisibility } from '../review/repositoryVisibility';
+export type { RepositoryVisibility } from '../review/repositoryVisibility';
 
 export function repositoryVisibilityPromptLines(visibility: RepositoryVisibility): string[] {
   return [

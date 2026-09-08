@@ -114,7 +114,7 @@ function cost(value: number | null): string {
   return value === null ? 'unavailable' : `$${value.toFixed(6)} USD`;
 }
 
-function checkSummary(result: PanelResult): string {
+export function checkSummary(result: PanelResult): string {
   const laneRows = result.personas.map((lane) =>
     `| ${lane.id} | ${lane.required ? 'yes' : 'no'} | ${lane.providerId} | \`${lane.model}\` | ${lane.decision} | ${lane.durationMs} ms | ${usage(lane.usage)} | ${cost(lane.costUSD)} |`,
   ).join('\n');
