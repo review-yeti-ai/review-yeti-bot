@@ -149,17 +149,31 @@ describe('downgradeUnverifiedPremise (unit)', () => {
     expect(hasUnverifiedPremise(`if ${filler(199)} still references`)).toBe(false);
   });
 
-  it('every entry of the exported phrase list is live', () => {
-    // The list is literal substrings. A typo'd or stale entry would silently stop
-    // downgrading exactly the findings that use it, and a hand-picked sample here
-    // would not notice. Derive the assertions from the constant itself.
-    expect(UNVERIFIED_PREMISE_PHRASES.length).toBeGreaterThan(0);
-    for (const phrase of UNVERIFIED_PREMISE_PHRASES as readonly string[]) {
-      const sample = phrase.includes('...')
-        ? phrase.replace('...', ' some intervening words ')
-        : phrase;
-      expect(hasUnverifiedPremise(`Note: ${sample} in this diff.`), phrase).toBe(true);
+  it('every hedge phrase is detected in a realistic sentence, and the list matches this corpus', () => {
+    // Deliberately NOT derived from the exported constant: a test that feeds each
+    // entry back into the matcher is a tautology -- a typo'd entry matches itself.
+    // (The first version of this test did exactly that and stayed green with
+    // 'verify befor merge' in the list.) The sentences are hand-written; the
+    // second assertion pins the constant to this corpus so drift in either
+    // direction fails here.
+    const corpus: Array<[string, string]> = [
+      ['could not be located', "The table's definition could not be located to confirm the key names."],
+      ['could not be verified', 'The export shape could not be verified from the workspace.'],
+      ['could not confirm', 'Repo tooling could not confirm a pre-existing import.'],
+      ['unable to confirm', 'I was unable to confirm that the constant is imported.'],
+      ['unable to verify', 'Unable to verify the module boundary from the diff alone.'],
+      ['can be dismissed on verification', 'If the import already exists, this finding can be dismissed on verification.'],
+      ['verify before merge', 'Verify before merge that no dangling reference remains.'],
+      ['if ... still references', 'If any later code in the pipeline still references STEP_ADVERSARIAL, this throws.'],
+      ['if the import already exists', 'If the import already exists this is moot.'],
+      ['not visible in the diff', 'The import statement is not visible in the diff.'],
+      ['unverifiable', 'The premise is unverifiable from the changed hunks.'],
+    ];
+    for (const [phrase, sentence] of corpus) {
+      expect(hasUnverifiedPremise(sentence), `${phrase} :: ${sentence}`).toBe(true);
     }
+    expect([...(UNVERIFIED_PREMISE_PHRASES as readonly string[])].sort())
+      .toEqual(corpus.map(([phrase]) => phrase).sort());
   });
 
   it('hasUnverifiedPremise matches every documented phrase category', () => {
