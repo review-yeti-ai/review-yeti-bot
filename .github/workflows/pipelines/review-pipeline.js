@@ -5765,62 +5765,8 @@ async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, 
   return { ok: false, error: lastError?.message || 'no falsification transport available', ...(timedOut ? { timedOut: true } : {}) };
 }
 
-function computeArbitrationQuorumLegacy(personaResults, expectedPersonas = personaResults.length) {
-  let p0Count = 0;
-  let p1Count = 0;
-  let p2Count = 0;
-  const failedLanes = personaResults.filter((res) => res.decision === 'ERROR');
-  const completedResults = personaResults.filter((res) => res.decision !== 'ERROR');
-
-  for (const res of completedResults) {
-    for (const f of res.findings) {
-      if (f.severity === 'P0') p0Count++;
-      else if (f.severity === 'P1') p1Count++;
-      else if (f.severity === 'P2') p2Count++;
-    }
-  }
-
-  // Thresholds scale with the size of the panel. Fixed counts were calibrated for sparse regex
-  // hits; with a dozen model-driven reviewers each free to raise a concern, a flat "3 P1s blocks"
-  // means essentially every pull request blocks, and a reviewer that always blocks is ignored.
-  const panelSize = Math.max(1, completedResults.length);
-  const blockP1 = Math.max(3, Math.ceil(panelSize / 2));
-  const fixP2 = Math.max(5, panelSize);
-
-  let verdict = 'SHIP';
-  let rationale = `All ${completedResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
-
-  if (failedLanes.length > 0) {
-    verdict = 'BLOCK';
-    rationale = `Blocked because ${failedLanes.length} persona lane(s) failed; provider failures cannot produce a successful verdict.`;
-  } else if (p0Count > 0) {
-    verdict = 'BLOCK';
-    rationale = `Blocked on ${p0Count} critical P0 finding(s).`;
-  } else if (p1Count >= blockP1) {
-    verdict = 'BLOCK';
-    rationale = `Blocked on ${p1Count} P1 finding(s) across ${panelSize} reviewer(s), at or above the blocking threshold of ${blockP1}.`;
-  } else if (p1Count > 0) {
-    verdict = 'FIX_FIRST';
-    rationale = `Changes requested for ${p1Count} P1 finding(s) and ${p2Count} P2 nit(s).`;
-  } else if (p2Count >= fixP2) {
-    verdict = 'FIX_FIRST';
-    rationale = `Changes requested for ${p2Count} P2 nit(s) across ${panelSize} reviewer(s), at or above the nit threshold of ${fixP2}.`;
-  }
-
-  return {
-    totalPersonas: expectedPersonas,
-    completedPersonas: completedResults.length,
-    quorumSatisfied: failedLanes.length === 0 && completedResults.length === expectedPersonas,
-    verdict,
-    rationale,
-    thresholds: { blockP1, fixP2 },
-    metrics: { p0Count, p1Count, p2Count, totalFindings: p0Count + p1Count + p2Count },
-  };
-}
-
 /**
  * Canonical arbitration boundary shared with the typed App runtime.
- * The legacy implementation above is retained only as a readable migration reference.
  */
 function computeArbitrationQuorum(personaResults, expectedPersonas = personaResults.length, options = {}) {
   return computeCanonicalArbitration(personaResults, expectedPersonas, options);
