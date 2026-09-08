@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { compareClaims } = require('./claimSimilarity');
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 
 function canonicalize(value) {
@@ -91,6 +92,57 @@ function sanitizeFinding(raw, changedFiles) {
   if (typeof raw.suggestion === 'string' && raw.suggestion.trim()) result.suggestion = raw.suggestion.trim();
   if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)) result.confidence = raw.confidence;
   return result;
+}
+
+const SEVERITY_RANK = { P0: 0, P1: 1, P2: 2 };
+
+/**
+ * Title phrases that name a code-quality or process concern rather than a defect in shipped
+ * behaviour. A P1 whose *title* leads with one of these is re-filed as P2 before it can gate a
+ * merge. Title-only on purpose: bodies mention "documentation" or "duplicated" in passing while
+ * describing a real defect, and a real P0/P1 must never be hidden by an incidental word.
+ *
+ * Evidence: cisco-cdr#4860 head 430d8058 went FIX_FIRST on three P1s, two of which were
+ * "Cross-domain reach-in and DRY violation" and "additive but unversioned ... deserves changelog
+ * notes". Neither is a defect the author can ship wrong; both are P2 under the calibration rule.
+ * P0 is never touched here: a P0 is either a real exploit/outage or a persona contract failure,
+ * and both must stay visible.
+ */
+const ADVISORY_TITLE_RE = /\b(?:DRY(?:\s+violation)?|code\s+duplication|duplicated\s+(?:code|logic|constants?|helpers?|implementation)|naming|readability|maintainability|code\s+style|portability|changelog|release\s+notes?|migration\s+notes?|docstrings?|documentation)\b/i;
+
+function calibrateSeverity(finding) {
+  if (!finding || finding.severity !== 'P1') return finding;
+  if (!ADVISORY_TITLE_RE.test(String(finding.title || ''))) return finding;
+  return { ...finding, severity: 'P2', severityAdjusted: { from: 'P1', reason: 'advisory claim in title' } };
+}
+
+/**
+ * One defect, one finding. Personas describe the same defect under different titles a few lines
+ * apart; counting each description separately let a single defect reach the P1 block threshold
+ * on its own (three lanes agreeing on one P1 == BLOCK on a three-lane panel). Clusters use the
+ * same claim comparison the hosted publisher uses, so a finding without a path (test fixtures,
+ * unanchored lanes) never merges, and findings on different files never merge.
+ */
+function clusterFindings(findings) {
+  const clusters = [];
+  for (const finding of findings) {
+    const target = clusters.find((cluster) => compareClaims(cluster, finding).duplicate);
+    if (!target) {
+      clusters.push({ ...finding, reporters: 1 });
+      continue;
+    }
+    target.reporters += 1;
+    if (SEVERITY_RANK[finding.severity] < SEVERITY_RANK[target.severity]) target.severity = finding.severity;
+    if (String(finding.body || '').length > String(target.body || '').length) {
+      target.body = finding.body;
+      target.title = finding.title;
+    }
+    if (!target.suggestion && finding.suggestion) target.suggestion = finding.suggestion;
+    if (typeof finding.confidence === 'number') {
+      target.confidence = typeof target.confidence === 'number' ? Math.max(target.confidence, finding.confidence) : finding.confidence;
+    }
+  }
+  return clusters;
 }
 
 function sanitizeFindings(findings, changedFiles) {
@@ -223,7 +275,11 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const expected = Number.isInteger(expectedPersonas) ? expectedPersonas : results.length;
   const failedLanes = results.filter(isFailedLane);
   const completedResults = results.filter((result) => !isFailedLane(result));
-  const findings = completedResults.flatMap((result) => sanitizeFindings(result.findings, options.changedFiles));
+  const rawFindings = completedResults.flatMap((result) => sanitizeFindings(result.findings, options.changedFiles));
+  // Calibrate each finding on its own title first, then collapse paraphrases. Severity of a
+  // cluster is the highest any reporter kept after calibration, so one lane naming the real
+  // defect is enough to keep it P1.
+  const findings = clusterFindings(rawFindings.map(calibrateSeverity));
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;
@@ -319,7 +375,12 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     status,
     rationale: finalRationale,
     thresholds: { blockP1, fixP2 },
-    metrics: { p0Count, p1Count, p2Count, totalFindings: findings.length },
+    // Pre-clustering set, exposed for callers whose contract is about panel
+    // volume rather than distinct defects -- the same-head qualification receipt
+    // bounds its fingerprint list on raw output, and clustering must not be able
+    // to bring a runaway panel back under that bound.
+    rawFindings,
+    metrics: { p0Count, p1Count, p2Count, totalFindings: findings.length, rawFindingCount: rawFindings.length },
     findings,
   };
 }
@@ -333,5 +394,7 @@ module.exports = {
   sanitizeFindings,
   validateReviewFindings,
   describeCoverageGaps,
+  calibrateSeverity,
+  clusterFindings,
   computeArbitration,
 };
