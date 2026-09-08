@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient } from './gateway/openRouterClient';
-import { getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
+import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
 import { createWebhookRouter, RequestWithRawBody } from './github/webhookServer';
@@ -41,7 +41,6 @@ import {
   MAX_FINAL_INLINE_COMMENTS,
   buildFinalInlineComments,
   formatFinalReviewBody,
-  formatPersonaIssueComment,
   type FindingWithPersona,
 } from './github/panelPublication';
 import { logger } from './utils/logger';
@@ -112,14 +111,6 @@ function usage(value: { prompt: number; completion: number; total: number } | nu
 
 function cost(value: number | null): string {
   return value === null ? 'unavailable' : `$${value.toFixed(6)} USD`;
-}
-
-function personaBody(lane: PanelResult['personas'][number], headSha: string): string {
-  // Issue-comment body only — personas must not open PR review threads.
-  return formatPersonaIssueComment(lane, headSha, {
-    usageLine: usage(lane.usage),
-    costLine: cost(lane.costUSD),
-  });
 }
 
 function checkSummary(result: PanelResult): string {
@@ -207,7 +198,10 @@ async function installationClient(
       throw new Error(`GitHub App installation permission ${name} must be ${required}; got ${actual || 'missing'}`);
     }
   }
-  return new GitHubInstallationClient({ token: token.token, baseUrl, currentHeadSha: options.currentHeadSha });
+  const publisherLogin = await getGitHubAppBotLogin({
+    appId: requiredEnv('GITHUB_APP_ID'), privateKey: privateKey(), baseUrl,
+  });
+  return new GitHubInstallationClient({ token: token.token, baseUrl, publisherLogin, currentHeadSha: options.currentHeadSha });
 }
 
 export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> {
@@ -520,14 +514,9 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           if (!publicationClaim) throw new Error(`review run ${durableRun.runId} could not claim publication`);
         }
 
-        // Phase 1 — persona reports as issue comments only (no review threads).
-        // Opening per-persona COMMENT reviews with inline findings creates dozens of
-        // resolve-required threads under required_conversation_resolution and
-        // thrashes statusCheckRollup. Personas are advisory inputs to the arbiter.
+        // Keep persona evidence in the check report; publish each retained finding inline.
         const retainedFindings: FindingWithPersona[] = [];
-        let laneIndex = 0;
         for (const lane of panel.personas) {
-          laneIndex += 1;
           await assertCurrentHead();
           const { filteredFindings, suppressedNits } = await learningEngine.analyzeAndFilterFindings(
             repoFull,
@@ -540,26 +529,8 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           for (const finding of filteredFindings) {
             retainedFindings.push({ ...finding, persona: lane.id });
           }
-
-          const body = formatPersonaIssueComment(lane, headSha, {
-            usageLine: usage(lane.usage),
-            costLine: cost(lane.costUSD),
-            runId: durableRun?.runId || undefined,
-            laneIndex,
-            laneTotal: panel.personas.length,
-          });
-          await github.postIssueComment(owner, repo, prNumber, body);
-          logger.info(`✅ Persona issue comment published`, {
-            persona: lane.id,
-            owner,
-            repo,
-            prNumber,
-            findings: filteredFindings.length,
-            surface: 'issue_comment',
-          });
         }
 
-        // Phase 2 — single arbiter review; only deduped P0/P1 become review threads.
         const summary = checkSummary(panel);
         const ship = panel.arbiter.verdict === 'SHIP';
         const finalInline = buildFinalInlineComments({
@@ -573,14 +544,15 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           repo,
           prNumber,
           commitSha: headSha,
-          event: ship ? 'APPROVE' : 'REQUEST_CHANGES',
+          event: 'COMMENT',
+          stickyOverview: true,
           body: formatFinalReviewBody({
             verdict: panel.arbiter.verdict,
             rationale: panel.arbiter.rationale,
             summary,
             headSha,
             inlineCount: finalInline.length,
-            totalActionableCandidates: retainedFindings.filter((f) => f.severity === 'P0' || f.severity === 'P1').length,
+            totalActionableCandidates: retainedFindings.length,
             maxInline: MAX_FINAL_INLINE_COMMENTS,
           }),
           idempotencyKey: 'arbiter',
@@ -592,7 +564,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           verdict: panel.arbiter.verdict,
           decision: ship ? 'APPROVE' : 'REQUEST_CHANGES',
           personaCount: panel.personas.length,
-          personaSurface: 'issue_comment',
+          personaSurface: 'inline',
           finalInlineThreads: finalInline.length,
           durationMs: Date.now() - startTime,
         });
@@ -739,12 +711,15 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             summary: `Exact head: \`${headSha}\`\n\nThe review failed closed before a binding approval.\n\n\`${message}\``,
           }).catch((publishError) => logger.error('Failed to complete failed check', { publishError }));
         }
-        await github.postIssueComment(
+        await github.publishReview({
           owner,
           repo,
           prNumber,
-          `ct-review-bot failed closed at \`${headSha}\`: ${message}\n\nNo code verdict or approval was fabricated.`,
-        ).catch((publishError) => logger.error('Failed to publish infrastructure failure comment', { publishError }));
+          commitSha: headSha,
+          event: 'COMMENT',
+          stickyOverview: true,
+          body: `Review failed at \`${headSha}\`: ${message}\n\nNo verdict is available.`,
+        }).catch((publishError) => logger.error('Failed to update infrastructure failure overview', { publishError }));
         throw error;
       }
     } finally {

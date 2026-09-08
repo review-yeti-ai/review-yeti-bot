@@ -341,6 +341,10 @@ describe('Milestone 1: Native 1-Click Suggestion Diffs & Fallback Table (R1)', (
         repo: 'review-yeti-bot',
         prNumber: 99,
         commitSha: 'c3d4e5f6a1b27890123456789012345678901234',
+        changedFiles: [{
+          path: 'src/routes/api.ts',
+          patch: '@@ -19,0 +20,6 @@\n' + Array.from({ length: 6 }, (_, i) => `+route line ${20 + i}`).join('\n'),
+        }],
         findings: sampleFindings,
       });
 

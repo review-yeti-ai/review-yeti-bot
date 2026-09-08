@@ -273,7 +273,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
   // These pin the boundary contract only -- that publication goes through the injected command
   // runner, names the repository explicitly, leaves no temp file behind, and fails closed. The
   // publication semantics themselves (sticky anchor, exact-head receipt, thread dedupe, the
-  // conversation cap) belong to tests/unit/actionReviewPublication.test.ts.
+  // all-finding inline publication) belong to tests/unit/actionReviewPublication.test.ts.
   const publishContext = {
     prNumber: '42',
     repo: 'calltelemetry/ct-review-bot',
@@ -330,7 +330,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
         } else if (endpoint.endsWith('/reviews')) {
           reviews.push({ id: 901, body: payload.body, commit_id: payload.commit_id, user: { login: 'github-actions[bot]' } });
         }
-        return { status: 0, stdout: JSON.stringify({ id: 901, user: { login: 'github-actions[bot]' } }), stderr: '' };
+        return { status: 0, stdout: JSON.stringify({ id: endpoint.endsWith('/issues/42/comments') ? 900 : 901, user: { login: 'github-actions[bot]' } }), stderr: '' };
       }
       if (args[0] === 'api' && String(args[1]).includes('/pulls/42/reviews')) {
         return { status: 0, stdout: JSON.stringify([reviews]), stderr: '' };

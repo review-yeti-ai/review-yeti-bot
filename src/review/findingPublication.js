@@ -224,20 +224,10 @@ function comparePublicationItems(a, b) {
   return normalizeTitle(a.finding.title).localeCompare(normalizeTitle(b.finding.title));
 }
 
-/**
- * Folds one finding's fields into another that has already been judged the same claim.
- *
- * Shared by the exact-key dedupe in `planFindingPublication` and by `mergeClaimInto`'s
- * near-duplicate clustering. Both used to carry their own copy of these rules, so any field added
- * to a publication finding had to be merged in two places and the two were free to drift.
- */
 const conflictingReplacement = Symbol('conflictingReplacement');
 
-function mergeFindingFields(merged, candidate) {
-  if (SEVERITY_RANK[candidate.severity] < SEVERITY_RANK[merged.severity]) merged.severity = candidate.severity;
-  merged.personas = [...new Set([...merged.personas, ...candidate.personas])].sort((a, b) => a.localeCompare(b));
-  merged.body = chooseRicher(merged.body, candidate.body);
-  merged.suggestion = chooseRicher(merged.suggestion, candidate.suggestion);
+/** Merge replacement code and its range together, suppressing conflicting patches permanently. */
+function mergeReplacementMetadata(merged, candidate) {
   // A patch belongs to its original range, even when nearby reports describe the same defect.
   const sameAnchor = merged.path === candidate.path && merged.line === candidate.line && merged.side === candidate.side;
   if (sameAnchor && candidate[conflictingReplacement] && !merged[conflictingReplacement]) {
@@ -258,6 +248,22 @@ function mergeFindingFields(merged, candidate) {
       else delete merged.startLine;
     }
   }
+  return merged;
+}
+
+/**
+ * Folds one finding's fields into another that has already been judged the same claim.
+ *
+ * Shared by the exact-key dedupe in `planFindingPublication` and by `mergeClaimInto`'s
+ * near-duplicate clustering. Both used to carry their own copy of these rules, so any field added
+ * to a publication finding had to be merged in two places and the two were free to drift.
+ */
+function mergeFindingFields(merged, candidate) {
+  if (SEVERITY_RANK[candidate.severity] < SEVERITY_RANK[merged.severity]) merged.severity = candidate.severity;
+  merged.personas = [...new Set([...merged.personas, ...candidate.personas])].sort((a, b) => a.localeCompare(b));
+  merged.body = chooseRicher(merged.body, candidate.body);
+  merged.suggestion = chooseRicher(merged.suggestion, candidate.suggestion);
+  mergeReplacementMetadata(merged, candidate);
   merged.recommendation = chooseRicher(merged.recommendation, candidate.recommendation);
   if (candidate.confidence !== undefined) {
     merged.confidence = merged.confidence === undefined ? candidate.confidence : Math.max(merged.confidence, candidate.confidence);
@@ -386,11 +392,9 @@ function planFindingPublication(input, changedFiles, options = {}) {
         // exists only in the pre-image is unambiguously a LEFT deletion anchor.
         if (sideWasOmitted && !anchors.right.has(line) && anchors.left.has(line)) side = 'LEFT';
         const validLines = side === 'LEFT' ? anchors.left : anchors.right;
-        if (!validLines.has(line)) {
-          rejected.push(rejection(raw, personas, `finding line is not an exact changed ${side} line`));
-          continue;
-        }
-        subjectType = 'line';
+        // Keep file-specific feedback on the changed file when the reported line cannot
+        // safely anchor a review thread. Never guess a nearby changed line.
+        subjectType = validLines.has(line) ? 'line' : 'file';
       }
     }
 
@@ -461,16 +465,8 @@ function planFindingPublication(input, changedFiles, options = {}) {
       personas: finding.personas,
       finding,
     };
-    if (finding.severity === 'P2') {
-      advisories.push({
-        ...common,
-        line: finding.line,
-        side: finding.side,
-        title: finding.title,
-        severity: finding.severity,
-      });
-    } else if (subjectType === 'file') {
-      fileComments.push({ ...common, body: formatFindingCommentBody(finding) });
+    if (subjectType === 'file') {
+      fileComments.push({ ...common, body: `${formatFindingCommentBody(finding)}\n\nReported location: line ${finding.line} (${finding.side}).` });
     } else {
       lineComments.push({ ...common, body: formatFindingCommentBody(finding) });
     }
@@ -489,29 +485,15 @@ function planFindingPublication(input, changedFiles, options = {}) {
   return { lineComments, fileComments, advisories, rejected };
 }
 
-/**
- * Severities that may become resolve-required review threads.
- *
- * The single definition of "actionable". It sits beside the cap because the two decide the same
- * thing together -- which findings can block a merge -- and both publication surfaces read it, so
- * widening the blocking set cannot leave one surface gating on the old pair.
- */
+/** Severities used by arbitration to request changes; inline eligibility includes P2 as well. */
 const ACTIONABLE_SEVERITIES = Object.freeze(['P0', 'P1']);
 
 function isActionableSeverity(severity) {
   return ACTIONABLE_SEVERITIES.includes(String(severity || '').toUpperCase());
 }
 
-/**
- * Max resolve-required review threads one run may open.
- *
- * `required_conversation_resolution` turns every unresolved thread into a merge block, so an
- * uncapped panel can wedge a pull request behind dozens of them. The App path has capped this at
- * ten P0/P1 threads since the 2026-08-03 publication policy. It lives here, beside the planner,
- * so the Action and the App read one definition of the cap and its ranking rather than keeping
- * hand-maintained copies that drift. Overflow is never dropped -- callers render it.
- */
-const MAX_PUBLISHED_REVIEW_THREADS = 10;
+/** Publish every valid finding by default. Callers can still request an explicit cap. */
+const MAX_PUBLISHED_REVIEW_THREADS = Infinity;
 
 /**
  * Trims the plan to `max` review threads, most severe first.
@@ -564,5 +546,6 @@ module.exports = {
   findingMarkerKey,
   formatFindingCommentBody,
   mergeNearDuplicateClaims,
+  mergeReplacementMetadata,
   planFindingPublication,
 };
