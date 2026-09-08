@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.42.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.3...v1.42.4) (2026-09-08)
+
+
+### Performance
+
+* **panel:** optimize prompt caching, scope persona paths, and add pre-flight triage classifier ([#593](https://github.com/review-yeti-ai/review-yeti-bot/issues/593)) ([ca41a3f](https://github.com/review-yeti-ai/review-yeti-bot/commit/ca41a3fb391524c4b8ed57d8a2aac8d9d21013e3))
+
 ## [1.42.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.2...v1.42.3) (2026-09-08)
 
 
