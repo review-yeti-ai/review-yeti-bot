@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.4...v1.41.5) (2026-09-08)
+
+
+### Bug Fixes
+
+* **publishing:** read diff paths that contain spaces, and stop dropping files silently ([#582](https://github.com/review-yeti-ai/review-yeti-bot/issues/582)) ([24a3a88](https://github.com/review-yeti-ai/review-yeti-bot/commit/24a3a88ed2c62342f18db3578a9160cff01efaae))
+
 ## [1.41.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.3...v1.41.4) (2026-09-08)
 
 
