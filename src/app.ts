@@ -183,7 +183,7 @@ async function withinOverallTimeout<T>(operation: Promise<T>, timeoutSeconds: nu
  * The full-repository tree is fetched at most once per run (memoized) and only if a persona tool
  * call actually misses in the diff, so a review with no such tool call pays no extra API cost.
  */
-function createRepoFileProvider(github: GitHubInstallationClient, owner: string, repo: string, headSha: string): RepoFileProvider {
+export function createRepoFileProvider(github: GitHubInstallationClient, owner: string, repo: string, headSha: string): RepoFileProvider {
   let treePromise: Promise<{ paths: string[]; truncated: boolean }> | undefined;
   const loadTree = () => {
     if (!treePromise) {

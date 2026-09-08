@@ -181,6 +181,16 @@ describe('panelEngine read_file — full-repository fallback paths', () => {
     expect(out.toLowerCase()).not.toContain('does not exist');
   });
 
+  it('never claims a non-diff file is missing when no repoFileProvider is wired', async () => {
+    // The symmetric find_files no-provider case is tested; this branch was not.
+    // Regressing it to the old "outside the reviewed PR scope" text would let a
+    // persona report the file as absent for every CLI/dry-run caller.
+    const out = await runFindFilesScenario(undefined, readGate);
+    expect(out.toLowerCase()).not.toContain('does not exist');
+    expect(out.toLowerCase()).toMatch(/changed files only/);
+    expect(out.toLowerCase()).toMatch(/may still exist elsewhere/);
+  });
+
   it('truncates a large file and says so, instead of inlining megabytes into the prompt', async () => {
     const big = 'x'.repeat(REPO_READ_FILE_MAX_CHARS + 1000);
     const out = await runFindFilesScenario(provider({ readFile: async () => big }), readGate);
