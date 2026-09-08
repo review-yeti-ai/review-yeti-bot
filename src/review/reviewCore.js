@@ -134,6 +134,90 @@ function calibrateSeverity(finding) {
 }
 
 /**
+ * Body/title phrases that admit the finding's own premise is unverified -- "I could not check X"
+ * dressed as a defect in X. A P0/P1 stating its premise was never confirmed is a question the
+ * reviewer could not answer, not a defect it verified, and must not gate a merge.
+ *
+ * Detection is a small, explicit, reviewable phrase list, never heuristic NLP: every match traces
+ * to one literal string a human chose to include here. An entry containing `...` marks a bounded
+ * gap between two literal anchors (matched with up to 200 characters of slop between them, so
+ * "if <anything> still references" matches without matching arbitrary unrelated text); every
+ * other entry is a plain case-insensitive substring match. Extend by adding a phrase to this one
+ * exported constant, never by loosening the matcher.
+ *
+ * Evidence: calltelemetry/ct-meta#2882, three P1 findings across three consecutive review rounds,
+ * all false, each hedging its own premise in its own body:
+ *   - "If any later code in runDarkFactoryPipeline still references STEP_ADVERSARIAL ... Verify
+ *     no remaining references exist; if unused, this is a dead-constant cleanup."
+ *   - "repo tooling could not confirm a pre-existing import. If the import already exists, this
+ *     finding can be dismissed on verification; as submitted, the diff is not self-contained
+ *     proof."
+ *   - "The table's definition could not be located to confirm these exact key names exist."
+ * A genuine P1 states a defect the reviewer verified against code it read (e.g. "there is no
+ * timeout on socket idle or response"); it contains none of these phrases and is never touched.
+ */
+const UNVERIFIED_PREMISE_PHRASES = Object.freeze([
+  'could not be located',
+  'could not be verified',
+  'could not confirm',
+  'unable to confirm',
+  'unable to verify',
+  'can be dismissed on verification',
+  'verify before merge',
+  'if ... still references',
+  'if the import already exists',
+  'not visible in the diff',
+  'unverifiable',
+]);
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** A `...`-bearing phrase becomes a bounded-gap regex; a plain phrase has no pattern. */
+function unverifiedPremisePatternFor(phrase) {
+  if (!phrase.includes('...')) return null;
+  const anchors = phrase.split('...').map((part) => part.trim()).filter(Boolean);
+  if (anchors.length < 2) return null;
+  return new RegExp(anchors.map(escapeRegExp).join('[\\s\\S]{0,200}'), 'i');
+}
+
+const UNVERIFIED_PREMISE_PATTERNS = UNVERIFIED_PREMISE_PHRASES
+  .map(unverifiedPremisePatternFor)
+  .filter(Boolean);
+
+function hasUnverifiedPremise(text) {
+  const value = String(text || '');
+  const lower = value.toLowerCase();
+  const plainMatch = UNVERIFIED_PREMISE_PHRASES.some(
+    (phrase) => !phrase.includes('...') && lower.includes(phrase),
+  );
+  if (plainMatch) return true;
+  return UNVERIFIED_PREMISE_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+/**
+ * A P0/P1 whose title or body hedges on its own premise ("could not confirm", "if X still
+ * references Y") is re-filed as P2 before arbitration -- the original severity and the reason are
+ * preserved on the finding (`downgradedFrom`, `downgrade_reason: 'unverified_premise'`) so the
+ * published output can still show what was downgraded and why. Never touches P2: a P2 hedge is
+ * already non-blocking and must not be double-processed or relabelled.
+ */
+function downgradeUnverifiedPremise(finding) {
+  if (!finding) return finding;
+  if (finding.severity !== 'P0' && finding.severity !== 'P1') return finding;
+  if (finding.downgrade_reason) return finding;
+  const haystack = `${finding.title || ''}\n${finding.body || ''}`;
+  if (!hasUnverifiedPremise(haystack)) return finding;
+  return {
+    ...finding,
+    downgradedFrom: finding.severity,
+    severity: 'P2',
+    downgrade_reason: 'unverified_premise',
+  };
+}
+
+/**
  * One defect, one finding. Personas describe the same defect under different titles a few lines
  * apart; counting each description separately let a single defect reach the P1 block threshold
  * on its own (three lanes agreeing on one P1 == BLOCK on a three-lane panel). Clusters use the
@@ -294,10 +378,11 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const failedLanes = results.filter(isFailedLane);
   const completedResults = results.filter((result) => !isFailedLane(result));
   const rawFindings = completedResults.flatMap((result) => sanitizeFindings(result.findings, options.changedFiles));
-  // Calibrate each finding on its own title first, then collapse paraphrases. Severity of a
-  // cluster is the highest any reporter kept after calibration, so one lane naming the real
-  // defect is enough to keep it P1.
-  const findings = clusterFindings(rawFindings.map(calibrateSeverity));
+  // Calibrate each finding on its own title first, downgrade any P0/P1 that hedges on an
+  // unverified premise, then collapse paraphrases. Severity of a cluster is the highest any
+  // reporter kept after these per-finding passes, so one lane naming the real, verified defect is
+  // enough to keep it P1 even when another lane only filed the same claim as a question.
+  const findings = clusterFindings(rawFindings.map(calibrateSeverity).map(downgradeUnverifiedPremise));
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;
@@ -414,6 +499,9 @@ module.exports = {
   validateReviewFindings,
   describeCoverageGaps,
   calibrateSeverity,
+  UNVERIFIED_PREMISE_PHRASES,
+  hasUnverifiedPremise,
+  downgradeUnverifiedPremise,
   clusterFindings,
   computeArbitration,
 };
