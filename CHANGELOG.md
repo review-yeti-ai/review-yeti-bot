@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.5...v1.41.6) (2026-09-08)
+
+
+### Bug Fixes
+
+* **review:** cluster paraphrased findings and calibrate advisory P1s ([#585](https://github.com/review-yeti-ai/review-yeti-bot/issues/585)) ([28ebd03](https://github.com/review-yeti-ai/review-yeti-bot/commit/28ebd03cc7cc4fc146d02dae2870cacdc0f54d2b))
+
 ## [1.41.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.4...v1.41.5) (2026-09-08)
 
 
