@@ -9,7 +9,7 @@ import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHu
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
 import { createWebhookRouter, RequestWithRawBody } from './github/webhookServer';
-import { executePersonaPanel, PanelResult } from './panel/panelEngine';
+import { executePersonaPanel, PanelResult, RepoFileProvider } from './panel/panelEngine';
 import { ReviewRunStore } from './persistence/reviewRunStore';
 import { PostgresReviewRunRepository, ReviewRunRepository } from './persistence/reviewRunRepository';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
@@ -45,6 +45,7 @@ import {
 } from './github/panelPublication';
 import { logger } from './utils/logger';
 import { resolveRepositoryVisibility } from './github/repositoryVisibility';
+import { createRepoFileProvider } from './panel/repoFileProvider';
 import { LiveStreamBus } from './live/liveStreamBus';
 import {
   initTelemetry,
@@ -173,6 +174,7 @@ async function withinOverallTimeout<T>(operation: Promise<T>, timeoutSeconds: nu
     if (timer) clearTimeout(timer);
   }
 }
+
 
 async function installationClient(
   payload: ParsedPRPayload,
@@ -450,6 +452,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           repositoryVisibility,
           client: openRouterClient(),
           isCurrentHead: () => store.isCurrentHead(owner, repo, prNumber, headSha),
+          repoFileProvider: createRepoFileProvider(github, owner, repo, headSha),
         }), config.reviewers.overall_timeout_s);
         await durablePersist('review', panel as unknown as import('./review/reviewRun').JsonValue);
 

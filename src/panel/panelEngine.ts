@@ -36,6 +36,39 @@ export interface FixOption {
   suggestionCode?: string;
 }
 
+/**
+ * Full-repository file access for persona tool calls (find_files / read_file), independent of the
+ * diff's changedFiles array. Without this, `find_files`/`read_file` can only see files that were
+ * actually changed in the PR -- a persona asked to verify a sibling file the diff *imports* (but
+ * does not modify) gets a false "not found", and self-reports that as "the file could not be
+ * located / does not exist", which reads to a human as a real P1. Optional and best-effort: when
+ * absent (e.g. CLI/local dry-run callers with no GitHub API handle), the tool response falls back
+ * to the changedFiles-only search but says so explicitly so the persona cannot honestly claim
+ * non-existence from a diff-scoped miss.
+ */
+/**
+ * Bounds on what a full-repository tool result may inject into the model's next turn.
+ * The query is model-controlled, so a short substring can match thousands of tree
+ * entries, and a lockfile or minified bundle can run to megabytes: either would
+ * inflate the prompt, the latency and the cost of the follow-up turn, and can push
+ * the lane past its context window and fail it outright.
+ */
+export const REPO_FIND_FILES_MAX_HITS = 50;
+export const REPO_READ_FILE_MAX_CHARS = 48 * 1024;
+
+export interface RepoFileProvider {
+  /** Case-insensitive substring match of `query` against every file path in the repository at the reviewed head. */
+  findFiles(query: string): Promise<string[]>;
+  /** Full content of a single file at the reviewed head, or null if it does not exist there. */
+  readFile(path: string): Promise<string | null>;
+  /**
+   * Whether the repository tree behind findFiles was truncated by the API. GitHub
+   * truncates recursive trees past ~100k entries, and a zero-hit search over a
+   * truncated tree is not evidence of absence. Optional so simple stubs stay valid.
+   */
+  treeTruncated?(): Promise<boolean>;
+}
+
 export interface PanelFinding {
   severity: FindingSeverity;
   path: string;
@@ -715,6 +748,7 @@ async function invoke(
     persona?: string;
     providerId?: string;
     requestPolicy?: PanelRequestPolicy;
+    repoFileProvider?: RepoFileProvider;
   }
 ): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number }> {
   const requestNonce = nonce();
@@ -932,15 +966,54 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
             if (matched) {
               toolOutput += matched.patch || matched.content || 'File present in PR scope.';
+            } else if (options?.repoFileProvider) {
+              try {
+                const content = await options.repoFileProvider.readFile(targetPath);
+                if (content !== null) {
+                  const truncated = content.length > REPO_READ_FILE_MAX_CHARS;
+                  const shown = truncated ? content.slice(0, REPO_READ_FILE_MAX_CHARS) : content;
+                  toolOutput += `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. `
+                    + (truncated
+                      ? `Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${content.length} characters:\n${shown}\n[... content truncated: ${content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
+                      : `Full current content:\n${shown}`);
+                } else {
+                  toolOutput += `File '${targetPath}' does not exist in the repository at the reviewed head (checked the full repository tree, not just the diff).`;
+                }
+              } catch (err: any) {
+                toolOutput += `Full-repository read of '${targetPath}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`;
+              }
             } else {
-              toolOutput += `File '${targetPath}' is outside the reviewed PR scope.`;
+              toolOutput += `File '${targetPath}' is not part of this PR's diff. This tool's search scope here is changed files only (no full-repository access is wired for this run); the file may still exist elsewhere in the repository. Do not report it as missing, unconfirmed, or unverifiable from this result alone.`;
             }
           } else if (tName === 'search_code' || tName === 'grep_search') {
             const hits = changedFiles.filter((f: any) => (f.patch || f.content || '').toLowerCase().includes(searchQ.toLowerCase()));
-            toolOutput += hits.length > 0 ? `Matches found in: ${hits.map((h: any) => h.path).join(', ')}` : `No matches for '${searchQ}'.`;
+            toolOutput += hits.length > 0
+              ? `Matches found in diff: ${hits.map((h: any) => h.path).join(', ')}`
+              : `No matches for '${searchQ}' in the diff. This tool's text search scope is changed files only, not the full repository -- a match may still exist outside the diff. Use find_files/read_file to check a specific file directly.`;
           } else if (tName === 'find_files') {
             const hits = changedFiles.filter((f: any) => f.path.toLowerCase().includes(searchQ.toLowerCase()));
-            toolOutput += hits.length > 0 ? `Files found: ${hits.map((h: any) => h.path).join(', ')}` : `No files found matching '${searchQ}'.`;
+            if (hits.length > 0) {
+              toolOutput += `Files found in diff: ${hits.map((h: any) => h.path).join(', ')}`;
+            } else if (options?.repoFileProvider) {
+              try {
+                const repoHits = await options.repoFileProvider.findFiles(searchQ);
+                if (repoHits.length > REPO_FIND_FILES_MAX_HITS) {
+                  toolOutput += `No matches in the diff, but ${repoHits.length} paths match in the full repository at the reviewed head. Showing the first ${REPO_FIND_FILES_MAX_HITS}; narrow the query for the rest: ${repoHits.slice(0, REPO_FIND_FILES_MAX_HITS).join(', ')}`;
+                } else if (repoHits.length > 0) {
+                  toolOutput += `No matches in the diff, but found in the full repository at the reviewed head: ${repoHits.join(', ')}`;
+                } else if (await (options.repoFileProvider.treeTruncated?.() ?? Promise.resolve(false))) {
+                  // A zero-hit search over a truncated tree must not become a definitive
+                  // absence claim -- that is the exact false-P1 shape this tool exists to remove.
+                  toolOutput += `No files matching '${searchQ}' in the diff, and none in the PORTION of the repository tree the API returned -- the tree was truncated by GitHub, so the file may still exist. Do not report it as missing on this basis; read_file on the exact path is conclusive.`;
+                } else {
+                  toolOutput += `No files matching '${searchQ}' found anywhere in the repository at the reviewed head (full-repository search, not just the diff).`;
+                }
+              } catch (err: any) {
+                toolOutput += `Full-repository file search for '${searchQ}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`;
+              }
+            } else {
+              toolOutput += `No files matching '${searchQ}' found in the diff. This tool's search scope here is changed files only (no full-repository access is wired for this run); the file may still exist elsewhere in the repository. Do not report it as missing, unconfirmed, or unverifiable from this result alone.`;
+            }
           } else if (tName === 'symbol_search') {
             const parser = new ASTParser();
             const hits: string[] = [];
@@ -953,7 +1026,9 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
                 }
               }
             }
-            toolOutput += hits.length > 0 ? hits.join('\n') : `No symbols found matching '${searchQ}'.`;
+            toolOutput += hits.length > 0
+              ? hits.join('\n')
+              : `No symbols found matching '${searchQ}' in the diff. This tool's search scope is changed files only, not the full repository -- the symbol may be defined elsewhere.`;
           } else {
             // Only documentation/search MCPs are permitted. Review execution must never mutate
             // Linear, Productlane, GitHub, or an arbitrary custom MCP server.
@@ -1010,6 +1085,7 @@ async function runPersona(
   jobId?: string,
   primaryModelContext?: string,
   requestPolicy?: PanelRequestPolicy,
+  repoFileProvider?: RepoFileProvider,
   repositoryVisibility: RepositoryVisibility = 'UNKNOWN',
 ): Promise<PersonaLaneResult> {
   return runInSpan(`ct_persona_lane`, async (span) => {
@@ -1135,6 +1211,7 @@ async function runPersona(
             persona: persona.id,
             providerId,
             requestPolicy,
+            repoFileProvider,
             validateParsed: (candidate) => {
               try {
                 const findings = validateFindings((candidate as any)?.findings);
@@ -1316,11 +1393,12 @@ export async function executePersonaPanel(options: {
   requestPolicy?: PanelRequestPolicy;
   generateArchitecturalFlowchart?: boolean;
   isCurrentHead?: () => boolean;
+  repoFileProvider?: RepoFileProvider;
   /** Never undetermined by throwing: an unresolved lookup upstream must pass 'UNKNOWN', not omit the field. */
   repositoryVisibility?: RepositoryVisibility;
 }): Promise<PanelResult> {
   return runInSpan('ct_persona_panel', async (span) => {
-    const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead } = options;
+    const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const repositoryVisibility = normalizeRepositoryVisibility(options.repositoryVisibility ?? 'UNKNOWN');
     const runId = Math.random().toString(36).slice(2);
     const runKey = `${repository}#${headSha}`;
@@ -1395,7 +1473,7 @@ export async function executePersonaPanel(options: {
         if (!stillCurrent || currentActiveId !== runId) {
           throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
         }
-        const result = await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId, primaryAuthoringModel, requestPolicy, repositoryVisibility);
+        const result = await runPersona(config, client, persona, effectiveFiles, repository, headSha, memoryRules, effectiveJobId, primaryAuthoringModel, requestPolicy, repoFileProvider, repositoryVisibility);
         return { persona, result, error: undefined };
       })
     );
