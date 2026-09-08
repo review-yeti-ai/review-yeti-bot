@@ -16,11 +16,11 @@ describe('fastShipResult.ts — Consensus and Panel Structure Invariants', () =>
       providerId: 'openrouter-provider',
     };
 
-    const panelResult = buildFastShipPanelResult(classifierResult, 'commit-sha-123', 2);
+    const panelResult = buildFastShipPanelResult(classifierResult, 'commit-sha-123', 1);
 
     expect(panelResult.headSha).toBe('commit-sha-123');
     expect(panelResult.quorum.satisfied).toBe(true);
-    expect(panelResult.quorum.required).toBe(2);
+    expect(panelResult.quorum.required).toBe(1);
     expect(panelResult.quorum.distinctProviders).toEqual(['openrouter-provider']);
 
     // Moderator invariants
@@ -59,5 +59,20 @@ describe('fastShipResult.ts — Consensus and Panel Structure Invariants', () =>
     expect(panelResult.quorum.distinctProviders).toEqual(['fast-ship']);
     expect(panelResult.personas[0].providerId).toBe('fast-ship');
     expect(panelResult.personas[0].usage).toBeNull();
+  });
+
+  it('correctly marks quorum unsatisfied when requiredQuorum > 1 with a single classifier provider', () => {
+    const classifierResult: ClassifierResult = {
+      fastShip: true,
+      selectedPersonas: [],
+      effortTier: 'low',
+      rationale: 'Docs only update.',
+      providerId: 'provider-1',
+    };
+
+    const panelResult = buildFastShipPanelResult(classifierResult, 'sha-quorum-fail', 2);
+    expect(panelResult.quorum.satisfied).toBe(false);
+    expect(panelResult.quorum.required).toBe(2);
+    expect(panelResult.quorum.distinctProviders).toEqual(['provider-1']);
   });
 });

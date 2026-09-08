@@ -31,6 +31,7 @@ export function buildFastShipPanelResult(
   };
 
   const distinctProviders = [providerId];
+  const satisfied = distinctProviders.length >= requiredQuorum;
 
   return {
     headSha,
@@ -39,7 +40,7 @@ export function buildFastShipPanelResult(
     quorum: {
       required: requiredQuorum,
       distinctProviders,
-      satisfied: true,
+      satisfied,
     },
     moderator: {
       providerId,

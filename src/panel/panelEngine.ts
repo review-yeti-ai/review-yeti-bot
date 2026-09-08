@@ -1406,32 +1406,39 @@ export async function executePersonaPanel(options: {
     }
 
     if (classifierResult?.fastShip) {
-      const isCurrent = isCurrentHead ? isCurrentHead() : true;
-      const activeId = activeRuns.get(runKey);
-      if (!isCurrent || activeId !== runId) {
-        throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
+      if ((config.quorum || 1) > 1) {
+        logger.info(
+          `Classifier suggested fastShip, but repo config requires quorum of ${config.quorum} (> 1); falling through to full multi-persona panel`,
+          { repository, headSha }
+        );
+      } else {
+        const isCurrent = isCurrentHead ? isCurrentHead() : true;
+        const activeId = activeRuns.get(runKey);
+        if (!isCurrent || activeId !== runId) {
+          throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
+        }
+
+        logger.info(`Fast-ship approved by classifier for ${repository}#${headSha}: ${classifierResult.rationale}`);
+        const fastShipResult = buildFastShipPanelResult(classifierResult, headSha, config.quorum);
+
+        LiveStreamBus.getInstance().publishEvent({
+          jobId: effectiveJobId,
+          timestamp: new Date().toISOString(),
+          type: 'job:complete',
+          persona: 'fast-ship',
+          data: {
+            verdict: 'SHIP',
+            quorumSatisfied: true,
+            distinctProviders: fastShipResult.quorum.distinctProviders,
+            totalPersonasExecuted: 1,
+            totalFindings: 0,
+            totalDurationMs: classifierResult.durationMs || 0,
+            totalCostUSD: classifierResult.costUSD || 0,
+          },
+        });
+
+        return fastShipResult;
       }
-
-      logger.info(`Fast-ship approved by classifier for ${repository}#${headSha}: ${classifierResult.rationale}`);
-      const fastShipResult = buildFastShipPanelResult(classifierResult, headSha, config.quorum);
-
-      LiveStreamBus.getInstance().publishEvent({
-        jobId: effectiveJobId,
-        timestamp: new Date().toISOString(),
-        type: 'job:complete',
-        persona: 'fast-ship',
-        data: {
-          verdict: 'SHIP',
-          quorumSatisfied: true,
-          distinctProviders: fastShipResult.quorum.distinctProviders,
-          totalPersonasExecuted: 1,
-          totalFindings: 0,
-          totalDurationMs: classifierResult.durationMs || 0,
-          totalCostUSD: classifierResult.costUSD || 0,
-        },
-      });
-
-      return fastShipResult;
     }
 
     if (classifierResult && !classifierResult.fastShip && classifierResult.selectedPersonas.length > 0) {
