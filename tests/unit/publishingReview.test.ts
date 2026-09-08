@@ -137,7 +137,10 @@ describe('fail-closed conclusion mapping', () => {
   );
 
   it('fails a SHIP that still carries a blocking finding', () => {
-    // A verdict and its findings can disagree; the findings win.
+    // Retained as a last line of defence. Since the worker now sources the
+    // verdict and the blocking count from the same arbitration result, this
+    // combination should be unreachable in practice -- but if it ever occurs
+    // again, the findings still win over the verdict.
     expect(publishingConclusion('SHIP', 2)).toBe('failure');
   });
 });
@@ -156,7 +159,10 @@ describe('runPublishingReviewWorker', () => {
   it('publishes failure when the panel blocks', async () => {
     const d = deps({
       panelRunner: vi.fn(async () => ({
-        personas: [{ findings: [{ severity: 'P1' }] }],
+        // Anchored to the diff. A bare `{ severity: 'P1' }` is discarded by
+        // sanitizeFindings as unanchorable, so it would no longer block -- which
+        // is the documented contract, now that the count follows arbitration.
+        personas: [{ findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Blocking' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
@@ -181,6 +187,68 @@ describe('runPublishingReviewWorker', () => {
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({ conclusion: 'success', title: 'Review Yeti: SHIP' }),
     );
+  });
+
+  it('parses the changed-file path from the header line, not the whole patch', async () => {
+    // The regression: a dotall `b/(.*?)` capture ran to end-of-string and put the
+    // entire patch into the path. That path matched no finding, sanitizeFinding
+    // discarded every finding for the last file in the diff -- every finding, in a
+    // single-file diff -- arbitration saw none, and the lane returned SHIP
+    // unconditionally. It could not block on anything.
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        personas: [{ findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Real', body: 'Real' }] }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    // A finding anchored to the only file in the diff must survive sanitisation.
+    expect(receipt.findingCount).toBe(1);
+    expect(receipt.blockingFindingCount).toBe(1);
+    expect(receipt.verdict).not.toBe('SHIP');
+    expect(receipt.conclusion).toBe('failure');
+  });
+
+  it('never publishes a verdict that disagrees with its own finding count', async () => {
+    // The observed defect: a published check read `Review Yeti: SHIP` with
+    // `blocking P0/P1: 2` and a `failure` conclusion. The two numbers came from
+    // different sets -- arbitration counts findings sanitised against the diff,
+    // while this lane counted every raw persona finding, so a finding pointing
+    // outside the changed files was excluded from the verdict and included in
+    // the summary. A verdict and its own evidence must not contradict.
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        personas: [{
+          findings: [
+            // Outside the changed files: arbitration drops it, so it must not be
+            // counted as blocking either.
+            { severity: 'P1', path: 'src/not-in-this-diff.ts', line: 9, title: 'Elsewhere', body: 'Elsewhere' },
+            // Anchored: this one is real and must survive into the counts.
+            { severity: 'P1', path: 'src/a.ts', line: 1, title: 'Anchored', body: 'Anchored' },
+          ],
+        }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    // Whatever the verdict is, the counts must be the ones it was computed from.
+    if (receipt.verdict === 'SHIP') {
+      expect(receipt.blockingFindingCount).toBe(0);
+      expect(receipt.conclusion).toBe('success');
+    } else {
+      expect(receipt.blockingFindingCount).toBeGreaterThan(0);
+      expect(receipt.conclusion).toBe('failure');
+    }
+
+    // And the published summary must agree with the receipt it was built from.
+    const calls = d.checkClient.completeCheck.mock.calls as unknown as Array<[{ title: string; summary: string }]>;
+    const call = calls[calls.length - 1][0];
+    expect(call.title).toBe(`Review Yeti: ${receipt.verdict}`);
+    expect(call.summary).toContain(`blocking P0/P1: ${receipt.blockingFindingCount}`);
   });
 
   it('concludes failure — never neutral or success — when the provider fails', async () => {

@@ -170,7 +170,6 @@ export function createBifrostPublishingConfig(model: string): ReturnType<typeof 
   };
 }
 
-const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
  * Fail closed. `SHIP` with no blocking finding is the only success. Everything
@@ -231,10 +230,28 @@ export async function runPublishingReviewWorker(
       token: value(env, 'GH_TOKEN'),
     });
 
-    const changedFiles = Array.from(
-      String(source.diff).matchAll(/diff --git a\/(.*?) b\/(.*?)(?=\ndiff --git|\n$|$)/gs),
-    )
-      .map((match) => ({ path: (match[2] || match[1] || '').trim(), patch: match[0] }))
+    // Split on file boundaries and take the path from the header LINE.
+    //
+    // The previous expression used the dotall flag, so the `b/` capture ran past
+    // the end of the header to the `$` lookahead and swallowed the whole patch
+    // into the path -- for `src/a.ts` it produced
+    // `"src/a.ts\n@@ -1 +1 @@\n-old\n+new"`. That path matched no finding, so
+    // sanitizeFinding discarded EVERY finding for the last file in the diff (and
+    // for a single-file diff, every finding full stop). Arbitration then saw zero
+    // findings and returned SHIP unconditionally: the hosted lane could not block
+    // on anything. Observed as a published `Review Yeti: SHIP` carrying
+    // `blocking P0/P1: 2`.
+    const changedFiles = String(source.diff)
+      .split(/^diff --git /mu)
+      .filter((block) => block.trim().length > 0)
+      .map((block) => {
+        const header = block.split('\n', 1)[0] || '';
+        const match = /^a\/(.*?) b\/(.*)$/u.exec(header.trim());
+        return {
+          path: (match?.[2] || match?.[1] || '').trim(),
+          patch: `diff --git ${block}`,
+        };
+      })
       .filter((file) => file.path.length > 0 && file.path !== '/dev/null');
     // An empty changed-file set must not be read as "nothing to review, ship".
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
@@ -249,10 +266,7 @@ export async function runPublishingReviewWorker(
       jobId: identity.runId,
     } as Parameters<typeof executePersonaPanel>[0]);
 
-    const findings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
-    const blocking = findings.filter(
-      (finding) => BLOCKING_SEVERITIES.has(String((finding as { severity?: unknown })?.severity || 'P2').toUpperCase()),
-    );
+    const rawFindings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
     // The model arbiter is evidence, not the policy boundary. The canonical
     // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
     // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
@@ -263,7 +277,27 @@ export async function runPublishingReviewWorker(
       coverageComplete: panelResult.quorum.satisfied,
     });
     const verdict = canonical.verdict;
-    const conclusion = publishingConclusion(verdict, blocking.length);
+
+    // Count what arbitration counted, not the raw persona output.
+    //
+    // These were two different sets. Arbitration counts
+    // `sanitizeFindings(findings, changedFiles)` -- findings filtered to the
+    // diff under review -- while this lane counted every raw finding. A finding
+    // pointing outside the changed files was therefore excluded from the verdict
+    // and included in the summary and the conclusion, which produced a published
+    // check reading `Review Yeti: SHIP` with `blocking P0/P1: 2` and a `failure`
+    // conclusion. A verdict and its own evidence must not disagree; sourcing
+    // both from `canonical.metrics` makes that impossible rather than unlikely.
+    const blockingCount = (canonical.metrics?.p0Count || 0) + (canonical.metrics?.p1Count || 0);
+    const findingCount = canonical.metrics?.totalFindings ?? rawFindings.length;
+    const conclusion = publishingConclusion(verdict, blockingCount);
+
+    // Discarding is deliberate -- sanitizeFindings drops findings that cannot be
+    // anchored to the diff, because an unanchorable finding cannot be shown as a
+    // line comment and is not actionable on this pull request. Doing it silently
+    // is not: a genuine blocking finding the model failed to locate would simply
+    // disappear. Report the count so a reader can see that it happened.
+    const discardedCount = Math.max(0, rawFindings.length - findingCount);
 
     await deps.checkClient.completeCheck({
       owner: identity.owner,
@@ -273,7 +307,10 @@ export async function runPublishingReviewWorker(
       title: `Review Yeti: ${verdict}`,
       summary: [
         `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
-        `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}).`,
+        `Findings: ${findingCount} (blocking P0/P1: ${blockingCount}).`,
+        ...(discardedCount > 0
+          ? [`${discardedCount} finding(s) discarded as unanchorable to this diff.`]
+          : []),
         `Transport: bifrost \`${transport.model}\`.`,
       ].join('\n\n'),
     });
@@ -292,8 +329,8 @@ export async function runPublishingReviewWorker(
       model: transport.model,
       verdict,
       conclusion,
-      findingCount: findings.length,
-      blockingFindingCount: blocking.length,
+      findingCount,
+      blockingFindingCount: blockingCount,
       failureClass: null,
       startedAt,
       completedAt,
