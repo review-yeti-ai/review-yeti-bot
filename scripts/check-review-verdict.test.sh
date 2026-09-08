@@ -432,9 +432,13 @@ fi
   export GITHUB_STEP_SUMMARY="$passthrough_test_dir/summary"
   bash "$repo_root/scripts/deliver-passthrough.sh"
 )
-grep -Fxq "review-status=SHIP" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing review-status output" >&2; exit 1; }
-grep -Fxq "gate-decision=PASS" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing gate-decision output" >&2; exit 1; }
-grep -Fxq "merge-eligible=true" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing merge-eligible output" >&2; exit 1; }
+# Plan item 0.1: passthrough reviewed nothing, so it must not report an approval.
+# These assertions previously required review-status=SHIP / gate-decision=PASS /
+# merge-eligible=true -- the exact combination a pull request once merged on.
+grep -Fxq "review-status=NO_REVIEW" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing review-status output" >&2; exit 1; }
+grep -Fxq "gate-decision=BLOCK" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing gate-decision output" >&2; exit 1; }
+grep -Fxq "merge-eligible=false" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing merge-eligible output" >&2; exit 1; }
+grep -Fq "review-status=SHIP" "$passthrough_test_dir/gh_output" && { echo "[deliver-passthrough-script] passthrough must never emit SHIP" >&2; exit 1; }
 grep -Fxq "files-omitted=0" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing files-omitted output" >&2; exit 1; }
 generated_report="$(grep '^run-report-path=' "$passthrough_test_dir/gh_output" | cut -d= -f2-)"
 [[ -f "$generated_report" ]] || { echo "[deliver-passthrough-script] report file was not created" >&2; exit 1; }
@@ -444,7 +448,7 @@ jq -e '
   .prNumber == 4854 and
   .baseSha == "'"$base_sha"'" and
   .headSha == "'"$head_sha"'" and
-  .verdict == "SHIP" and
+  .verdict == "NO_REVIEW" and
   .lanes == [] and
   .scope.mode == "passthrough"
 ' "$generated_report" >/dev/null || { echo "[deliver-passthrough-script] generated report failed schema validation" >&2; exit 1; }

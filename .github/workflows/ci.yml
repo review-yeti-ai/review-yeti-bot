@@ -31,6 +31,7 @@ jobs:
         run: |
           node --check scripts/emit-policy.mjs
           node --check scripts/emit-execution-plan.mjs
+          node --check scripts/deliver-passthrough.test.mjs
           node --check scripts/emit-execution-plan.test.mjs
           node --check scripts/validate-central-dispatch.mjs
           node --check scripts/validate-central-dispatch.test.mjs
@@ -80,6 +81,7 @@ jobs:
           bash scripts/release-channel.test.sh
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output"
           grep -Eq '^repository<<' "$RUNNER_TEMP/policy-output"
+          node --test scripts/deliver-passthrough.test.mjs
           node --test scripts/review-yeti-smoke.test.mjs
           node --test scripts/emit-execution-plan.test.mjs
           node --test scripts/validate-central-dispatch.test.mjs

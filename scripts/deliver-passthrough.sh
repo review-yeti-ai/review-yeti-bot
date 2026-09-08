@@ -11,19 +11,35 @@ if [[ -z "$target_repo" || -z "$pr_number" || -z "$head_sha" || -z "$base_sha" ]
   exit 1
 fi
 
+# Plan item 0.1. Passthrough used to publish SHIP with a body stating no review
+# was completed, and a pull request merged on one. A verdict that reviewed
+# nothing is not an approval, so this path now emits NO_REVIEW and blocks by
+# default. Passthrough remains a legitimate maintenance escape hatch; what
+# changes is that using it can no longer be mistaken for a passing review.
+#
+# ON_NO_REVIEW=neutral lets an operator explicitly choose to unblock during a
+# planned outage. That is a deliberate, recorded decision -- not a silent SHIP.
+on_no_review="${ON_NO_REVIEW:-fail}"
+
 echo "====================================================="
 echo "Review Yeti: Passthrough Mode Active"
 echo "Target: ${target_repo}#${pr_number} at ${head_sha}"
 echo "No review was completed; scheduled maintenance in progress."
+echo "Verdict: NO_REVIEW (on-no-review=${on_no_review})"
 echo "====================================================="
 
-comment_body="### ⛵ Review Yeti: SHIP (Passthrough Mode)
+comment_body="### 🛑 Review Yeti: NO_REVIEW (Passthrough Mode)
 
-Review Yeti is currently in **passthrough mode**. No automated review was completed (scheduled maintenance in progress).
+**No automated review was performed on this head.** Review Yeti is in passthrough mode for scheduled maintenance.
 
-SHIP: Review Yeti is in passthrough mode. No review was completed (scheduled maintenance in progress).
+This is not an approval. Nothing about this pull request has been assessed, so
+this check must not be read as evidence that it is safe to merge.
 
-<!-- ct-review-bot:passthrough:SHIP -->"
+**What you can do:** wait for passthrough to be lifted and push a new commit (or
+re-run the review) to get a real verdict, or have an operator merge deliberately
+with a human review recorded in its place.
+
+<!-- ct-review-bot:passthrough:NO_REVIEW -->"
 
 if command -v gh >/dev/null 2>&1 && [[ -n "${GH_TOKEN:-}" ]]; then
   echo "Publishing passthrough comment to ${target_repo}#${pr_number}..."
@@ -48,7 +64,7 @@ jq -nc \
     prNumber: $pr,
     baseSha: $base,
     headSha: $head,
-    verdict: "SHIP",
+    verdict: "NO_REVIEW",
     lanes: [],
     scope: {
       schemaVersion: "review-scope-v1",
@@ -66,13 +82,20 @@ jq -nc \
     }
   }' > "$report_path"
 
-echo "Emitted synthetic SHIP run report to ${report_path}"
+echo "Emitted NO_REVIEW run report to ${report_path}"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "run-report-path=${report_path}" >> "$GITHUB_OUTPUT"
-  echo "review-status=SHIP" >> "$GITHUB_OUTPUT"
-  echo "gate-decision=PASS" >> "$GITHUB_OUTPUT"
-  echo "merge-eligible=true" >> "$GITHUB_OUTPUT"
+  echo "review-status=NO_REVIEW" >> "$GITHUB_OUTPUT"
+  if [[ "$on_no_review" == "neutral" ]]; then
+    # Explicitly chosen by an operator for a planned outage. Still not SHIP:
+    # the verdict says no review happened, and only the gate is relaxed.
+    echo "gate-decision=NEUTRAL" >> "$GITHUB_OUTPUT"
+    echo "merge-eligible=true" >> "$GITHUB_OUTPUT"
+  else
+    echo "gate-decision=BLOCK" >> "$GITHUB_OUTPUT"
+    echo "merge-eligible=false" >> "$GITHUB_OUTPUT"
+  fi
   echo "files-omitted=0" >> "$GITHUB_OUTPUT"
   echo "review-dispatch-reflection-status=complete" >> "$GITHUB_OUTPUT"
   echo "review-dispatch-provider-receipt-digest=" >> "$GITHUB_OUTPUT"
@@ -80,8 +103,8 @@ fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
-    echo "### ⛵ Review Yeti: SHIP (Passthrough Mode)"
-    echo "Review Yeti is currently in passthrough mode. No review was completed (scheduled maintenance in progress)."
+    echo "### 🛑 Review Yeti: NO_REVIEW (Passthrough Mode)"
+    echo "No automated review was performed on this head. This is not an approval."
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 
