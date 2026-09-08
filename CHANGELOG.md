@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.42.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.1...v1.42.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **panel:** give persona find_files/read_file real repository scope ([#590](https://github.com/review-yeti-ai/review-yeti-bot/issues/590)) ([c60bbcf](https://github.com/review-yeti-ai/review-yeti-bot/commit/c60bbcf4ae3cbcc59357bca5062cfd97f4d9bc7f))
+
 ## [1.42.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.0...v1.42.1) (2026-09-08)
 
 
