@@ -608,7 +608,7 @@ describe('Challenger 2 Empirical Adversarial Suite: Arbiter & Panel Publication 
         isArchitectural: false,
         title: 'Missing Null Check',
         comment: 'Check customer object before accessing customer.id.',
-        suggestion: 'if (!customer) throw new Error("Customer not found");',
+        replacementCode: 'if (!customer) throw new Error("Customer not found");',
       };
 
       const body = formatInlineCommentBody(codeFinding);
@@ -624,7 +624,7 @@ describe('Challenger 2 Empirical Adversarial Suite: Arbiter & Panel Publication 
         lineNumber: 12,
         title: 'Unnecessary Cloning',
         comment: 'Do not clone array before iteration.',
-        suggestion: 'items.forEach(item => process(item));',
+        replacementCode: 'items.forEach(item => process(item));',
       };
 
       const body = formatInlineCommentBody(standardFinding);
