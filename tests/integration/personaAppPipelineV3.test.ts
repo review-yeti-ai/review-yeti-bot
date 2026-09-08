@@ -103,12 +103,15 @@ function route(options: {
 } = {}) {
   const requests: Array<{ url: string; method: string; body: any }> = [];
   let pullReads = 0;
+  let overview: any;
   const fetchMock = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = String(input);
     const method = String(init.method || 'GET').toUpperCase();
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
     requests.push({ url, method, body });
 
+    if (url.endsWith('/app')) return json({ slug: 'review-yeti' });
+    if (/\/issues\/comments\/800$/.test(url) && method === 'GET') return json(overview);
     if (url.includes('/app/installations/148780830/access_tokens')) {
       return json({
         token: 'ghs_pipeline_test',
@@ -162,8 +165,12 @@ function route(options: {
       return json({ id: 991 }, 201);
     }
     if (url.includes('/check-runs/991') && method === 'PATCH') return json({});
+    if (/\/(?:issues|pulls)\/\d+\/(?:comments|reviews)\?/.test(url) && method === 'GET') return json([]);
     if (url.endsWith('/reviews') && method === 'POST') return json({ id: 700 + requests.length }, 201);
-    if (/\/issues\/\d+\/comments$/.test(url) && method === 'POST') return json({ id: 800 }, 201);
+    if (/\/issues\/\d+\/comments$/.test(url) && method === 'POST') {
+      overview = { ...body, id: 800, user: { type: 'Bot', login: 'review-yeti[bot]' } };
+      return json(overview, 201);
+    }
     return json({ error: `unexpected ${method} ${url}` }, 404);
   });
   return { fetchMock, requests };
@@ -183,7 +190,7 @@ describe('GitHub App configurable persona pipeline', () => {
     vi.restoreAllMocks();
   });
 
-  it('uses a ghs token, base-SHA policy, persona issue comments, and arbiter-only approval with final review', async () => {
+  it('uses a ghs token, base-SHA policy, and one compact sticky overview without repeated verdict reviews', async () => {
     const mock = route();
     vi.stubGlobal('fetch', mock.fetchMock);
 
@@ -202,21 +209,13 @@ describe('GitHub App configurable persona pipeline', () => {
     const policyRequest = mock.requests.find((request) => request.url.includes('/contents/.ct-review.yaml'));
     expect(policyRequest?.url).toContain('ref=base-9101');
 
-    // Personas publish as issue comments only — no per-persona review threads.
     const issueComments = mock.requests.filter((request) => /\/issues\/\d+\/comments$/.test(request.url) && request.method === 'POST');
-    expect(issueComments).toHaveLength(2);
-    expect(issueComments[0].body.body).toContain('ct-review-persona');
-    expect(issueComments[0].body.body).toContain('security-tenancy');
-    expect(issueComments[0].body.body).toContain('advisory');
-    expect(issueComments[1].body.body).toContain('constitutional-goals');
-
-    // Single arbiter review (no persona COMMENT reviews, no per-persona inline comments).
+    expect(issueComments).toHaveLength(1);
+    expect(issueComments[0].body.body).toContain('ct-review-bot:overview:v1');
+    expect(issueComments[0].body.body).toContain('SHIP');
+    expect(issueComments[0].body.body).not.toContain('Persona findings');
     const reviews = mock.requests.filter((request) => request.url.endsWith('/reviews'));
-    expect(reviews).toHaveLength(1);
-    expect(reviews[0].body.event).toBe('APPROVE');
-    expect(reviews[0].body.body).toContain('Binding arbiter verdict: SHIP');
-    expect(reviews[0].body.body).toContain('issue comments only');
-    expect(reviews[0].body.comments || []).toEqual([]);
+    expect(reviews).toHaveLength(0);
 
     const githubRequests = mock.fetchMock.mock.calls.filter(([url]) => String(url).startsWith('https://api.github.test/repos/'));
     expect(githubRequests.every(([, init]) =>
@@ -257,8 +256,9 @@ describe('GitHub App configurable persona pipeline', () => {
       decision: 'REQUEST_CHANGES',
     });
     const reviews = mock.requests.filter((request) => request.url.endsWith('/reviews'));
-    expect(reviews.at(-1)?.body.event).toBe('REQUEST_CHANGES');
-    expect(reviews.at(-1)?.body.body).toContain('Binding arbiter verdict: BLOCK');
+    expect(reviews).toHaveLength(0);
+    const overview = mock.requests.find((request) => /\/issues\/9105\/comments$/.test(request.url) && request.method === 'POST');
+    expect(overview?.body.body).toContain('BLOCK');
   });
 
   it('fails closed with a failed check and infrastructure comment during provider outage', async () => {
@@ -272,7 +272,7 @@ describe('GitHub App configurable persona pipeline', () => {
     );
     expect(completion?.body.conclusion).toBe('failure');
     const comment = mock.requests.find((request) => /\/issues\/9103\/comments$/.test(request.url));
-    expect(comment?.body.body).toContain('No code verdict or approval was fabricated');
+    expect(comment?.body.body).toContain('No verdict is available');
   });
 
   it('publishes with no completing check run and logs loudly when Check Run creation fails (REL-586)', async () => {

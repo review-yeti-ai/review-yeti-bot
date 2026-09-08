@@ -64,7 +64,7 @@ describe('Review Yeti Platform Superpowers E2E Test Suite', () => {
           filePath: 'src/auth/jwt.ts',
           lineNumber: 42,
           comment: 'Insecure algorithm: use RS256 instead of none',
-          suggestion: 'const algorithm = "RS256";',
+          replacementCode: 'const algorithm = "RS256";',
         };
 
         const body = formatInlineCommentBody(finding, { mascot: false });
@@ -81,7 +81,7 @@ describe('Review Yeti Platform Superpowers E2E Test Suite', () => {
           lineNumber: 50,
           startLine: 45,
           comment: 'Wrap query in transaction with retry block',
-          suggestion: 'await db.transaction(async (tx) => {\n  await tx.execute(query);\n});',
+          replacementCode: 'await db.transaction(async (tx) => {\n  await tx.execute(query);\n});',
         };
 
         expect(finding.startLine).toBe(45);
@@ -177,6 +177,10 @@ describe('Review Yeti Platform Superpowers E2E Test Suite', () => {
           repo: 'test-repo',
           prNumber: 42,
           commitSha: 'a'.repeat(40),
+          changedFiles: [{
+            path: 'src/api/auth.ts',
+            patch: '@@ -19,0 +20,6 @@\n' + Array.from({ length: 6 }, (_, i) => `+auth line ${20 + i}`).join('\n'),
+          }],
           findings: deduped,
         });
 
@@ -767,7 +771,7 @@ Guard multi-tenant data isolation at all costs. Flag un-scoped tenant queries.`;
       expect(fallbackBody).toContain('Secret found on deleted line');
     });
 
-    it('2.7: Inverted or reverse line ranges (startLine >= line) normalized safely', () => {
+    it('2.7: Prose guidance with an inverted line range does not become an applicable replacement', () => {
       const finding: PersonaFinding = {
         persona: 'testing',
         severity: 'minor',
@@ -778,13 +782,14 @@ Guard multi-tenant data isolation at all costs. Flag un-scoped tenant queries.`;
         suggestion: 'expect(a).toBe(b);',
       };
 
-      // Ensure startLine >= line is either ignored or swapped
+      // This finding has an invalid range and provides guidance only.
       const hasValidMultiLineSpan = finding.startLine !== undefined && finding.startLine < finding.lineNumber;
       expect(hasValidMultiLineSpan).toBe(false);
 
       const body = formatInlineCommentBody(finding, { mascot: false });
       expect(body).toContain('Assertion ordering inverted');
-      expect(body).toContain('```suggestion\nexpect(a).toBe(b);\n```');
+      expect(body).toContain('**Suggested fix**\n\nexpect(a).toBe(b);');
+      expect(body).not.toContain('```suggestion');
     });
 
     it('2.8: Static secret scanner rejects false positives (placeholders and test fixtures)', () => {
@@ -805,7 +810,7 @@ Guard multi-tenant data isolation at all costs. Flag un-scoped tenant queries.`;
         filePath: 'src/large.ts',
         lineNumber: 1,
         comment: 'A'.repeat(50000),
-        suggestion: 'const optimized = true;',
+        replacementCode: 'const optimized = true;',
       };
 
       const body = formatInlineCommentBody(hugeFinding, { mascot: false });
@@ -870,7 +875,7 @@ Guard multi-tenant data isolation at all costs. Flag un-scoped tenant queries.`;
         line: 35,
         title: 'N+1 Query Hazard: Database call inside loop',
         body: 'Querying users in array map causes N+1 network roundtrips.',
-        suggestion: 'const users = await userLoader.loadMany(userIds);',
+        replacementCode: 'const users = await userLoader.loadMany(userIds);',
       };
 
       const validated = validateFindings([finding]);
@@ -883,7 +888,7 @@ Guard multi-tenant data isolation at all costs. Flag un-scoped tenant queries.`;
         filePath: validated[0].path,
         lineNumber: validated[0].line,
         comment: validated[0].body,
-        suggestion: validated[0].suggestion,
+        replacementCode: validated[0].replacementCode,
       }, { mascot: false });
 
       expect(commentBody).toContain('```suggestion\nconst users = await userLoader.loadMany(userIds);\n```');
@@ -917,7 +922,7 @@ Guard multi-tenant data isolation at all costs. Flag un-scoped tenant queries.`;
         filePath: 'src/crypto.ts',
         lineNumber: 10,
         comment: 'Weak MD5 hash algorithm used for password digest',
-        suggestion: 'crypto.scryptSync(password, salt, 64);',
+        replacementCode: 'crypto.scryptSync(password, salt, 64);',
       }, { mascot: false });
 
       expect(body).toContain('```suggestion\ncrypto.scryptSync(password, salt, 64);\n```');
@@ -984,7 +989,7 @@ Guard multi-tenant data isolation at all costs. Flag un-scoped tenant queries.`;
           line: 11,
           title: 'Unvalidated User Input in Financial Calculation',
           body: 'req.body.amount must be validated and sanitized before calling chargeUser.',
-          suggestion: 'const amount = validatePositiveAmount(req.body.amount);',
+          replacementCode: 'const amount = validatePositiveAmount(req.body.amount);',
         },
       ];
       const validated = validateFindings(findings);
@@ -997,7 +1002,7 @@ Guard multi-tenant data isolation at all costs. Flag un-scoped tenant queries.`;
         filePath: validated[0].path,
         lineNumber: validated[0].line,
         comment: validated[0].body,
-        suggestion: validated[0].suggestion,
+        replacementCode: validated[0].replacementCode,
       }, { mascot: false });
       expect(commentBody).toContain('```suggestion\nconst amount = validatePositiveAmount(req.body.amount);\n```');
 

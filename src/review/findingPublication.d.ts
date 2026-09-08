@@ -2,11 +2,15 @@ import type { CompareClaimsOptions } from './claimSimilarity';
 
 export type PublicationSeverity = 'P0' | 'P1' | 'P2';
 export type PublicationSide = 'RIGHT' | 'LEFT';
+export const INLINE_SEVERITIES: readonly PublicationSeverity[];
+export function codeFence(value: string): string;
 
 export interface PublicationFindingInput {
   severity: PublicationSeverity | 'critical' | 'major' | 'minor' | 'nit';
   path: string;
   line: number;
+  /** First new-file line to replace, inclusive; omitted means line only. */
+  startLine?: number;
   side?: PublicationSide;
   title: string;
   body: string;
@@ -52,12 +56,15 @@ export interface PublicationChangedFile {
 export interface PatchAnchors {
   right: Set<number>;
   left: Set<number>;
+  /** New-file lines (including context) mapped to their containing hunk. */
+  rightHunks: Map<number, number>;
   hasHunks: boolean;
 }
 
 export interface PublicationComment {
   path: string;
   line?: number;
+  startLine?: number;
   side?: PublicationSide;
   body: string;
   markerKey: string;
@@ -123,7 +130,7 @@ export function planFindingPublication(
   options?: PlanFindingPublicationOptions,
 ): FindingPublicationPlan;
 
-/** Max resolve-required review threads one publish may open. */
+/** Default publication limit (Infinity); explicit caps remain supported. */
 export const MAX_PUBLISHED_REVIEW_THREADS: number;
 
 /**
@@ -135,8 +142,14 @@ export function capPublicationThreads<T extends FindingPublicationPlan>(
   max?: number,
 ): T & { overflow: PublicationComment[] };
 
-/** Severities that may become resolve-required review threads. */
+/** Severities that affect the arbitration verdict; all severities can publish inline. */
 export const ACTIONABLE_SEVERITIES: readonly PublicationSeverity[];
 
-/** Whether a severity may open a resolve-required review thread. */
+/** Whether a severity affects the arbitration verdict. */
 export function isActionableSeverity(severity: unknown): boolean;
+
+/** Merge replacement code and range together; conflicts suppress both fields. Mutates merged. */
+export function mergeReplacementMetadata<T extends Partial<PublicationFindingInput>>(
+  merged: T,
+  candidate: Partial<PublicationFindingInput>,
+): T;

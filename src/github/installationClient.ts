@@ -91,6 +91,7 @@ export class GitHubInstallationClient {
 
   constructor(options: {
     token: string;
+    publisherLogin?: string;
     baseUrl?: string;
     fetchImplementation?: FetchImplementation;
     /** @deprecated Use fetchImplementation. */
@@ -109,6 +110,7 @@ export class GitHubInstallationClient {
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
     this.publisher = new CommentPublisher({
       githubToken: options.token,
+      publisherLogin: options.publisherLogin,
       baseUrl: this.baseUrl,
       fetchImplementation: options.fetchImplementation || options.fetchImpl,
       now: this.now,

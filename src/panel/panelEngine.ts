@@ -44,6 +44,7 @@ export interface PanelFinding {
   title: string;
   body: string;
   suggestion?: string;
+  replacementCode?: string;
   confidence?: number;
   recommendation?: string;
   fixOptions?: FixOption[];
@@ -114,12 +115,13 @@ const FINDING_OUTPUT_SCHEMA = {
     severity: { type: 'string', enum: ['P0', 'P1', 'P2'] },
     path: { type: 'string' },
     line: { type: 'integer', minimum: 1 },
-    start_line: { type: ['integer', 'null'], minimum: 1 },
+    startLine: { type: ['integer', 'null'], minimum: 1 },
     title: { type: 'string' },
     body: { type: 'string' },
     suggestion: { type: ['string', 'null'] },
+    replacementCode: { type: ['string', 'null'], maxLength: 10000, description: 'Exact complete replacement for RIGHT-side line or startLine..line. Preserve indentation. No Markdown fences. Empty string deletes range; null unless safe and complete.' },
   },
-  required: ['severity', 'path', 'line', 'title', 'body', 'suggestion'],
+  required: ['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion', 'replacementCode'],
   additionalProperties: false,
 } as const;
 
@@ -199,6 +201,8 @@ function structuredOutputExample(role: string, nonceValue: string, payload: Reco
         severity: 'P1',
         path: 'src/example.ts',
         line: 12,
+        startLine: null,
+        replacementCode: null,
         title: 'Concrete defect title',
         body: 'Explain the failure and the conditions that trigger it.',
         suggestion: 'Describe a concrete fix, or use null when none is needed.',
@@ -215,6 +219,8 @@ function structuredOutputExample(role: string, nonceValue: string, payload: Reco
         severity: 'P1',
         path: 'src/example.ts',
         line: 12,
+        startLine: null,
+        replacementCode: null,
         title: 'Reconciled defect title',
         body: 'Explain the evidence-backed defect retained by the moderator.',
         suggestion: null,
@@ -614,6 +620,7 @@ function structuredOutputCorrection(
     'Return the actual result object, not the request, an example, or an outputSchema wrapper.',
     `Validate the ${role} response against this exact strict JSON Schema; do not add, rename, omit, or nest fields:`,
     JSON.stringify(schema, null, 2),
+    'replacementCode is exact complete replacement text for the RIGHT-side line (or inclusive startLine through line); preserve indentation, use no Markdown fences, use an empty string for deletion, and null when a safe local edit is unavailable. suggestion is prose only.',
     'Finding severity is an enum and must be exactly P0, P1, or P2. Never coerce HIGH, CRITICAL, MAJOR, or another label into a valid severity.',
   ];
   return [
@@ -752,6 +759,7 @@ async function invoke(
           `The object MUST contain the exact top-level field "nonce":"${requestNonce}".`,
           'The response MUST validate against this exact strict JSON Schema; no additional properties are allowed:',
           JSON.stringify(structuredOutputSchema(role, payload), null, 2),
+          'replacementCode is exact complete replacement text for the RIGHT-side line (or inclusive startLine through line); preserve indentation, use no Markdown fences, use an empty string for deletion, and null when a safe local edit is unavailable. suggestion is prose only.',
           'Finding severity is an enum and must be exactly P0, P1, or P2. Never coerce HIGH, CRITICAL, MAJOR, or another label into a valid severity.',
           'Valid response example:',
           structuredOutputExample(role, requestNonce, payload),
@@ -1097,7 +1105,7 @@ async function runPersona(
             rules: [...(config.rules || []), ...memoryRules],
             outputSchema: {
               decision: 'APPROVE|FINDINGS',
-              findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'optional string' }],
+              findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'prose fix or null', startLine: null, replacementCode: 'Exact replacement code for RIGHT-side line or startLine..line, preserving indentation; null unless safe and complete. Empty string deletes the range. No Markdown fences or partial fixes.' }],
               ...(persona.id === 'review_flowchart' ? { mermaidDiagram: 'string' } : {}),
             },
           }, {

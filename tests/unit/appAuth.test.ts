@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import {
   generateGitHubAppJwt,
+  getGitHubAppBotLogin,
   getGitHubAppInstallationIdForRepository,
   getGitHubAppInstallationToken,
   getGitHubAppRepositoryReadToken,
@@ -13,6 +14,21 @@ describe('GitHub App Authentication & Installation Token Exchange', () => {
     modulusLength: 2048,
     publicKeyEncoding: { type: 'spki', format: 'pem' },
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+
+  it('resolves publisher login from the documented App endpoint using an App JWT', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ slug: 'review-yeti' })));
+    await expect(getGitHubAppBotLogin({ appId: '123456', privateKey, baseUrl: 'https://api.github.test' }, mockFetch))
+      .resolves.toBe('review-yeti[bot]');
+    expect(mockFetch.mock.calls[0][0]).toBe('https://api.github.test/app');
+    const authorization = new Headers(mockFetch.mock.calls[0][1].headers).get('authorization')!;
+    const jwt = authorization.slice('Bearer '.length);
+    expect(JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString()).iss).toBe('123456');
+  });
+
+  it('fails closed when GitHub does not return an authenticated App slug', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('{}'));
+    await expect(getGitHubAppBotLogin({ appId: '123456', privateKey }, mockFetch)).rejects.toThrow('missing slug');
   });
 
   it('generates a valid RS256-signed JWT for GitHub App ID', () => {
