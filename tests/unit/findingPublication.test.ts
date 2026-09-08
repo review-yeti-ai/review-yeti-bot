@@ -29,6 +29,30 @@ describe('shared finding publication planner', () => {
     expect(anchors.left).toEqual(new Set([11, 40]));
   });
 
+  it('validates multiple ranges across files sharing the same patch text', () => {
+    const plan = planFindingPublication([
+      { severity: 'P1', path: 'src/app.ts', line: 21, startLine: 20, replacementCode: 'guard();', title: 'Account guard', body: 'Check account ownership.' },
+      { severity: 'P2', path: 'src/app.ts', line: 22, startLine: 21, replacementCode: 'name();', title: 'Name value', body: 'Clarify the variable name.' },
+      { severity: 'P1', path: 'src/other.ts', line: 51, title: 'Handle error', body: 'Propagate the failure.' },
+    ], [{ path: 'src/app.ts', patch: textPatch }, { path: 'src/other.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(3);
+    expect(plan.lineComments.filter(comment => comment.startLine !== undefined)).toHaveLength(2);
+    expect(plan.fileComments).toEqual([]);
+  });
+
+  it('uses the first changed-file entry consistently when duplicate paths carry different patches', () => {
+    const plan = planFindingPublication([
+      { severity: 'P1', path: 'src/app.ts', line: 21, startLine: 20, replacementCode: 'guard();', title: 'Account guard', body: 'Check account ownership.' },
+    ], [
+      { path: 'src/app.ts', patch: textPatch },
+      { path: 'src/app.ts', patch: '@@ -1 +1 @@\n-old();\n+new();' },
+    ]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0]).toMatchObject({ line: 21, startLine: 20 });
+    expect(plan.lineComments[0].finding.replacementCode).toBe('guard();');
+    expect(plan.fileComments).toEqual([]);
+  });
+
   it('defaults legacy findings to RIGHT and publishes every actionable finding without a cap', () => {
     const patch = `@@ -0,0 +1,12 @@\n${Array.from({ length: 12 }, (_, i) => `+line ${i + 1}`).join('\n')}`;
     const findings = Array.from({ length: 12 }, (_, i) => ({
@@ -89,20 +113,31 @@ describe('shared finding publication planner', () => {
     expect(findingDedupeKey(plan.lineComments[0].finding)).not.toContain('P0');
   });
 
-  it('keeps P2 findings advisory and title-only at the plan boundary', () => {
+  it('publishes P2 findings inline with their full body and safe replacement', () => {
     const plan = planFindingPublication([{
       severity: 'P2', path: 'src/app.ts', line: 21, title: 'Prefer a clearer name',
-      body: 'A detailed advisory body that must not become a thread.', persona: 'consistency',
+      body: 'The name obscures which account owns this value.', persona: 'consistency',
+      replacementCode: 'const accountId = account.id;',
     }], [{ path: 'src/app.ts', patch: textPatch }]);
 
-    expect(plan.lineComments).toEqual([]);
-    expect(plan.fileComments).toEqual([]);
-    expect(plan.advisories).toHaveLength(1);
-    expect(plan.advisories[0]).toMatchObject({ path: 'src/app.ts', line: 21, title: 'Prefer a clearer name' });
-    expect(Object.prototype.hasOwnProperty.call(plan.advisories[0], 'body')).toBe(false);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0]).toMatchObject({ path: 'src/app.ts', line: 21 });
+    expect(plan.lineComments[0].body).toContain('The name obscures');
+    expect(plan.lineComments[0].body).toContain('```suggestion');
+    expect(plan.advisories).toEqual([]);
   });
 
-  it('uses file-level conversations only for patchless, binary, and gitlink changed files', () => {
+  it('publishes P2 findings on patchless files as file conversations', () => {
+    const plan = planFindingPublication([{
+      severity: 'P2', path: 'assets/logo.png', line: 1, title: 'Logo has low contrast',
+      body: 'Increase contrast against the navigation background.',
+    }], [{ path: 'assets/logo.png' }]);
+    expect(plan.fileComments).toHaveLength(1);
+    expect(plan.fileComments[0].body).toContain('Increase contrast');
+    expect(plan.advisories).toEqual([]);
+  });
+
+  it('uses file-level conversations for patchless, binary, and gitlink changed files', () => {
     const findings = [
       { severity: 'P1' as const, path: 'assets/logo.png', line: 1, title: 'Binary issue', body: 'Replace it.' },
       { severity: 'P0' as const, path: 'vendor/lib', line: 99, title: 'Gitlink issue', body: 'Pin it.' },
@@ -117,7 +152,7 @@ describe('shared finding publication planner', () => {
     expect(plan.rejected).toEqual([]);
   });
 
-  it('rejects wrong hunk lines, invalid paths, and missing lines without inventing line 1', () => {
+  it('falls back to a file conversation for context lines while rejecting invalid paths and missing lines', () => {
     const plan = planFindingPublication([
       { severity: 'P1', path: 'src/app.ts', line: 20, title: 'Context line', body: 'Not changed.' },
       { severity: 'P1', path: 'src/malformed.ts', line: 1, title: 'Malformed', body: 'No hunk.' },
@@ -129,15 +164,32 @@ describe('shared finding publication planner', () => {
     ]);
 
     expect(plan.lineComments).toEqual([]);
-    expect(plan.fileComments).toHaveLength(1);
-    expect(plan.fileComments[0].path).toBe('src/malformed.ts');
-    expect(plan.rejected).toHaveLength(3);
+    expect(plan.fileComments).toHaveLength(2);
+    expect(plan.fileComments.map(comment => comment.path)).toEqual(['src/app.ts', 'src/malformed.ts']);
+    expect(plan.fileComments[0].line).toBeUndefined();
+    expect(plan.fileComments[0].body).toContain('Reported location: line 20');
+    expect(plan.rejected).toHaveLength(2);
     expect(plan.rejected.map((item) => item.reason)).toEqual(expect.arrayContaining([
-      'finding line is not an exact changed RIGHT line',
       'finding path is not present in the changed files',
       'finding line must be a positive integer',
     ]));
     expect(plan.rejected.find((item) => item.title === 'No line')?.line).toBeUndefined();
+  });
+
+  it.each([20, 500])('publishes an unanchored finding at reported line %i as file prose without a replacement', (line) => {
+    const plan = planFindingPublication([{
+      severity: 'P2', path: 'src/app.ts', line, title: 'Clarify account ownership',
+      body: 'This value belongs to the current account.', startLine: line - 1,
+      replacementCode: 'const accountId = account.id;', suggestion: 'Use an account-specific name.',
+    }], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toEqual([]);
+    expect(plan.rejected).toEqual([]);
+    expect(plan.fileComments).toHaveLength(1);
+    expect(plan.fileComments[0].line).toBeUndefined();
+    expect(plan.fileComments[0].finding.replacementCode).toBeUndefined();
+    expect(plan.fileComments[0].finding.startLine).toBeUndefined();
+    expect(plan.fileComments[0].body).toContain('Use an account-specific name.');
+    expect(plan.fileComments[0].body).not.toContain('```suggestion');
   });
 
   it('treats suggestion as prose and only explicit replacementCode as a suggestion block', () => {
@@ -168,6 +220,76 @@ describe('shared finding publication planner', () => {
 
     expect(forward).toEqual(reverse);
     expect(forward.lineComments.map((comment) => comment.finding.title)).toEqual(['C', 'A', 'B']);
+  });
+
+  const patchFinding = {
+    severity: 'P1' as const, path: 'src/app.ts', line: 22,
+    title: 'Unsafe fallback', body: 'The fallback bypasses validation.',
+    suggestion: 'Validate the fallback.',
+  };
+
+  it.each(['    validate();\n    run();\n', '', '  ', 'const fence = "```";'])('preserves exact replacement text %j', (replacementCode) => {
+    const plan = planFindingPublication([{ ...patchFinding, replacementCode }], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments[0].finding.replacementCode).toBe(replacementCode);
+    expect(plan.lineComments[0].body).toContain(`suggestion\n${replacementCode}\n`);
+  });
+
+  it('anchors a replacement range including context within the same new-file hunk', () => {
+    const plan = planFindingPublication([{ ...patchFinding, startLine: 20, replacementCode: '  guarded();' }], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments[0]).toMatchObject({ startLine: 20, line: 22, side: 'RIGHT' });
+    expect(plan.lineComments[0].body).toContain('```suggestion\n  guarded();\n```');
+  });
+
+  it.each([
+    { startLine: 19 }, { startLine: 23 }, { startLine: 0 }, { startLine: 20.5 },
+    { startLine: '20' }, { startLine: 21, line: 51 },
+  ])('keeps prose but suppresses unsafe replacement range %j', (range) => {
+    const plan = planFindingPublication([{ ...patchFinding, replacementCode: 'guarded();', ...range } as any], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0].startLine).toBeUndefined();
+    expect(plan.lineComments[0].finding.replacementCode).toBeUndefined();
+    expect(plan.lineComments[0].body).not.toContain('```suggestion');
+    expect(plan.lineComments[0].body).toContain('Validate the fallback.');
+  });
+
+  it('does not offer replacements on deleted lines or file-level comments', () => {
+    const left = planFindingPublication([{ ...patchFinding, line: 11, side: 'LEFT', replacementCode: 'guarded();' }], [{ path: 'src/app.ts', patch: textPatch }]);
+    const file = planFindingPublication([{ ...patchFinding, replacementCode: 'guarded();' }], [{ path: 'src/app.ts' }]);
+    for (const comment of [...left.lineComments, ...file.fileComments]) {
+      expect(comment.finding.replacementCode).toBeUndefined();
+      expect(comment.body).not.toContain('```suggestion');
+      expect(comment.body).toContain('Validate the fallback.');
+    }
+  });
+
+  it('never borrows a replacement from a nearby merged finding', () => {
+    const plan = planFindingPublication([
+      { ...patchFinding, line: 21 },
+      { ...patchFinding, replacementCode: 'onlyCorrectAtLine22();' },
+    ], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0].line).toBe(21);
+    expect(plan.lineComments[0].body).not.toContain('```suggestion');
+  });
+
+  it('drops conflicting patches from duplicate reports, including later matching reports', () => {
+    const plan = planFindingPublication([
+      { ...patchFinding, replacementCode: 'first();' },
+      { ...patchFinding, replacementCode: 'second();' },
+      { ...patchFinding, replacementCode: 'first();' },
+    ], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0].body).not.toContain('```suggestion');
+  });
+
+  it('preserves conflict suppression when merging differently titled duplicate groups', () => {
+    const plan = planFindingPublication([
+      { ...patchFinding, title: 'Tenant query bypasses validation', replacementCode: 'first();' },
+      { ...patchFinding, title: 'Tenant query skips validation', replacementCode: 'second();' },
+      { ...patchFinding, title: 'Tenant query skips validation', replacementCode: 'third();' },
+    ], [{ path: 'src/app.ts', patch: textPatch }]);
+    expect(plan.lineComments).toHaveLength(1);
+    expect(plan.lineComments[0].body).not.toContain('```suggestion');
   });
 });
 

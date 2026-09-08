@@ -22,7 +22,7 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 ## ✨ Features at a Glance
 
 - 👥 **Multi-Persona Review Panel**: Dedicated reviewers for Security & Tenancy, System Architecture, Performance, QA & Testing, and Dependency Safety.
-- ⚡ **Native 1-Click Commit Suggestions**: Formats actionable fixes directly into native GitHub ````suggestion ` diff blocks for 1-click merging.
+- ⚡ **Native Apply Suggestions**: Automatic reviews can include GitHub's **Apply suggestion** button for complete, self-contained fixes. Single-line and multiline replacements preserve indentation and support deletions. Suggestions are attached only to validated new-file diff ranges; uncertain fixes, file-level findings, and architectural advice remain prose. All severities publish inline; P2 findings do not change the verdict. A single sticky overview replaces its contents on each push or rerun, without accumulating verdict comments or history.
 - 💬 **Interactive PR Chat Mentoring**: Mention `@review-yeti explain`, `@review-yeti fix`, `@review-yeti ignore`, or `@review-yeti mute` in review threads ([Guide](docs/INTERACTIVE_CHAT.md)).
 - 💻 **Local Pre-Commit CLI & Git Hook**: Evaluate staged changes in < 5s with sub-10ms credential detection and blocking P0 checks via `git yeti pre-commit` ([Guide](docs/CLI_REFERENCE.md)).
 - 🧙 **30-Second GitHub App Setup Wizard**: Automated onboarding via GitHub App Manifest Flow (`npx review-yeti init`) with least-privilege security and `.env` generation ([Guide](docs/CLI_REFERENCE.md#review-yeti-init-30-second-setup-wizard)).

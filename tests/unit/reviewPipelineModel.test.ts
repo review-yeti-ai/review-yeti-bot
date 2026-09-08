@@ -297,6 +297,38 @@ describe('resolveModelConfig', () => {
 });
 
 describe('reviewWithModel', () => {
+  it.each(['  return scoped;\n', ''])('preserves exact replacement source through model validation (%j)', async (replacementCode) => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [{
+      severity: 'P1', path: 'src/api/user.ts', line: 2, startLine: 1,
+      title: 'Scope the lookup', body: 'The lookup crosses tenants.',
+      suggestion: 'Scope by orgId.', replacementCode,
+    }] }));
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImpl: impl,
+    });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({ startLine: 1, replacementCode });
+    const system = calls[0].body.messages.find((message: any) => message.role === 'system').content;
+    expect(system).toContain('inclusive RIGHT/new-file range startLine..line');
+    expect(system).toContain('empty replacementCode string deletes');
+    expect(system).toContain('"replacementCode":null,"startLine":null');
+  });
+
+  it('requires nullable replacement fields in the strict response schema', () => {
+    const item = FINDINGS_RESPONSE_SCHEMA.properties.findings.items;
+    expect(item.required).toEqual(expect.arrayContaining(['replacementCode', 'startLine']));
+    expect(item.properties.replacementCode).toEqual({ type: ['string', 'null'], maxLength: 10000 });
+    expect(item.properties.startLine).toEqual({ type: ['integer', 'null'], minimum: 1 });
+  });
+
+  it('drops oversized replacement code without truncating it into an applicable edit', () => {
+    const findings = pipeline.sanitizeFindings([{
+      severity: 'P1', path: 'src/api/user.ts', line: 2, startLine: 1,
+      title: 'Scope lookup', body: 'Cross-tenant lookup', replacementCode: 'x'.repeat(10001),
+    }], diffFiles);
+    expect(findings[0]).not.toHaveProperty('replacementCode');
+  });
+
   it('reserves a three-times direct generation budget for the structured output target', () => {
     expect(pipeline.DIRECT_GENERATION_BUDGET_MULTIPLIER).toBe(3);
     expect(pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS).toBe(
