@@ -16,6 +16,7 @@ import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { executeMillerTool } from '../services/millerTool';
 import { ASTParser } from '../indexer/astParser';
+import { classifyReviewScope, ClassifierResult, containsExecutableOrSensitiveCode } from './classifierEngine';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -838,7 +839,7 @@ async function invoke(
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
     {
       role: 'system',
-      content: `You are an automated fail-closed CallTelemetry PR review engine for ${repoStr}. Perform a rigorous code review based on the persona charter and diff provided.
+      content: `You are an automated fail-closed CallTelemetry PR review engine for ${repoStr}. Perform a rigorous code review for persona '${personaName}' based on the charter and diff provided.
 
 === MULTI-TURN EXPLORATION & TOOL INVOCATION PROTOCOL ===
 - Permitted Tool Categories:
@@ -1426,7 +1427,7 @@ export async function executePersonaPanel(options: {
     span.setAttribute('ct.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
     span.setAttribute('ct.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
 
-    const applicable = config.personas.filter((persona) => {
+    let applicable = config.personas.filter((persona) => {
       const storePersona = dashboardStore.getPersonaSetting(persona.id);
       const isEnabled = storePersona ? storePersona.enabled !== false : persona.enabled;
       return isEnabled && persona.paths.some((pattern) => effectiveFiles.some((file) => pathMatches(pattern, file.path)));
@@ -1436,6 +1437,117 @@ export async function executePersonaPanel(options: {
 
     if (applicable.length === 0) {
       throw new PanelConfigurationError(`no enabled persona applies to the changed paths for ${repository} #${headSha}`);
+    }
+
+    const isPotentiallyFastShip = !containsExecutableOrSensitiveCode(effectiveFiles);
+    const hasOptionalPersonas = applicable.some((p) => !p.required);
+    const shouldClassify = isPotentiallyFastShip || hasOptionalPersonas;
+
+    let classifierResult: ClassifierResult | null = null;
+    if (shouldClassify) {
+      try {
+        classifierResult = await runInSpan('ct_classifier', async (classSpan) => {
+          const result = await classifyReviewScope({
+            config,
+            changedFiles: effectiveFiles,
+            candidatePersonas: applicable,
+            repository,
+            headSha,
+            client,
+            jobId: effectiveJobId,
+            requestPolicy,
+          });
+          if (result) {
+            classSpan.setAttribute('ct.classifier.fast_ship', result.fastShip);
+            classSpan.setAttribute('ct.classifier.effort_tier', result.effortTier);
+            classSpan.setAttribute('ct.classifier.selected_count', result.selectedPersonas.length);
+          }
+          return result;
+        });
+      } catch (classErr: any) {
+        logger.warn('Pre-flight classifier failed; proceeding with default persona panel', {
+          repository,
+          headSha,
+          error: classErr?.message,
+        });
+      }
+    }
+
+    if (classifierResult?.fastShip) {
+      const isCurrent = isCurrentHead ? isCurrentHead() : true;
+      const activeId = activeRuns.get(runKey);
+      if (!isCurrent || activeId !== runId) {
+        throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
+      }
+
+      logger.info(`Fast-ship approved by classifier for ${repository}#${headSha}: ${classifierResult.rationale}`);
+      const fastShipLane: PersonaLaneResult = {
+        id: 'fast-ship',
+        required: true,
+        providerId: (classifierResult.providerId as ProviderId) || ('fast-ship' as ProviderId),
+        model: classifierResult.model || 'fast-ship-classifier',
+        decision: 'APPROVE',
+        findings: [],
+        usage: classifierResult.usage || null,
+        costUSD: classifierResult.costUSD || null,
+        durationMs: classifierResult.durationMs || 0,
+      };
+
+      const distinctProviders = [fastShipLane.providerId];
+      LiveStreamBus.getInstance().publishEvent({
+        jobId: effectiveJobId,
+        timestamp: new Date().toISOString(),
+        type: 'job:complete',
+        persona: 'fast-ship',
+        data: {
+          verdict: 'SHIP',
+          quorumSatisfied: true,
+          distinctProviders,
+          totalPersonasExecuted: 1,
+          totalFindings: 0,
+          totalDurationMs: classifierResult.durationMs || 0,
+          totalCostUSD: classifierResult.costUSD || 0,
+        },
+      });
+
+      return {
+        headSha,
+        personas: [fastShipLane],
+        optionalFailures: [],
+        quorum: { required: config.quorum, distinctProviders, satisfied: true },
+        moderator: {
+          providerId: fastShipLane.providerId,
+          model: fastShipLane.model,
+          decision: 'RECONCILED',
+          findings: [],
+          usage: null,
+          costUSD: 0,
+          durationMs: 0,
+        },
+        arbiter: {
+          providerId: fastShipLane.providerId,
+          model: fastShipLane.model,
+          verdict: 'SHIP',
+          rationale: `Fast-ship auto-approved: ${classifierResult.rationale}`,
+          usage: classifierResult.usage || null,
+          costUSD: classifierResult.costUSD || null,
+          durationMs: classifierResult.durationMs || 0,
+        },
+      };
+    }
+
+    if (classifierResult && !classifierResult.fastShip && classifierResult.selectedPersonas.length > 0) {
+      const selectedSet = new Set(classifierResult.selectedPersonas);
+      const narrowed = applicable.filter((p) => p.required || selectedSet.has(p.id));
+      if (narrowed.length > 0) {
+        logger.info(`Classifier narrowed personas from ${applicable.length} to ${narrowed.length}`, {
+          repository,
+          headSha,
+          retained: narrowed.map((p) => p.id),
+        });
+        applicable = narrowed;
+        span.setAttribute('ct.persona_count_narrowed', applicable.length);
+      }
     }
 
     let memoryRules: string[] = [];
