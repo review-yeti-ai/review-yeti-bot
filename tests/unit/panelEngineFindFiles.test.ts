@@ -287,3 +287,12 @@ describe('panelEngine — a diff hit always wins over the repository provider', 
     expect(provider.findFiles).not.toHaveBeenCalled();
   });
 });
+
+describe('panelEngine grep_search — scope-qualified miss', () => {
+  it('never lets a diff-only text miss read as "no match exists"', async () => {
+    const out = await runFindFilesScenario(undefined, { tool: 'grep_search', args: { query: 'zzz-not-in-the-diff' } });
+    expect(out.toLowerCase()).toContain('changed files only');
+    expect(out.toLowerCase()).toMatch(/may still exist outside the diff/);
+    expect(out).not.toMatch(/No matches for '[^']*'\.\s*$/mu);
+  });
+});
