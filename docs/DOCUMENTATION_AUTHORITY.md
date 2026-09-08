@@ -43,6 +43,5 @@ These files describe the optional long-running web dashboard/service lineage (`n
 
 - [`OPENROUTER_TERRAFORM.md`](OPENROUTER_TERRAFORM.md) — Retained infrastructure reference
 - [`ROADMAP.md`](ROADMAP.md) and [`VISION.md`](VISION.md)
-- `docs/superpowers/` — Retained development execution evidence and planning specs.
 
 These preserve point-in-time development records and should not be interpreted as authoritative runtime configurations.
