@@ -1,6 +1,6 @@
 /** Final publication puts every deduplicated finding in a review thread, at every severity. */
 
-import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS, mergeReplacementMetadata, planFindingPublication } from '../review/findingPublication';
+import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, MAX_PUBLISHED_REVIEW_THREADS, findingDedupeKey as publicationDedupeKey, mergeReplacementMetadata, planFindingPublication } from '../review/findingPublication';
 import type { PublicationChangedFile } from '../review/findingPublication';
 import type { PanelFinding, PersonaLaneResult } from '../panel/panelEngine';
 import type { PublishInlineCommentRequest } from './commentPublisher';
@@ -193,11 +193,33 @@ export function buildFinalInlineComments(options: {
 }): PublishInlineCommentRequest[] {
   const deduped = dedupeActionableFindings(options.findings, { max: options.max });
   const changedFiles = options.changedFiles ?? deduped.map(finding => ({ path: finding.path }));
-  return deduped.flatMap((rawFinding) => {
-    const plan = planFindingPublication([rawFinding], changedFiles, { mergeNearDuplicates: false });
-    const validated = plan.lineComments[0] ?? plan.fileComments[0];
-    if (!validated) return [];
-    const fileComment = plan.fileComments.length > 0;
+  const plan = planFindingPublication(deduped, changedFiles);
+  // Keep App-only display metadata alongside the canonical publication result. Index both
+  // subjects because several unanchored reports can collapse into one file conversation.
+  const metadata = new Map<string, FindingWithPersona>();
+  for (const raw of deduped) {
+    for (const subject of ['line', 'file'] as const) {
+      const key = publicationDedupeKey(raw, subject);
+      const existing = metadata.get(key);
+      metadata.set(key, existing ? {
+        ...existing,
+        fixOptions: existing.fixOptions ?? raw.fixOptions,
+        isArchitectural: existing.isArchitectural ?? raw.isArchitectural,
+      } : raw);
+    }
+  }
+  return [
+    ...plan.lineComments.map(validated => ({ validated, fileComment: false })),
+    ...plan.fileComments.map(validated => ({ validated, fileComment: true })),
+  ].map(({ validated, fileComment }) => {
+    // Panel findings omit side; use their original RIGHT default for metadata lookup,
+    // while preserving the planner's inferred LEFT anchor in the published request.
+    // File-to-line promotion can retain the file report's title while taking the line
+    // report's anchor. Its original title is preserved in mergedTitles by the planner.
+    const rawFinding = [validated.finding.title, ...(validated.finding.mergedTitles ?? [])]
+      .map(title => metadata.get(publicationDedupeKey({ ...validated.finding, title, side: 'RIGHT' }, fileComment ? 'file' : 'line')))
+      .find(candidate => candidate !== undefined);
+
     const finding = { ...rawFinding, ...validated.finding };
     // A spread cannot clear metadata deliberately suppressed by the planner.
     delete finding.replacementCode;
@@ -214,13 +236,13 @@ export function buildFinalInlineComments(options: {
       ...(fileComment ? { subjectType: 'file' as const } : { side: validated.side }),
       ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
       finding: {
-        persona: finding.persona as any,
+        persona: (rawFinding?.persona ?? validated.finding.personas[0]) as any,
         severity: finding.severity === 'P0' ? 'critical' : finding.severity === 'P1' ? 'major' : 'minor',
         filePath: finding.path,
         lineNumber: finding.line,
         ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
         title: finding.title,
-        comment: `${finding.title}\n\n${finding.body}${fileComment ? `\n\nReported location: line ${finding.line} (${finding.side}).` : ''}`,
+        comment: `${finding.title}\n\n${finding.body}${finding.mergedTitles?.length ? `\n\n**Also reported as:** ${finding.mergedTitles.join(' · ')}` : ''}\n\n**Reported by:** ${finding.personas.map(persona => `\`${persona}\``).join(', ')}${fileComment ? `\n\nReported location: line ${finding.line} (${finding.side}).` : ''}`,
         suggestion: finding.suggestion,
         replacementCode: finding.replacementCode,
         confidence: finding.confidence,

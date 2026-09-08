@@ -2131,6 +2131,17 @@ const OUTPUT_CONTRACT_MODES = new Set(['json_object', 'json_schema', 'prompt_val
 const OUTPUT_CONTRACT_SUPPORT = new Set(['accepted', 'rejected', 'unreported']);
 // Keep the schema deliberately small and stable.  It is opt-in per transport so a provider or
 // model that only supports JSON mode can continue using the existing compatibility path.
+const CLICKABLE_FIX_CONTRACT_LINES = Object.freeze([
+  'Clickable fix contract:',
+  '- suggestion is prose explaining the fix; replacementCode is exact replacement source code without Markdown fences, or null.',
+  '- Supply replacementCode only for a certain, self-contained fix entirely within one visible RIGHT/new-file diff hunk. Use null for architectural advice, uncertain fixes, or changes requiring other files.',
+  '- replacementCode replaces the inclusive RIGHT/new-file range startLine..line; line is the last replaced line. startLine is null for a single-line replacement. Include every line needed for the replacement and preserve indentation and whitespace.',
+  '- An empty replacementCode string deletes the selected lines. Never use placeholders or ellipses; use null when the complete replacement exceeds 10000 characters. Set startLine to null when replacementCode is null.',
+  '',
+  'Respond with JSON only, in exactly this shape:',
+  '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>","replacementCode":null,"startLine":null}]}',
+]);
+
 const FINDINGS_RESPONSE_SCHEMA = Object.freeze({
   type: 'object',
   properties: {
@@ -3648,14 +3659,7 @@ function buildOpenRouterReviewMessages(persona, reviewContextPrompt) {
     '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
     '- If the supplied evidence does not prove a defect, return no finding.',
     '',
-    'Clickable fix contract:',
-    '- suggestion is prose explaining the fix; replacementCode is exact replacement source code without Markdown fences, or null.',
-    '- Supply replacementCode only for a certain, self-contained fix entirely within one visible RIGHT/new-file diff hunk. Use null for architectural advice, uncertain fixes, or changes requiring other files.',
-    '- replacementCode replaces the inclusive RIGHT/new-file range startLine..line; line is the last replaced line. startLine is null for a single-line replacement. Include every line needed for the replacement and preserve indentation and whitespace.',
-    '- An empty replacementCode string deletes the selected lines. Never use placeholders or ellipses; use null when the complete replacement exceeds 10000 characters. Set startLine to null when replacementCode is null.',
-    '',
-    'Respond with JSON only, in exactly this shape:',
-    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>","replacementCode":null,"startLine":null}]}',
+    ...CLICKABLE_FIX_CONTRACT_LINES,
   ].join('\n');
   const assignmentPrompt = [
     'Panel assignment:',
@@ -3813,14 +3817,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
     '- If the supplied evidence does not prove a defect, return no finding.',
     '',
-    'Clickable fix contract:',
-    '- suggestion is prose explaining the fix; replacementCode is exact replacement source code without Markdown fences, or null.',
-    '- Supply replacementCode only for a certain, self-contained fix entirely within one visible RIGHT/new-file diff hunk. Use null for architectural advice, uncertain fixes, or changes requiring other files.',
-    '- replacementCode replaces the inclusive RIGHT/new-file range startLine..line; line is the last replaced line. startLine is null for a single-line replacement. Include every line needed for the replacement and preserve indentation and whitespace.',
-    '- An empty replacementCode string deletes the selected lines. Never use placeholders or ellipses; use null when the complete replacement exceeds 10000 characters. Set startLine to null when replacementCode is null.',
-    '',
-    'Respond with JSON only, in exactly this shape:',
-    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>","replacementCode":null,"startLine":null}]}',
+    ...CLICKABLE_FIX_CONTRACT_LINES,
   ].join('\n');
 
   let diffContent = '';
@@ -6657,7 +6654,10 @@ function findVerifiedThread(item, prContext, snapshot, expectedPublisherLogin) {
   const expectedLine = Number.isInteger(item.line) ? item.line : null;
   return snapshot.threads.find((thread) => {
     if (thread.isResolved || thread.path !== item.path || (thread.line ?? null) !== expectedLine) return false;
-    if ((thread.startLine ?? null) !== (item.startLine ?? null)) return false;
+    // GitHub echoes the end line as startLine for standalone single-line comments,
+    // with a null startDiffSide. Only a distinct start identifies a multiline range.
+    const startLine = thread.startLine === expectedLine ? null : (thread.startLine ?? null);
+    if (startLine !== (item.startLine ?? null)) return false;
     if (item.startLine != null && thread.startDiffSide !== (item.side || 'RIGHT')) return false;
     return (thread.comments?.nodes || []).some((comment) => (
       String(comment.body || '').includes(marker)

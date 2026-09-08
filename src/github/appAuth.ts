@@ -77,8 +77,9 @@ export async function getGitHubAppBotLogin(
     },
   });
   if (!response.ok) throw new Error(`GitHub App identity lookup failed HTTP ${response.status}`);
-  const app = await response.json();
-  if (typeof app.slug !== 'string' || !app.slug.trim()) throw new Error('GitHub App identity missing slug');
+  const app: unknown = await response.json();
+  if (!app || typeof app !== 'object' || !('slug' in app)
+    || typeof app.slug !== 'string' || !app.slug.trim()) throw new Error('GitHub App identity missing slug');
   return `${app.slug}[bot]`;
 }
 
@@ -306,4 +307,3 @@ export async function createEphemeralChatClient(
     baseUrl,
   });
 }
-
