@@ -9,6 +9,8 @@ import {
   formatPersonaIssueComment,
   findingDedupeKey,
 } from '../../src/github/panelPublication';
+import { CommentPublisher, formatInlineCommentBody } from '../../src/github/commentPublisher';
+import { buildPanelResponseFormat, validateFindings } from '../../src/panel/panelEngine';
 
 describe('panelPublication', () => {
   const baseFinding = {
@@ -117,4 +119,62 @@ describe('panelPublication', () => {
     const b = findingDedupeKey({ ...baseFinding, persona: 'b' });
     expect(a).toBe(b);
   });
+  it.each([['  return safe;', 9], ['  return safe;', null], ['', null]] as const)('carries structured replacement %j at start %j through to the GitHub payload', async (replacementCode, startLine) => {
+    const schema: any = buildPanelResponseFormat('persona');
+    const findingSchema = schema.json_schema.schema.properties.findings.items;
+    expect(findingSchema.required).toContain('replacementCode');
+    expect(findingSchema.required).toContain('startLine');
+    const findings = validateFindings([{ ...baseFinding, startLine, replacementCode }]);
+    const comments = buildFinalInlineComments({
+      findings: findings.map(finding => ({ ...finding, persona: 'correctness' })),
+      changedFiles: [{ path: baseFinding.path, patch: '@@ -9,2 +9,2 @@\n-old\n-old\n+  const unsafe = true;\n+  return unsafe;' }],
+    });
+    let payload: any;
+    const publisher = new CommentPublisher({
+      githubToken: 'ghs_test', maxRetries: 0,
+      fetchImplementation: async (_url, init) => {
+        payload = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({ id: 1 }), { status: 200 });
+      },
+    });
+    const result = await publisher.publishReview({ owner: 'o', repo: 'r', prNumber: 1, commitSha: 'abc', event: 'COMMENT', body: 'Review', inlineComments: comments });
+    expect(result.success).toBe(true);
+    expect(payload.comments[0]).toMatchObject({ line: 10, side: 'RIGHT' });
+    expect(payload.comments[0].start_line).toBe(startLine ?? undefined);
+    expect(payload.comments[0].body).toContain('```suggestion\n' + replacementCode + '\n```');
+  });
+
+  it.each([
+    undefined,
+    [{ path: baseFinding.path }],
+    [{ path: baseFinding.path, patch: '@@ -10 +10,0 @@\n-old' }],
+    [{ path: baseFinding.path, patch: '@@ -10 +10 @@\n-old\n+new' }],
+  ])('withholds replacements without a proven complete RIGHT-side range (%j)', (changedFiles) => {
+    const comments = buildFinalInlineComments({
+      findings: [{ ...baseFinding, persona: 'security', startLine: 9, replacementCode: 'new', suggestion: 'Fix the unsafe code.' }],
+      changedFiles,
+    });
+    expect(comments[0].finding.replacementCode).toBeUndefined();
+    expect(formatInlineCommentBody(comments[0].finding)).not.toContain('```suggestion');
+    expect(formatInlineCommentBody(comments[0].finding)).toContain('Fix the unsafe code.');
+  });
+
+  it('withholds conflicting replacement proposals for the same finding', () => {
+    const result = dedupeActionableFindings([
+      { ...baseFinding, persona: 'a', replacementCode: 'first();' },
+      { ...baseFinding, persona: 'b', replacementCode: 'second();' },
+      { ...baseFinding, persona: 'c', replacementCode: 'first();' },
+    ]);
+    expect(result[0].replacementCode).toBeUndefined();
+  });
+
+  it('keeps a duplicate replacement tied to its original range', () => {
+    const result = dedupeActionableFindings([
+      { ...baseFinding, persona: 'a', replacementCode: '  safe();' },
+      { ...baseFinding, persona: 'b', startLine: 8 },
+    ]);
+    expect(result[0].replacementCode).toBe('  safe();');
+    expect(result[0].startLine).toBeUndefined();
+  });
+
 });

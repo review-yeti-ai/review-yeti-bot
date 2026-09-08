@@ -2144,8 +2144,10 @@ const FINDINGS_RESPONSE_SCHEMA = Object.freeze({
           title: { type: 'string' },
           body: { type: 'string' },
           suggestion: { type: ['string', 'null'] },
+          replacementCode: { type: ['string', 'null'], maxLength: 10_000 },
+          startLine: { type: ['integer', 'null'], minimum: 1 },
         },
-        required: ['severity', 'path', 'line', 'title', 'body', 'suggestion'],
+        required: ['severity', 'path', 'line', 'title', 'body', 'suggestion', 'replacementCode', 'startLine'],
         additionalProperties: false,
       },
     },
@@ -2472,6 +2474,9 @@ function sanitizeFindings(rawFindings, diffFiles) {
       title: String(f.title || 'Review finding').slice(0, 200),
       body: String(f.body || f.title || '').slice(0, 2_000),
       suggestion: f.suggestion ? String(f.suggestion).slice(0, 2_000) : undefined,
+      ...(typeof f.replacementCode === 'string' && f.replacementCode.length <= 10_000
+        ? { replacementCode: f.replacementCode } : {}),
+      ...(f.startLine != null ? { startLine: f.startLine } : {}),
     }));
 }
 
@@ -3644,8 +3649,14 @@ function buildOpenRouterReviewMessages(persona, reviewContextPrompt) {
     '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
     '- If the supplied evidence does not prove a defect, return no finding.',
     '',
+    'Clickable fix contract:',
+    '- suggestion is prose explaining the fix; replacementCode is exact replacement source code without Markdown fences, or null.',
+    '- Supply replacementCode only for a certain, self-contained fix entirely within one visible RIGHT/new-file diff hunk. Use null for architectural advice, uncertain fixes, or changes requiring other files.',
+    '- replacementCode replaces the inclusive RIGHT/new-file range startLine..line; line is the last replaced line. startLine is null for a single-line replacement. Include every line needed for the replacement and preserve indentation and whitespace.',
+    '- An empty replacementCode string deletes the selected lines. Never use placeholders or ellipses; use null when the complete replacement exceeds 10000 characters. Set startLine to null when replacementCode is null.',
+    '',
     'Respond with JSON only, in exactly this shape:',
-    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
+    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>","replacementCode":null,"startLine":null}]}',
   ].join('\n');
   const assignmentPrompt = [
     'Panel assignment:',
@@ -3803,8 +3814,14 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
     '- No tools are attached to this request. Do not emit tool calls or ask to inspect files outside the supplied diff and context.',
     '- If the supplied evidence does not prove a defect, return no finding.',
     '',
+    'Clickable fix contract:',
+    '- suggestion is prose explaining the fix; replacementCode is exact replacement source code without Markdown fences, or null.',
+    '- Supply replacementCode only for a certain, self-contained fix entirely within one visible RIGHT/new-file diff hunk. Use null for architectural advice, uncertain fixes, or changes requiring other files.',
+    '- replacementCode replaces the inclusive RIGHT/new-file range startLine..line; line is the last replaced line. startLine is null for a single-line replacement. Include every line needed for the replacement and preserve indentation and whitespace.',
+    '- An empty replacementCode string deletes the selected lines. Never use placeholders or ellipses; use null when the complete replacement exceeds 10000 characters. Set startLine to null when replacementCode is null.',
+    '',
     'Respond with JSON only, in exactly this shape:',
-    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>"}]}',
+    '{"findings":[{"severity":"P0|P1|P2","path":"<file path>","line":<int>,"title":"<short>","body":"<why it matters>","suggestion":"<concrete fix>","replacementCode":null,"startLine":null}]}',
   ].join('\n');
 
   let diffContent = '';
@@ -5952,8 +5969,6 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
           const trimmed = f.suggestion.trim();
           if (trimmed.startsWith('```')) {
             findingsDetails += `\n${trimmed}\n`;
-          } else if (trimmed.includes('\n') || /[;{}()=>]/.test(trimmed) || /^(def |fn |function |const |let |var |import |export |Repo\.)/.test(trimmed)) {
-            findingsDetails += `\n\`\`\`suggestion\n${trimmed}\n\`\`\`\n`;
           } else {
             findingsDetails += `\n> **Suggested Fix:** ${trimmed}\n`;
           }
@@ -6097,6 +6112,8 @@ query ReviewThreads($owner: String!, $name: String!, $number: Int!, $endCursor: 
           path
           line
           diffSide
+          startLine
+          startDiffSide
           comments(first: 10) {
             nodes { databaseId body createdAt author { login } commit { oid } }
             pageInfo { hasNextPage endCursor }
@@ -6753,6 +6770,8 @@ function findVerifiedThread(item, prContext, snapshot, expectedPublisherLogin) {
   const expectedLine = Number.isInteger(item.line) ? item.line : null;
   return snapshot.threads.find((thread) => {
     if (thread.isResolved || thread.path !== item.path || (thread.line ?? null) !== expectedLine) return false;
+    if ((thread.startLine ?? null) !== (item.startLine ?? null)) return false;
+    if (item.startLine != null && thread.startDiffSide !== (item.side || 'RIGHT')) return false;
     return (thread.comments?.nodes || []).some((comment) => (
       String(comment.body || '').includes(marker)
       && isExpectedPublisherLogin(comment.author?.login, expectedPublisherLogin)
@@ -7012,6 +7031,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
             path: item.path,
             line: item.line,
             side: item.side || 'RIGHT',
+            ...(Number.isInteger(item.startLine) ? { start_line: item.startLine, start_side: item.side || 'RIGHT' } : {}),
             body: commentBodyWithMarker(prContext, item),
           })),
         });
@@ -7031,6 +7051,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
             path: item.path,
             line: item.line,
             side: item.side || 'RIGHT',
+            ...(Number.isInteger(item.startLine) ? { start_line: item.startLine, start_side: item.side || 'RIGHT' } : {}),
             body: commentBodyWithMarker(prContext, item),
           });
           if (!isExpectedPublisherLogin(requirePublisherLogin(created.user?.login), expectedPublisherLogin)) {

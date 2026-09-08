@@ -565,6 +565,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         const finalInline = buildFinalInlineComments({
           findings: retainedFindings,
           max: MAX_FINAL_INLINE_COMMENTS,
+          changedFiles: reviewChangedFiles,
         });
         await assertCurrentHead();
         const final = await github.publishReview({

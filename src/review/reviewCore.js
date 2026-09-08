@@ -63,11 +63,28 @@ function isGitlinkFile(file) {
   return Boolean(file && (file.isSubmodule === true || String(file.mode || '') === '160000'));
 }
 
+/** Preserve exact replacement text; unsafe metadata must never become a partial patch. */
+function normalizeFindingReplacement(raw) {
+  if (!raw || typeof raw !== 'object' || !Number.isInteger(raw.line) || raw.line < 1) return {};
+  // Core findings drop side metadata; never let an old-side patch become a default RIGHT fix.
+  if (raw.side !== undefined && raw.side !== 'RIGHT') return {};
+  const hasStartLine = raw.startLine !== undefined && raw.startLine !== null;
+  if (hasStartLine && (!Number.isInteger(raw.startLine) || raw.startLine < 1 || raw.startLine > raw.line)) return {};
+  const result = {};
+  if (hasStartLine) result.startLine = raw.startLine;
+  // Empty text is an intentional deletion; whitespace and trailing newlines are source code.
+  if (typeof raw.replacementCode === 'string' && raw.replacementCode.length <= 10_000) {
+    result.replacementCode = raw.replacementCode;
+  }
+  return result;
+}
+
 function sanitizeFinding(raw, changedFiles) {
   if (!raw || typeof raw !== 'object') return null;
   if (!Array.isArray(changedFiles)) {
     if (!['P0', 'P1', 'P2'].includes(raw.severity)) return null;
-    return { ...raw, severity: raw.severity };
+    const { replacementCode, startLine, ...finding } = raw;
+    return { ...finding, severity: raw.severity, ...normalizeFindingReplacement(raw) };
   }
   const path = normalizePath(raw.path);
   const changed = changedFiles.find((file) => normalizePath(file.path) === path);
@@ -87,7 +104,7 @@ function sanitizeFinding(raw, changedFiles) {
   const title = typeof raw.title === 'string' ? raw.title.trim() : '';
   const body = typeof raw.body === 'string' ? raw.body.trim() : '';
   if (!title || !body) return null;
-  const result = { severity, path, line, title, body };
+  const result = { severity, path, line, title, body, ...normalizeFindingReplacement({ ...raw, line }) };
   if (typeof raw.suggestion === 'string' && raw.suggestion.trim()) result.suggestion = raw.suggestion.trim();
   if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)) result.confidence = raw.confidence;
   return result;
@@ -179,6 +196,7 @@ function validateReviewFindings(rawFindings, changedFiles) {
       line: raw.line,
       title: raw.title.trim(),
       body: raw.body.trim(),
+      ...normalizeFindingReplacement(raw),
     };
     if (typeof raw.suggestion === 'string' && raw.suggestion.trim()) finding.suggestion = raw.suggestion.trim();
     if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)) finding.confidence = raw.confidence;
@@ -329,6 +347,7 @@ module.exports = {
   canonicalJson,
   sha256,
   changedLineNumbers,
+  normalizeFindingReplacement,
   sanitizeFinding,
   sanitizeFindings,
   validateReviewFindings,

@@ -8,6 +8,10 @@ export interface ReviewFinding {
   title: string;
   body: string;
   suggestion?: string;
+  /** Exact source replacing startLine through line (inclusive); empty string deletes. */
+  replacementCode?: string;
+  /** First new-file line to replace; omitted means line. */
+  startLine?: number;
   confidence?: number;
 }
 
@@ -83,3 +87,6 @@ export function computeArbitration(
   expectedPersonas?: number,
   options?: ArbitrationOptions,
 ): CanonicalArbitration;
+
+/** Discard unsafe patch metadata while preserving exact valid replacement source. */
+export function normalizeFindingReplacement(raw: unknown): Pick<ReviewFinding, 'replacementCode' | 'startLine'>;

@@ -1,6 +1,6 @@
 'use strict';
 
-const { canonicalJson, sha256 } = require('./reviewCore');
+const { canonicalJson, sha256, normalizeFindingReplacement } = require('./reviewCore');
 const { compareClaims } = require('./claimSimilarity');
 
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2 });
@@ -44,22 +44,26 @@ function isGitlinkFile(file) {
 
 /**
  * Parse every exact changed-line anchor from a unified diff. RIGHT contains additions in the
- * post-image; LEFT contains deletions in the pre-image. Context lines are deliberately excluded.
+ * post-image; LEFT contains deletions in the pre-image. Context lines are excluded from those
+ * anchor sets but included in rightHunks for validating contiguous replacement ranges.
  */
 function parsePatchAnchors(patch) {
   const right = new Set();
   const left = new Set();
-  if (typeof patch !== 'string') return { right, left, hasHunks: false };
+  const rightHunks = new Map();
+  if (typeof patch !== 'string') return { right, left, rightHunks, hasHunks: false };
 
   let oldLine = 0;
   let newLine = 0;
   let inHunk = false;
   let hasHunks = false;
+  let indexOfHunk = -1;
   const patchLines = patch.split('\n');
 
   for (const [index, line] of patchLines.entries()) {
     const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunk) {
+      indexOfHunk = index;
       oldLine = Number(hunk[1]);
       newLine = Number(hunk[2]);
       inHunk = true;
@@ -73,6 +77,7 @@ function parsePatchAnchors(patch) {
     if (!inHunk || line.startsWith('\\ No newline at end of file')) continue;
     if (line.startsWith('+')) {
       right.add(newLine);
+      rightHunks.set(newLine, indexOfHunk);
       newLine += 1;
     } else if (line.startsWith('-')) {
       left.add(oldLine);
@@ -81,11 +86,12 @@ function parsePatchAnchors(patch) {
       // GitHub patches normally prefix context with a space. Some fixtures omit that prefix for
       // blank context, so any remaining in-hunk line advances both images.
       oldLine += 1;
+      rightHunks.set(newLine, indexOfHunk);
       newLine += 1;
     }
   }
 
-  return { right, left, hasHunks };
+  return { right, left, rightHunks, hasHunks };
 }
 
 function attributionFor(value, includeId = false) {
@@ -162,7 +168,7 @@ function formatFindingCommentBody(finding) {
   const title = typeof finding.title === 'string' ? finding.title.trim().replace(/\s+/g, ' ') : 'Review finding';
   const body = typeof finding.body === 'string' ? finding.body.trim() : '';
   const suggestion = typeof finding.suggestion === 'string' ? finding.suggestion.trim() : '';
-  const replacementCode = typeof finding.replacementCode === 'string' ? finding.replacementCode.trim() : '';
+  const replacementCode = typeof finding.replacementCode === 'string' ? finding.replacementCode : undefined;
   const personas = Array.isArray(finding.personas)
     ? [...new Set(finding.personas.map(normalizePersona).filter(Boolean))].sort((a, b) => a.localeCompare(b))
     : [];
@@ -174,7 +180,7 @@ function formatFindingCommentBody(finding) {
   const lines = [`**${severity} · ${title}**`];
   if (body) lines.push('', body);
   if (suggestion) lines.push('', '**Suggested fix**', '', suggestion);
-  if (replacementCode) {
+  if (replacementCode !== undefined) {
     const fence = codeFence(replacementCode);
     lines.push('', '**Suggested replacement**', '', `${fence}suggestion`, replacementCode, fence);
   }
@@ -225,12 +231,33 @@ function comparePublicationItems(a, b) {
  * near-duplicate clustering. Both used to carry their own copy of these rules, so any field added
  * to a publication finding had to be merged in two places and the two were free to drift.
  */
+const conflictingReplacement = Symbol('conflictingReplacement');
+
 function mergeFindingFields(merged, candidate) {
   if (SEVERITY_RANK[candidate.severity] < SEVERITY_RANK[merged.severity]) merged.severity = candidate.severity;
   merged.personas = [...new Set([...merged.personas, ...candidate.personas])].sort((a, b) => a.localeCompare(b));
   merged.body = chooseRicher(merged.body, candidate.body);
   merged.suggestion = chooseRicher(merged.suggestion, candidate.suggestion);
-  merged.replacementCode = chooseRicher(merged.replacementCode, candidate.replacementCode);
+  // A patch belongs to its original range, even when nearby reports describe the same defect.
+  const sameAnchor = merged.path === candidate.path && merged.line === candidate.line && merged.side === candidate.side;
+  if (sameAnchor && candidate[conflictingReplacement] && !merged[conflictingReplacement]) {
+    delete merged.replacementCode;
+    delete merged.startLine;
+    Object.defineProperty(merged, conflictingReplacement, { value: true });
+  }
+  if (sameAnchor && !merged[conflictingReplacement] && typeof candidate.replacementCode === 'string') {
+    if (typeof merged.replacementCode === 'string'
+      && (merged.replacementCode !== candidate.replacementCode
+        || (merged.startLine ?? merged.line) !== (candidate.startLine ?? candidate.line))) {
+      delete merged.replacementCode;
+      delete merged.startLine;
+      Object.defineProperty(merged, conflictingReplacement, { value: true });
+    } else if (typeof merged.replacementCode !== 'string') {
+      merged.replacementCode = candidate.replacementCode;
+      if (candidate.startLine !== undefined) merged.startLine = candidate.startLine;
+      else delete merged.startLine;
+    }
+  }
   merged.recommendation = chooseRicher(merged.recommendation, candidate.recommendation);
   if (candidate.confidence !== undefined) {
     merged.confidence = merged.confidence === undefined ? candidate.confidence : Math.max(merged.confidence, candidate.confidence);
@@ -261,6 +288,10 @@ function mergeClaimInto(target, entry) {
     target.subjectType = 'line';
     merged.line = candidate.line;
     merged.side = candidate.side;
+    delete merged.replacementCode;
+    delete merged.startLine;
+    if (typeof candidate.replacementCode === 'string') merged.replacementCode = candidate.replacementCode;
+    if (candidate.startLine !== undefined) merged.startLine = candidate.startLine;
   }
 }
 
@@ -363,6 +394,26 @@ function planFindingPublication(input, changedFiles, options = {}) {
       }
     }
 
+    const replacement = normalizeFindingReplacement({ ...raw, line });
+    if (subjectType !== 'line' || side !== 'RIGHT') {
+      delete replacement.replacementCode;
+      delete replacement.startLine;
+    } else if (replacement.startLine !== undefined) {
+      const { rightHunks } = parsePatchAnchors(patch);
+      const start = replacement.startLine;
+      const hunk = rightHunks.get(line);
+      // Every replaced line must be visible in the same new-file hunk, including context.
+      const validRange = line - start < rightHunks.size
+        && Array.from({ length: line - start + 1 }, (_, offset) => start + offset)
+          .every((number) => rightHunks.get(number) === hunk);
+      if (!validRange) {
+        delete replacement.replacementCode;
+        delete replacement.startLine;
+      } else if (start === line) {
+        delete replacement.startLine;
+      }
+    }
+
     const candidate = {
       severity,
       path,
@@ -371,7 +422,7 @@ function planFindingPublication(input, changedFiles, options = {}) {
       title,
       body,
       ...(typeof raw.suggestion === 'string' && raw.suggestion.trim() ? { suggestion: raw.suggestion.trim() } : {}),
-      ...(typeof raw.replacementCode === 'string' && raw.replacementCode.trim() ? { replacementCode: raw.replacementCode.trim() } : {}),
+      ...replacement,
       ...(typeof raw.recommendation === 'string' && raw.recommendation.trim() ? { recommendation: raw.recommendation.trim() } : {}),
       ...(typeof raw.confidence === 'number' && Number.isFinite(raw.confidence) ? { confidence: raw.confidence } : {}),
       personas,
@@ -402,7 +453,10 @@ function planFindingPublication(input, changedFiles, options = {}) {
   for (const { subjectType, finding } of collapsed) {
     const common = {
       path: finding.path,
-      ...(subjectType === 'line' ? { line: finding.line, side: finding.side } : {}),
+      ...(subjectType === 'line' ? {
+        line: finding.line, side: finding.side,
+        ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
+      } : {}),
       markerKey: findingMarkerKey(finding, subjectType),
       personas: finding.personas,
       finding,

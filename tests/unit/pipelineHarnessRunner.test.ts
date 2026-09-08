@@ -318,6 +318,40 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
       expect(deduped.length).toBe(2);
     });
 
+    it.each(['  corrected();\n', ''])('retains exact replacement text through parsing and deduplication', (replacementCode) => {
+      const raw = { path: 'sip.ts', line: 15, startLine: 14, severity: 'P1', title: 'Race', body: 'Unsynchronized update', replacementCode };
+      const findings = parseFindingsFromText(JSON.stringify({ findings: [raw] }), 'architecture');
+      expect(findings[0]).toMatchObject(raw);
+      expect(sanitizeAndDeduplicateFindings(findings)[0]).toMatchObject(raw);
+    });
+
+    it.each([0, 16, '14'])('suppresses replacement metadata for unsafe model range %s', (startLine) => {
+      const raw = { path: 'sip.ts', line: 15, startLine, severity: 'P1', title: 'Race', body: 'Unsynchronized update', replacementCode: 'fixed();' };
+      const findings = parseFindingsFromText(JSON.stringify({ findings: [raw] }), 'architecture');
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).not.toHaveProperty('replacementCode');
+      expect(findings[0]).not.toHaveProperty('startLine');
+    });
+
+    it('does not copy a nearby duplicate replacement onto the retained anchor', () => {
+      const base: HarnessPersonaFinding = { id: 'first', persona: 'security', path: 'sip.ts', line: 15, severity: 'P2', title: 'Race', body: 'Unsynchronized update', confidence: 0.9 };
+      const findings = sanitizeAndDeduplicateFindings([
+        base,
+        { ...base, id: 'second', line: 17, startLine: 16, severity: 'P1', replacementCode: 'fixed();' },
+      ]);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({ line: 15, severity: 'P1' });
+      expect(findings[0]).not.toHaveProperty('replacementCode');
+      expect(findings[0]).not.toHaveProperty('startLine');
+    });
+
+    it('drops oversized replacement metadata on direct sanitizer input', () => {
+      const base: HarnessPersonaFinding = { id: 'first', persona: 'security', path: 'sip.ts', line: 15, severity: 'P2', title: 'Race', body: 'Unsynchronized update', confidence: 0.9, replacementCode: 'x'.repeat(10_001) };
+      const findings = sanitizeAndDeduplicateFindings([base]);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).not.toHaveProperty('replacementCode');
+    });
+
     it('parseFindingsFromText parses nonced fenced blocks and raw JSON structures', () => {
       const noncedText = `CT_REVIEW_BEGIN:nonce123\n{\n  "findings": [\n    {\n      "path": "sip.ts",\n      "line": 15,\n      "severity": "P0",\n      "title": "Race Condition",\n      "body": "Unsynchronized state update"\n    }\n  ]\n}\nCT_REVIEW_END`;
       const findings = parseFindingsFromText(noncedText, 'architecture');

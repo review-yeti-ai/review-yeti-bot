@@ -7,6 +7,8 @@ export interface PublicationFindingInput {
   severity: PublicationSeverity | 'critical' | 'major' | 'minor' | 'nit';
   path: string;
   line: number;
+  /** First new-file line to replace, inclusive; omitted means line only. */
+  startLine?: number;
   side?: PublicationSide;
   title: string;
   body: string;
@@ -52,12 +54,15 @@ export interface PublicationChangedFile {
 export interface PatchAnchors {
   right: Set<number>;
   left: Set<number>;
+  /** New-file lines (including context) mapped to their containing hunk. */
+  rightHunks: Map<number, number>;
   hasHunks: boolean;
 }
 
 export interface PublicationComment {
   path: string;
   line?: number;
+  startLine?: number;
   side?: PublicationSide;
   body: string;
   markerKey: string;
