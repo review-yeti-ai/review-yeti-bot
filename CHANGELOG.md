@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.3...v1.41.4) (2026-09-08)
+
+
+### Bug Fixes
+
+* **publishing:** repair the diff parser, the blocking count, and publish findings ([#580](https://github.com/review-yeti-ai/review-yeti-bot/issues/580)) ([95831d2](https://github.com/review-yeti-ai/review-yeti-bot/commit/95831d26c2f5f06fe5ae45fc84fdc36a7e192a36))
+
 ## [1.41.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.2...v1.41.3) (2026-09-07)
 
 
