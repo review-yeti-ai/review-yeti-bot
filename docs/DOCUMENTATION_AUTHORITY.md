@@ -41,9 +41,7 @@ These files describe the optional long-running web dashboard/service lineage (`n
 
 ### Historical Design Records
 
-- [`PROJECT.md`](../PROJECT.md), [`ORIGINAL_REQUEST.md`](../ORIGINAL_REQUEST.md)
 - [`OPENROUTER_TERRAFORM.md`](OPENROUTER_TERRAFORM.md) — Retained infrastructure reference
-- [`ADVERSARIAL_REVIEW_PATTERNS.md`](ADVERSARIAL_REVIEW_PATTERNS.md)
 - [`ROADMAP.md`](ROADMAP.md) and [`VISION.md`](VISION.md)
 - `docs/superpowers/` — Retained development execution evidence and planning specs.
 
