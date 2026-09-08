@@ -259,6 +259,7 @@ export const SEVERITY_CALIBRATION_LINES: readonly string[] = [
   'P1: a defect in shipped behaviour that must be fixed before merge: secret exposure, an untrusted-input exploit, data loss, a wrong result returned to a user or API consumer, or a broken invariant on an existing contract.',
   'P2: everything else. Style, DRY/duplication, naming, readability, portability, missing docs or changelog notes, test-shape suggestions, and injection paths reachable only by the local operator through inputs they control are ALWAYS P2, never P1.',
   'Report each defect once, anchored at its root line. Do not file the same defect under several titles or at several nearby lines.',
+  'A blocking finding must state a defect you have verified against the code you can read. If a tool could not find or read a file, report what you searched and where, as P2 -- never as P0/P1. "If X, then Y" is a question, not a finding.',
 ];
 
 const BUILTIN_CHARTERS: Record<string, string> = {
