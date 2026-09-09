@@ -194,7 +194,22 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             to_timestamp($16 / 1000.0), to_timestamp($17 / 1000.0), $18,
             to_timestamp($16 / 1000.0), to_timestamp($16 / 1000.0))
          ON CONFLICT (identity_digest) DO UPDATE
-           SET updated_at = review_runs.updated_at
+           SET updated_at = review_runs.updated_at,
+               -- A run that terminally FAILED on this exact head is retryable.
+               -- The run id is derived from the identity digest, so every
+               -- re-dispatch of the same head lands on the same row; without this
+               -- the row stays 'failed' forever, the outbox stays 'terminal', and
+               -- the head can never be reviewed again by any means short of a
+               -- force-push. Only 'failed' is re-armed: 'queued'/'running' are
+               -- in flight and must stay idempotent, and 'superseded' belongs to
+               -- an older head.
+               status = CASE WHEN review_runs.status = 'failed' THEN 'queued' ELSE review_runs.status END,
+               attempt = CASE WHEN review_runs.status = 'failed' THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
+               error_text = CASE WHEN review_runs.status = 'failed' THEN NULL ELSE review_runs.error_text END,
+               delivery_id = CASE WHEN review_runs.status = 'failed' THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
+               -- The old deadline is already in the past, so a retry would be
+               -- swept by the abandoned-run reaper before it could start.
+               terminal_deadline = CASE WHEN review_runs.status = 'failed' THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
          WHERE review_runs.publication_mode = EXCLUDED.publication_mode
          RETURNING *`,
         [
@@ -230,7 +245,19 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await client.query(
         `INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, available_at, created_at, updated_at)
          VALUES ($1, $2, 'pending', to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
-         ON CONFLICT (run_id) DO NOTHING`,
+         ON CONFLICT (run_id) DO UPDATE
+           SET status = 'pending', delivery_id = EXCLUDED.delivery_id,
+               available_at = EXCLUDED.available_at, lease_owner = NULL,
+               lease_expires_at = NULL, updated_at = EXCLUDED.updated_at
+         -- Re-arm only alongside a run the statement above just returned to
+         -- 'queued'. Guarding on the run's status keeps a superseded run's
+         -- terminal outbox row untouched, and a row that is not 'terminal' is
+         -- still in flight and must not be disturbed.
+         WHERE review_dispatch_outbox.status = 'terminal'
+           AND EXISTS (
+             SELECT 1 FROM review_runs r
+              WHERE r.run_id = review_dispatch_outbox.run_id AND r.status = 'queued'
+           )`,
         [runRow.run_id, input.deliveryId, input.receivedAt],
       );
       await client.query('COMMIT');
