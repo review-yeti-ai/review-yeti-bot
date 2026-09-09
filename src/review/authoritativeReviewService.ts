@@ -1,7 +1,7 @@
 import type { Pool } from 'pg';
 import type { AuthoritativeServiceConfig } from '../auth/authoritativeServiceConfig';
-import type { ActionDispatchRouterOptions } from '../api/actionDispatchApi';
-import { createWorkerCompletionVerifier } from '../api/actionDispatchApi';
+import { createWorkerCompletionVerifier, type AuthoritativeReviewAdmission,
+  type AuthoritativeReviewCompletion } from './authoritativeServiceContracts';
 import { AuthoritativeReviewReader, type ReviewRepositoryIdentity } from '../github/authoritativeReviewReader';
 import { getBoundedRepositoryToken } from '../github/boundedAppToken';
 import { GitHubReviewGateClient } from '../github/reviewGateClient';
@@ -27,8 +27,8 @@ export interface AuthoritativeReviewServiceOptions {
 /** Additive control-plane wiring. Merely constructing this object does not
  * schedule anything, contact GitHub, or change repository protection. */
 export function createAuthoritativeReviewService(options: AuthoritativeReviewServiceOptions): {
-  admission: NonNullable<ActionDispatchRouterOptions['authoritativePublishing']>;
-  completion: NonNullable<ActionDispatchRouterOptions['authoritativeWorkerCompletion']>;
+  admission: AuthoritativeReviewAdmission;
+  completion: AuthoritativeReviewCompletion;
   /** Called by persistence while holding its PR admission lock, before writes. */
   validateAdmission(input: ReviewAdmissionInput): Promise<void>;
   runOnce(): Promise<void>;

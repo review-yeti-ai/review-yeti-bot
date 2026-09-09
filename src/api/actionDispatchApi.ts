@@ -14,16 +14,12 @@ import {
 } from '../review/actionDispatch';
 import { sha256 } from '../review/reviewCore';
 import { logger } from '../utils/logger';
-import type { AuthoritativePublishingResolver } from '../review/authoritativePublishingResolver';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
-import type { PostgresReviewGateRepository, StoredReviewGate, TrustedGateCompletionContext } from '../persistence/reviewGateRepository';
+import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, AuthoritativeReviewCompletion } from '../review/authoritativeServiceContracts';
+export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 
 export interface ActionOidcVerifier {
   verify(token: string): Promise<GitHubActionsOidcClaims>;
-}
-
-export interface WorkerCompletionVerifier {
-  verify(token: string, event: WorkerTerminalFailure | WorkerReviewCompletion): Promise<WorkerCompletionProof>;
 }
 
 export interface ActionDispatchRouterOptions {
@@ -32,22 +28,12 @@ export interface ActionDispatchRouterOptions {
   resolveInstallationId(owner: string, repo: string): Promise<number>;
   allowAppGate?: boolean;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
-  authoritativePublishing?: {
-    expectedAppId: number;
-    /** Pausing admission drains existing gates; never fall back to a legacy run. */
-    acceptNewRequests?: boolean;
-    repositoryIds: readonly number[];
-    resolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
-  };
+  authoritativePublishing?: AuthoritativeReviewAdmission;
   workerCompletion?: {
     verifier: WorkerCompletionVerifier;
     repository: Pick<ReviewDispatchRepository, 'markWorkerFailure'>;
   };
-  authoritativeWorkerCompletion?: {
-    verifier: WorkerCompletionVerifier;
-    repository: Pick<PostgresReviewGateRepository, 'recordWorkerResult'>;
-    resolve(gate: StoredReviewGate): Promise<TrustedGateCompletionContext>;
-  };
+  authoritativeWorkerCompletion?: AuthoritativeReviewCompletion;
   now?: () => number;
 }
 
@@ -203,18 +189,4 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
   });
 
   return router;
-}
-
-/**
- * The bearer is not trusted merely because it has a GitHub installation-token
- * prefix. The repository compares this digest, constant-time, with the digest
- * the trusted dispatcher stored for the exact projected execution attempt.
- */
-export function createWorkerCompletionVerifier(): WorkerCompletionVerifier {
-  return {
-    async verify(token: string, _event: WorkerTerminalFailure | WorkerReviewCompletion): Promise<WorkerCompletionProof> {
-      if (!token.startsWith('ghs_')) throw new Error('worker completion requires a ghs_ installation token');
-      return { workerTokenDigest: sha256(token) };
-    },
-  };
 }

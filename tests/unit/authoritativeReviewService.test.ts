@@ -47,7 +47,7 @@ vi.mock('../../src/review/authoritativeCompletionContext', () => ({
     return mocks.resolveCompletion;
   }),
 }));
-vi.mock('../../src/api/actionDispatchApi', () => ({
+vi.mock('../../src/review/authoritativeServiceContracts', () => ({
   createWorkerCompletionVerifier: () => ({ verify: mocks.verify }),
 }));
 vi.mock('../../src/github/authoritativeReviewReader', () => ({
