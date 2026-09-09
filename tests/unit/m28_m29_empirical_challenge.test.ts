@@ -1,5 +1,5 @@
 import { timeBudgetMs } from '../support/timeBudget';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -15,6 +15,7 @@ import { scanRepositoryStack } from '../../src/onboarding/stackScanner';
 import { generateCtReviewConfig } from '../../src/onboarding/configGenerator';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
 import { Finding } from '../../src/reflection/nitSuppressionEngine';
+import { LLMCommentLearner } from '../../src/reflection/llmCommentLearner';
 
 describe('EMPIRICAL STRESS TEST: Milestone 28 & Milestone 29', () => {
   let memoryStore: PRMemoryStore;
@@ -142,7 +143,14 @@ And newline injection attacks <script>alert(1)</script>`;
       });
 
       it('should parse reply refutation phrases and record nit suppressions', async () => {
-        const listener = new FeedbackListener(learningStore);
+        // This exercises the deterministic phrase fallback and its persistence,
+        // not a live provider's latency or judgment. Fail the injected client
+        // immediately so CI never waits for a network timeout to reach it.
+        const complete = vi.fn().mockRejectedValue(new Error('fixture provider unavailable'));
+        const listener = new FeedbackListener(
+          learningStore,
+          new LLMCommentLearner({ complete }, memoryStore),
+        );
 
         const replyCases = [
           { body: 'This is a false positive review comment', expectedRecorded: true },
@@ -165,6 +173,7 @@ And newline injection attacks <script>alert(1)</script>`;
 
         const learnings = await learningStore.getLearnedContext('testorg/testrepo');
         expect(learnings.resolvedNits.length).toBe(3);
+        expect(complete).toHaveBeenCalledTimes(replyCases.length);
       });
     });
 

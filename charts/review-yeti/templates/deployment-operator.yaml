@@ -56,6 +56,10 @@ spec:
             - name: REVIEW_YETI_REVIEW_MODEL
               value: {{ .Values.publishing.model | quote }}
             {{- end }}
+            {{- if .Values.publishing.completionUrl }}
+            - name: REVIEW_YETI_COMPLETION_URL
+              value: {{ .Values.publishing.completionUrl | quote }}
+            {{- end }}
             - name: REVIEW_YETI_GATEWAY_SECRET_NAME
               value: {{ .Values.publishing.gatewaySecretName | quote }}
             - name: REVIEW_YETI_GATEWAY_SECRET_KEY

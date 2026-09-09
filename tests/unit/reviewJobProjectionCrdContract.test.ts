@@ -42,6 +42,7 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(Object.keys(projection.spec).sort()).toEqual([...spec.required, 'runnerMode'].sort());
     expect(Object.keys(spec.properties).sort()).toEqual([
       ...spec.required,
+      'executionAttempt',
       'qualificationModel',
       'qualificationProfile',
       'runnerMode',
