@@ -10,6 +10,7 @@ import {
   resolveWorkerConfig,
   runPublishingReviewWorker,
 } from '../../src/cli/publishingReview';
+import { HttpWorkerCompletionAdapter } from '../../src/review/workerCompletion';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -22,6 +23,9 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
     REVIEW_REPO: 'calltelemetry/ct-meta',
     REVIEW_REPOSITORY_ID: '1339040553',
+    REVIEW_POLICY_DIGEST: 'c'.repeat(64),
+    REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
+    REVIEW_EXECUTION_ATTEMPT: '1',
     REVIEW_PR_NUMBER: '2795',
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
@@ -91,6 +95,34 @@ describe('check run ownership', () => {
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({ checkId: 4242 }),
     );
+  });
+});
+
+describe('callback rollout compatibility', () => {
+  it('uses execution attempt 1 for a legacy worker with callback disabled', () => {
+    expect(publishingReviewIdentity(env({ REVIEW_EXECUTION_ATTEMPT: '' })).executionAttempt).toBe(1);
+  });
+
+  it('requires an injected execution attempt when callback reporting is enabled', () => {
+    expect(() => publishingReviewIdentity(env({
+      REVIEW_EXECUTION_ATTEMPT: '',
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
+    }))).toThrow(/contract is invalid/u);
+  });
+
+  it('fails closed for an explicit malformed callback URL', async () => {
+    const d = deps();
+    await expect(runPublishingReviewWorker(env({ REVIEW_COMPLETION_URL: 'http://dispatch.example.invalid/completion' }), d as never))
+      .rejects.toThrow(/contract is invalid/u);
+    expect(d.checkClient.createCheck).not.toHaveBeenCalled();
+  });
+
+  it('does not silently ignore a valid callback URL without an adapter', async () => {
+    const d = deps();
+    await expect(runPublishingReviewWorker(env({
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
+    }), d as never)).rejects.toThrow(/contract is invalid/u);
+    expect(d.checkClient.createCheck).not.toHaveBeenCalled();
   });
 });
 
@@ -334,6 +366,28 @@ describe('runPublishingReviewWorker', () => {
     );
   });
 
+  it('reports a typed terminal failure after fail-closed publication', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const d = deps({
+      completion,
+      panelRunner: vi.fn(async () => { throw new Error('429 rate limit'); }) as never,
+    });
+    await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow(/rate limit/u);
+    expect(completion.reportTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({
+      version: 'WorkerTerminalFailure.v1',
+      runId: env().REVIEW_RUN_ID,
+      checkId: 4242,
+      failureClass: 'rate_limit',
+    }));
+  });
+
+  it('does not report completion for a successful review', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const d = deps({ completion });
+    await runPublishingReviewWorker(env(), d as never);
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+  });
+
   it('refuses to ship an empty diff as a clean review', async () => {
     const d = deps({ sourceLoader: vi.fn(async () => ({ diff: '', githubReads: 1 })) as never });
     await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow(/no reviewable diff/u);
@@ -348,6 +402,43 @@ describe('runPublishingReviewWorker', () => {
     // The original failure propagates so the Job fails and the admission deadline
     // can reap it, rather than being masked by the publish error.
     await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow(/boom/u);
+  });
+
+  it('reports a durable failure when check creation fails before a check id exists', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const d = deps({
+      checkClient: {
+        createCheck: vi.fn(async () => { throw new Error('check provider response contains sensitive detail'); }),
+        completeCheck: vi.fn(async () => {}),
+      },
+      completion,
+    });
+    await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow(/sensitive detail/u);
+    expect(d.checkClient.completeCheck).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    const event = (completion.reportTerminalFailure as any).mock.calls[0][0] as Record<string, unknown>;
+    expect(event).not.toHaveProperty('checkId');
+    expect(event).toMatchObject({
+      runId: env().REVIEW_RUN_ID,
+      repositoryId: 1339040553,
+      executionAttempt: 1,
+      failureClass: 'provider_error',
+    });
+  });
+
+  it('reports a durable contract failure after check creation instead of skipping the callback', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const d = deps({ completion });
+    await expect(runPublishingReviewWorker(env({ BIFROST_BASE_URL: '' }), d as never))
+      .rejects.toThrow(/contract is invalid/u);
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
+      checkId: 4242,
+      conclusion: 'failure',
+    }));
+    expect(completion.reportTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({
+      checkId: 4242,
+      failureClass: 'contract',
+    }));
   });
 
   it('rejects a malformed identity before creating a check', async () => {
@@ -372,6 +463,58 @@ describe('identity and failure classification', () => {
     ['fetch failed', 'transport'],
   ])('classifies %s as %s', (message, expected) => {
     expect(classifyFailure(new Error(message))).toBe(expected);
+  });
+});
+
+describe('worker terminal failure adapter', () => {
+  it('sends only the typed failure event with the scoped worker token', async () => {
+    const fetchImplementation = vi.fn(async () => new Response('', { status: 202 }));
+    const adapter = new HttpWorkerCompletionAdapter({
+      token: 'ghs_test',
+      endpoint: 'https://dispatch.example.test/completion',
+      fetchImplementation,
+    });
+    const event = {
+      version: 'WorkerTerminalFailure.v1' as const,
+      runId: `run_${'c'.repeat(32)}`,
+      repositoryId: 1339040553,
+      owner: 'calltelemetry',
+      repo: 'ct-meta',
+      prNumber: 2795,
+      headSha: HEAD,
+      baseSha: BASE,
+      policyDigest: 'c'.repeat(64),
+      configDigest: 'd'.repeat(64),
+      executionAttempt: 1,
+      checkId: 4242,
+      failureClass: 'provider_error' as const,
+    };
+
+    await adapter.reportTerminalFailure(event);
+
+    expect(fetchImplementation).toHaveBeenCalledWith(
+      'https://dispatch.example.test/completion',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer ghs_test' }),
+        body: JSON.stringify(event),
+        redirect: 'error',
+      }),
+    );
+  });
+
+  it('rejects a non-HTTPS completion endpoint', () => {
+    expect(() => new HttpWorkerCompletionAdapter({
+      token: 'ghs_test',
+      endpoint: 'http://dispatch.example.test/completion',
+    })).toThrow(/HTTPS/u);
+  });
+
+  it('rejects completion endpoint userinfo', () => {
+    expect(() => new HttpWorkerCompletionAdapter({
+      token: 'ghs_test',
+      endpoint: 'https://user:password@dispatch.example.test/completion',
+    })).toThrow(/userinfo/u);
   });
 });
 

@@ -33,6 +33,7 @@ import { createDefaultV3Config } from '../config/configLoader';
 import type { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
+import type { WorkerCompletionAdapter, WorkerTerminalFailure } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
@@ -49,6 +50,7 @@ export interface PublishingReviewIdentity {
   prNumber: number;
   headSha: string;
   baseSha: string;
+  executionAttempt: number;
 }
 
 /** One canonical finding, as arbitration emits it. */
@@ -151,20 +153,41 @@ const RUN_ID = /^run_[a-f0-9]{32}$/u;
 const SHA = /^[a-f0-9]{40}$/u;
 const REPO = /^[^/\s]+\/[^/\s]+$/u;
 
-export function publishingReviewIdentity(env: NodeJS.ProcessEnv): PublishingReviewIdentity {
+export function publishingReviewIdentity(
+  env: NodeJS.ProcessEnv,
+  options: { callbackEnabled?: boolean } = {},
+): PublishingReviewIdentity {
   const runId = value(env, 'REVIEW_RUN_ID');
   const repo = value(env, 'REVIEW_REPO');
   const headSha = value(env, 'REVIEW_HEAD_SHA');
   const baseSha = value(env, 'REVIEW_BASE_SHA');
   const repositoryId = Number(value(env, 'REVIEW_REPOSITORY_ID'));
   const prNumber = Number(value(env, 'REVIEW_PR_NUMBER'));
+  const rawExecutionAttempt = value(env, 'REVIEW_EXECUTION_ATTEMPT');
+  const executionAttempt = rawExecutionAttempt ? Number(rawExecutionAttempt) : 1;
+  const callbackEnabled = options.callbackEnabled ?? Boolean(value(env, 'REVIEW_COMPLETION_URL'));
+  const invalidExecutionAttempt = !Number.isSafeInteger(executionAttempt) || executionAttempt <= 0;
+  const missingExecutionAttempt = !rawExecutionAttempt;
   if (!RUN_ID.test(runId) || !REPO.test(repo) || !SHA.test(headSha) || !SHA.test(baseSha)
     || !Number.isSafeInteger(repositoryId) || repositoryId <= 0
-    || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
+    || !Number.isSafeInteger(prNumber) || prNumber <= 0
+    || invalidExecutionAttempt || (callbackEnabled && missingExecutionAttempt)) {
     throw invalidPublishingReviewContract();
   }
   const [owner, repoName] = repo.split('/');
-  return { runId, repositoryId, repo, owner, repoName, prNumber, headSha, baseSha };
+  return { runId, repositoryId, repo, owner, repoName, prNumber, headSha, baseSha, executionAttempt };
+}
+
+function validateConfiguredCompletionEndpoint(endpoint: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw invalidPublishingReviewContract();
+  }
+  if (parsed.protocol !== 'https:' || !parsed.host || parsed.username || parsed.password || parsed.hash) {
+    throw invalidPublishingReviewContract();
+  }
 }
 
 /**
@@ -325,7 +348,7 @@ export function publishingConclusion(verdict: string, blockingFindingCount: numb
   return String(verdict).toUpperCase() === 'SHIP' ? 'success' : 'failure';
 }
 
-export function classifyFailure(error: unknown): string {
+export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
   if (/timeout|timed out|ETIMEDOUT/iu.test(message)) return 'timeout';
@@ -442,6 +465,8 @@ export function resolveWorkerConfig(
 
 export interface PublishingReviewDeps {
   checkClient: PublishingCheckClient;
+  /** Reports a terminal worker failure without carrying provider error text. */
+  completion?: WorkerCompletionAdapter;
   sourceLoader?: typeof loadSameHeadReviewSource;
   /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
   visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
@@ -506,37 +531,100 @@ export async function runPublishingReviewWorker(
   deps: PublishingReviewDeps,
 ): Promise<PublishingReviewReceipt> {
   if (!isPublishingReviewWorker(env)) throw invalidPublishingReviewContract();
-  const identity = publishingReviewIdentity(env);
-  const transport = bifrostTransport(env);
+  const completionEndpoint = value(env, 'REVIEW_COMPLETION_URL');
+  if (completionEndpoint) validateConfiguredCompletionEndpoint(completionEndpoint);
+  if (completionEndpoint && !deps.completion) throw invalidPublishingReviewContract();
+  const identity = publishingReviewIdentity(env, {
+    callbackEnabled: Boolean(completionEndpoint) || Boolean(deps.completion),
+  });
+  const now = deps.now || Date.now;
+  const startedAt = new Date(now()).toISOString();
+  const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
+  const panelRunner = deps.panelRunner || executePersonaPanel;
+
+  const reportTerminalFailure = async (error: unknown, failedCheckId?: number): Promise<void> => {
+    const failureClass = classifyFailure(error);
+    if (failedCheckId !== undefined) {
+      try {
+        await deps.checkClient.completeCheck({
+          owner: identity.owner,
+          repo: identity.repoName,
+          checkId: failedCheckId,
+          conclusion: 'failure',
+          title: 'Review Yeti: review did not complete',
+          summary: `Failure class \`${failureClass}\` at \`${identity.headSha}\`. This is a failed review, not an approval.`,
+        });
+      } catch {
+        logger.error('Failed to publish the fail-closed conclusion', {
+          runId: identity.runId,
+          failureClass,
+          reason: 'check_publication_failed',
+        });
+      }
+    }
+    if (deps.completion) {
+      const event: WorkerTerminalFailure = {
+        version: 'WorkerTerminalFailure.v1',
+        runId: identity.runId,
+        repositoryId: identity.repositoryId,
+        owner: identity.owner,
+        repo: identity.repoName,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        baseSha: identity.baseSha,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
+        configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+        executionAttempt: identity.executionAttempt,
+        ...(failedCheckId === undefined ? {} : { checkId: failedCheckId }),
+        failureClass,
+      };
+      try {
+        await deps.completion.reportTerminalFailure(event);
+      } catch {
+        // The original failure remains authoritative. The callback is a durable
+        // recovery aid, never a reason to swallow or rewrite that failure.
+        logger.error('Failed to persist worker terminal failure', {
+          runId: identity.runId,
+          failureClass,
+          reason: 'completion_callback_failed',
+        });
+      }
+    }
+  };
+
+  let checkId: number | undefined;
+  try {
+    // A check is useful evidence, but it is not a prerequisite for durable
+    // failure recovery: createCheck itself can fail before a check id exists.
+    checkId = value(env, 'REVIEW_CHECK_ID')
+      ? Number(value(env, 'REVIEW_CHECK_ID'))
+      : await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha);
+  } catch (error) {
+    await reportTerminalFailure(error);
+    throw error;
+  }
+
   // The dispatching workflow may tell this lane the repository's visibility. In
   // production nothing does yet, and the first live run after the visibility
   // change published "Repository visibility: UNKNOWN" for a private repository
   // (ct-meta#2884). This lane already holds a repository-scoped read token for
   // the diff, so it can ask GitHub itself. A failed lookup settles to UNKNOWN
   // and never blocks the run; it is never allowed to become a guess.
-  const repositoryVisibility = await resolveRepositoryVisibility(
-    normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY')),
-    {
-      lookup: () => (deps.visibilityLookup || lookupRepositoryVisibility)({
-        owner: identity.owner,
-        repo: identity.repoName,
-        token: value(env, 'GH_TOKEN'),
-      }),
-    },
-  );
-  const now = deps.now || Date.now;
-  const startedAt = new Date(now()).toISOString();
-  const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
-  const panelRunner = deps.panelRunner || executePersonaPanel;
-
-  // Created before any provider work so an in-flight run is visible on the head,
-  // and so a crash leaves a check this lane owns rather than nothing at all.
-  // When REVIEW_CHECK_ID is provided by central dispatch, reuse it directly via PATCH.
-  const checkId = value(env, 'REVIEW_CHECK_ID')
-    ? Number(value(env, 'REVIEW_CHECK_ID'))
-    : await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha);
-
   try {
+    // Validate the provider contract after check creation so a validly identified
+    // worker can still persist a durable terminal failure for a configuration
+    // error. The check id remains optional only for createCheck failures.
+    const transport = bifrostTransport(env);
+    const repositoryVisibility = await resolveRepositoryVisibility(
+      normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY')),
+      {
+        lookup: () => (deps.visibilityLookup || lookupRepositoryVisibility)({
+          owner: identity.owner,
+          repo: identity.repoName,
+          token: value(env, 'GH_TOKEN'),
+        }),
+      },
+    );
     // `repo` is the full `owner/repo`: the loader parses the slash itself and has
     // no `owner` field. Passing the bare name made every app-gate run die on
     // "GitHub qualification repository is invalid". The `as Parameters<...>` cast
@@ -728,26 +816,7 @@ export async function runPublishingReviewWorker(
       },
     };
   } catch (error) {
-    const failureClass = classifyFailure(error);
-    // Fail closed: an outage concludes `failure`, never `neutral` or `success`.
-    // Publication is best-effort because the check may be unreachable; the
-    // rethrow below still fails the Job so the admission deadline can reap it.
-    try {
-      await deps.checkClient.completeCheck({
-        owner: identity.owner,
-        repo: identity.repoName,
-        checkId,
-        conclusion: 'failure',
-        title: 'Review Yeti: review did not complete',
-        summary: `Failure class \`${failureClass}\` at \`${identity.headSha}\`. This is a failed review, not an approval.`,
-      });
-    } catch (publishError) {
-      logger.error('Failed to publish the fail-closed conclusion', {
-        runId: identity.runId,
-        failureClass,
-        error: publishError instanceof Error ? publishError.message : String(publishError),
-      });
-    }
+    await reportTerminalFailure(error, checkId);
     throw error;
   }
 }

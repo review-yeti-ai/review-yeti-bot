@@ -1,5 +1,6 @@
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
 import { createActionDispatchApp } from './dispatchServer';
+import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
 import { getGitHubAppInstallationIdForRepository } from './github/appAuth';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { AbandonedRunReaper } from './review/abandonedRunReaper';
@@ -30,6 +31,10 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     verifier: new GitHubActionsOidcVerifier({ policy }),
     admission: repository,
     allowAppGate: policy.allowAppGate,
+    workerCompletion: {
+      verifier: createWorkerCompletionVerifier(),
+      repository,
+    },
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getGitHubAppInstallationIdForRepository({
       appId,

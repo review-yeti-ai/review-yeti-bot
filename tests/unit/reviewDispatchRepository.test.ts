@@ -56,6 +56,19 @@ function clientWithRows(rows: any[][]) {
   return { query, release };
 }
 
+function workerFailureRepository(query: (sql: string, values?: unknown[]) => Promise<{ rows: any[] }>) {
+  const transactionQuery = vi.fn(async (sql: string, values?: unknown[]) => {
+    if (/^(BEGIN|COMMIT|ROLLBACK)$/u.test(sql) || /SELECT pg_advisory_xact_lock/u.test(sql)) return { rows: [] };
+    return query(sql, values);
+  });
+  const release = vi.fn();
+  return {
+    repository: new PostgresReviewDispatchRepository({ connect: async () => ({ query: transactionQuery, release }) }),
+    transactionQuery,
+    release,
+  };
+}
+
 describe('PostgresReviewDispatchRepository', () => {
   it('admits delivery, run, and one outbox row in one committed transaction', async () => {
     const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [], [row], [], [], []]);
@@ -403,6 +416,172 @@ describe('PostgresReviewDispatchRepository', () => {
       1_000,
       'review job projection rejected',
     ]);
+  });
+
+  it.each(['projected', 'claimed', 'pending'])('atomically records a matching failure from a %s execution', async (outboxStatus) => {
+    const tokenDigest = 'a'.repeat(64);
+    const query = vi.fn(async (sql: string, _values?: unknown[]) => /SELECT runs\.status/u.test(sql)
+      ? { rows: [{
+        ...row,
+        repository_id: 123,
+        publication_mode: 'app-gate',
+        status: 'running',
+        outbox_status: outboxStatus,
+        execution_attempt: 0,
+        worker_token_digest: tokenDigest,
+      }] }
+      : { rows: [{ run_id: row.run_id }] });
+    const { repository, transactionQuery, release } = workerFailureRepository(query);
+    const failure = {
+      version: 'WorkerTerminalFailure.v1' as const,
+      runId: row.run_id,
+      owner: identity.owner,
+      repo: identity.repo,
+      prNumber: identity.prNumber,
+      headSha: identity.headSha,
+      baseSha: identity.baseSha,
+      repositoryId: 123,
+      policyDigest: identity.configDigest,
+      configDigest: identity.configDigest,
+      executionAttempt: 1,
+      checkId: 4242,
+      failureClass: 'provider_error' as const,
+    };
+
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest: tokenDigest }, 4_000)).resolves.toEqual({
+      runId: row.run_id,
+      status: 'failed',
+    });
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(query.mock.calls[0][0]).toContain('FOR UPDATE OF runs, outbox');
+    expect(query.mock.calls[1][0]).toContain("SET status = 'projected', lease_owner = NULL");
+    expect(transactionQuery.mock.calls[0][0]).toBe('BEGIN');
+    expect(transactionQuery.mock.calls[1][1]).toEqual(['review-dispatch:123:42']);
+    expect(transactionQuery.mock.calls.at(-1)?.[0]).toBe('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
+    const sql = String(query.mock.calls[2][0]).replace(/\s+/gu, ' ');
+    expect(sql).toContain("publication_mode = 'app-gate'");
+    expect(sql).toContain("status IN ('queued', 'running')");
+    expect(sql).toContain("outbox.status = 'projected'");
+    expect(sql).toContain('outbox.worker_token_digest = $13');
+    expect(query.mock.calls[2][1]).toEqual([
+      row.run_id,
+      'worker terminal failure: provider_error',
+      4_000,
+      identity.owner,
+      identity.repo,
+      identity.prNumber,
+      identity.headSha,
+      identity.baseSha,
+      123,
+      identity.configDigest,
+      identity.configDigest,
+      1,
+      tokenDigest,
+    ]);
+  });
+
+  it('treats a duplicate worker terminal failure as already failed', async () => {
+    const tokenDigest = 'a'.repeat(64);
+    const query = vi.fn(async () => ({ rows: [{
+      ...row,
+      repository_id: 123,
+      publication_mode: 'app-gate',
+      status: 'failed',
+      outbox_status: 'projected',
+      execution_attempt: 0,
+      worker_token_digest: tokenDigest,
+    }] }));
+    const { repository } = workerFailureRepository(query);
+    const failure = {
+      version: 'WorkerTerminalFailure.v1' as const,
+      runId: row.run_id,
+      owner: identity.owner,
+      repo: identity.repo,
+      prNumber: identity.prNumber,
+      headSha: identity.headSha,
+      baseSha: identity.baseSha,
+      repositoryId: 123,
+      policyDigest: identity.configDigest,
+      configDigest: identity.configDigest,
+      executionAttempt: 1,
+      checkId: 4242,
+      failureClass: 'transport' as const,
+    };
+
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest: tokenDigest }, 4_500)).resolves.toEqual({
+      runId: row.run_id,
+      status: 'already_failed',
+    });
+    expect(query).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a same-head callback signed by a different token digest', async () => {
+    const query = vi.fn(async (sql: string) => /SELECT runs\.status/u.test(sql)
+      ? { rows: [{
+        ...row,
+        repository_id: 123,
+        publication_mode: 'app-gate',
+        status: 'running',
+        outbox_status: 'projected',
+        execution_attempt: 0,
+        worker_token_digest: 'a'.repeat(64),
+      }] }
+      : { rows: [{ run_id: row.run_id }] });
+    const { repository } = workerFailureRepository(query);
+    const failure = {
+      version: 'WorkerTerminalFailure.v1' as const,
+      runId: row.run_id,
+      repositoryId: 123,
+      owner: identity.owner,
+      repo: identity.repo,
+      prNumber: identity.prNumber,
+      headSha: identity.headSha,
+      baseSha: identity.baseSha,
+      policyDigest: identity.configDigest,
+      configDigest: identity.configDigest,
+      executionAttempt: 1,
+      failureClass: 'provider_error' as const,
+    };
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest: 'b'.repeat(64) }, 4_100)).resolves.toEqual({
+      runId: row.run_id,
+      status: 'unauthorized',
+    });
+    expect(query).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a late callback from the prior attempt even when the head is unchanged', async () => {
+    const query = vi.fn(async (sql: string) => /SELECT runs\.status/u.test(sql)
+      ? { rows: [{
+        ...row,
+        repository_id: 123,
+        publication_mode: 'app-gate',
+        status: 'running',
+        outbox_status: 'projected',
+        execution_attempt: 1,
+        worker_token_digest: 'b'.repeat(64),
+      }] }
+      : { rows: [{ run_id: row.run_id }] });
+    const { repository } = workerFailureRepository(query);
+    const failure = {
+      version: 'WorkerTerminalFailure.v1' as const,
+      runId: row.run_id,
+      repositoryId: 123,
+      owner: identity.owner,
+      repo: identity.repo,
+      prNumber: identity.prNumber,
+      headSha: identity.headSha,
+      baseSha: identity.baseSha,
+      policyDigest: identity.configDigest,
+      configDigest: identity.configDigest,
+      executionAttempt: 1,
+      failureClass: 'transport' as const,
+    };
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest: 'a'.repeat(64) }, 4_200)).resolves.toEqual({
+      runId: row.run_id,
+      status: 'unauthorized',
+    });
+    expect(query).toHaveBeenCalledOnce();
   });
 
   it('defines migration-safe delivery and outbox tables', () => {

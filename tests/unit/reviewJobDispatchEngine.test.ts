@@ -18,6 +18,7 @@ const claim = {
   terminalDeadline: receivedAt + 900_000,
   policyDigest: 'c'.repeat(64),
   configDigest: 'd'.repeat(64),
+  workerTokenDigest: undefined,
   leaseOwner: 'dispatcher-a',
   leaseExpiresAt: now + 30_000,
 };
@@ -26,6 +27,7 @@ function fixture(overrides: Record<string, any> = {}) {
   const repository = {
     claimNext: vi.fn(async () => claim),
     markProjected: vi.fn(async () => true),
+    bindWorkerTokenDigest: vi.fn(async () => true),
     releaseForRetry: vi.fn(async () => true),
     markTerminal: vi.fn(async () => true),
     ...overrides.repository,
@@ -33,7 +35,7 @@ function fixture(overrides: Record<string, any> = {}) {
   const projector = { ensure: vi.fn(async () => undefined), ...overrides.projector };
   const runSecretProvisioner = overrides.runSecretProvisioner === null
     ? undefined
-    : { provision: vi.fn(async () => undefined), ...overrides.runSecretProvisioner };
+    : { provision: vi.fn(async () => ({ workerTokenDigest: 'f'.repeat(64) })), ...overrides.runSecretProvisioner };
   const engine = new ReviewJobDispatchEngine({
     repository,
     projector,
@@ -94,6 +96,55 @@ describe('ReviewJobDispatchEngine', () => {
     }));
     expect((runSecretProvisioner!.provision as any).mock.invocationCallOrder[0])
       .toBeLessThan((projector.ensure as any).mock.invocationCallOrder[0]);
+    expect(repository.bindWorkerTokenDigest).toHaveBeenCalledWith(
+      claim.runId,
+      'dispatcher-a',
+      'f'.repeat(64),
+      now,
+    );
+    expect(repository.markProjected).toHaveBeenCalledWith(
+      claim.runId,
+      'dispatcher-a',
+      `ct-review-${'1'.repeat(32)}`,
+      now,
+      'f'.repeat(64),
+    );
+  });
+
+  it('reuses a durable token digest after a projector retry without provisioning again', async () => {
+    const provision = vi.fn(async () => ({ workerTokenDigest: 'f'.repeat(64) }));
+    const { engine, repository } = fixture({
+      repository: {
+        claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const, workerTokenDigest: 'a'.repeat(64) })),
+      },
+      runSecretProvisioner: { provision },
+    });
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'projected',
+      runId: claim.runId,
+      projectionName: `ct-review-${'1'.repeat(32)}`,
+    });
+    expect(provision).not.toHaveBeenCalled();
+    expect(repository.bindWorkerTokenDigest).not.toHaveBeenCalled();
+    expect(repository.markProjected).toHaveBeenCalledWith(
+      claim.runId,
+      'dispatcher-a',
+      `ct-review-${'1'.repeat(32)}`,
+      now,
+      'a'.repeat(64),
+    );
+  });
+
+  it('does not project when the durable token bind loses the lease', async () => {
+    const { engine, projector, repository } = fixture({
+      repository: {
+        claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })),
+        bindWorkerTokenDigest: vi.fn(async () => false),
+      },
+    });
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'lease-lost', runId: claim.runId });
+    expect(projector.ensure).not.toHaveBeenCalled();
+    expect(repository.markProjected).not.toHaveBeenCalled();
   });
 
   it('never provisions a run secret for a non-publishing claim', async () => {
