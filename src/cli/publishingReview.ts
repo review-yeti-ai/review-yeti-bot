@@ -34,6 +34,7 @@ import type { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { logger } from '../utils/logger';
+import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '../pipeline/domainIndex';
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
 
@@ -336,6 +337,74 @@ export function classifyFailure(error: unknown): string {
   return 'provider_error';
 }
 
+let cachedCompiledIndex: CompiledDomainIndex | null = null;
+
+export function getCompiledDomainIndex(): CompiledDomainIndex | null {
+  if (cachedCompiledIndex) return cachedCompiledIndex;
+  try {
+    cachedCompiledIndex = loadCompiledIndex();
+    return cachedCompiledIndex;
+  } catch (err) {
+    logger.warn('Failed to load compiled domain index; falling back to open paths', { error: err });
+    return null;
+  }
+}
+
+export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDomainIndex | null): string[] {
+  const loadedIndex = index !== undefined ? index : getCompiledDomainIndex();
+  if (!loadedIndex) {
+    return ['**'];
+  }
+
+  const canonicalMap: Record<string, string> = {
+    'security': 'security',
+    'sec-lane': 'security',
+    'performance': 'performance',
+    'perf-lane': 'performance',
+    'architecture': 'architecture',
+    'arch-lane': 'architecture',
+    'testing': 'testing',
+    'qual-lane': 'testing',
+    'dependencies': 'dependencies',
+    'dep-lane': 'dependencies',
+    'licensing': 'licensing',
+    'policy-lane': 'licensing',
+    'devops': 'devops',
+    'devops-lane': 'devops',
+    'database': 'database',
+    'db-lane': 'database',
+    'style': 'style',
+    'documentation': 'documentation',
+    'accessibility': 'accessibility',
+    'i18n': 'i18n',
+  };
+  const target = canonicalMap[personaName.toLowerCase().trim()] || personaName.toLowerCase().trim();
+
+  const classes = new Set<string>();
+  for (const [cls, personas] of Object.entries(loadedIndex.classes)) {
+    if (personas.includes(target)) {
+      classes.add(cls);
+    }
+  }
+
+  if (classes.size === 0) {
+    return ['**'];
+  }
+
+  const globs = new Set<string>();
+  for (const eco of Object.values(loadedIndex.ecosystems)) {
+    for (const cls of classes) {
+      if (eco.classes[cls]) {
+        for (const g of eco.classes[cls]) {
+          globs.add(g);
+        }
+      }
+    }
+  }
+
+  return Array.from(globs).sort();
+}
+
 export function resolveWorkerConfig(
   env: NodeJS.ProcessEnv,
   transport: { baseUrl: string; apiKey: string; model: string },
@@ -376,19 +445,19 @@ export function resolveWorkerConfig(
   const default6 = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'];
   const effectivePersonaNames = personasList.length > 0 ? personasList : default6;
 
-  const personaMap: Record<string, { id: string; required: boolean; charter: string; paths: string[] }> = {
-    'security': { id: 'sec-lane', required: true, charter: 'builtin:security', paths: ['**'] },
-    'sec-lane': { id: 'sec-lane', required: true, charter: 'builtin:security', paths: ['**'] },
-    'performance': { id: 'perf-lane', required: false, charter: 'builtin:performance', paths: ['**'] },
-    'perf-lane': { id: 'perf-lane', required: false, charter: 'builtin:performance', paths: ['**'] },
-    'architecture': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals', paths: ['**'] },
-    'arch-lane': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals', paths: ['**'] },
-    'testing': { id: 'qual-lane', required: false, charter: 'builtin:consistency', paths: ['**'] },
-    'qual-lane': { id: 'qual-lane', required: false, charter: 'builtin:consistency', paths: ['**'] },
-    'dependencies': { id: 'dep-lane', required: false, charter: 'builtin:contract', paths: ['**'] },
-    'dep-lane': { id: 'dep-lane', required: false, charter: 'builtin:contract', paths: ['**'] },
-    'licensing': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance', paths: ['**'] },
-    'policy-lane': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance', paths: ['**'] },
+  const personaMap: Record<string, { id: string; required: boolean; charter: string }> = {
+    'security': { id: 'sec-lane', required: true, charter: 'builtin:security' },
+    'sec-lane': { id: 'sec-lane', required: true, charter: 'builtin:security' },
+    'performance': { id: 'perf-lane', required: false, charter: 'builtin:performance' },
+    'perf-lane': { id: 'perf-lane', required: false, charter: 'builtin:performance' },
+    'architecture': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals' },
+    'arch-lane': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals' },
+    'testing': { id: 'qual-lane', required: false, charter: 'builtin:consistency' },
+    'qual-lane': { id: 'qual-lane', required: false, charter: 'builtin:consistency' },
+    'dependencies': { id: 'dep-lane', required: false, charter: 'builtin:contract' },
+    'dep-lane': { id: 'dep-lane', required: false, charter: 'builtin:contract' },
+    'licensing': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
+    'policy-lane': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
   };
 
   const personas = effectivePersonaNames.map((name) => {
@@ -397,14 +466,13 @@ export function resolveWorkerConfig(
       id: name,
       required: false,
       charter: 'builtin:correctness',
-      paths: ['**'],
     };
     return {
       id: matched.id,
       enabled: true,
       required: matched.required,
       charter: matched.charter,
-      paths: matched.paths,
+      paths: getPersonaEcosystemPaths(key),
       providers: ['bifrost'] as ProviderId[],
     };
   });
