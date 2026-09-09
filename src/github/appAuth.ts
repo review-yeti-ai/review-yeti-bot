@@ -21,6 +21,35 @@ export interface GitHubRepositoryInstallationConfig {
   owner: string;
   repo: string;
   baseUrl?: string;
+  signal?: AbortSignal;
+}
+
+/** Identity comes from GitHub's authenticated App endpoint, not its check name,
+ * a PR field, or the admission service's separately configured credentials. */
+export async function getGitHubAppIdentity(
+  config: Pick<GitHubAppAuthConfig, 'appId' | 'privateKey' | 'baseUrl'>,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<{ id: number }> {
+  const response = await fetchFn(`${(config.baseUrl || 'https://api.github.com').replace(/\/+$/, '')}/app`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${generateGitHubAppJwt(config.appId, config.privateKey)}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error('GitHub publisher App identity unavailable');
+  const body = await response.json() as { id?: unknown };
+  if (!Number.isSafeInteger(body?.id) || Number(body.id) <= 0 || String(body.id) !== config.appId) {
+    throw new Error('GitHub publisher App identity mismatch');
+  }
+  return { id: Number(body.id) };
+}
+
+function repositoryRequestSignal(config: GitHubRepositoryInstallationConfig): AbortSignal {
+  config.signal?.throwIfAborted();
+  const timeout = AbortSignal.timeout(5_000);
+  return config.signal ? AbortSignal.any([config.signal, timeout]) : timeout;
 }
 
 /**
@@ -137,7 +166,7 @@ export async function getGitHubAppInstallationIdForRepository(
       'User-Agent': 'ct-review-bot[bot]',
       'X-GitHub-Api-Version': '2022-11-28',
     },
-    signal: AbortSignal.timeout(5_000),
+    signal: repositoryRequestSignal(config),
   });
   if (!response.ok) throw new Error(`GitHub App repository installation lookup failed HTTP ${response.status}`);
   const body = await response.json() as { id?: unknown };
@@ -173,7 +202,7 @@ export async function getGitHubAppRepositoryReadToken(
       repositories: [repo],
       permissions: { contents: 'read', pull_requests: 'read' },
     }),
-    signal: AbortSignal.timeout(5_000),
+    signal: repositoryRequestSignal(config),
   });
   if (!response.ok) {
     throw new Error(`GitHub App repository read token exchange failed HTTP ${response.status}`);
@@ -237,7 +266,7 @@ export async function getGitHubAppRepositoryPublishToken(
       repositories: [repo],
       permissions: { checks: 'write' },
     }),
-    signal: AbortSignal.timeout(5_000),
+    signal: repositoryRequestSignal(config),
   });
   if (!response.ok) {
     throw new Error(`GitHub App repository publish token exchange failed HTTP ${response.status}`);

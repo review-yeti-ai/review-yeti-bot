@@ -93,7 +93,8 @@ describe('check run ownership', () => {
   it('calls createCheck when REVIEW_CHECK_ID is absent', async () => {
     const d = deps();
     await runPublishingReviewWorker(env(), d);
-    expect(d.checkClient.createCheck).toHaveBeenCalledWith('calltelemetry', 'ct-meta', HEAD);
+    expect(d.checkClient.createCheck).toHaveBeenCalledWith('calltelemetry', 'ct-meta', HEAD,
+      `${env().REVIEW_RUN_ID}:a1`);
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({ checkId: 4242 }),
     );

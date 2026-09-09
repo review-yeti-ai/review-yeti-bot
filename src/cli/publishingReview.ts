@@ -72,7 +72,7 @@ export interface CheckAnnotation {
 }
 
 export interface PublishingCheckClient {
-  createCheck(owner: string, repo: string, headSha: string): Promise<number>;
+  createCheck(owner: string, repo: string, headSha: string, externalId?: string): Promise<number>;
   completeCheck(options: {
     owner: string;
     repo: string;
@@ -594,7 +594,8 @@ export async function runPublishingReviewWorker(
     // failure recovery: createCheck itself can fail before a check id exists.
     checkId = value(env, 'REVIEW_CHECK_ID')
       ? Number(value(env, 'REVIEW_CHECK_ID'))
-      : await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha);
+      : await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha,
+        `${identity.runId}:a${identity.executionAttempt}`);
   } catch (error) {
     await reportTerminalFailure(error);
     throw error;
