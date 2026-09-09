@@ -531,7 +531,10 @@ export async function runPublishingReviewWorker(
 
   // Created before any provider work so an in-flight run is visible on the head,
   // and so a crash leaves a check this lane owns rather than nothing at all.
-  const checkId = await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha);
+  // When REVIEW_CHECK_ID is provided by central dispatch, reuse it directly via PATCH.
+  const checkId = value(env, 'REVIEW_CHECK_ID')
+    ? Number(value(env, 'REVIEW_CHECK_ID'))
+    : await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha);
 
   try {
     // `repo` is the full `owner/repo`: the loader parses the slash itself and has
