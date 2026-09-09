@@ -171,17 +171,16 @@ for transport in review.get('transports', []):
 lane_deadline_ms = int(budget['lane_deadline_ms'])
 lane_overhead_ms = int(budget['lane_overhead_ms'])
 max_attempts = int(review['openrouter_max_attempts'])
-max_investigation_turns = int(budget['max_investigation_turns'])
 transport_connect_sum_ms = sum(t['connect_timeout_ms'] for t in transports)
 transport_stall_sum_ms = sum(t['stall_ms'] for t in transports)
 stall_envelope_ms = transport_connect_sum_ms + transport_stall_sum_ms
-worst_case_dead_call_ms = stall_envelope_ms * max_attempts * max_investigation_turns
+worst_case_dead_call_ms = stall_envelope_ms * max_attempts
 required_lane_budget_ms = worst_case_dead_call_ms + lane_overhead_ms
 if required_lane_budget_ms > lane_deadline_ms:
     raise SystemExit(
         f'worst-case dead-transport budget ({worst_case_dead_call_ms}ms = ({transport_connect_sum_ms}ms '
         f'connect + {transport_stall_sum_ms}ms stall) across {len(transports)} transports x '
-        f'{max_attempts} attempts x {max_investigation_turns} turns) plus lane overhead reserve '
+        f'{max_attempts} attempts) plus lane overhead reserve '
         f'({lane_overhead_ms}ms) exceeds review_yeti.budget.lane_deadline_ms ({lane_deadline_ms}ms); '
         'a full sequential failover of never-connecting or never-streaming transports could never '
         'finish the last transport'
@@ -357,11 +356,10 @@ review = policy['review_yeti']
 # edge via the declared overhead reserve instead of mutating the transport.
 lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
 attempts = int(review['openrouter_max_attempts'])
-turns = int(review['budget']['max_investigation_turns'])
 enabled = [item for item in review['transports'] if item.get('enabled') is True]
 base_sum = sum(item['connect_timeout_ms'] + item['stall_ms'] for item in enabled)
 # Smallest overhead that makes required exceed the lane deadline:
-required_without_overhead = base_sum * attempts * turns
+required_without_overhead = base_sum * attempts
 review['budget']['lane_overhead_ms'] = str(lane_deadline_ms - required_without_overhead + 1)
 json.dump(policy, open(destination, 'w'))
 PY
@@ -383,7 +381,7 @@ run_transport_budget_overflow_case() {
 }
 
 # Same failure mode, isolated to the retry multiplier: a modest connect+stall envelope that fits
-# once but overflows once multiplied by openrouter_max_attempts x max_investigation_turns.
+# once but overflows once multiplied by openrouter_max_attempts.
 write_transport_retry_budget_overflow_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
 import json
@@ -392,11 +390,9 @@ import sys
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
-# Ollama-only: ollama's six-lane/90s contract is hard-pinned, so this fixture
-# overflows the lane deadline by multiplying the investigation-turn budget
-# (the same worst-case dead-transport sum, more turns).
-turns = int(review['budget']['max_investigation_turns'])
-review['budget']['max_investigation_turns'] = str(turns * 3)
+# A lane deadline that covers OpenRouter request retries (180s) but cannot fit
+# the full connect+stall dead-call envelope plus overhead (360s).
+review['budget']['lane_deadline_ms'] = '300000'
 json.dump(policy, open(destination, 'w'))
 PY
 }
@@ -435,7 +431,6 @@ transports = [item for item in review['transports'] if item.get('enabled') is Tr
 raw_dead_call_budget = (
     sum(item['connect_timeout_ms'] + item['stall_ms'] for item in transports)
     * int(review['openrouter_max_attempts'])
-    * int(budget['max_investigation_turns'])
 )
 budget['lane_deadline_ms'] = str(raw_dead_call_budget)
 with open(destination, 'w') as handle:
@@ -532,13 +527,13 @@ grep -q '^max_review_assignments<<' "$tmp_dir/valid.output"
 grep -q '^max_incremental_diff_chars<<' "$tmp_dir/valid.output"
 grep -qx '60000' "$tmp_dir/valid.output"
 
-run_case valid-lane-deadline lane_deadline_ms 1080000 0
+run_case valid-lane-deadline lane_deadline_ms 1200000 0
 grep -q '^lane_deadline_ms<<' "$tmp_dir/valid-lane-deadline.output"
-grep -qx '1080000' "$tmp_dir/valid-lane-deadline.output"
+grep -qx '1200000' "$tmp_dir/valid-lane-deadline.output"
 
-run_case valid-investigation-turns max_investigation_turns 2 0
+run_case valid-investigation-turns max_investigation_turns 20 0
 grep -q '^max_investigation_turns<<' "$tmp_dir/valid-investigation-turns.output"
-grep -qx '2' "$tmp_dir/valid-investigation-turns.output"
+grep -qx '20' "$tmp_dir/valid-investigation-turns.output"
 
 for value in 0 -1 abc '24 ' ''; do
   run_case "invalid-${value:-empty}" lane_call_budget "$value" 1

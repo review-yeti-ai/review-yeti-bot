@@ -40,13 +40,13 @@ export function checkDeadTransportEnvelope({
   const transportConnectSumMs = transports.reduce((sum, transport) => sum + transport.connect_timeout_ms, 0);
   const transportStallSumMs = transports.reduce((sum, transport) => sum + transport.stall_ms, 0);
   const stallEnvelopeMs = transportConnectSumMs + transportStallSumMs;
-  const worstCaseDeadCallMs = stallEnvelopeMs * maxAttempts * maxInvestigationTurns;
+  const worstCaseDeadCallMs = stallEnvelopeMs * maxAttempts;
   const requiredLaneBudgetMs = worstCaseDeadCallMs + laneOverheadMs;
   if (requiredLaneBudgetMs > laneDeadlineMs) {
     throw new Error(
       `worst-case dead-transport budget (${worstCaseDeadCallMs}ms = (${transportConnectSumMs}ms connect `
       + `+ ${transportStallSumMs}ms stall) across ${transports.length} transports `
-      + `x ${maxAttempts} attempts x ${maxInvestigationTurns} turns) plus lane overhead reserve `
+      + `x ${maxAttempts} attempts) plus lane overhead reserve `
       + `(${laneOverheadMs}ms) exceeds review_yeti.budget.lane_deadline_ms (${laneDeadlineMs}ms); a full `
       + 'sequential failover of never-connecting or never-streaming transports could never finish the '
       + 'last transport',

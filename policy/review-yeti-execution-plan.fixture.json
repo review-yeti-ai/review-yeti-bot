@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "2cdedcc26668539af01909fb014075d993bc3dfec2fc271abd35d80727ada850",
+  "normalized_plan_sha256": "48674de0ec92458299cdd1661a3df47f746a4d2644c6d76960a30fc237dedc7b",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -15,9 +15,9 @@
       }
     },
     "lane": {
-      "deadline_ms": 1080000,
+      "deadline_ms": 1200000,
       "overhead_ms": 120000,
-      "max_investigation_turns": 2,
+      "max_investigation_turns": 20,
       "max_review_assignments": 24
     },
     "scope": {
@@ -34,7 +34,7 @@
         "timeouts": {
           "connect_ms": 90000,
           "request_ms": 90000,
-          "stall_ms": 90000,
+          "stall_ms": 30000,
           "ttft_ms": 60000,
           "max_wall_clock_ms": 900000
         },

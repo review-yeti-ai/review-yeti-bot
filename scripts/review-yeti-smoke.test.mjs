@@ -302,7 +302,6 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
           0,
         )
         * Number(policy.review_yeti.openrouter_max_attempts)
-        * Number(policy.review_yeti.budget.max_investigation_turns)
         + Number(policy.review_yeti.budget.lane_overhead_ms),
   );
   assert.ok(
@@ -613,8 +612,7 @@ test('the smoke suite rejects a policy whose dead-transport connect+stall envelo
   const connectSum = transports.reduce((sum, transport) => sum + transport.connect_timeout_ms, 0);
   const stallSum = transports.reduce((sum, transport) => sum + transport.stall_ms, 0);
   const envelope = (connectSum + stallSum)
-    * Number(policy.review_yeti.openrouter_max_attempts)
-    * Number(policy.review_yeti.budget.max_investigation_turns);
+    * Number(policy.review_yeti.openrouter_max_attempts);
   policy.review_yeti.budget.lane_deadline_ms = String(envelope + Number(policy.review_yeti.budget.lane_overhead_ms) - 1);
   assert.throws(
     () => validatePolicy(policy),
