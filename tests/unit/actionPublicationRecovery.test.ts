@@ -64,6 +64,12 @@ function fixture(options: Options = {}, selectedPlan = plan) {
         state.comments.push({ id: 99, body: payload.body, user: { login: state.publisher } });
         return ok({ id: 99, user: { login: state.publisher } });
       }
+      if (args[2] === 'PATCH' && args[3].endsWith('/issues/comments/99')) {
+        const existing = state.comments.find((comment: any) => comment.id === 99);
+        if (!existing) throw new Error('Fake PATCH requires an existing sticky comment');
+        existing.body = payload.body;
+        return ok(existing);
+      }
     }
     throw new Error(`Unexpected fake GitHub call: ${args.slice(0, 4).join(' ')}`);
   };
@@ -113,6 +119,40 @@ describe('uncertain inline creation: strict read-back, never POST retry', () => 
     const f = fixture({ afterSnapshot(s, reads) { if (reads === 2) s[key] = key === 'publisher' ? 'changed[bot]' : 'e'.repeat(40); } });
     expect(f.run().success).toBe(false);
     expect(f.state.posts).toHaveLength(1);
+  });
+
+  describe.each([false, true])('existing sticky publisher boundary (needs PATCH=%s)', (needsPatch) => {
+    it('refuses changed identity at the pre-sticky guard without adopting or writing', () => {
+      let driftAtRead = Infinity;
+      const f = fixture({ successfulCreate: true,
+        afterSnapshot(state, reads) { if (reads === driftAtRead) state.publisher = 'changed[bot]'; },
+      });
+      expect(f.run()).toMatchObject({ success: true, summaryCommentId: 99 });
+      if (needsPatch) f.state.comments[0].body += '\nprevious summary content';
+      const before = structuredClone(f.state.comments);
+      f.state.posts = [];
+      driftAtRead = f.state.reads + 1;
+      const result = f.run();
+      expect(f.state.publisher).toBe('changed[bot]');
+      expect(result).toMatchObject({ success: false, postedViaGh: false,
+        error: 'GitHub review publication failed: sticky summary publication failed: Action review publisher changed before sticky publication',
+      });
+      expect(f.state.posts).toEqual([]);
+      expect(f.state.comments).toEqual(before);
+    });
+
+    it('still permits the corresponding existing-comment path for an unchanged identity', () => {
+      const f = fixture({ successfulCreate: true });
+      expect(f.run()).toMatchObject({ success: true, summaryCommentId: 99 });
+      if (needsPatch) f.state.comments[0].body += '\nprevious summary content';
+      f.state.posts = [];
+      expect(f.run()).toMatchObject({ success: true, postedViaGh: true, summaryCommentId: 99 });
+      expect(f.state.posts.map((post: any) => [post.method, post.endpoint])).toEqual(needsPatch
+        ? [['PATCH', 'repos/review-yeti-ai/review-yeti-bot/issues/comments/99']]
+        : []);
+      expect(f.state.comments).toHaveLength(1);
+      expect(f.state.comments[0].user.login).toBe('github-actions[bot]');
+    });
   });
 
   describe.each(['nested', 'outer'] as const)('%s strict pagination', (scope) => {
