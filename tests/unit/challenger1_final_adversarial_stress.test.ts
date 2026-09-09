@@ -261,23 +261,23 @@ personas:
   });
 
   describe('Challenge 4: Terminal Failed Run Re-dispatch & Outbox Re-arming Defect', () => {
-    it('re-dispatch of a failed run whose outbox was "terminal" re-arms the outbox to pending', async () => {
+    it('re-dispatch of a failed run whose outbox was "projected" re-arms the outbox to pending', async () => {
       // In real DOKS operation:
       // 1. A run is admitted -> review_dispatch_outbox is 'pending'
       // 2. reviewJobDispatchEngine claims it -> 'claimed'
       // 3. reviewJobDispatchEngine creates K8s job -> 'projected'
-      // 4. The worker fails terminally or is swept -> review_runs is 'failed', review_dispatch_outbox is 'terminal'
+      // 4. The worker fails in a provider stage -> review_runs is 'failed', review_dispatch_outbox remains 'projected'
       // 5. A developer triggers a re-dispatch (e.g. comments /review or pushes a commit with same head)
       // 6. admit() runs:
       //    review_runs is re-armed from 'failed' to 'queued'
-      //    review_dispatch_outbox is re-armed from 'terminal' to 'pending'
+      //    review_dispatch_outbox is re-armed from 'projected' to 'pending'
       //
       const queryHistory: Array<{ sql: string; values: any[] }> = [];
 
-      // Simulate a database where review_dispatch_outbox already has status 'terminal'
-      const outboxTable = new Map<string, { runId: string; status: string; attempt: number }>();
+      // Simulate a database where a worker has projected a Job and then failed.
+      const outboxTable = new Map<string, { runId: string; status: string; attempt: number; executionAttempt: number }>();
       const runId = 'run_12345678901234567890123456789012';
-      outboxTable.set(runId, { runId, status: 'terminal', attempt: 1 });
+      outboxTable.set(runId, { runId, status: 'projected', attempt: 1, executionAttempt: 0 });
 
       const mockClient = {
         query: vi.fn(async (sql: string, values: any[]) => {
@@ -318,23 +318,25 @@ personas:
             return { rows: [] };
           }
           if (/INSERT INTO review_dispatch_outbox/i.test(sql)) {
-            // Simulate PostgreSQL ON CONFLICT (run_id) DO UPDATE ... WHERE review_dispatch_outbox.status = 'terminal'
+            // Simulate PostgreSQL ON CONFLICT (run_id) DO UPDATE ... WHERE review_dispatch_outbox.status IN ('projected', 'terminal')
             const existing = outboxTable.get(values[0]);
             if (existing) {
-              // The SQL contains: WHERE review_dispatch_outbox.status IN ('terminal', 'projected')
+              // The SQL contains: WHERE review_dispatch_outbox.status IN ('projected', 'terminal')
               const matchesWhereClause = sql.includes('projected')
                 ? (existing.status === 'terminal' || existing.status === 'projected')
                 : existing.status === 'terminal';
               if (matchesWhereClause) {
+                const wasProjected = existing.status === 'projected';
                 existing.status = 'pending';
                 existing.attempt = 0;
+                if (wasProjected) existing.executionAttempt += 1;
                 return { rows: [existing] };
               } else {
                 // In Postgres, if WHERE on DO UPDATE evaluates to false, 0 rows are updated!
                 return { rows: [] };
               }
             } else {
-              outboxTable.set(values[0], { runId: values[0], status: 'pending', attempt: 0 });
+              outboxTable.set(values[0], { runId: values[0], status: 'pending', attempt: 0, executionAttempt: 0 });
               return { rows: [outboxTable.get(values[0])!] };
             }
           }
@@ -368,12 +370,11 @@ personas:
       expect(admissionResult.status).toBe('accepted');
       expect(admissionResult.run.status).toBe('queued');
 
-      // VERIFICATION OF DEFECT:
-      // Because review_dispatch_outbox was in 'projected' state when the run failed,
-      // the outbox record was NOT reset to 'pending'. It remains stuck in 'projected'!
+      // The projected row must be made runnable again, and its next claim must
+      // receive a fresh execution identity rather than the terminal Job/Secret.
       const currentOutboxState = outboxTable.get(runId)!;
-      // In a correctly hardened implementation, re-admitting a failed run MUST re-arm the outbox to 'pending'!
       expect(currentOutboxState.status).toBe('pending');
+      expect(currentOutboxState.executionAttempt).toBe(1);
     });
   });
 });

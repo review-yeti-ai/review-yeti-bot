@@ -701,7 +701,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
 
       // Verify that outbox reset query handles terminal status and checks queued run
       const outboxInsertCall = query.mock.calls.find(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(sql));
-      expect(outboxInsertCall?.[0]).toMatch(/review_dispatch_outbox\.status = 'terminal'/);
+      expect(outboxInsertCall?.[0]).toMatch(/review_dispatch_outbox\.status IN \('projected', 'terminal'\)/);
     });
 
     it('prevents admitting when delivery identity conflicts with existing delivery id', async () => {
