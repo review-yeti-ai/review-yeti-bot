@@ -1394,7 +1394,7 @@ export class OpenRouterClient implements ReviewModelClient {
             try {
               const rawRes = await sdkClient.getRawResponse();
               if (rawRes) {
-                const rawJson = await rawRes.json();
+                const rawJson = (await rawRes.json()) as any;
                 rawUsage = rawJson?.usage;
               }
             } catch (_) {}
