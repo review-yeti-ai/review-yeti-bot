@@ -440,6 +440,7 @@ func validateInput(input Input) error {
 // validatePreparedReview bounds the opaque transport and checks its envelope.
 // Config semantics/digest and agreement with the actual injected provider
 // transport remain with the shared TypeScript verifier, not this Go builder.
+// Both languages exercise testdata/prepared-review-execution.json.
 func validatePreparedReview(raw string) error {
 	rejected := configErr("prepared review envelope is invalid")
 	if len(raw) == 0 || len(raw) > MaxPreparedReviewBytes || !utf8.ValidString(raw) {
@@ -458,16 +459,39 @@ func validatePreparedReview(raw string) error {
 		return rejected
 	}
 	var baseURL, model string
-	if json.Unmarshal(transport["baseUrl"], &baseURL) != nil || utf8.RuneCountInString(baseURL) > 2000 ||
-		json.Unmarshal(transport["model"], &model) != nil || len(model) == 0 || utf8.RuneCountInString(model) > 256 ||
+	if json.Unmarshal(transport["baseUrl"], &baseURL) != nil || utf16CodeUnits(baseURL) > 2000 ||
+		json.Unmarshal(transport["model"], &model) != nil || len(model) == 0 || utf16CodeUnits(model) > 256 ||
 		strings.ContainsFunc(model, func(r rune) bool { return r < 32 || r == 127 }) {
 		return rejected
 	}
-	parsed, err := url.Parse(baseURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	// Reject raw spelling that URL parsers normalize differently, including
+	// empty query/fragment delimiters. Escaped path characters remain valid.
+	if strings.ContainsAny(baseURL, "\\?#") || strings.ContainsFunc(baseURL, func(r rune) bool { return r <= 32 || r == 127 }) {
 		return rejected
 	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return rejected
+	}
+	if port := parsed.Port(); port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return rejected
+		}
+	}
 	return nil
+}
+
+// Match TypeScript/Zod string limits, which count UTF-16 units rather than
+// Unicode code points. Astral characters consume two units in both validators.
+func utf16CodeUnits(value string) int {
+	units := 0
+	for _, r := range value {
+		units++
+		if r > 0xffff {
+			units++
+		}
+	}
+	return units
 }
 
 // executionAttemptForSpec uses the explicit CRD field whenever present. The
