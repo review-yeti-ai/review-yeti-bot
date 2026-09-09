@@ -13,6 +13,8 @@ const failure = () => ({ status: 1, stdout: JSON.stringify({ message: 'PRIVATE_R
 type Options = {
   mutate?: (state: any) => void;
   afterSnapshot?: (state: any, reads: number) => void;
+  afterSummarySnapshot?: (state: any) => void;
+  pagination?: { scope: 'nested' | 'outer'; response: unknown };
   response?: ReturnType<typeof failure>;
   stickyFailure?: boolean;
   hideSummary?: boolean;
@@ -22,19 +24,32 @@ type Options = {
 // Only GitHub transport is fake. The real publisher must decide whether the persisted
 // comment is sufficient and must still publish/read back its own current sticky summary.
 function fixture(options: Options = {}, selectedPlan = plan) {
-  const state: any = { threads: [], comments: [], posts: [], reads: 0, publisher: 'github-actions[bot]', head, base, complete: true, readFailure: false };
+  const state: any = { threads: [], comments: [], posts: [], reads: 0, paginationReads: 0, publisher: 'github-actions[bot]', head, base, complete: true, readFailure: false };
   const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
     if (args[0] === 'pr') return ok({ headRefOid: state.head, baseRefOid: state.base });
     if (args[1] === 'user') return ok(state.publisher);
     if (args[1] === 'graphql') {
       state.reads++;
       if (state.readFailure) return { status: 1, stdout: '', stderr: 'PRIVATE_GRAPHQL' };
+      if (options.pagination && args.includes('endCursor=fixture-next')) {
+        const nested = args.some(arg => arg.includes('query ReviewThreadComments'));
+        if (nested !== (options.pagination.scope === 'nested')) throw new Error('Unexpected pagination connection');
+        state.paginationReads++;
+        return ok(options.pagination.response);
+      }
       const snapshot = structuredClone({ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: !state.complete, endCursor: null } } } } } });
+      if (options.pagination && state.threads.length > 0) {
+        const connection = snapshot.data.repository.pullRequest.reviewThreads;
+        const paginated = options.pagination.scope === 'nested' ? connection.nodes[0].comments : connection;
+        paginated.pageInfo = { hasNextPage: true, endCursor: 'fixture-next' };
+      }
       options.afterSnapshot?.(state, state.reads);
       return ok(snapshot);
     }
     if (args[1]?.startsWith('repos/review-yeti-ai/review-yeti-bot/issues/638/comments?') && !args.includes('--method')) {
-      return ok(options.hideSummary ? '' : state.comments.map((c: any) => JSON.stringify(c)).join('\n'));
+      const snapshot = ok(options.hideSummary ? '' : state.comments.map((c: any) => JSON.stringify(c)).join('\n'));
+      if (state.comments.length > 0) options.afterSummarySnapshot?.(state);
+      return snapshot;
     }
     if (args[1] === '--method') {
       const payload = JSON.parse(commandOptions.input);
@@ -98,6 +113,57 @@ describe('uncertain inline creation: strict read-back, never POST retry', () => 
     const f = fixture({ afterSnapshot(s, reads) { if (reads === 2) s[key] = key === 'publisher' ? 'changed[bot]' : 'e'.repeat(40); } });
     expect(f.run().success).toBe(false);
     expect(f.state.posts).toHaveLength(1);
+  });
+
+  describe.each(['nested', 'outer'] as const)('%s strict pagination', (scope) => {
+    const page = (connection: unknown) => scope === 'nested'
+      ? { data: { node: { comments: connection } } }
+      : { data: { repository: { pullRequest: { reviewThreads: connection } } } };
+    const terminal = page({ nodes: [], pageInfo: { hasNextPage: false, endCursor: null } });
+
+    it.each([
+      ['absent page list', []],
+      ['missing connection', {}],
+      ['missing pageInfo', page({ nodes: [] })],
+      ['later missing connection', [terminal, {}]],
+      ['later missing pageInfo', [terminal, page({ nodes: [] })]],
+      ['nonboolean hasNextPage', page({ nodes: [], pageInfo: { hasNextPage: 'false', endCursor: null } })],
+    ])('refuses %s without retrying inline creation or publishing sticky', (_name, response) => {
+      const f = fixture({ pagination: { scope, response } });
+      expect(f.run()).toMatchObject({ success: false, postedViaGh: false, reconciledInlineCount: 0 });
+      expect(f.state.paginationReads).toBe(1);
+      expect(f.state.posts.map((p: any) => [p.method, p.endpoint])).toEqual([
+        ['POST', 'repos/review-yeti-ai/review-yeti-bot/pulls/638/comments'],
+      ]);
+    });
+
+    it.each([['object', terminal], ['page list', [terminal]]])('accepts an explicit empty terminal connection (%s)', (_name, response) => {
+      const f = fixture({ pagination: { scope, response } });
+      expect(f.run()).toMatchObject({ success: true, postedViaGh: true, reconciledInlineCount: 1, summaryCommentId: 99 });
+      // Both recovery and final verification must observe the terminal page.
+      expect(f.state.paginationReads).toBe(2);
+      expect(f.state.posts.map((p: any) => [p.method, p.endpoint])).toEqual([
+        ['POST', 'repos/review-yeti-ai/review-yeti-bot/pulls/638/comments'],
+        ['POST', 'repos/review-yeti-ai/review-yeti-bot/issues/638/comments'],
+      ]);
+    });
+  });
+
+  describe.each([false, true])('terminal sticky identity (normal201=%s)', (successfulCreate) => {
+    it.each(['head', 'base', 'publisher'])('refuses %s drift during the final visible sticky GET', (key) => {
+      const f = fixture({
+        successfulCreate,
+        afterSummarySnapshot(s) { s[key] = key === 'publisher' ? 'changed[bot]' : 'e'.repeat(40); },
+      });
+      expect(f.run()).toMatchObject({ success: false, postedViaGh: false, reconciledInlineCount: successfulCreate ? 0 : 1 });
+      expect(f.state[key]).toBe(key === 'publisher' ? 'changed[bot]' : 'e'.repeat(40));
+      // The final read happens after the write: fail closed, never retry either POST.
+      expect(f.state.posts.map((p: any) => [p.method, p.endpoint])).toEqual([
+        ['POST', 'repos/review-yeti-ai/review-yeti-bot/pulls/638/comments'],
+        ['POST', 'repos/review-yeti-ai/review-yeti-bot/issues/638/comments'],
+      ]);
+      expect(f.state.comments[0].body).toContain(head);
+    });
   });
 
   it('does not weaken the final all-thread verification after recovering', () => {

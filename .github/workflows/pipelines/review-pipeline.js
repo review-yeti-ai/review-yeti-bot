@@ -6226,12 +6226,12 @@ function readActionReviewThreads(commandRunner, prContext, options = {}) {
       const pages = Array.isArray(decoded) ? decoded : [decoded];
       const graphError = pages.flatMap((page) => page?.errors || [])[0];
       if (graphError) throw new Error(graphError.message || 'GraphQL returned an error');
-      if (options.strict && pages.some((page) => {
+      if (options.strict && (pages.length === 0 || pages.some((page) => {
         const connection = label === 'reviewThread comments' ? page?.data?.node?.comments : page?.data?.repository?.pullRequest?.reviewThreads;
         return !Array.isArray(connection?.nodes) || typeof connection?.pageInfo?.hasNextPage !== 'boolean'
           || connection.nodes.some((thread) => label === 'reviewThreads'
             && (!Array.isArray(thread?.comments?.nodes) || typeof thread.comments?.pageInfo?.hasNextPage !== 'boolean'));
-      })) throw new Error('Incomplete publication snapshot shape');
+      }))) throw new Error('Incomplete publication snapshot shape');
       return pages;
     } catch (error) {
       throw new Error(`GitHub returned malformed ${label} JSON: ${error.message}`);
@@ -6985,6 +6985,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         && comment.body === renderStickySummaryBody(bodyWithRejected, prContext, null, { publicationAttemptId: attemptId }).body
       ));
       if (!visibleSummary) throw new Error('exact-head sticky overview was not visible after publication');
+      assertPublicationIdentity(commandRunner, prContext, expectedPublisherLogin);
 
       const matchedThreads = expectedItems.map((item) => findVerifiedThread(item, prContext, verified, expectedPublisherLogin)).filter(Boolean);
       const reviewCommentIds = matchedThreads.flatMap((thread) => (thread.comments?.nodes || [])
