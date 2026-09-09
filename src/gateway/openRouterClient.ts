@@ -35,9 +35,21 @@ export type FetchImplementation = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+export type OpenRouterContentBlock =
+  | {
+      type: 'text';
+      text: string;
+      cache_control?: { type: 'ephemeral' };
+      [key: string]: unknown;
+    }
+  | {
+      type: string;
+      [key: string]: unknown;
+    };
+
 export interface OpenRouterMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | OpenRouterContentBlock[];
 }
 
 export interface OpenRouterRequest {
@@ -59,12 +71,41 @@ export interface OpenRouterRequest {
   provider?: Record<string, unknown>;
   plugins?: Array<Record<string, unknown>>;
   metadata?: Record<string, string>;
+  onFirstToken?: () => void;
 }
 
 export interface TokensUsed {
   prompt: number;
   completion: number;
   total: number;
+  cached?: number;
+  cached_tokens?: number;
+  cache_read_input_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+}
+
+/**
+ * Canonical helper to resolve the cached token count from any usage structure.
+ * Standardizes precedence: cached -> cached_tokens -> prompt_cache_hit_tokens -> cache_read_input_tokens.
+ */
+export function resolveCachedTokens(usage: TokensUsed | Record<string, unknown> | null | undefined): number {
+  if (!usage) return 0;
+  const raw = usage as Record<string, unknown>;
+  const val = raw.cached ??
+    raw.cached_tokens ??
+    raw.cachedTokens ??
+    raw.prompt_cache_hit_tokens ??
+    raw.promptCacheHitTokens ??
+    raw.cache_read_input_tokens ??
+    raw.cacheReadInputTokens ??
+    raw.cacheReadTokens ??
+    (raw.prompt_tokens_details as any)?.cached_tokens ??
+    (raw.prompt_tokens_details as any)?.cachedTokens ??
+    (raw.promptTokensDetails as any)?.cachedTokens ??
+    (raw.promptTokensDetails as any)?.cached_tokens ??
+    0;
+  const num = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(num) && num > 0 ? num : 0;
 }
 
 export interface OpenRouterResponse {
@@ -751,6 +792,7 @@ async function readStreamingResponse(
     onCancel?: (reason: string) => void;
     persona?: string;
     providerId?: string;
+    onFirstToken?: () => void;
   }
 ): Promise<any> {
   const contentType = response.headers?.get('content-type') || '';
@@ -829,7 +871,10 @@ async function readStreamingResponse(
     if (!json || json === '[DONE]') return;
     try {
       collectChunk(JSON.parse(json), state);
-      receivedFirstData = true;
+      if (!receivedFirstData) {
+        receivedFirstData = true;
+        options?.onFirstToken?.();
+      }
     } catch {
       throw new OpenRouterResponseError('OpenRouter returned malformed streaming JSON');
     }
@@ -904,14 +949,22 @@ async function readStreamingResponse(
   };
 }
 
-function sdkUsageToWire(usage: any): Record<string, unknown> | null {
-  if (!usage || typeof usage !== 'object') return null;
-  const costDetails = usage.costDetails ?? usage.cost_details;
+function sdkUsageToWire(usage: any, rawUsage?: any): Record<string, unknown> | null {
+  if ((!usage || typeof usage !== 'object') && (!rawUsage || typeof rawUsage !== 'object')) return null;
+  const costDetails = usage?.costDetails ?? usage?.cost_details ?? rawUsage?.costDetails ?? rawUsage?.cost_details;
+  const cachedTokens = resolveCachedTokens(usage) || resolveCachedTokens(rawUsage);
+  const cacheReadTokens = usage?.cacheReadTokens ?? usage?.cacheReadInputTokens ?? usage?.cache_read_input_tokens
+    ?? rawUsage?.cacheReadTokens ?? rawUsage?.cacheReadInputTokens ?? rawUsage?.cache_read_input_tokens;
+  const promptCacheHitTokens = usage?.promptCacheHitTokens ?? usage?.prompt_cache_hit_tokens
+    ?? rawUsage?.promptCacheHitTokens ?? rawUsage?.prompt_cache_hit_tokens;
   return {
-    prompt_tokens: usage.promptTokens ?? usage.prompt_tokens,
-    completion_tokens: usage.completionTokens ?? usage.completion_tokens,
-    total_tokens: usage.totalTokens ?? usage.total_tokens,
-    ...(usage.cost !== undefined ? { cost: usage.cost } : {}),
+    prompt_tokens: usage?.promptTokens ?? usage?.prompt_tokens ?? rawUsage?.promptTokens ?? rawUsage?.prompt_tokens,
+    completion_tokens: usage?.completionTokens ?? usage?.completion_tokens ?? rawUsage?.completionTokens ?? rawUsage?.completion_tokens,
+    total_tokens: usage?.totalTokens ?? usage?.total_tokens ?? rawUsage?.totalTokens ?? rawUsage?.total_tokens,
+    ...(cachedTokens > 0 ? { cached_tokens: cachedTokens } : {}),
+    ...(cacheReadTokens !== undefined ? { cache_read_input_tokens: Number(cacheReadTokens) } : {}),
+    ...(promptCacheHitTokens !== undefined ? { prompt_cache_hit_tokens: Number(promptCacheHitTokens) } : {}),
+    ...(usage?.cost !== undefined ? { cost: usage.cost } : rawUsage?.cost !== undefined ? { cost: rawUsage.cost } : {}),
     ...(costDetails && typeof costDetails === 'object' ? {
       cost_details: {
         ...(costDetails.upstreamInferenceCompletionsCost !== undefined || costDetails.upstream_inference_completions_cost !== undefined
@@ -981,6 +1034,7 @@ async function readSdkStreamingResponse(
     totalTimeoutMs?: number;
     onTotalTimeout?: () => void;
     onCancel?: (reason: string) => void;
+    onFirstToken?: () => void;
   },
 ): Promise<any> {
   const reader = stream.getReader();
@@ -1039,7 +1093,10 @@ async function readSdkStreamingResponse(
       );
       if (done) break;
       if (value !== undefined) {
-        receivedFirstData = true;
+        if (!receivedFirstData) {
+          receivedFirstData = true;
+          options?.onFirstToken?.();
+        }
         collectSdkChunk(value, state);
       }
     }
@@ -1095,8 +1152,8 @@ async function readSdkStreamingResponse(
   };
 }
 
-function normalizeSdkResponse(response: any): any {
-  const usage = sdkUsageToWire(response?.usage);
+function normalizeSdkResponse(response: any, rawUsage?: any): any {
+  const usage = sdkUsageToWire(response?.usage, rawUsage);
   const choice = response?.choices?.[0];
   const message = choice?.message || {};
   const content = typeof message.content === 'string'
@@ -1342,18 +1399,31 @@ export class OpenRouterClient implements ReviewModelClient {
             retries: { strategy: 'none' },
           },
         );
-        data = sdkResponse && typeof (sdkResponse as any).getReader === 'function'
-          ? await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
-              ttftTimeoutMs: request.ttftTimeoutMs,
-              inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
-              totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
-              onTotalTimeout: () => {
-                requestDeadlineExpired = true;
-                controller.abort();
-              },
-              onCancel: (reason) => sdkClient.cancelRawResponse?.(reason),
-            })
-          : normalizeSdkResponse(sdkResponse);
+        if (sdkResponse && typeof (sdkResponse as any).getReader === 'function') {
+          data = await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
+            ttftTimeoutMs: request.ttftTimeoutMs,
+            inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+            totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+            onTotalTimeout: () => {
+              requestDeadlineExpired = true;
+              controller.abort();
+            },
+            onCancel: (reason) => sdkClient.cancelRawResponse?.(reason),
+            onFirstToken: request.onFirstToken,
+          });
+        } else {
+          let rawUsage: any = null;
+          if (sdkClient.getRawResponse) {
+            try {
+              const rawRes = await sdkClient.getRawResponse();
+              if (rawRes) {
+                const rawJson = (await rawRes.json()) as any;
+                rawUsage = rawJson?.usage;
+              }
+            } catch (_) {}
+          }
+          data = normalizeSdkResponse(sdkResponse, rawUsage);
+        }
         sdkClient.cancelRawResponse?.('sdk response parsed');
       } catch (sdkError: any) {
         let compatibilityResponse: Response | null = null;
@@ -1392,6 +1462,7 @@ export class OpenRouterClient implements ReviewModelClient {
                   requestDeadlineExpired = true;
                   controller.abort();
                 },
+                onFirstToken: request.onFirstToken,
               });
         } catch (compatibilityError: any) {
           if (compatibilityError instanceof OpenRouterResponseError
@@ -1414,11 +1485,16 @@ export class OpenRouterClient implements ReviewModelClient {
       }
 
       const rawUsage = data.usage;
-      const usage = rawUsage && [rawUsage.prompt_tokens, rawUsage.completion_tokens, rawUsage.total_tokens].every(Number.isFinite)
+      const cached = resolveCachedTokens(rawUsage);
+      const usage: TokensUsed | null = rawUsage && [rawUsage.prompt_tokens, rawUsage.completion_tokens, rawUsage.total_tokens].every(Number.isFinite)
         ? {
             prompt: Number(rawUsage.prompt_tokens),
             completion: Number(rawUsage.completion_tokens),
             total: Number(rawUsage.total_tokens),
+            ...(cached > 0 ? { cached } : {}),
+            ...(rawUsage.cached_tokens !== undefined ? { cached_tokens: Number(rawUsage.cached_tokens) } : {}),
+            ...(rawUsage.cache_read_input_tokens !== undefined ? { cache_read_input_tokens: Number(rawUsage.cache_read_input_tokens) } : {}),
+            ...(rawUsage.prompt_cache_hit_tokens !== undefined ? { prompt_cache_hit_tokens: Number(rawUsage.prompt_cache_hit_tokens) } : {}),
           }
         : null;
       const rawCost = Number(

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, personaSchema } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -89,7 +89,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
 
       mockClient.complete.mockImplementation(async (opts: any) => {
         const allMsg = JSON.stringify(opts.messages);
-        const prompt = opts.messages[1]?.content as string || '';
+        const prompt = extractMessageContentText(opts.messages[1]?.content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
 
@@ -139,7 +139,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       mockClient.complete.mockImplementation(async (opts: any) => {
         const isPersonaCall = opts.messages?.some((m: any) => m.content?.includes("persona 'sec-auditor'"));
         const allMsg = JSON.stringify(opts.messages);
-        const prompt = opts.messages[1]?.content as string || '';
+        const prompt = extractMessageContentText(opts.messages[1]?.content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
 
@@ -201,7 +201,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       mockClient.complete.mockImplementation(async (opts: any) => {
         const isPersonaCall = opts.messages?.some((m: any) => m.content?.includes("persona 'sec-auditor'"));
         const allMsg = JSON.stringify(opts.messages);
-        const prompt = opts.messages[1]?.content as string || '';
+        const prompt = extractMessageContentText(opts.messages[1]?.content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
 
@@ -263,7 +263,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       mockClient.complete.mockImplementation(async (opts: any) => {
         const isPersonaCall = opts.messages?.some((m: any) => m.content?.includes("persona 'sec-auditor'"));
         const allMsg = JSON.stringify(opts.messages);
-        const prompt = opts.messages[1]?.content as string || '';
+        const prompt = extractMessageContentText(opts.messages[1]?.content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
 
@@ -466,7 +466,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
 
         mockClient.complete.mockImplementation(async (opts: any) => {
           const allMsg = JSON.stringify(opts.messages);
-          const prompt = opts.messages[1]?.content as string || '';
+          const prompt = extractMessageContentText(opts.messages[1]?.content);
           const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
           const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
 
@@ -553,7 +553,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
 
         mockClient.complete.mockImplementation(async (opts: any) => {
           const allMsg = JSON.stringify(opts.messages);
-          const prompt = opts.messages[1]?.content as string || '';
+          const prompt = extractMessageContentText(opts.messages[1]?.content);
           const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
           const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
 
@@ -600,7 +600,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
 
         mockClient.complete.mockImplementation(async (opts: any) => {
           const allMsg = JSON.stringify(opts.messages);
-          const prompt = opts.messages[1]?.content as string || '';
+          const prompt = extractMessageContentText(opts.messages[1]?.content);
           const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
           const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
 
@@ -648,7 +648,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
 
         mockClient.complete.mockImplementation(async (opts: any) => {
           const allMsg = JSON.stringify(opts.messages);
-          const prompt = opts.messages[1]?.content as string || '';
+          const prompt = extractMessageContentText(opts.messages[1]?.content);
           const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
           const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
 

@@ -156,5 +156,93 @@ limits:
   max_diff_bytes: 10000001
 `)).toThrow(ConfigValidationError);
     });
+
+    it('defaults max_file_size and max_file_bytes to 1,048,576 bytes (1MB)', () => {
+      const config = parseAndValidateConfig(`
+version: 4
+quorum: 1
+personas:
+  - id: sec
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["*"]
+    providers: [synthetic]
+reviewers:
+  execution: personas
+  fallback: none
+  overall_timeout_s: 300
+  providers:
+    - id: synthetic
+      enabled: true
+      model: google/gemini-3.7-flash:high
+      effort: high
+      review_timeout_s: 60
+      arbiter_timeout_s: 60
+  arbiter:
+    order: [synthetic]
+`);
+      expect((config as any).limits.max_file_size).toBe(1_048_576);
+      expect((config as any).limits.max_file_bytes).toBe(1_048_576);
+    });
+
+    it('respects custom max_file_size in both v3 and v4 YAML configuration', () => {
+      const configV3 = parseAndValidateConfig(`
+version: 3
+quorum: 1
+max_file_size: 500000
+personas:
+  - id: sec
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["*"]
+    providers: [synthetic]
+reviewers:
+  execution: personas
+  fallback: none
+  overall_timeout_s: 300
+  providers:
+    - id: synthetic
+      enabled: true
+      model: google/gemini-3.7-flash:high
+      effort: high
+      review_timeout_s: 60
+      arbiter_timeout_s: 60
+  arbiter:
+    order: [synthetic]
+`);
+      expect((configV3 as any).max_file_size).toBe(500_000);
+
+      const configV4 = parseAndValidateConfig(`
+version: 4
+quorum: 1
+personas:
+  - id: sec
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["*"]
+    providers: [synthetic]
+reviewers:
+  execution: personas
+  fallback: none
+  overall_timeout_s: 300
+  providers:
+    - id: synthetic
+      enabled: true
+      model: google/gemini-3.7-flash:high
+      effort: high
+      review_timeout_s: 60
+      arbiter_timeout_s: 60
+  arbiter:
+    order: [synthetic]
+limits:
+  max_file_size: 500000
+  max_file_bytes: 500000
+`);
+      expect((configV4 as any).limits.max_file_size).toBe(500_000);
+      expect((configV4 as any).limits.max_file_bytes).toBe(500_000);
+    });
   });
 });

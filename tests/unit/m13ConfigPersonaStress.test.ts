@@ -495,7 +495,7 @@ reviewers:
   });
 
   describe('3. Fallback Behavior and Error Handling in loadConfig', () => {
-    it('exhaustively tries filename variants .ct-review.yaml -> .ct-review.yml -> ct-review.yaml -> .coderabbit.yaml', async () => {
+    it('exhaustively tries filename variants .ct-review.yaml -> .reviewyeti.yaml -> .reviewyeti.yml -> reviewyeti.yaml -> .ct-review.yml -> ct-review.yaml -> .coderabbit.yaml', async () => {
       const requestedPaths: string[] = [];
       const mockClient = {
         getFileContent: vi.fn().mockImplementation(async (owner: string, repo: string, path: string) => {
@@ -511,6 +511,9 @@ reviewers:
       expect(config.profile).toBe('chill');
       expect(requestedPaths).toEqual([
         'myorg/myrepo:.ct-review.yaml',
+        'myorg/myrepo:.reviewyeti.yaml',
+        'myorg/myrepo:.reviewyeti.yml',
+        'myorg/myrepo:reviewyeti.yaml',
         'myorg/myrepo:.ct-review.yml',
         'myorg/myrepo:ct-review.yaml',
         'myorg/myrepo:.coderabbit.yaml',

@@ -1,6 +1,7 @@
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
+import { ConfigResolver } from '../config/configResolver';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -83,6 +84,8 @@ function parseGitmodules(content: string, owner: string, repo: string): Record<s
   flush();
   return result;
 }
+
+export const BASE_POLICY_CANDIDATE_FILES = ConfigResolver.CONFIG_FILES;
 
 export class GitHubInstallationClient {
   private readonly baseUrl: string;
@@ -176,11 +179,31 @@ export class GitHubInstallationClient {
   }
 
   async getBasePolicy(owner: string, repo: string, baseSha: string): Promise<string> {
-    const data = await this.request(`/repos/${owner}/${repo}/contents/.ct-review.yaml?ref=${encodeURIComponent(baseSha)}`);
-    if (data.encoding !== 'base64' || typeof data.content !== 'string') {
-      throw new Error('base policy response is not base64 file content');
+    let first404Error: Error | undefined;
+
+    for (const configFile of BASE_POLICY_CANDIDATE_FILES) {
+      try {
+        const data = await this.request(`/repos/${owner}/${repo}/contents/${configFile}?ref=${encodeURIComponent(baseSha)}`);
+        if (!data || data.encoding !== 'base64' || typeof data.content !== 'string') {
+          throw new Error('base policy response is not base64 file content');
+        }
+        return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8');
+      } catch (err: any) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (/^GitHub API 404\b/u.test(message)) {
+          if (!first404Error) {
+            first404Error = err instanceof Error ? err : new Error(message);
+          }
+          continue;
+        }
+        throw err;
+      }
     }
-    return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8');
+
+    if (first404Error) {
+      throw first404Error;
+    }
+    throw new Error('base policy response is not base64 file content');
   }
 
   async getChangedFiles(owner: string, repo: string, prNumber: number): Promise<ChangedFile[]> {

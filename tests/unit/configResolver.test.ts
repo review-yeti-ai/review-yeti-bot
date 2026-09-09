@@ -240,4 +240,132 @@ personas:
     const claudeProvider = config.reviewers.providers.find((p) => p.id === 'claude');
     expect(claudeProvider?.model).toBe('gpt-5.6-sol');
   });
+
+  it('includes .reviewyeti.yaml, .reviewyeti.yml, and reviewyeti.yaml in ConfigResolver.CONFIG_FILES', () => {
+    expect(ConfigResolver.CONFIG_FILES).toContain('.reviewyeti.yaml');
+    expect(ConfigResolver.CONFIG_FILES).toContain('.reviewyeti.yml');
+    expect(ConfigResolver.CONFIG_FILES).toContain('reviewyeti.yaml');
+  });
+
+  it('resolves configuration from .reviewyeti.yaml when present', async () => {
+    const resolver = new ConfigResolver();
+    const repoYaml = `
+version: 3
+profile: assertive
+max_file_size: 750000
+personas:
+  - id: sec-lane
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["src/**"]
+    providers: [claude]
+`;
+    const client = mockClient({ '.reviewyeti.yaml': repoYaml });
+
+    const config = await resolver.resolveConfig({
+      owner: 'myorg',
+      repo: 'myrepo',
+      ref: 'main',
+      client,
+    });
+
+    expect(config.profile).toBe('assertive');
+    expect(config.max_file_size).toBe(750000);
+  });
+
+  it('preserves max_file_size and max_file_bytes when merging configs', async () => {
+    const resolver = new ConfigResolver();
+    const repoYaml = `
+version: 3
+max_file_size: 400000
+`;
+    const client = mockClient({ '.reviewyeti.yaml': repoYaml });
+
+    const config = await resolver.resolveConfig({
+      owner: 'myorg',
+      repo: 'myrepo',
+      ref: 'main',
+      client,
+    });
+
+    expect(config.max_file_size).toBe(400000);
+  });
+
+  it('inherits max_file_size from org-level config when repo does not define it', async () => {
+    const resolver = new ConfigResolver();
+    const orgYaml = `
+version: 3
+max_file_size: 600000
+`;
+    const repoYaml = `
+version: 3
+profile: assertive
+`;
+    const client: RepositoryContentClient = {
+      getFileContent: async (_owner: string, repo: string, path: string) => {
+        if (repo === 'myrepo' && path === '.reviewyeti.yaml') return repoYaml;
+        if (repo === '.github' && path === '.reviewyeti.yaml') return orgYaml;
+        return null;
+      },
+    };
+
+    const config = await resolver.resolveConfig({
+      owner: 'myorg',
+      repo: 'myrepo',
+      ref: 'main',
+      client,
+    });
+
+    expect(config.max_file_size).toBe(600000);
+    expect(config.max_file_bytes).toBe(600000);
+  });
+
+  it('repo-level max_file_size strictly overrides org-level and system defaults', async () => {
+    const resolver = new ConfigResolver();
+    const orgYaml = `
+version: 3
+max_file_size: 600000
+`;
+    const repoYaml = `
+version: 3
+max_file_size: 250000
+`;
+    const client: RepositoryContentClient = {
+      getFileContent: async (_owner: string, repo: string, path: string) => {
+        if (repo === 'myrepo' && path === '.reviewyeti.yaml') return repoYaml;
+        if (repo === '.github' && path === '.reviewyeti.yaml') return orgYaml;
+        return null;
+      },
+    };
+
+    const config = await resolver.resolveConfig({
+      owner: 'myorg',
+      repo: 'myrepo',
+      ref: 'main',
+      client,
+    });
+
+    expect(config.max_file_size).toBe(250000);
+    expect(config.max_file_bytes).toBe(250000);
+  });
+
+  it('falls back to default 1MB (1,048,576) when neither repo nor org configures max_file_size', async () => {
+    const resolver = new ConfigResolver();
+    const repoYaml = `
+version: 3
+profile: balanced
+`;
+    const client = mockClient({ '.reviewyeti.yaml': repoYaml });
+
+    const config = await resolver.resolveConfig({
+      owner: 'myorg',
+      repo: 'myrepo',
+      ref: 'main',
+      client,
+    });
+
+    expect(config.max_file_size).toBe(1048576);
+    expect(config.max_file_bytes).toBe(1048576);
+  });
 });

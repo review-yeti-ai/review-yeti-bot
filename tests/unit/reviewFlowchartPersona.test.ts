@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ALL_PERSONA_IDS, PERSONA_METADATA } from '../../src/components/settings/persona-selector';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient, type OmniRouteRequest, type OmniRouteResponse } from '../../src/gateway/omniRouteClient';
 
@@ -132,7 +132,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
 
       const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
       vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
-        const prompt = opts.messages?.[1]?.content || '';
+        const prompt = extractMessageContentText(opts.messages?.[1]?.content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
         const allMsg = JSON.stringify(opts.messages);

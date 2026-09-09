@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import { DashboardStore, dashboardStore } from '../../src/persistence/dashboardStore';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
 import type { CtReviewConfigV3 } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -89,7 +89,7 @@ describe('Persona Persistence & System Prompt Override Integration Suite', () =>
     let capturedCharter: string | undefined;
 
     const complete = async ({ model, messages }: any) => {
-      const prompt = messages[messages.length - 1].content as string;
+      const prompt = extractMessageContentText(messages[messages.length - 1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
 
