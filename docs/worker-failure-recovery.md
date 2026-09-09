@@ -16,6 +16,14 @@ callback route is actually updated and reachable. Apply the manifest's exact
 callbacks. Do not expose a broad API prefix. The job dispatcher, operator,
 and worker images alone are not proof that the HTTP API service was updated.
 
+For the execution identity rollout, apply the updated `PRReviewJob` CRD schema
+before enabling a dispatcher that writes `spec.executionAttempt`. The field is
+optional during the mixed-version window: a new operator uses it when present,
+while CRs persisted by an older dispatcher decode only a validated `-aN`
+Secret suffix, with an unsuffixed Secret meaning attempt `1`. Keep that legacy
+fallback until all pre-schema CRs have expired; an explicit field and a
+mismatched Secret name fail closed.
+
 An unset URL preserves the legacy worker path during a mixed-version rollout.
 An explicitly invalid URL is an error, not an instruction to disable reporting.
 URLs with credentials or fragments are rejected; redirects are not followed.

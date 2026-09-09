@@ -44,7 +44,7 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 		"workerImage", "runSecretName",
 	}
 	wantProperties := append([]string(nil), wantRequired...)
-	wantProperties = append(wantProperties, "qualificationModel", "qualificationProfile", "runnerMode")
+	wantProperties = append(wantProperties, "executionAttempt", "qualificationModel", "qualificationProfile", "runnerMode")
 	sort.Strings(wantRequired)
 	sort.Strings(wantProperties)
 	gotRequired := append([]string(nil), spec.Required...)
@@ -109,6 +109,12 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 	}
 	if spec.Properties["prNumber"].Minimum == nil || *spec.Properties["prNumber"].Minimum != 1 {
 		t.Fatal("prNumber minimum must be one")
+	}
+	attempt := spec.Properties["executionAttempt"]
+	if attempt.Type != "integer" || attempt.Format != "int32" || attempt.Minimum == nil || *attempt.Minimum != 1 ||
+		attempt.Maximum == nil || *attempt.Maximum != 2_147_483_647 {
+		t.Fatalf("executionAttempt bounds = type %q/format %q/min %v/max %v, want positive int32",
+			attempt.Type, attempt.Format, attempt.Minimum, attempt.Maximum)
 	}
 	profile := spec.Properties["qualificationProfile"]
 	if len(profile.Enum) != 2 || string(profile.Enum[0].Raw) != `"full-panel"` || string(profile.Enum[1].Raw) != `"same-head"` {

@@ -43,6 +43,25 @@ function conflict(): Error {
   return Object.assign(new Error('upstream response must not be surfaced'), { code: 409 });
 }
 
+function attemptProjection(attempt: number): PRReviewJobProjection {
+  const suffix = attempt === 1 ? '' : `-a${attempt}`;
+  return {
+    ...projection,
+    metadata: { ...projection.metadata, name: `ct-review-${'1'.repeat(32)}${suffix}` },
+    spec: {
+      ...projection.spec,
+      executionAttempt: attempt,
+      runSecretName: `ct-review-run-${'1'.repeat(32)}${suffix}`,
+    },
+  };
+}
+
+function legacyProjection(value: PRReviewJobProjection): PRReviewJobProjection {
+  const spec = { ...value.spec };
+  delete spec.executionAttempt;
+  return { ...value, spec };
+}
+
 describe('KubernetesReviewJobProjector', () => {
   it('accepts an existing exact resource without creating a duplicate', async () => {
     const client = {
@@ -99,6 +118,65 @@ describe('KubernetesReviewJobProjector', () => {
 
     await expect(projector.ensure(projection)).resolves.toBeUndefined();
     expect(client.getNamespacedCustomObject).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts a GET-existing legacy CR by normalizing only its absent attempt for comparison', async () => {
+    const expected = attemptProjection(1);
+    const existing = legacyProjection(expected);
+    const before = JSON.stringify(existing);
+    const client = {
+      getNamespacedCustomObject: vi.fn(async () => existing),
+      createNamespacedCustomObject: vi.fn(),
+    };
+    const projector = new KubernetesReviewJobProjector(client);
+
+    await expect(projector.ensure(expected)).resolves.toBeUndefined();
+    expect(JSON.stringify(existing)).toBe(before);
+    expect(existing.spec).not.toHaveProperty('executionAttempt');
+    expect(client.createNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  it('accepts a 409 reread of a legacy CR by normalizing only its absent attempt for comparison', async () => {
+    const expected = attemptProjection(2);
+    const existing = legacyProjection(expected);
+    const before = JSON.stringify(existing);
+    const client = {
+      getNamespacedCustomObject: vi.fn()
+        .mockRejectedValueOnce(notFound())
+        .mockResolvedValueOnce(existing),
+      createNamespacedCustomObject: vi.fn(async () => { throw conflict(); }),
+    };
+    const projector = new KubernetesReviewJobProjector(client);
+
+    await expect(projector.ensure(expected)).resolves.toBeUndefined();
+    expect(JSON.stringify(existing)).toBe(before);
+    expect(existing.spec).not.toHaveProperty('executionAttempt');
+    expect(client.getNamespacedCustomObject).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    {
+      name: 'explicit attempt mismatch',
+      existing: () => ({ ...attemptProjection(2), spec: { ...attemptProjection(2).spec, executionAttempt: 3 } }),
+    },
+    {
+      name: 'legacy malformed suffix',
+      existing: () => {
+        const value = legacyProjection(attemptProjection(2));
+        value.spec.runSecretName = `ct-review-run-${'1'.repeat(32)}-a2147483648`;
+        return value;
+      },
+    },
+  ])('rejects $name instead of normalizing it', async ({ existing }) => {
+    const client = {
+      getNamespacedCustomObject: vi.fn(async () => existing()),
+      createNamespacedCustomObject: vi.fn(),
+    };
+    const projector = new KubernetesReviewJobProjector(client);
+
+    await expect(projector.ensure(attemptProjection(2)))
+      .rejects.toThrow('existing PRReviewJob conflicts with the durable projection');
+    expect(client.createNamespacedCustomObject).not.toHaveBeenCalled();
   });
 
   it.each([

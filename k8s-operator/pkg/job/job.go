@@ -155,9 +155,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	runAsGroup := int64(1000)
 	fsGroup := int64(1000)
 	fsGroupChangePolicy := corev1.FSGroupChangeOnRootMismatch
-	executionAttempt := "1"
-	if index := strings.LastIndex(spec.RunSecretName, "-a"); index >= 0 {
-		executionAttempt = spec.RunSecretName[index+2:]
+	executionAttempt, err := executionAttemptForSpec(spec)
+	if err != nil {
+		return nil, err
 	}
 	env := []corev1.EnvVar{
 		{Name: "REVIEW_RUN_ID", Value: spec.RunID},
@@ -169,7 +169,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: "REVIEW_BASE_SHA", Value: spec.BaseSHA},
 		{Name: "REVIEW_POLICY_DIGEST", Value: spec.PolicyDigest},
 		{Name: "REVIEW_CONFIG_DIGEST", Value: spec.ConfigDigest},
-		{Name: ExecutionAttemptEnv, Value: executionAttempt},
+		{Name: ExecutionAttemptEnv, Value: strconv.FormatInt(int64(executionAttempt), 10)},
 		{Name: PublicationModeEnv, Value: spec.PublicationMode},
 		{Name: ReceiptPathEnv, Value: ReceiptPath},
 	}
@@ -386,6 +386,9 @@ func validateInput(input Input) error {
 		!workerImagePattern.MatchString(spec.WorkerImage) || !secretNamePattern.MatchString(spec.RunSecretName) {
 		return configErr("PRReviewJob spec failed identity validation (run/delivery/repo/PR/sha/digest/publication-mode/image/run-secret)")
 	}
+	if _, err := executionAttemptForSpec(spec); err != nil {
+		return err
+	}
 	if err := validateQualification(spec.QualificationProfile, spec.QualificationModel); err != nil {
 		return err
 	}
@@ -407,6 +410,44 @@ func validateInput(input Input) error {
 		return workspace.ErrLeaseHeld
 	}
 	return workspace.ValidateLeaseForUse(lease.Lease, review.Namespace, spec.RepositoryID, spec.PRNumber, spec.RunID, input.Now)
+}
+
+// executionAttemptForSpec uses the explicit CRD field whenever present. The
+// suffix path is retained only for CRs persisted before executionAttempt was
+// added; it is deliberately bounded and tied back to the run ID instead of
+// treating an arbitrary Secret suffix as trusted identity.
+func executionAttemptForSpec(spec v1alpha2.PRReviewJobSpec) (int32, error) {
+	baseSecretName := "ct-review-run-" + strings.TrimPrefix(spec.RunID, "run_")
+	if spec.ExecutionAttempt != nil {
+		attempt := *spec.ExecutionAttempt
+		if attempt <= 0 {
+			return 0, configErr("executionAttempt must be a positive int32")
+		}
+		expected := baseSecretName
+		if attempt > 1 {
+			expected = fmt.Sprintf("%s-a%d", baseSecretName, attempt)
+		}
+		if spec.RunSecretName != expected {
+			return 0, configErr("executionAttempt does not match the expected run Secret name")
+		}
+		return attempt, nil
+	}
+
+	// Legacy CRs may omit executionAttempt. Keep the historical -aN form
+	// readable, including an explicitly suffixed -a1, but require the Secret
+	// prefix to belong to this run and parse the suffix as a bounded int32.
+	if spec.RunSecretName == baseSecretName {
+		return 1, nil
+	}
+	index := strings.LastIndex(spec.RunSecretName, "-a")
+	if index < 0 || spec.RunSecretName[:index] != baseSecretName {
+		return 0, configErr("legacy run Secret name does not match the run ID")
+	}
+	parsed, err := strconv.ParseInt(spec.RunSecretName[index+2:], 10, 32)
+	if err != nil || parsed <= 0 {
+		return 0, configErr("legacy run Secret execution suffix is not a positive int32")
+	}
+	return int32(parsed), nil
 }
 
 // validatePublishing refuses an app-gate Job whose required transport is not
