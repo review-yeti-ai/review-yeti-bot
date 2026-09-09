@@ -297,7 +297,14 @@ const ctReviewConfigV3ObjectSchema = z.object({
   // Milestone 18 Extensions
   mcps: mcpsSchema,
   on_pr_close: onPRCloseSchema,
-  evidence: evidenceSchema.default({ zoekt: { enabled: true } }),
+  // Optional (not .default()): evidenceSchema already defaults its inner
+  // shape when provided, but making the *field itself* required-in-output
+  // via .default() broke every hand-built CtReviewConfigV3 literal that
+  // predates this Milestone 18 addition. The one consumer
+  // (panelEngine.ts's `(config as any)?.evidence?.zoekt`) already treats
+  // a missing evidence block as absent, so .optional() matches how it's
+  // actually read.
+  evidence: evidenceSchema.optional(),
 
   reviewers: z.object({
     execution: z.literal('personas'),
