@@ -78,10 +78,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Restrict envsubst to these literal variable names.
-# shellcheck disable=SC2016
-envsubst '${CT_REVIEW_JOB_DISPATCHER_IMAGE} ${CT_REVIEW_WORKER_IMAGE} ${CT_REVIEW_RUNNER_MODE}' \
-  < k8s/review-job-dispatcher.yaml.tpl > "$render_dir/review-job-dispatcher.yaml"
+# The variable list lives in scripts/lib/review-job-dispatcher-render.sh and is
+# shared with advance-review-worker.sh so the two renderers cannot drift.
+# shellcheck source=scripts/lib/review-job-dispatcher-render.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-job-dispatcher-render.sh"
+render_review_job_dispatcher_template k8s/review-job-dispatcher.yaml.tpl "$render_dir/review-job-dispatcher.yaml"
 
 if [[ -n "$force_conflicts" ]]; then
   echo "deploy-review-job-dispatcher: --force-conflicts given; this manifest will take ownership of any field another manager holds" >&2
