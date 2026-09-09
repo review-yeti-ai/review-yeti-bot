@@ -70,7 +70,7 @@ type PRReviewJobSpec struct {
 	// +kubebuilder:validation:Enum=prebaked;generic
 	// +optional
 	RunnerMode string `json:"runnerMode,omitempty"`
-	// +kubebuilder:validation:Pattern=`^ct-review-run-[a-f0-9]{32}$`
+	// +kubebuilder:validation:Pattern=`^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$`
 	RunSecretName string `json:"runSecretName"`
 	// QualificationProfile is optional. An omitted profile preserves the
 	// production-safe receipt-only worker contract. The only admitted

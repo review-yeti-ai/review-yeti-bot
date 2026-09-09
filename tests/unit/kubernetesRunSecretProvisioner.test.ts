@@ -53,10 +53,9 @@ describe('KubernetesRunSecretProvisioner', () => {
   });
 
   it('treats a 409 as success without deleting anything', async () => {
-    // A 409 means a sibling dispatcher provisioned this run moments ago with its own
-    // fresh tokens. It cannot be a stale Secret: the run id is identity-derived and
-    // re-admission does not reset terminal_deadline, so one name is only written
-    // inside a single fifteen-minute window.
+    // A 409 means a sibling dispatcher provisioned this exact execution attempt
+    // moments ago with its own fresh tokens. The attempt-scoped name prevents a
+    // terminal Secret from an older worker execution being reused.
     //
     // This is what lets the dispatcher hold `create` and NOT `delete` on secrets --
     // a verb Kubernetes cannot scope to one name, which would otherwise reach the
@@ -93,6 +92,12 @@ describe('KubernetesRunSecretProvisioner', () => {
       .rejects.toThrow(/run-scoped pattern/u);
     expect(mintToken).not.toHaveBeenCalled();
     expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  it('accepts an execution-attempt-scoped Secret name', async () => {
+    const { subject, client } = provisioner();
+    await subject.provision({ ...request, secretName: `${request.secretName}-a2` });
+    expect(client.createNamespacedSecret).toHaveBeenCalledOnce();
   });
 
   it('requires App credentials at construction', () => {

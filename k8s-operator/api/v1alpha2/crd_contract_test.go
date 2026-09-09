@@ -89,7 +89,7 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		"policyDigest":  `^[a-f0-9]{64}$`,
 		"configDigest":  `^[a-f0-9]{64}$`,
 		"workerImage":   `^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`,
-		"runSecretName": `^ct-review-run-[a-f0-9]{32}$`,
+		"runSecretName": `^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$`,
 	}
 	for field, want := range wants {
 		got := spec.Properties[field].Pattern

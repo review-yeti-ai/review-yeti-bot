@@ -6,6 +6,7 @@ const now = receivedAt + 60_000;
 const claim = {
   runId: `run_${'1'.repeat(32)}`,
   deliveryId: 'actions:98765:2:123:42:head',
+  executionAttempt: 1,
   repositoryId: 123,
   installationId: 456,
   publicationMode: 'disabled' as const,
@@ -186,6 +187,31 @@ describe('ReviewJobDispatchEngine', () => {
       projector: { ensure: vi.fn(async () => { throw new Error('transient'); }) },
     });
     await expect(retry.engine.runOnce()).resolves.toEqual({ status: 'lease-lost', runId: claim.runId });
+  });
+
+  it('uses a fresh execution identity after a worker retry while keeping the run identity stable', async () => {
+    const { engine, projector, repository } = fixture({
+      repository: { claimNext: vi.fn(async () => ({ ...claim, executionAttempt: 2 })) },
+    });
+
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'projected',
+      runId: claim.runId,
+      projectionName: `ct-review-${'1'.repeat(32)}-a2`,
+    });
+    expect(projector.ensure).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ name: `ct-review-${'1'.repeat(32)}-a2` }),
+      spec: expect.objectContaining({
+        runId: claim.runId,
+        runSecretName: `ct-review-run-${'1'.repeat(32)}-a2`,
+      }),
+    }));
+    expect(repository.markProjected).toHaveBeenCalledWith(
+      claim.runId,
+      'dispatcher-a',
+      `ct-review-${'1'.repeat(32)}-a2`,
+      now,
+    );
   });
 
   it('is idle when no durable row is available', async () => {
