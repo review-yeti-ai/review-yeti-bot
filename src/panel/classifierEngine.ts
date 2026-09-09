@@ -1,4 +1,5 @@
 import { CtReviewConfigV3 } from '../config/schema';
+import { resolveMaxFileSize } from '../config/configLoader';
 import { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { PanelRequestPolicy } from './types';
 import { logger } from '../utils/logger';
@@ -476,11 +477,7 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
 
     // Code guardrail: never fast-ship executable, script, or sensitive changes
     let effectiveFastShip = fastShipRaw;
-    const maxFileSize = (options.config as any)?.max_file_size ??
-      (options.config as any)?.max_file_bytes ??
-      (options.config as any)?.limits?.max_file_size ??
-      (options.config as any)?.limits?.max_file_bytes ??
-      1_048_576;
+    const maxFileSize = resolveMaxFileSize(options.config);
     if (effectiveFastShip && containsExecutableOrSensitiveCode(options.changedFiles, { maxFileSize })) {
       logger.info('Classifier suggested fastShip, but PR contains executable or sensitive code; forcing full panel review', {
         repository: options.repository,

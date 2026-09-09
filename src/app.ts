@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { randomUUID } from 'node:crypto';
 import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
-import { OpenRouterClient } from './gateway/openRouterClient';
+import { OpenRouterClient, resolveCachedTokens } from './gateway/openRouterClient';
 import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
@@ -105,9 +105,9 @@ function openRouterClient(): OpenRouterClient {
   });
 }
 
-function usage(value: { prompt: number; completion: number; total: number; cached?: number; cached_tokens?: number } | null): string {
+export function usage(value: { prompt: number; completion: number; total: number; cached?: number; cached_tokens?: number } | null): string {
   if (!value) return 'unavailable';
-  const cached = value.cached ?? value.cached_tokens ?? 0;
+  const cached = resolveCachedTokens(value);
   const cachedText = cached > 0 ? `, ${cached} cached` : '';
   return `${value.total} total (${value.prompt} prompt, ${value.completion} completion${cachedText})`;
 }
@@ -138,10 +138,7 @@ export function checkSummary(result: PanelResult): string {
     result.arbiter.usage,
   ].filter((u): u is NonNullable<typeof u> => Boolean(u));
   const aggregatePrompt = allUsages.reduce((sum, u) => sum + (u.prompt || 0), 0);
-  const aggregateCached = allUsages.reduce((sum, u) => {
-    const c = (u as any).cached ?? (u as any).cached_tokens ?? (u as any).prompt_cache_hit_tokens ?? (u as any).cache_read_input_tokens ?? 0;
-    return sum + c;
-  }, 0);
+  const aggregateCached = allUsages.reduce((sum, u) => sum + resolveCachedTokens(u), 0);
   const hitPercentage = aggregatePrompt > 0 ? Math.round((aggregateCached / aggregatePrompt) * 100) : 0;
   const cacheSummaryLines = aggregateCached > 0
     ? ['', `Prompt caching: ${aggregateCached} / ${aggregatePrompt} tokens (${hitPercentage}% cache hit rate)`]

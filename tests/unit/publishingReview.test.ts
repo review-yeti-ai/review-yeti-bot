@@ -615,4 +615,49 @@ describe('hosted lane — repository visibility resolution', () => {
     expect(receipt.conclusion).toBe('success');
     expect(summaryOf(client)).toContain('Repository visibility: UNKNOWN.');
   });
+
+  it('publishes Review Yeti: SHIP (fast-ship) and fast-ship summary for fastShip panel result', async () => {
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      panelRunner: vi.fn(async () => ({
+        isFastShip: true,
+        classifierRationale: 'Docs only modification',
+        tokensSaved: 12500,
+        personas: [{ id: 'fast-ship', findings: [] }],
+        quorum: { required: 0, distinctProviders: [], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('success');
+    expect(client.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Review Yeti: SHIP (fast-ship)',
+        summary: expect.stringContaining('### Review Yeti: SHIP (fast-ship)'),
+      }),
+    );
+    expect(summaryOf(client)).toContain('Docs only modification');
+    expect(summaryOf(client)).toContain('12,500 tokens saved');
+  });
+
+  it('publishes normal Review Yeti: SHIP with Telemetry line for standard panel result', async () => {
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      panelRunner: vi.fn(async () => ({
+        personas: [{ id: 'sec-lane', findings: [] }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('success');
+    expect(client.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Review Yeti: SHIP',
+        summary: expect.stringContaining('Telemetry:'),
+      }),
+    );
+  });
 });

@@ -39,23 +39,7 @@ export class InMemoryReviewRunRepository implements ReviewRunRepository {
   async createOrGet(input: { identity: ReviewRunIdentity; indexEpoch?: number; effectivePolicyDigest?: string; now?: number }): Promise<ReviewRunRecord> {
     const identityDigest = sha256(input.identity);
     const existingId = this.identityIndex.get(identityDigest);
-    if (existingId) {
-      const existing = this.records.get(existingId)!;
-      if (existing.status === 'failed' || (existing.status as string) === 'terminal') {
-        const now = input.now ?? Date.now();
-        existing.status = 'queued';
-        existing.stage = 'admission';
-        existing.attempt = 0;
-        existing.error = undefined;
-        existing.leaseOwner = undefined;
-        existing.leaseExpiresAt = undefined;
-        existing.publicationFence = undefined;
-        existing.resultDigest = undefined;
-        existing.artifacts = {};
-        existing.updatedAt = now;
-      }
-      return clone(existing);
-    }
+    if (existingId) return clone(this.records.get(existingId)!);
     const now = input.now ?? Date.now();
     for (const existing of this.records.values()) {
       const samePullRequest = existing.identity.owner === input.identity.owner && existing.identity.repo === input.identity.repo && existing.identity.prNumber === input.identity.prNumber;
@@ -246,17 +230,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
        )
        INSERT INTO review_runs (run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha, snapshot_digest, config_digest, effective_policy_digest, effective_config_digest, index_epoch, identity, status, stage, attempt, artifacts, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'queued','admission',0,'{}'::jsonb,$14,$14)
-       ON CONFLICT (identity_digest) DO UPDATE
-         SET status = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN 'queued' ELSE review_runs.status END,
-             stage = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN 'admission' ELSE review_runs.stage END,
-             attempt = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN 0 ELSE review_runs.attempt END,
-             error_text = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN NULL ELSE review_runs.error_text END,
-             lease_owner = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN NULL ELSE review_runs.lease_owner END,
-             lease_expires_at = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN NULL ELSE review_runs.lease_expires_at END,
-             publication_fence = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN NULL ELSE review_runs.publication_fence END,
-             result_digest = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN NULL ELSE review_runs.result_digest END,
-             artifacts = CASE WHEN review_runs.status = 'failed' OR review_runs.status = 'terminal' THEN '{}'::jsonb ELSE review_runs.artifacts END,
-             updated_at = EXCLUDED.updated_at
+       ON CONFLICT (identity_digest) DO UPDATE SET updated_at = review_runs.updated_at
        RETURNING *`,
       [runId, identityDigest, input.identity.owner, input.identity.repo, input.identity.prNumber, input.identity.headSha, input.identity.baseSha, input.identity.snapshotDigest, input.identity.configDigest, input.effectivePolicyDigest || input.identity.configDigest, input.identity.configDigest, input.indexEpoch ?? 0, JSON.stringify(input.identity), now],
     );

@@ -627,8 +627,7 @@ export async function runPublishingReviewWorker(
     const changedPaths = new Set(changedFiles.map((file) => file.path));
     const isFastShip = Boolean(
       (panelResult as any).isFastShip ||
-      panelResult.personas?.some((p: any) => p.id === 'fast-ship') ||
-      panelResult.arbiter?.rationale?.startsWith('Fast-ship auto-approved:')
+      (panelResult.personas?.length === 1 && panelResult.personas[0]?.id === 'fast-ship' && (panelResult as any).isFastShip !== false)
     );
 
     const title = isFastShip
@@ -636,9 +635,8 @@ export async function runPublishingReviewWorker(
       : `Review Yeti: ${verdict}`;
 
     const classifierRationale = (panelResult as any).classifierRationale ||
-      panelResult.arbiter?.rationale?.replace(/^Fast-ship auto-approved:\s*/i, '') ||
       'Approved via fast-ship triage classifier.';
-    const tokensSaved = (panelResult as any).tokensSaved ?? 15000;
+    const tokensSaved = typeof (panelResult as any).tokensSaved === 'number' ? (panelResult as any).tokensSaved : 15000;
 
     const summaryParts = isFastShip
       ? [
@@ -651,7 +649,9 @@ export async function runPublishingReviewWorker(
         ]
       : [
           `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
-          `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+          (panelResult as any).zeroLaneNonEvidence
+            ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
+            : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
           ...(discardedFindingCount > 0
             ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
             : []),
@@ -660,6 +660,7 @@ export async function runPublishingReviewWorker(
             : []),
           `Transport: bifrost \`${transport.model}\`.`,
           `Repository visibility: ${repositoryVisibility}.`,
+          `Telemetry: ${totalTurns} turns, ${totalToolCalls} tool calls, ${totalTokens} tokens across ${personaMetrics.length} lanes (${totalDurationMs}ms).`,
         ];
 
     await deps.checkClient.completeCheck({

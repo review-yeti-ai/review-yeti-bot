@@ -84,6 +84,24 @@ export interface TokensUsed {
   prompt_cache_hit_tokens?: number;
 }
 
+/**
+ * Canonical helper to resolve the cached token count from any usage structure.
+ * Standardizes precedence: cached -> cached_tokens -> prompt_cache_hit_tokens -> cache_read_input_tokens.
+ */
+export function resolveCachedTokens(usage: TokensUsed | Record<string, unknown> | null | undefined): number {
+  if (!usage) return 0;
+  const raw = usage as Record<string, unknown>;
+  const val = raw.cached ??
+    raw.cached_tokens ??
+    raw.prompt_cache_hit_tokens ??
+    raw.cache_read_input_tokens ??
+    (raw.prompt_tokens_details as any)?.cached_tokens ??
+    (raw.promptTokensDetails as any)?.cachedTokens ??
+    0;
+  const num = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(num) && num > 0 ? num : 0;
+}
+
 export interface OpenRouterResponse {
   model: string;
   content: string;
