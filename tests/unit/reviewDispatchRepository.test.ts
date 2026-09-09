@@ -88,6 +88,33 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(client.query.mock.calls.some(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(String(sql)))).toBe(false);
   });
 
+  // A run id is derived from the identity digest, so every re-dispatch of the
+  // same head lands on the same row. Without a retry path a terminally failed run
+  // pins that head forever: the run stays 'failed', the outbox stays 'terminal',
+  // and no label, re-run or re-dispatch can produce another review. Observed on
+  // cisco-cdr#4836, where three dispatches were accepted and none created a job.
+  it('re-arms a terminally failed run for the same head', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [], [row], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await repository.admit(input());
+
+    const runSql = String(client.query.mock.calls.find(([sql]) => /INSERT INTO review_runs/u.test(String(sql)))?.[0] || '');
+    expect(runSql).toMatch(/ON CONFLICT \(identity_digest\) DO UPDATE/u);
+    // 'failed' is the only status re-armed; in-flight and superseded stay put.
+    expect(runSql).toMatch(/status = CASE WHEN review_runs\.status = 'failed' THEN 'queued'/u);
+    expect(runSql).toMatch(/attempt = CASE WHEN review_runs\.status = 'failed' THEN review_runs\.attempt \+ 1/u);
+    // The old deadline is already past; a retry would be swept before it started.
+    expect(runSql).toMatch(/terminal_deadline = CASE WHEN review_runs\.status = 'failed'/u);
+
+    const outboxSql = String(client.query.mock.calls.find(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(String(sql)))?.[0] || '');
+    expect(outboxSql).toMatch(/ON CONFLICT \(run_id\) DO UPDATE/u);
+    expect(outboxSql).toMatch(/status = 'pending'/u);
+    // Both guards: only a terminal outbox row, and only beside a re-armed run.
+    expect(outboxSql).toMatch(/WHERE review_dispatch_outbox\.status = 'terminal'/u);
+    expect(outboxSql).toMatch(/r\.status = 'queued'/u);
+  });
+
   it('rejects a delivery id replayed with a different digest or repository', async () => {
     const client = clientWithRows([[], [], [], [{ ...row, payload_digest: '0'.repeat(64), repository_id: 999 }], []]);
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
