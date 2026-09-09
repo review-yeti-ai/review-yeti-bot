@@ -3,6 +3,8 @@ import { createActionDispatchApp } from './dispatchServer';
 import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
 import { getBoundedRepositoryInstallationId, validateGitHubAppApiBaseUrl } from './github/boundedAppToken';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
+import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
+import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
 import { AbandonedRunReaper } from './review/abandonedRunReaper';
 import { GitHubInstallationClient } from './github/installationClient';
 import { getGitHubAppRepositoryPublishToken } from './github/appAuth';
@@ -30,7 +32,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   await store.initialize();
   const pool = store.getPool();
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
-    config: authoritativeConfig, pool, appId, privateKey, baseUrl,
+    config: authoritativeConfig, appId, privateKey, baseUrl,
+    repository: new PostgresReviewGateRepository(pool, { completionResolutionTimeoutMs: 15_000 }),
+    getStoredPrepared: (policyDigest) => getPreparedPublishingPolicy(pool, policyDigest),
     workerId: `authoritative-review-${environment.HOSTNAME || 'local'}`,
   }) : undefined;
   const repository = new PostgresReviewDispatchRepository(pool, undefined,

@@ -1,21 +1,23 @@
-import type { Pool } from 'pg';
 import type { AuthoritativeServiceConfig } from '../auth/authoritativeServiceConfig';
 import { createWorkerCompletionVerifier, type AuthoritativeReviewAdmission,
   type AuthoritativeReviewCompletion } from './authoritativeServiceContracts';
 import { AuthoritativeReviewReader, type ReviewRepositoryIdentity } from '../github/authoritativeReviewReader';
 import { getBoundedRepositoryToken } from '../github/boundedAppToken';
 import { GitHubReviewGateClient } from '../github/reviewGateClient';
-import { getPreparedPublishingPolicy } from '../persistence/preparedReviewRepository';
-import { PostgresReviewGateRepository } from '../persistence/reviewGateRepository';
 import { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
-import { createAuthoritativeCompletionContext } from './authoritativeCompletionContext';
-import { ReviewGatePublisher } from './reviewGatePublisher';
+import { createAuthoritativeCompletionContext, type AuthoritativeCompletionContextOptions } from './authoritativeCompletionContext';
+import { ReviewGatePublisher, type ReviewGatePublisherOptions } from './reviewGatePublisher';
 import type { ReviewAdmissionInput } from './reviewRun';
 import { sha256 } from './reviewCore';
 
 export interface AuthoritativeReviewServiceOptions {
   config: AuthoritativeServiceConfig;
-  pool: Pool;
+  /** Storage is composed by the entrypoint, not selected by the domain service. */
+  repository: ReviewGatePublisherOptions['repository'] & AuthoritativeReviewCompletion['repository'] & {
+    reapTerminalAttempts(now?: number, limit?: number): Promise<number>;
+    advanceProjectedAttempts(now?: number, limit?: number): Promise<number>;
+  };
+  getStoredPrepared: AuthoritativeCompletionContextOptions['getStoredPrepared'];
   appId: string;
   privateKey: string;
   baseUrl: string;
@@ -33,7 +35,7 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   validateAdmission(input: ReviewAdmissionInput): Promise<void>;
   runOnce(): Promise<void>;
 } {
-  const { config, pool } = options;
+  const { config, repository } = options;
   if (Number(options.appId) !== config.expectedAppId || !options.workerId.trim()) {
     throw new Error('Authoritative service identity does not match its configuration');
   }
@@ -52,9 +54,8 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     policyRepository: config.policyRepository, policyRef: config.policyRef, policyPath: config.policyPath,
     transport: config.transport, candidateReaderFactory: readerFactory, policyReaderFactory: readerFactory,
   });
-  const repository = new PostgresReviewGateRepository(pool, { completionResolutionTimeoutMs: 15_000 });
   const resolveCompletion = createAuthoritativeCompletionContext({
-    getStoredPrepared: (policyDigest) => getPreparedPublishingPolicy(pool, policyDigest),
+    getStoredPrepared: options.getStoredPrepared,
     readerFactory, publishingResolver: resolver,
   });
   const publisher = new ReviewGatePublisher({
