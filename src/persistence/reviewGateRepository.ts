@@ -1,5 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateCheck, type ReviewGateCoordinates } from '../github/reviewGateClient';
+import type { WorkerCompletionProof } from '../review/workerCompletion';
+import {
+  deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, workerReviewCompletionDigest,
+  type TrustedReviewCoverageContract,
+} from '../review/workerReviewCompletion';
+import { evaluateReviewGate, type ReviewGateCandidate, type ReviewGateDecision, type ReviewGateEvidence } from '../review/reviewGatePolicy';
 
 interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
 interface Client extends Queryable { release(): void }
@@ -28,6 +34,13 @@ export interface GatePublicationClaim extends StoredReviewGate {
   mayCreate: boolean;
 }
 
+export interface TrustedGateCompletionContext {
+  current: ReviewGateCandidate & { open: boolean; draft: boolean };
+  coverage: Omit<TrustedReviewCoverageContract, 'expectedCoordinates'>;
+}
+
+export type GateWorkerResultTransition = 'recorded' | 'duplicate' | 'ignored' | 'unauthorized' | 'conflict';
+
 export function gateAttemptId(runId: string, generation: number, executionAttempt: number): string {
   if (!/^run_[a-f0-9]{32}$/u.test(runId)
     || !Number.isSafeInteger(generation) || generation < 0
@@ -50,6 +63,108 @@ function fromRow(row: any): StoredReviewGate {
  * and policy; workers cannot reserve, create or select authoritative checks. */
 export class PostgresReviewGateRepository {
   constructor(private readonly pool: Pool) {}
+
+  /** Authenticate and commit terminal review, dispatch retirement and gate
+   * publication intent in one transaction. The service's resolver owns current
+   * GitHub truth and coverage; the worker never supplies that authority.
+   * Deliberately not wired to a route until prepared-policy storage is in place. */
+  async recordWorkerResult(
+    input: unknown,
+    proof: WorkerCompletionProof,
+    resolve: (gate: StoredReviewGate) => Promise<TrustedGateCompletionContext>,
+    now = Date.now(),
+  ): Promise<GateWorkerResultTransition> {
+    const event = parseWorkerReviewCompletion(input);
+    if (!Number.isFinite(now)) throw new Error('Invalid gate completion clock');
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("SET LOCAL lock_timeout = '5s'");
+      const binding = (await client.query('SELECT repository_id, pr_number FROM review_runs WHERE run_id = $1', [event.runId])).rows[0];
+      if (!binding || Number(binding.repository_id) !== event.repositoryId || Number(binding.pr_number) !== event.prNumber) {
+        await client.query('COMMIT'); return binding ? 'unauthorized' : 'ignored';
+      }
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `review-dispatch:${event.repositoryId}:${event.prNumber}`,
+      ]);
+      const result = await client.query(`SELECT gate.*, runs.status AS run_status,
+          runs.attempt AS current_generation, runs.effective_config_digest, runs.received_at,
+          outbox.worker_token_digest, outbox.execution_attempt AS current_execution,
+          outbox.status AS outbox_status
+        FROM review_gate_attempts gate JOIN review_runs runs USING (run_id)
+        JOIN review_dispatch_outbox outbox USING (run_id)
+        WHERE gate.run_id = $1 AND gate.current_attempt
+        FOR UPDATE OF gate, runs, outbox`, [event.runId]);
+      const row = result.rows[0];
+      const finish = async (status: GateWorkerResultTransition): Promise<GateWorkerResultTransition> => {
+        await client.query('COMMIT'); return status;
+      };
+      if (!row) return await finish('ignored');
+      if (typeof row.worker_token_digest !== 'string' || !/^[a-f0-9]{64}$/u.test(row.worker_token_digest)
+        || !/^[a-f0-9]{64}$/u.test(proof.workerTokenDigest)
+        || !timingSafeEqual(Buffer.from(row.worker_token_digest, 'hex'), Buffer.from(proof.workerTokenDigest, 'hex'))) {
+        return await finish('unauthorized');
+      }
+      const gate = fromRow(row);
+      const coordinates = gate.coordinates;
+      if (['runId', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'policyDigest', 'executionAttempt']
+        .some((key) => event[key as keyof typeof event] !== coordinates[key as keyof ReviewGateCoordinates])
+        || event.configDigest !== row.effective_config_digest
+        || gate.reviewGeneration !== Number(row.current_generation)
+        || event.executionAttempt !== Number(row.current_execution) + 1) return await finish('unauthorized');
+      const resultDigest = workerReviewCompletionDigest(event);
+      if (row.worker_result_digest != null) {
+        return await finish(row.worker_result_digest === resultDigest ? 'duplicate' : 'conflict');
+      }
+      if (!['queued', 'running'].includes(row.run_status)
+        || !['pending', 'claimed', 'projected'].includes(row.outbox_status)
+        || gate.creationState !== 'bound' || gate.checkId === null) return await finish('ignored');
+
+      const trusted = await resolve(gate);
+      const derived = deriveCanonicalWorkerReviewEvidence(event, {
+        ...trusted.coverage,
+        expectedCoordinates: {
+          runId: coordinates.runId, repositoryId: coordinates.repositoryId,
+          owner: coordinates.owner, repo: coordinates.repo, prNumber: coordinates.prNumber,
+          headSha: coordinates.headSha, baseSha: coordinates.baseSha,
+          policyDigest: coordinates.policyDigest, configDigest: row.effective_config_digest,
+          executionAttempt: coordinates.executionAttempt,
+        },
+      });
+      // The after-review human-risk boundary uses service receipt time, not a
+      // worker-controlled timestamp that could make older consent look fresh.
+      const workerCompletedAt = Date.parse(event.result.completedAt);
+      const receivedAt = new Date(row.received_at).getTime();
+      const timestampValid = Number.isFinite(receivedAt) && workerCompletedAt >= receivedAt && workerCompletedAt <= now + 5_000;
+      const evidence: ReviewGateEvidence | undefined = derived.valid && timestampValid
+        ? { ...derived.evidence, completedAt: new Date(now).toISOString() } : undefined;
+      const decision: ReviewGateDecision = evidence
+        ? evaluateReviewGate({ candidate: coordinates, current: trusted.current, evidence })
+        : { status: 'failure', eligible: false, reason: 'invalid-evidence' };
+      if (decision.status === 'pending') throw new Error('Terminal gate result cannot remain pending');
+
+      await client.query(`UPDATE review_gate_attempts SET evidence = $2, decision = $3,
+          worker_result_digest = $4, desired_state = $5, desired_version = desired_version + 1,
+          current_attempt = $6, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+          available_at = to_timestamp($7/1000.0), updated_at = to_timestamp($7/1000.0)
+        WHERE attempt_id = $1`, [coordinates.attemptId, evidence ? JSON.stringify(evidence) : null,
+      JSON.stringify(decision), resultDigest, decision.status, decision.status !== 'cancelled', now]);
+      // Authenticated completion proves projection even when Kubernetes accepted
+      // the Job before its dispatcher ACK. Keep 'projected' so a failed review's
+      // explicit re-admission advances execution and receives a fresh Secret.
+      await client.query(`UPDATE review_dispatch_outbox SET status = 'projected',
+          lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($2/1000.0)
+        WHERE run_id = $1`, [event.runId, now]);
+      await client.query(`UPDATE review_runs SET status = $2, stage = 'publish',
+          result_digest = $3, error_text = $4, lease_owner = NULL, lease_expires_at = NULL,
+          updated_at = to_timestamp($5/1000.0) WHERE run_id = $1`,
+      [event.runId, decision.status === 'success' ? 'succeeded' : decision.status === 'cancelled' ? 'superseded' : 'failed',
+        resultDigest, decision.status === 'success' ? null : `review gate: ${decision.reason}`, now]);
+      return await finish('recorded');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined); throw error;
+    } finally { client.release(); }
+  }
 
   /** Reserve the current durable dispatch's gate before its worker is projected.
    * Reuses admission's repository/PR lock; stale claims cannot supersede a newer

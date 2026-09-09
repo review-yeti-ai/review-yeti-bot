@@ -17,7 +17,7 @@ function fixture(overrides: Partial<GatePublicationClaim> = {}) {
   const active = { ...claim, ...overrides };
   const repository = {
     claimPublication: vi.fn(async () => active as GatePublicationClaim | null),
-    publishLocked: vi.fn(async (_claim, publish) => { await publish(active, active.mayCreate); return 'published' as const; }),
+    publishLocked: vi.fn(async (_claim, publish): Promise<'published' | 'stale-claim'> => { await publish(active, active.mayCreate); return 'published'; }),
     retryPublication: vi.fn(async () => true),
   };
   const client = {
@@ -62,5 +62,22 @@ describe('durable service gate publisher', () => {
     expect(f.client.createPending).not.toHaveBeenCalled();
     expect(f.client.reconcile).not.toHaveBeenCalled();
     expect(f.client.updateExisting).toHaveBeenCalledWith({ coordinates, checkId: 1234, update: { conclusion: 'failure' } });
+  });
+  it('records a bound-check transport failure without creating or reconciling another check', async () => {
+    const f = fixture({ mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'success' });
+    f.client.updateExisting.mockRejectedValue(new Error('synthetic private transport detail'));
+    expect(await f.publisher.runOnce()).toEqual({ status: 'retry', attemptId: coordinates.attemptId });
+    expect(f.repository.retryPublication).toHaveBeenCalledWith(expect.objectContaining({ checkId: 1234 }),
+      1_000, 30_000, 'transport');
+    expect(f.client.createPending).not.toHaveBeenCalled();
+    expect(f.client.reconcile).not.toHaveBeenCalled();
+    expect(f.client.updateExisting).toHaveBeenCalledOnce();
+  });
+  it('releases a stale publication claim through the fenced retry path', async () => {
+    const f = fixture();
+    f.repository.publishLocked.mockResolvedValue('stale-claim');
+    expect(await f.publisher.runOnce()).toEqual({ status: 'stale-claim', attemptId: coordinates.attemptId });
+    expect(f.repository.retryPublication).toHaveBeenCalledWith(expect.anything(), 1_000, 30_000, 'stale-claim');
+    expect(f.client.createPending).not.toHaveBeenCalled();
   });
 });

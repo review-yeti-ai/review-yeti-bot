@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { Pool } from 'pg';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { Pool, type PoolClient } from 'pg';
 import {
   deriveReviewGateExternalId,
   REVIEW_GATE_CHECK_NAME,
@@ -9,13 +9,23 @@ import {
 import {
   gateAttemptId,
   PostgresReviewGateRepository,
+  type StoredReviewGate,
+  type TrustedGateCompletionContext,
 } from '../../src/persistence/reviewGateRepository';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import {
+  workerReviewCompletionDigest,
+  type WorkerReviewCompletion,
+} from '../../src/review/workerReviewCompletion';
 
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 const describeWithPostgres = databaseUrl ? describe : describe.skip;
 const OWNED_SCHEMA = /^review_gate_test_[0-9a-f]{16}$/u;
 const APP_ID = 7001;
+const CONFIG_DIGEST = 'e'.repeat(64);
+const WORKER_PROOF = { workerTokenDigest: 'd'.repeat(64) };
+const RECEIVED_AT = Date.parse('2026-09-09T12:00:00.000Z');
+const COMPLETED_AT = RECEIVED_AT + 60_000;
 
 describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   let pool: Pool | undefined;
@@ -54,10 +64,11 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     await pool!.query(`
       INSERT INTO review_runs (
         run_id, owner, repo, pr_number, head_sha, base_sha,
-        effective_policy_digest, publication_mode, status, attempt, repository_id
+        effective_policy_digest, publication_mode, status, attempt, repository_id,
+        effective_config_digest, received_at
       ) VALUES ($1, 'calltelemetry', 'ct-review-actions', $2, $3, $4,
-        $5, 'app-gate', 'queued', $6, $7)
-    `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId]);
+        $5, 'app-gate', 'queued', $6, $7, $8, to_timestamp($9/1000.0))
+    `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId, CONFIG_DIGEST, RECEIVED_AT]);
     await pool!.query(`
       INSERT INTO review_dispatch_outbox (run_id, status, execution_attempt)
       VALUES ($1, 'pending', $2)
@@ -113,12 +124,24 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           publication_mode TEXT NOT NULL,
           status TEXT NOT NULL,
           attempt INTEGER NOT NULL,
-          repository_id BIGINT NOT NULL
+          repository_id BIGINT NOT NULL,
+          effective_config_digest VARCHAR(64) NOT NULL,
+          received_at TIMESTAMPTZ NOT NULL,
+          stage TEXT NOT NULL DEFAULT 'admission',
+          result_digest VARCHAR(64),
+          error_text TEXT,
+          lease_owner TEXT,
+          lease_expires_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE review_dispatch_outbox (
           run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
           status TEXT NOT NULL,
-          execution_attempt INTEGER NOT NULL DEFAULT 0
+          execution_attempt INTEGER NOT NULL DEFAULT 0,
+          worker_token_digest VARCHAR(64),
+          lease_owner TEXT,
+          lease_expires_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
       `);
       await client.query(REVIEW_GATE_SCHEMA_SQL);
@@ -486,6 +509,369 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       creation_state: 'creating',
       lease_owner: 'same-worker',
       lease_token: reclaimedClaim.leaseToken,
+    });
+  });
+
+  describe('authenticated worker result transaction', () => {
+    async function snapshot(id: string, database: Pick<PoolClient, 'query'> = pool!) {
+      const result = await database.query(`
+        SELECT to_jsonb(runs) AS run, to_jsonb(outbox) AS outbox,
+          (SELECT COALESCE(jsonb_agg(to_jsonb(gate) ORDER BY gate.attempt_id), '[]'::jsonb)
+             FROM review_gate_attempts gate WHERE gate.run_id = runs.run_id) AS gates
+          FROM review_runs runs LEFT JOIN review_dispatch_outbox outbox USING (run_id)
+         WHERE runs.run_id = $1
+      `, [id]);
+      return result.rows[0];
+    }
+
+    async function completionFixture(outboxStatus: 'pending' | 'claimed' | 'projected' = 'projected') {
+      const id = runId(100);
+      await insertRun(id, 2, 4);
+      const repository = new PostgresReviewGateRepository(pool!);
+      const gate = (await repository.reserve(id, APP_ID, RECEIVED_AT + 1_000))!;
+      const claim = (await repository.claimPublication('test-publisher', RECEIVED_AT + 2_000, 5_000))!;
+      // Simulate the trusted App's response locally; there is no GitHub client.
+      await repository.publishLocked(claim, async () => ({
+        id: 8080, name: REVIEW_GATE_CHECK_NAME, appId: APP_ID,
+        headSha: gate.coordinates.headSha, externalId: gate.externalId,
+        status: 'queued', conclusion: null,
+      }), () => RECEIVED_AT + 3_000);
+      await pool!.query(`UPDATE review_runs SET status = $2, stage = 'personas',
+        lease_owner = 'review-worker', lease_expires_at = to_timestamp($3/1000.0)
+        WHERE run_id = $1`, [id, outboxStatus === 'projected' ? 'running' : 'queued', COMPLETED_AT + 60_000]);
+      await pool!.query(`UPDATE review_dispatch_outbox SET status = $2,
+        worker_token_digest = $3, lease_owner = 'dispatcher',
+        lease_expires_at = to_timestamp($4/1000.0) WHERE run_id = $1`,
+      [id, outboxStatus, WORKER_PROOF.workerTokenDigest, COMPLETED_AT + 60_000]);
+
+      const event: WorkerReviewCompletion = {
+        version: 'WorkerReviewCompletion.v1', runId: id,
+        repositoryId: 3210, owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+        policyDigest: 'c'.repeat(64), configDigest: CONFIG_DIGEST, executionAttempt: 5,
+        result: {
+          version: 'WorkerReviewResult.v1',
+          completedAt: new Date(COMPLETED_AT - 10_000).toISOString(),
+          personas: [
+            { id: 'sec-lane', decision: 'APPROVE', findings: [] },
+            { id: 'arch-lane', decision: 'APPROVE', findings: [] },
+          ],
+          coverageComplete: true, quorumSatisfied: true,
+        },
+      };
+      const trusted: TrustedGateCompletionContext = {
+        current: {
+          repositoryId: event.repositoryId, prNumber: event.prNumber,
+          headSha: event.headSha, baseSha: event.baseSha, policyDigest: event.policyDigest,
+          open: true, draft: false,
+        },
+        coverage: {
+          expectedPersonaIds: ['sec-lane', 'arch-lane'],
+          changedFiles: [{ path: 'src/example.ts', patch: '@@ -0,0 +1 @@\n+const first = 1;\n' }],
+          coverageComplete: true, quorumSatisfied: true,
+        },
+      };
+      const resolve = vi.fn(async (_gate: StoredReviewGate) => trusted);
+      return { id, repository, gate, event, trusted, resolve };
+    }
+
+    function expectTerminalState(
+      state: Awaited<ReturnType<typeof snapshot>>,
+      event: WorkerReviewCompletion,
+      status: 'success' | 'failure' | 'cancelled',
+      reason: string,
+    ): void {
+      const digest = workerReviewCompletionDigest(event);
+      expect(state.run).toMatchObject({
+        status: status === 'success' ? 'succeeded' : status === 'cancelled' ? 'superseded' : 'failed',
+        stage: 'publish', result_digest: digest,
+        error_text: status === 'success' ? null : `review gate: ${reason}`,
+        lease_owner: null, lease_expires_at: null,
+      });
+      expect(state.outbox).toMatchObject({
+        status: 'projected', execution_attempt: 4, worker_token_digest: WORKER_PROOF.workerTokenDigest,
+        lease_owner: null, lease_expires_at: null,
+      });
+      expect(state.gates).toHaveLength(1);
+      expect(state.gates[0]).toMatchObject({
+        creation_state: 'bound', check_id: 8080, current_attempt: status !== 'cancelled',
+        desired_state: status, desired_version: 1, published_version: 0,
+        worker_result_digest: digest, decision: { status, eligible: status === 'success', reason },
+        lease_owner: null, lease_token: null, lease_expires_at: null,
+      });
+    }
+
+    it('atomically commits authenticated success, run completion, dispatch retirement and unpublished gate intent', async () => {
+      const { id, event, resolve } = await completionFixture('claimed');
+      const before = await snapshot(id);
+      const observedUpdates: string[] = [];
+      // All SQL still executes in Postgres. A second connection observes each
+      // intermediate write, while the transaction connection sees all three.
+      const repository = new PostgresReviewGateRepository({
+        query: (sql, values) => pool!.query(sql, values),
+        connect: async () => {
+          const client = await pool!.connect();
+          return {
+            query: async (sql, values) => {
+              if (sql === 'COMMIT') {
+                expectTerminalState(await snapshot(id, client), event, 'success', 'clean-review');
+                expect(await snapshot(id)).toEqual(before);
+              }
+              const result = await client.query(sql, values);
+              const table = sql.match(/^UPDATE (review_gate_attempts|review_dispatch_outbox|review_runs) /u)?.[1];
+              if (table) {
+                observedUpdates.push(table);
+                expect(await snapshot(id)).toEqual(before);
+              }
+              return result;
+            },
+            release: () => client.release(),
+          };
+        },
+      });
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      expect(observedUpdates).toEqual(['review_gate_attempts', 'review_dispatch_outbox', 'review_runs']);
+      expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+      expect(resolve).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        checkId: 8080, creationState: 'bound', reviewGeneration: 2,
+        coordinates: expect.objectContaining({ runId: id, executionAttempt: 5 }),
+      }));
+    });
+
+    it.each(['pending', 'claimed', 'projected'] as const)(
+      'accepts authenticated completion with outbox %s, including before projection ACK', async (status) => {
+        const { id, repository, event, resolve } = await completionFixture(status);
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+        expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+      },
+    );
+
+    it.each(['missing', 'reserved', 'creating', 'superseded'] as const)(
+      'requires a current bound gate and ignores a %s gate', async (state) => {
+        const { id, repository, event, resolve } = await completionFixture();
+        if (state === 'missing') await pool!.query('DELETE FROM review_gate_attempts WHERE run_id = $1', [id]);
+        else if (state === 'superseded') {
+          await pool!.query('UPDATE review_gate_attempts SET current_attempt = false WHERE run_id = $1', [id]);
+        } else {
+          await pool!.query('UPDATE review_gate_attempts SET creation_state = $2, check_id = NULL WHERE run_id = $1', [id, state]);
+        }
+        const before = await snapshot(id);
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('ignored');
+        expect(resolve).not.toHaveBeenCalled();
+        expect(await snapshot(id)).toEqual(before);
+      },
+    );
+
+    it.each(['f'.repeat(64), 'malformed', ''])(
+      'rejects an incorrect or malformed worker token digest %s', async (workerTokenDigest) => {
+        const { id, repository, event, resolve } = await completionFixture();
+        const before = await snapshot(id);
+        await expect(repository.recordWorkerResult(event, { workerTokenDigest }, resolve, COMPLETED_AT)).resolves.toBe('unauthorized');
+        expect(resolve).not.toHaveBeenCalled();
+        expect(await snapshot(id)).toEqual(before);
+      },
+    );
+
+    it.each([null, 'malformed'])('rejects missing or malformed persisted token digest %s', async (digest) => {
+      const { id, repository, event, resolve } = await completionFixture();
+      await pool!.query('UPDATE review_dispatch_outbox SET worker_token_digest = $2 WHERE run_id = $1', [id, digest]);
+      const before = await snapshot(id);
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('unauthorized');
+      expect(resolve).not.toHaveBeenCalled();
+      expect(await snapshot(id)).toEqual(before);
+    });
+
+    it.each([
+      ['repositoryId', 3211], ['owner', 'other-owner'], ['repo', 'other-repo'], ['prNumber', 43],
+      ['headSha', 'f'.repeat(40)], ['baseSha', 'f'.repeat(40)],
+      ['policyDigest', 'f'.repeat(64)], ['configDigest', 'f'.repeat(64)], ['executionAttempt', 6],
+    ] as const)('rejects mismatched worker %s before resolving evidence', async (field, value) => {
+      const { id, repository, event, resolve } = await completionFixture();
+      const before = await snapshot(id);
+      await expect(repository.recordWorkerResult({ ...event, [field]: value }, WORKER_PROOF, resolve, COMPLETED_AT))
+        .resolves.toBe('unauthorized');
+      expect(resolve).not.toHaveBeenCalled();
+      expect(await snapshot(id)).toEqual(before);
+    });
+
+    it('ignores an unknown run without resolving or changing another run', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      const before = await snapshot(id);
+      await expect(repository.recordWorkerResult({ ...event, runId: runId(101) }, WORKER_PROOF, resolve, COMPLETED_AT))
+        .resolves.toBe('ignored');
+      expect(resolve).not.toHaveBeenCalled();
+      expect(await snapshot(id)).toEqual(before);
+    });
+
+    it.each(['generation', 'execution'] as const)('rejects a persisted %s advance behind the bound gate', async (field) => {
+      const { id, repository, event, resolve } = await completionFixture();
+      if (field === 'generation') await pool!.query('UPDATE review_runs SET attempt = attempt + 1 WHERE run_id = $1', [id]);
+      else await pool!.query('UPDATE review_dispatch_outbox SET execution_attempt = execution_attempt + 1 WHERE run_id = $1', [id]);
+      const before = await snapshot(id);
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('unauthorized');
+      expect(resolve).not.toHaveBeenCalled();
+      expect(await snapshot(id)).toEqual(before);
+    });
+
+    it.each(['headSha', 'baseSha', 'policyDigest', 'closed'] as const)(
+      'cancels against current trusted %s changes without reviving the candidate', async (field) => {
+        const { id, repository, event, resolve, trusted } = await completionFixture();
+        if (field === 'closed') trusted.current.open = false;
+        else trusted.current[field] = 'f'.repeat(field === 'policyDigest' ? 64 : 40);
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+        expectTerminalState(await snapshot(id), event, 'cancelled', field === 'closed' ? 'pull-request-closed' : 'candidate-superseded');
+        const cancelled = await snapshot(id);
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT + 1_000)).resolves.toBe('ignored');
+        expect(await snapshot(id)).toEqual(cancelled);
+      },
+    );
+
+    it.each([
+      ['provider-error', 'infrastructure-failure'], ['missing-lane', 'incomplete-review'],
+      ['worker-coverage', 'incomplete-review'], ['worker-quorum', 'incomplete-review'],
+      ['trusted-coverage', 'incomplete-review'], ['trusted-quorum', 'incomplete-review'],
+      ['blocking-finding', 'blocking-findings'], ['invalid-finding', 'invalid-evidence'],
+      ['false-worker-verdict', 'invalid-evidence'], ['false-worker-count', 'invalid-evidence'],
+      ['duplicate-lane', 'invalid-evidence'], ['unknown-lane', 'invalid-evidence'],
+    ] as const)('fails closed for %s with atomic non-success intent', async (scenario, reason) => {
+      const { id, repository, event, resolve, trusted } = await completionFixture();
+      const lane = event.result.personas[0];
+      switch (scenario) {
+        case 'provider-error': lane.decision = 'ERROR'; lane.errorClass = 'timeout'; break;
+        case 'missing-lane': event.result.personas.pop(); break;
+        case 'worker-coverage': event.result.coverageComplete = false; break;
+        case 'worker-quorum': event.result.quorumSatisfied = false; break;
+        case 'trusted-coverage': trusted.coverage.coverageComplete = false; break;
+        case 'trusted-quorum': trusted.coverage.quorumSatisfied = false; break;
+        case 'duplicate-lane': event.result.personas[1].id = lane.id; break;
+        case 'unknown-lane': lane.id = 'unknown-lane'; break;
+        case 'false-worker-count': event.result.findingCount = 99; break;
+        default:
+          lane.decision = 'FINDINGS';
+          lane.findings = [{
+            severity: 'P1', path: scenario === 'invalid-finding' ? 'src/unreviewed.ts' : 'src/example.ts',
+            line: 1, title: 'Unsafe change', body: 'The changed code exposes private data.',
+          }];
+          if (scenario === 'false-worker-verdict') event.result.verdict = 'SHIP';
+      }
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      const state = await snapshot(id);
+      expectTerminalState(state, event, 'failure', reason);
+      if (reason === 'invalid-evidence') expect(state.gates[0].evidence).toBeNull();
+      else expect(state.gates[0].evidence).not.toBeNull();
+    });
+
+    it('uses the service receipt time for evidence and stores eligibility independently of draft readiness', async () => {
+      const { id, repository, event, resolve, trusted } = await completionFixture();
+      trusted.current.draft = true;
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      const state = await snapshot(id);
+      expectTerminalState(state, event, 'success', 'clean-review');
+      expect(state.gates[0].evidence.completedAt).toBe(new Date(COMPLETED_AT).toISOString());
+      expect(state.gates[0].evidence.completedAt).not.toBe(event.result.completedAt);
+      expect(trusted.current.draft).toBe(true);
+    });
+
+    it.each([RECEIVED_AT - 1, COMPLETED_AT + 5_001])('fails closed on implausible worker timestamp %s', async (time) => {
+      const { id, repository, event, resolve } = await completionFixture();
+      event.result.completedAt = new Date(time).toISOString();
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      const state = await snapshot(id);
+      expectTerminalState(state, event, 'failure', 'invalid-evidence');
+      expect(state.gates[0].evidence).toBeNull();
+    });
+
+    it('serializes concurrent exact duplicates and rejects a conflicting second body without another intent', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      const results = await Promise.all([
+        repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT),
+        repository.recordWorkerResult(structuredClone(event), WORKER_PROOF, resolve, COMPLETED_AT),
+      ]);
+      expect(results.sort()).toEqual(['duplicate', 'recorded']);
+      expect(resolve).toHaveBeenCalledTimes(1);
+      const recorded = await snapshot(id);
+      expectTerminalState(recorded, event, 'success', 'clean-review');
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT + 1_000)).resolves.toBe('duplicate');
+      const conflicting = structuredClone(event);
+      conflicting.result.completedAt = new Date(COMPLETED_AT - 9_000).toISOString();
+      await expect(repository.recordWorkerResult(conflicting, WORKER_PROOF, resolve, COMPLETED_AT + 2_000)).resolves.toBe('conflict');
+      await expect(repository.recordWorkerResult(event, { workerTokenDigest: 'f'.repeat(64) }, resolve, COMPLETED_AT + 3_000))
+        .resolves.toBe('unauthorized');
+      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(await snapshot(id)).toEqual(recorded);
+    });
+
+    it('rolls back a resolver failure and permits retry against unchanged state', async () => {
+      const { id, repository, event, resolve } = await completionFixture('claimed');
+      const before = await snapshot(id);
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, async () => {
+        throw new Error('synthetic trusted resolver failure');
+      }, COMPLETED_AT)).rejects.toThrow('synthetic trusted resolver failure');
+      expect(await snapshot(id)).toEqual(before);
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+    });
+
+    it('rolls back gate and outbox writes when the terminal run UPDATE violates an owned DB constraint', async () => {
+      const { id, repository, event, resolve } = await completionFixture('claimed');
+      const before = await snapshot(id);
+      // Only the suite-owned schema is affected, and the constraint is removed
+      // even when an assertion fails. This triggers a real SQL error after the
+      // gate intent and dispatch retirement UPDATEs have executed.
+      await pool!.query("ALTER TABLE review_runs ADD CONSTRAINT test_reject_worker_success CHECK (status <> 'succeeded')");
+      try {
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT))
+          .rejects.toMatchObject({ code: '23514', constraint: 'test_reject_worker_success' });
+        expect(await snapshot(id)).toEqual(before);
+      } finally {
+        await pool!.query('ALTER TABLE review_runs DROP CONSTRAINT test_reject_worker_success');
+      }
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+    });
+
+    it('publishes exact completed/success after a recorded result while retaining the bound check ID', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT);
+      const claim = (await repository.claimPublication('terminal-publisher', COMPLETED_AT, 5_000))!;
+      expect(claim).toMatchObject({ checkId: 8080, desiredState: 'success', mayCreate: false, desiredVersion: 1 });
+      await expect(repository.publishLocked(claim, async (gate, mayCreate) => {
+        expect(mayCreate).toBe(false);
+        expect(gate.checkId).toBe(8080);
+        return {
+          id: 8080, name: REVIEW_GATE_CHECK_NAME, appId: APP_ID,
+          headSha: gate.coordinates.headSha, externalId: gate.externalId,
+          status: 'completed', conclusion: 'success',
+        };
+      }, () => COMPLETED_AT + 1_000)).resolves.toBe('published');
+      const state = await snapshot(id);
+      expect(state.gates[0]).toMatchObject({
+        check_id: 8080, creation_state: 'bound', desired_state: 'success',
+        desired_version: 1, published_version: 1, lease_owner: null, lease_token: null,
+      });
+      expect(state.run.result_digest).toBe(workerReviewCompletionDigest(event));
+      await expect(repository.claimPublication('unnecessary-retry', COMPLETED_AT + 2_000, 5_000)).resolves.toBeNull();
+    });
+
+    it.each([
+      { status: 'in_progress', conclusion: null, id: 8080 },
+      { status: 'completed', conclusion: 'failure', id: 8080 },
+      { status: 'completed', conclusion: 'success', id: 8081 },
+    ] as const)('rolls back terminal publication with mismatched returned state or check ID %j', async (returned) => {
+      const { id, repository, event, resolve } = await completionFixture();
+      await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT);
+      const claim = (await repository.claimPublication('terminal-publisher', COMPLETED_AT, 5_000))!;
+      const before = await snapshot(id);
+      await expect(repository.publishLocked(claim, async (gate, mayCreate) => {
+        expect(mayCreate).toBe(false);
+        expect(gate.checkId).toBe(8080);
+        return {
+          ...returned, name: REVIEW_GATE_CHECK_NAME, appId: APP_ID,
+          headSha: gate.coordinates.headSha, externalId: gate.externalId,
+        };
+      }, () => COMPLETED_AT + 1_000)).rejects.toThrow('Published gate did not match the locked attempt');
+      expect(await snapshot(id)).toEqual(before);
+      expect(before.gates[0]).toMatchObject({ check_id: 8080, published_version: 0, desired_version: 1 });
     });
   });
 });

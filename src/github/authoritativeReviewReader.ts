@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { CurrentReviewCandidate, TrustedResolvedReviewPolicy } from '../review/authoritativeReviewIdentity';
+import { reviewPolicySourceSchema, type CurrentReviewCandidate, type TrustedResolvedReviewPolicy } from '../review/authoritativeReviewIdentity';
 
 const positive = z.number().int().positive().safe();
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -12,9 +12,7 @@ const pullResponse = z.object({
   number: positive, state: z.enum(['open', 'closed']), draft: z.boolean(), merged: z.boolean(),
   head: z.object({ sha }), base: z.object({ sha, repo: repositoryResponse }),
 });
-const sourcePath = z.string().min(1).max(512).refine((value) => !value.startsWith('/')
-  && !value.split('/').some((part) => part === '' || part === '.' || part === '..')
-  && !/[\\\u0000-\u001f\u007f]/u.test(value));
+const sourcePath = reviewPolicySourceSchema.shape.path;
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 512 * 1024;
 

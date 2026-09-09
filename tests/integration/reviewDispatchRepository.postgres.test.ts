@@ -3,6 +3,7 @@ import { Pool, type PoolClient } from 'pg';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { sha256 } from '../../src/review/reviewCore';
+import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
 
 function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
   baseSha?: string; configDigest?: string; policyDigest?: string;
@@ -35,6 +36,25 @@ function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 
 const describeWithPostgres = databaseUrl ? describe : describe.skip;
+
+const claimMutations = ['heartbeat', 'bindWorkerTokenDigest', 'markProjected', 'releaseForRetry', 'markTerminal'] as const;
+function mutateClaim(repository: PostgresReviewDispatchRepository, mutation: typeof claimMutations[number], claim: ReviewDispatchClaim, now: number) {
+  const fence = [claim.runId, claim.leaseOwner, claim.claimAttempt] as const;
+  switch (mutation) {
+    case 'heartbeat': return repository.heartbeat(...fence, now, 30_000);
+    case 'bindWorkerTokenDigest': return repository.bindWorkerTokenDigest(...fence, 'b'.repeat(64), now);
+    case 'markProjected': return repository.markProjected(...fence, 'projection', now, 'b'.repeat(64));
+    case 'releaseForRetry': return repository.releaseForRetry(...fence, now, now + 5_000);
+    case 'markTerminal': return repository.markTerminal(...fence, now, 'projection rejected');
+  }
+}
+
+async function dispatchState(client: PoolClient, runId: string) {
+  return {
+    run: (await client.query('SELECT * FROM review_runs WHERE run_id = $1', [runId])).rows[0],
+    outbox: (await client.query('SELECT * FROM review_dispatch_outbox WHERE run_id = $1', [runId])).rows[0],
+  };
+}
 
 describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () => {
   let pool: Pool | undefined;
@@ -123,6 +143,71 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     return { repository, client };
   }
 
+  describe.each(claimMutations)('%s claim fencing', (mutation) => {
+    it('rejects an old same-worker claim after reclaiming the same execution', async () => {
+      const { repository, client } = await createRepository();
+      await repository.admit(sameHeadAdmission('initial', 1_000));
+      const oldClaim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+      const freshClaim = (await repository.claimNext('dispatcher-a', 31_000, 30_000))!;
+      expect(oldClaim.claimAttempt).toBe(1);
+      expect(freshClaim.claimAttempt).toBe(2);
+      expect(freshClaim.executionAttempt).toBe(oldClaim.executionAttempt);
+      const before = await dispatchState(client, freshClaim.runId);
+      await expect(mutateClaim(repository, mutation, oldClaim, 31_001)).resolves.toBe(false);
+      expect(await dispatchState(client, freshClaim.runId)).toEqual(before);
+      await expect(mutateClaim(repository, mutation, freshClaim, 31_002)).resolves.toBe(true);
+    });
+
+    it('rejects a delayed same-worker claim across failed-worker re-admission', async () => {
+      const { repository, client } = await createRepository();
+      const input = sameHeadAdmission('initial', 1_000);
+      await repository.admit(input);
+      const oldClaim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+      await expect(repository.markProjected(oldClaim.runId, oldClaim.leaseOwner, oldClaim.claimAttempt,
+        'prior-projection', 1_100, 'a'.repeat(64))).resolves.toBe(true);
+      // Worker callbacks remain execution-bound, not dispatcher-claim-bound.
+      await expect(repository.markWorkerFailure({
+        version: 'WorkerTerminalFailure.v1', runId: oldClaim.runId,
+        owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+        headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+        repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest,
+        configDigest: input.identity.configDigest, executionAttempt: oldClaim.executionAttempt,
+        checkId: 4242, failureClass: 'provider_error',
+      }, { workerTokenDigest: 'a'.repeat(64) }, 1_200)).resolves.toMatchObject({ status: 'failed' });
+      await repository.admit(sameHeadAdmission('retry', 1_300));
+      const freshClaim = (await repository.claimNext('dispatcher-a', 1_400, 30_000))!;
+      expect(freshClaim.claimAttempt).toBe(oldClaim.claimAttempt + 1);
+      expect(freshClaim.executionAttempt).toBe(oldClaim.executionAttempt + 1);
+      const before = await dispatchState(client, freshClaim.runId);
+      await expect(mutateClaim(repository, mutation, oldClaim, 1_500)).resolves.toBe(false);
+      expect(await dispatchState(client, freshClaim.runId)).toEqual(before);
+      await expect(mutateClaim(repository, mutation, freshClaim, 1_600)).resolves.toBe(true);
+    });
+
+    it('cannot mutate at or after lease expiry even without a reclaim', async () => {
+      const { repository, client } = await createRepository();
+      await repository.admit(sameHeadAdmission('initial', 1_000));
+      const claim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+      const before = await dispatchState(client, claim.runId);
+      for (const now of [claim.leaseExpiresAt, claim.leaseExpiresAt + 1]) {
+        await expect(mutateClaim(repository, mutation, claim, now)).resolves.toBe(false);
+        expect(await dispatchState(client, claim.runId)).toEqual(before);
+      }
+    });
+
+    it('cannot mutate at or after the run deadline even with an unexpired lease', async () => {
+      const { repository, client } = await createRepository();
+      await repository.admit(sameHeadAdmission('initial', 1_000));
+      const claim = (await repository.claimNext('dispatcher-a', 890_000, 30_000))!;
+      expect(claim.leaseExpiresAt).toBeGreaterThan(claim.terminalDeadline + 1);
+      const before = await dispatchState(client, claim.runId);
+      for (const now of [claim.terminalDeadline, claim.terminalDeadline + 1]) {
+        await expect(mutateClaim(repository, mutation, claim, now)).resolves.toBe(false);
+        expect(await dispatchState(client, claim.runId)).toEqual(before);
+      }
+    });
+  });
+
   it('keeps active claims single-owner and advances identity only after durable same-head re-admission', async () => {
     const { repository, client } = await createRepository();
     const identity = {
@@ -156,15 +241,15 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimNext('dispatcher-b', 2_000, 30_000)).resolves.toBeNull();
 
     // A failed projection releases the same execution identity for retry.
-    await expect(repository.releaseForRetry(first.run.runId, 'dispatcher-a', 2_000, 2_000)).resolves.toBe(true);
+    await expect(repository.releaseForRetry(first.run.runId, 'dispatcher-a', firstClaim!.claimAttempt, 2_000, 2_000)).resolves.toBe(true);
     const projectionRetry = await repository.claimNext('dispatcher-a', 3_000, 30_000);
     expect(projectionRetry?.executionAttempt).toBe(1);
     // Exercise digest fencing while every status/lease predicate is valid.
     // A mismatched token must not publish or mutate the still-claimed row.
-    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', 'a'.repeat(64), 3_000))
+    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', projectionRetry!.claimAttempt, 'a'.repeat(64), 3_000))
       .resolves.toBe(true);
     await expect(repository.markProjected(
-      first.run.runId, 'dispatcher-a', 'wrong-token-projection', 3_000, 'b'.repeat(64),
+      first.run.runId, 'dispatcher-a', projectionRetry!.claimAttempt, 'wrong-token-projection', 3_000, 'b'.repeat(64),
     )).resolves.toBe(false);
     expect((await client.query(
       'SELECT status, lease_owner, projection_name, worker_token_digest FROM pg_temp.review_dispatch_outbox WHERE run_id = $1',
@@ -175,6 +260,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.markProjected(
       first.run.runId,
       'dispatcher-a',
+      projectionRetry!.claimAttempt,
       'ct-review-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
       3_000,
       'a'.repeat(64),
@@ -270,7 +356,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
     // A dispatcher-terminal row has no prior worker object to replace, so its
     // same-head re-admission keeps the stored execution counter stable.
-    await expect(repository.markTerminal(secondClaim!.runId, 'dispatcher-a', 5_000, 'projection rejected')).resolves.toBe(true);
+    await expect(repository.markTerminal(secondClaim!.runId, 'dispatcher-a', secondClaim!.claimAttempt, 5_000, 'projection rejected')).resolves.toBe(true);
     const terminalReAdmission = await repository.admit(admission('delivery-3', 6_000));
     expect(terminalReAdmission.status).toBe('accepted');
     const terminalRow = await client.query(
@@ -285,24 +371,25 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     // The Kubernetes write may succeed before markProjected acknowledges it.
     // An authenticated failure from that worker must close the execution and
     // fence both the original dispatch lease and a subsequent projection retry.
-    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', 'b'.repeat(64), 7_010)).resolves.toBe(true);
+    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', terminalRetry!.claimAttempt, 'b'.repeat(64), 7_010)).resolves.toBe(true);
     const earlyFailure = { ...failure, executionAttempt: 2, failureClass: 'transport' as const };
     await expect(repository.markWorkerFailure(earlyFailure, { workerTokenDigest: 'b'.repeat(64) }, 7_020)).resolves.toMatchObject({ status: 'failed' });
-    await expect(repository.markProjected(first.run.runId, 'dispatcher-a', 'late-projection', 7_030, 'b'.repeat(64))).resolves.toBe(false);
-    await expect(repository.releaseForRetry(first.run.runId, 'dispatcher-a', 7_030, 7_040)).resolves.toBe(false);
+    await expect(repository.markProjected(first.run.runId, 'dispatcher-a', terminalRetry!.claimAttempt, 'late-projection', 7_030, 'b'.repeat(64))).resolves.toBe(false);
+    await expect(repository.releaseForRetry(first.run.runId, 'dispatcher-a', terminalRetry!.claimAttempt, 7_030, 7_040)).resolves.toBe(false);
     await repository.admit(admission('delivery-4', 8_000));
     const thirdClaim = await repository.claimNext('dispatcher-b', 8_010, 30_000);
     expect(thirdClaim?.executionAttempt).toBe(3);
-    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-b', 'c'.repeat(64), 8_020)).resolves.toBe(true);
+    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-b', thirdClaim!.claimAttempt, 'c'.repeat(64), 8_020)).resolves.toBe(true);
     await expect(repository.markWorkerFailure(earlyFailure, { workerTokenDigest: 'b'.repeat(64) }, 8_030)).resolves.toMatchObject({ status: 'unauthorized' });
 
     // An uncertain ensure failure can return the claimed outbox to pending
     // while the already-created worker is reporting its failure.
-    await repository.releaseForRetry(first.run.runId, 'dispatcher-b', 8_040, 8_050);
+    await repository.releaseForRetry(first.run.runId, 'dispatcher-b', thirdClaim!.claimAttempt, 8_040, 8_050);
     await expect(repository.markWorkerFailure({ ...failure, executionAttempt: 3 }, { workerTokenDigest: 'c'.repeat(64) }, 8_060)).resolves.toMatchObject({ status: 'failed' });
     await repository.admit(admission('delivery-5', 9_000));
-    expect((await repository.claimNext('dispatcher-c', 9_010, 30_000))?.executionAttempt).toBe(4);
-    await repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-c', 'd'.repeat(64), 9_020);
+    const fourthClaim = await repository.claimNext('dispatcher-c', 9_010, 30_000);
+    expect(fourthClaim?.executionAttempt).toBe(4);
+    await repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-c', fourthClaim!.claimAttempt, 'd'.repeat(64), 9_020);
     const failingRepository = new PostgresReviewDispatchRepository({ connect: async () => ({
       release: () => undefined,
       query: async (sql: string, values?: unknown[]) => {

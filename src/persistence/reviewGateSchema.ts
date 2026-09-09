@@ -21,6 +21,7 @@ export const REVIEW_GATE_SCHEMA_SQL = `
     current_attempt BOOLEAN NOT NULL DEFAULT true,
     evidence JSONB,
     decision JSONB,
+    worker_result_digest VARCHAR(64),
     lease_owner TEXT,
     lease_token UUID,
     lease_expires_at TIMESTAMPTZ,
@@ -31,6 +32,8 @@ export const REVIEW_GATE_SCHEMA_SQL = `
     UNIQUE (run_id, review_generation),
     CHECK ((creation_state = 'bound') = (check_id IS NOT NULL))
   );
+  ALTER TABLE review_gate_attempts ADD COLUMN IF NOT EXISTS lease_token UUID;
+  ALTER TABLE review_gate_attempts ADD COLUMN IF NOT EXISTS worker_result_digest VARCHAR(64);
   CREATE UNIQUE INDEX IF NOT EXISTS review_gate_current_candidate_idx
     ON review_gate_attempts (repository_id, pr_number) WHERE current_attempt;
   CREATE INDEX IF NOT EXISTS review_gate_publication_idx
