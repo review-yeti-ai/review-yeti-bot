@@ -8,6 +8,8 @@ import {
 } from './k8s/reviewJobDispatcherRuntime';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresStore } from './persistence/postgresStore';
+import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
+import { parsePreparedReviewExecution } from './review/preparedPublishingPolicy';
 import { logger } from './utils/logger';
 
 async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -67,6 +69,16 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     workerImage: config.workerImage,
     namespace: config.namespace,
     runnerMode: config.runnerMode,
+    preparedReviewFor: async (claim) => {
+      const prepared = await getPreparedPublishingPolicy(store.getPool(), claim.policyDigest);
+      if (!prepared || prepared.policy.effectiveConfigDigest !== claim.configDigest) {
+        throw new Error('Admitted prepared review policy is unavailable');
+      }
+      const json = JSON.stringify({ version: 'PreparedReviewExecution.v1',
+        config: prepared.config, transport: prepared.transport });
+      parsePreparedReviewExecution(json, claim.configDigest);
+      return json;
+    },
   });
   const controller = new AbortController();
   const stop = (signal: 'SIGTERM' | 'SIGINT') => {
