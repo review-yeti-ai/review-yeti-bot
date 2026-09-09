@@ -12,7 +12,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
   afterEach(async () => {
     if (client) {
-      await client.query('DROP TABLE IF EXISTS review_dispatch_outbox, review_runs, github_deliveries');
+      await client.query('DROP TABLE IF EXISTS pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
       client.release();
       client = undefined;
     }
@@ -24,7 +24,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     pool = new Pool({ connectionString: databaseUrl });
     client = await pool.connect();
     await client.query(`
-      CREATE TEMP TABLE github_deliveries (
+      CREATE TEMP TABLE pg_temp.github_deliveries (
         delivery_id TEXT PRIMARY KEY,
         event_name TEXT NOT NULL,
         repository_id BIGINT NOT NULL,
@@ -34,7 +34,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         received_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE TEMP TABLE review_runs (
+      CREATE TEMP TABLE pg_temp.review_runs (
         run_id TEXT PRIMARY KEY,
         identity_digest VARCHAR(64) UNIQUE NOT NULL,
         owner TEXT NOT NULL,
@@ -66,7 +66,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE TEMP TABLE review_dispatch_outbox (
+      CREATE TEMP TABLE pg_temp.review_dispatch_outbox (
         run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id),
         delivery_id TEXT UNIQUE NOT NULL REFERENCES github_deliveries(delivery_id),
         status TEXT NOT NULL,
@@ -129,6 +129,40 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       'ct-review-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
       3_000,
     )).resolves.toBe(true);
+
+    // A new delivery while the worker is still admitted must not re-arm a
+    // projected execution, even if its run remains queued. Otherwise a second
+    // dispatcher could mint a duplicate Kubernetes identity before the first
+    // worker reports a durable failure.
+    const queuedReAdmission = await repository.admit(admission('delivery-queued', 3_500));
+    expect(queuedReAdmission.status).toBe('accepted');
+    const queuedProjectedRow = await client.query(
+      'SELECT status, delivery_id, execution_attempt, projection_name FROM pg_temp.review_dispatch_outbox WHERE run_id = $1',
+      [first.run.runId],
+    );
+    expect(queuedProjectedRow.rows[0]).toMatchObject({
+      status: 'projected',
+      delivery_id: 'delivery-1',
+      execution_attempt: 0,
+      projection_name: 'ct-review-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    });
+    await expect(repository.claimNext('dispatcher-b', 3_600, 30_000)).resolves.toBeNull();
+
+    // The same protection applies after the run enters its active worker state.
+    await client.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [first.run.runId]);
+    const runningReAdmission = await repository.admit(admission('delivery-running', 3_700));
+    expect(runningReAdmission.status).toBe('accepted');
+    const runningProjectedRow = await client.query(
+      'SELECT status, delivery_id, execution_attempt, projection_name FROM pg_temp.review_dispatch_outbox WHERE run_id = $1',
+      [first.run.runId],
+    );
+    expect(runningProjectedRow.rows[0]).toMatchObject({
+      status: 'projected',
+      delivery_id: 'delivery-1',
+      execution_attempt: 0,
+      projection_name: 'ct-review-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    });
+    await expect(repository.claimNext('dispatcher-b', 3_800, 30_000)).resolves.toBeNull();
 
     // Only a durable worker failure followed by same-head re-admission creates
     // a fresh execution identity. This also proves the DO UPDATE SQL parses.

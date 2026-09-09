@@ -263,7 +263,13 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          WHERE review_dispatch_outbox.status IN ('projected', 'terminal')
            AND EXISTS (
              SELECT 1 FROM review_runs r
-              WHERE r.run_id = review_dispatch_outbox.run_id AND r.status = 'queued'
+              WHERE r.run_id = review_dispatch_outbox.run_id
+                AND r.status = 'queued'
+                -- Only the failed/terminal branch above replaces the run's delivery_id.
+                -- Requiring the same new delivery binds this re-arm to that durable
+                -- transition; a queued or running run with a projected outbox must stay
+                -- untouched even when a new delivery arrives while its worker starts.
+                AND r.delivery_id = EXCLUDED.delivery_id
            )`,
         [runRow.run_id, input.deliveryId, input.receivedAt],
       );

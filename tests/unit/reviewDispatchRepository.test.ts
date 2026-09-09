@@ -136,6 +136,7 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(outboxSql).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
     expect(outboxSql).toContain('execution_attempt');
     expect(outboxSql).toContain("r.status = 'queued'");
+    expect(outboxSql).toContain('r.delivery_id = EXCLUDED.delivery_id');
   });
 
   it.each([
@@ -192,6 +193,7 @@ describe('PostgresReviewDispatchRepository', () => {
         );
         expect(normalized).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
         expect(normalized).toContain("r.status = 'queued'");
+        expect(normalized).toContain('r.delivery_id = EXCLUDED.delivery_id');
         const prior = outbox.status;
         outbox = {
           status: 'pending',
