@@ -28,10 +28,20 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "$FAKE_KUBECTL_LOG"
 case "$*" in
   *"get secret ct-review-job-dispatcher-runtime"*) printf 'DATABASE_URL\\nDATABASE_CA_CERT\\n' ;;
-  *"get deployment ct-review-job-dispatcher"*) printf '0' ;;
+  *"get deployment ct-review-job-dispatcher"*)
+    # State file present => the deployment exists, and holds its replica count.
+    # Absent => it does not exist yet, so kubectl get must fail like the real one.
+    if [[ ! -f "\$FAKE_STATE" ]]; then exit 1; fi
+    printf '%s' "\$(cat "\$FAKE_STATE")"
+    ;;
 esac
 if [[ "$*" == *"apply --server-side -f "*"/review-job-dispatcher.yaml" ]]; then
   cp "\${@: -1}" "$FAKE_RENDERED_MANIFEST"
+  # A create materialises the deployment at whatever the manifest asked for; an
+  # update leaves the existing count alone. That is the behaviour under test.
+  if [[ ! -f "\$FAKE_STATE" ]]; then
+    if grep -q '^  replicas: 0$' "\${@: -1}"; then printf '0' > "\$FAKE_STATE"; else printf '1' > "\$FAKE_STATE"; fi
+  fi
 fi
 `);
   fs.writeFileSync(path.join(binaryDirectory, 'envsubst'), [
@@ -47,12 +57,16 @@ fi
   ].join('\n'));
   fs.chmodSync(path.join(binaryDirectory, 'kubectl'), 0o755);
   fs.chmodSync(path.join(binaryDirectory, 'envsubst'), 0o755);
+  const stateFile = path.join(temporaryDirectory, 'deployment.state');
+  const seed = 'FAKE_DEPLOYMENT_REPLICAS' in overrides ? overrides.FAKE_DEPLOYMENT_REPLICAS : '0';
+  if (seed !== '') fs.writeFileSync(stateFile, seed);
   const result = spawnSync('bash', ['scripts/deploy-review-job-dispatcher.sh'], {
     cwd: root,
     encoding: 'utf8',
     env: {
       ...process.env,
       PATH: `${binaryDirectory}:${process.env.PATH || ''}`,
+      FAKE_STATE: stateFile,
       FAKE_KUBECTL_LOG: kubectlLog,
       FAKE_RENDERED_MANIFEST: renderedManifest,
       CT_REVIEW_JOB_DISPATCHER_IMAGE: dispatcherImage,
@@ -67,6 +81,41 @@ fi
 }
 
 describe('zero-replica review job dispatcher deployment', () => {
+  // `replicas: 0` in the template is an INSTALL boundary, not a statement that the
+  // dispatcher should be off. Applying it unconditionally scaled a live production
+  // dispatcher 1 -> 0 and then printed "installed at zero replicas" -- a success
+  // message for an outage. Because this is also the only script that moves the
+  // dispatcher image, shipping a dispatcher fix required taking review dispatch
+  // down. These two tests pin the distinction.
+  it('a FIRST install lands inert: replicas: 0 is applied and asserted', () => {
+    const result = runDeployScript({ FAKE_DEPLOYMENT_REPLICAS: '' });
+    expect(result.status).toBe(0);
+    expect(result.rendered).toMatch(/^ {2}replicas: 0$/mu);
+    expect(result.stdout).toContain('installed at zero replicas');
+    // Nothing may scale the deployment on a create either.
+    expect(result.calls).not.toContain('scale');
+  });
+
+  it('a redeploy over a LIVE dispatcher never scales it and never applies replicas', () => {
+    const result = runDeployScript({ FAKE_DEPLOYMENT_REPLICAS: '1' });
+    expect(result.status).toBe(0);
+    // The applied manifest must not carry the field at all, so server-side apply
+    // cannot take ownership of a count the operator and the scale subresource own.
+    expect(result.rendered).not.toMatch(/^ {2}replicas:/mu);
+    expect(result.stdout).toContain('replicas left unchanged at 1');
+    expect(result.stdout).not.toContain('zero replicas');
+    expect(result.calls).not.toContain('scale');
+  });
+
+  it('refuses to guess if the template stops carrying exactly one replica line', () => {
+    // The strip is a line match. If the template shape changes, failing is correct;
+    // silently applying an unstripped manifest would scale production to zero.
+    const deployment = documents().find((d) => d.kind === 'Deployment');
+    const raw = fs.readFileSync(path.join(root, 'k8s/review-job-dispatcher.yaml.tpl'), 'utf8');
+    expect(deployment!.spec.replicas).toBe(0);
+    expect(raw.split('\n').filter((l) => l === '  replicas: 0')).toHaveLength(1);
+  });
+
   it('is inert by default and carries no review execution credentials', () => {
     const docs = documents();
     expect(docs.some((document) => ['Service', 'Ingress', 'PersistentVolumeClaim'].includes(document.kind))).toBe(false);
@@ -191,7 +240,7 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(result.calls).toContain('apply --server-side -f k8s/namespace.yaml');
     expect(result.calls).toContain('apply --server-side -f');
     expect(result.calls).toContain("get deployment ct-review-job-dispatcher -o jsonpath={.spec.replicas}");
-    expect(result.stdout).toContain('zero replicas');
+    expect(result.stdout).toContain('replicas left unchanged at 0');
     expect(result.rendered).toContain(`image: ${dispatcherImage}`);
     expect(result.rendered).toContain(`REVIEW_JOB_WORKER_IMAGE: "${workerImage}"`);
     expect(result.rendered).not.toContain('${');
