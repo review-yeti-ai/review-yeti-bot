@@ -230,9 +230,14 @@ fi
 echo "advance-review-worker: old worker image -> ${current_image}"
 echo "advance-review-worker: new worker image -> ${target_image}"
 
+already_pinned=""
 if [[ "$current_image" == "$target_image" ]]; then
-  echo "advance-review-worker: dispatcher already pinned to ${target_image}; nothing to do"
-  exit 0
+  # Still apply the ConfigMap through the manifest: a matching value may have
+  # been set by a hand patch, which leaves field-manager "kubectl-patch" owning
+  # the key and makes the next server-side apply conflict. Reclaiming ownership
+  # is part of what this script is for; only the restart is skipped.
+  already_pinned="1"
+  echo "advance-review-worker: dispatcher already pinned to ${target_image}; re-applying the ConfigMap to reclaim manifest ownership, no restart unless the running pod disagrees"
 fi
 
 if [[ -n "$dry_run" ]]; then
@@ -279,10 +284,12 @@ fi
 # touch; this script IS that deliberate, reviewed change.
 kubectl apply --server-side --force-conflicts -f "$work_dir/configmap-only.yaml"
 
-# --- Step 5: restart and verify -------------------------------------------
+# --- Step 5: restart (when the value changed) and verify -------------------
 
-kubectl -n "$namespace" rollout restart "deployment/${deployment_name}"
-kubectl -n "$namespace" rollout status "deployment/${deployment_name}" --timeout="$rollout_timeout"
+if [[ -z "$already_pinned" ]]; then
+  kubectl -n "$namespace" rollout restart "deployment/${deployment_name}"
+  kubectl -n "$namespace" rollout status "deployment/${deployment_name}" --timeout="$rollout_timeout"
+fi
 
 if ! pod_name="$(kubectl -n "$namespace" get pods \
   -l "app.kubernetes.io/name=${deployment_name}" \
@@ -302,6 +309,25 @@ fi
 if ! observed_image="$(kubectl -n "$namespace" exec "$pod_name" -- sh -c 'printf "%s" "$REVIEW_JOB_WORKER_IMAGE"' 2>&1)"; then
   echo "advance-review-worker: could not exec into pod ${pod_name} to verify REVIEW_JOB_WORKER_IMAGE (${observed_image})" >&2
   exit 1
+fi
+if [[ "$observed_image" != "$target_image" && -n "$already_pinned" ]]; then
+  # The ConfigMap already carried the target but the running pod does not: a
+  # hand edit without a restart. Restart once and verify again.
+  echo "advance-review-worker: ConfigMap is pinned but pod ${pod_name} reports '${observed_image}'; restarting so the running dispatcher matches the manifest"
+  kubectl -n "$namespace" rollout restart "deployment/${deployment_name}"
+  kubectl -n "$namespace" rollout status "deployment/${deployment_name}" --timeout="$rollout_timeout"
+  if ! pod_name="$(kubectl -n "$namespace" get pods \
+    -l "app.kubernetes.io/name=${deployment_name}" \
+    --field-selector=status.phase=Running \
+    -o jsonpath='{.items[-1:].metadata.name}' 2>&1)" || [[ -z "$pod_name" ]]; then
+    echo "advance-review-worker: no running pod found after restart of ${deployment_name}; cannot verify" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2016
+  if ! observed_image="$(kubectl -n "$namespace" exec "$pod_name" -- sh -c 'printf "%s" "$REVIEW_JOB_WORKER_IMAGE"' 2>&1)"; then
+    echo "advance-review-worker: could not exec into pod ${pod_name} after restart (${observed_image})" >&2
+    exit 1
+  fi
 fi
 if [[ "$observed_image" != "$target_image" ]]; then
   echo "advance-review-worker: verification failed: pod ${pod_name} reports REVIEW_JOB_WORKER_IMAGE='${observed_image}', expected '${target_image}'" >&2
