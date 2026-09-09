@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.46.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.7...v1.46.0) (2026-09-09)
+
+
+### Features
+
+* **dispatch:** make the terminal review deadline configurable, default 30 minutes (REL-733) ([#634](https://github.com/review-yeti-ai/review-yeti-bot/issues/634)) ([6e7725a](https://github.com/review-yeti-ai/review-yeti-bot/commit/6e7725ab0a8d30753df5619af0e1289b933f77f7))
+
 ## [1.45.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.6...v1.45.7) (2026-09-09)
 
 

@@ -71,8 +71,8 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 	if !rules["self == oldSelf"] {
 		t.Fatal("spec immutability rule is missing")
 	}
-	if !rules["timestamp(self.terminalDeadline) - timestamp(self.receivedAt) == duration('900s')"] {
-		t.Fatal("exact 15-minute deadline rule is missing")
+	if !rules["duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')"] {
+		t.Fatal("bounded 15-to-60-minute deadline rule is missing")
 	}
 	if !rules["(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')"] {
 		t.Fatal("qualification profile/model rule is missing")

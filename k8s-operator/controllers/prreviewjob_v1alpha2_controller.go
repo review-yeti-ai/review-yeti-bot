@@ -597,8 +597,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) clock() time.Time {
 }
 
 func validateProjectionWindow(review *reviewv1alpha2.PRReviewJob) error {
-	if review.Spec.TerminalDeadline.Sub(review.Spec.ReceivedAt.Time) != 15*time.Minute {
-		return errors.New("terminal deadline must be exactly 15 minutes after receivedAt")
+	window := review.Spec.TerminalDeadline.Sub(review.Spec.ReceivedAt.Time)
+	if window < time.Duration(job.MinTerminalDeadlineSeconds)*time.Second || window > time.Duration(job.MaxTerminalDeadlineSeconds)*time.Second {
+		return errors.New("terminal deadline must be between 15 and 60 minutes after receivedAt")
 	}
 	if review.Namespace != job.Namespace {
 		return fmt.Errorf("review must run in namespace %q", job.Namespace)
