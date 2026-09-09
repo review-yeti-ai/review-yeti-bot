@@ -625,6 +625,16 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(query).toHaveBeenCalledOnce();
   });
 
+  it.each(['NOT-A-DIGEST', 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), ''])('rejects invalid worker digest %j before SQL', async (digest) => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() }, { query });
+    await expect(repository.markProjected(row.run_id, 'dispatcher-a', 'projection', 1_000, digest))
+      .rejects.toThrow('worker token digest must be 64 lowercase hex characters');
+    await expect(repository.bindWorkerTokenDigest(row.run_id, 'dispatcher-a', digest, 1_000))
+      .rejects.toThrow('worker token digest must be 64 lowercase hex characters');
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('defines migration-safe delivery and outbox tables', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/persistence/postgresStore.ts'), 'utf8');
     expect(source).toMatch(/CREATE TABLE IF NOT EXISTS github_deliveries/u);

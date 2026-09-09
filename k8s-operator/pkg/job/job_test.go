@@ -114,16 +114,35 @@ func TestBuildWorkerJobDefaultsLegacyUnsuffixedSecretToAttemptOne(t *testing.T) 
 
 func TestBuildWorkerJobDecodesLegacySuffixedSecretWhenFieldIsAbsent(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
-	review := reviewFixture(now)
-	review.Name = review.Name + "-a2"
-	review.Spec.RunSecretName += "-a2"
-
-	built, err := job.BuildWorkerJob(buildInput(review, now))
-	if err != nil {
-		t.Fatalf("legacy suffixed review was rejected: %v", err)
+	for _, attempt := range []string{"1", "2", "2147483647"} {
+		t.Run(attempt, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Name += "-a" + attempt
+			review.Spec.RunSecretName += "-a" + attempt
+			built, err := job.BuildWorkerJob(buildInput(review, now))
+			if err != nil {
+				t.Fatalf("legacy suffixed review was rejected: %v", err)
+			}
+			if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != attempt {
+				t.Fatalf("legacy execution attempt env = %q, want %q", got, attempt)
+			}
+		})
 	}
-	if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != "2" {
-		t.Fatalf("legacy suffixed execution attempt env = %q, want 2", got)
+}
+
+func TestBuildWorkerJobRejectsLegacySecretSuffixBoundaries(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	// Exercise the public builder, including validateInput's canonical-digit
+	// guard before ParseInt. Mirrored in the TypeScript run Secret contract tests.
+	for _, suffix := range []string{"-a0", "-a-1", "-anonsense", "-a2147483648", "-a+2", "-a01"} {
+		t.Run(suffix, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.RunSecretName += suffix
+			built, err := job.BuildWorkerJob(buildInput(review, now))
+			if built != nil || !errors.Is(err, job.ErrJobConfiguration) {
+				t.Fatalf("invalid legacy Secret built a Job or returned wrong error: %v", err)
+			}
+		})
 	}
 }
 

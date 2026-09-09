@@ -1,13 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { ReviewJobProjector } from './reviewJobDispatchEngine';
-import type { PRReviewJobProjection } from './reviewJobProjection';
+import { deriveRunSecretExecutionAttempt, type PRReviewJobProjection } from './reviewJobProjection';
 
 const GROUP = 'review-yeti.ai';
 const VERSION = 'v1alpha2';
 const PLURAL = 'prreviewjobs';
-const runIdPattern = /^run_([a-f0-9]{32})$/u;
-const runSecretNamePattern = /^ct-review-run-([a-f0-9]{32})(?:-a([1-9][0-9]*))?$/u;
-const maxExecutionAttempt = 2_147_483_647;
 const projectionConflictMessage = 'existing PRReviewJob conflicts with the durable projection';
 
 interface NamespacedCustomObjectIdentity {
@@ -82,15 +79,8 @@ function projectedContract(value: unknown): unknown {
 }
 
 function legacyExecutionAttempt(spec: Record<string, unknown>): number {
-  const runId = typeof spec.runId === 'string' ? spec.runId : '';
-  const runSecretName = typeof spec.runSecretName === 'string' ? spec.runSecretName : '';
-  const runMatch = runIdPattern.exec(runId);
-  const secretMatch = runSecretNamePattern.exec(runSecretName);
-  const attempt = secretMatch?.[2] === undefined ? 1 : Number(secretMatch[2]);
-  if (!runMatch || !secretMatch || secretMatch[1] !== runMatch[1]
-    || !Number.isSafeInteger(attempt) || attempt <= 0 || attempt > maxExecutionAttempt) {
-    throw new Error(projectionConflictMessage);
-  }
+  const attempt = deriveRunSecretExecutionAttempt(spec.runId, spec.runSecretName);
+  if (attempt === undefined) throw new Error(projectionConflictMessage);
   return attempt;
 }
 

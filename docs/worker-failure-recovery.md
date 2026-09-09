@@ -33,6 +33,29 @@ recovery remains available when a process dies without making a callback.
 
 ## Trusted binding and split-write recovery
 
+The normative run Secret name contract is `ct-review-run-<id>[-aN]`, where
+`<id>` must equal the 32 lowercase hexadecimal characters in `run_<id>`.
+`N` is canonical decimal in `1..2147483647`: digits only, no sign or leading
+zero. Writers emit the unsuffixed name for explicit attempt `1`; legacy readers
+also accept `-a1`. An explicit CR attempt must match its canonical Secret name.
+The projection, provisioner and projector share the pure builder/deriver in
+`src/k8s/reviewJobProjection.ts`. The projector fills only an absent attempt in
+a comparison copy, preserving the observed CR and every other compared field.
+
+The TypeScript and Go builder tests mirror these cases for the same run ID:
+
+| Secret suffix | Legacy result |
+| --- | --- |
+| absent | attempt `1` |
+| `-a1` | attempt `1` |
+| `-a2` | attempt `2` |
+| `-a2147483647` | attempt `2147483647` |
+| `-a0`, `-a-1`, `-anonsense`, `-a2147483648`, `-a+2`, `-a01` | reject |
+
+A Secret belonging to another run is rejected regardless of suffix. The Go
+builder validates the name pattern before parsing the numeric suffix, so
+`ParseInt` accepting signed or zero-padded text does not admit those names.
+
 The trusted dispatcher provisions repository-scoped installation tokens in the
 existing per-execution Kubernetes Secret, then persists the delivered publish
 token's SHA-256 digest before projecting work. The API authenticates the bearer
