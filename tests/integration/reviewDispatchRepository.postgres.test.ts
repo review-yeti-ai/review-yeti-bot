@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 
@@ -105,7 +106,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       repositoryId: 123,
       installationId: 456,
       receivedAt,
-      terminalDeadline: receivedAt + 900_000,
+      terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
       payloadDigest: 'f'.repeat(64),
       publicationMode: 'app-gate' as const,
       identity,

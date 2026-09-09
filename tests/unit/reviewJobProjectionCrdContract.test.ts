@@ -3,6 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 import { buildReviewJobProjection } from '../../src/k8s/reviewJobProjection';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const projection = buildReviewJobProjection({
@@ -14,7 +15,7 @@ const projection = buildReviewJobProjection({
   headSha: 'a'.repeat(40),
   baseSha: 'b'.repeat(40),
   receivedAt,
-  terminalDeadline: receivedAt + 900_000,
+  terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
   policyDigest: 'c'.repeat(64),
   configDigest: 'd'.repeat(64),
   publicationMode: 'disabled',
@@ -59,7 +60,7 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     }
     expect(properties.publicationMode.enum).toEqual(['disabled', 'app-gate']);
     expect(properties.runnerMode.enum).toEqual(['prebaked', 'generic']);
-    expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(900_000);
+    expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(TERMINAL_DEADLINE_MS);
   });
 
   it('validates public ghcr.io worker image under the CRD pattern', () => {

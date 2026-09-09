@@ -38,7 +38,7 @@ const (
 // PRReviewJobSpec is an immutable, non-secret projection of an authenticated review run.
 // The CRD schema rejects updates and all fields not declared here.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="PRReviewJob spec is immutable"
-// +kubebuilder:validation:XValidation:rule="timestamp(self.terminalDeadline) - timestamp(self.receivedAt) == duration('900s')",message="terminalDeadline must be exactly 15 minutes after receivedAt"
+// +kubebuilder:validation:XValidation:rule="duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')",message="terminalDeadline must be between 15 and 60 minutes after receivedAt"
 type PRReviewJobSpec struct {
 	// +kubebuilder:validation:Pattern=`^run_[a-f0-9]{32}$`
 	RunID string `json:"runId"`

@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { sha256 } from '../review/reviewCore';
+import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import {
   ReviewAdmission,
   ReviewAdmissionInput,
@@ -79,8 +80,8 @@ function validateAdmission(input: ReviewAdmissionInput): void {
   if (input.publicationMode !== 'disabled' && input.publicationMode !== 'app-gate') {
     throw new Error('publication mode must be disabled or app-gate');
   }
-  if (!Number.isFinite(input.receivedAt) || input.terminalDeadline !== input.receivedAt + 900_000) {
-    throw new Error('terminal deadline must be exactly 15 minutes after receipt');
+  if (!Number.isFinite(input.receivedAt) || input.terminalDeadline !== input.receivedAt + TERMINAL_DEADLINE_MS) {
+    throw new Error(`terminal deadline must be exactly ${TERMINAL_DEADLINE_MS}ms (the configured terminal-deadline window) after receipt`);
   }
 }
 

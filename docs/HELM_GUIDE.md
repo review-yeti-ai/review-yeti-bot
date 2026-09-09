@@ -224,12 +224,12 @@ worker:
     size: 1Gi
     storageClassName: ""  # Leave blank for default cluster StorageClass
 
-  activeDeadlineSeconds: 840  # 14 minutes hard timeout inside the container
+  activeDeadlineSeconds: 840  # graceful timeout reserve inside the container (window minus 60s)
   ttlSecondsAfterFinished: 300 # Retain completed pods for 5 minutes for log inspection
 ```
 
 > [!WARNING]
-> Review Yeti's CRD enforces a strict 15-minute terminal deadline (`terminalDeadline - receivedAt == 900s`) via CEL validation. Worker `activeDeadlineSeconds` should always remain below 900 seconds (recommended: `840s`) so the worker container can gracefully finalize and post failure details before being forcefully evicted.
+> Review Yeti's CRD enforces a configurable terminal deadline window (`900s <= terminalDeadline - receivedAt <= 3600s`) via CEL validation. The dispatcher computes `terminalDeadline` from `REVIEW_YETI_TERMINAL_DEADLINE_MS` (default 1,800,000ms / 30 minutes; see `src/config/terminalDeadline.ts`). Worker `activeDeadlineSeconds` should always remain below that admitted window (recommended: window minus 60s) so the worker container can gracefully finalize and post failure details before being forcefully evicted.
 
 ### 4. Ingress & TLS Management (`ingress`)
 
