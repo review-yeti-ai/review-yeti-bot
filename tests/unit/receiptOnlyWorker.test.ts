@@ -29,7 +29,9 @@ import {
   runFullPanelQualificationWorker,
   isSameHeadQualificationWorker,
   runSameHeadQualificationWorker,
+  qualificationTimeoutMs,
 } from '../../src/cli/runLiveReview';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { compareQualificationReceipts } from '../../src/qualification/receiptComparison';
 import type { PanelResult } from '../../src/panel/panelEngine';
 
@@ -1111,5 +1113,63 @@ describe('same-head qualification worker contract', () => {
     expect(panelRunner).not.toHaveBeenCalled();
     expect(providerRunner).not.toHaveBeenCalled();
     expect(liveRunner).not.toHaveBeenCalled();
+  });
+});
+
+describe('qualificationTimeoutMs', () => {
+  // REL-733 follow-up: the upper bound moved from a fixed 900_000 to
+  // TERMINAL_DEADLINE_MS (the configured terminal-deadline window), widening
+  // accepted values under the new 30-minute default. Pin the boundary
+  // explicitly so a regression -- reverting to the old constant, clamping to
+  // MAX_TERMINAL_DEADLINE_MS instead of the resolved window, or dropping the
+  // upper bound -- fails here rather than only surfacing as a worker Job
+  // that starts with a qualification timeout it can never honor.
+  it('accepts the minimum useful value of 1_000ms', () => {
+    expect(qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: '1000' } as unknown as NodeJS.ProcessEnv)).toBe(1_000);
+  });
+
+  it('accepts 900_000ms (the original fixed ceiling)', () => {
+    expect(qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: '900000' } as unknown as NodeJS.ProcessEnv)).toBe(900_000);
+  });
+
+  it('accepts a value between 900_000 and the current TERMINAL_DEADLINE_MS', () => {
+    // Derived relative to TERMINAL_DEADLINE_MS rather than a hardcoded literal so
+    // this stays deterministic regardless of the ambient
+    // REVIEW_YETI_TERMINAL_DEADLINE_MS the suite happened to load under -- a
+    // hardcoded '1200000' would exceed TERMINAL_DEADLINE_MS (and wrongly throw)
+    // if that env var were set below 1_200_000 when the suite runs.
+    const midValue = Math.round((900_000 + TERMINAL_DEADLINE_MS) / 2);
+    expect(qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: String(midValue) } as unknown as NodeJS.ProcessEnv)).toBe(midValue);
+  });
+
+  it('accepts TERMINAL_DEADLINE_MS itself', () => {
+    expect(qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: String(TERMINAL_DEADLINE_MS) } as unknown as NodeJS.ProcessEnv))
+      .toBe(TERMINAL_DEADLINE_MS);
+  });
+
+  it('rejects a value one millisecond above TERMINAL_DEADLINE_MS', () => {
+    expect(() => qualificationTimeoutMs(
+      { REVIEW_QUALIFICATION_TIMEOUT_MS: String(TERMINAL_DEADLINE_MS + 1) } as unknown as NodeJS.ProcessEnv,
+    )).toThrow('provider qualification worker contract is invalid');
+  });
+
+  it('rejects a value below the minimum useful 1_000ms', () => {
+    expect(() => qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: '999' } as unknown as NodeJS.ProcessEnv))
+      .toThrow('provider qualification worker contract is invalid');
+  });
+
+  it('rejects non-safe-integer and negative input', () => {
+    expect(() => qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: 'abc' } as unknown as NodeJS.ProcessEnv))
+      .toThrow('provider qualification worker contract is invalid');
+    expect(() => qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: '-1000' } as unknown as NodeJS.ProcessEnv))
+      .toThrow('provider qualification worker contract is invalid');
+  });
+
+  it('defaults to 120_000ms when unset, and uses the caller-supplied invalid-contract error', () => {
+    expect(qualificationTimeoutMs({} as unknown as NodeJS.ProcessEnv)).toBe(120_000);
+    expect(() => qualificationTimeoutMs(
+      { REVIEW_QUALIFICATION_TIMEOUT_MS: String(TERMINAL_DEADLINE_MS + 1) } as unknown as NodeJS.ProcessEnv,
+      () => new Error('panel qualification worker contract is invalid'),
+    )).toThrow('panel qualification worker contract is invalid');
   });
 });
