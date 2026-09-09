@@ -35,6 +35,39 @@ function reaper(over: Record<string, any> = {}) {
 }
 
 describe('AbandonedRunReaper', () => {
+  // The consumer shims (.github/workflows/ct-review-bot.yml in cisco-cdr, ct-meta
+  // and ai-workspace) decide whether a head still needs a panel by matching the
+  // check title against a `dead_lane` predicate. A title outside that set reads to
+  // them as a live run: the label refresh returns dispatch=false, and a head the
+  // reaper just failed can never be re-reviewed -- red, required, and unretryable.
+  //
+  // This list mirrors `def dead_lane` in those workflows. If the reaper needs a
+  // title that is not here, the shims must be taught it FIRST, in their own PR.
+  const DEAD_LANE_TITLES = [
+    'Review Yeti: DISPATCHED',
+    'Review Yeti: NO VERDICT',
+    'Review Yeti: review did not complete',
+  ];
+
+  it('publishes a title the consumer shims treat as a retryable dead lane', async () => {
+    const { subject, client } = reaper();
+    await subject.runOnce();
+    const { title } = client.completeCheck.mock.calls[0][0];
+    expect(
+      DEAD_LANE_TITLES.some((prefix) => String(title).startsWith(prefix)),
+      `reaper title ${JSON.stringify(title)} is not in the shims' dead_lane set; `
+        + 'a head reaped with it cannot be re-dispatched by a label refresh',
+    ).toBe(true);
+  });
+
+  it('does not claim the review never started -- it was admitted, then timed out', async () => {
+    // The summary says the run "was admitted but reached its terminal deadline",
+    // so "did not start" contradicted the body and misdescribed the failure.
+    const { subject, client } = reaper();
+    await subject.runOnce();
+    expect(client.completeCheck.mock.calls[0][0].title).not.toContain('did not start');
+  });
+
   it('publishes failure — never neutral or success — for a run that never reviewed', async () => {
     // A neutral check does not block a merge, so reporting an unrun review as
     // neutral would turn a silent block into a silent pass, which is worse.

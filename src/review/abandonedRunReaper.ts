@@ -68,7 +68,14 @@ export class AbandonedRunReaper {
           repo: run.repo,
           checkId,
           conclusion: 'failure',
-          title: 'Review Yeti: review did not start',
+          // MUST stay inside the consumer shims' `dead_lane` predicate in
+          // .github/workflows/ct-review-bot.yml (cisco-cdr, ct-meta, ai-workspace).
+          // Those shims decide whether a head still needs a panel by matching this
+          // title; a title they do not recognise reads as a live run, so the label
+          // refresh refuses to re-dispatch and the head is stuck red with no way
+          // back. 'did not start' was also simply wrong -- the run was admitted and
+          // dispatched, it just never produced a verdict.
+          title: 'Review Yeti: review did not complete',
           summary: [
             `No persona reviewed \`${run.headSha}\`.`,
             'The run was admitted but reached its terminal deadline before a worker'
