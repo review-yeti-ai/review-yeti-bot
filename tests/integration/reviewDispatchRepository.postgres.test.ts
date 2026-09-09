@@ -244,7 +244,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       [first.run.runId],
     );
     expect(terminalRow.rows[0].received_at.getTime()).toBe(6_000);
-    expect(terminalRow.rows[0].terminal_deadline.getTime()).toBe(906_000);
+    expect(terminalRow.rows[0].terminal_deadline.getTime()).toBe(6_000 + TERMINAL_DEADLINE_MS);
     const terminalRetry = await repository.claimNext('dispatcher-a', 7_000, 30_000);
     expect(terminalRetry?.executionAttempt).toBe(2);
 
