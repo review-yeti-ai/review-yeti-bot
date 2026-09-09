@@ -6137,15 +6137,19 @@ function ghApi(commandRunner, args, input) {
 }
 
 function normalizedPublisherLogin(login) {
-  return typeof login === 'string' && login.endsWith('[bot]') ? login.slice(0, -5) : login;
+  if (typeof login !== 'string'
+    || !/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?(?:\[bot\])?$/iu.test(login)) return null;
+  const normalized = login.replace(/\[bot\]$/iu, '').toLowerCase();
+  return /^(?:null|undefined|true|false)$/u.test(normalized) ? null : normalized;
 }
 
 function isExpectedPublisherLogin(login, expectedLogin) {
-  return Boolean(expectedLogin) && normalizedPublisherLogin(login) === normalizedPublisherLogin(expectedLogin);
+  const expected = normalizedPublisherLogin(expectedLogin);
+  return Boolean(expected) && normalizedPublisherLogin(login) === expected;
 }
 
 function requirePublisherLogin(login) {
-  if (typeof login !== 'string' || login.length === 0) {
+  if (!normalizedPublisherLogin(login)) {
     throw new Error('Action review publication response did not identify its publisher');
   }
   return login;
@@ -6931,7 +6935,12 @@ function parsePriorSummaryReview(body) {
 }
 
 function cleanGhScalar(stdout) {
-  return String(stdout || '').trim().replace(/^"|"$/g, '');
+  if (typeof stdout !== 'string') return null;
+  let value = stdout.trim();
+  if (value.startsWith('"')) {
+    try { value = JSON.parse(value); } catch (_) { return null; }
+  }
+  return normalizedPublisherLogin(value) ? value : null;
 }
 
 function resolveAuthenticatedPublisher(commandRunner) {
@@ -6949,18 +6958,32 @@ function resolveAuthenticatedPublisher(commandRunner) {
     if (slug) return { login: slug.endsWith('[bot]') ? slug : `${slug}[bot]`, verified: true };
   }
 
-  // Neither probe identified the token, so this is an ASSUMPTION, not an identity.
-  // GITHUB_ACTIONS only says a workflow is running -- it does not say which App the
-  // token belongs to. An installation token for any App other than github-actions
-  // publishes as `<slug>[bot]`, so enforcing equality against this value rejects every
-  // custom App. It must never be treated as authoritative.
-  return process.env.GITHUB_ACTIONS === 'true'
-    ? { login: 'github-actions[bot]', verified: false }
-    : { login: null, verified: false };
+  // The same token may expose its viewer through GraphQL even when the REST
+  // identity endpoints are unavailable to an installation token. This is a fixed
+  // authenticated query, never an identity supplied by the environment or PR.
+  const viewer = ghApi(commandRunner, [
+    'api', 'graphql', '-f', 'query=query ReviewYetiPublisher { viewer { login } }',
+  ]);
+  if (viewer && viewer.status === 0) {
+    try {
+      const response = JSON.parse(viewer.stdout);
+      const login = response?.data?.viewer?.login;
+      const hasErrors = response?.errors !== undefined
+        && (!Array.isArray(response.errors) || response.errors.length > 0);
+      if (!hasErrors && normalizedPublisherLogin(login)) {
+        return { login, verified: true };
+      }
+    } catch (_) { /* An unreadable identity must not authorize any mutation. */ }
+  }
+
+  // GITHUB_ACTIONS identifies the runner, not the token's publisher. Never use
+  // an assumed github-actions[bot] identity to adopt comments or start writing.
+  return { login: null, verified: false };
 }
 
 function readAuthenticatedPublisherLogin(commandRunner) {
-  return resolveAuthenticatedPublisher(commandRunner).login;
+  const publisher = resolveAuthenticatedPublisher(commandRunner);
+  return publisher.verified ? publisher.login : null;
 }
 
 /**
