@@ -8,7 +8,7 @@ export const PUBLISH_TOKEN_KEY = 'GITHUB_PUBLISH_TOKEN';
 // backoffLimit 0 -- it never starts, never creates a check run, and the pull
 // request sees nothing at all.
 export const READ_TOKEN_KEY = 'GITHUB_READ_TOKEN';
-const SECRET_NAME_PATTERN = /^ct-review-run-[a-f0-9]{32}$/u;
+const SECRET_NAME_PATTERN = /^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$/u;
 
 export interface CoreSecretClient {
   createNamespacedSecret(request: {
@@ -110,12 +110,11 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
       // and with its own freshly minted tokens -- so the existing Secret is good
       // and this is success, not a conflict to resolve.
       //
-      // It cannot be a stale Secret from an earlier attempt. The run id is derived
-      // from the review identity (`run_${sha256(identity).slice(0,32)}`), and
-      // re-admitting the same identity returns the existing row without resetting
-      // terminal_deadline (ON CONFLICT ... DO UPDATE SET updated_at =
-      // review_runs.updated_at), so one Secret name is only ever written inside a
-      // single fifteen-minute window -- well inside the token's hour.
+      // It cannot be a stale Secret from an earlier execution attempt. The
+      // dispatcher keeps the run id derived from the immutable review identity
+      // (`run_${sha256(identity).slice(0,32)}`), while advancing the execution
+      // attempt in the Secret name whenever a worker must be recreated. A 409 is
+      // therefore only the idempotent race for this exact projection attempt.
       //
       // This is why the dispatcher needs `create` on secrets and NOT `delete`.
       // Kubernetes cannot scope a verb to one Secret name, so `delete` here would

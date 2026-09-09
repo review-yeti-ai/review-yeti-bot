@@ -80,7 +80,7 @@ var (
 	shaPattern         = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	digestPattern      = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	workerImagePattern = regexp.MustCompile(`^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`)
-	secretNamePattern  = regexp.MustCompile(`^ct-review-run-[a-f0-9]{32}$`)
+	secretNamePattern  = regexp.MustCompile(`^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$`)
 )
 
 // Input is the immutable review projection plus fresh workspace ownership

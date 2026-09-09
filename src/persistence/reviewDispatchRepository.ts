@@ -207,6 +207,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
                error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END,
                delivery_id = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
+               received_at = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.received_at ELSE review_runs.received_at END,
                -- The old deadline is already in the past, so a retry would be
                -- swept by the abandoned-run reaper before it could start.
                terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
@@ -248,12 +249,18 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          ON CONFLICT (run_id) DO UPDATE
            SET status = 'pending', delivery_id = EXCLUDED.delivery_id,
                available_at = EXCLUDED.available_at, lease_owner = NULL,
-               lease_expires_at = NULL, updated_at = EXCLUDED.updated_at
+               lease_expires_at = NULL, projection_name = NULL,
          -- Re-arm only alongside a run the statement above just returned to
-         -- 'queued'. Guarding on the run's status keeps a superseded run's
-         -- terminal outbox row untouched, and a row that is not 'terminal' is
-         -- still in flight and must not be disturbed.
-         WHERE review_dispatch_outbox.status = 'terminal'
+         -- 'queued'. A worker provider failure leaves the outbox 'projected'
+         -- and needs a new execution attempt; a dispatcher failure leaves it
+         -- 'terminal' with no worker identity to replace. Guarding on the
+         -- run's status keeps a superseded run's terminal outbox row untouched,
+         -- and an in-flight row is never disturbed.
+               execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'
+                 THEN review_dispatch_outbox.execution_attempt + 1
+                 ELSE review_dispatch_outbox.execution_attempt END,
+               updated_at = EXCLUDED.updated_at
+         WHERE review_dispatch_outbox.status IN ('projected', 'terminal')
            AND EXISTS (
              SELECT 1 FROM review_runs r
               WHERE r.run_id = review_dispatch_outbox.run_id AND r.status = 'queued'
@@ -311,6 +318,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                  candidate.head_sha, candidate.base_sha, candidate.received_at,
                  candidate.terminal_deadline, candidate.effective_policy_digest,
                  candidate.effective_config_digest,
+                 outbox.execution_attempt + 1 AS execution_attempt,
                  outbox.lease_owner, outbox.lease_expires_at`,
       [workerId, now, leaseMs],
     );
@@ -318,6 +326,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     return row ? {
       runId: row.run_id,
       deliveryId: row.delivery_id,
+      executionAttempt: Number(row.execution_attempt || 1),
       repositoryId: Number(row.repository_id),
       installationId: Number(row.installation_id),
       publicationMode: publicationMode(row.publication_mode),

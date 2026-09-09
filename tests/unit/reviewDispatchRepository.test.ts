@@ -90,8 +90,8 @@ describe('PostgresReviewDispatchRepository', () => {
 
   // A run id is derived from the identity digest, so every re-dispatch of the
   // same head lands on the same row. Without a retry path a terminally failed run
-  // pins that head forever: the run stays 'failed', the outbox stays 'terminal',
-  // and no label, re-run or re-dispatch can produce another review. Observed on
+  // pins that head forever: the run stays 'failed', the outbox stays 'projected'
+  // or 'terminal', and no label, re-run or re-dispatch can produce another review. Observed on
   // cisco-cdr#4836, where three dispatches were accepted and none created a job.
   //
   // Known limit, stated plainly: this suite has no Postgres, so the retry rule
@@ -118,10 +118,11 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(runSql).toContain("status = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN 'queued' ELSE review_runs.status END");
     expect(runSql).toContain("attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN review_runs.attempt + 1 ELSE review_runs.attempt END");
     expect(runSql).toContain("error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END");
+    expect(runSql).toContain("received_at = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.received_at ELSE review_runs.received_at END");
     expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END");
     // Every re-arm is conditioned on 'failed', and no other status is named:
     // 'queued'/'running' are in flight, 'superseded' belongs to an older head.
-    expect(runSql.match(/CASE WHEN review_runs\.status IN \('failed', 'terminal'\)/gu) || []).toHaveLength(5);
+    expect(runSql.match(/CASE WHEN review_runs\.status IN \('failed', 'terminal'\)/gu) || []).toHaveLength(6);
     // markTerminal writes 'failed'; the reaper writes 'terminal'. Both are dead
     // runs and both must be retryable, and no other status may be named.
     expect(runSql).not.toMatch(/CASE WHEN review_runs\.status (=|IN \()\s*'?(queued|running|superseded)/u);
@@ -131,8 +132,92 @@ describe('PostgresReviewDispatchRepository', () => {
     // re-armed and an in-flight row is never disturbed.
     expect(outboxSql).toContain("SET status = 'pending'");
     expect(outboxSql).toContain("lease_owner = NULL");
-    expect(outboxSql).toContain("WHERE review_dispatch_outbox.status = 'terminal'");
+    expect(outboxSql).toContain('projection_name = NULL');
+    expect(outboxSql).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
+    expect(outboxSql).toContain('execution_attempt');
     expect(outboxSql).toContain("r.status = 'queued'");
+  });
+
+  it.each([
+    { priorStatus: 'terminal', expectedExecutionAttempt: 7 },
+    { priorStatus: 'projected', expectedExecutionAttempt: 8 },
+  ] as const)('re-arms a $priorStatus outbox row with the correct execution identity', async ({ priorStatus, expectedExecutionAttempt }) => {
+    let outbox: {
+      status: 'pending' | 'claimed' | 'projected' | 'terminal';
+      executionAttempt: number;
+      projectionName: string;
+    } = {
+      status: priorStatus,
+      executionAttempt: 7,
+      projectionName: 'ct-review-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    };
+    const query = vi.fn(async (sql: string) => {
+      if (/WITH candidate/u.test(sql)) {
+        // The re-armed row is the only state eligible for a new claim. The
+        // repository's RETURNING expression exposes the next one-based
+        // execution identity from the stored zero-based counter.
+        expect(outbox.status).toBe('pending');
+        expect(sql.replace(/\s+/gu, ' ')).toContain('outbox.execution_attempt + 1 AS execution_attempt');
+        outbox.status = 'claimed';
+        return { rows: [{
+          run_id: row.run_id,
+          delivery_id: input().deliveryId,
+          execution_attempt: outbox.executionAttempt + 1,
+          repository_id: 123,
+          installation_id: 456,
+          publication_mode: 'disabled',
+          owner: identity.owner,
+          repo: identity.repo,
+          pr_number: identity.prNumber,
+          head_sha: identity.headSha,
+          base_sha: identity.baseSha,
+          received_at: new Date(1_000),
+          terminal_deadline: new Date(901_000),
+          effective_policy_digest: identity.configDigest,
+          effective_config_digest: identity.configDigest,
+          lease_owner: 'dispatcher-a',
+          lease_expires_at: new Date(31_000),
+        }] };
+      }
+      if (/INSERT INTO github_deliveries/u.test(sql)) return { rows: [{ delivery_id: input().deliveryId }] };
+      if (/WITH superseded/u.test(sql)) return { rows: [] };
+      if (/INSERT INTO review_runs/u.test(sql)) return { rows: [row] };
+      if (/INSERT INTO review_dispatch_outbox/u.test(sql)) {
+        // Model the two state transitions guarded by the emitted SQL. A
+        // terminal dispatcher failure has no worker object to replace, while a
+        // projected worker failure must advance to a new CR/Secret name.
+        const normalized = sql.replace(/\s+/gu, ' ');
+        expect(normalized).toContain(
+          "execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected' THEN review_dispatch_outbox.execution_attempt + 1 ELSE review_dispatch_outbox.execution_attempt END",
+        );
+        expect(normalized).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
+        expect(normalized).toContain("r.status = 'queued'");
+        const prior = outbox.status;
+        outbox = {
+          status: 'pending',
+          executionAttempt: prior === 'projected' ? outbox.executionAttempt + 1 : outbox.executionAttempt,
+          projectionName: '',
+        };
+        return { rows: [] };
+      }
+      if (/UPDATE github_deliveries/u.test(sql)) return { rows: [] };
+      return { rows: [] };
+    });
+    const pool = {
+      connect: vi.fn(async () => ({ query, release: vi.fn() })),
+      query,
+    };
+    const repository = new PostgresReviewDispatchRepository(pool);
+
+    await repository.admit(input());
+
+    expect(outbox).toEqual({
+      status: 'pending',
+      executionAttempt: expectedExecutionAttempt,
+      projectionName: '',
+    });
+    const claim = await repository.claimNext('dispatcher-a', 2_000, 30_000);
+    expect(claim?.executionAttempt).toBe(expectedExecutionAttempt + 1);
   });
 
   it('rejects a delivery id replayed with a different digest or repository', async () => {
@@ -201,6 +286,7 @@ describe('PostgresReviewDispatchRepository', () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{
       run_id: row.run_id,
       delivery_id: input().deliveryId,
+      execution_attempt: 0,
       repository_id: 123,
       installation_id: 456,
       publication_mode: 'disabled',
@@ -229,9 +315,69 @@ describe('PostgresReviewDispatchRepository', () => {
       terminalDeadline: 901_000,
       policyDigest: 'c'.repeat(64),
       configDigest: identity.configDigest,
+      executionAttempt: 1,
     }));
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE OF outbox SKIP LOCKED/u);
+    expect(query.mock.calls[0][0]).toContain("outbox.status = 'pending'");
+    expect(query.mock.calls[0][0]).toContain('execution_attempt');
     expect(await repository.heartbeat(row.run_id, 'dispatcher-a', 2_000, 30_000)).toBe(true);
+  });
+
+  it('keeps active claims single-owner and stable across projection retries', async () => {
+    let dispatchStatus: 'pending' | 'claimed' = 'pending';
+    let leaseActive = false;
+    let executionAttempt = 0;
+    const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+      if (/WITH candidate/u.test(sql)) {
+        // This stateful double follows the UPDATE ... RETURNING contract rather
+        // than returning a hard-coded execution attempt. A projected row is not
+        // claimable: only admit() after a durable failed/terminal run transition
+        // re-arms it to pending, preventing a second dispatcher from minting a
+        // fresh Kubernetes identity while the first worker is still starting.
+        const normalized = sql.replace(/\s+/gu, ' ');
+        expect(normalized).toContain("outbox.status = 'pending'");
+        expect(normalized).not.toContain("outbox.status IN ('pending', 'projected')");
+        expect(normalized).toContain('outbox.execution_attempt + 1 AS execution_attempt');
+        const now = Number(values[1]);
+        if (dispatchStatus === 'claimed' && leaseActive) return { rows: [] };
+        dispatchStatus = 'claimed';
+        leaseActive = true;
+        const storedExecutionAttempt = executionAttempt;
+        return { rows: [{
+          run_id: row.run_id,
+          delivery_id: input().deliveryId,
+          execution_attempt: storedExecutionAttempt + 1,
+          repository_id: 123,
+          installation_id: 456,
+          publication_mode: 'disabled',
+          owner: identity.owner,
+          repo: identity.repo,
+          pr_number: identity.prNumber,
+          head_sha: identity.headSha,
+          base_sha: identity.baseSha,
+          received_at: new Date(1_000),
+          terminal_deadline: new Date(901_000),
+          effective_policy_digest: 'c'.repeat(64),
+          effective_config_digest: identity.configDigest,
+          lease_owner: 'dispatcher-a',
+          lease_expires_at: new Date(now + 30_000),
+        }] };
+      }
+      if (/UPDATE review_dispatch_outbox\s+SET status = 'pending'/u.test(sql)) {
+        dispatchStatus = 'pending';
+        leaseActive = false;
+        return { rows: [{ run_id: row.run_id }] };
+      }
+      return { rows: [{ run_id: row.run_id }] };
+    });
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
+
+    const initial = await repository.claimNext('dispatcher-a', 1_000, 30_000);
+    expect(initial?.executionAttempt).toBe(1);
+    await expect(repository.claimNext('dispatcher-b', 2_000, 30_000)).resolves.toBeNull();
+    await expect(repository.releaseForRetry(row.run_id, 'dispatcher-a', 2_000, 3_000)).resolves.toBe(true);
+    const infrastructureRetry = await repository.claimNext('dispatcher-a', 3_000, 30_000);
+    expect(infrastructureRetry?.executionAttempt).toBe(1);
   });
 
   it('terminalizes both the outbox and run only for the owning dispatcher lease', async () => {
@@ -261,6 +407,8 @@ describe('PostgresReviewDispatchRepository', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../../src/persistence/postgresStore.ts'), 'utf8');
     expect(source).toMatch(/CREATE TABLE IF NOT EXISTS github_deliveries/u);
     expect(source).toMatch(/CREATE TABLE IF NOT EXISTS review_dispatch_outbox/u);
+    expect(source).toMatch(/execution_attempt INTEGER NOT NULL DEFAULT 0/u);
+    expect(source).toMatch(/ADD COLUMN IF NOT EXISTS execution_attempt INTEGER NOT NULL DEFAULT 0/u);
     expect(source).toMatch(/ADD COLUMN IF NOT EXISTS terminal_deadline/u);
     expect(source).toMatch(/ADD COLUMN IF NOT EXISTS publication_mode TEXT NOT NULL DEFAULT 'disabled'/u);
     expect(source).toMatch(/UPDATE review_runs SET publication_mode = 'disabled' WHERE publication_mode IS NULL/u);
