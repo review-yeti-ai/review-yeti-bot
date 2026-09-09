@@ -154,6 +154,13 @@ describe('DOKS Action dispatch client', () => {
     expect((floodedError as Error).message).toMatch(/HTTP 400/u);
     expect((floodedError as Error).message.length).toBeLessThan(700);
 
+    // An empty (or whitespace-only) body must not leave a dangling `: ` on the message.
+    const silent = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('   \n  ', { status: 400 }));
+    const silentError = await dispatchAction(environment(), silent).catch((error: Error) => error);
+    expect((silentError as Error).message).toBe('DOKS dispatch failed with HTTP 400');
+
     // An unreadable body must not replace the failure it is describing.
     const unreadable = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
