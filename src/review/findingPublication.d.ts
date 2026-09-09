@@ -19,6 +19,9 @@ export interface PublicationFindingInput {
   personaId?: string;
   displayName?: string;
   personas?: string[];
+  exhaustive?: boolean;
+  hasExhaustiveEvidence?: boolean;
+  scope?: string;
 }
 
 export interface PublicationFinding extends Omit<PublicationFindingInput, 'severity' | 'side' | 'personas'> {
@@ -110,6 +113,7 @@ export interface PlanFindingPublicationOptions {
   /** Collapse differently-worded reports of one claim. Defaults to true. */
   mergeNearDuplicates?: boolean;
   nearDuplicate?: CompareClaimsOptions;
+  exhaustiveEvidence?: boolean;
 }
 
 export function mergeNearDuplicateClaims<T extends { subjectType: 'line' | 'file'; finding: PublicationFinding }>(
@@ -140,3 +144,6 @@ export const ACTIONABLE_SEVERITIES: readonly PublicationSeverity[];
 
 /** Whether a severity may open a resolve-required review thread. */
 export function isActionableSeverity(severity: unknown): boolean;
+
+export const ABSENCE_CLAIM_PATTERN: RegExp;
+export function isAbsenceClaim(title?: string, body?: string): boolean;

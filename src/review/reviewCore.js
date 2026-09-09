@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { compareClaims } = require('./claimSimilarity');
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 
 function canonicalize(value) {
@@ -223,7 +224,37 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const expected = Number.isInteger(expectedPersonas) ? expectedPersonas : results.length;
   const failedLanes = results.filter(isFailedLane);
   const completedResults = results.filter((result) => !isFailedLane(result));
-  const findings = completedResults.flatMap((result) => sanitizeFindings(result.findings, options.changedFiles));
+  const rawFindings = [];
+  for (let i = 0; i < completedResults.length; i++) {
+    const lane = completedResults[i];
+    const laneId = lane.id || `lane_${i}`;
+    const sanitized = sanitizeFindings(lane.findings, options.changedFiles);
+    for (const f of sanitized) {
+      rawFindings.push({ finding: f, laneId });
+    }
+  }
+
+  const clusteredFindings = [];
+  const SEVERITY_RANK = { P0: 0, P1: 1, P2: 2 };
+  for (const item of rawFindings) {
+    const target = clusteredFindings.find((c) =>
+      !c._laneIds.has(item.laneId) && compareClaims(c.finding, item.finding, options.nearDuplicate).duplicate
+    );
+    if (!target) {
+      clusteredFindings.push({
+        finding: { ...item.finding },
+        _laneIds: new Set([item.laneId]),
+      });
+    } else {
+      target._laneIds.add(item.laneId);
+      if ((SEVERITY_RANK[item.finding.severity] ?? 3) < (SEVERITY_RANK[target.finding.severity] ?? 3)) {
+        target.finding.severity = item.finding.severity;
+      }
+    }
+  }
+
+  const findings = clusteredFindings.map((c) => c.finding);
+
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;

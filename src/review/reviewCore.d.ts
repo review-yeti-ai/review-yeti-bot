@@ -59,6 +59,12 @@ export interface ArbitrationOptions {
    * forced BLOCK by coverage alone, computeArbitration names these in the rationale instead of
    * reusing the clean-panel "Quorum satisfied" sentence (REL-491).
    */
+  p2BlocksMerge?: boolean;
+  nearDuplicate?: {
+    threshold?: number;
+    strongThreshold?: number;
+    lineWindow?: number;
+  };
   coverageGaps?: Array<string | CoverageGap>;
   candidateVerdict?: CanonicalVerdict;
   rationale?: string;

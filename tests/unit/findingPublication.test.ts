@@ -268,4 +268,69 @@ describe('anchoring against blank context lines', () => {
     expect(plan.lineComments).toHaveLength(1);
     expect(plan.lineComments[0]?.line).toBe(3);
   });
+
+  describe('Evidence-of-Absence Gate & False-Grounding Remediation', () => {
+    const patch = ['@@ -10,3 +10,3 @@', ' def update(conn, params) do', '-  old_filter(params)', '+  replace_filters(conn, params)', ' end'].join('\n');
+
+    it('PR #4936 replay: downgrades patch-scoped undefined function claims from P1 to P2 advisory', () => {
+      const plan = planFindingPublication([{
+        displayName: 'Architecture',
+        findings: [{
+          severity: 'P1' as const,
+          path: 'lib/app/query.ex',
+          line: 11,
+          title: 'Call to undefined function replace_filters/2',
+          body: 'Function replace_filters/2 is undefined in this module and not found anywhere in the repository.',
+        }],
+      }], [{ path: 'lib/app/query.ex', patch }]);
+
+      expect(plan.rejected).toEqual([]);
+      // Should not block review as a P1 lineComment
+      expect(plan.lineComments).toHaveLength(0);
+      // Should be downgraded to a P2 advisory
+      expect(plan.advisories).toHaveLength(1);
+      expect(plan.advisories[0]?.severity).toBe('P2');
+      expect(plan.advisories[0]?.title).toBe('Call to undefined function replace_filters/2');
+      expect(plan.advisories[0]?.finding.body).toContain('Evidence-of-absence downgrade');
+    });
+
+    it('preserves P1 severity when backed by exhaustive repository evidence (e.g. Zoekt)', () => {
+      const plan = planFindingPublication([{
+        displayName: 'Architecture',
+        findings: [{
+          severity: 'P1' as const,
+          path: 'lib/app/query.ex',
+          line: 11,
+          title: 'Call to undefined function replace_filters/2',
+          body: 'Function replace_filters/2 is undefined across the full repository.',
+          exhaustive: true,
+          scope: 'full-repository-zoekt',
+        }],
+      }], [{ path: 'lib/app/query.ex', patch }]);
+
+      expect(plan.rejected).toEqual([]);
+      expect(plan.lineComments).toHaveLength(1);
+      expect(plan.advisories).toHaveLength(0);
+      expect(plan.lineComments[0]?.finding.severity).toBe('P1');
+    });
+
+    it('does not downgrade standard security findings that mention missing checks', () => {
+      const plan = planFindingPublication([{
+        displayName: 'Security',
+        findings: [{
+          severity: 'P1' as const,
+          path: 'lib/app/query.ex',
+          line: 11,
+          title: 'Tenant check is missing on the cancel path',
+          body: 'The cancel path fails to verify tenant authorization before mutating records.',
+        }],
+      }], [{ path: 'lib/app/query.ex', patch }]);
+
+      expect(plan.rejected).toEqual([]);
+      expect(plan.lineComments).toHaveLength(1);
+      expect(plan.advisories).toHaveLength(0);
+      expect(plan.lineComments[0]?.finding.severity).toBe('P1');
+    });
+  });
 });
+

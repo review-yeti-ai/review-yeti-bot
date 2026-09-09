@@ -64,6 +64,7 @@ export interface PersonaLaneResult {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>;
   isRedTeam?: boolean;
   crossExaminedModel?: string;
   mermaidDiagram?: string;
@@ -73,6 +74,7 @@ export interface PanelResult {
   headSha: string;
   personas: PersonaLaneResult[];
   optionalFailures: Array<{ id: string; error: string }>;
+  zeroLaneNonEvidence?: boolean;
   quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
   moderator: {
     providerId: ProviderId;
@@ -485,6 +487,16 @@ function pathMatches(pattern: string, path: string): boolean {
   return globRegex(pattern).test(path);
 }
 
+function isDocumentationOrAssetPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+  return (
+    normalized.startsWith('docs/') ||
+    normalized.startsWith('.github/') ||
+    normalized.startsWith('.changeset/') ||
+    /\.(md|markdown|txt|rst|adoc|png|jpg|jpeg|gif|svg|ico|pdf|drawio)$/i.test(normalized)
+  );
+}
+
 function nonce(): string {
   return crypto.randomUUID();
 }
@@ -682,7 +694,7 @@ async function invoke(
     providerId?: string;
     requestPolicy?: PanelRequestPolicy;
   }
-): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number }> {
+): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number; toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> }> {
   const requestNonce = nonce();
   const nativeJsonMode = ['json_object', 'json_schema'].includes(
     String(options?.requestPolicy?.responseFormat?.type || '').toLowerCase(),
@@ -754,7 +766,7 @@ async function invoke(
     .filter((tool) => tool.name === 'fetch_docs' || tool.name === 'context7_search');
   const mcpToolListStr = availableMcpTools.map((t) => `${t.name} (${t.description})`).join(', ');
 
-  const maxTurns = Math.min(20, Math.max(1, options?.maxTurns ?? 20));
+  const maxTurns = Math.min(20, Math.max(1, options?.maxTurns ?? 3));
   const effectiveEffort = options?.effort || 'medium';
 
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -764,10 +776,11 @@ async function invoke(
 
 === MULTI-TURN EXPLORATION & TOOL INVOCATION PROTOCOL ===
 - Permitted Tool Categories:
-  1. Code Reading: view_file, read_file, get_diff (read surrounding file lines within the repository)
-  2. AST Context & Symbols: miller (AST context), symbol_search, search_code, grep_search, find_files
+  1. Code Reading: view_file, read_file, get_diff (patch-scoped to changed files in this PR)
+  2. AST Context & Symbols: miller (AST context), symbol_search, search_code, grep_search, find_files, code_search_zoekt
   3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}
      Use Context7 when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Do NOT call Context7 if the code is self-explanatory or contained in the repository.
+- IMPORTANT EVIDENCE BOUNDARY: Default code reading and symbol search tools are patch-scoped: they only inspect the patch hunks of files modified in this PR. They DO NOT search unchanged files across the repository. Never claim a function, module, or symbol is undefined, missing, or broken in the repository simply because a patch-scoped search returns no hits.
 - You are granted up to ${maxTurns} execution turns for active codebase exploration.
 - Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.
 ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
@@ -793,9 +806,24 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   let finalResponse: OpenRouterResponse | null = null;
   let parsedResult: any = null;
   let turnsCount = 1;
+  const toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
   let structuredCorrectionAttempts = 0;
 
   for (let iter = 0; iter < maxTurns; iter++) {
+    // Prompt compaction on turns 2+ (ADR 0501 / Concept B): Stop resending raw diff blocks
+    if (iter >= 1 && diffBlocks && messages[1]) {
+      const compactFileList = changedFiles.map((f: any) => `- ${f.path || f.filePath || 'unknown'}`).join('\n') || 'None';
+      const compactDiffIndex = [
+        `=== PR CHANGED FILES (COMPACT INDEX) ===`,
+        compactFileList,
+        `(Full diff omitted on subsequent turns. Use read_file, get_diff, or code_search_zoekt.)`,
+      ].join('\n');
+      const targetBlock = `=== PR CHANGED FILES & DIFF PATCHES ===\n${diffBlocks}`;
+      if (messages[1].content.includes(targetBlock)) {
+        messages[1].content = messages[1].content.replace(targetBlock, compactDiffIndex);
+      }
+    }
+
     const requestPersona = options?.persona || personaName;
     const response = await client.complete({
       ...(requestPolicy || {}),
@@ -859,16 +887,18 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         const targetPath = toolCall.args?.path || toolCall.args?.filePath || '';
         const searchQ = toolCall.args?.query || toolCall.args?.pattern || '';
 
-        // Whitelist check: Code Reading, Miller, Context Searching, Dashboard MCPs
+        // Whitelist check: Code Reading, Miller, Context Searching, Dashboard MCPs, Zoekt
         const isCodeReading = ['view_file', 'read_file', 'get_diff'].includes(tName);
         const isMiller = tName === 'miller';
-        const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code'].includes(tName);
+        const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code', 'code_search_zoekt', 'zoekt_search'].includes(tName);
         const readOnlyMcpNames = new Set(['fetch_docs', 'context7_search', 'mcp_context7_query', 'linear_get_issue']);
         const isMcp = readOnlyMcpNames.has(tName);
 
         const isAllowed = isCodeReading || isMiller || isSearching || isMcp;
 
         let toolOutput = '';
+        let toolScope = 'changed-patches-only';
+        let isExhaustive = false;
 
         if (!isAllowed) {
           toolOutput = `Tool '${tName}' execution rejected: Permission denied. Reviewer personas are restricted strictly to read-only code, Miller, search, and MCP tools.`;
@@ -889,16 +919,22 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
           } else if (isCodeReading) {
             const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
             if (matched) {
-              toolOutput += matched.patch || matched.content || 'File present in PR scope.';
+              toolOutput += `[SCOPE: changed-patches-only | EXHAUSTIVE: false]\n${matched.patch || matched.content || 'File present in PR scope.'}`;
             } else {
-              toolOutput += `File '${targetPath}' is outside the reviewed PR scope.`;
+              toolOutput += `[SCOPE: changed-patches-only | EXHAUSTIVE: false]\nFile '${targetPath}' is outside the reviewed PR changed files. This search did NOT inspect the full repository.`;
             }
           } else if (tName === 'search_code' || tName === 'grep_search') {
             const hits = changedFiles.filter((f: any) => (f.patch || f.content || '').toLowerCase().includes(searchQ.toLowerCase()));
-            toolOutput += hits.length > 0 ? `Matches found in: ${hits.map((h: any) => h.path).join(', ')}` : `No matches for '${searchQ}'.`;
+            toolOutput += `[SCOPE: changed-patches-only | EXHAUSTIVE: false]\n` +
+              (hits.length > 0
+                ? `Matches found in: ${hits.map((h: any) => h.path).join(', ')}`
+                : `No matches found in changed files for '${searchQ}'. (Note: Unchanged repository files were not searched).`);
           } else if (tName === 'find_files') {
             const hits = changedFiles.filter((f: any) => f.path.toLowerCase().includes(searchQ.toLowerCase()));
-            toolOutput += hits.length > 0 ? `Files found: ${hits.map((h: any) => h.path).join(', ')}` : `No files found matching '${searchQ}'.`;
+            toolOutput += `[SCOPE: changed-patches-only | EXHAUSTIVE: false]\n` +
+              (hits.length > 0
+                ? `Files found: ${hits.map((h: any) => h.path).join(', ')}`
+                : `No files found matching '${searchQ}' in changed files.`);
           } else if (tName === 'symbol_search') {
             const parser = new ASTParser();
             const hits: string[] = [];
@@ -911,7 +947,20 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
                 }
               }
             }
-            toolOutput += hits.length > 0 ? hits.join('\n') : `No symbols found matching '${searchQ}'.`;
+            toolOutput += `[SCOPE: changed-patches-only | EXHAUSTIVE: false]\n` +
+              (hits.length > 0
+                ? hits.join('\n')
+                : `No symbols matching '${searchQ}' found in PR diff patches. (Note: Definitions outside the PR diff hunks were NOT searched. A miss here does NOT prove the symbol is missing from the repository).`);
+          } else if (tName === 'code_search_zoekt' || tName === 'zoekt_search') {
+            toolScope = 'full-repository-zoekt';
+            try {
+              const zoektTool = require('../mcp/zoektSearchTool');
+              const zoektRes = await zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig);
+              isExhaustive = zoektRes.status === 'ok';
+              toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: ${isExhaustive}]\n${JSON.stringify(zoektRes, null, 2)}`;
+            } catch (err: any) {
+              toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: false | STATUS: unavailable]\nZoekt search unavailable: ${err?.message || String(err)}`;
+            }
           } else {
             // Only documentation/search MCPs are permitted. Review execution must never mutate
             // Linear, Productlane, GitHub, or an arbitrary custom MCP server.
@@ -923,6 +972,13 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             }
           }
         }
+
+        toolCalls.push({
+          tool: tName,
+          args: toolCall.args,
+          scope: toolScope,
+          exhaustive: isExhaustive,
+        });
 
         messages.push({ role: 'assistant', content: response.content });
         messages.push({ role: 'user', content: `[PI_TOOL_RESULT]\n${toolOutput}\n\nPlease proceed to render final evaluation enclosed in CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.` });
@@ -954,6 +1010,8 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
     response: finalResponse,
     parsed: parsedResult,
     durationMs: Date.now() - started,
+    turnsCount,
+    toolCalls,
   };
 }
 
@@ -1052,7 +1110,7 @@ async function runPersona(
       }
 
       const effectiveEffort = (storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? 20;
+      const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? 3;
 
       let attempts = 0;
       const maxAttempts = 2;
@@ -1091,6 +1149,7 @@ async function runPersona(
             persona: persona.id,
             providerId,
             requestPolicy,
+            zoektConfig: (config as any)?.evidence?.zoekt,
             validateParsed: (candidate) => {
               try {
                 const findings = validateFindings((candidate as any)?.findings);
@@ -1108,6 +1167,9 @@ async function runPersona(
           });
           if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
               || !Array.isArray(result.parsed.findings)) {
+            if (result.turnsCount >= effectiveMaxTurns || !result.parsed) {
+              throw new PanelConfigurationError(`persona ${persona.id} turn budget exhausted without verdict (INCOMPLETE)`);
+            }
             throw new Error('invalid persona response contract');
           }
           // The panel may receive either a unified diff or context-only file content. Strict
@@ -1214,6 +1276,7 @@ async function runPersona(
             costUSD: result.response.costUSD,
             durationMs: result.durationMs,
             turnsCount: result.turnsCount || 1,
+            toolCalls: result.toolCalls || [],
             promptTokens,
             completionTokens,
             totalTokens,
@@ -1307,7 +1370,39 @@ export async function executePersonaPanel(options: {
     span.setAttribute('ct.quorum_required', config.quorum);
 
     if (applicable.length === 0) {
-      throw new PanelConfigurationError(`no enabled persona applies to the changed paths for ${repository} #${headSha}`);
+      const allNonCode = effectiveFiles.length > 0 && effectiveFiles.every((f: any) =>
+        isDocumentationOrAssetPath(f.path || f.filePath || '')
+      );
+      if (!allNonCode) {
+        throw new PanelConfigurationError(`no enabled persona applies to the changed paths for ${repository} #${headSha}`);
+      }
+
+      const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
+      return {
+        headSha,
+        personas: [],
+        optionalFailures: [],
+        zeroLaneNonEvidence: true,
+        quorum: { required: 0, distinctProviders: [], satisfied: true },
+        moderator: {
+          providerId: arbiterId,
+          model: 'none',
+          decision: 'RECONCILED',
+          findings: [],
+          usage: null,
+          costUSD: null,
+          durationMs: 0,
+        },
+        arbiter: {
+          providerId: arbiterId,
+          model: 'none',
+          verdict: 'SHIP',
+          rationale: 'No enabled persona paths matched the changed files; zero-lane run is a non-evidence clean receipt.',
+          usage: null,
+          costUSD: null,
+          durationMs: 0,
+        },
+      };
     }
 
     let memoryRules: string[] = [];
