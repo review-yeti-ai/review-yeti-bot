@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.44.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.44.1...v1.44.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* **dispatch:** a terminally failed run must be retryable on the same head ([#608](https://github.com/review-yeti-ai/review-yeti-bot/issues/608)) ([1ff29e4](https://github.com/review-yeti-ai/review-yeti-bot/commit/1ff29e490610971c96b7b1c531e11d4a23a5e4bf))
+
 ## [1.44.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.44.0...v1.44.1) (2026-09-09)
 
 
