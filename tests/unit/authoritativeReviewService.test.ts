@@ -1,31 +1,24 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthoritativeServiceConfig } from '../../src/auth/authoritativeServiceConfig';
-import type { StoredReviewGate } from '../../src/persistence/reviewGateRepository';
+import type { StoredReviewGate } from '../../src/review/reviewGateContracts';
 import type { AuthoritativeCompletionContextOptions } from '../../src/review/authoritativeCompletionContext';
 import type { AuthoritativePublishingResolverOptions } from '../../src/review/authoritativePublishingResolver';
 import type { ReviewGatePublisherOptions } from '../../src/review/reviewGatePublisher';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
-import { createAuthoritativeReviewService } from '../../src/review/authoritativeReviewService';
+import { createAuthoritativeReviewService, type AuthoritativeReviewServiceOptions } from '../../src/review/authoritativeReviewService';
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import type { ReviewAdmissionInput } from '../../src/review/reviewRun';
 
 const mocks = vi.hoisted(() => ({
-  repositoryConstructor: vi.fn(), publisherConstructor: vi.fn(), resolverConstructor: vi.fn(),
+  publisherConstructor: vi.fn(), resolverConstructor: vi.fn(),
   completionFactory: vi.fn(), readerConstructor: vi.fn(), clientConstructor: vi.fn(),
   reap: vi.fn(), advance: vi.fn(), publish: vi.fn(), mint: vi.fn(), getPrepared: vi.fn(),
   currentCandidate: vi.fn(), resolvePolicyRevision: vi.fn(), immutablePolicyFile: vi.fn(),
-  resolveCompletion: vi.fn(), verify: vi.fn(), query: vi.fn(), connect: vi.fn(),
+  resolveCompletion: vi.fn(), verify: vi.fn(),
 }));
 
-vi.mock('../../src/persistence/reviewGateRepository', () => ({
-  PostgresReviewGateRepository: vi.fn(function (pool, options) {
-    mocks.repositoryConstructor(pool, options);
-    return { reapTerminalAttempts: mocks.reap, advanceProjectedAttempts: mocks.advance };
-  }),
-}));
 vi.mock('../../src/review/reviewGatePublisher', () => ({
   ReviewGatePublisher: vi.fn(function (options) {
     mocks.publisherConstructor(options);
@@ -58,7 +51,6 @@ vi.mock('../../src/github/authoritativeReviewReader', () => ({
   }),
 }));
 vi.mock('../../src/github/boundedAppToken', () => ({ getBoundedRepositoryToken: mocks.mint }));
-vi.mock('../../src/persistence/preparedReviewRepository', () => ({ getPreparedPublishingPolicy: mocks.getPrepared }));
 vi.mock('../../src/github/reviewGateClient', () => ({
   GitHubReviewGateClient: vi.fn(function (options) {
     mocks.clientConstructor(options);
@@ -85,9 +77,13 @@ function fixture() {
     transport: { baseUrl: 'https://gateway.example.invalid/v1', model: 'service-selected-model' }, tickMs: 5_000,
   };
   const prepared = preparePublishingPolicy(policyFile, config.transport);
-  const pool = { query: mocks.query, connect: mocks.connect } as unknown as Pool;
+  const repository: AuthoritativeReviewServiceOptions['repository'] = {
+    reapTerminalAttempts: mocks.reap, advanceProjectedAttempts: mocks.advance,
+    claimPublication: vi.fn(), publishLocked: vi.fn(), retryPublication: vi.fn(), recordWorkerResult: vi.fn(),
+  };
   const fetchImplementation = vi.fn<typeof fetch>().mockRejectedValue(new Error('No live requests in unit tests'));
-  const options = { config, pool, appId: String(APP_ID), privateKey: 'fake-app-private-key',
+  const options = { config, repository, getStoredPrepared: mocks.getPrepared,
+    appId: String(APP_ID), privateKey: 'fake-app-private-key',
     baseUrl: 'https://github.example.invalid/api/v3', workerId: 'authoritative-review-test', fetchImplementation };
   const gate: StoredReviewGate = {
     coordinates: { repositoryId: candidate.repositoryId, owner: candidate.owner, repo: candidate.repo,
@@ -127,19 +123,22 @@ beforeEach(() => {
   mocks.advance.mockReset().mockResolvedValue(2);
   mocks.publish.mockReset().mockResolvedValue({ status: 'idle' });
   mocks.mint.mockReset().mockResolvedValue({ token: 'ghs_fake_scoped_token' });
-  mocks.query.mockReset().mockRejectedValue(new Error('Unexpected database query'));
-  mocks.connect.mockReset().mockRejectedValue(new Error('Unexpected database connection'));
   vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
 });
 afterEach(() => {
   expect(globalThis.fetch).not.toHaveBeenCalled();
-  expect(mocks.query).not.toHaveBeenCalled();
-  expect(mocks.connect).not.toHaveBeenCalled();
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();
 });
 
 describe('createAuthoritativeReviewService wiring', () => {
+  it('keeps concrete database imports out of the service boundary', () => {
+    const source = readFileSync(new URL('../../src/review/authoritativeReviewService.ts', import.meta.url), 'utf8');
+    expect(source).not.toMatch(/from\s+['"](?:pg|\.\.\/persistence\/[^'"]+)['"]/u);
+    expect(source).not.toContain('PostgresReviewGateRepository');
+    expect(source).not.toContain('getPreparedPublishingPolicy');
+  });
+
   it('freshly validates the whole prepared identity for the locked admission adapter', async () => {
     const f = fixture();
     const service = createAuthoritativeReviewService(f.options);
@@ -204,13 +203,15 @@ describe('createAuthoritativeReviewService wiring', () => {
     expect(service.admission.repositoryIds).not.toBe(f.config.repositoryIds);
     expect(service.completion).toEqual({ verifier: { verify: mocks.verify },
       repository: publisherOptions().repository, resolve: mocks.resolveCompletion });
-    expect(mocks.repositoryConstructor).toHaveBeenCalledExactlyOnceWith(f.options.pool, { completionResolutionTimeoutMs: 15_000 });
+    expect(service.completion.repository).toBe(f.options.repository);
+    expect(publisherOptions().repository).toBe(f.options.repository);
     expect(mocks.publisherConstructor).toHaveBeenCalledExactlyOnceWith({
       repository: service.completion.repository, workerId: f.options.workerId,
       clientFactoryTimeoutMs: 45_000, clientFor: expect.any(Function),
     });
     for (const call of [mocks.mint, mocks.getPrepared, mocks.readerConstructor, mocks.clientConstructor,
-      mocks.currentCandidate, mocks.reap, mocks.advance, mocks.publish, mocks.resolveCompletion, mocks.verify]) {
+      mocks.currentCandidate, mocks.publish, mocks.resolveCompletion, mocks.verify,
+      ...Object.values(f.options.repository)]) {
       expect(call).not.toHaveBeenCalled();
     }
     expect(f.options.fetchImplementation).not.toHaveBeenCalled();
@@ -240,7 +241,7 @@ describe('createAuthoritativeReviewService wiring', () => {
     expect(() => createAuthoritativeReviewService({ ...f.options, ...overrides }))
       .toThrow('Authoritative service identity does not match its configuration');
     expect(mocks.resolverConstructor).not.toHaveBeenCalled();
-    expect(mocks.repositoryConstructor).not.toHaveBeenCalled();
+    for (const operation of Object.values(f.options.repository)) expect(operation).not.toHaveBeenCalled();
     expect(mocks.publisherConstructor).not.toHaveBeenCalled();
     expect(mocks.mint).not.toHaveBeenCalled();
   });
@@ -255,11 +256,12 @@ describe('createAuthoritativeReviewService wiring', () => {
     expect(resolverOptions()).toEqual({ policyRepository: f.config.policyRepository,
       policyRef: f.config.policyRef, policyPath: f.config.policyPath, transport: f.config.transport,
       candidateReaderFactory: expect.any(Function), policyReaderFactory: expect.any(Function) });
-    expect(completionOptions()).toEqual({ getStoredPrepared: expect.any(Function),
+    expect(completionOptions()).toEqual({ getStoredPrepared: f.options.getStoredPrepared,
       readerFactory: resolverOptions().candidateReaderFactory, publishingResolver: service.admission.resolver });
-    await expect(completionOptions().getStoredPrepared(f.gate.coordinates.policyDigest, new AbortController().signal))
+    const signal = new AbortController().signal;
+    await expect(completionOptions().getStoredPrepared(f.gate.coordinates.policyDigest, signal))
       .resolves.toBe(f.prepared);
-    expect(mocks.getPrepared).toHaveBeenCalledExactlyOnceWith(f.options.pool, f.gate.coordinates.policyDigest);
+    expect(mocks.getPrepared).toHaveBeenCalledExactlyOnceWith(f.gate.coordinates.policyDigest, signal);
     expect(process.env).toEqual(before);
   });
 
@@ -461,7 +463,7 @@ describe('dispatchIndex authoritative startup source contract', () => {
     expect(source.indexOf('authoritativeServiceConfigFromEnv(environment, policy)'))
       .toBeLessThan(source.indexOf('new PostgresStore()'));
     expect(source).toMatch(/authoritativeConfig\s*\?\s*createAuthoritativeReviewService\(\{/u);
-    expect(source).toMatch(/config:\s*authoritativeConfig,\s*pool,\s*appId,\s*privateKey,\s*baseUrl/u);
+    expect(source).toMatch(/config:\s*authoritativeConfig,\s*appId,\s*privateKey,\s*baseUrl/u);
     expect(source).toMatch(/authoritative\s*\?\s*\{\s*authoritativePublishing:\s*authoritative\.admission,\s*authoritativeWorkerCompletion:\s*authoritative\.completion\s*\}\s*:\s*\{\}/u);
     expect(source).toMatch(/workerCompletion:\s*\{\s*verifier:\s*createWorkerCompletionVerifier\(\),\s*repository,/u);
   });
