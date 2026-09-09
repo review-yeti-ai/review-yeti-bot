@@ -136,6 +136,12 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const projectedReAdmission = await repository.admit(admission('delivery-2', 4_000));
     expect(projectedReAdmission.status).toBe('accepted');
     expect(projectedReAdmission.run.runId).toBe(first.run.runId);
+    const projectedRow = await client.query(
+      'SELECT received_at, terminal_deadline FROM review_runs WHERE run_id = $1',
+      [first.run.runId],
+    );
+    expect(projectedRow.rows[0].received_at.getTime()).toBe(4_000);
+    expect(projectedRow.rows[0].terminal_deadline.getTime()).toBe(904_000);
     const secondClaim = await repository.claimNext('dispatcher-a', 5_000, 30_000);
     expect(secondClaim?.executionAttempt).toBe(2);
 
@@ -144,6 +150,12 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.markTerminal(secondClaim!.runId, 'dispatcher-a', 5_000, 'projection rejected')).resolves.toBe(true);
     const terminalReAdmission = await repository.admit(admission('delivery-3', 6_000));
     expect(terminalReAdmission.status).toBe('accepted');
+    const terminalRow = await client.query(
+      'SELECT received_at, terminal_deadline FROM review_runs WHERE run_id = $1',
+      [first.run.runId],
+    );
+    expect(terminalRow.rows[0].received_at.getTime()).toBe(6_000);
+    expect(terminalRow.rows[0].terminal_deadline.getTime()).toBe(906_000);
     const terminalRetry = await repository.claimNext('dispatcher-a', 7_000, 30_000);
     expect(terminalRetry?.executionAttempt).toBe(2);
   });
