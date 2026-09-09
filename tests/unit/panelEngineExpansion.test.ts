@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelConfigurationError, extractMessageContentText } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -103,7 +103,7 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     const changedFiles = [{ path: 'src/main.ts' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
       const allMsg = JSON.stringify(opts.messages);
@@ -157,7 +157,7 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     const changedFiles = [{ path: 'src/main.ts' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -189,7 +189,7 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     const changedFiles = [{ path: 'src/main.ts' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 

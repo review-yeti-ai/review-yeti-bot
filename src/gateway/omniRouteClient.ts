@@ -40,6 +40,10 @@ export interface TokensUsed {
   prompt: number;
   completion: number;
   total: number;
+  cached?: number;
+  cached_tokens?: number;
+  cache_read_input_tokens?: number;
+  prompt_cache_hit_tokens?: number;
 }
 
 export interface OmniRouteResponse {

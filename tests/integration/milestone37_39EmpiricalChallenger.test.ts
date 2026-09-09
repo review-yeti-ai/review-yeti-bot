@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelConfigurationError, extractMessageContentText } from '../../src/panel/panelEngine';
 import { ConfigResolver, RepositoryContentClient } from '../../src/config/configResolver';
 import { createDefaultV3Config, ConfigValidationError } from '../../src/config/configLoader';
 import { CtReviewConfigV3, R4_ALLOWED_MODELS, V3_PROVIDER_MODELS } from '../../src/config/schema';
@@ -63,7 +63,7 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
       const changedFiles = [{ path: 'src/core/heavy_module.ts', patch: '+ export function computeHeavy() {}' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -131,7 +131,7 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
       }
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -164,7 +164,7 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
       });
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -196,7 +196,7 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
       // Fail perf-lane, sre-lane, qual-lane, devops-lane (which drops grok and agy-opus)
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -472,7 +472,7 @@ path_filters:
       const config = build10PersonaConfig(4);
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -506,7 +506,7 @@ path_filters:
       if (archLane) archLane.required = true;
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
 
         if (prompt.includes('"sec-lane"') || prompt.includes('"arch-lane"')) {
           throw new Error('Simulated critical failure');
@@ -538,7 +538,7 @@ path_filters:
       const config = build10PersonaConfig(4);
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 

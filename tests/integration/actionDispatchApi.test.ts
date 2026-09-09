@@ -206,6 +206,67 @@ describe('POST /api/dispatch/action', () => {
 
     expect(result.status).toBe('accepted');
     expect(fixture.admission.admit).toHaveBeenCalledOnce();
-    expect(JSON.stringify(fixture.admission.admit.mock.calls[0][0])).not.toContain('must-not-cross-the-boundary');
+    const admittedPayload = fixture.admission.admit.mock.calls[0][0];
+    expect((admittedPayload as any).OPENROUTER_API_KEY).toBeUndefined();
+    expect(JSON.stringify(admittedPayload)).not.toContain('must-not-cross-the-boundary');
+  });
+
+  it('re-arms a previously failed run and returns status accepted with run.status queued', async () => {
+    let admittedInput: any;
+    const admission = {
+      admit: vi.fn(async (input: any) => {
+        admittedInput = input;
+        return {
+          status: 'accepted' as const,
+          deliveryId: input.deliveryId,
+          repositoryId: input.repositoryId,
+          installationId: input.installationId,
+          publicationMode: input.publicationMode,
+          receivedAt: input.receivedAt,
+          terminalDeadline: input.terminalDeadline,
+          payloadDigest: input.payloadDigest,
+          run: {
+            runId: `run_${'f'.repeat(32)}`,
+            identity: input.identity,
+            identityDigest: 'f'.repeat(64),
+            effectivePolicyDigest: input.effectivePolicyDigest || input.identity.configDigest,
+            effectiveConfigDigest: input.identity.configDigest,
+            indexEpoch: 0,
+            status: 'queued' as const,
+            stage: 'admission' as const,
+            attempt: 0,
+            artifacts: {},
+            createdAt: input.receivedAt,
+            updatedAt: input.receivedAt,
+          },
+        };
+      }),
+    };
+    const verifier = { verify: vi.fn(async () => ({ ...verified, run_attempt: '3' })) };
+    const fixture = app({ admission, verifier });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        deliveryId: `actions:98765:3:123:42:${'b'.repeat(40)}`,
+        caller: {
+          ...body.caller,
+          runAttempt: 3,
+        },
+      });
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({
+      version: 'ActionDispatchAccepted.v1',
+      status: 'accepted',
+      runId: `run_${'f'.repeat(32)}`,
+    });
+    expect(admission.admit).toHaveBeenCalledOnce();
+    const admissionResult = await admission.admit.mock.results[0].value;
+    expect(admissionResult.status).toBe('accepted');
+    expect(admissionResult.run.status).toBe('queued');
+    expect(admissionResult.run.attempt).toBe(0);
+    expect(admissionResult.run.stage).toBe('admission');
   });
 });
