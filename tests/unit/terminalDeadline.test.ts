@@ -3,6 +3,7 @@ import {
   DEFAULT_TERMINAL_DEADLINE_MS,
   MAX_TERMINAL_DEADLINE_MS,
   MIN_TERMINAL_DEADLINE_MS,
+  assertTerminalDeadlineWindow,
   resolveTerminalDeadlineMs,
 } from '../../src/config/terminalDeadline';
 
@@ -70,5 +71,33 @@ describe('resolveTerminalDeadlineMs', () => {
     const snapshot = { ...env };
     resolveTerminalDeadlineMs(env);
     expect(env).toEqual(snapshot);
+  });
+});
+
+describe('assertTerminalDeadlineWindow', () => {
+  it('accepts a window at the exact MIN and MAX boundaries', () => {
+    expect(() => assertTerminalDeadlineWindow(0, MIN_TERMINAL_DEADLINE_MS)).not.toThrow();
+    expect(() => assertTerminalDeadlineWindow(0, MAX_TERMINAL_DEADLINE_MS)).not.toThrow();
+  });
+
+  it('accepts an in-range window regardless of the receivedAt offset', () => {
+    expect(() => assertTerminalDeadlineWindow(1_000, 1_000 + 1_800_000)).not.toThrow();
+  });
+
+  it('rejects a window one millisecond below MIN or above MAX', () => {
+    expect(() => assertTerminalDeadlineWindow(0, MIN_TERMINAL_DEADLINE_MS - 1)).toThrow(/terminal deadline must be between/i);
+    expect(() => assertTerminalDeadlineWindow(0, MAX_TERMINAL_DEADLINE_MS + 1)).toThrow(/terminal deadline must be between/i);
+  });
+
+  // The subsequent range comparisons silently pass on NaN (NaN < MIN and NaN > MAX
+  // are both false), so the three Number.isFinite guards are the only thing
+  // rejecting non-finite input -- and they are the sole remaining rejection for
+  // repository.admit(), which no longer does its own finite check inline.
+  it('rejects non-finite receivedAt or terminalDeadline', () => {
+    expect(() => assertTerminalDeadlineWindow(Number.NaN, Number.NaN)).toThrow(/terminal deadline must be between/i);
+    expect(() => assertTerminalDeadlineWindow(1_000, Number.NaN)).toThrow(/terminal deadline must be between/i);
+    expect(() => assertTerminalDeadlineWindow(Number.NaN, 1_000 + 1_800_000)).toThrow(/terminal deadline must be between/i);
+    expect(() => assertTerminalDeadlineWindow(1_000, Number.POSITIVE_INFINITY)).toThrow(/terminal deadline must be between/i);
+    expect(() => assertTerminalDeadlineWindow(Number.NEGATIVE_INFINITY, 1_000)).toThrow(/terminal deadline must be between/i);
   });
 });
