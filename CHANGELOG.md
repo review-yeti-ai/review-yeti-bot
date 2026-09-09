@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.43.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.43.0...v1.43.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **hosted:** resolve repository visibility with the run's own token ([#602](https://github.com/review-yeti-ai/review-yeti-bot/issues/602)) ([94aadae](https://github.com/review-yeti-ai/review-yeti-bot/commit/94aadae737e37a31b46d549923a71b51326b628e))
+
 ## [1.43.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.4...v1.43.0) (2026-09-09)
 
 
