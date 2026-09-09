@@ -33,6 +33,10 @@ case "$endpoint" in
     body="$(printf '{"content":"%s"}' "$encoded")"
     ;;
   repos/exampleorg/example-review-actions/compare/*)
+    if [[ "$GH_TOKEN" != "${FAKE_COMPARE_TOKEN:-test}" ]]; then
+      echo 'private central comparison requires the App identity' >&2
+      exit 1
+    fi
     body="$(printf '{"status":"%s"}' "${FAKE_COMPARE_STATUS:-ahead}")"
     ;;
   *)
@@ -53,6 +57,46 @@ base_sha="deadbeefcafef00ddeadbeefcafef00ddeadbeef"
 valid_workflow=$'jobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1\n    secrets: inherit\n'
 immutable_workflow=$'jobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@89269f7918bee2ec4fcc48d61bde64346e6e865b\n    secrets: inherit\n'
 invalid_workflow="${valid_workflow}"$'    with:\n      central-sha: 0123456789012345678901234567890123456789\n'
+
+# Exercise the workflow binding as well as the script. A script-only test would
+# miss github.token being passed to this one step while checkout uses the App.
+pin_step="$(sed -n '/      - name: Validate immutable caller pin/,/      - name: Validate central dispatch boundary/p' "$repo_root/.github/workflows/review-yeti.yml")"
+# shellcheck disable=SC2016 # Match the literal GitHub expression, not shell expansion.
+grep -Fxq '          GH_TOKEN: ${{ steps.ry_token.outputs.token }}' <<<"$pin_step" || {
+  echo 'immutable caller validation must bind only the already-minted App token' >&2
+  exit 1
+}
+
+# The ambient consumer token can read its own base caller but cannot compare
+# private central history. Only the App token works; lack of it is fail-closed.
+PATH="$tmp_dir/bin:$PATH" \
+  GH_TOKEN=fixture-app FAKE_COMPARE_TOKEN=fixture-app \
+  REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+  FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
+  "$repo_root/scripts/validate-caller-workflow.sh"
+
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=fixture-ambient FAKE_COMPARE_TOKEN=fixture-app \
+    REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
+    "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected the ambient consumer token to fail private central comparison' >&2
+  exit 1
+fi
+grep -Fq 'Could not verify immutable Review Yeti pin' <<<"$output"
+
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN='' \
+    REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
+    "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected an absent App token to fail before any API access' >&2
+  exit 1
+fi
+grep -Fq 'GH_TOKEN is required' <<<"$output"
 
 PATH="$tmp_dir/bin:$PATH" \
   GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \

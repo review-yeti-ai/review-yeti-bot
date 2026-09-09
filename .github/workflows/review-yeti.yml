@@ -128,7 +128,10 @@ jobs:
       - name: Validate immutable caller pin
         if: ${{ !inputs.central_execution }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Consumer GITHUB_TOKEN cannot read the private central compare API.
+          # Reuse the already-minted App identity for both repositories; an empty
+          # mint output fails the validator's required-token guard, never falls back.
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
         run: .exampleorg-review-actions/scripts/validate-caller-workflow.sh
 
       - name: Validate central dispatch boundary
