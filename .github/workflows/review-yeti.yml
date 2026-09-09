@@ -452,3 +452,21 @@ jobs:
           CENTRAL_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CHECK_ID: ${{ steps.init_check.outputs.check_id || '' }}
         run: .exampleorg-review-actions/scripts/publish-review-check-run.sh
+
+      - name: Trigger target repository CI validation on SHIP
+        if: always() && inputs.central_execution && steps.ry_token.outputs.token != '' && (steps.passthrough.outputs.review-status == 'SHIP' || steps.review.outputs.review-status == 'SHIP')
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          TARGET_REPO: ${{ inputs.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -euo pipefail
+          echo "Review Yeti passed with SHIP. Admitting PR #${PR_NUMBER} to CI/CD validation..."
+          head_ref="$(gh api "repos/${TARGET_REPO}/pulls/${PR_NUMBER}" --jq .head.ref 2>/dev/null || echo '')"
+          if [ -n "$head_ref" ]; then
+            echo "Dispatching validate.yml on ${TARGET_REPO}@${head_ref}..."
+            gh workflow run validate.yml --repo "${TARGET_REPO}" --ref "${head_ref}" -f pr_number="${PR_NUMBER}" -f head_sha="${HEAD_SHA}" || {
+              echo "::notice::Direct workflow run dispatch was skipped or not supported on target repo."
+            }
+          fi
