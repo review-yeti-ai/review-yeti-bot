@@ -1,7 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { ReviewGatePublisher } from '../../src/review/reviewGatePublisher';
 import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateCheck } from '../../src/github/reviewGateClient';
-import type { GatePublicationClaim } from '../../src/persistence/reviewGateRepository';
+import type { GatePublicationClaim, ReviewGateRepository } from '../../src/review/reviewGateContracts';
 
 const coordinates = { owner: 'example', repo: 'repo', repositoryId: 123, prNumber: 42,
   runId: `run_${'a'.repeat(32)}`, executionAttempt: 1, attemptId: 'attempt-g0-e1',
@@ -17,14 +18,14 @@ function fixture(overrides: Partial<GatePublicationClaim> = {}) {
   const active = { ...claim, ...overrides };
   const notStarted = vi.fn();
   const repository = {
-    claimPublication: vi.fn(async () => active as GatePublicationClaim | null),
-    publishLocked: vi.fn(async (_claim, publish): Promise<'published' | 'stale-claim' | 'retry'> => {
+    claimPublication: vi.fn<ReviewGateRepository['claimPublication']>(async () => active),
+    publishLocked: vi.fn<ReviewGateRepository['publishLocked']>(async (_claim, publish) => {
       const result = await publish(active, active.mayCreate);
-      if (result.kind === 'not-started') { notStarted(result); return 'retry'; }
+      if ('kind' in result && result.kind === 'not-started') { notStarted(result); return 'retry'; }
       return 'published';
     }),
-    retryPublication: vi.fn(async () => true),
-  };
+    retryPublication: vi.fn<ReviewGateRepository['retryPublication']>(async () => true),
+  } satisfies ReviewGateRepository;
   const client = {
     createPending: vi.fn(async () => check), reconcile: vi.fn(async () => check as typeof check | null),
     updateExisting: vi.fn(async () => check),
@@ -35,6 +36,14 @@ function fixture(overrides: Partial<GatePublicationClaim> = {}) {
 }
 
 describe('durable service gate publisher', () => {
+  it('depends only on the domain storage port, not a Postgres class or client', () => {
+    for (const file of ['reviewGatePublisher.ts', 'reviewGateContracts.ts']) {
+      const source = readFileSync(new URL(`../../src/review/${file}`, import.meta.url), 'utf8');
+      expect(source).not.toMatch(/from\s+['"](?:pg|\.\.\/persistence\/[^'"]+)['"]/u);
+      expect(source).not.toContain('PostgresReviewGateRepository');
+    }
+  });
+
   it('does no work without a durable publication claim', async () => {
     const f = fixture();
     f.repository.claimPublication.mockResolvedValue(null);

@@ -1,35 +1,19 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateCheck, type ReviewGateCoordinates } from '../github/reviewGateClient';
+import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateCoordinates } from '../github/reviewGateClient';
 import type { WorkerCompletionProof } from '../review/workerCompletion';
 import {
   deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, workerReviewCompletionDigest,
 } from '../review/workerReviewCompletion';
 import { evaluateReviewGate, type ReviewGateDecision, type ReviewGateEvidence } from '../review/reviewGatePolicy';
 import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
-  type GateWorkerResultTransition } from '../review/reviewGateContracts';
+  type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationCallback,
+  type GatePublicationTransition, type GatePublicationErrorClass, type ReviewGateRepository } from '../review/reviewGateContracts';
 export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
-  type GateWorkerResultTransition } from '../review/reviewGateContracts';
+  type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationNotStarted } from '../review/reviewGateContracts';
 
 interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
 interface Client extends Queryable { release(): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
-
-export interface GatePublicationClaim extends StoredReviewGate {
-  leaseOwner: string;
-  /** Fences a stale claim even when the same process identity reacquires it. */
-  leaseToken: string;
-  /** True only on the committed reserved -> creating transition. After an
-   * uncertain POST, no check ID still means reconcile-only. Only a proven
-   * pre-create preparation failure may restore the reservation. */
-  mayCreate: boolean;
-}
-
-/** Only the trusted publisher's client-preparation branch may return this.
- * Once createPending is invoked, even a synchronous throw is uncertain. */
-export interface GatePublicationNotStarted {
-  kind: 'not-started';
-  retryDelayMs: number;
-}
 
 export function gateAttemptId(runId: string, generation: number, executionAttempt: number): string {
   if (!/^run_[a-f0-9]{32}$/u.test(runId)
@@ -51,7 +35,7 @@ function fromRow(row: any): StoredReviewGate {
 
 /** Persistence boundary only. The service supplies trusted current GitHub truth
  * and policy; workers cannot reserve, create or select authoritative checks. */
-export class PostgresReviewGateRepository {
+export class PostgresReviewGateRepository implements ReviewGateRepository {
   private readonly completionResolutionTimeoutMs: number;
   constructor(private readonly pool: Pool, options: { completionResolutionTimeoutMs?: number } = {}) {
     this.completionResolutionTimeoutMs = options.completionResolutionTimeoutMs ?? 10_000;
@@ -389,7 +373,7 @@ export class PostgresReviewGateRepository {
   /** Release with bounded service backoff. Never revert creating to reserved:
    * losing an HTTP acknowledgement must not buy another create attempt. */
   async retryPublication(claim: GatePublicationClaim, now: number, delayMs: number,
-    errorClass: 'transport' | 'unknown-create' | 'identity-conflict' | 'stale-claim'): Promise<boolean> {
+    errorClass: GatePublicationErrorClass): Promise<boolean> {
     if (!Number.isSafeInteger(delayMs) || delayMs < 1_000 || delayMs > 300_000
       || !['transport', 'unknown-create', 'identity-conflict', 'stale-claim'].includes(errorClass)) {
       throw new Error('Invalid gate publication retry');
@@ -409,9 +393,9 @@ export class PostgresReviewGateRepository {
    * a database rollback after an accepted POST therefore remains reconcile-only. */
   async publishLocked(
     claim: GatePublicationClaim,
-    publish: (gate: StoredReviewGate, mayCreate: boolean) => Promise<ReviewGateCheck | GatePublicationNotStarted>,
+    publish: GatePublicationCallback,
     clock: () => number = Date.now,
-  ): Promise<'published' | 'stale-claim' | 'retry'> {
+  ): Promise<GatePublicationTransition> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');

@@ -24,6 +24,48 @@ export interface StoredReviewGate {
   publishedVersion: number;
   current: boolean;
 }
+export interface GatePublicationClaim extends StoredReviewGate {
+  leaseOwner: string;
+  /** Fences a stale claim even when the same process identity reacquires it. */
+  leaseToken: string;
+  /** True only on the committed reserved -> creating transition. After an
+   * uncertain POST, no check ID still means reconcile-only. Only a proven
+   * pre-create preparation failure may restore the reservation. */
+  mayCreate: boolean;
+}
+
+/** Only the trusted publisher's client-preparation branch may return this.
+ * Once createPending is invoked, even a synchronous throw is uncertain. */
+export interface GatePublicationNotStarted {
+  kind: 'not-started';
+  retryDelayMs: number;
+}
+
+/** Structural transport readback, not authority by itself. Persistence must
+ * validate exact identity, bound ID and desired status/conclusion before ACK. */
+export interface GatePublicationObservation {
+  id: number;
+  name: string;
+  appId: number;
+  headSha: string;
+  externalId: string;
+  status: 'queued' | 'in_progress' | 'completed';
+  conclusion: string | null;
+}
+export type GatePublicationCallback = (gate: StoredReviewGate, mayCreate: boolean) =>
+  Promise<GatePublicationObservation | GatePublicationNotStarted>;
+export type GatePublicationTransition = 'published' | 'stale-claim' | 'retry';
+export type GatePublicationErrorClass = 'transport' | 'unknown-create' | 'identity-conflict' | 'stale-claim';
+
+/** Publisher-facing storage port. Transaction/lock clients never escape the
+ * implementation; the callback receives only its fenced gate and create right. */
+export interface ReviewGateRepository {
+  claimPublication(workerId: string, now: number, leaseMs?: number): Promise<GatePublicationClaim | null>;
+  publishLocked(claim: GatePublicationClaim, publish: GatePublicationCallback,
+    clock?: () => number): Promise<GatePublicationTransition>;
+  retryPublication(claim: GatePublicationClaim, now: number, delayMs: number,
+    errorClass: GatePublicationErrorClass): Promise<boolean>;
+}
 export interface TrustedGateCompletionContext {
   current: ReviewGateCandidate & { open: boolean; draft: boolean };
   coverage: Omit<TrustedReviewCoverageContract, 'expectedCoordinates'>;
