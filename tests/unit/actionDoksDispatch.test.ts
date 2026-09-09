@@ -158,11 +158,13 @@ describe('DOKS Action dispatch client', () => {
     expect(output).toContain(`rationale=Durably admitted as ${runId} (duplicate); awaiting the Review Yeti App gate.`);
   });
 
-  it('forwards CHECK_ID as positive integer checkId when present', async () => {
+  it('does not forward CHECK_ID over the wire even when present in the environment', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     const request = buildDispatchRequest(environment({
       CHECK_ID: '12345678',
     }));
-    expect(request.checkId).toBe(12345678);
+    expect((request as Record<string, unknown>).checkId).toBeUndefined();
+    expect(JSON.stringify(request)).not.toContain('12345678');
   });
 });
+
