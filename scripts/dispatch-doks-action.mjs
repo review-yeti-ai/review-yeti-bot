@@ -131,6 +131,28 @@ async function json(response, description) {
   }
 }
 
+/**
+ * A bounded, single-line slice of a failed response body.
+ *
+ * The operator's 4xx says WHICH field it rejected. Discarding it turned every dispatch failure
+ * into a bare status code: on 2026-09-09 a run of `HTTP 400`s blocked review across the org, and
+ * the message carried nothing to act on. Worse, the text is three layers down --
+ * `gh run view --log-failed` shows only post-job cleanup, and `gh api .../logs` returns 0 bytes --
+ * so the one line that could have explained it was the one line thrown away.
+ *
+ * Never throws: this runs on a path that is already failing, and a diagnostic must not replace
+ * the error it is describing.
+ */
+async function failureDetail(response) {
+  try {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const text = new TextDecoder().decode(bytes.subarray(0, 512)).replace(/\s+/gu, ' ').trim();
+    return text ? `: ${text}` : '';
+  } catch {
+    return '';
+  }
+}
+
 async function requestOidcToken(environment, fetchImpl) {
   const audience = required(environment, 'DOKS_OIDC_AUDIENCE');
   if (audience !== DOKS_OIDC_AUDIENCE) throw new Error(`DOKS OIDC audience must be ${DOKS_OIDC_AUDIENCE}`);
@@ -179,7 +201,9 @@ export async function dispatchAction(environment = process.env, fetchImpl = fetc
     body: JSON.stringify(request),
     signal: AbortSignal.timeout(15_000),
   });
-  if (response.status !== 202) throw new Error(`DOKS dispatch failed with HTTP ${response.status}`);
+  if (response.status !== 202) {
+    throw new Error(`DOKS dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
+  }
   return validateReceipt(await json(response, 'DOKS dispatch'));
 }
 
