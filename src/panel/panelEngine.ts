@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
-import { OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRouterResponse, OpenRouterResponseError, OpenRouterTimeoutError, ReviewModelClient, TokensUsed, isExplicitUpstreamRejection } from '../gateway/openRouterClient';
+import { resolveMaxFileSize } from '../config/configLoader';
+import { OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRouterResponse, OpenRouterResponseError, OpenRouterTimeoutError, ReviewModelClient, TokensUsed, isExplicitUpstreamRejection, resolveCachedTokens } from '../gateway/openRouterClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
@@ -1335,11 +1336,7 @@ async function runPersona(
             },
           });
 
-          const cachedTokens = result.response.usage?.cached
-            ?? result.response.usage?.cached_tokens
-            ?? result.response.usage?.prompt_cache_hit_tokens
-            ?? result.response.usage?.cache_read_input_tokens
-            ?? 0;
+          const cachedTokens = resolveCachedTokens(result.response.usage);
           const hitRate = promptTokens > 0 ? (cachedTokens / promptTokens) : 0;
           const hitPercentage = Math.round(hitRate * 100);
 
@@ -1541,11 +1538,7 @@ export async function executePersonaPanel(options: {
       };
     }
 
-    const maxFileSize = (config as any)?.max_file_size ??
-      (config as any)?.max_file_bytes ??
-      (config as any)?.limits?.max_file_size ??
-      (config as any)?.limits?.max_file_bytes ??
-      1_048_576;
+    const maxFileSize = resolveMaxFileSize(config);
     const isPotentiallyFastShip = !containsExecutableOrSensitiveCode(effectiveFiles, { maxFileSize });
     const hasPrunableGeneralLanes = applicable.some(isPrunableGeneralLane);
     const shouldClassify = isPotentiallyFastShip || hasPrunableGeneralLanes;
@@ -1836,7 +1829,7 @@ export async function executePersonaPanel(options: {
       const modComp = run.response.usage?.completion || (run.response.usage as any)?.completion_tokens || 0;
       const modTotal = run.response.usage?.total || (run.response.usage as any)?.total_tokens || (modPrompt + modComp);
       const modCost = run.response.costUSD || 0;
-      const modCached = run.response.usage?.cached ?? (run.response.usage as any)?.cached_tokens ?? (run.response.usage as any)?.cache_read_input_tokens ?? (run.response.usage as any)?.prompt_cache_hit_tokens ?? 0;
+      const modCached = resolveCachedTokens(run.response.usage);
       const modHitPercentage = modPrompt > 0 ? Math.round((modCached / modPrompt) * 100) : 0;
 
       modSpan.setAttribute('ct.moderator.provider', moderatorId);
@@ -1900,7 +1893,7 @@ export async function executePersonaPanel(options: {
           const arbComp = run.response.usage?.completion || (run.response.usage as any)?.completion_tokens || 0;
           const arbTotal = run.response.usage?.total || (run.response.usage as any)?.total_tokens || (arbPrompt + arbComp);
           const arbCost = run.response.costUSD || 0;
-          const arbCached = run.response.usage?.cached ?? (run.response.usage as any)?.cached_tokens ?? (run.response.usage as any)?.cache_read_input_tokens ?? (run.response.usage as any)?.prompt_cache_hit_tokens ?? 0;
+          const arbCached = resolveCachedTokens(run.response.usage);
           const arbHitPercentage = arbPrompt > 0 ? Math.round((arbCached / arbPrompt) * 100) : 0;
 
           arbSpan.setAttribute('ct.arbiter.provider', providerId);
@@ -1957,7 +1950,7 @@ export async function executePersonaPanel(options: {
       const p = u.prompt || (u as any).prompt_tokens || 0;
       const c = u.completion || (u as any).completion_tokens || 0;
       const t = u.total || (u as any).total_tokens || (p + c);
-      const k = u.cached ?? (u as any).cached_tokens ?? (u as any).cache_read_input_tokens ?? (u as any).prompt_cache_hit_tokens ?? 0;
+      const k = resolveCachedTokens(u);
       panelPrompt += p;
       panelComp += c;
       panelTotal += t;

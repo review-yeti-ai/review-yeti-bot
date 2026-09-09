@@ -135,9 +135,24 @@ export function createDefaultV4Config(): CtReviewConfigV4 {
   });
 }
 
+/**
+ * Canonical helper to resolve the maximum file size limit (in bytes) from configuration.
+ * Defaults to 1MB (1,048,576 bytes) if not explicitly configured.
+ */
+export function resolveMaxFileSize(config: any): number {
+  if (!config) return 1_048_576;
+  const val = config.max_file_size ??
+    config.max_file_bytes ??
+    config.limits?.max_file_size ??
+    config.limits?.max_file_bytes ??
+    1_048_576;
+  const num = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(num) && num >= 0 ? num : 1_048_576;
+}
+
 export function normalizeConfigToV4(config: CtReviewConfigV3 | CtReviewConfigV4): CtReviewConfigV4 {
   const rawLimits = (config as any).limits || {};
-  const maxFileSize = (config as any).max_file_size ?? (config as any).max_file_bytes ?? rawLimits.max_file_size ?? rawLimits.max_file_bytes ?? 1_048_576;
+  const maxFileSize = resolveMaxFileSize(config);
   const maxFileBytes = (config as any).max_file_bytes ?? (config as any).max_file_size ?? rawLimits.max_file_bytes ?? rawLimits.max_file_size ?? maxFileSize;
 
   return ctReviewConfigV4Schema.parse({
