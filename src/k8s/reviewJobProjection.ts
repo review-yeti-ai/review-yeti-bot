@@ -3,6 +3,7 @@ import type { PublicationMode } from '../review/reviewRun';
 const exactSha = /^[a-f0-9]{40}$/u;
 const exactDigest = /^[a-f0-9]{64}$/u;
 const runIdPattern = /^run_([a-f0-9]{32})$/u;
+const maxExecutionAttempt = 2_147_483_647;
 const repositoryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const namespacePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const digestOnlyImagePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[a-f0-9]{64}$/u;
@@ -26,6 +27,8 @@ export function isTrustedWorkerImage(image: string): boolean {
 export interface ReviewJobProjectionInput {
   runId: string;
   deliveryId: string;
+  /** Positive execution identity; projection retries reuse it, new workers advance it. */
+  executionAttempt?: number;
   repositoryId: number;
   repo: string;
   prNumber: number;
@@ -83,6 +86,10 @@ export function buildReviewJobProjection(
   const runMatch = runIdPattern.exec(input.runId);
   if (!runMatch) throw new Error('run id must be run_ followed by 32 lowercase hexadecimal characters');
   if (!input.deliveryId || input.deliveryId.length > 512) throw new Error('delivery id must contain 1 to 512 characters');
+  const executionAttempt = input.executionAttempt ?? 1;
+  if (!Number.isSafeInteger(executionAttempt) || executionAttempt <= 0 || executionAttempt > maxExecutionAttempt) {
+    throw new Error('execution attempt must be a positive safe integer');
+  }
   positiveSafeInteger(input.repositoryId, 'repository id');
   positiveSafeInteger(input.prNumber, 'pull request number');
   if (!repositoryPattern.test(input.repo)) throw new Error('repository must be an owner/name identity');
@@ -123,11 +130,17 @@ export function buildReviewJobProjection(
   }
 
   const identitySuffix = runMatch[1];
+  // A retry of the same projection keeps this name. Once a worker has reached a
+  // terminal state, the dispatcher advances executionAttempt and gets a fresh
+  // CR/Secret identity while the immutable run id and review artifacts remain
+  // stable. This prevents Kubernetes from accepting a stale terminal object.
+  const attemptSuffix = executionAttempt === 1 ? '' : `-a${executionAttempt}`;
+  const projectionName = `ct-review-${identitySuffix}${attemptSuffix}`;
   return {
     apiVersion: 'review-yeti.ai/v1alpha2',
     kind: 'PRReviewJob',
     metadata: {
-      name: `ct-review-${identitySuffix}`,
+      name: projectionName,
       namespace: input.namespace,
       labels: {
         'app.kubernetes.io/name': 'review-yeti-worker',
@@ -149,7 +162,7 @@ export function buildReviewJobProjection(
       configDigest: input.configDigest,
       publicationMode: input.publicationMode,
       workerImage: input.workerImage,
-      runSecretName: `ct-review-run-${identitySuffix}`,
+      runSecretName: `ct-review-run-${identitySuffix}${attemptSuffix}`,
       runnerMode,
     },
   };

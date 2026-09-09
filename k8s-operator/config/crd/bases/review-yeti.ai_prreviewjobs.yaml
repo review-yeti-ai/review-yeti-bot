@@ -109,7 +109,7 @@ spec:
                 pattern: ^run_[a-f0-9]{32}$
                 type: string
               runSecretName:
-                pattern: ^ct-review-run-[a-f0-9]{32}$
+                pattern: ^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$
                 type: string
               runnerMode:
                 description: RunnerMode defines whether the worker image is an immutable

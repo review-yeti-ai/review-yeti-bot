@@ -75,6 +75,7 @@ export class ReviewJobDispatchEngine {
       projection = buildReviewJobProjection({
         runId: claim.runId,
         deliveryId: claim.deliveryId,
+        executionAttempt: claim.executionAttempt,
         repositoryId: claim.repositoryId,
         repo: claim.repo,
         prNumber: claim.prNumber,

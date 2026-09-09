@@ -82,6 +82,17 @@ func buildInput(review *v1alpha2.PRReviewJob, now time.Time) job.Input {
 	}
 }
 
+func TestBuildWorkerJobAcceptsExecutionAttemptScopedSecret(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Name = review.Name + "-a2"
+	review.Spec.RunSecretName = review.Spec.RunSecretName + "-a2"
+
+	if _, err := job.BuildWorkerJob(buildInput(review, now)); err != nil {
+		t.Fatalf("execution-attempt-scoped review was rejected: %v", err)
+	}
+}
+
 func envValue(container corev1.Container, name string) string {
 	for _, env := range container.Env {
 		if env.Name == name {
