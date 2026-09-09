@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.44.3...v1.45.0) (2026-09-09)
+
+
+### Features
+
+* **panel:** configurable max file size, fast-ship security guards, and prompt caching telemetry ([#612](https://github.com/review-yeti-ai/review-yeti-bot/issues/612)) ([7ad94b8](https://github.com/review-yeti-ai/review-yeti-bot/commit/7ad94b8ebf305dfa1e5ef670db855386e2570332))
+
 ## [1.44.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.44.2...v1.44.3) (2026-09-09)
 
 
