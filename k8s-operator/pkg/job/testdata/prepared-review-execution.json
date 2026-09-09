@@ -1,0 +1,491 @@
+{
+  "version": "prepared-review-execution-contract.v1",
+  "contract": {
+    "scope": "Shared envelope/version/exact-key/transport safety contract; Go intentionally does not verify config integrity or actual worker transport.",
+    "expansion": "Replace $CONFIG with configJson verbatim, then append ASCII spaces to padToBytes when set. Both tests consume these exact expanded JSON bytes.",
+    "url": "HTTPS absolute URL with hostname and valid port/percent escapes; no userinfo, raw whitespace/control/backslash, query or fragment delimiters; maximum 2000 UTF-16 units. Preserve input, do not normalize.",
+    "model": "Nonempty, maximum 256 UTF-16 units, no U+0000..U+001F or U+007F; preserve input.",
+    "bytes": "Maximum 262144 UTF-8 bytes; Go additionally rejects invalid UTF-8 before JSON decoding."
+  },
+  "configJson": "{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"review-model\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]}",
+  "cases": [
+    {
+      "name": "valid",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "formatted envelope",
+      "json": " \n{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}\n ",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "empty",
+      "json": "",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "whitespace",
+      "json": " \n",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "malformed",
+      "json": "{",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "null",
+      "json": "null",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "array",
+      "json": "[]",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "scalar",
+      "json": "\"synthetic-private-marker\"",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "trailing JSON",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}{}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "version undefined",
+      "json": "{\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "version null",
+      "json": "{\"version\":null,\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "version 1",
+      "json": "{\"version\":1,\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "version PreparedReviewExecution.v2",
+      "json": "{\"version\":\"PreparedReviewExecution.v2\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "missing config",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "missing transport",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "extra envelope checkId",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"},\"checkId\":\"synthetic-private-marker\"}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "extra envelope token",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"},\"token\":\"synthetic-private-marker\"}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "config shape null",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":null,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "config shape []",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":[],\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "config shape false",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":false,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "config shape \"text\"",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":\"text\",\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "transport shape null",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":null}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "transport shape []",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":[]}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "transport shape false",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":false}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "transport shape \"text\"",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":\"text\"}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "transport shape {}",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "transport shape {\"baseUrl\":\"https://gateway.example.invalid/v1\"}",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "transport shape {\"model\":\"review-model\"}",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "transport shape {\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\",\"apiKey\":\"synthetic-private-marker\"}",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\",\"apiKey\":\"synthetic-private-marker\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL HTTPS prefix",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "URL IPv6",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://[::1]:443/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "URL path at sign",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1/@router\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "URL encoded path",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1/%E2%98%83\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "URL HTTP",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"http://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL relative",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL empty",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL null",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":null,\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL number",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":42,\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL credentials",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://user:synthetic-private-marker@gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL empty userinfo",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://@gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL query",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1?key=synthetic-private-marker\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL empty query",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1?\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL fragment",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1#fragment\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL empty fragment",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1#\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL leading space",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\" https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL trailing space",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1 \",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL tab",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\\t\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL embedded newline",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gate\\nway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL backslash",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid\\\\v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL empty hostname",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://:443/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL invalid escape",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1/%zz\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL port maximum",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid:65535/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "URL port overflow",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid:65536/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL 2000 ASCII units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "URL 2001 ASCII units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "URL 2000 UTF16 units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "URL 2001 UTF16 units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊a\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model empty",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"review-model\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model null",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"review-model\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":null}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model number",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"review-model\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":42}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model 256 ASCII units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "model 257 ASCII units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model 256 UTF16 units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "model 258 UTF16 units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊🦊\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model 256 BMP units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "model 257 BMP units",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model space",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\" \",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\" \"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true
+    },
+    {
+      "name": "model NUL",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"model\\u0000\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"model\\u0000\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model newline",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"model\\n\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"model\\n\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "model DEL",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":true,\"model\":\"model\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false
+    },
+    {
+      "name": "256 KiB envelope",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true,
+      "padToBytes": 262144
+    },
+    {
+      "name": "256 KiB plus one byte",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": false,
+      "typescriptAccepted": false,
+      "padToBytes": 262145
+    },
+    {
+      "name": "object config is opaque to Go",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": false,
+      "integrityOnly": "Go checks object shape; TypeScript requires a complete normalized Bifrost config."
+    },
+    {
+      "name": "disabled provider with matching digest",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":{\"version\":3,\"profile\":\"balanced\",\"quorum\":1,\"personas\":[{\"id\":\"sec-lane\",\"enabled\":true,\"required\":true,\"charter\":\"builtin:security\",\"paths\":[\"**\"],\"providers\":[\"bifrost\"]}],\"reviewer_effort\":\"medium\",\"default_effort\":\"low\",\"default_max_turns\":2,\"mascot\":true,\"max_file_size\":1048576,\"max_file_bytes\":1048576,\"reviews\":{\"profile\":\"balanced\",\"reviewer_effort\":\"low\",\"default_max_turns\":20,\"confidence_threshold\":70,\"mascot\":true,\"ticket_enforcement\":false,\"request_changes_workflow\":true,\"high_level_summary\":true,\"poem\":false,\"review_status\":true,\"collapse_walkthrough\":false,\"sequence_diagrams\":true,\"path_instructions\":[]},\"chat\":{\"auto_reply\":true,\"max_context_turns\":10,\"art_mascot_response\":true},\"knowledge_base\":{\"learnings\":true,\"issues\":true,\"pull_requests\":true,\"custom_instructions\":[]},\"path_filters\":[],\"auto_review\":{\"enabled\":true,\"ignore_drafts\":true,\"review_drafts\":false,\"triggers\":[\"pr_opened\",\"pr_synchronize\",\"@ct-review\"],\"labels\":[],\"ignore_patterns\":[],\"drafts\":false},\"dials\":{\"memory_engine\":true,\"mascot\":true,\"confidence_threshold\":70,\"ticket_enforcement\":false},\"mcps\":[],\"on_pr_close\":{\"create_followup_prs\":[],\"sync_productlane\":false},\"evidence\":{\"zoekt\":{\"enabled\":true}},\"reviewers\":{\"execution\":\"personas\",\"fallback\":\"ordered\",\"overall_timeout_s\":900,\"providers\":[{\"id\":\"bifrost\",\"enabled\":false,\"model\":\"review-model\",\"effort\":\"medium\",\"review_timeout_s\":300,\"arbiter_timeout_s\":300}],\"arbiter\":{\"order\":[\"bifrost\"]}},\"path_instructions\":[],\"rules\":[]},\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": false,
+      "integrityOnly": "Provider integrity belongs to TypeScript even with a matching config digest."
+    },
+    {
+      "name": "wrong admitted config digest",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": false,
+      "digestMismatch": true,
+      "integrityOnly": "Go validates only the spec digest shape, not its relationship to opaque config."
+    },
+    {
+      "name": "actual worker URL mismatch",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": false,
+      "actualTransport": {
+        "baseUrl": "https://other.example.invalid/v1",
+        "model": "review-model"
+      },
+      "integrityOnly": "Only TypeScript verifies the actual injected transport against the config digest."
+    },
+    {
+      "name": "actual worker model mismatch",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": false,
+      "actualTransport": {
+        "baseUrl": "https://gateway.example.invalid/v1",
+        "model": "other-model"
+      },
+      "integrityOnly": "Only TypeScript verifies the actual injected transport against the config digest."
+    }
+  ]
+}

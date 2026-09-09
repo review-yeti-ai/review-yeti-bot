@@ -105,6 +105,23 @@ func TestPRReviewJobV1Alpha2SchemeAndDeepCopy(t *testing.T) {
 	}
 }
 
+func TestPRReviewJobV1Alpha2PreparedReviewDeepCopy(t *testing.T) {
+	original := contractFixture()
+	envelope := `{"version":"PreparedReviewExecution.v1","config":{},"transport":{"baseUrl":"https://gateway.example.invalid/v1","model":"review-model"}}`
+	original.Spec.PreparedReview = &envelope
+	copy := original.DeepCopy()
+	if copy.Spec.PreparedReview == nil || *copy.Spec.PreparedReview != envelope {
+		t.Fatal("prepared review envelope was not preserved")
+	}
+	*copy.Spec.PreparedReview = "changed"
+	if *original.Spec.PreparedReview != envelope || original.Spec.PreparedReview == copy.Spec.PreparedReview {
+		t.Fatal("prepared review pointer was not deep copied")
+	}
+	if contractFixture().DeepCopy().Spec.PreparedReview != nil {
+		t.Fatal("legacy deepcopy must leave prepared review absent")
+	}
+}
+
 func TestDispatchTimingStatusRecordsOnlyMonotonicLifecycleStages(t *testing.T) {
 	received := metav1.NewTime(time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC))
 	timing := v1alpha2.DispatchTimingStatus{}
