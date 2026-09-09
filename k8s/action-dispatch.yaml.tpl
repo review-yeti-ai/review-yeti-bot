@@ -151,6 +151,13 @@ spec:
                 name: ct-review-action-dispatch
                 port:
                   name: http
+          - path: /api/dispatch/completion
+            pathType: Exact
+            backend:
+              service:
+                name: ct-review-action-dispatch
+                port:
+                  name: http
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

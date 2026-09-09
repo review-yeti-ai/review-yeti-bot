@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { KubernetesRunSecretProvisioner, PUBLISH_TOKEN_KEY, READ_TOKEN_KEY } from '../../src/k8s/kubernetesRunSecretProvisioner';
+import { sha256 } from '../../src/review/reviewCore';
 
 const request = {
   runId: `run_${'1'.repeat(32)}`,
@@ -12,6 +13,7 @@ const request = {
 function provisioner(over: Record<string, any> = {}) {
   const client = {
     createNamespacedSecret: vi.fn(async () => undefined),
+    readNamespacedSecret: vi.fn(async () => { throw { code: 404 }; }),
     ...over.client,
   };
   const mintToken = over.mintToken || vi.fn(async () => ({
@@ -49,24 +51,89 @@ describe('KubernetesRunSecretProvisioner', () => {
       [PUBLISH_TOKEN_KEY]: 'ghs_minted',
       [READ_TOKEN_KEY]: 'ghs_read',
     });
-    expect(body.metadata.labels['review-yeti.ai/run-id']).toBe(request.runId);
+    expect(body.metadata.labels).toMatchObject({
+      'review-yeti.ai/run-id': request.runId,
+      'review-yeti.ai/component': 'run-credentials',
+    });
+    expect(body.metadata.annotations).toEqual({ 'review-yeti.ai/repository': `${request.owner}/${request.repo}` });
   });
 
-  it('treats a 409 as success without deleting anything', async () => {
-    // A 409 means a sibling dispatcher provisioned this exact execution attempt
-    // moments ago with its own fresh tokens. The attempt-scoped name prevents a
-    // terminal Secret from an older worker execution being reused.
-    //
-    // This is what lets the dispatcher hold `create` and NOT `delete` on secrets --
-    // a verb Kubernetes cannot scope to one name, which would otherwise reach the
-    // App private key and the gateway credential in this namespace.
+  it('recovers the exact existing Secret after a create 409 without binding a replacement', async () => {
+    const existingToken = 'ghs_existing';
     const conflict = Object.assign(new Error('exists'), { code: 409 });
-    const { subject, client } = provisioner({
-      client: { createNamespacedSecret: vi.fn(async () => { throw conflict; }) },
+    const { subject, client, mintToken } = provisioner({
+      client: {
+        createNamespacedSecret: vi.fn(async () => { throw conflict; }),
+        readNamespacedSecret: vi.fn()
+          .mockRejectedValueOnce({ code: 404 })
+          .mockResolvedValueOnce({ body: {
+          metadata: { name: request.secretName, namespace: request.namespace, labels: {
+            'review-yeti.ai/run-id': request.runId,
+            'review-yeti.ai/owner': request.owner,
+            'review-yeti.ai/repo': request.repo,
+            'review-yeti.ai/component': 'run-credentials',
+          } },
+          data: {
+            [PUBLISH_TOKEN_KEY]: Buffer.from(existingToken).toString('base64'),
+            [READ_TOKEN_KEY]: Buffer.from('ghs_existing_read').toString('base64'),
+          },
+        } }),
+      },
     });
-    await expect(subject.provision(request)).resolves.toBeUndefined();
+    const result = await subject.provision(request);
+    expect(result).toEqual({
+      workerTokenDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    });
+    // The candidate mint happened before a concurrent creator won the race, but
+    // it is never trusted or bound; the returned digest is the existing Secret's.
+    expect(mintToken).toHaveBeenCalledOnce();
+    expect(result.workerTokenDigest).toBe(sha256(existingToken));
     expect(client.createNamespacedSecret).toHaveBeenCalledOnce();
+    expect(client.readNamespacedSecret).toHaveBeenCalledWith({ namespace: request.namespace, name: request.secretName });
     expect((client as Record<string, unknown>).deleteNamespacedSecret).toBeUndefined();
+  });
+
+  it('recovers before minting when the exact Secret already exists after a prior DB bind failure', async () => {
+    const existingToken = 'ghs_existing';
+    const { subject, client, mintToken } = provisioner({
+      client: {
+        readNamespacedSecret: vi.fn(async () => ({ metadata: {
+          name: request.secretName, namespace: request.namespace, labels: {
+            'review-yeti.ai/run-id': request.runId,
+            'review-yeti.ai/owner': request.owner,
+            'review-yeti.ai/repo': request.repo,
+            'review-yeti.ai/component': 'run-credentials',
+          },
+        }, data: {
+          [PUBLISH_TOKEN_KEY]: Buffer.from(existingToken).toString('base64'),
+          [READ_TOKEN_KEY]: Buffer.from('ghs_existing_read').toString('base64'),
+        } })),
+      },
+    });
+    await expect(subject.provision(request)).resolves.toEqual({ workerTokenDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+    expect(mintToken).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  it('rejects an existing Secret whose identity labels do not match the run', async () => {
+    const { subject, client, mintToken } = provisioner({
+      client: {
+        readNamespacedSecret: vi.fn(async () => ({ metadata: {
+          name: request.secretName, namespace: request.namespace, labels: {
+            'review-yeti.ai/run-id': request.runId,
+            'review-yeti.ai/owner': 'another-owner',
+            'review-yeti.ai/repo': request.repo,
+            'review-yeti.ai/component': 'run-credentials',
+          },
+        }, data: {
+          [PUBLISH_TOKEN_KEY]: Buffer.from('ghs_foreign').toString('base64'),
+          [READ_TOKEN_KEY]: Buffer.from('ghs_foreign_read').toString('base64'),
+        } })),
+      },
+    });
+    await expect(subject.provision(request)).rejects.toThrow(/identity could not be verified/u);
+    expect(mintToken).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
   });
 
   it('propagates a non-conflict Kubernetes failure', async () => {
@@ -100,8 +167,38 @@ describe('KubernetesRunSecretProvisioner', () => {
     expect(client.createNamespacedSecret).toHaveBeenCalledOnce();
   });
 
+  it('rejects a different valid-looking run name before any read or write', async () => {
+    const { subject, client } = provisioner();
+    await expect(subject.provision({ ...request, secretName: `ct-review-run-${'2'.repeat(32)}` })).rejects.toThrow(/run-scoped pattern/u);
+    expect(client.readNamespacedSecret).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  it('keeps long repository names out of Kubernetes labels', async () => {
+    const { subject, client } = provisioner();
+    await subject.provision({ ...request, repo: 'a'.repeat(100) });
+    const body = (client.createNamespacedSecret.mock.calls[0][0] as any).body;
+    expect(body.metadata.annotations['review-yeti.ai/repository']).toBe(`calltelemetry/${'a'.repeat(100)}`);
+    expect(Object.values(body.metadata.labels).every((entry) => String(entry).length <= 63)).toBe(true);
+  });
+
+  it('recovers a legacy identity-bound Secret without adding permission to mutate it', async () => {
+    const { subject, client, mintToken } = provisioner({ client: {
+      readNamespacedSecret: vi.fn(async () => ({ metadata: {
+        name: request.secretName, namespace: request.namespace,
+        labels: { 'review-yeti.ai/run-id': request.runId, 'review-yeti.ai/component': 'run-credentials' },
+      }, data: {
+        [PUBLISH_TOKEN_KEY]: Buffer.from('ghs_legacy').toString('base64'),
+        [READ_TOKEN_KEY]: Buffer.from('ghs_legacy_read').toString('base64'),
+      } })),
+    } });
+    await expect(subject.provision(request)).resolves.toEqual({ workerTokenDigest: sha256('ghs_legacy') });
+    expect(mintToken).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
   it('requires App credentials at construction', () => {
-    const client = { createNamespacedSecret: vi.fn(), deleteNamespacedSecret: vi.fn() };
+    const client = { createNamespacedSecret: vi.fn(), readNamespacedSecret: vi.fn(), deleteNamespacedSecret: vi.fn() };
     expect(() => new KubernetesRunSecretProvisioner({ client, appId: '', privateKey: 'k' }))
       .toThrow(/requires GitHub App credentials/u);
   });

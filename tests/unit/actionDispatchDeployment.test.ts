@@ -33,13 +33,17 @@ describe('admission-only Action dispatch deployment', () => {
     }
   });
 
-  it('exposes only the exact dispatch path and permits only required network flows', () => {
+  it('exposes only exact admission/completion paths and permits only required network flows', () => {
     const docs = documents();
     const ingress = docs.find((document) => document.kind === 'Ingress');
     expect(ingress).toBeDefined();
     expect(ingress!.spec.rules[0].http.paths).toEqual([expect.objectContaining({
       path: '/api/dispatch/action',
       pathType: 'Exact',
+    }), expect.objectContaining({
+      path: '/api/dispatch/completion',
+      pathType: 'Exact',
+      backend: { service: { name: 'ct-review-action-dispatch', port: { name: 'http' } } },
     })]);
 
     const policies = docs.filter((document) => document.kind === 'NetworkPolicy');

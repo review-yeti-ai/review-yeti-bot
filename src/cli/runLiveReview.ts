@@ -26,6 +26,7 @@ import {
   runPublishingReviewWorker,
 } from './publishingReview';
 import { GitHubInstallationClient } from '../github/installationClient';
+import { HttpWorkerCompletionAdapter } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -1698,8 +1699,20 @@ export async function runWorker(
     if (!token.startsWith('ghs_')) {
       throw new Error('publishing review worker requires a ghs_ installation token');
     }
+    const completionEndpoint = String(workerEnv.REVIEW_COMPLETION_URL || '').trim();
     const checkClient = new GitHubInstallationClient({ token });
-    const receipt = await runPublishingReviewWorker(workerEnv, { checkClient });
+    // Completion reporting is additive. Existing publishing workers may not yet
+    // have the operator callback URL; they retain the legacy check-only behavior
+    // until the explicit URL is configured. A nonempty value still constructs the
+    // strict adapter, so malformed configuration fails closed rather than opting
+    // out silently.
+    const completion = completionEndpoint
+      ? new HttpWorkerCompletionAdapter({ token, endpoint: completionEndpoint })
+      : undefined;
+    const receipt = await runPublishingReviewWorker(workerEnv, {
+      checkClient,
+      ...(completion ? { completion } : {}),
+    });
     logger.info('Publishing review worker completed', {
       runId: receipt.runId,
       repo: receipt.repo,

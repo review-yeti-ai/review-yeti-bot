@@ -49,6 +49,8 @@ const (
 	QualificationModelEnv         = "REVIEW_QUALIFICATION_MODEL"
 	QualificationTimeoutEnv       = "REVIEW_QUALIFICATION_TIMEOUT_MS"
 	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
+	CompletionURLEnv              = "REVIEW_COMPLETION_URL"
+	ExecutionAttemptEnv           = "REVIEW_EXECUTION_ATTEMPT"
 	ReceiptPathEnv                = "REVIEW_RECEIPT_PATH"
 	ReceiptPath                   = "/workspace/.review-yeti/receipt.json"
 	PublicationModeAppGate        = "app-gate"
@@ -105,6 +107,7 @@ type PublishingConfig struct {
 	Model             string
 	GatewaySecretName string
 	GatewaySecretKey  string
+	CompletionURL     string
 }
 
 // WorkerComponentFor returns the component label for a review's lane. The builder
@@ -152,6 +155,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	runAsGroup := int64(1000)
 	fsGroup := int64(1000)
 	fsGroupChangePolicy := corev1.FSGroupChangeOnRootMismatch
+	executionAttempt := "1"
+	if index := strings.LastIndex(spec.RunSecretName, "-a"); index >= 0 {
+		executionAttempt = spec.RunSecretName[index+2:]
+	}
 	env := []corev1.EnvVar{
 		{Name: "REVIEW_RUN_ID", Value: spec.RunID},
 		{Name: "REVIEW_DELIVERY_ID", Value: spec.DeliveryID},
@@ -162,6 +169,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: "REVIEW_BASE_SHA", Value: spec.BaseSHA},
 		{Name: "REVIEW_POLICY_DIGEST", Value: spec.PolicyDigest},
 		{Name: "REVIEW_CONFIG_DIGEST", Value: spec.ConfigDigest},
+		{Name: ExecutionAttemptEnv, Value: executionAttempt},
 		{Name: PublicationModeEnv, Value: spec.PublicationMode},
 		{Name: ReceiptPathEnv, Value: ReceiptPath},
 	}
@@ -253,6 +261,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				}},
 			},
 		)
+		if input.Publishing.CompletionURL != "" {
+			env = append(env, corev1.EnvVar{Name: CompletionURLEnv, Value: input.Publishing.CompletionURL})
+		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
 	}
@@ -398,8 +409,9 @@ func validateInput(input Input) error {
 	return workspace.ValidateLeaseForUse(lease.Lease, review.Namespace, spec.RepositoryID, spec.PRNumber, spec.RunID, input.Now)
 }
 
-// validatePublishing refuses an app-gate Job whose transport is not fully and
-// safely specified. https is required because the gateway carries the diff.
+// validatePublishing refuses an app-gate Job whose required transport is not
+// safely specified. Completion reporting is additive: an empty URL preserves
+// the legacy check-only worker until the operator enables the callback lane.
 func validatePublishing(config PublishingConfig) error {
 	var missing []string
 	if config.GatewayBaseURL == "" {
@@ -417,12 +429,18 @@ func validatePublishing(config PublishingConfig) error {
 	if len(missing) > 0 {
 		return configErr("app-gate publishing transport is not configured on the operator; unset: " + strings.Join(missing, ", "))
 	}
-	if strings.ContainsAny(config.GatewayBaseURL+config.Model, "\r\n\t ") {
+	if strings.ContainsAny(config.GatewayBaseURL+config.Model+config.CompletionURL, "\r\n\t ") {
 		return configErr("publishing gateway URL or model contains whitespace")
 	}
 	parsed, err := url.Parse(config.GatewayBaseURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return configErr("publishing gateway URL must be an absolute https URL")
+	}
+	if config.CompletionURL != "" {
+		completion, err := url.Parse(config.CompletionURL)
+		if err != nil || completion.Scheme != "https" || completion.Host == "" || completion.User != nil || completion.Fragment != "" {
+			return configErr("worker completion URL must be an absolute https URL without userinfo or fragments")
+		}
 	}
 	if len(validation.IsDNS1123Subdomain(config.GatewaySecretName)) != 0 {
 		return configErr("publishing gateway secret name is not a valid Kubernetes object name")

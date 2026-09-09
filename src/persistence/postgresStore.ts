@@ -213,6 +213,7 @@ export class PostgresStore {
           projection_name TEXT,
           attempt INTEGER NOT NULL DEFAULT 0,
           execution_attempt INTEGER NOT NULL DEFAULT 0,
+          worker_token_digest VARCHAR(64),
           available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -221,6 +222,8 @@ export class PostgresStore {
           ON review_dispatch_outbox (status, available_at, lease_expires_at);
         ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS execution_attempt INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE review_dispatch_outbox
+          ADD COLUMN IF NOT EXISTS worker_token_digest VARCHAR(64);
         CREATE INDEX IF NOT EXISTS review_runs_delivery_idx ON review_runs (delivery_id);
 
         CREATE TABLE IF NOT EXISTS review_run_artifacts (

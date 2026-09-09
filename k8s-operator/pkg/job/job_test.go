@@ -223,6 +223,10 @@ func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
 	if envValue(container, "REVIEW_PUBLICATION_MODE") != "app-gate" {
 		t.Fatalf("app-gate publication env = %q", envValue(container, "REVIEW_PUBLICATION_MODE"))
 	}
+	if envValue(container, "REVIEW_COMPLETION_URL") != "https://dispatch.example.invalid/api/dispatch/completion" ||
+		envValue(container, "REVIEW_EXECUTION_ATTEMPT") != "1" {
+		t.Fatalf("app-gate callback identity env missing: %#v", container.Env)
+	}
 	if result.Labels["review-yeti.ai/publication-mode"] != "app-gate" {
 		t.Fatalf("app-gate job label = %q", result.Labels["review-yeti.ai/publication-mode"])
 	}
@@ -230,6 +234,23 @@ func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
 		if hasEnv(container, forbidden) {
 			t.Fatalf("app-gate worker exposes forbidden credential %s", forbidden)
 		}
+	}
+}
+
+func TestBuildWorkerJobKeepsLegacyPublishingWhenCompletionURLIsUnset(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.CompletionURL = ""
+	result, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build legacy app-gate job: %v", err)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if hasEnv(container, "REVIEW_COMPLETION_URL") {
+		t.Fatalf("legacy publishing job unexpectedly enables completion callback: %#v", container.Env)
 	}
 }
 
@@ -491,6 +512,7 @@ func publishingFixture() job.PublishingConfig {
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
 		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 	}
 }
 
@@ -545,11 +567,17 @@ func TestBuildWorkerJobDisabledStaysReceiptOnly(t *testing.T) {
 func TestBuildWorkerJobRefusesIncompletePublishingConfig(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	for name, mutate := range map[string]func(*job.PublishingConfig){
-		"no gateway url":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "" },
-		"no model":        func(c *job.PublishingConfig) { c.Model = "" },
-		"no secret name":  func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
-		"no secret key":   func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
-		"plaintext http":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://gateway.example.invalid/v1" },
+		"no gateway url": func(c *job.PublishingConfig) { c.GatewayBaseURL = "" },
+		"no model":       func(c *job.PublishingConfig) { c.Model = "" },
+		"no secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
+		"no secret key":  func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
+		"plaintext http": func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://gateway.example.invalid/v1" },
+		"completion userinfo": func(c *job.PublishingConfig) {
+			c.CompletionURL = "https://user:password@dispatch.example.invalid/completion"
+		},
+		"completion fragment": func(c *job.PublishingConfig) {
+			c.CompletionURL = "https://dispatch.example.invalid/completion#redirect"
+		},
 		"whitespace":      func(c *job.PublishingConfig) { c.Model = "ollama/glm 5.3" },
 		"bad secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "Not_A_Subdomain" },
 	} {
