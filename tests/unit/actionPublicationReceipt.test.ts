@@ -45,6 +45,34 @@ describe('current-run-only publication evidence', () => {
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 
+  it.each([
+    ['headSha', ''], ['headSha', 'abc123'], ['headSha', 'g'.repeat(40)],
+    ['headSha', 'A'.repeat(40)], ['headSha', 'a'.repeat(41)],
+    ['headSha', `${context.headSha}\n`],
+    ['baseSha', ''], ['baseSha', 'abc123'], ['baseSha', 'g'.repeat(40)],
+    ['baseSha', `${context.baseSha}\n`],
+    ['repo', 'owner'], ['repo', 'owner/sub/dir'], ['repo', '/repo'],
+    ['repo', 'owner/'], ['repo', 'owner/re po'], ['repo', `${context.repo}\n`],
+    ['prNumber', 0], ['prNumber', -1], ['prNumber', NaN],
+    ['prNumber', Infinity], ['prNumber', 1.5], ['prNumber', Number.MAX_SAFE_INTEGER + 1],
+  ])('refuses invalid receipt coordinate %s=%j without creating files', (field, value) => {
+    expect(pipeline.writePublicationReceipt({ ...context, [field]: value }, plan,
+      { success: true, postedViaGh: true }, dir)).toBeNull();
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
+  it.each([
+    ['GITHUB_RUN_ID', '1'.repeat(21)], ['GITHUB_RUN_ID', '123\n'],
+    ['GITHUB_RUN_ATTEMPT', ''], ['GITHUB_RUN_ATTEMPT', '0'],
+    ['GITHUB_RUN_ATTEMPT', '-1'], ['GITHUB_RUN_ATTEMPT', '1.5'],
+    ['GITHUB_RUN_ATTEMPT', '1'.repeat(10)], ['GITHUB_RUN_ATTEMPT', '1\n'],
+  ])('refuses invalid current-run field %s=%j without creating files', (field, value) => {
+    vi.stubEnv(field, value);
+    expect(pipeline.writePublicationReceipt(context, plan,
+      { success: true, postedViaGh: true }, dir)).toBeNull();
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
+
   it.each(['sibling', 'runner-suffix'])('refuses a receipt outside RUNNER_TEMP (%s)', (outsideName) => {
     const runner = path.join(dir, 'runner');
     const outside = path.join(dir, outsideName);
