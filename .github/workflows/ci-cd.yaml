@@ -32,6 +32,21 @@ jobs:
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      REVIEW_YETI_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
     # Keep required validation bounded alongside the review job; a stalled install or suite must
     # not turn CI into an unbounded review wait. 15 was too tight to be a stall detector: the
     # measured full suite plus `npm run build` runs ~9-13 minutes, so ordinary runs were landing
