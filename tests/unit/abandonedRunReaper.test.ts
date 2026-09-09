@@ -43,6 +43,20 @@ describe('AbandonedRunReaper', () => {
   //
   // This list mirrors `def dead_lane` in those workflows. If the reaper needs a
   // title that is not here, the shims must be taught it FIRST, in their own PR.
+  //
+  // The shims match by PREFIX, not equality, so `startsWith` below is the exact
+  // mirror rather than a weaker approximation. Verbatim from cisco-cdr
+  // .github/workflows/ct-review-bot.yml on 0.8.7-stable:
+  //
+  //   def dead_lane: (.output.title // "")
+  //     | startswith("Review Yeti: DISPATCHED")
+  //       or startswith("Review Yeti: NO VERDICT")
+  //       or startswith("Review Yeti: review did not complete");
+  //
+  // So a suffixed title such as "...did not complete (deadline exceeded)" is
+  // still recognised and still re-dispatchable. Tightening this to equality
+  // would fail titles the shims accept, which is a different contract than the
+  // one that governs whether a head can be retried.
   const DEAD_LANE_TITLES = [
     'Review Yeti: DISPATCHED',
     'Review Yeti: NO VERDICT',
