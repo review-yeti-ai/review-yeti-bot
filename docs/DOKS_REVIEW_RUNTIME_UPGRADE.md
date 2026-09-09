@@ -68,6 +68,20 @@ Deployment. Advancing images does not configure callback ingress, RBAC, or
 operator environment; those declarative changes require reviewed readback
 before activation. See [worker failure recovery](worker-failure-recovery.md).
 
+The native operator template declares `REVIEW_YETI_COMPLETION_URL` as empty;
+Helm exposes `publishing.completionUrl` (empty by default, omitted from the
+rendered environment). The installer deliberately does not interpolate a
+callback URL from ambient environment variables and retains its zero-replica
+and active-deployment refusal guards. After the CRD, API/ingress, dispatcher
+and worker prerequisites are verified, set the reviewed HTTPS completion URL
+in private deployment configuration. Render and review it, then activate only
+that environment entry on the named active operator container with a separate
+JSON patch guarded by fresh UID, resourceVersion, generation, image and prior
+environment tests. Preserve every unrelated field and replica count; do not
+apply the whole dormant template. Capture separate activation intent/readback
+evidence: the image-only helper does not perform this step, and changing the
+environment invalidates its earlier image rollback receipt.
+
 A worker ConfigMap image is configuration, not provenance. Never infer its
 source from another component's tag, a checkout, or an old version annotation.
 The invoking identity must already have scoped Deployment get/patch and

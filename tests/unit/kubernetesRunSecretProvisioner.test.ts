@@ -10,6 +10,20 @@ const request = {
   repo: 'ct-meta',
 };
 
+function trustedSecret() {
+  return {
+    metadata: {
+      name: request.secretName, namespace: request.namespace,
+      labels: { 'review-yeti.ai/run-id': request.runId, 'review-yeti.ai/component': 'run-credentials' },
+      annotations: { 'review-yeti.ai/repository': `${request.owner}/${request.repo}` },
+    },
+    data: {
+      [PUBLISH_TOKEN_KEY]: Buffer.from('ghs_existing').toString('base64'),
+      [READ_TOKEN_KEY]: Buffer.from('ghs_existing_read').toString('base64'),
+    },
+  };
+}
+
 function provisioner(over: Record<string, any> = {}) {
   const client = {
     createNamespacedSecret: vi.fn(async () => undefined),
@@ -38,6 +52,107 @@ function provisioner(over: Record<string, any> = {}) {
 }
 
 describe('KubernetesRunSecretProvisioner', () => {
+  it.each([
+    ['forbidden', { statusCode: 403 }],
+    ['unavailable', { response: { statusCode: 503 } }],
+    ['transport', new Error('404 appears only in private transport text ghs_do_not_log')],
+  ])('fails closed on a non-404 initial Secret read: %s', async (_reason, error) => {
+    const { subject, client, mintToken, mintReadToken } = provisioner({
+      client: { readNamespacedSecret: vi.fn().mockRejectedValue(error) },
+    });
+    await expect(subject.provision(request)).rejects.toThrow(
+      new Error('run secret could not be read for trusted completion binding'),
+    );
+    expect(client.readNamespacedSecret).toHaveBeenCalledExactlyOnceWith({ namespace: request.namespace, name: request.secretName });
+    expect(mintToken).not.toHaveBeenCalled();
+    expect(mintReadToken).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing after conflict', { code: 404 }, 'run secret exists but trusted completion binding could not be recovered'],
+    ['forbidden after conflict', { code: 403 }, 'run secret could not be read for trusted completion binding'],
+    ['transport after conflict', new Error('private transport response'), 'run secret could not be read for trusted completion binding'],
+  ])('does not bind a candidate mint when the 409 recovery read fails: %s', async (_reason, error, message) => {
+    const { subject, client, mintToken, mintReadToken } = provisioner({ client: {
+      readNamespacedSecret: vi.fn().mockRejectedValueOnce({ code: 404 }).mockRejectedValueOnce(error),
+      createNamespacedSecret: vi.fn().mockRejectedValue({ code: 409 }),
+    } });
+    await expect(subject.provision(request)).rejects.toThrow(new Error(message));
+    expect(client.readNamespacedSecret).toHaveBeenCalledTimes(2);
+    expect(client.readNamespacedSecret).toHaveBeenNthCalledWith(2, { namespace: request.namespace, name: request.secretName });
+    expect(mintToken).toHaveBeenCalledOnce();
+    expect(mintReadToken).toHaveBeenCalledOnce();
+    expect(client.createNamespacedSecret).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['non-object Secret', false],
+    ['missing metadata', { ...trustedSecret(), metadata: undefined }],
+    ['non-object metadata', { ...trustedSecret(), metadata: 'invalid' }],
+    ['wrong name', { ...trustedSecret(), metadata: { ...trustedSecret().metadata, name: 'another-secret' } }],
+    ['wrong namespace', { ...trustedSecret(), metadata: { ...trustedSecret().metadata, namespace: 'another-namespace' } }],
+    ['missing labels', { ...trustedSecret(), metadata: { ...trustedSecret().metadata, labels: undefined } }],
+    ['non-object labels', { ...trustedSecret(), metadata: { ...trustedSecret().metadata, labels: 'invalid' } }],
+    ['wrong run', { ...trustedSecret(), metadata: { ...trustedSecret().metadata,
+      labels: { ...trustedSecret().metadata.labels, 'review-yeti.ai/run-id': `run_${'2'.repeat(32)}` } } }],
+    ['wrong component', { ...trustedSecret(), metadata: { ...trustedSecret().metadata,
+      labels: { ...trustedSecret().metadata.labels, 'review-yeti.ai/component': 'another-component' } } }],
+    ['wrong optional repo label', { ...trustedSecret(), metadata: { ...trustedSecret().metadata,
+      labels: { ...trustedSecret().metadata.labels, 'review-yeti.ai/repo': 'another-repo' } } }],
+    ['wrong repository annotation', { ...trustedSecret(), metadata: { ...trustedSecret().metadata,
+      annotations: { 'review-yeti.ai/repository': 'another-owner/another-repo' } } }],
+  ])('rejects recovered Secret identity with %s before minting or writing', async (_reason, secret) => {
+    const { subject, client, mintToken, mintReadToken } = provisioner({ client: {
+      readNamespacedSecret: vi.fn().mockResolvedValue(secret),
+    } });
+    await expect(subject.provision(request)).rejects.toThrow(new Error('run secret identity could not be verified'));
+    expect(client.readNamespacedSecret).toHaveBeenCalledOnce();
+    expect(mintToken).not.toHaveBeenCalled();
+    expect(mintReadToken).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, 'invalid'])('rejects unavailable Secret data: %s', async (data) => {
+    const { subject, client, mintToken, mintReadToken } = provisioner({ client: {
+      readNamespacedSecret: vi.fn().mockResolvedValue({ ...trustedSecret(), data }),
+    } });
+    await expect(subject.provision(request)).rejects.toThrow(new Error('secret data unavailable'));
+    expect(mintToken).not.toHaveBeenCalled();
+    expect(mintReadToken).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  describe.each([PUBLISH_TOKEN_KEY, READ_TOKEN_KEY])('recovered %s', (key) => {
+    it.each([
+      ['missing', undefined, 'secret token unavailable'],
+      ['wrong type', 42, 'secret token unavailable'],
+      ['empty', '', 'secret token unavailable'],
+      ['invalid base64', '!!!!', 'secret token invalid'],
+      ['non-installation token', Buffer.from('ghp_private_test_token').toString('base64'), 'secret token invalid'],
+    ])('rejects %s while the sibling token and metadata remain valid', async (_reason, encoded, message) => {
+      const { subject, client, mintToken, mintReadToken } = provisioner({ client: {
+        readNamespacedSecret: vi.fn().mockResolvedValue({
+          ...trustedSecret(), data: { ...trustedSecret().data, [key]: encoded },
+        }),
+      } });
+      await expect(subject.provision(request)).rejects.toThrow(new Error(message));
+      expect(mintToken).not.toHaveBeenCalled();
+      expect(mintReadToken).not.toHaveBeenCalled();
+      expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+    });
+  });
+
+  it('recovers an annotated Secret and binds only the existing publish token', async () => {
+    const { subject, client, mintToken, mintReadToken } = provisioner({ client: {
+      readNamespacedSecret: vi.fn().mockResolvedValue(trustedSecret()),
+    } });
+    await expect(subject.provision(request)).resolves.toEqual({ workerTokenDigest: sha256('ghs_existing') });
+    expect(mintToken).not.toHaveBeenCalled();
+    expect(mintReadToken).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+
   it('mints for the run repository and writes only the publish token', async () => {
     const { subject, client, mintToken } = provisioner();
     await subject.provision(request);
