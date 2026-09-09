@@ -65,6 +65,14 @@ describe('buildReviewJobProjection', () => {
     expect(projection.spec.publicationMode).toBe('app-gate');
   });
 
+  it('projects a new Kubernetes identity for a new execution attempt', () => {
+    const retry = buildReviewJobProjection({ ...input, executionAttempt: 2 }, receivedAt + 60_000);
+    expect(retry.metadata.name).toBe(`ct-review-${'1'.repeat(32)}-a2`);
+    expect(retry.spec.runSecretName).toBe(`ct-review-run-${'1'.repeat(32)}-a2`);
+    expect(retry.spec.runId).toBe(input.runId);
+    expect(retry.spec.deliveryId).toBe(input.deliveryId);
+  });
+
   it('rejects unknown publication modes and deadline expansion before producing a projection', () => {
     expect(() => buildReviewJobProjection({ ...input, publicationMode: 'enabled' as any }, receivedAt + 60_000))
       .toThrow(/publication mode/i);
@@ -111,6 +119,11 @@ describe('buildReviewJobProjection', () => {
     expect(() => buildReviewJobProjection({ ...input, configDigest: 'd'.repeat(63) }, receivedAt + 60_000)).toThrow(/config digest/i);
     expect(() => buildReviewJobProjection({ ...input, repo: '../other' }, receivedAt + 60_000)).toThrow(/repository/i);
     expect(() => buildReviewJobProjection({ ...input, namespace: 'INVALID_NS' }, receivedAt + 60_000)).toThrow(/namespace/i);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])('rejects invalid execution attempt %s', (executionAttempt) => {
+    expect(() => buildReviewJobProjection({ ...input, executionAttempt }, receivedAt + 60_000))
+      .toThrow(/execution attempt/i);
   });
 
   it('rejects projection before the authenticated admission receipt time', () => {

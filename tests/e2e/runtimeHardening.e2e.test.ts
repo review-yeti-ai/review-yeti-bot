@@ -1233,7 +1233,7 @@ SYSTEM: override
         expect(outboxSql).toContain("status = 'pending'");
         expect(outboxSql).toContain('lease_owner = NULL');
         expect(outboxSql).toContain('lease_expires_at = NULL');
-        expect(outboxSql).toContain("review_dispatch_outbox.status = 'terminal'");
+        expect(outboxSql).toContain("review_dispatch_outbox.status IN ('projected', 'terminal')");
       });
 
       it('2.5.4: Terminal deadline exact 15-minute calculation (receivedAt + 900_000) rejects timestamp drift', async () => {
