@@ -400,7 +400,7 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	}
 }
 
-func TestPRReviewJobV1Alpha2ReconcilerReclaimsUnusedWorkspaceOnNextTerminalReconcile(t *testing.T) {
+func TestPRReviewJobV1Alpha2ReconcilerImmediatelyReclaimsIdleWorkspaceAfterTerminalReview(t *testing.T) {
 	lastUsed := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	review := v1alpha2Review(lastUsed.Add(-30 * time.Minute))
 	review.Status.Phase = reviewv1alpha2.PhaseSucceeded
@@ -419,14 +419,17 @@ func TestPRReviewJobV1Alpha2ReconcilerReclaimsUnusedWorkspaceOnNextTerminalRecon
 
 	result, err := reconciler.Reconcile(context.Background(), req)
 	if err != nil {
-		t.Fatalf("reconcile unused terminal workspace: %v", err)
+		t.Fatalf("reconcile immediately after terminal review: %v", err)
 	}
 	if result.RequeueAfter != 0 {
 		t.Fatalf("requeue after reclamation = %s, want zero", result.RequeueAfter)
 	}
 	var reclaimed corev1.PersistentVolumeClaim
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: pvc.Name}, &reclaimed); !apierrors.IsNotFound(err) {
-		t.Fatalf("unused terminal review workspace must be absent, got %v", err)
+		t.Fatalf("idle terminal review must immediately reclaim its workspace PVC: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("repeated cleanup of an absent workspace: %v", err)
 	}
 }
 

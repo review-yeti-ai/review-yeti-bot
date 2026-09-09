@@ -17,8 +17,9 @@ const mocks = vi.hoisted(() => {
   const serviceConfig = vi.fn<() => { tickMs: number } | undefined>(() => undefined);
   const lookup = vi.fn(async () => 987);
   const error = vi.fn();
+  const legacyReaper = vi.fn();
   return { pool, initialize, listen, createApp, repository, gateStorage, gateRepository, getPrepared,
-    validateAdmission, authoritative, serviceConfig, lookup, error };
+    validateAdmission, authoritative, serviceConfig, lookup, error, legacyReaper };
 });
 
 vi.mock('../../src/auth/githubActionsOidc', () => ({
@@ -33,7 +34,10 @@ vi.mock('../../src/persistence/postgresStore', () => ({
 vi.mock('../../src/persistence/reviewDispatchRepository', () => ({ PostgresReviewDispatchRepository: mocks.repository }));
 vi.mock('../../src/persistence/reviewGateRepository', () => ({ PostgresReviewGateRepository: mocks.gateRepository }));
 vi.mock('../../src/persistence/preparedReviewRepository', () => ({ getPreparedPublishingPolicy: mocks.getPrepared }));
-vi.mock('../../src/review/abandonedRunReaper', () => ({ AbandonedRunReaper: class { runOnce = vi.fn(); } }));
+vi.mock('../../src/review/abandonedRunReaper', () => ({ AbandonedRunReaper: class {
+  constructor() { mocks.legacyReaper(); }
+  runOnce = vi.fn();
+} }));
 vi.mock('../../src/github/installationClient', () => ({ GitHubInstallationClient: class {} }));
 vi.mock('../../src/github/appAuth', () => ({ getGitHubAppRepositoryPublishToken: vi.fn() }));
 vi.mock('../../src/auth/authoritativeServiceConfig', () => ({ authoritativeServiceConfigFromEnv: mocks.serviceConfig }));
@@ -113,7 +117,8 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.gateRepository).not.toHaveBeenCalled();
     expect(mocks.getPrepared).not.toHaveBeenCalled();
     expect(mocks.authoritative).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(1); // Only the unchanged legacy reaper runs by default.
+    expect(mocks.legacyReaper).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0); // Legacy publication belongs only to the worker-App dispatcher.
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
@@ -147,10 +152,28 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.validateAdmission).not.toHaveBeenCalled();
     expect(mocks.listen).toHaveBeenCalledOnce();
     expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(2);
+    expect(mocks.legacyReaper).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(service.runOnce).toHaveBeenCalledOnce();
     expect(mocks.pool.query).not.toHaveBeenCalled();
+  });
+
+  it.each(['SIGTERM', 'SIGINT'])('stops the opted-in authoritative timer on %s', async (signal) => {
+    mocks.serviceConfig.mockReturnValue({ tickMs: 1_000 });
+    await start();
+    const service = mocks.authoritative.mock.results[0].value;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(service.runOnce).toHaveBeenCalledOnce();
+    const stop = vi.mocked(process.once).mock.calls.find(([event]) => event === signal)?.[1];
+    expect(stop).toEqual(expect.any(Function));
+    // Do not arm the real process-exit fallback in this offline startup test.
+    vi.spyOn(globalThis, 'setTimeout').mockReturnValue({ unref: vi.fn() } as unknown as NodeJS.Timeout);
+    stop!();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(service.runOnce).toHaveBeenCalledOnce();
+    expect(mocks.legacyReaper).not.toHaveBeenCalled();
   });
 
   it('does not construct the service or listen if composed gate storage fails', async () => {

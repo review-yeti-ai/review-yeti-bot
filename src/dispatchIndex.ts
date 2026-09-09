@@ -5,9 +5,6 @@ import { getBoundedRepositoryInstallationId, validateGitHubAppApiBaseUrl } from 
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
 import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
-import { AbandonedRunReaper } from './review/abandonedRunReaper';
-import { GitHubInstallationClient } from './github/installationClient';
-import { getGitHubAppRepositoryPublishToken } from './github/appAuth';
 import { PostgresStore } from './persistence/postgresStore';
 import { logger } from './utils/logger';
 import { authoritativeServiceConfigFromEnv } from './auth/authoritativeServiceConfig';
@@ -58,33 +55,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       baseUrl,
     }),
   });
-  // Legacy REL-586: the only component that creates the raw check is the worker, so any
-  // failure before its pod starts leaves the head with no check at all -- on a
-  // required gate, merges blocked with nothing red. This service is the right home
-  // for the sweep: it already holds the App credentials and the database.
-  const reaperIntervalMs = Number(environment.ACTION_DISPATCH_REAPER_INTERVAL_MS || 60_000);
-  if (!Number.isSafeInteger(reaperIntervalMs) || reaperIntervalMs < 5_000) {
-    throw new Error('ACTION_DISPATCH_REAPER_INTERVAL_MS must be at least 5000');
-  }
-  const reaper = new AbandonedRunReaper({
-    repository,
-    workerId: `action-dispatch-${environment.HOSTNAME || 'local'}`,
-    // Minted per run: a token is scoped to one repository, so it cannot be reused
-    // across the sweep.
-    checkClientFor: async (run) => {
-      const minted = await getGitHubAppRepositoryPublishToken({
-        appId, privateKey, owner: run.owner, repo: run.repo, baseUrl,
-      });
-      return new GitHubInstallationClient({ token: minted.token, baseUrl });
-    },
-  });
-  const reaperTimer = setInterval(() => {
-    void reaper.runOnce().catch((error) => logger.error('Abandoned-run sweep failed', {
-      error: error instanceof Error ? error.message : String(error),
-    }));
-  }, reaperIntervalMs);
-  // Never hold the process open for the sweep; shutdown clears it explicitly.
-  reaperTimer.unref();
+  // Admission credentials may belong to a different App. Only the worker-token
+  // dispatcher reconciles legacy raw checks. The separately opted-in service
+  // controller validates its authoritative App identity before it is constructed.
   const authoritativeTimer = authoritative && authoritativeConfig ? setInterval(() => {
     void authoritative.runOnce().catch(() => logger.error('Authoritative review reconciliation unavailable'));
   }, authoritativeConfig.tickMs) : undefined;
@@ -97,7 +70,6 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
 
   const shutdown = (signal: string) => {
     logger.info('Stopping Review Yeti Action dispatch service', { signal });
-    clearInterval(reaperTimer);
     if (authoritativeTimer) clearInterval(authoritativeTimer);
     server.close(() => void store.close().finally(() => process.exit(0)));
     setTimeout(() => process.exit(1), 10_000).unref();
