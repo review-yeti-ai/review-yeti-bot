@@ -1,4 +1,5 @@
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
+import type { ReviewDispatchClaim } from '../review/reviewRun';
 import {
   buildReviewJobProjection,
   type PRReviewJobProjection,
@@ -39,6 +40,8 @@ export interface ReviewJobDispatchEngineOptions {
   workerImage: string;
   namespace: string;
   runnerMode?: RunnerMode;
+  /** Service-owned immutable policy read; absence must not fall back to legacy publishing. */
+  preparedReviewFor?(claim: ReviewDispatchClaim): Promise<string>;
   now?: () => number;
   leaseMs?: number;
   retryDelayMs?: number;
@@ -72,6 +75,20 @@ export class ReviewJobDispatchEngine {
 
     let projection: PRReviewJobProjection;
     try {
+      let preparedReview: string | undefined;
+      if (claim.authoritativeGateAppId !== undefined) {
+        if (!this.options.preparedReviewFor) throw new Error('Authoritative worker projection is not configured');
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          preparedReview = await Promise.race([
+            this.options.preparedReviewFor(claim),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error('Prepared policy read deadline exceeded')), 5_000);
+            }),
+          ]);
+        } finally { if (timer !== undefined) clearTimeout(timer); }
+        if (!preparedReview) throw new Error('Prepared policy is required for authoritative review');
+      }
       projection = buildReviewJobProjection({
         runId: claim.runId,
         deliveryId: claim.deliveryId,
@@ -89,12 +106,14 @@ export class ReviewJobDispatchEngine {
         workerImage: this.options.workerImage,
         namespace: this.options.namespace,
         runnerMode: this.options.runnerMode,
-      }, now);
+        ...(preparedReview !== undefined ? { preparedReview } : {}),
+      }, this.now());
     } catch {
       const marked = await this.options.repository.markTerminal(
         claim.runId,
         this.options.workerId,
-        now,
+        claim.claimAttempt,
+        this.now(),
         'review job projection rejected',
       );
       return marked
@@ -114,7 +133,8 @@ export class ReviewJobDispatchEngine {
         const marked = await this.options.repository.markTerminal(
           claim.runId,
           this.options.workerId,
-          now,
+          claim.claimAttempt,
+          this.now(),
           'publishing review dispatched without a run secret provisioner',
         );
         return marked
@@ -135,8 +155,9 @@ export class ReviewJobDispatchEngine {
           const bound = await this.options.repository.bindWorkerTokenDigest(
             claim.runId,
             this.options.workerId,
+            claim.claimAttempt,
             workerTokenDigest,
-            now,
+            this.now(),
           );
           if (!bound) return { status: 'lease-lost', runId: claim.runId };
         }
@@ -150,11 +171,13 @@ export class ReviewJobDispatchEngine {
         // source. A fixed label restores that signal; interpolating the caught
         // error would not, because upstream failures can carry credential material.
         const reason = 'run-secret-provisioning' as const;
-        const availableAt = now + this.retryDelayMs;
+        const retryNow = this.now();
+        const availableAt = retryNow + this.retryDelayMs;
         const released = await this.options.repository.releaseForRetry(
           claim.runId,
           this.options.workerId,
-          now,
+          claim.claimAttempt,
+          retryNow,
           availableAt,
         );
         return released
@@ -167,11 +190,13 @@ export class ReviewJobDispatchEngine {
       await this.options.projector.ensure(projection);
     } catch {
       const reason = 'projection' as const;
-      const availableAt = now + this.retryDelayMs;
+      const retryNow = this.now();
+      const availableAt = retryNow + this.retryDelayMs;
       const released = await this.options.repository.releaseForRetry(
         claim.runId,
         this.options.workerId,
-        now,
+        claim.claimAttempt,
+        retryNow,
         availableAt,
       );
       return released
@@ -183,15 +208,17 @@ export class ReviewJobDispatchEngine {
       ? await this.options.repository.markProjected(
         claim.runId,
         this.options.workerId,
+        claim.claimAttempt,
         projection.metadata.name,
-        now,
+        this.now(),
         workerTokenDigest,
       )
       : await this.options.repository.markProjected(
         claim.runId,
         this.options.workerId,
+        claim.claimAttempt,
         projection.metadata.name,
-        now,
+        this.now(),
       );
     return projected
       ? { status: 'projected', runId: claim.runId, projectionName: projection.metadata.name }

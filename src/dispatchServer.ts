@@ -1,5 +1,6 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './api/actionDispatchApi';
+import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
@@ -8,6 +9,9 @@ export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
 export function createActionDispatchApp(options: ActionDispatchAppOptions): Express {
   const app = express();
   app.disable('x-powered-by');
+  // Only the typed completion endpoint accepts bounded full persona evidence.
+  // Action admission retains its smaller limit and strict request schema.
+  app.use('/api/dispatch/completion', express.json({ limit: MAX_COMPLETION_BYTES, strict: true }));
   app.use(express.json({ limit: '64kb', strict: true }));
 
   app.get('/health', (_request: Request, response: Response) => response.status(200).json({
@@ -30,6 +34,9 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
 
   app.use('/api/dispatch', createActionDispatchRouter(options));
   app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
+    if (error && typeof error === 'object' && 'status' in error && error.status === 413) {
+      return response.status(413).json({ error: 'Request body exceeds its permitted size' });
+    }
     if (error instanceof SyntaxError) return response.status(400).json({ error: 'Invalid JSON body' });
     return next(error);
   });
