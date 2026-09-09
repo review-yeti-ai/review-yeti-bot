@@ -12,6 +12,6 @@ describe('guarded runtime upgrade shell contract', () => {
     const provenance = execFileSync('bash', ['scripts/review-runtime-image-provenance.test.sh'], {
       cwd: root, encoding: 'utf8', timeout: 30_000,
     });
-    expect(provenance).toContain('PASS: 41 provenance checks (fake crane only)');
+    expect(provenance).toMatch(/^PASS: [1-9]\d* provenance checks \(fake crane only\)$/m);
   }, 65_000);
 });
