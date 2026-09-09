@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.2...v1.45.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* **scripts:** make the shell scripts run on bash 3.2 [no-linear] ([#620](https://github.com/review-yeti-ai/review-yeti-bot/issues/620)) ([fb5d2a8](https://github.com/review-yeti-ai/review-yeti-bot/commit/fb5d2a8daf5f71ab827bbc028c774ccf3f7812e6))
+
 ## [1.45.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.1...v1.45.2) (2026-09-09)
 
 
