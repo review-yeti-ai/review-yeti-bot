@@ -1,10 +1,17 @@
 import express from 'express';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
-import { createActionDispatchRouter, createWorkerCompletionVerifier } from '../../src/api/actionDispatchApi';
+import { createActionDispatchRouter, createWorkerCompletionVerifier, type ActionDispatchRouterOptions } from '../../src/api/actionDispatchApi';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { GitHubActionsOidcVerifier } from '../../src/auth/githubActionsOidc';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
+import type { AuthoritativePublishingResolution, RequestedReviewCandidate } from '../../src/review/authoritativePublishingResolver';
+import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
+import { actionDispatchDigestInput, type ActionDispatchRequest } from '../../src/review/actionDispatch';
+import { sha256 } from '../../src/review/reviewCore';
 
 const body = {
   version: 'ActionDispatch.v1',
@@ -47,8 +54,38 @@ function app(overrides: Record<string, any> = {}) {
   const resolveInstallationId = overrides.resolveInstallationId || vi.fn(async () => 456);
   const instance = express();
   instance.use(express.json({ limit: '64kb' }));
-  instance.use('/api/dispatch', createActionDispatchRouter({ verifier, admission, resolveInstallationId }));
+  instance.use('/api/dispatch', createActionDispatchRouter({
+    verifier, admission, resolveInstallationId,
+    allowAppGate: overrides.allowAppGate,
+    authoritativePublishing: overrides.authoritativePublishing,
+    now: overrides.now,
+  }));
   return { instance, verifier, admission, resolveInstallationId };
+}
+
+// Exercise the real preparer/identity contract without network readers, provider
+// calls or persistence. The router's trusted resolver is the mocked boundary.
+function publishingFixture() {
+  const candidate: RequestedReviewCandidate = {
+    repositoryId: body.repositoryId, owner: body.owner, repo: body.repo,
+    prNumber: body.prNumber, headSha: body.headSha, baseSha: body.baseSha,
+  };
+  const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+    personas: 'security,testing', budget: { max_investigation_turns: 20 },
+  } });
+  const prepared = preparePublishingPolicy({ content, source: {
+    repositoryId: 987, repository: 'calltelemetry/ct-review-actions',
+    sha: 'e'.repeat(40), path: 'policy/review.json',
+    contentDigest: createHash('sha256').update(content).digest('hex'),
+  } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'service-owned-model' });
+  const current = { ...candidate, open: true, draft: true };
+  const resolution: AuthoritativePublishingResolution = {
+    current, prepared, identity: buildAuthoritativeReviewIdentity({ requested: candidate, current, policy: prepared.policy }),
+  };
+  const resolve = vi.fn(async (_candidate: RequestedReviewCandidate) => resolution);
+  const authoritativePublishing = { expectedAppId: 789, repositoryIds: [123], resolver: { resolve } };
+  const now = Date.parse(body.requestedAt);
+  return { candidate, resolution, resolve, authoritativePublishing, now };
 }
 
 const terminalFailure = {
@@ -304,6 +341,223 @@ describe('POST /api/dispatch/action', () => {
     expect(admissionResult.run.status).toBe('queued');
     expect(admissionResult.run.attempt).toBe(0);
     expect(admissionResult.run.stage).toBe('admission');
+  });
+});
+
+describe('POST /api/dispatch/action authoritative publishing', () => {
+  it('resolves exactly the enrolled candidate and admits the service-owned identity, policy, config and App', async () => {
+    const publishing = publishingFixture();
+    const fixture = app({ ...publishing, now: () => publishing.now, allowAppGate: true });
+    const dispatch: ActionDispatchRequest = { ...body, version: 'ActionDispatch.v1',
+      publishMode: 'app-gate', caller: { ...body.caller, eventName: 'workflow_dispatch' } };
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token').send(dispatch);
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({ version: 'ActionDispatchAccepted.v1', status: 'accepted', runId: `run_${'1'.repeat(32)}` });
+    expect(fixture.resolveInstallationId).toHaveBeenCalledExactlyOnceWith(body.owner, body.repo);
+    expect(publishing.resolve).toHaveBeenCalledExactlyOnceWith(publishing.candidate);
+    expect(fixture.admission.admit).toHaveBeenCalledExactlyOnceWith({
+      deliveryId: body.deliveryId, eventName: body.caller.eventName,
+      repositoryId: body.repositoryId, installationId: 456,
+      receivedAt: publishing.now, terminalDeadline: publishing.now + 900_000,
+      payloadDigest: sha256(actionDispatchDigestInput(dispatch)), publicationMode: 'app-gate',
+      identity: publishing.resolution.identity,
+      effectivePolicyDigest: publishing.resolution.prepared.policy.effectivePolicyDigest,
+      authoritativeGate: { expectedAppId: 789, prepared: publishing.resolution.prepared },
+    });
+    const admitted = fixture.admission.admit.mock.calls[0][0];
+    expect(admitted.identity).toBe(publishing.resolution.identity);
+    expect(admitted.authoritativeGate.prepared).toBe(publishing.resolution.prepared);
+    expect(admitted.identity.configDigest).toBe(publishing.resolution.prepared.policy.effectiveConfigDigest);
+    expect(admitted.identity).not.toEqual(buildReviewRunIdentity(publishing.candidate));
+    expect(admitted.authoritativeGate.prepared.expectedPersonaIds).toEqual(['sec-lane', 'qual-lane']);
+    expect(publishing.resolution.current.draft).toBe(true);
+    expect(fixture.resolveInstallationId.mock.invocationCallOrder[0]).toBeLessThan(publishing.resolve.mock.invocationCallOrder[0]);
+    expect(publishing.resolve.mock.invocationCallOrder[0]).toBeLessThan(fixture.admission.admit.mock.invocationCallOrder[0]);
+  });
+
+  it('waits for trusted resolution to finish before calling admission', async () => {
+    const publishing = publishingFixture();
+    let finish!: (value: AuthoritativePublishingResolution) => void;
+    publishing.resolve.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const fixture = app({ ...publishing, now: () => publishing.now, allowAppGate: true });
+    const pending = request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode: 'app-gate' }).then((response) => response);
+    try {
+      await vi.waitFor(() => expect(publishing.resolve).toHaveBeenCalledOnce());
+      expect(fixture.admission.admit).not.toHaveBeenCalled();
+    } finally { finish(publishing.resolution); }
+    expect((await pending).status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledOnce();
+  });
+
+  it('pauses enrolled admission before token mint without falling back to legacy', async () => {
+    const publishing = publishingFixture();
+    const fixture = app({ now: () => publishing.now, allowAppGate: true,
+      authoritativePublishing: { ...publishing.authoritativePublishing, acceptNewRequests: false } });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode: 'app-gate' });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Authoritative review admission is paused' });
+    expect(fixture.verifier.verify).toHaveBeenCalledOnce();
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(publishing.resolve).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { repositoryIds: [999], publishMode: 'app-gate' },
+    { repositoryIds: [123], publishMode: 'disabled' },
+  ])('draining does not change other existing lanes ($publishMode)', async ({ repositoryIds, publishMode }) => {
+    const publishing = publishingFixture();
+    const fixture = app({ now: () => publishing.now, allowAppGate: true,
+      authoritativePublishing: { ...publishing.authoritativePublishing, repositoryIds, acceptNewRequests: false } });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode });
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledOnce();
+    expect(publishing.resolve).not.toHaveBeenCalled();
+  });
+
+  it('ignores schema-allowed legacy policy hints and caller check ID when selecting authoritative config', async () => {
+    const publishing = publishingFixture();
+    const fixture = app({ ...publishing, now: () => publishing.now, allowAppGate: true });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode: 'app-gate', checkId: 999,
+        policy: { personas: 'caller-persona', maxInvestigationTurns: 99, laneCallBudget: 99 } });
+    expect(response.status).toBe(202);
+    expect(publishing.resolve).toHaveBeenCalledExactlyOnceWith(publishing.candidate);
+    const admitted = fixture.admission.admit.mock.calls[0][0];
+    expect(admitted.identity).toEqual(publishing.resolution.identity);
+    expect(admitted.authoritativeGate).toEqual({ expectedAppId: 789, prepared: publishing.resolution.prepared });
+    expect(admitted).not.toHaveProperty('policy');
+    expect(admitted).not.toHaveProperty('checkId');
+    expect(JSON.stringify(admitted)).not.toContain('caller-persona');
+  });
+
+  it.each([
+    { label: 'option absent', enabled: false, repositoryIds: [123], publishMode: 'app-gate' },
+    { label: 'unlisted repository with matching owner/name', enabled: true, repositoryIds: [999], publishMode: 'app-gate' },
+    { label: 'disabled publishing in an enrolled repository', enabled: true, repositoryIds: [123], publishMode: 'disabled' },
+    { label: 'disabled publishing in an unlisted repository', enabled: true, repositoryIds: [999], publishMode: 'disabled' },
+  ])('preserves legacy admission for $label', async ({ enabled, repositoryIds, publishMode }) => {
+    const publishing = publishingFixture();
+    const fixture = app({ allowAppGate: true, now: () => publishing.now,
+      authoritativePublishing: enabled ? { ...publishing.authoritativePublishing, repositoryIds } : undefined });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode });
+    expect(response.status).toBe(202);
+    expect(publishing.resolve).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).toHaveBeenCalledOnce();
+    const admitted = fixture.admission.admit.mock.calls[0][0];
+    expect(admitted.identity).toEqual(buildReviewRunIdentity(publishing.candidate));
+    expect(admitted.publicationMode).toBe(publishMode);
+    expect(admitted).not.toHaveProperty('authoritativeGate');
+    expect(admitted).not.toHaveProperty('effectivePolicyDigest');
+  });
+
+  it.each([
+    { label: 'missing bearer', token: false, allowAppGate: true, repositoryId: 123, offset: 0, status: 401 },
+    { label: 'OIDC coordinate mismatch', token: true, allowAppGate: true, repositoryId: 999, offset: 0, status: 403 },
+    { label: 'app-gate disabled', token: true, allowAppGate: false, repositoryId: 123, offset: 0, status: 403 },
+    { label: 'stale request', token: true, allowAppGate: true, repositoryId: 123, offset: 600_001, status: 400 },
+  ])('rejects $label before trusted resolution', async ({ token, allowAppGate, repositoryId, offset, status }) => {
+    const publishing = publishingFixture();
+    const fixture = app({ ...publishing, allowAppGate, now: () => publishing.now + offset });
+    const pending = request(fixture.instance).post('/api/dispatch/action');
+    if (token) pending.set('Authorization', 'Bearer token');
+    const response = await pending.send({ ...body, publishMode: 'app-gate', repositoryId });
+    expect(response.status).toBe(status);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(publishing.resolve).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve policy when installation resolution fails', async () => {
+    const publishing = publishingFixture();
+    const fixture = app({ ...publishing, now: () => publishing.now, allowAppGate: true,
+      resolveInstallationId: vi.fn(async () => { throw new Error('synthetic private installation diagnostic'); }) });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode: 'app-gate' });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Review dispatch admission is temporarily unavailable' });
+    expect(publishing.resolve).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each(['error', 'non-error'])('fails closed with a redacted 503 on resolver %s rejection', async (kind) => {
+    const publishing = publishingFixture();
+    const diagnostic = 'ghs_SYNTHETIC_SECRET raw central policy and provider transcript';
+    publishing.resolve.mockRejectedValue(kind === 'error' ? new Error(diagnostic) : diagnostic);
+    const fixture = app({ ...publishing, now: () => publishing.now, allowAppGate: true });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode: 'app-gate' });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Review dispatch admission is temporarily unavailable' });
+    expect(response.text).not.toContain(diagnostic);
+    expect(publishing.resolve).toHaveBeenCalledExactlyOnceWith(publishing.candidate);
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['zero App ID', { expectedAppId: 0 }], ['negative App ID', { expectedAppId: -1 }],
+    ['fractional App ID', { expectedAppId: 1.5 }], ['unsafe App ID', { expectedAppId: Number.MAX_SAFE_INTEGER + 1 }],
+    ['non-finite App ID', { expectedAppId: Infinity }], ['NaN App ID', { expectedAppId: NaN }],
+    ['string App ID', { expectedAppId: '789' }], ['missing App ID', { expectedAppId: undefined }],
+    ['empty allowlist', { repositoryIds: [] }], ['missing allowlist', { repositoryIds: undefined }],
+    ['duplicate allowlist entry', { repositoryIds: [123, 123] }],
+    ['oversized allowlist', { repositoryIds: Array.from({ length: 101 }, (_, index) => index + 1) }],
+    ['zero repository ID', { repositoryIds: [123, 0] }], ['negative repository ID', { repositoryIds: [-1] }],
+    ['fractional repository ID', { repositoryIds: [1.5] }], ['string repository ID', { repositoryIds: ['123'] }],
+    ['unsafe repository ID', { repositoryIds: [Number.MAX_SAFE_INTEGER + 1] }],
+    ['non-finite repository ID', { repositoryIds: [Infinity] }], ['NaN repository ID', { repositoryIds: [NaN] }],
+  ])('throws synchronously for %s before a router can listen', (_label, invalid) => {
+    const publishing = publishingFixture();
+    const verifier = { verify: vi.fn() };
+    const admission = { admit: vi.fn() };
+    const resolveInstallationId = vi.fn();
+    expect(() => createActionDispatchRouter({ verifier, admission, resolveInstallationId,
+      authoritativePublishing: { ...publishing.authoritativePublishing, ...invalid } as ActionDispatchRouterOptions['authoritativePublishing'],
+    })).toThrow('Invalid authoritative review admission configuration');
+    expect(verifier.verify).not.toHaveBeenCalled();
+    expect(admission.admit).not.toHaveBeenCalled();
+    expect(resolveInstallationId).not.toHaveBeenCalled();
+    expect(publishing.resolve).not.toHaveBeenCalled();
+  });
+
+  it('accepts the 100-repository bound and uses the configured App ID unchanged', async () => {
+    const publishing = publishingFixture();
+    const fixture = app({ now: () => publishing.now, allowAppGate: true,
+      authoritativePublishing: { ...publishing.authoritativePublishing, expectedAppId: Number.MAX_SAFE_INTEGER,
+        repositoryIds: [123, ...Array.from({ length: 99 }, (_, index) => index + 1)] } });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode: 'app-gate' });
+    expect(response.status).toBe(202);
+    expect(publishing.resolve).toHaveBeenCalledExactlyOnceWith(publishing.candidate);
+    expect(fixture.admission.admit.mock.calls[0][0].authoritativeGate.expectedAppId).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it.each([
+    { expectedAppId: 1 }, { repositoryIds: [123] }, { installationId: 1 },
+    { authoritativePublishing: { expectedAppId: 1, repositoryIds: [123] } },
+    { authoritativeGate: { expectedAppId: 1 } }, { prepared: {} }, { config: {} },
+    { identity: {} }, { configDigest: 'f'.repeat(64) }, { effectiveConfigDigest: 'f'.repeat(64) },
+    { effectivePolicyDigest: 'f'.repeat(64) }, { expectedPersonaIds: ['caller-lane'] },
+    { policyRef: 'refs/heads/caller-policy' }, { transport: { model: 'caller-model' } },
+    { policy: { config: {} } }, { policy: { expectedAppId: 1 } },
+    { caller: { ...body.caller, config: {} } },
+  ])('rejects request-supplied authority/config override %j at the strict schema boundary', async (override) => {
+    const publishing = publishingFixture();
+    const fixture = app({ ...publishing, now: () => publishing.now, allowAppGate: true });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer token').send({ ...body, publishMode: 'app-gate', ...override });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Invalid Action dispatch request' });
+    expect(fixture.verifier.verify).not.toHaveBeenCalled();
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(publishing.resolve).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 });
 

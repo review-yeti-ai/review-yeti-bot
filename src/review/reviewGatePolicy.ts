@@ -34,6 +34,7 @@ export interface ReviewRiskAcceptance {
 
 export type ReviewGateDecision =
   | { status: 'pending'; eligible: false; reason: 'review-pending' }
+  | { status: 'timed_out'; eligible: false; reason: 'review-deadline-exceeded' }
   | { status: 'cancelled'; eligible: false; reason: 'candidate-superseded' | 'pull-request-closed' }
   | { status: 'failure'; eligible: false; reason: 'invalid-evidence' | 'infrastructure-failure' | 'incomplete-review' | 'blocking-findings' }
   | { status: 'success'; eligible: true; reason: 'clean-review' | 'central-exemption' }

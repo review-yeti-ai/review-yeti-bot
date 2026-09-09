@@ -43,6 +43,7 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(Object.keys(spec.properties).sort()).toEqual([
       ...spec.required,
       'executionAttempt',
+      'preparedReview',
       'qualificationModel',
       'qualificationProfile',
       'runnerMode',
@@ -50,6 +51,19 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(projection.spec).not.toHaveProperty('qualificationModel');
     expect(projection.spec).not.toHaveProperty('qualificationProfile');
     expect(JSON.stringify(projection.spec)).not.toMatch(/privateKey|providerApiKey|installationToken|callbackToken/u);
+  });
+
+  it('keeps preparedReview optional, bounded, immutable, and restricted to prebaked app-gate', () => {
+    const spec = crdSchema().properties.spec;
+    expect(spec.required).not.toContain('preparedReview');
+    expect(spec.properties.preparedReview).toEqual(expect.objectContaining({
+      type: 'string', minLength: 1, maxLength: 256 * 1024,
+    }));
+    expect(spec.properties.preparedReview).not.toHaveProperty('default');
+    const rules = spec['x-kubernetes-validations'].map((validation: { rule: string }) => validation.rule);
+    expect(rules).toContain('self == oldSelf');
+    expect(rules).toContain("!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))");
+    expect(projection.spec).not.toHaveProperty('preparedReview');
   });
 
   it('accepts the projected identities under every declared string pattern', () => {

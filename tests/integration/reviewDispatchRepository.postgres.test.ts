@@ -1,9 +1,34 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
-import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import { PostgresReviewDispatchRepository, type ReviewDispatchRepositoryOptions } from '../../src/persistence/reviewDispatchRepository';
 import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { sha256 } from '../../src/review/reviewCore';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
+import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { PREPARED_REVIEW_SCHEMA_SQL } from '../../src/persistence/preparedReviewRepository';
+import { PostgresReviewGateRepository } from '../../src/persistence/reviewGateRepository';
+import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
+import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { createHash, randomBytes } from 'node:crypto';
+import { REVIEW_GATE_CHECK_NAME } from '../../src/github/reviewGateClient';
+import { buildRunSecretName } from '../../src/k8s/reviewJobProjection';
+import type { WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
+
+function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000) {
+  const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
+    review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: 2 } } });
+  const prepared = preparePublishingPolicy({ content, source: {
+    repositoryId: 789, repository: 'calltelemetry/ct-review-actions', sha: 'c'.repeat(40),
+    path: 'review-policy.json', contentDigest: createHash('sha256').update(content).digest('hex'),
+  } }, { baseUrl: 'https://gateway.example/v1', model: 'review-model' });
+  const candidate = { repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+    headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
+  const identity = buildAuthoritativeReviewIdentity({ requested: candidate,
+    current: { ...candidate, open: true, draft: true }, policy: prepared.policy });
+  return { ...sameHeadAdmission(deliveryId, receivedAt), identity,
+    effectivePolicyDigest: prepared.policy.effectivePolicyDigest,
+    authoritativeGate: { expectedAppId: 4385771, prepared } };
+}
 
 function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
   baseSha?: string; configDigest?: string; policyDigest?: string;
@@ -36,6 +61,8 @@ function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 
 const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const trustedValidation: ReviewDispatchRepositoryOptions = { validateAuthoritativeAdmission: async () => undefined };
+const ownedSharedSchema = /^review_dispatch_test_[a-f0-9]{16}$/u;
 
 const claimMutations = ['heartbeat', 'bindWorkerTokenDigest', 'markProjected', 'releaseForRetry', 'markTerminal'] as const;
 function mutateClaim(repository: PostgresReviewDispatchRepository, mutation: typeof claimMutations[number], claim: ReviewDispatchClaim, now: number) {
@@ -59,21 +86,31 @@ async function dispatchState(client: PoolClient, runId: string) {
 describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () => {
   let pool: Pool | undefined;
   let client: PoolClient | undefined;
+  let sharedSchema: string | undefined;
 
   afterEach(async () => {
     if (client) {
-      await client.query('DROP TABLE IF EXISTS pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
+      if (sharedSchema) {
+        if (!ownedSharedSchema.test(sharedSchema)) throw new Error('Refusing to remove an unowned test schema');
+        await client.query(`DROP SCHEMA ${sharedSchema} CASCADE`);
+      } else {
+        await client.query('DROP TABLE IF EXISTS pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
+      }
       client.release();
       client = undefined;
     }
     await pool?.end();
     pool = undefined;
+    sharedSchema = undefined;
   });
 
-  async function createRepository() {
-    pool = new Pool({ connectionString: databaseUrl });
+  async function createRepository(options: ReviewDispatchRepositoryOptions = trustedValidation, shared = false) {
+    if (shared) sharedSchema = `review_dispatch_test_${randomBytes(8).toString('hex')}`;
+    pool = new Pool({ connectionString: databaseUrl,
+      ...(sharedSchema ? { options: `-c search_path=${sharedSchema},public`, application_name: sharedSchema } : {}) });
     client = await pool.connect();
-    await client.query(`
+    if (sharedSchema) await client.query(`CREATE SCHEMA ${sharedSchema}`);
+    const fixtureSql = `
       CREATE TEMP TABLE pg_temp.github_deliveries (
         delivery_id TEXT PRIMARY KEY,
         event_name TEXT NOT NULL,
@@ -130,18 +167,382 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-    `);
+    `;
+    await client.query(sharedSchema ? fixtureSql.replaceAll('CREATE TEMP TABLE pg_temp.', 'CREATE TABLE ') : fixtureSql);
+    await client.query(sharedSchema ? REVIEW_GATE_SCHEMA_SQL : REVIEW_GATE_SCHEMA_SQL.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
+    await client.query(sharedSchema ? PREPARED_REVIEW_SCHEMA_SQL : PREPARED_REVIEW_SCHEMA_SQL.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
 
     const transactionClient = {
       query: client.query.bind(client),
       release: () => undefined,
     };
     const repository = new PostgresReviewDispatchRepository(
-      { connect: async () => transactionClient },
-      client,
+      shared ? pool : { connect: async () => transactionClient },
+      shared ? undefined : client,
+      options,
     );
-    return { repository, client };
+    const gateRepository = new PostgresReviewGateRepository(shared ? pool : {
+      query: client.query.bind(client), connect: async () => transactionClient,
+    });
+    return { repository, client, gateRepository };
   }
+
+  async function bindPendingGate(gates: PostgresReviewGateRepository, now = 1_001) {
+    const claim = (await gates.claimPublication('gate-publisher', now))!;
+    expect(claim).not.toBeNull();
+    expect(await gates.publishLocked(claim, async (gate) => ({
+      id: now, name: REVIEW_GATE_CHECK_NAME, appId: gate.expectedAppId,
+      headSha: gate.coordinates.headSha, externalId: gate.externalId,
+      status: 'queued', conclusion: null,
+    }), () => now + 1)).toBe('published');
+    return claim;
+  }
+
+  describe('atomic authoritative admission', () => {
+    it('commits prepared policy, run, outbox and gate together; dispatch waits for durable check binding', async () => {
+      const { repository, client, gateRepository } = await createRepository();
+      const input = authoritativeAdmission();
+      const admission = await repository.admit(input);
+      expect(admission.run.authoritativeGateAppId).toBe(4385771);
+      for (const table of ['prepared_review_policies', 'review_runs', 'review_dispatch_outbox', 'review_gate_attempts']) {
+        expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(1);
+      }
+      expect(await repository.claimNext('dispatcher', 1_000, 30_000)).toBeNull();
+      const gate = await bindPendingGate(gateRepository);
+      const claimed = await repository.claimNext('dispatcher', 1_003, 30_000);
+      expect(claimed).toMatchObject({ runId: admission.run.runId, authoritativeGateAppId: 4385771,
+        configDigest: input.authoritativeGate.prepared.policy.effectiveConfigDigest,
+        policyDigest: input.authoritativeGate.prepared.policy.effectivePolicyDigest, executionAttempt: 1 });
+      expect(gate.coordinates.runId).toBe(admission.run.runId);
+    });
+
+    it('rolls every admission write back when gate reservation fails', async () => {
+      const { client } = await createRepository();
+      const failing = new PostgresReviewDispatchRepository({ connect: async () => ({
+        query: async (sql, values) => {
+          if (sql.includes('INSERT INTO review_gate_attempts')) throw new Error('injected reservation failure');
+          return client.query(sql, values);
+        }, release: () => undefined,
+      }) }, undefined, trustedValidation);
+      await expect(failing.admit(authoritativeAdmission())).rejects.toThrow('injected reservation failure');
+      for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs', 'review_dispatch_outbox', 'review_gate_attempts']) {
+        expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
+      }
+    });
+
+    it('reuses the exact gate for duplicate deliveries and active new deliveries', async () => {
+      const { repository, client, gateRepository } = await createRepository();
+      const original = authoritativeAdmission();
+      await repository.admit(original);
+      await bindPendingGate(gateRepository);
+      expect((await repository.admit(original)).status).toBe('duplicate');
+      const active = await repository.admit(authoritativeAdmission('next-delivery', 2_000));
+      expect(active.run.attempt).toBe(0);
+      expect((await client.query('SELECT check_id, current_attempt FROM review_gate_attempts')).rows)
+        .toEqual([{ check_id: '1001', current_attempt: true }]);
+    });
+
+    it('rejects a duplicate delivery that resolves to a different candidate or App', async () => {
+      const { repository, client } = await createRepository();
+      const original = authoritativeAdmission();
+      await repository.admit(original);
+      const changed = authoritativeAdmission();
+      changed.identity.baseSha = 'f'.repeat(40);
+      // Rebuild the entire identity, not just a caller-supplied head/base field.
+      const candidate = { repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'f'.repeat(40) };
+      changed.identity = buildAuthoritativeReviewIdentity({ requested: candidate,
+        current: { ...candidate, open: true, draft: false }, policy: changed.authoritativeGate.prepared.policy });
+      await expect(repository.admit(changed)).rejects.toThrow('Duplicate delivery no longer matches');
+      const changedApp = authoritativeAdmission(); changedApp.authoritativeGate.expectedAppId = 15368;
+      await expect(repository.admit(changedApp)).rejects.toThrow('Duplicate delivery no longer matches');
+      expect((await client.query('SELECT count(*)::int AS count FROM review_gate_attempts')).rows[0].count).toBe(1);
+    });
+
+    it('requires a fresh bound gate for an explicit retry after worker failure', async () => {
+      const { repository, client, gateRepository } = await createRepository();
+      const run = (await repository.admit(authoritativeAdmission())).run;
+      await bindPendingGate(gateRepository);
+      await client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [run.runId]);
+      await client.query("UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1", [run.runId]);
+      const retry = await repository.admit(authoritativeAdmission('explicit-retry', 2_000));
+      expect(retry.run.attempt).toBe(1);
+      expect(await repository.claimNext('dispatcher', 2_001, 30_000)).toBeNull();
+      const rows = (await client.query('SELECT review_generation, execution_attempt, current_attempt, check_id FROM review_gate_attempts ORDER BY review_generation')).rows;
+      expect(rows).toEqual([
+        { review_generation: 0, execution_attempt: 1, current_attempt: false, check_id: '1001' },
+        { review_generation: 1, execution_attempt: 2, current_attempt: true, check_id: null },
+      ]);
+    });
+
+    it('does not let the legacy abandoned-run check creator own authoritative runs', async () => {
+      const { repository } = await createRepository();
+      await repository.admit(authoritativeAdmission());
+      expect(await repository.claimAbandonedPublishingRuns('legacy-reaper', 1_000_000, 10)).toEqual([]);
+    });
+
+    it('rejects a mismatched prepared identity before writing', async () => {
+      const { repository, client } = await createRepository();
+      const input = authoritativeAdmission(); input.effectivePolicyDigest = 'f'.repeat(64);
+      await expect(repository.admit(input)).rejects.toThrow('does not match its prepared identity');
+      expect((await client.query('SELECT count(*)::int AS count FROM review_runs')).rows[0].count).toBe(0);
+    });
+  });
+
+  describe('under-lock authoritative admission validation', () => {
+    async function expectNoAdmissionWrites(connection: PoolClient) {
+      for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs', 'review_dispatch_outbox', 'review_gate_attempts']) {
+        expect((await connection.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
+      }
+    }
+
+    it('requires an explicit trusted validator for authoritative admission', async () => {
+      const { repository, client } = await createRepository({});
+      await expect(repository.admit(authoritativeAdmission())).rejects.toThrow('validator is required');
+      await expectNoAdmissionWrites(client);
+    });
+
+    it('redacts validator failure and rolls back before any admission writes', async () => {
+      const { repository, client } = await createRepository({ validateAuthoritativeAdmission: async () => {
+        throw new Error('private provider response and fixture credential');
+      } });
+      await expect(repository.admit(authoritativeAdmission())).rejects.toThrow(/^Authoritative admission validation unavailable$/u);
+      await expectNoAdmissionWrites(client);
+    });
+
+    it('hard-bounds an uncooperative validator and cannot write after it resolves late', async () => {
+      let finish!: () => void;
+      const { repository, client } = await createRepository({ admissionValidationTimeoutMs: 1,
+        validateAuthoritativeAdmission: () => new Promise<void>((resolve) => { finish = resolve; }) });
+      const started = performance.now();
+      await expect(repository.admit(authoritativeAdmission())).rejects.toThrow(/^Authoritative admission validation unavailable$/u);
+      expect(performance.now() - started).toBeGreaterThanOrEqual(250);
+      await expectNoAdmissionWrites(client);
+      finish();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await expectNoAdmissionWrites(client);
+      // ROLLBACK completed and the same connection is usable, not held by the late validator.
+      expect((await client.query('SELECT 1 AS ready')).rows[0].ready).toBe(1);
+    });
+
+    it.each(['disabled', 'app-gate'] as const)('never invokes authoritative validation for unmarked %s admissions', async (publicationMode) => {
+      let calls = 0;
+      const { repository } = await createRepository({ validateAuthoritativeAdmission: async () => { calls++; throw new Error('must not run'); } });
+      expect((await repository.admit({ ...sameHeadAdmission('legacy', 1_000), publicationMode })).status).toBe('accepted');
+      expect(calls).toBe(0);
+    });
+
+    it.each([NaN, Infinity, 250.5])('rejects invalid validation timeout %s before connecting', (admissionValidationTimeoutMs) => {
+      let connected = false;
+      expect(() => new PostgresReviewDispatchRepository({ connect: async () => { connected = true; throw new Error(); } },
+        undefined, { admissionValidationTimeoutMs })).toThrow('validation configuration');
+      expect(connected).toBe(false);
+    });
+
+    it('validates stale A only after concurrently admitted newer B releases the real PR lock', async () => {
+      const stale = authoritativeAdmission('stale-a', 1_000);
+      const newer = authoritativeAdmission('new-b', 2_000);
+      const current = { repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+        headSha: 'f'.repeat(40), baseSha: 'b'.repeat(40), open: true, draft: true };
+      newer.identity = buildAuthoritativeReviewIdentity({ requested: current, current, policy: newer.authoritativeGate.prepared.policy });
+      let entered!: () => void;
+      let release!: () => void;
+      const inside = new Promise<void>((resolve) => { entered = resolve; });
+      const barrier = new Promise<void>((resolve) => { release = resolve; });
+      const validationOrder: string[] = [];
+      const { repository, client } = await createRepository({ validateAuthoritativeAdmission: async (input) => {
+        validationOrder.push(input.deliveryId);
+        if (input.deliveryId === 'new-b') { entered(); await barrier; }
+        if (input.identity.headSha !== current.headSha) throw new Error('stale candidate');
+      } }, true);
+      const accepted = repository.admit(newer);
+      let rejected: Promise<unknown> | undefined;
+      try {
+        await inside;
+        await expectNoAdmissionWrites(client);
+        expect((await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired',
+          ['review-dispatch:123:42'])).rows[0].acquired).toBe(false);
+        // A's old snapshot exists already, but its validation must wait for B's
+        // transaction rather than overwriting B after validation outside the lock.
+        rejected = expect(repository.admit(stale)).rejects.toThrow('Authoritative admission validation unavailable');
+        const waitDeadline = performance.now() + 1_000;
+        let waiting = 0;
+        while (performance.now() < waitDeadline && waiting === 0) {
+          waiting = (await client.query(`SELECT count(*)::int AS waiting FROM pg_stat_activity
+            WHERE application_name = $1 AND wait_event_type = 'Lock' AND wait_event = 'advisory'`, [sharedSchema])).rows[0].waiting;
+          if (waiting === 0) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(1);
+        expect(validationOrder).toEqual(['new-b']);
+        release();
+        const admitted = await accepted;
+        await rejected;
+        expect(validationOrder).toEqual(['new-b', 'stale-a']);
+        expect((await client.query('SELECT delivery_id FROM github_deliveries')).rows).toEqual([{ delivery_id: 'new-b' }]);
+        expect((await client.query('SELECT run_id, status FROM review_runs')).rows).toEqual([{ run_id: admitted.run.runId, status: 'queued' }]);
+        expect((await client.query('SELECT run_id, current_attempt FROM review_gate_attempts')).rows)
+          .toEqual([{ run_id: admitted.run.runId, current_attempt: true }]);
+      } finally {
+        release();
+        await Promise.allSettled([accepted, ...(rejected ? [rejected] : [])]);
+      }
+    });
+  });
+
+  describe('authoritative isolation and execution recovery', () => {
+    it.each(['disabled', 'app-gate'] as const)('keeps authoritative work intact across unmarked %s admission and redelivery', async (publicationMode) => {
+      const { repository, client, gateRepository } = await createRepository();
+      const first = await repository.admit(authoritativeAdmission());
+      await bindPendingGate(gateRepository);
+      const claim = (await repository.claimNext('dispatcher', 1_003, 30_000))!;
+      await repository.bindWorkerTokenDigest(claim.runId, claim.leaseOwner, claim.claimAttempt, 'a'.repeat(64), 1_004);
+      const before = await dispatchState(client, first.run.runId);
+      const gateBefore = (await client.query('SELECT * FROM review_gate_attempts')).rows;
+      const legacy = await repository.admit({ ...sameHeadAdmission('shadow', 2_000), publicationMode });
+      expect(await dispatchState(client, first.run.runId)).toEqual(before);
+      expect(await gateRepository.reapTerminalAttempts(2_001)).toBe(0);
+      expect((await client.query('SELECT * FROM review_gate_attempts')).rows).toEqual(gateBefore);
+      const legacyBefore = await dispatchState(client, legacy.run.runId);
+      expect((await repository.admit(authoritativeAdmission('active-redelivery', 3_000))).run.runId).toBe(first.run.runId);
+      expect(await dispatchState(client, first.run.runId)).toEqual(before);
+      expect(await dispatchState(client, legacy.run.runId)).toEqual(legacyBefore);
+    });
+
+    it.each(['disabled', 'app-gate'] as const)('keeps unmarked %s work intact across authoritative admission and redelivery', async (publicationMode) => {
+      const { repository, client } = await createRepository();
+      const first = await repository.admit({ ...sameHeadAdmission('legacy', 1_000), publicationMode });
+      await repository.claimNext('legacy-dispatcher', 1_001, 30_000);
+      const before = await dispatchState(client, first.run.runId);
+      const authoritative = await repository.admit(authoritativeAdmission('authoritative', 2_000));
+      expect(await dispatchState(client, first.run.runId)).toEqual(before);
+      const authoritativeBefore = await dispatchState(client, authoritative.run.runId);
+      const gateBefore = (await client.query('SELECT * FROM review_gate_attempts')).rows;
+      expect((await repository.admit({ ...sameHeadAdmission('legacy-redelivery', 3_000), publicationMode })).run.runId).toBe(first.run.runId);
+      expect(await dispatchState(client, first.run.runId)).toEqual(before);
+      expect(await dispatchState(client, authoritative.run.runId)).toEqual(authoritativeBefore);
+      expect((await client.query('SELECT * FROM review_gate_attempts')).rows).toEqual(gateBefore);
+    });
+
+    describe.each(['disabled', 'app-gate'] as const)('unmarked %s history', (publicationMode) => {
+      it.each([true, false])('does not block retry in the other authority class (authoritative retry: %s)', async (authoritative) => {
+        const { repository, client, gateRepository } = await createRepository();
+        const admission = (id: string, now: number, enrolled: boolean) => enrolled
+          ? authoritativeAdmission(id, now) : { ...sameHeadAdmission(id, now), publicationMode };
+        const first = await repository.admit(admission('first', 1_000, authoritative));
+        if (authoritative) await bindPendingGate(gateRepository);
+        const claim = (await repository.claimNext('dispatcher', 1_003, 30_000))!;
+        expect(await repository.markTerminal(claim.runId, claim.leaseOwner, claim.claimAttempt, 1_004, 'before-worker failure')).toBe(true);
+        const failed = await dispatchState(client, first.run.runId);
+        const other = await repository.admit(admission('other', 2_000, !authoritative));
+        expect(await dispatchState(client, first.run.runId)).toEqual(failed);
+        const otherBefore = await dispatchState(client, other.run.runId);
+        const retry = await repository.admit(admission('retry', 3_000, authoritative));
+        expect(retry.run).toMatchObject({ runId: first.run.runId, attempt: 1, status: 'queued' });
+        // No token was ever bound, so this true pre-worker failure does not
+        // allocate a replacement execution/Secret, even for an enrolled run.
+        expect((await dispatchState(client, first.run.runId)).outbox).toMatchObject({ execution_attempt: 0, worker_token_digest: null });
+        expect(await dispatchState(client, other.run.runId)).toEqual(otherBefore);
+      });
+    });
+
+    it.each(['disabled', 'app-gate'] as const)('preserves supersession and historical rejection within legacy modes starting with %s', async (publicationMode) => {
+      const { repository, client } = await createRepository();
+      const first = await repository.admit({ ...sameHeadAdmission('first', 1_000), publicationMode });
+      const nextMode = publicationMode === 'disabled' ? 'app-gate' : 'disabled';
+      const next = await repository.admit({ ...sameHeadAdmission('next', 2_000, { baseSha: 'f'.repeat(40) }), publicationMode: nextMode });
+      expect((await dispatchState(client, first.run.runId)).run.status).toBe('superseded');
+      await expect(repository.admit({ ...sameHeadAdmission('stale', 3_000), publicationMode })).rejects.toThrow('identity conflict');
+      expect((await dispatchState(client, next.run.runId)).run.status).toBe('queued');
+      expect((await client.query('SELECT * FROM review_gate_attempts')).rows).toEqual([]);
+    });
+
+    it('preserves supersession and historical rejection within authoritative admissions', async () => {
+      const { repository, client } = await createRepository();
+      const first = await repository.admit(authoritativeAdmission());
+      const nextInput = authoritativeAdmission('next', 2_000);
+      const candidate = { repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'f'.repeat(40) };
+      nextInput.identity = buildAuthoritativeReviewIdentity({ requested: candidate,
+        current: { ...candidate, open: true, draft: false }, policy: nextInput.authoritativeGate.prepared.policy });
+      const next = await repository.admit(nextInput);
+      expect((await dispatchState(client, first.run.runId)).run.status).toBe('superseded');
+      // Model pre-fix retained history to exercise the historical conflict guard,
+      // rather than only the explicit superseded-status rejection.
+      await client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [first.run.runId]);
+      await expect(repository.admit(authoritativeAdmission('stale', 3_000))).rejects.toThrow('identity conflict');
+      expect((await dispatchState(client, next.run.runId)).run.status).toBe('queued');
+      expect((await client.query('SELECT run_id FROM review_gate_attempts WHERE current_attempt')).rows).toEqual([{ run_id: next.run.runId }]);
+    });
+
+    it.each([true, false])('rotates a token-bound execution after a lost ACK and reclaimed dispatcher failure (authoritative: %s)', async (authoritative) => {
+      const { repository, client, gateRepository } = await createRepository();
+      const authInput = authoritativeAdmission();
+      const input = authoritative ? authInput : sameHeadAdmission('legacy', 1_000);
+      const first = await repository.admit(input);
+      if (authoritative) await bindPendingGate(gateRepository);
+      const original = (await repository.claimNext('dispatcher', 1_003, 1_000))!;
+      const oldProof = { workerTokenDigest: 'a'.repeat(64) };
+      const newProof = { workerTokenDigest: 'b'.repeat(64) };
+      expect(await repository.bindWorkerTokenDigest(original.runId, original.leaseOwner, original.claimAttempt, oldProof.workerTokenDigest, 1_004)).toBe(true);
+      // Kubernetes may have started this worker. Only its projection ACK is lost.
+      const reclaimed = (await repository.claimNext('dispatcher', 2_003, 1_000))!;
+      expect(reclaimed).toMatchObject({ executionAttempt: 1, claimAttempt: 2, workerTokenDigest: oldProof.workerTokenDigest });
+      expect(await repository.markTerminal(reclaimed.runId, reclaimed.leaseOwner, reclaimed.claimAttempt, 2_004, 'prepared read unavailable')).toBe(true);
+      const failed = await dispatchState(client, first.run.runId);
+      expect(failed.run.status).toBe('failed');
+      expect(failed.outbox).toMatchObject({ status: 'projected', execution_attempt: 0,
+        worker_token_digest: oldProof.workerTokenDigest, lease_owner: null, lease_expires_at: null });
+      expect(await repository.markProjected(original.runId, original.leaseOwner, original.claimAttempt, 'late-ack', 2_005, oldProof.workerTokenDigest)).toBe(false);
+      expect(await repository.releaseForRetry(reclaimed.runId, reclaimed.leaseOwner, reclaimed.claimAttempt, 2_005, 2_006)).toBe(false);
+      expect(await dispatchState(client, first.run.runId)).toEqual(failed);
+
+      const retry = await repository.admit(authoritative ? authoritativeAdmission('retry', 3_000) : sameHeadAdmission('retry', 3_000));
+      expect(retry.run).toMatchObject({ runId: first.run.runId, attempt: 1, status: 'queued' });
+      expect((await dispatchState(client, first.run.runId)).outbox).toMatchObject({ execution_attempt: 1, worker_token_digest: null });
+      if (authoritative) {
+        expect(await repository.claimNext('dispatcher', 3_001, 30_000)).toBeNull();
+        const cancelled = (await gateRepository.claimPublication('publisher', 3_002))!;
+        expect(cancelled.desiredState).toBe('cancelled');
+        await gateRepository.publishLocked(cancelled, async (gate) => ({ id: gate.checkId!, name: REVIEW_GATE_CHECK_NAME,
+          appId: gate.expectedAppId, headSha: gate.coordinates.headSha, externalId: gate.externalId,
+          status: 'completed', conclusion: 'cancelled' }), () => 3_003);
+        await bindPendingGate(gateRepository, 3_004);
+      }
+      const fresh = (await repository.claimNext('dispatcher', 3_006, 30_000))!;
+      expect(fresh.executionAttempt).toBe(2);
+      expect(buildRunSecretName(fresh.runId, fresh.executionAttempt)).not.toBe(buildRunSecretName(original.runId, original.executionAttempt));
+      expect(await repository.bindWorkerTokenDigest(fresh.runId, fresh.leaseOwner, fresh.claimAttempt, newProof.workerTokenDigest, 3_007)).toBe(true);
+      const completion = (executionAttempt: number): WorkerReviewCompletion => ({
+        version: 'WorkerReviewCompletion.v1', runId: first.run.runId, repositoryId: input.repositoryId,
+        owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+        headSha: input.identity.headSha, baseSha: input.identity.baseSha, policyDigest: input.effectivePolicyDigest,
+        configDigest: input.identity.configDigest, executionAttempt,
+        result: { version: 'WorkerReviewResult.v1', completedAt: new Date(3_020).toISOString(),
+          personas: authInput.authoritativeGate.prepared.expectedPersonaIds.map((id) => ({ id, decision: 'APPROVE', status: 'COMPLETE', findings: [] })),
+          coverageComplete: true, quorumSatisfied: true },
+      });
+      const report = async (execution: number, proof: typeof oldProof) => {
+        const event = completion(execution);
+        if (authoritative) return gateRepository.recordWorkerResult(event, proof, async () => ({
+          current: { ...event, open: true, draft: true },
+          coverage: { expectedPersonaIds: authInput.authoritativeGate.prepared.expectedPersonaIds,
+            changedFiles: [{ path: 'src/a.ts', patch: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n' }],
+            coverageComplete: true, quorumSatisfied: true },
+        }), 3_020);
+        const { version: _version, result: _result, ...coordinates } = event;
+        return (await repository.markWorkerFailure({ version: 'WorkerTerminalFailure.v1', ...coordinates, failureClass: 'provider_error' }, proof, 3_020)).status;
+      };
+      const beforeCallback = await dispatchState(client, fresh.runId);
+      const gateBefore = (await client.query('SELECT * FROM review_gate_attempts ORDER BY attempt_id')).rows;
+      // Even a late old completion stamped AFTER the fresh admission is fenced.
+      expect(await report(1, oldProof)).toBe('unauthorized');
+      expect(await report(1, newProof)).toBe('unauthorized');
+      expect(await dispatchState(client, fresh.runId)).toEqual(beforeCallback);
+      expect((await client.query('SELECT * FROM review_gate_attempts ORDER BY attempt_id')).rows).toEqual(gateBefore);
+      expect(await report(2, newProof)).toBe(authoritative ? 'recorded' : 'failed');
+      expect((await dispatchState(client, fresh.runId)).run.status).toBe(authoritative ? 'succeeded' : 'failed');
+    });
+  });
 
   describe.each(claimMutations)('%s claim fencing', (mutation) => {
     it('rejects an old same-worker claim after reclaiming the same execution', async () => {

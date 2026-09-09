@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ReviewJobDispatchEngine } from '../../src/k8s/reviewJobDispatchEngine';
+import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
+import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const now = receivedAt + 60_000;
@@ -41,6 +44,7 @@ function fixture(overrides: Record<string, any> = {}) {
     repository,
     projector,
     runSecretProvisioner,
+    preparedReviewFor: overrides.preparedReviewFor,
     workerId: 'dispatcher-a',
     workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     namespace: 'ct-review-qualification',
@@ -352,5 +356,156 @@ describe('ReviewJobDispatchEngine', () => {
     const { engine, projector } = fixture({ repository: { claimNext: vi.fn(async () => null) } });
     await expect(engine.runOnce()).resolves.toEqual({ status: 'idle' });
     expect(projector.ensure).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  function authoritativeFixture(overrides: Record<string, any> = {}) {
+    const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 1 },
+    } });
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'admitted-review-model' };
+    const prepared = preparePublishingPolicy({ content, source: {
+      repositoryId: 987, repository: 'central/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
+      contentDigest: createHash('sha256').update(content).digest('hex'),
+    } }, transport);
+    const envelope = { version: 'PreparedReviewExecution.v1', config: prepared.config, transport };
+    const serialized = JSON.stringify(envelope);
+    const authoritativeClaim: ReviewDispatchClaim = { ...claim, publicationMode: 'app-gate',
+      authoritativeGateAppId: 4385771, policyDigest: prepared.policy.effectivePolicyDigest,
+      configDigest: prepared.policy.effectiveConfigDigest };
+    const preparedReviewFor = vi.fn<(claim: ReviewDispatchClaim) => Promise<string>>().mockResolvedValue(serialized);
+    const f = fixture({ preparedReviewFor, ...overrides, repository: {
+      claimNext: vi.fn(async () => authoritativeClaim), ...overrides.repository,
+    } });
+    return { ...f, authoritativeClaim, preparedReviewFor, prepared, envelope, serialized };
+  }
+
+  function expectNoProjectionEffects(f: ReturnType<typeof authoritativeFixture>) {
+    expect(f.runSecretProvisioner?.provision).not.toHaveBeenCalled();
+    expect(f.repository.bindWorkerTokenDigest).not.toHaveBeenCalled();
+    expect(f.projector.ensure).not.toHaveBeenCalled();
+    expect(f.repository.markProjected).not.toHaveBeenCalled();
+    expect(f.repository.releaseForRetry).not.toHaveBeenCalled();
+  }
+
+  async function expectRejectedProjection(f: ReturnType<typeof authoritativeFixture>, at = now) {
+    await expect(f.engine.runOnce()).resolves.toEqual({ status: 'terminal', runId: claim.runId, reason: 'projection-rejected' });
+    expect(f.repository.markTerminal).toHaveBeenCalledExactlyOnceWith(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, at, 'review job projection rejected',
+    );
+    expectNoProjectionEffects(f);
+  }
+
+  it('looks up the exact claim before provisioning and forwards only the validated envelope unchanged', async () => {
+    vi.stubEnv('REVIEW_MODEL', 'mutable-model');
+    vi.stubEnv('REVIEW_PERSONAS', 'licensing');
+    const f = authoritativeFixture();
+    await expect(f.engine.runOnce()).resolves.toMatchObject({ status: 'projected', runId: claim.runId });
+    expect(f.preparedReviewFor).toHaveBeenCalledExactlyOnceWith(f.authoritativeClaim);
+    expect(f.projector.ensure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      spec: expect.objectContaining({ preparedReview: f.serialized,
+        configDigest: f.prepared.policy.effectiveConfigDigest, policyDigest: f.prepared.policy.effectivePolicyDigest,
+        publicationMode: 'app-gate', workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}` }),
+    }));
+    expect(f.preparedReviewFor.mock.invocationCallOrder[0]).toBeLessThan(f.runSecretProvisioner!.provision.mock.invocationCallOrder[0]);
+    expect(f.runSecretProvisioner!.provision.mock.invocationCallOrder[0]).toBeLessThan(f.repository.bindWorkerTokenDigest.mock.invocationCallOrder[0]);
+    expect(f.repository.bindWorkerTokenDigest.mock.invocationCallOrder[0]).toBeLessThan(f.projector.ensure.mock.invocationCallOrder[0]);
+    expect(f.repository.markTerminal).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the authoritative callback is absent instead of falling back to legacy publishing', async () => {
+    await expectRejectedProjection(authoritativeFixture({ preparedReviewFor: undefined }));
+  });
+
+  it.each(['empty', 'undefined', 'null', 'invalid JSON', 'wrong version', 'extra authority',
+    'wrong config', 'wrong transport', 'oversize'] as const)('rejects a %s envelope before any Secret or Job effect', async (invalid) => {
+    const f = authoritativeFixture();
+    const values: Record<typeof invalid, unknown> = {
+      empty: '', undefined, null: null, 'invalid JSON': '{private policy content',
+      'wrong version': JSON.stringify({ ...f.envelope, version: 'PreparedReviewExecution.v2' }),
+      'extra authority': JSON.stringify({ ...f.envelope, checkId: 4242 }),
+      'wrong config': JSON.stringify({ ...f.envelope, config: { ...f.envelope.config, default_max_turns: 2 } }),
+      'wrong transport': JSON.stringify({ ...f.envelope, transport: { ...f.envelope.transport, model: 'different-model' } }),
+      oversize: `${f.serialized}${' '.repeat(256 * 1024)}`,
+    };
+    // Exercise corrupt/missing persistence returns at the runtime boundary.
+    f.preparedReviewFor.mockResolvedValue(values[invalid] as string);
+    await expectRejectedProjection(f);
+  });
+
+  it.each(['rejection', 'synchronous throw'] as const)('redacts a lookup %s and does not provision or retry', async (failure) => {
+    const f = authoritativeFixture();
+    const privateDetail = 'ghs_private_token private policy transcript';
+    if (failure === 'rejection') f.preparedReviewFor.mockRejectedValue(new Error(privateDetail));
+    else f.preparedReviewFor.mockImplementation(() => { throw new Error(privateDetail); });
+    await expectRejectedProjection(f);
+    expect(JSON.stringify(f.repository.markTerminal.mock.calls)).not.toContain(privateDetail);
+  });
+
+  it('rejects a valid envelope when it is not the config admitted by the claim', async () => {
+    const f = authoritativeFixture();
+    f.authoritativeClaim.configDigest = '0'.repeat(64);
+    await expectRejectedProjection(f);
+  });
+
+  it('reports lease loss when marking a failed lookup no longer owns the claim', async () => {
+    const f = authoritativeFixture({ repository: { markTerminal: vi.fn(async () => false) } });
+    f.preparedReviewFor.mockRejectedValue(new Error('lookup unavailable'));
+    await expect(f.engine.runOnce()).resolves.toEqual({ status: 'lease-lost', runId: claim.runId });
+    expectNoProjectionEffects(f);
+  });
+
+  it('bounds a hung read at exactly five seconds; a late success cannot provision or publish a Job', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const f = authoritativeFixture({ now: Date.now });
+    const deferred = Promise.withResolvers<string>();
+    f.preparedReviewFor.mockReturnValue(deferred.promise);
+    const pending = f.engine.runOnce();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(f.preparedReviewFor).toHaveBeenCalledExactlyOnceWith(f.authoritativeClaim);
+    expectNoProjectionEffects(f);
+    expect(f.repository.markTerminal).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({ status: 'terminal', runId: claim.runId, reason: 'projection-rejected' });
+    expect(f.repository.markTerminal).toHaveBeenCalledExactlyOnceWith(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, now + 5_000, 'review job projection rejected',
+    );
+    expect(vi.getTimerCount()).toBe(0);
+    deferred.resolve(f.serialized);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expectNoProjectionEffects(f);
+    expect(f.repository.markTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['success', 'rejection'] as const)('clears the bounded lookup timer after early %s', async (outcome) => {
+    vi.useFakeTimers();
+    const f = authoritativeFixture();
+    const deferred = Promise.withResolvers<string>();
+    f.preparedReviewFor.mockReturnValue(deferred.promise);
+    const pending = f.engine.runOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(vi.getTimerCount()).toBe(1);
+    expectNoProjectionEffects(f);
+    if (outcome === 'success') deferred.resolve(f.serialized);
+    else deferred.reject(new Error('lookup failed'));
+    await expect(pending).resolves.toMatchObject({ status: outcome === 'success' ? 'projected' : 'terminal' });
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.repository.markTerminal).toHaveBeenCalledTimes(outcome === 'success' ? 0 : 1);
+    expect(f.projector.ensure).toHaveBeenCalledTimes(outcome === 'success' ? 1 : 0);
+  });
+
+  it.each(['disabled', 'app-gate'] as const)('ignores the prepared-policy callback entirely for legacy %s claims', async (publicationMode) => {
+    const lookup = vi.fn(async () => { throw new Error('Legacy must not look up an authoritative policy'); });
+    const f = fixture({ preparedReviewFor: lookup,
+      repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode })) } });
+    await expect(f.engine.runOnce()).resolves.toMatchObject({ status: 'projected', runId: claim.runId });
+    expect(lookup).not.toHaveBeenCalled();
+    expect(f.projector.ensure.mock.calls[0][0].spec).not.toHaveProperty('preparedReview');
+    expect(f.repository.markTerminal).not.toHaveBeenCalled();
   });
 });

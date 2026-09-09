@@ -12,6 +12,9 @@ interface Client extends Queryable { release(): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
 
 export type GateDesiredState = 'queued' | 'in_progress' | 'success' | 'failure' | 'cancelled' | 'timed_out';
+export function isGateProgressState(state: GateDesiredState): state is 'queued' | 'in_progress' {
+  return state === 'queued' || state === 'in_progress';
+}
 export interface StoredReviewGate {
   coordinates: ReviewGateCoordinates;
   reviewGeneration: number;
@@ -28,10 +31,17 @@ export interface GatePublicationClaim extends StoredReviewGate {
   leaseOwner: string;
   /** Fences a stale claim even when the same process identity reacquires it. */
   leaseToken: string;
-  /** True only on the committed reserved -> creating transition. A retry with
-   * no check ID must reconcile; absence after an uncertain POST is not proof
-   * that GitHub rejected the creation. */
+  /** True only on the committed reserved -> creating transition. After an
+   * uncertain POST, no check ID still means reconcile-only. Only a proven
+   * pre-create preparation failure may restore the reservation. */
   mayCreate: boolean;
+}
+
+/** Only the trusted publisher's client-preparation branch may return this.
+ * Once createPending is invoked, even a synchronous throw is uncertain. */
+export interface GatePublicationNotStarted {
+  kind: 'not-started';
+  retryDelayMs: number;
 }
 
 export interface TrustedGateCompletionContext {
@@ -62,12 +72,30 @@ function fromRow(row: any): StoredReviewGate {
 /** Persistence boundary only. The service supplies trusted current GitHub truth
  * and policy; workers cannot reserve, create or select authoritative checks. */
 export class PostgresReviewGateRepository {
-  constructor(private readonly pool: Pool) {}
+  private readonly completionResolutionTimeoutMs: number;
+  constructor(private readonly pool: Pool, options: { completionResolutionTimeoutMs?: number } = {}) {
+    this.completionResolutionTimeoutMs = options.completionResolutionTimeoutMs ?? 10_000;
+    if (!Number.isSafeInteger(this.completionResolutionTimeoutMs)
+      || this.completionResolutionTimeoutMs < 250 || this.completionResolutionTimeoutMs > 15_000) {
+      throw new Error('Gate completion resolution timeout must be bounded');
+    }
+  }
+
+  private async resolveCompletion(resolve: (gate: StoredReviewGate) => Promise<TrustedGateCompletionContext>,
+    gate: StoredReviewGate): Promise<TrustedGateCompletionContext> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([resolve(gate), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Gate completion resolution deadline exceeded')),
+          this.completionResolutionTimeoutMs);
+      })]);
+    } finally { if (timer !== undefined) clearTimeout(timer); }
+  }
 
   /** Authenticate and commit terminal review, dispatch retirement and gate
    * publication intent in one transaction. The service's resolver owns current
    * GitHub truth and coverage; the worker never supplies that authority.
-   * Deliberately not wired to a route until prepared-policy storage is in place. */
+   * Only explicitly enrolled runs with persisted prepared policy may complete. */
   async recordWorkerResult(
     input: unknown,
     proof: WorkerCompletionProof,
@@ -88,7 +116,8 @@ export class PostgresReviewGateRepository {
         `review-dispatch:${event.repositoryId}:${event.prNumber}`,
       ]);
       const result = await client.query(`SELECT gate.*, runs.status AS run_status,
-          runs.attempt AS current_generation, runs.effective_config_digest, runs.received_at,
+          runs.attempt AS current_generation, runs.effective_config_digest, runs.received_at, runs.terminal_deadline,
+          runs.authoritative_gate_app_id,
           outbox.worker_token_digest, outbox.execution_attempt AS current_execution,
           outbox.status AS outbox_status
         FROM review_gate_attempts gate JOIN review_runs runs USING (run_id)
@@ -106,6 +135,8 @@ export class PostgresReviewGateRepository {
         return await finish('unauthorized');
       }
       const gate = fromRow(row);
+      if (row.authoritative_gate_app_id == null
+        || Number(row.authoritative_gate_app_id) !== gate.expectedAppId) return await finish('unauthorized');
       const coordinates = gate.coordinates;
       if (['runId', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'policyDigest', 'executionAttempt']
         .some((key) => event[key as keyof typeof event] !== coordinates[key as keyof ReviewGateCoordinates])
@@ -120,8 +151,11 @@ export class PostgresReviewGateRepository {
         || !['pending', 'claimed', 'projected'].includes(row.outbox_status)
         || gate.creationState !== 'bound' || gate.checkId === null) return await finish('ignored');
 
-      const trusted = await resolve(gate);
-      const derived = deriveCanonicalWorkerReviewEvidence(event, {
+      const deadline = new Date(row.terminal_deadline).getTime();
+      const deadlineValid = Number.isFinite(deadline) && row.terminal_deadline != null && now < deadline;
+      const trusted = deadlineValid ? await this.resolveCompletion(resolve, gate) : undefined;
+      const currentDecision = trusted ? evaluateReviewGate({ candidate: coordinates, current: trusted.current }) : undefined;
+      const derived = trusted && currentDecision?.status === 'pending' ? deriveCanonicalWorkerReviewEvidence(event, {
         ...trusted.coverage,
         expectedCoordinates: {
           runId: coordinates.runId, repositoryId: coordinates.repositoryId,
@@ -130,15 +164,18 @@ export class PostgresReviewGateRepository {
           policyDigest: coordinates.policyDigest, configDigest: row.effective_config_digest,
           executionAttempt: coordinates.executionAttempt,
         },
-      });
+      }) : undefined;
       // The after-review human-risk boundary uses service receipt time, not a
       // worker-controlled timestamp that could make older consent look fresh.
       const workerCompletedAt = Date.parse(event.result.completedAt);
       const receivedAt = new Date(row.received_at).getTime();
       const timestampValid = Number.isFinite(receivedAt) && workerCompletedAt >= receivedAt && workerCompletedAt <= now + 5_000;
-      const evidence: ReviewGateEvidence | undefined = derived.valid && timestampValid
+      const evidence: ReviewGateEvidence | undefined = derived?.valid && timestampValid
         ? { ...derived.evidence, completedAt: new Date(now).toISOString() } : undefined;
-      const decision: ReviewGateDecision = evidence
+      const decision: ReviewGateDecision = !deadlineValid
+        ? { status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' }
+        : currentDecision && currentDecision.status !== 'pending' ? currentDecision
+        : evidence && trusted
         ? evaluateReviewGate({ candidate: coordinates, current: trusted.current, evidence })
         : { status: 'failure', eligible: false, reason: 'invalid-evidence' };
       if (decision.status === 'pending') throw new Error('Terminal gate result cannot remain pending');
@@ -170,17 +207,30 @@ export class PostgresReviewGateRepository {
    * Reuses admission's repository/PR lock; stale claims cannot supersede a newer
    * run, and retries of one generation cannot allocate another external ID. */
   async reserve(runId: string, expectedAppId: number, now = Date.now()): Promise<StoredReviewGate | null> {
-    if (!/^run_[a-f0-9]{32}$/u.test(runId) || !Number.isSafeInteger(expectedAppId) || expectedAppId <= 0) {
-      throw new Error('Invalid gate reservation identity');
-    }
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      const gate = await PostgresReviewGateRepository.reserveInTransaction(client, runId, expectedAppId, now);
+      await client.query('COMMIT');
+      return gate;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally { client.release(); }
+  }
+
+  /** Admission owns BEGIN/COMMIT when reserving together with its immutable
+   * prepared policy and outbox row. Never publish externally in this transaction. */
+  static async reserveInTransaction(client: Queryable, runId: string, expectedAppId: number,
+    now = Date.now()): Promise<StoredReviewGate | null> {
+    if (!/^run_[a-f0-9]{32}$/u.test(runId) || !Number.isSafeInteger(expectedAppId) || expectedAppId <= 0
+      || !Number.isFinite(now)) throw new Error('Invalid gate reservation identity');
+      await client.query("SET LOCAL lock_timeout = '5s'");
       // Discover only the lock key without a row lock. Admission takes the
       // advisory lock before locking rows; reversing that order can deadlock.
       const lookup = await client.query('SELECT repository_id, pr_number FROM review_runs WHERE run_id = $1', [runId]);
       const key = lookup.rows[0];
-      if (!key) { await client.query('COMMIT'); return null; }
+      if (!key) return null;
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`review-dispatch:${key.repository_id}:${key.pr_number}`]);
       const result = await client.query(`
         SELECT runs.*, outbox.execution_attempt + 1 AS worker_execution_attempt
@@ -190,7 +240,7 @@ export class PostgresReviewGateRepository {
            AND outbox.status IN ('pending', 'claimed', 'projected')
          FOR UPDATE OF runs, outbox`, [runId]);
       const run = result.rows[0];
-      if (!run) { await client.query('COMMIT'); return null; }
+      if (!run) return null;
       const generation = Number(run.attempt);
       const executionAttempt = Number(run.worker_execution_attempt);
       const coordinates: ReviewGateCoordinates = {
@@ -222,12 +272,7 @@ export class PostgresReviewGateRepository {
         RETURNING *`, [coordinates.attemptId, runId, generation, executionAttempt,
         coordinates.repositoryId, coordinates.prNumber, expectedAppId, JSON.stringify(coordinates), externalId, now]);
       if (saved.rows.length !== 1) throw new Error('Gate reservation conflicts with persisted identity');
-      await client.query('COMMIT');
       return fromRow(saved.rows[0]);
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw error;
-    } finally { client.release(); }
   }
 
   async claimPublication(workerId: string, now: number, leaseMs = 60_000): Promise<GatePublicationClaim | null> {
@@ -246,6 +291,119 @@ export class PostgresReviewGateRepository {
       RETURNING gate.*, candidate.may_create`, [workerId, now, leaseMs, randomUUID()]);
     const row = result.rows[0];
     return row ? { ...fromRow(row), leaseOwner: workerId, leaseToken: row.lease_token, mayCreate: row.may_create === true } : null;
+  }
+
+  /** Service-side recovery, not an Actions waiter. Hints are re-read under the
+   * admission lock; a late sweep cannot terminalize a newly admitted generation.
+   * Keep the existing gate ID and enqueue its non-success publication atomically. */
+  async reapTerminalAttempts(now = Date.now(), limit = 25): Promise<number> {
+    if (!Number.isFinite(now) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Invalid authoritative reaper bounds');
+    }
+    const hints = await this.pool.query(`SELECT gate.attempt_id, gate.repository_id, gate.pr_number
+      FROM review_gate_attempts gate JOIN review_runs runs USING (run_id)
+      WHERE gate.current_attempt AND gate.desired_state IN ('queued', 'in_progress')
+        AND runs.authoritative_gate_app_id = gate.expected_app_id
+        AND (runs.status IN ('failed', 'terminal', 'superseded')
+          OR runs.terminal_deadline <= to_timestamp($1/1000.0))
+      ORDER BY gate.created_at LIMIT $2`, [now, limit]);
+    let reaped = 0;
+    for (const hint of hints.rows) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query("SET LOCAL lock_timeout = '5s'");
+        const lock = await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired', [
+          `review-dispatch:${hint.repository_id}:${hint.pr_number}`,
+        ]);
+        if (!lock.rows[0]?.acquired) { await client.query('COMMIT'); continue; }
+        const current = await client.query(`SELECT gate.*, runs.status AS run_status,
+            runs.terminal_deadline, outbox.worker_token_digest
+          FROM review_gate_attempts gate JOIN review_runs runs USING (run_id)
+          JOIN review_dispatch_outbox outbox USING (run_id)
+          WHERE gate.attempt_id = $1 AND gate.current_attempt
+            AND gate.review_generation = runs.attempt
+            AND gate.execution_attempt = outbox.execution_attempt + 1
+            AND gate.expected_app_id = runs.authoritative_gate_app_id
+            AND gate.desired_state IN ('queued', 'in_progress')
+            AND (runs.status IN ('failed', 'terminal', 'superseded')
+              OR (runs.status IN ('queued', 'running') AND runs.terminal_deadline <= to_timestamp($2/1000.0)))
+          FOR UPDATE OF gate, runs, outbox`, [hint.attempt_id, now]);
+        const row = current.rows[0];
+        if (!row) { await client.query('COMMIT'); continue; }
+        const cancelled = row.run_status === 'superseded';
+        const expired = row.terminal_deadline != null && new Date(row.terminal_deadline).getTime() <= now;
+        const decision: ReviewGateDecision = cancelled
+          ? { status: 'cancelled', eligible: false, reason: 'candidate-superseded' }
+          : expired
+          ? { status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' }
+          : { status: 'failure', eligible: false, reason: 'infrastructure-failure' };
+        await client.query(`UPDATE review_gate_attempts SET desired_state = $2,
+            desired_version = desired_version + 1, decision = $3, current_attempt = $4,
+            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+            available_at = to_timestamp($5/1000.0), updated_at = to_timestamp($5/1000.0),
+            published_version = CASE WHEN $2 = 'cancelled' AND creation_state = 'reserved'
+              THEN desired_version + 1 ELSE published_version END
+          WHERE attempt_id = $1`, [hint.attempt_id, decision.status, JSON.stringify(decision), !cancelled, now]);
+        await client.query(`UPDATE review_runs SET status = $2, stage = 'publish', error_text = $3,
+            lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($4/1000.0)
+          WHERE run_id = $1`, [row.run_id, cancelled ? 'superseded' : 'failed', `review gate: ${decision.reason}`, now]);
+        // A bound token means a Job may have started before a lost projection
+        // ACK. Preserve that execution so retry allocates a fresh Job/Secret.
+        await client.query(`UPDATE review_dispatch_outbox SET
+            status = CASE WHEN worker_token_digest IS NOT NULL THEN 'projected' ELSE 'terminal' END,
+            lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($2/1000.0)
+          WHERE run_id = $1`, [row.run_id, now]);
+        await client.query('COMMIT');
+        reaped += 1;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined); throw error;
+      } finally { client.release(); }
+    }
+    return reaped;
+  }
+
+  /** Projection ACK is progress, never eligibility. Reconcile its durable row
+   * instead of letting a worker choose the authoritative check or mutate it. */
+  async advanceProjectedAttempts(now = Date.now(), limit = 25): Promise<number> {
+    if (!Number.isFinite(now) || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Invalid authoritative progress bounds');
+    }
+    const hints = await this.pool.query(`SELECT gate.attempt_id, gate.repository_id, gate.pr_number
+      FROM review_gate_attempts gate JOIN review_runs runs USING (run_id)
+      JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE gate.current_attempt AND gate.desired_state = 'queued' AND gate.creation_state = 'bound'
+        AND gate.expected_app_id = runs.authoritative_gate_app_id
+        AND runs.status IN ('queued', 'running') AND outbox.status = 'projected'
+        AND runs.terminal_deadline > to_timestamp($1/1000.0)
+      ORDER BY gate.created_at LIMIT $2`, [now, limit]);
+    let advanced = 0;
+    for (const hint of hints.rows) {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query("SET LOCAL lock_timeout = '5s'");
+        const lock = await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired', [
+          `review-dispatch:${hint.repository_id}:${hint.pr_number}`,
+        ]);
+        if (!lock.rows[0]?.acquired) { await client.query('COMMIT'); continue; }
+        const updated = await client.query(`UPDATE review_gate_attempts gate
+          SET desired_state = 'in_progress', desired_version = desired_version + 1,
+            available_at = to_timestamp($2/1000.0), updated_at = to_timestamp($2/1000.0)
+          FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+          WHERE gate.attempt_id = $1 AND gate.run_id = runs.run_id
+            AND gate.current_attempt AND gate.desired_state = 'queued' AND gate.creation_state = 'bound'
+            AND gate.review_generation = runs.attempt AND gate.execution_attempt = outbox.execution_attempt + 1
+            AND gate.expected_app_id = runs.authoritative_gate_app_id
+            AND runs.status IN ('queued', 'running') AND outbox.status = 'projected'
+            AND runs.terminal_deadline > to_timestamp($2/1000.0) RETURNING gate.attempt_id`, [hint.attempt_id, now]);
+        await client.query('COMMIT');
+        advanced += updated.rows.length;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined); throw error;
+      } finally { client.release(); }
+    }
+    return advanced;
   }
 
   /** Release with bounded service backoff. Never revert creating to reserved:
@@ -271,12 +429,13 @@ export class PostgresReviewGateRepository {
    * a database rollback after an accepted POST therefore remains reconcile-only. */
   async publishLocked(
     claim: GatePublicationClaim,
-    publish: (gate: StoredReviewGate, mayCreate: boolean) => Promise<ReviewGateCheck>,
+    publish: (gate: StoredReviewGate, mayCreate: boolean) => Promise<ReviewGateCheck | GatePublicationNotStarted>,
     clock: () => number = Date.now,
-  ): Promise<'published' | 'stale-claim'> {
+  ): Promise<'published' | 'stale-claim' | 'retry'> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query("SET LOCAL lock_timeout = '5s'");
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
         `review-dispatch:${claim.coordinates.repositoryId}:${claim.coordinates.prNumber}`,
       ]);
@@ -291,8 +450,31 @@ export class PostgresReviewGateRepository {
         await client.query('COMMIT');
         return 'stale-claim';
       }
-      const check = await publish(gate, claim.mayCreate && gate.creationState === 'creating' && gate.checkId === null);
-      const terminal = !['queued', 'in_progress'].includes(gate.desiredState);
+      const mayCreate = claim.mayCreate && gate.creationState === 'creating' && gate.checkId === null;
+      const check = await publish(gate, mayCreate);
+      if ('kind' in check) {
+        if (check.kind !== 'not-started' || !mayCreate || !Number.isSafeInteger(check.retryDelayMs)
+          || check.retryDelayMs < 1_000 || check.retryDelayMs > 300_000) {
+          throw new Error('Invalid gate preparation recovery');
+        }
+        // This is not a generic retry: the factory failed before any check
+        // operation. Recover only the original creation lease, under the same
+        // PR lock that serializes cancellation, supersession and the reaper.
+        // A later cancellation can then tombstone this never-started intent.
+        const reset = await client.query(`UPDATE review_gate_attempts
+          SET creation_state = 'reserved', lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+              available_at = to_timestamp(($4+$7)/1000.0), last_error_class = 'client-preparation',
+              updated_at = to_timestamp($4/1000.0)
+          WHERE attempt_id = $1 AND lease_owner = $2 AND lease_token = $3
+            AND lease_expires_at > to_timestamp($4/1000.0) AND desired_version = $5
+            AND creation_state = 'creating' AND check_id IS NULL AND current_attempt
+            AND desired_state <> 'cancelled' AND expected_app_id = $6
+          RETURNING attempt_id`, [gate.coordinates.attemptId, claim.leaseOwner, claim.leaseToken,
+          clock(), claim.desiredVersion, claim.expectedAppId, check.retryDelayMs]);
+        await client.query('COMMIT');
+        return reset.rows.length === 1 ? 'retry' : 'stale-claim';
+      }
+      const terminal = !isGateProgressState(gate.desiredState);
       if (!Number.isSafeInteger(check.id) || check.id <= 0
         || check.name !== REVIEW_GATE_CHECK_NAME || check.appId !== gate.expectedAppId
         || check.headSha !== gate.coordinates.headSha || check.externalId !== gate.externalId
