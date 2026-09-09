@@ -19,6 +19,7 @@ package job_test
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,138 @@ import (
 )
 
 const jobNamespace = "ct-review-system"
+
+// Go checks the envelope only; complete config/digest verification belongs to
+// the shared TypeScript parser. Formatting must survive the CR and env roundtrip.
+const preparedEnvelope = " {\n \"version\":\"PreparedReviewExecution.v1\",\n \"config\":{\"version\":3},\n \"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"ollama/glm-5.3-flash\"}\n} "
+
+func TestPreparedReviewAddsOnlyExplicitAuthoritativeEnvironment(t *testing.T) {
+	for _, completionURL := range []string{"", "https://dispatch.example.invalid/api/dispatch/completion"} {
+		t.Run(completionURL, func(t *testing.T) {
+			now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+			review := reviewFixture(now)
+			review.Spec.PublicationMode = "app-gate"
+			input := buildInput(review, now)
+			input.Publishing = publishingFixture()
+			input.Publishing.CompletionURL = completionURL
+			legacy, err := job.BuildWorkerJob(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hasEnv(legacy.Spec.Template.Spec.Containers[0], job.AuthoritativeGateEnv) || hasEnv(legacy.Spec.Template.Spec.Containers[0], job.PreparedConfigEnv) {
+				t.Fatal("legacy app-gate must not implicitly activate prepared mode")
+			}
+			raw := preparedEnvelope
+			review.Spec.PreparedReview = &raw
+			encoded, err := json.Marshal(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded v1alpha2.PRReviewJob
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			input.Review = &decoded
+			built, err := job.BuildWorkerJob(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			container := &built.Spec.Template.Spec.Containers[0]
+			if envValue(*container, job.AuthoritativeGateEnv) != "true" || envValue(*container, job.PreparedConfigEnv) != raw {
+				t.Fatal("prepared envelope was changed or opt-in flag is missing")
+			}
+			var legacyEnv []corev1.EnvVar
+			for _, env := range container.Env {
+				if env.Name != job.AuthoritativeGateEnv && env.Name != job.PreparedConfigEnv {
+					legacyEnv = append(legacyEnv, env)
+				}
+			}
+			container.Env = legacyEnv
+			if !reflect.DeepEqual(built, legacy) {
+				t.Fatal("prepared mode changed existing commands, provider/Secret references, callback settings or other Job fields")
+			}
+		})
+	}
+}
+
+func TestPreparedReviewAbsentLeavesReceiptOnlyJobUnchanged(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	built, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	container := built.Spec.Template.Spec.Containers[0]
+	if hasEnv(container, job.AuthoritativeGateEnv) || hasEnv(container, job.PreparedConfigEnv) {
+		t.Fatal("receipt-only job enabled prepared mode")
+	}
+}
+
+func TestPreparedReviewRejectsMalformedOrUnsafeEnvelope(t *testing.T) {
+	cases := map[string]string{
+		"empty": "", "whitespace": " ", "malformed": "{", "null": "null", "array": "[]", "scalar": `"text"`,
+		"wrong version":       strings.Replace(preparedEnvelope, "PreparedReviewExecution.v1", "PreparedReviewExecution.v2", 1),
+		"null config":         strings.Replace(preparedEnvelope, `{"version":3}`, "null", 1),
+		"array config":        strings.Replace(preparedEnvelope, `{"version":3}`, "[]", 1),
+		"missing config":      `{"version":"PreparedReviewExecution.v1","transport":{"baseUrl":"https://gateway.example.invalid/v1","model":"model"}}`,
+		"extra check":         strings.Replace(preparedEnvelope, `"config":`, `"checkId":4242,"config":`, 1),
+		"extra secret":        strings.Replace(preparedEnvelope, `"config":`, `"token":"synthetic-private-marker","config":`, 1),
+		"transport secret":    strings.Replace(preparedEnvelope, `"model":`, `"apiKey":"synthetic-private-marker","model":`, 1),
+		"userinfo":            strings.Replace(preparedEnvelope, "https://gateway.", "https://synthetic-private-marker@gateway.", 1),
+		"empty model":         strings.Replace(preparedEnvelope, "ollama/glm-5.3-flash", "", 1),
+		"utf8":                preparedEnvelope + string([]byte{0xff}),
+		"oversized":           preparedEnvelope + strings.Repeat(" ", job.MaxPreparedReviewBytes),
+		"multibyte oversized": strings.Replace(preparedEnvelope, `{"version":3}`, `{"note":"`+strings.Repeat("é", job.MaxPreparedReviewBytes/2)+`"}`, 1),
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+			review := reviewFixture(now)
+			review.Spec.PublicationMode = "app-gate"
+			review.Spec.PreparedReview = &raw
+			input := buildInput(review, now)
+			input.Publishing = publishingFixture()
+			built, err := job.BuildWorkerJob(input)
+			if built != nil || !errors.Is(err, job.ErrJobConfiguration) {
+				t.Fatalf("expected configuration rejection, got %v", err)
+			}
+			if strings.Contains(err.Error(), "synthetic-private-marker") {
+				t.Fatal("error exposed envelope content")
+			}
+		})
+	}
+}
+
+func TestPreparedReviewByteBoundaryAndLaneRestrictions(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	raw := preparedEnvelope + strings.Repeat(" ", job.MaxPreparedReviewBytes-len(preparedEnvelope))
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	review.Spec.PreparedReview = &raw
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	built, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envValue(built.Spec.Template.Spec.Containers[0], job.PreparedConfigEnv) != raw {
+		t.Fatal("boundary envelope was truncated")
+	}
+	raw += " "
+	if _, err := job.BuildWorkerJob(input); !errors.Is(err, job.ErrJobConfiguration) {
+		t.Fatal("accepted one byte over bound")
+	}
+	raw = preparedEnvelope
+	review.Spec.PublicationMode = "disabled"
+	if _, err := job.BuildWorkerJob(input); !errors.Is(err, job.ErrJobConfiguration) {
+		t.Fatal("accepted nonpublishing prepared review")
+	}
+	review.Spec.PublicationMode = "app-gate"
+	review.Spec.RunnerMode = "generic"
+	review.Spec.WorkerImage = "node:24-bookworm-slim"
+	if _, err := job.BuildWorkerJob(input); !errors.Is(err, job.ErrJobConfiguration) {
+		t.Fatal("accepted generic prepared review")
+	}
+}
 
 func reviewFixture(now time.Time) *v1alpha2.PRReviewJob {
 	receivedAt := metav1.NewTime(now)

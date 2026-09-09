@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildReviewJobProjection, buildRunSecretName, deriveRunSecretExecutionAttempt } from '../../src/k8s/reviewJobProjection';
+import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { sha256 } from '../../src/review/reviewCore';
 import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
@@ -19,6 +21,83 @@ const input = {
   workerImage: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:${'e'.repeat(64)}`,
   namespace: 'ct-review-qualification',
 };
+
+function preparedInput() {
+  const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+    personas: 'security,testing', budget: { max_investigation_turns: 3 },
+  } });
+  const prepared = preparePublishingPolicy({ content, source: {
+    repositoryId: 456, repository: 'example/central-policy', sha: 'c'.repeat(40),
+    path: 'policy/review.json', contentDigest: sha256(content),
+  } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
+  return { ...input, publicationMode: 'app-gate' as const,
+    configDigest: prepared.policy.effectiveConfigDigest,
+    preparedReview: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport: prepared.transport }, null, 2) };
+}
+
+describe('prepared review projection transport', () => {
+  it('preserves the exact envelope and otherwise leaves the legacy projection unchanged', () => {
+    const request = preparedInput();
+    const projection = buildReviewJobProjection(request, receivedAt + 60_000);
+    const { preparedReview, ...legacyInput } = request;
+    const legacy = buildReviewJobProjection(legacyInput, receivedAt + 60_000);
+    expect(projection).toEqual({ ...legacy, spec: { ...legacy.spec, preparedReview } });
+    expect(JSON.parse(JSON.stringify(projection)).spec.preparedReview).toBe(preparedReview);
+    expect(legacy.spec).not.toHaveProperty('preparedReview');
+  });
+
+  it.each(['disabled', 'app-gate'] as const)('leaves prepared mode absent for legacy %s', (publicationMode) => {
+    expect(buildReviewJobProjection({ ...input, publicationMode }, receivedAt + 60_000).spec).not.toHaveProperty('preparedReview');
+  });
+
+  it('accepts exactly 256 KiB and rejects one more byte without truncation', () => {
+    const request = preparedInput();
+    const exact = request.preparedReview + ' '.repeat(256 * 1024 - Buffer.byteLength(request.preparedReview));
+    expect(buildReviewJobProjection({ ...request, preparedReview: exact }, receivedAt + 60_000).spec.preparedReview).toBe(exact);
+    expect(() => buildReviewJobProjection({ ...request, preparedReview: exact + ' ' }, receivedAt + 60_000)).toThrow(/Prepared review execution/u);
+  });
+
+  it('enforces the UTF-8 byte limit rather than character count', () => {
+    const request = preparedInput();
+    const envelope = JSON.parse(request.preparedReview);
+    envelope.config.path_instructions = [{ path: '**', instructions: 'é'.repeat(128 * 1024) }];
+    const oversized = JSON.stringify(envelope);
+    expect(oversized.length).toBeLessThan(256 * 1024);
+    expect(Buffer.byteLength(oversized)).toBeGreaterThan(256 * 1024);
+    expect(() => buildReviewJobProjection({ ...request, preparedReview: oversized }, receivedAt + 60_000)).toThrow(/Prepared review execution/u);
+  });
+
+  it.each(['', ' ', '{', 'null', '[]', '"text"', '{}'])('rejects empty or malformed prepared JSON %j', (preparedReview) => {
+    expect(() => buildReviewJobProjection({ ...preparedInput(), preparedReview }, receivedAt + 60_000)).toThrow(/Prepared review execution/u);
+  });
+
+  it.each([
+    { version: 'PreparedReviewExecution.v2' }, { config: null }, { config: [] },
+    { checkId: 4242 }, { token: 'synthetic-secret-must-not-cross' },
+    { transport: { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model', apiKey: 'synthetic-secret-must-not-cross' } },
+  ])('rejects an invalid or extra envelope field %j with a redacted error', (change) => {
+    const request = preparedInput();
+    const preparedReview = JSON.stringify({ ...JSON.parse(request.preparedReview), ...change });
+    let error: unknown;
+    try { buildReviewJobProjection({ ...request, preparedReview }, receivedAt + 60_000); } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('Prepared review execution does not match its admitted identity');
+    expect((error as Error).stack).not.toContain('synthetic-secret-must-not-cross');
+  });
+
+  it('rejects config digest or stored transport mismatch', () => {
+    const request = preparedInput();
+    expect(() => buildReviewJobProjection({ ...request, configDigest: 'f'.repeat(64) }, receivedAt + 60_000)).toThrow(/Prepared review execution/u);
+    const envelope = JSON.parse(request.preparedReview); envelope.transport.model = 'other-model';
+    expect(() => buildReviewJobProjection({ ...request, preparedReview: JSON.stringify(envelope) }, receivedAt + 60_000)).toThrow(/Prepared review execution/u);
+  });
+
+  it('rejects nonpublishing and generic prepared workers', () => {
+    const request = preparedInput();
+    expect(() => buildReviewJobProjection({ ...request, publicationMode: 'disabled' }, receivedAt + 60_000)).toThrow(/prebaked app-gate/u);
+    expect(() => buildReviewJobProjection({ ...request, runnerMode: 'generic', workerImage: 'node:24-bookworm-slim' }, receivedAt + 60_000)).toThrow(/prebaked app-gate/u);
+  });
+});
 
 describe('shared run Secret name contract', () => {
   const baseName = `ct-review-run-${'1'.repeat(32)}`;
