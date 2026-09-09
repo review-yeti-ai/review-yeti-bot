@@ -241,6 +241,44 @@ jobs:
       # every lane from rediscovering the same known provider failure while retaining automatic
       # failover among the transports that passed the real request shape. Zero healthy transports
       # still hard-fails before this step.
+      - name: Initialize Review Yeti check run
+        id: init_check
+        if: inputs.central_execution && steps.ry_token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          TARGET_REPO: ${{ inputs.repository }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          CENTRAL_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          echo "Initializing Check Run 'Review Yeti' (in_progress) on ${TARGET_REPO}@${HEAD_SHA}..."
+          response="$(curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
+            -d "$(jq -nc \
+              --arg name "Review Yeti" \
+              --arg head_sha "${HEAD_SHA}" \
+              --arg details_url "${CENTRAL_RUN_URL}" \
+              '{
+                name: $name,
+                head_sha: $head_sha,
+                status: "in_progress",
+                details_url: $details_url,
+                output: {
+                  title: "Review Yeti: in progress",
+                  summary: ("Review Yeti evaluation is running in central execution. See [central run](" + $details_url + ").")
+                }
+              }')" 2>/dev/null || true)"
+          check_id="$(echo "$response" | jq -r '.id // empty' 2>/dev/null || true)"
+          if [ -n "$check_id" ]; then
+            echo "check_id=${check_id}" >> "$GITHUB_OUTPUT"
+            echo "Created check-run ID: ${check_id}"
+          else
+            echo "::warning::Failed to initialize check-run: $(echo "$response" | head -c 200)"
+          fi
+
       - name: Run Review Yeti review panel
         id: review
         if: steps.policy.outputs.passthrough != 'true'
@@ -262,6 +300,7 @@ jobs:
           MEMORY_PROVIDER: 'composite'
           MCP_CONFIG_JSON: ${{ steps.policy.outputs.mcp_config_json }}
         with:
+          check-id: ${{ steps.init_check.outputs.check_id || '' }}
           github-token: ${{ steps.ry_token.outputs.token || github.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
           pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
@@ -393,4 +432,5 @@ jobs:
           REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
           REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}
           CENTRAL_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CHECK_ID: ${{ steps.init_check.outputs.check_id || '' }}
         run: .exampleorg-review-actions/scripts/publish-review-check-run.sh

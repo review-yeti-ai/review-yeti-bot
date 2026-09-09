@@ -1,0 +1,36 @@
+name: 'Hold for Review Yeti'
+description: 'Centralized gate holding CI execution until ct-review-bot Review Yeti completes with success'
+inputs:
+  head-sha:
+    description: 'Commit SHA to check'
+    required: false
+    default: ${{ github.event.pull_request.head.sha || github.sha }}
+  repository:
+    description: 'Repository in owner/repo format'
+    required: false
+    default: ${{ github.repository }}
+  timeout-seconds:
+    description: 'Maximum seconds to wait'
+    required: false
+    default: '600'
+  poll-interval:
+    description: 'Seconds between checks'
+    required: false
+    default: '10'
+  github-token:
+    description: 'GitHub token with checks:read permissions'
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Run hold-for-review
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        REPO: ${{ inputs.repository }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+        POLL_INTERVAL: ${{ inputs.poll-interval }}
+      run: |
+        "${{ github.action_path }}/hold-for-review.sh" "${HEAD_SHA}" "${REPO}" "${TIMEOUT_SECONDS}" "${POLL_INTERVAL}"

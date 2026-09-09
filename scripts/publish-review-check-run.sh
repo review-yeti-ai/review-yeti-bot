@@ -7,6 +7,7 @@ set -euo pipefail
 : "${REVIEW_STATUS:=}"
 : "${CENTRAL_RUN_URL:=}"
 : "${REVIEW_YETI_PASSTHROUGH:=}"
+: "${CHECK_ID:=}"
 
 if [[ -z "${TARGET_REPO:-}" || -z "${HEAD_SHA:-}" ]]; then
   echo "::warning::Missing TARGET_REPO or HEAD_SHA; skipping check-run publication."
@@ -30,6 +31,10 @@ fi
 # run on the same head, and until then "no persona judged this commit" is a
 # reason not to merge, not a neutral fact.
 if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then
+  if [[ -n "${CHECK_ID:-}" ]]; then
+    echo "Review Yeti dispatched to DOKS queue with check ID ${CHECK_ID}. Worker will complete check-run via PATCH. Skipping placeholder publication."
+    exit 0
+  fi
   echo "Publishing Check Run 'Review Yeti' (failure, dispatched — no verdict yet) to ${TARGET_REPO} on ${HEAD_SHA}..."
   curl -sS -X POST \
     -H "Accept: application/vnd.github+json" \
@@ -59,29 +64,53 @@ fi
 
 if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
   echo "Publishing Check Run 'Review Yeti' (neutral, passthrough) to ${TARGET_REPO} on ${HEAD_SHA}..."
-  curl -sS -X POST \
-    -H "Accept: application/vnd.github+json" \
-    -H "Authorization: Bearer ${GH_TOKEN}" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
-    -d "$(jq -nc \
-      --arg name "Review Yeti" \
-      --arg head_sha "${HEAD_SHA}" \
-      --arg details_url "${CENTRAL_RUN_URL}" \
-      --arg summary "Review Yeti is in passthrough mode (REVIEW_YETI_PASSTHROUGH). No panel review was performed for this head; this is a maintenance escape hatch, not an approval. See [central run](${CENTRAL_RUN_URL})." \
-      '{
-        name: $name,
-        head_sha: $head_sha,
-        status: "completed",
-        conclusion: "neutral",
-        details_url: $details_url,
-        output: {
-          title: "Review Yeti: PASSTHROUGH (no review performed)",
-          summary: $summary
-        }
-      }')" || {
-    echo "::warning::Failed to publish passthrough check-run to ${TARGET_REPO}."
-  }
+  if [[ -n "${CHECK_ID:-}" ]]; then
+    curl -sS -X PATCH \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${GH_TOKEN}" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "https://api.github.com/repos/${TARGET_REPO}/check-runs/${CHECK_ID}" \
+      -d "$(jq -nc \
+        --arg name "Review Yeti" \
+        --arg details_url "${CENTRAL_RUN_URL}" \
+        --arg summary "Review Yeti is in passthrough mode (REVIEW_YETI_PASSTHROUGH). No panel review was performed for this head; this is a maintenance escape hatch, not an approval. See [central run](${CENTRAL_RUN_URL})." \
+        '{
+          name: $name,
+          status: "completed",
+          conclusion: "neutral",
+          details_url: $details_url,
+          output: {
+            title: "Review Yeti: PASSTHROUGH (no review performed)",
+            summary: $summary
+          }
+        }')" || {
+      echo "::warning::Failed to update passthrough check-run ${CHECK_ID} in ${TARGET_REPO}."
+    }
+  else
+    curl -sS -X POST \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${GH_TOKEN}" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
+      -d "$(jq -nc \
+        --arg name "Review Yeti" \
+        --arg head_sha "${HEAD_SHA}" \
+        --arg details_url "${CENTRAL_RUN_URL}" \
+        --arg summary "Review Yeti is in passthrough mode (REVIEW_YETI_PASSTHROUGH). No panel review was performed for this head; this is a maintenance escape hatch, not an approval. See [central run](${CENTRAL_RUN_URL})." \
+        '{
+          name: $name,
+          head_sha: $head_sha,
+          status: "completed",
+          conclusion: "neutral",
+          details_url: $details_url,
+          output: {
+            title: "Review Yeti: PASSTHROUGH (no review performed)",
+            summary: $summary
+          }
+        }')" || {
+      echo "::warning::Failed to publish passthrough check-run to ${TARGET_REPO}."
+    }
+  fi
   exit 0
 fi
 
@@ -112,28 +141,54 @@ else
 fi
 
 echo "Publishing Check Run 'Review Yeti' (${conclusion}) to ${TARGET_REPO} on ${HEAD_SHA}..."
-curl -sS -X POST \
-  -H "Accept: application/vnd.github+json" \
-  -H "Authorization: Bearer ${GH_TOKEN}" \
-  -H "X-GitHub-Api-Version: 2022-11-28" \
-  "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
-  -d "$(jq -nc \
-    --arg name "Review Yeti" \
-    --arg head_sha "${HEAD_SHA}" \
-    --arg conclusion "${conclusion}" \
-    --arg details_url "${CENTRAL_RUN_URL}" \
-    --arg title "${title}" \
-    --arg summary "${summary}" \
-    '{
-      name: $name,
-      head_sha: $head_sha,
-      status: "completed",
-      conclusion: $conclusion,
-      details_url: $details_url,
-      output: {
-        title: $title,
-        summary: $summary
-      }
-    }')" || {
-  echo "::warning::Failed to publish check-run to ${TARGET_REPO}."
-}
+if [[ -n "${CHECK_ID:-}" ]]; then
+  curl -sS -X PATCH \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${TARGET_REPO}/check-runs/${CHECK_ID}" \
+    -d "$(jq -nc \
+      --arg name "Review Yeti" \
+      --arg conclusion "${conclusion}" \
+      --arg details_url "${CENTRAL_RUN_URL}" \
+      --arg title "${title}" \
+      --arg summary "${summary}" \
+      '{
+        name: $name,
+        status: "completed",
+        conclusion: $conclusion,
+        details_url: $details_url,
+        output: {
+          title: $title,
+          summary: $summary
+        }
+      }')" || {
+    echo "::warning::Failed to update check-run ${CHECK_ID} in ${TARGET_REPO}."
+  }
+else
+  curl -sS -X POST \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
+    -d "$(jq -nc \
+      --arg name "Review Yeti" \
+      --arg head_sha "${HEAD_SHA}" \
+      --arg conclusion "${conclusion}" \
+      --arg details_url "${CENTRAL_RUN_URL}" \
+      --arg title "${title}" \
+      --arg summary "${summary}" \
+      '{
+        name: $name,
+        head_sha: $head_sha,
+        status: "completed",
+        conclusion: $conclusion,
+        details_url: $details_url,
+        output: {
+          title: $title,
+          summary: $summary
+        }
+      }')" || {
+    echo "::warning::Failed to publish check-run to ${TARGET_REPO}."
+  }
+fi

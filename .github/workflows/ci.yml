@@ -68,12 +68,19 @@ jobs:
           bash -n scripts/promote-v1.test.sh
           bash -n scripts/validate-review-request.test.sh
           bash -n scripts/check-review-verdict.test.sh
+          bash -n scripts/publish-review-check-run.sh
+          bash -n scripts/publish-review-check-run.test.sh
+          bash -n scripts/hold-for-review.sh
+          bash -n scripts/hold-for-review.test.sh
+          bash -n .github/actions/hold-for-review/hold-for-review.sh
           bash -n scripts/self-cancel-run.test.sh
           bash scripts/validate-caller-workflow.test.sh
           bash scripts/emit-workflow-identity.test.sh
           bash scripts/promote-v1.test.sh
           bash scripts/validate-review-request.test.sh
           bash scripts/check-review-verdict.test.sh
+          bash scripts/publish-review-check-run.test.sh
+          bash scripts/hold-for-review.test.sh
           bash scripts/self-cancel-run.test.sh
           bash scripts/emit-policy.test.sh
           bash scripts/doks-action-qualification.test.sh
