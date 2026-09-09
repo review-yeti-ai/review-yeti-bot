@@ -105,10 +105,11 @@ function openRouterClient(): OpenRouterClient {
   });
 }
 
-function usage(value: { prompt: number; completion: number; total: number } | null): string {
-  return value
-    ? `${value.total} total (${value.prompt} prompt, ${value.completion} completion)`
-    : 'unavailable';
+function usage(value: { prompt: number; completion: number; total: number; cached?: number; cached_tokens?: number } | null): string {
+  if (!value) return 'unavailable';
+  const cached = value.cached ?? value.cached_tokens ?? 0;
+  const cachedText = cached > 0 ? `, ${cached} cached` : '';
+  return `${value.total} total (${value.prompt} prompt, ${value.completion} completion${cachedText})`;
 }
 
 function cost(value: number | null): string {
@@ -130,6 +131,22 @@ export function checkSummary(result: PanelResult): string {
   const moderatorFindings = result.moderator.findings.map((finding) =>
     `- **${finding.severity}** \`${finding.path}:${finding.line}\` — ${finding.title}: ${finding.body}`,
   );
+
+  const allUsages = [
+    ...result.personas.map((lane) => lane.usage),
+    result.moderator.usage,
+    result.arbiter.usage,
+  ].filter((u): u is NonNullable<typeof u> => Boolean(u));
+  const aggregatePrompt = allUsages.reduce((sum, u) => sum + (u.prompt || 0), 0);
+  const aggregateCached = allUsages.reduce((sum, u) => {
+    const c = (u as any).cached ?? (u as any).cached_tokens ?? (u as any).prompt_cache_hit_tokens ?? (u as any).cache_read_input_tokens ?? 0;
+    return sum + c;
+  }, 0);
+  const hitPercentage = aggregatePrompt > 0 ? Math.round((aggregateCached / aggregatePrompt) * 100) : 0;
+  const cacheSummaryLines = aggregateCached > 0
+    ? ['', `Prompt caching: ${aggregateCached} / ${aggregatePrompt} tokens (${hitPercentage}% cache hit rate)`]
+    : [];
+
   return [
     `Exact head: \`${result.headSha}\``,
     `Repository visibility: ${result.repositoryVisibility || 'UNKNOWN'}.`,
@@ -155,6 +172,7 @@ export function checkSummary(result: PanelResult): string {
     `Verdict: \`${result.arbiter.verdict}\``,
     `Rationale: ${result.arbiter.rationale}`,
     `Arbiter tokens: ${usage(result.arbiter.usage)}; cost: ${cost(result.arbiter.costUSD)}`,
+    ...cacheSummaryLines,
   ].join('\n');
 }
 

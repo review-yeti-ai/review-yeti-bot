@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
@@ -83,7 +83,7 @@ describe('4-Persona Quorum Review Output Generation Integration', () => {
     const changedFiles = [{ path: 'src/gateway/providerPool.ts', patch: '+ export function addProvider() {}' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -208,7 +208,7 @@ describe('4-Persona Quorum Review Output Generation Integration', () => {
     const changedFiles = [{ path: 'src/utils/logger.ts', patch: '+ // logger comment' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -257,7 +257,7 @@ describe('4-Persona Quorum Review Output Generation Integration', () => {
     const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log(1);' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 

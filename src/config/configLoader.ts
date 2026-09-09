@@ -17,6 +17,8 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
     profile: 'balanced',
     quorum: 1,
     mascot: true,
+    max_file_size: 1_048_576,
+    max_file_bytes: 1_048_576,
     default_max_turns: 20,
     default_effort: 'low',
     reviews: {
@@ -123,23 +125,40 @@ export function createDefaultV4Config(): CtReviewConfigV4 {
   return ctReviewConfigV4Schema.parse({
     ...createDefaultV3Config(),
     version: 4,
+    max_file_size: 1_048_576,
+    max_file_bytes: 1_048_576,
     submodules: {},
-    limits: {},
+    limits: {
+      max_file_size: 1_048_576,
+      max_file_bytes: 1_048_576,
+    },
   });
 }
 
 export function normalizeConfigToV4(config: CtReviewConfigV3 | CtReviewConfigV4): CtReviewConfigV4 {
+  const rawLimits = (config as any).limits || {};
+  const maxFileSize = (config as any).max_file_size ?? (config as any).max_file_bytes ?? rawLimits.max_file_size ?? rawLimits.max_file_bytes ?? 1_048_576;
+  const maxFileBytes = (config as any).max_file_bytes ?? (config as any).max_file_size ?? rawLimits.max_file_bytes ?? rawLimits.max_file_size ?? maxFileSize;
+
   return ctReviewConfigV4Schema.parse({
     ...config,
+    max_file_size: maxFileSize,
+    max_file_bytes: maxFileBytes,
     version: 4,
     submodules: (config as any).submodules || {},
-    limits: (config as any).limits || {},
+    limits: {
+      ...rawLimits,
+      max_file_size: maxFileSize,
+      max_file_bytes: maxFileBytes,
+    },
   });
 }
 
 const V4_SAFETY_CAPS = {
   max_files: 5000,
   max_diff_bytes: 2_000_000,
+  max_file_size: 50_000_000,
+  max_file_bytes: 50_000_000,
   max_prompt_tokens: 200_000,
   max_completion_tokens: 32_000,
   max_cost_usd: 100,
@@ -284,6 +303,8 @@ export function translateLegacyConfigToV3(raw: any): CtReviewConfigV3 {
     path_instructions: raw.path_instructions || [],
     mcps: raw.mcps || [],
     on_pr_close: raw.on_pr_close || raw.onPrClose || { create_followup_prs: [], sync_productlane: false },
+    ...(raw.max_file_size !== undefined ? { max_file_size: raw.max_file_size } : {}),
+    ...(raw.max_file_bytes !== undefined ? { max_file_bytes: raw.max_file_bytes } : {}),
   } as any;
 }
 

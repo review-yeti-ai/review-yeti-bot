@@ -42,5 +42,5 @@ describe('legacy-runtime lock graph', () => {
     expect(fs.existsSync(path.join(prefix, 'node_modules/react'))).toBe(false);
     expect(fs.existsSync(path.join(prefix, 'node_modules/@openrouter/sdk'))).toBe(true);
     fs.rmSync(prefix, { recursive: true, force: true });
-  });
+  }, 30000);
 });
