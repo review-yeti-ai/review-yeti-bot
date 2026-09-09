@@ -232,7 +232,7 @@ worker:
     storageClassName: ""
 
   activeDeadlineSeconds: 840
-  ttlSecondsAfterFinished: 300
+  ttlSecondsAfterFinished: 0
 
 # Ingress Configuration
 # Exposes the dispatcher endpoint externally to receive webhook requests.
