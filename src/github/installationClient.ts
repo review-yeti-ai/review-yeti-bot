@@ -2,6 +2,7 @@ import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishRes
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
 import { ConfigResolver } from '../config/configResolver';
+import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
 import type { AbandonedPublishingRun } from '../persistence/reviewDispatchRepository';
 
 export interface PullRequestSnapshot {
@@ -278,10 +279,12 @@ export class GitHubInstallationClient {
   async failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal):
     Promise<'failed' | 'already-completed'> {
     try {
+      // Validate the persisted admission, not the current process's default:
+      // a configuration change must not strand an already-admitted attempt.
+      assertTerminalDeadlineWindow(run.receivedAt, run.terminalDeadline);
       if (!Number.isSafeInteger(publisherAppId) || publisherAppId <= 0
         || !/^run_[a-f0-9]{32}$/u.test(run.runId) || !/^[a-f0-9]{40}$/u.test(run.headSha)
-        || !Number.isSafeInteger(run.executionAttempt) || run.executionAttempt <= 0
-        || !Number.isFinite(run.receivedAt) || run.terminalDeadline !== run.receivedAt + 900_000) {
+        || !Number.isSafeInteger(run.executionAttempt) || run.executionAttempt <= 0) {
         throw new Error('invalid abandoned check identity');
       }
       const base = `/repos/${encodeURIComponent(run.owner)}/${encodeURIComponent(run.repo)}`;

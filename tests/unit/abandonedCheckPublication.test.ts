@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
+import type { AbandonedPublishingRun } from '../../src/persistence/reviewDispatchRepository';
 
 const run = {
   runId: 'run_83c172a7d93c193fdb6dfa62bfa8bfde',
@@ -26,8 +28,59 @@ function fixture(checks: unknown[] = [check], reread: unknown = check) {
   return { client, fetchImplementation };
 }
 const signal = () => AbortSignal.timeout(20_000);
+const persistedWindows = [900_000, 1_800_000, 2_700_000, 3_600_000];
 
 describe('abandoned check exact App/attempt failure publication', () => {
+  it.each(persistedWindows)('publishes a valid persisted %i ms window independently of the current admission default', async (window) => {
+    const persistedRun = { ...run, terminalDeadline: run.receivedAt + window };
+    const { client, fetchImplementation } = fixture();
+    await expect(client.failAbandonedCheck(persistedRun, 4385771, signal())).resolves.toBe('failed');
+    expect(fetchImplementation.mock.calls).toHaveLength(3);
+    expect(fetchImplementation.mock.calls[2][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
+    expect(fetchImplementation.mock.calls[2][1]?.method).toBe('PATCH');
+    expect(JSON.parse(String(fetchImplementation.mock.calls[2][1]?.body))).toMatchObject({
+      status: 'completed', conclusion: 'failure',
+    });
+  });
+
+  it.each([
+    ['below minimum', run.receivedAt, run.receivedAt + 899_999],
+    ['above maximum', run.receivedAt, run.receivedAt + 3_600_001],
+    ['zero window', run.receivedAt, run.receivedAt],
+    ['reversed window', run.receivedAt, run.receivedAt - 900_000],
+    ['NaN receipt', Number.NaN, run.terminalDeadline],
+    ['NaN deadline', run.receivedAt, Number.NaN],
+    ['infinite receipt', Number.POSITIVE_INFINITY, run.terminalDeadline],
+    ['negative infinite receipt', Number.NEGATIVE_INFINITY, run.terminalDeadline],
+    ['infinite deadline', run.receivedAt, Number.POSITIVE_INFINITY],
+    ['negative infinite deadline', run.receivedAt, Number.NEGATIVE_INFINITY],
+  ])('refuses %s before any HTTP request', async (_label, receivedAt, terminalDeadline) => {
+    const { client, fetchImplementation } = fixture();
+    await expect(client.failAbandonedCheck({ ...run, receivedAt: receivedAt as number,
+      terminalDeadline: terminalDeadline as number }, 4385771, signal())).rejects.toThrow();
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { runId: 'unbound-run' },
+    { headSha: 'unbound-head' },
+    { executionAttempt: 0 },
+    { executionAttempt: 1.5 },
+    { executionAttempt: Number.NaN },
+  ])('retains identity validation with a valid 60-minute window: %j', async (identity) => {
+    const { client, fetchImplementation } = fixture();
+    await expect(client.failAbandonedCheck({ ...run, terminalDeadline: run.receivedAt + 3_600_000,
+      ...identity }, 4385771, signal())).rejects.toThrow();
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it.each([0, Number.NaN, 4385771.5])('refuses invalid publisher App %s before any HTTP request', async (appId) => {
+    const { client, fetchImplementation } = fixture();
+    await expect(client.failAbandonedCheck({ ...run, terminalDeadline: run.receivedAt + 1_800_000 },
+      appId, signal())).rejects.toThrow();
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
   it('fails the existing genuine App orphan, ignoring the preview App failure; never creates a replacement', async () => {
     const { client, fetchImplementation } = fixture([check, {
       ...check, id: 102575533973, app: { id: 4435435, slug: 'ct-pr-operator-local-5f8cc6' },
@@ -60,8 +113,12 @@ describe('abandoned check exact App/attempt failure publication', () => {
     expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
   });
 
-  it('refuses a changed head or App on the direct pre-write read', async () => {
-    const { client, fetchImplementation } = fixture([check], { ...check, head_sha: 'f'.repeat(40) });
+  it.each([
+    { head_sha: 'f'.repeat(40) },
+    { app: { id: 4435435 } },
+    { external_id: `${run.runId}:a2` },
+  ])('refuses changed identity %j on the direct pre-write read', async (identity) => {
+    const { client, fetchImplementation } = fixture([check], { ...check, ...identity });
     await expect(client.failAbandonedCheck(run, 4385771, signal())).rejects.toThrow();
     expect(fetchImplementation.mock.calls).toHaveLength(2);
   });
@@ -121,5 +178,45 @@ describe('abandoned check exact App/attempt failure publication', () => {
     await expect(client.failAbandonedCheck(run, 4385771, signal())).rejects.toThrow();
     expect(fetchImplementation.mock.calls).toHaveLength(5);
     expect(fetchImplementation.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+  });
+});
+
+describe('abandoned reaper with the actual GitHub publication adapter', () => {
+  it.each(persistedWindows.flatMap((window) =>
+    (['existing', 'absent', 'completed'] as const).map((state) => ({ window, state })),
+  ))('reconciles a persisted $window ms / $state check once across admission-default changes', async ({ window, state }) => {
+    const persistedRun = { ...run, terminalDeadline: run.receivedAt + window };
+    const owned = { ...check, external_id: `${run.runId}:a1` };
+    const { client, fetchImplementation } = fixture(state === 'absent' ? [] : [owned],
+      state === 'completed' ? { ...owned, status: 'completed', conclusion: 'success' } : owned);
+    // Only persistence is a seam here; the reaper callback must call the real
+    // adapter and reach its injected HTTP boundary before acknowledgement.
+    let pending = true;
+    const repository = {
+      claimAbandonedPublishingRuns: async () => pending ? [persistedRun] : [],
+      reconcileAbandonedPublishingRun: async (
+        claimed: AbandonedPublishingRun, _worker: string, _now: number, publish: () => Promise<void>,
+      ) => {
+        expect(claimed).toEqual(persistedRun);
+        await publish();
+        pending = false;
+        return true;
+      },
+    };
+    const reaper = new AbandonedRunReaper({ repository, checkClientFor: async () => client,
+      publisherAppId: 4385771, workerId: 'offline-reaper', now: () => persistedRun.terminalDeadline + 1 });
+    await expect(reaper.runOnce()).resolves.toEqual({ swept: 1, published: state === 'completed' ? 0 : 1, failed: 0 });
+    expect(pending).toBe(false);
+    const writes = fetchImplementation.mock.calls.filter(([, init]) => ['PATCH', 'POST'].includes(init?.method || ''));
+    expect(writes).toHaveLength(state === 'completed' ? 0 : 1);
+    if (state !== 'completed') {
+      expect(writes[0][1]?.method).toBe(state === 'absent' ? 'POST' : 'PATCH');
+      expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure',
+        ...(state === 'absent' ? { head_sha: run.headSha, external_id: `${run.runId}:a1` } : {}) });
+    }
+    const requests = fetchImplementation.mock.calls.length;
+    expect(requests).toBe(state === 'existing' ? 3 : 2);
+    await expect(reaper.runOnce()).resolves.toEqual({ swept: 0, published: 0, failed: 0 });
+    expect(fetchImplementation.mock.calls).toHaveLength(requests);
   });
 });
