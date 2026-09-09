@@ -107,6 +107,11 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
     path_instructions: [],
     rules: [],
     mcps: [],
+    evidence: {
+      zoekt: {
+        enabled: true,
+      },
+    },
     on_pr_close: {
       create_followup_prs: [],
       sync_productlane: false,

@@ -419,6 +419,9 @@ runs:
         BASE_SHA: ${{ steps.target.outputs.base-sha }}
         GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
         GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        PERSONAS: ${{ inputs.personas }}
+        MAX_INVESTIGATION_TURNS: ${{ inputs.max-investigation-turns }}
+        LANE_CALL_BUDGET: ${{ inputs.lane-call-budget }}
       run: |
         set -euo pipefail
         node "$GITHUB_ACTION_PATH/scripts/dispatch-doks-action.mjs"
