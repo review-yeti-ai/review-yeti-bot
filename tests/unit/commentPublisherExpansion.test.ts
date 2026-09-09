@@ -61,10 +61,10 @@ describe('commentPublisher.ts — Comprehensive Unit Expansion Tests', () => {
     expect(body).toContain('```suggestion\ndb.user.findUnique({ where: { id } })\n```');
   });
 
-  it('formatInlineCommentBody falls back to single suggestion or codeSnippet when fixOptions omitted', () => {
+  it('formatInlineCommentBody renders explicit replacement when fixOptions omitted', () => {
     const findingWithSuggestion: PersonaFinding = {
       ...sampleFinding,
-      suggestion: 'const safe = sanitize(input);',
+      replacementCode: 'const safe = sanitize(input);',
     };
 
     const body = formatInlineCommentBody(findingWithSuggestion);

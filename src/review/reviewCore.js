@@ -64,11 +64,28 @@ function isGitlinkFile(file) {
   return Boolean(file && (file.isSubmodule === true || String(file.mode || '') === '160000'));
 }
 
+/** Preserve exact replacement text; unsafe metadata must never become a partial patch. */
+function normalizeFindingReplacement(raw) {
+  if (!raw || typeof raw !== 'object' || !Number.isInteger(raw.line) || raw.line < 1) return {};
+  // Core findings drop side metadata; never let an old-side patch become a default RIGHT fix.
+  if (raw.side !== undefined && raw.side !== 'RIGHT') return {};
+  const hasStartLine = raw.startLine !== undefined && raw.startLine !== null;
+  if (hasStartLine && (!Number.isInteger(raw.startLine) || raw.startLine < 1 || raw.startLine > raw.line)) return {};
+  const result = {};
+  if (hasStartLine) result.startLine = raw.startLine;
+  // Empty text is an intentional deletion; whitespace and trailing newlines are source code.
+  if (typeof raw.replacementCode === 'string' && raw.replacementCode.length <= 10_000) {
+    result.replacementCode = raw.replacementCode;
+  }
+  return result;
+}
+
 function sanitizeFinding(raw, changedFiles) {
   if (!raw || typeof raw !== 'object') return null;
   if (!Array.isArray(changedFiles)) {
     if (!['P0', 'P1', 'P2'].includes(raw.severity)) return null;
-    return { ...raw, severity: raw.severity };
+    const { replacementCode, startLine, ...finding } = raw;
+    return { ...finding, severity: raw.severity, ...normalizeFindingReplacement(raw) };
   }
   const path = normalizePath(raw.path);
   const changed = changedFiles.find((file) => normalizePath(file.path) === path);
@@ -88,10 +105,145 @@ function sanitizeFinding(raw, changedFiles) {
   const title = typeof raw.title === 'string' ? raw.title.trim() : '';
   const body = typeof raw.body === 'string' ? raw.body.trim() : '';
   if (!title || !body) return null;
-  const result = { severity, path, line, title, body };
+  const result = { severity, path, line, title, body, ...normalizeFindingReplacement({ ...raw, line }) };
   if (typeof raw.suggestion === 'string' && raw.suggestion.trim()) result.suggestion = raw.suggestion.trim();
   if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)) result.confidence = raw.confidence;
   return result;
+}
+
+const SEVERITY_RANK = { P0: 0, P1: 1, P2: 2 };
+
+/**
+ * Title phrases that name a code-quality or process concern rather than a defect in shipped
+ * behaviour. A P1 whose *title* leads with one of these is re-filed as P2 before it can gate a
+ * merge. Title-only on purpose: bodies mention "documentation" or "duplicated" in passing while
+ * describing a real defect, and a real P0/P1 must never be hidden by an incidental word.
+ *
+ * Evidence: cisco-cdr#4860 head 430d8058 went FIX_FIRST on three P1s, two of which were
+ * "Cross-domain reach-in and DRY violation" and "additive but unversioned ... deserves changelog
+ * notes". Neither is a defect the author can ship wrong; both are P2 under the calibration rule.
+ * P0 is never touched here: a P0 is either a real exploit/outage or a persona contract failure,
+ * and both must stay visible.
+ */
+const ADVISORY_TITLE_RE = /\b(?:DRY(?:\s+violation)?|code\s+duplication|duplicated\s+(?:code|logic|constants?|helpers?|implementation)|naming|readability|maintainability|code\s+style|portability|changelog|release\s+notes?|migration\s+notes?|docstrings?|documentation)\b/i;
+
+function calibrateSeverity(finding) {
+  if (!finding || finding.severity !== 'P1') return finding;
+  if (!ADVISORY_TITLE_RE.test(String(finding.title || ''))) return finding;
+  return { ...finding, severity: 'P2', severityAdjusted: { from: 'P1', reason: 'advisory claim in title' } };
+}
+
+/**
+ * Body/title phrases that admit the finding's own premise is unverified -- "I could not check X"
+ * dressed as a defect in X. A P0/P1 stating its premise was never confirmed is a question the
+ * reviewer could not answer, not a defect it verified, and must not gate a merge.
+ *
+ * Detection is a small, explicit, reviewable phrase list, never heuristic NLP: every match traces
+ * to one literal string a human chose to include here. An entry containing `...` marks a bounded
+ * gap between two literal anchors (matched with up to 200 characters of slop between them, so
+ * "if <anything> still references" matches without matching arbitrary unrelated text); every
+ * other entry is a plain case-insensitive substring match. Extend by adding a phrase to this one
+ * exported constant, never by loosening the matcher.
+ *
+ * Evidence: calltelemetry/ct-meta#2882, three P1 findings across three consecutive review rounds,
+ * all false, each hedging its own premise in its own body:
+ *   - "If any later code in runDarkFactoryPipeline still references STEP_ADVERSARIAL ... Verify
+ *     no remaining references exist; if unused, this is a dead-constant cleanup."
+ *   - "repo tooling could not confirm a pre-existing import. If the import already exists, this
+ *     finding can be dismissed on verification; as submitted, the diff is not self-contained
+ *     proof."
+ *   - "The table's definition could not be located to confirm these exact key names exist."
+ * A genuine P1 states a defect the reviewer verified against code it read (e.g. "there is no
+ * timeout on socket idle or response"); it contains none of these phrases and is never touched.
+ */
+const UNVERIFIED_PREMISE_PHRASES = Object.freeze([
+  'could not be located',
+  'could not be verified',
+  'could not confirm',
+  'unable to confirm',
+  'unable to verify',
+  'can be dismissed on verification',
+  'verify before merge',
+  'if ... still references',
+  'if the import already exists',
+  'not visible in the diff',
+  'unverifiable',
+]);
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** A `...`-bearing phrase becomes a bounded-gap regex; a plain phrase has no pattern. */
+function unverifiedPremisePatternFor(phrase) {
+  if (!phrase.includes('...')) return null;
+  const anchors = phrase.split('...').map((part) => part.trim()).filter(Boolean);
+  if (anchors.length < 2) return null;
+  return new RegExp(anchors.map(escapeRegExp).join('[\\s\\S]{0,200}'), 'i');
+}
+
+const UNVERIFIED_PREMISE_PATTERNS = UNVERIFIED_PREMISE_PHRASES
+  .map(unverifiedPremisePatternFor)
+  .filter(Boolean);
+
+function hasUnverifiedPremise(text) {
+  const value = String(text || '');
+  const lower = value.toLowerCase();
+  const plainMatch = UNVERIFIED_PREMISE_PHRASES.some(
+    (phrase) => !phrase.includes('...') && lower.includes(phrase),
+  );
+  if (plainMatch) return true;
+  return UNVERIFIED_PREMISE_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+/**
+ * A P0/P1 whose title or body hedges on its own premise ("could not confirm", "if X still
+ * references Y") is re-filed as P2 before arbitration -- the original severity and the reason are
+ * preserved on the finding (`downgradedFrom`, `downgrade_reason: 'unverified_premise'`) so the
+ * published output can still show what was downgraded and why. Never touches P2: a P2 hedge is
+ * already non-blocking and must not be double-processed or relabelled.
+ */
+function downgradeUnverifiedPremise(finding) {
+  if (!finding) return finding;
+  if (finding.severity !== 'P0' && finding.severity !== 'P1') return finding;
+  if (finding.downgrade_reason) return finding;
+  const haystack = `${finding.title || ''}\n${finding.body || ''}`;
+  if (!hasUnverifiedPremise(haystack)) return finding;
+  return {
+    ...finding,
+    downgradedFrom: finding.severity,
+    severity: 'P2',
+    downgrade_reason: 'unverified_premise',
+  };
+}
+
+/**
+ * One defect, one finding. Personas describe the same defect under different titles a few lines
+ * apart; counting each description separately let a single defect reach the P1 block threshold
+ * on its own (three lanes agreeing on one P1 == BLOCK on a three-lane panel). Clusters use the
+ * same claim comparison the hosted publisher uses, so a finding without a path (test fixtures,
+ * unanchored lanes) never merges, and findings on different files never merge.
+ */
+function clusterFindings(findings) {
+  const clusters = [];
+  for (const finding of findings) {
+    const target = clusters.find((cluster) => compareClaims(cluster, finding).duplicate);
+    if (!target) {
+      clusters.push({ ...finding, reporters: 1 });
+      continue;
+    }
+    target.reporters += 1;
+    if (SEVERITY_RANK[finding.severity] < SEVERITY_RANK[target.severity]) target.severity = finding.severity;
+    if (String(finding.body || '').length > String(target.body || '').length) {
+      target.body = finding.body;
+      target.title = finding.title;
+    }
+    if (!target.suggestion && finding.suggestion) target.suggestion = finding.suggestion;
+    if (typeof finding.confidence === 'number') {
+      target.confidence = typeof target.confidence === 'number' ? Math.max(target.confidence, finding.confidence) : finding.confidence;
+    }
+  }
+  return clusters;
 }
 
 function sanitizeFindings(findings, changedFiles) {
@@ -180,6 +332,7 @@ function validateReviewFindings(rawFindings, changedFiles) {
       line: raw.line,
       title: raw.title.trim(),
       body: raw.body.trim(),
+      ...normalizeFindingReplacement(raw),
     };
     if (typeof raw.suggestion === 'string' && raw.suggestion.trim()) finding.suggestion = raw.suggestion.trim();
     if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)) finding.confidence = raw.confidence;
@@ -224,37 +377,12 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const expected = Number.isInteger(expectedPersonas) ? expectedPersonas : results.length;
   const failedLanes = results.filter(isFailedLane);
   const completedResults = results.filter((result) => !isFailedLane(result));
-  const rawFindings = [];
-  for (let i = 0; i < completedResults.length; i++) {
-    const lane = completedResults[i];
-    const laneId = lane.id || `lane_${i}`;
-    const sanitized = sanitizeFindings(lane.findings, options.changedFiles);
-    for (const f of sanitized) {
-      rawFindings.push({ finding: f, laneId });
-    }
-  }
-
-  const clusteredFindings = [];
-  const SEVERITY_RANK = { P0: 0, P1: 1, P2: 2 };
-  for (const item of rawFindings) {
-    const target = clusteredFindings.find((c) =>
-      !c._laneIds.has(item.laneId) && compareClaims(c.finding, item.finding, options.nearDuplicate).duplicate
-    );
-    if (!target) {
-      clusteredFindings.push({
-        finding: { ...item.finding },
-        _laneIds: new Set([item.laneId]),
-      });
-    } else {
-      target._laneIds.add(item.laneId);
-      if ((SEVERITY_RANK[item.finding.severity] ?? 3) < (SEVERITY_RANK[target.finding.severity] ?? 3)) {
-        target.finding.severity = item.finding.severity;
-      }
-    }
-  }
-
-  const findings = clusteredFindings.map((c) => c.finding);
-
+  const rawFindings = completedResults.flatMap((result) => sanitizeFindings(result.findings, options.changedFiles));
+  // Calibrate each finding on its own title first, downgrade any P0/P1 that hedges on an
+  // unverified premise, then collapse paraphrases. Severity of a cluster is the highest any
+  // reporter kept after these per-finding passes, so one lane naming the real, verified defect is
+  // enough to keep it P1 even when another lane only filed the same claim as a question.
+  const findings = clusterFindings(rawFindings.map(calibrateSeverity).map(downgradeUnverifiedPremise), options);
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;
@@ -350,7 +478,12 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     status,
     rationale: finalRationale,
     thresholds: { blockP1, fixP2 },
-    metrics: { p0Count, p1Count, p2Count, totalFindings: findings.length },
+    // Pre-clustering set, exposed for callers whose contract is about panel
+    // volume rather than distinct defects -- the same-head qualification receipt
+    // bounds its fingerprint list on raw output, and clustering must not be able
+    // to bring a runaway panel back under that bound.
+    rawFindings,
+    metrics: { p0Count, p1Count, p2Count, totalFindings: findings.length, rawFindingCount: rawFindings.length },
     findings,
   };
 }
@@ -360,9 +493,15 @@ module.exports = {
   canonicalJson,
   sha256,
   changedLineNumbers,
+  normalizeFindingReplacement,
   sanitizeFinding,
   sanitizeFindings,
   validateReviewFindings,
   describeCoverageGaps,
+  calibrateSeverity,
+  UNVERIFIED_PREMISE_PHRASES,
+  hasUnverifiedPremise,
+  downgradeUnverifiedPremise,
+  clusterFindings,
   computeArbitration,
 };

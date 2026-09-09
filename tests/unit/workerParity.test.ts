@@ -8,7 +8,7 @@ describe('GHA and DOKS Worker Configuration Policy Parity', () => {
   const policyRaw = fs.existsSync(policyPath) ? fs.readFileSync(policyPath, 'utf8') : null;
 
   const transport = {
-    baseUrl: 'https://llm-gateway.calltelemetry.com/v1',
+    baseUrl: 'https://gateway.example.invalid/v1',
     apiKey: 'vk-test-parity',
     model: 'ollama/glm-5.3-flash',
   };

@@ -248,9 +248,19 @@ describe('Empirical Challenger 2 — Persona Prompt Editor Edge Cases & Stress H
         expect(screen.getByText(/Control Panel/)).toBeDefined();
       });
 
-      // Default selected persona is 'security'
+      // Default selected persona is 'security'. The "Control Panel" heading above is
+      // static JSX and is present on SettingsContent's very first synchronous render,
+      // before the useEffect-driven loadPersonasData() -> fetchPersonas() promise has
+      // settled. It is therefore not a reliable proxy for "the async persona fetch has
+      // populated activePrompt". Under load (parallel workers contending for the event
+      // loop) the mocked fetchPersonas() microtask can still be pending when this line
+      // runs, so textarea.value reads '' instead of the loaded prompt. Wait on the
+      // actual data-dependent value instead of a condition that is trivially true from
+      // mount.
       const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-      expect(textarea.value).toBe('Initial Security Prompt');
+      await waitFor(() => {
+        expect(textarea.value).toBe('Initial Security Prompt');
+      });
 
       // User types unsaved changes into Security prompt
       fireEvent.change(textarea, { target: { value: 'SECURITY PROMPT HAS UNSAVED EDITS' } });

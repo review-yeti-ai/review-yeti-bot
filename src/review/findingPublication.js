@@ -1,9 +1,10 @@
 'use strict';
 
-const { canonicalJson, sha256 } = require('./reviewCore');
+const { canonicalJson, sha256, normalizeFindingReplacement } = require('./reviewCore');
 const { compareClaims } = require('./claimSimilarity');
 
 const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2 });
+const INLINE_SEVERITIES = Object.freeze(Object.keys(SEVERITY_RANK));
 const SEVERITY_ALIASES = Object.freeze({
   P0: 'P0',
   P1: 'P1',
@@ -51,22 +52,26 @@ function isGitlinkFile(file) {
 
 /**
  * Parse every exact changed-line anchor from a unified diff. RIGHT contains additions in the
- * post-image; LEFT contains deletions in the pre-image. Context lines are deliberately excluded.
+ * post-image; LEFT contains deletions in the pre-image. Context lines are excluded from those
+ * anchor sets but included in rightHunks for validating contiguous replacement ranges.
  */
 function parsePatchAnchors(patch) {
   const right = new Set();
   const left = new Set();
-  if (typeof patch !== 'string') return { right, left, hasHunks: false };
+  const rightHunks = new Map();
+  if (typeof patch !== 'string') return { right, left, rightHunks, hasHunks: false };
 
   let oldLine = 0;
   let newLine = 0;
   let inHunk = false;
   let hasHunks = false;
+  let indexOfHunk = -1;
   const patchLines = patch.split('\n');
 
   for (const [index, line] of patchLines.entries()) {
     const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunk) {
+      indexOfHunk = index;
       oldLine = Number(hunk[1]);
       newLine = Number(hunk[2]);
       inHunk = true;
@@ -80,6 +85,7 @@ function parsePatchAnchors(patch) {
     if (!inHunk || line.startsWith('\\ No newline at end of file')) continue;
     if (line.startsWith('+')) {
       right.add(newLine);
+      rightHunks.set(newLine, indexOfHunk);
       newLine += 1;
     } else if (line.startsWith('-')) {
       left.add(oldLine);
@@ -88,11 +94,12 @@ function parsePatchAnchors(patch) {
       // GitHub patches normally prefix context with a space. Some fixtures omit that prefix for
       // blank context, so any remaining in-hunk line advances both images.
       oldLine += 1;
+      rightHunks.set(newLine, indexOfHunk);
       newLine += 1;
     }
   }
 
-  return { right, left, hasHunks };
+  return { right, left, rightHunks, hasHunks };
 }
 
 function attributionFor(value, includeId = false) {
@@ -169,7 +176,7 @@ function formatFindingCommentBody(finding) {
   const title = typeof finding.title === 'string' ? finding.title.trim().replace(/\s+/g, ' ') : 'Review finding';
   const body = typeof finding.body === 'string' ? finding.body.trim() : '';
   const suggestion = typeof finding.suggestion === 'string' ? finding.suggestion.trim() : '';
-  const replacementCode = typeof finding.replacementCode === 'string' ? finding.replacementCode.trim() : '';
+  const replacementCode = typeof finding.replacementCode === 'string' ? finding.replacementCode : undefined;
   const personas = Array.isArray(finding.personas)
     ? [...new Set(finding.personas.map(normalizePersona).filter(Boolean))].sort((a, b) => a.localeCompare(b))
     : [];
@@ -181,7 +188,7 @@ function formatFindingCommentBody(finding) {
   const lines = [`**${severity} · ${title}**`];
   if (body) lines.push('', body);
   if (suggestion) lines.push('', '**Suggested fix**', '', suggestion);
-  if (replacementCode) {
+  if (replacementCode !== undefined) {
     const fence = codeFence(replacementCode);
     lines.push('', '**Suggested replacement**', '', `${fence}suggestion`, replacementCode, fence);
   }
@@ -225,6 +232,33 @@ function comparePublicationItems(a, b) {
   return normalizeTitle(a.finding.title).localeCompare(normalizeTitle(b.finding.title));
 }
 
+const conflictingReplacement = Symbol('conflictingReplacement');
+
+/** Merge replacement code and its range together, suppressing conflicting patches permanently. */
+function mergeReplacementMetadata(merged, candidate) {
+  // A patch belongs to its original range, even when nearby reports describe the same defect.
+  const sameAnchor = merged.path === candidate.path && merged.line === candidate.line && merged.side === candidate.side;
+  if (sameAnchor && candidate[conflictingReplacement] && !merged[conflictingReplacement]) {
+    delete merged.replacementCode;
+    delete merged.startLine;
+    Object.defineProperty(merged, conflictingReplacement, { value: true });
+  }
+  if (sameAnchor && !merged[conflictingReplacement] && typeof candidate.replacementCode === 'string') {
+    if (typeof merged.replacementCode === 'string'
+      && (merged.replacementCode !== candidate.replacementCode
+        || (merged.startLine ?? merged.line) !== (candidate.startLine ?? candidate.line))) {
+      delete merged.replacementCode;
+      delete merged.startLine;
+      Object.defineProperty(merged, conflictingReplacement, { value: true });
+    } else if (typeof merged.replacementCode !== 'string') {
+      merged.replacementCode = candidate.replacementCode;
+      if (candidate.startLine !== undefined) merged.startLine = candidate.startLine;
+      else delete merged.startLine;
+    }
+  }
+  return merged;
+}
+
 /**
  * Folds one finding's fields into another that has already been judged the same claim.
  *
@@ -237,7 +271,7 @@ function mergeFindingFields(merged, candidate) {
   merged.personas = [...new Set([...merged.personas, ...candidate.personas])].sort((a, b) => a.localeCompare(b));
   merged.body = chooseRicher(merged.body, candidate.body);
   merged.suggestion = chooseRicher(merged.suggestion, candidate.suggestion);
-  merged.replacementCode = chooseRicher(merged.replacementCode, candidate.replacementCode);
+  mergeReplacementMetadata(merged, candidate);
   merged.recommendation = chooseRicher(merged.recommendation, candidate.recommendation);
   if (candidate.confidence !== undefined) {
     merged.confidence = merged.confidence === undefined ? candidate.confidence : Math.max(merged.confidence, candidate.confidence);
@@ -268,6 +302,10 @@ function mergeClaimInto(target, entry) {
     target.subjectType = 'line';
     merged.line = candidate.line;
     merged.side = candidate.side;
+    delete merged.replacementCode;
+    delete merged.startLine;
+    if (typeof candidate.replacementCode === 'string') merged.replacementCode = candidate.replacementCode;
+    if (candidate.startLine !== undefined) merged.startLine = candidate.startLine;
   }
 }
 
@@ -306,6 +344,14 @@ function planFindingPublication(input, changedFiles, options = {}) {
       const path = normalizePath(file && file.path);
       if (path && !files.has(path)) files.set(path, file);
     }
+  }
+
+  // A run can report many findings (and replacement ranges) in the same large diff.
+  // Parse each referenced patch once, sharing its anchors across all those validations.
+  const anchorsByPath = new Map();
+  function anchorsFor(path, patch) {
+    if (!anchorsByPath.has(path)) anchorsByPath.set(path, parsePatchAnchors(patch));
+    return anchorsByPath.get(path);
   }
 
   const rejected = [];
@@ -354,7 +400,7 @@ function planFindingPublication(input, changedFiles, options = {}) {
       rejected.push(rejection(raw, personas, 'changed file patch is not usable'));
       continue;
     } else {
-      const anchors = parsePatchAnchors(patch);
+      const anchors = anchorsFor(path, patch);
       if (!anchors.hasHunks) {
         subjectType = 'file';
       } else {
@@ -362,11 +408,29 @@ function planFindingPublication(input, changedFiles, options = {}) {
         // exists only in the pre-image is unambiguously a LEFT deletion anchor.
         if (sideWasOmitted && !anchors.right.has(line) && anchors.left.has(line)) side = 'LEFT';
         const validLines = side === 'LEFT' ? anchors.left : anchors.right;
-        if (!validLines.has(line)) {
-          rejected.push(rejection(raw, personas, `finding line is not an exact changed ${side} line`));
-          continue;
-        }
-        subjectType = 'line';
+        // Keep file-specific feedback on the changed file when the reported line cannot
+        // safely anchor a review thread. Never guess a nearby changed line.
+        subjectType = validLines.has(line) ? 'line' : 'file';
+      }
+    }
+
+    const replacement = normalizeFindingReplacement({ ...raw, line });
+    if (subjectType !== 'line' || side !== 'RIGHT') {
+      delete replacement.replacementCode;
+      delete replacement.startLine;
+    } else if (replacement.startLine !== undefined) {
+      const { rightHunks } = anchorsFor(path, patch);
+      const start = replacement.startLine;
+      const hunk = rightHunks.get(line);
+      // Every replaced line must be visible in the same new-file hunk, including context.
+      const validRange = line - start < rightHunks.size
+        && Array.from({ length: line - start + 1 }, (_, offset) => start + offset)
+          .every((number) => rightHunks.get(number) === hunk);
+      if (!validRange) {
+        delete replacement.replacementCode;
+        delete replacement.startLine;
+      } else if (start === line) {
+        delete replacement.startLine;
       }
     }
 
@@ -391,7 +455,7 @@ function planFindingPublication(input, changedFiles, options = {}) {
       title,
       body: effectiveBody,
       ...(typeof raw.suggestion === 'string' && raw.suggestion.trim() ? { suggestion: raw.suggestion.trim() } : {}),
-      ...(typeof raw.replacementCode === 'string' && raw.replacementCode.trim() ? { replacementCode: raw.replacementCode.trim() } : {}),
+      ...replacement,
       ...(typeof raw.recommendation === 'string' && raw.recommendation.trim() ? { recommendation: raw.recommendation.trim() } : {}),
       ...(typeof raw.confidence === 'number' && Number.isFinite(raw.confidence) ? { confidence: raw.confidence } : {}),
       ...(effectiveSeverity !== severity ? { downgradedFrom: severity, absenceClaimDowngraded: true } : {}),
@@ -423,12 +487,15 @@ function planFindingPublication(input, changedFiles, options = {}) {
   for (const { subjectType, finding } of collapsed) {
     const common = {
       path: finding.path,
-      ...(subjectType === 'line' ? { line: finding.line, side: finding.side } : {}),
+      ...(subjectType === 'line' ? {
+        line: finding.line, side: finding.side,
+        ...(finding.startLine !== undefined ? { startLine: finding.startLine } : {}),
+      } : {}),
       markerKey: findingMarkerKey(finding, subjectType),
       personas: finding.personas,
       finding,
     };
-    if (finding.severity === 'P2') {
+    if (finding.absenceClaimDowngraded) {
       advisories.push({
         ...common,
         line: finding.line,
@@ -437,7 +504,7 @@ function planFindingPublication(input, changedFiles, options = {}) {
         severity: finding.severity,
       });
     } else if (subjectType === 'file') {
-      fileComments.push({ ...common, body: formatFindingCommentBody(finding) });
+      fileComments.push({ ...common, body: `${formatFindingCommentBody(finding)}\n\nReported location: line ${finding.line} (${finding.side}).` });
     } else {
       lineComments.push({ ...common, body: formatFindingCommentBody(finding) });
     }
@@ -456,29 +523,15 @@ function planFindingPublication(input, changedFiles, options = {}) {
   return { lineComments, fileComments, advisories, rejected };
 }
 
-/**
- * Severities that may become resolve-required review threads.
- *
- * The single definition of "actionable". It sits beside the cap because the two decide the same
- * thing together -- which findings can block a merge -- and both publication surfaces read it, so
- * widening the blocking set cannot leave one surface gating on the old pair.
- */
+/** Severities used by arbitration to request changes; inline eligibility includes P2 as well. */
 const ACTIONABLE_SEVERITIES = Object.freeze(['P0', 'P1']);
 
 function isActionableSeverity(severity) {
   return ACTIONABLE_SEVERITIES.includes(String(severity || '').toUpperCase());
 }
 
-/**
- * Max resolve-required review threads one run may open.
- *
- * `required_conversation_resolution` turns every unresolved thread into a merge block, so an
- * uncapped panel can wedge a pull request behind dozens of them. The App path has capped this at
- * ten P0/P1 threads since the 2026-08-03 publication policy. It lives here, beside the planner,
- * so the Action and the App read one definition of the cap and its ranking rather than keeping
- * hand-maintained copies that drift. Overflow is never dropped -- callers render it.
- */
-const MAX_PUBLISHED_REVIEW_THREADS = 10;
+/** Publish every valid finding by default. Callers can still request an explicit cap. */
+const MAX_PUBLISHED_REVIEW_THREADS = Infinity;
 
 /**
  * Trims the plan to `max` review threads, most severe first.
@@ -522,6 +575,8 @@ function capPublicationThreads(publicationPlan, max = MAX_PUBLISHED_REVIEW_THREA
 }
 
 module.exports = {
+  INLINE_SEVERITIES,
+  codeFence,
   ACTIONABLE_SEVERITIES,
   isActionableSeverity,
   capPublicationThreads,
@@ -531,6 +586,7 @@ module.exports = {
   findingMarkerKey,
   formatFindingCommentBody,
   mergeNearDuplicateClaims,
+  mergeReplacementMetadata,
   planFindingPublication,
   isAbsenceClaim,
   ABSENCE_CLAIM_PATTERN,

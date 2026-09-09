@@ -23,11 +23,13 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { executePersonaPanel } from '../panel/panelEngine';
+import { normalizeRepositoryVisibility } from '../review/repositoryVisibility';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import type { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
+import { computeArbitration } from '../review/reviewCore';
 import { logger } from '../utils/logger';
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
@@ -46,6 +48,24 @@ export interface PublishingReviewIdentity {
   baseSha: string;
 }
 
+/** One canonical finding, as arbitration emits it. */
+export interface ReviewFinding {
+  severity?: string;
+  path?: string;
+  line?: number;
+  title?: string;
+  body?: string;
+}
+
+export interface CheckAnnotation {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: 'notice' | 'warning' | 'failure';
+  message: string;
+  title?: string;
+}
+
 export interface PublishingCheckClient {
   createCheck(owner: string, repo: string, headSha: string): Promise<number>;
   completeCheck(options: {
@@ -55,6 +75,8 @@ export interface PublishingCheckClient {
     conclusion: 'success' | 'failure' | 'cancelled';
     title: string;
     summary: string;
+    text?: string;
+    annotations?: CheckAnnotation[];
   }): Promise<void>;
 }
 
@@ -161,6 +183,131 @@ export function bifrostTransport(env: NodeJS.ProcessEnv): { baseUrl: string; api
   // A plaintext or non-gateway base URL would ship diffs off the intended path.
   if (parsed.protocol !== 'https:') throw invalidPublishingReviewContract();
   return { baseUrl, apiKey, model };
+}
+
+/**
+ * The publishing worker is admitted with a single Bifrost transport. It must
+ * not fall back to the legacy default config, whose synthetic/claude providers
+ * are unavailable in the production gateway. Keep every persona, moderator,
+ * and arbiter call on the operator-injected model and fail closed on provider
+ * errors instead of attempting an undeclared route.
+ */
+export function createBifrostPublishingConfig(model: string): ReturnType<typeof createDefaultV3Config> {
+  const providerId = 'bifrost';
+  const config = createDefaultV3Config();
+  return {
+    ...config,
+    personas: config.personas.map((persona) => ({ ...persona, providers: [providerId] })),
+    reviewers: {
+      ...config.reviewers,
+      fallback: 'none',
+      providers: [{
+        id: providerId,
+        enabled: true,
+        model,
+        effort: 'medium',
+        review_timeout_s: 300,
+        arbiter_timeout_s: 300,
+      }],
+      arbiter: { order: [providerId] },
+    },
+  };
+}
+
+/**
+ * Git writes a diff header as `diff --git a/<src> b/<dst>`. With no quoting and
+ * a path containing a space that line is genuinely ambiguous -- `a/x y b/z` can
+ * be split more than one way -- so the header is the LAST source consulted, not
+ * the first. `+++`/`---`/`rename to` each carry exactly one path on their own
+ * line and are unambiguous.
+ *
+ * The previous `(\S+)` header match stopped at the first space, so
+ * `a/sip message.txt` yielded no usable path at all. That failed OPEN and
+ * silently: the file dropped out of `changedFiles`, was never sent to the panel,
+ * and any finding on it was discarded during arbitration. cisco-cdr has eight
+ * such paths today.
+ */
+function unquoteGitPath(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"') || trimmed.length < 2) return trimmed;
+  const inner = trimmed.slice(1, -1);
+  const simple: Record<string, number> = { n: 10, t: 9, r: 13, '"': 34, '\\': 92 };
+  const bytes: number[] = [];
+  for (let index = 0; index < inner.length; index += 1) {
+    if (inner[index] !== '\\') {
+      // Re-encode so a literal multi-byte character survives the Buffer round trip.
+      bytes.push(...Buffer.from(inner[index], 'utf8'));
+      continue;
+    }
+    const octal = /^[0-7]{3}/u.exec(inner.slice(index + 1, index + 4));
+    if (octal) {
+      bytes.push(parseInt(octal[0], 8));
+      index += 3;
+      continue;
+    }
+    const next = inner[index + 1];
+    if (next && Object.prototype.hasOwnProperty.call(simple, next)) {
+      bytes.push(simple[next]);
+      index += 1;
+      continue;
+    }
+    bytes.push(...Buffer.from(inner[index], 'utf8'));
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+function stripSidePrefix(path: string): string {
+  return /^[ab]\//u.test(path) ? path.slice(2) : path;
+}
+
+/** Reads the one path a finding could be anchored to, or '' if the chunk is unreadable. */
+function pathFromChunk(chunk: string): string {
+  const line = (pattern: RegExp): string => {
+    const match = pattern.exec(chunk);
+    return match ? unquoteGitPath(match[1].replace(/\r$/u, '')) : '';
+  };
+
+  // The post-image first: a finding anchors to an added line, which only the
+  // destination path can carry.
+  const plus = line(/^\+\+\+ (.+)$/mu);
+  if (plus && plus !== '/dev/null') return stripSidePrefix(plus);
+
+  // A pure rename or a binary change has no `+++` line.
+  const renamed = line(/^rename to (.+)$/mu);
+  if (renamed) return stripSidePrefix(renamed);
+
+  const minus = line(/^--- (.+)$/mu);
+  if (minus && minus !== '/dev/null') return stripSidePrefix(minus);
+
+  // Last resort. Only trustworthy when the header is unambiguous: either both
+  // sides are quoted, or neither path contains a space.
+  const quoted = /^diff --git ("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*")/u.exec(chunk);
+  if (quoted) return stripSidePrefix(unquoteGitPath(quoted[2]));
+  const plain = /^diff --git a\/(\S+) b\/(\S+)[ \t]*$/mu.exec(chunk);
+  if (plain) return stripSidePrefix(`b/${plain[2]}`);
+  return '';
+}
+
+export interface ChangedFile {
+  path: string;
+  patch: string;
+}
+
+/**
+ * Splits a unified diff into per-file chunks. `unreadable` carries the header of
+ * every chunk no path could be read from -- an unreviewable file, which the
+ * caller must surface rather than drop.
+ */
+export function parseChangedFiles(diff: string): { files: ChangedFile[]; unreadable: string[] } {
+  const files: ChangedFile[] = [];
+  const unreadable: string[] = [];
+  for (const chunk of String(diff).split(/^(?=diff --git )/mu)) {
+    if (!chunk.startsWith('diff --git ')) continue;
+    const path = pathFromChunk(chunk);
+    if (path && path !== '/dev/null') files.push({ path, patch: chunk });
+    else unreadable.push((chunk.split('\n', 1)[0] || '').slice(0, 200));
+  }
+  return { files, unreadable };
 }
 
 const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
@@ -298,6 +445,51 @@ export interface PublishingReviewDeps {
   now?: () => number;
 }
 
+/**
+ * Renders the canonical findings into the check's `text` body. Ordered by
+ * severity so the blocking ones are read first, and every entry carries its
+ * file and line so a reader can navigate without the annotation view.
+ */
+export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number): string {
+  if (findings.length === 0) {
+    return 'No findings survived canonical arbitration for this head.';
+  }
+  const order = (severity: string): number => (severity === 'P0' ? 0 : severity === 'P1' ? 1 : 2);
+  const lines = [...findings]
+    .sort((a, b) => order(String(a?.severity || 'P2').toUpperCase()) - order(String(b?.severity || 'P2').toUpperCase()))
+    .map((finding) => {
+      const severity = String(finding?.severity || 'P2').toUpperCase();
+      const where = finding?.path ? `\`${String(finding.path)}${finding?.line ? `:${finding.line}` : ''}\`` : '_no file_';
+      const title = String(finding?.title || 'finding');
+      const body = String(finding?.body || '').trim();
+      const reporters = Number((finding as { reporters?: number })?.reporters || 1);
+      const adjusted = (finding as { severityAdjusted?: { from: string; reason: string } })?.severityAdjusted;
+      const unverified = finding as { downgradedFrom?: string; downgrade_reason?: string };
+      // A severity-downgrade marker renders immediately after the bold severity token itself
+      // (`**P2** (was P1 — unverified premise)`), not folded into the trailing `_(...)_` marks --
+      // it changes what the severity IS, not an incidental annotation about the finding.
+      //
+      // Keyed on the presence of `downgradedFrom`, not on the reason's literal value:
+      // the domain owns that vocabulary, and matching a copy of it here would go
+      // quietly stale if it were renamed or a second reason were added -- the marker
+      // would just stop rendering, with nothing red. The reason is rendered from the
+      // finding itself for the same reason.
+      const downgradeMarker = unverified.downgradedFrom
+        ? ` (was ${unverified.downgradedFrom} — ${String(unverified.downgrade_reason || 'downgraded').replace(/_/gu, ' ')})`
+        : '';
+      const marks = [
+        reporters > 1 ? `reported by ${reporters} lanes` : '',
+        adjusted ? `filed ${adjusted.from}, re-filed ${severity}: ${adjusted.reason}` : '',
+      ].filter(Boolean);
+      return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
+    });
+  return [
+    `${findings.length} finding(s), ${blockingCount} blocking (P0/P1).`,
+    '',
+    ...lines,
+  ].join('\n');
+}
+
 export async function runPublishingReviewWorker(
   env: NodeJS.ProcessEnv,
   deps: PublishingReviewDeps,
@@ -305,6 +497,11 @@ export async function runPublishingReviewWorker(
   if (!isPublishingReviewWorker(env)) throw invalidPublishingReviewContract();
   const identity = publishingReviewIdentity(env);
   const transport = bifrostTransport(env);
+  // This lane's admitted identity is entirely env-driven (no GitHub client is available to
+  // look the repository up); the dispatching workflow is the only source of visibility here.
+  // Absent or unrecognised input normalizes to 'UNKNOWN', never to a guess, and never blocks
+  // the run (ct-meta#2884: visibility must be told to the persona, not guessed).
+  const repositoryVisibility = normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY'));
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
@@ -329,11 +526,7 @@ export async function runPublishingReviewWorker(
       token: value(env, 'GH_TOKEN'),
     });
 
-    const changedFiles = Array.from(
-      String(source.diff).matchAll(/diff --git a\/(.*?) b\/(.*?)(?=\ndiff --git|\n$|$)/gs),
-    )
-      .map((match) => ({ path: (match[2] || match[1] || '').trim(), patch: match[0] }))
-      .filter((file) => file.path.length > 0 && file.path !== '/dev/null');
+    const { files: changedFiles, unreadable } = parseChangedFiles(String(source.diff));
     // An empty changed-file set must not be read as "nothing to review, ship".
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
@@ -344,16 +537,40 @@ export async function runPublishingReviewWorker(
       changedFiles,
       repository: identity.repo,
       headSha: identity.headSha,
+      repositoryVisibility,
       client,
       jobId: identity.runId,
     } as Parameters<typeof executePersonaPanel>[0]);
 
-    const findings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
+    const rawFindings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
+    // The model arbiter is evidence, not the policy boundary. The canonical
+    // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
+    // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
+    // Recompute from the exact persona findings and quorum so this lane shares
+    // the same fail-closed severity contract as the hosted review path.
+    const canonical = computeArbitration(panelResult.personas, panelResult.personas.length, {
+      changedFiles,
+      coverageComplete: panelResult?.quorum ? panelResult.quorum.satisfied : true,
+    });
+    const verdict = canonical.verdict;
+    // Count blocking findings from the canonical set, not the raw persona
+    // output. The two disagreed: the check reported a blocking count derived
+    // from unsanitized findings next to a verdict derived from the sanitized
+    // ones, so a run could read `SHIP` and `blocking P0/P1: 13` at once. The
+    // canonical set is the one the verdict is computed from, so it is the only
+    // set the conclusion may be computed from.
+    const findings = (canonical.findings || []) as ReviewFinding[];
+    const discardedFindingCount = Math.max(0, rawFindings.length - findings.length);
     const blocking = findings.filter(
-      (finding) => BLOCKING_SEVERITIES.has(String((finding as { severity?: unknown })?.severity || 'P2').toUpperCase()),
+      (finding) => BLOCKING_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
     );
-    const verdict = String(panelResult.arbiter?.verdict || 'BLOCK');
-    const conclusion = publishingConclusion(verdict, blocking.length);
+    // A file whose header could not be read was never sent to the panel, so no
+    // finding can exist for it and the verdict describes less than the diff. That
+    // is the "absent capability, green check" shape: fail closed and name the
+    // headers, rather than publish a verdict over a partial review.
+    const conclusion = unreadable.length > 0
+      ? ('failure' as const)
+      : publishingConclusion(verdict, blocking.length);
 
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
       const pFindings = p.findings || [];
@@ -381,6 +598,13 @@ export async function runPublishingReviewWorker(
     const totalToolCalls = personaMetrics.reduce((sum, p) => sum + p.toolCallsCount, 0);
     const totalDurationMs = personaMetrics.reduce((sum, p) => sum + p.durationMs, 0);
 
+    // A count with nothing attached is not reviewable. Until now the check
+    // published only a title and a summary, so a run could report four blocking
+    // findings while the pull request carried no comment, no review and no
+    // annotation -- nothing an author could act on. Both fields below need only
+    // `checks: write`, so the findings become visible without widening the
+    // worker's token beyond its ADR 0541 boundary.
+    const changedPaths = new Set(changedFiles.map((file) => file.path));
     await deps.checkClient.completeCheck({
       owner: identity.owner,
       repo: identity.repoName,
@@ -391,10 +615,42 @@ export async function runPublishingReviewWorker(
         `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
         (panelResult as any).zeroLaneNonEvidence
           ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
-          : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}).`,
+          : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+        ...(discardedFindingCount > 0
+          ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
+          : []),
+        ...(unreadable.length > 0
+          ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
+          : []),
         `Transport: bifrost \`${transport.model}\`.`,
+        `Repository visibility: ${repositoryVisibility}.`,
         `Telemetry: ${totalTurns} turns, ${totalToolCalls} tool calls, ${totalTokens} tokens across ${personaMetrics.length} lanes (${totalDurationMs}ms).`,
       ].join('\n\n'),
+      text: renderFindingsMarkdown(findings, blocking.length),
+      // Redundant today and deliberately kept: `sanitizeFinding` already drops
+      // any finding whose path is not in `changedFiles`, so this filter removes
+      // nothing. It stays because GitHub rejects an annotation whose path is not
+      // in the diff and fails the whole PATCH -- which would take the verdict
+      // with it -- so a future change to arbitration must not be able to turn a
+      // stray path into a lost verdict. It is a guard, not a behaviour: do not
+      // write a test that claims it moves a finding to the text body.
+      annotations: findings
+        .filter((finding) => changedPaths.has(String(finding?.path || '')))
+        .slice(0, 50)
+        .map((finding) => {
+          const line = Number.isSafeInteger(Number(finding?.line)) && Number(finding?.line) > 0
+            ? Number(finding.line)
+            : 1;
+          const severity = String(finding?.severity || 'P2').toUpperCase();
+          return {
+            path: String(finding.path),
+            start_line: line,
+            end_line: line,
+            annotation_level: BLOCKING_SEVERITIES.has(severity) ? 'failure' as const : 'warning' as const,
+            title: `${severity}: ${String(finding?.title || 'finding').slice(0, 120)}`,
+            message: String(finding?.body || finding?.title || 'No detail provided.').slice(0, 4_000),
+          };
+        }),
     });
 
     const completedAt = new Date(now()).toISOString();

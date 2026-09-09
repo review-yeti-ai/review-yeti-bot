@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { codeFence } from '../review/findingPublication';
+import { normalizeFindingReplacement } from '../review/reviewCore';
 import { logger } from '../utils/logger';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { PanelFinding, FixOption } from '../panel/panelEngine';
@@ -18,6 +21,7 @@ export interface PersonaFinding {
   confidence?: number;
   recommendation?: string;
   suggestion?: string;
+  replacementCode?: string;
   codeSnippet?: string;
   fixOptions?: FixOption[];
   isRedTeam?: boolean;
@@ -31,6 +35,8 @@ export interface PersonaFinding {
 
 export interface CommentPublisherOptions {
   githubToken?: string;
+  /** Bot login resolved from the authenticated App JWT identity endpoint. */
+  publisherLogin?: string;
   baseUrl?: string;
   /** Canonical injectable HTTP boundary used by replay tests. */
   fetchImplementation?: FetchImplementation;
@@ -61,6 +67,7 @@ export interface BoundaryOptions {
 }
 
 export interface PublishInlineCommentRequest {
+  subjectType?: 'file';
   path: string;
   line: number;
   side?: 'LEFT' | 'RIGHT';
@@ -81,6 +88,8 @@ export interface PublishReviewRequest {
   body: string;
   inlineComments?: PublishInlineCommentRequest[];
   mascot?: boolean;
+  /** Keep the verdict in one PR issue comment; reviews contain inline findings only. */
+  stickyOverview?: boolean;
   /** Stable marker used to make reruns and ambiguous POST outcomes idempotent. */
   idempotencyKey?: string;
 }
@@ -88,6 +97,7 @@ export interface PublishReviewRequest {
 export interface PublishResult {
   success: boolean;
   reviewId?: number;
+  summaryCommentId?: number;
   commentsCreated: number;
   rateLimitRemaining?: number;
   errors?: string[];
@@ -272,13 +282,18 @@ export function formatInlineCommentBody(
         body += formatSuggestionBlock(fix.suggestionCode);
       }
     });
-  } else if (!finding.isArchitectural && (finding.suggestion || finding.codeSnippet)) {
-    const code = finding.suggestion || finding.codeSnippet;
-    body += `\n${formatSuggestionBlock(code!)}`;
+  } else if (!finding.isArchitectural && typeof finding.replacementCode === 'string') {
+    const fence = codeFence(finding.replacementCode);
+    body += `\n${fence}suggestion\n${finding.replacementCode}\n${fence}\n`;
+  } else if (!finding.isArchitectural && finding.codeSnippet) {
+    body += `\n${formatSuggestionBlock(finding.codeSnippet)}`;
   } else if (finding.isArchitectural || options?.fallbackTable || finding.recommendation) {
     body += '\n' + formatFindingFallbackTable(finding) + '\n';
   }
 
+  if (finding.suggestion && !finding.isArchitectural) {
+    body += `\n**Suggested fix**\n\n${finding.suggestion}\n`;
+  }
   return body;
 }
 
@@ -293,6 +308,7 @@ export class CommentPublisher {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly random: () => number;
   private readonly currentHeadSha?: () => Promise<string>;
+  private publisherLogin?: string;
 
   constructor(options: CommentPublisherOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com').replace(/\/$/, '');
@@ -314,6 +330,7 @@ export class CommentPublisher {
     this.sleep = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.random = options.random || Math.random;
     this.currentHeadSha = options.currentHeadSha;
+    this.publisherLogin = options.publisherLogin;
   }
 
   private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
@@ -398,12 +415,158 @@ export class CommentPublisher {
     if (actual !== expected) throw new Error(`pull request head changed before publication: expected ${expected}, found ${actual}`);
   }
 
+  private async authenticatedPublisherLogin(): Promise<string> {
+    if (!this.publisherLogin?.endsWith('[bot]')) throw new Error('Authenticated GitHub App publisher identity is required');
+    return this.publisherLogin;
+  }
+
+  private async upsertOverview(req: PublishReviewRequest): Promise<number> {
+    const login = await this.authenticatedPublisherLogin();
+    const marker = '<!-- ct-review-bot:overview:v1 -->';
+    const endpoint = `${this.baseUrl}/repos/${req.owner}/${req.repo}/issues/${req.prNumber}/comments`;
+    const findOverview = async (): Promise<number | undefined> => {
+      for (let page = 1; page <= 100; page++) {
+        const response = await this.fetchWithRetry(`${endpoint}?per_page=100&page=${page}`, { method: 'GET' });
+        if (!response.ok) throw new Error(`GitHub overview lookup returned HTTP ${response.status}`);
+        const comments = await response.json();
+        if (!Array.isArray(comments)) throw new Error('GitHub overview lookup response was not an array');
+        const existing = comments.find((comment: any) => comment.user?.type === 'Bot' && comment.user?.login === login
+          && typeof comment.body === 'string' && comment.body.includes(marker));
+        if (existing && Number.isFinite(Number(existing.id))) return Number(existing.id);
+        if (comments.length < 100) return undefined;
+      }
+      throw new Error('GitHub overview lookup exceeded pagination limit');
+    };
+    const write = async (id?: number) => {
+      await this.assertCurrentHead(req.commitSha);
+      return this.fetchWithRetry(id === undefined ? endpoint : `${this.baseUrl}/repos/${req.owner}/${req.repo}/issues/comments/${id}`, {
+        method: id === undefined ? 'POST' : 'PATCH',
+        body: JSON.stringify({ body: `${marker}\n${req.body}` }),
+      });
+    };
+    const existingId = await findOverview();
+    let response: Response;
+    try {
+      response = await write(existingId);
+    } catch (error) {
+      // A disconnected POST may have succeeded. Reconcile before another write.
+      if (existingId !== undefined) throw error;
+      const recoveredId = await findOverview();
+      if (recoveredId === undefined) throw error;
+      response = await write(recoveredId);
+    }
+    if (!response.ok) throw new Error(`GitHub overview publication returned HTTP ${response.status}`);
+    const written: unknown = await response.json();
+    if (!written || typeof written !== 'object' || !('id' in written)
+      || typeof written.id !== 'number' || !Number.isSafeInteger(written.id) || written.id <= 0) {
+      throw new Error('GitHub overview write returned no comment ID');
+    }
+    const id = written.id;
+    const verified = await this.fetchWithRetry(`${this.baseUrl}/repos/${req.owner}/${req.repo}/issues/comments/${id}`, { method: 'GET' });
+    if (!verified.ok) throw new Error(`GitHub overview verification returned HTTP ${verified.status}`);
+    const saved: unknown = await verified.json();
+    await this.assertCurrentHead(req.commitSha);
+    if (!saved || typeof saved !== 'object' || !('user' in saved) || !saved.user
+      || typeof saved.user !== 'object' || !('login' in saved.user) || saved.user.login !== login
+      || !('body' in saved) || saved.body !== `${marker}\n${req.body}`) {
+      throw new Error('GitHub overview verification did not match the published body and author');
+    }
+    return id;
+  }
+
+  private async publishStickyReview(req: PublishReviewRequest): Promise<PublishResult> {
+    const login = await this.authenticatedPublisherLogin();
+    const endpoint = `${this.baseUrl}/repos/${req.owner}/${req.repo}/pulls/${req.prNumber}/comments`;
+    const listComments = async (): Promise<any[]> => {
+      const result: any[] = [];
+      for (let page = 1; page <= 100; page++) {
+        const response = await this.fetchWithRetry(`${endpoint}?per_page=100&page=${page}`, { method: 'GET' });
+        if (!response.ok) throw new Error(`GitHub inline lookup returned HTTP ${response.status}`);
+        const comments = await response.json();
+        if (!Array.isArray(comments)) throw new Error('GitHub inline lookup response was not an array');
+        result.push(...comments);
+        if (comments.length < 100) return result;
+      }
+      throw new Error('GitHub inline lookup exceeded pagination limit');
+    };
+    let created = 0;
+    const inline = (req.inlineComments || []).map(comment => {
+      if (comment.subjectType === 'file') return comment;
+      const side = comment.side ?? 'RIGHT';
+      if (side !== 'RIGHT' && side !== 'LEFT') throw new Error('Invalid inline comment side');
+      const startLine = comment.startLine ?? comment.finding.startLine;
+      const range = normalizeFindingReplacement({ line: comment.line, startLine });
+      if (!Number.isInteger(comment.line) || comment.line < 1
+        || (startLine != null && range.startLine !== startLine)) {
+        throw new Error('Invalid inline comment range');
+      }
+      const finding = { ...comment.finding };
+      const replacement = normalizeFindingReplacement({ ...finding, line: comment.line, startLine, side });
+      if (finding.replacementCode !== undefined && replacement.replacementCode === undefined) {
+        throw new Error('Invalid inline replacement metadata');
+      }
+      if (side !== 'RIGHT' && (finding.codeSnippet || finding.fixOptions?.some(fix => fix.suggestionCode))) {
+        throw new Error('Inline suggestions require the RIGHT side');
+      }
+      delete finding.startLine;
+      delete finding.replacementCode;
+      Object.assign(finding, replacement);
+      return { ...comment, side, startLine: range.startLine, finding };
+    });
+    const existing = inline.length ? await listComments() : [];
+    for (const comment of inline) {
+      const finding = { ...comment.finding };
+      if (comment.subjectType === 'file') {
+        delete finding.replacementCode;
+        delete finding.codeSnippet;
+        delete finding.fixOptions;
+        delete finding.startLine;
+      }
+      const formatted = formatInlineCommentBody(finding, { mascot: req.mascot });
+      const digest = createHash('sha256').update(JSON.stringify([
+        req.commitSha, comment.path, comment.subjectType || 'line', comment.line,
+        comment.side || 'RIGHT', comment.startLine, formatted,
+      ])).digest('hex');
+      const marker = `<!-- ct-review-bot:inline:v1:${digest} -->`;
+      const hasMarker = (comments: any[]) => comments.some(c => c.user?.type === 'Bot' && c.user?.login === login && typeof c.body === 'string' && c.body.includes(marker));
+      if (hasMarker(existing)) continue;
+      const startLine = comment.startLine ?? finding.startLine;
+      const side = comment.side || 'RIGHT';
+      const payload = {
+        commit_id: req.commitSha,
+        path: comment.path,
+        body: `${formatted}\n${marker}`,
+        ...(comment.subjectType === 'file' ? { subject_type: 'file' } : {
+          line: comment.line, side,
+          ...(Number.isInteger(startLine) && startLine! > 0 && startLine! < comment.line
+            ? { start_line: startLine, start_side: side } : {}),
+        }),
+      };
+      await this.assertCurrentHead(req.commitSha);
+      let response: Response;
+      try {
+        response = await this.fetchWithRetry(endpoint, { method: 'POST', body: JSON.stringify(payload) });
+      } catch (error) {
+        const recovered = await listComments();
+        if (!hasMarker(recovered)) throw error;
+        existing.push(...recovered);
+        continue;
+      }
+      if (!response.ok) throw new Error(`GitHub inline publication returned HTTP ${response.status}: ${await response.text()}`);
+      existing.push(await response.json());
+      created += 1;
+    }
+    const overviewId = await this.upsertOverview(req);
+    return { success: true, summaryCommentId: overviewId, commentsCreated: created };
+  }
+
   public async publishReview(req: PublishReviewRequest): Promise<PublishResult> {
     const { owner, repo, prNumber, commitSha, event, body, inlineComments = [] } = req;
     let commentsCreated = 0;
     const errors: string[] = [];
 
     try {
+      if (req.stickyOverview) return await this.publishStickyReview(req);
       const url = `${this.baseUrl}/repos/${owner}/${repo}/pulls/${prNumber}/reviews`;
       const dashboardDomain = process.env.DASHBOARD_URL || 'https://ct-review-bot.calltelemetry.com';
       const jobId = getJobId(owner, repo, prNumber, commitSha);
@@ -456,7 +619,7 @@ export class CommentPublisher {
         logger.warn(`Failed to publish review with inline comments. Status: ${res.status}, Error: ${errorText}`);
 
         // If it's a 422 / line could not be resolved error, retry by appending inline comments to the review body.
-        if ((res.status === 422 || errorText.includes('Line could not be resolved') || errorText.includes('Unprocessable Entity')) && inlineComments.length > 0) {
+        if ((res.status === 422 || errorText.includes('Line could not be resolved') || errorText.includes('Unprocessable Entity')) && inlineComments.length > 0 && !req.stickyOverview) {
           logger.info(`Retrying review publication without inline comments due to line resolution error`);
           retriedWithoutInline = true;
           const fallbackTable = formatInlineFindingsFallbackTable(inlineComments);

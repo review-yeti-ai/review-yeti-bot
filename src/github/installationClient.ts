@@ -1,4 +1,6 @@
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
+import { logger } from '../utils/logger';
+import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -88,9 +90,11 @@ export class GitHubInstallationClient {
   private readonly publisher: CommentPublisher;
   private readonly now: () => number;
   private readonly fetchImplementation: FetchImplementation;
+  private readonly repositoryVisibilityCache = new Map<string, Promise<RepositoryVisibility>>();
 
   constructor(options: {
     token: string;
+    publisherLogin?: string;
     baseUrl?: string;
     fetchImplementation?: FetchImplementation;
     /** @deprecated Use fetchImplementation. */
@@ -109,6 +113,7 @@ export class GitHubInstallationClient {
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
     this.publisher = new CommentPublisher({
       githubToken: options.token,
+      publisherLogin: options.publisherLogin,
       baseUrl: this.baseUrl,
       fetchImplementation: options.fetchImplementation || options.fetchImpl,
       now: this.now,
@@ -140,6 +145,34 @@ export class GitHubInstallationClient {
       title: String(data.title || ''),
       body: String(data.body || ''),
     };
+  }
+
+  /**
+   * Fallback source of repository visibility for run modes whose webhook payload
+   * did not carry `repository.private`/`repository.visibility` (ct-meta#2884). A
+   * lookup failure of any kind -- 404, rate limit, network error, malformed body --
+   * must never fail or block the review it was requested for, so every error path
+   * resolves to 'UNKNOWN' rather than rejecting. Memoised per client instance per
+   * `owner/repo` since a single review run may ask more than once (persona +
+   * moderator + arbiter) and visibility does not change mid-run.
+   */
+  async getRepositoryVisibility(owner: string, repo: string): Promise<RepositoryVisibility> {
+    const key = `${owner}/${repo}`;
+    const cached = this.repositoryVisibilityCache.get(key);
+    if (cached) return cached;
+    const lookup = (async (): Promise<RepositoryVisibility> => {
+      try {
+        const data = await this.request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+        return repositoryVisibilityFrom(data);
+      } catch (error: any) {
+        logger.warn(`Repository visibility lookup failed for ${key}; falling back to UNKNOWN`, {
+          error: error?.message || error,
+        });
+        return 'UNKNOWN';
+      }
+    })();
+    this.repositoryVisibilityCache.set(key, lookup);
+    return lookup;
   }
 
   async getBasePolicy(owner: string, repo: string, baseSha: string): Promise<string> {
@@ -213,6 +246,15 @@ export class GitHubInstallationClient {
     return Number(data.id);
   }
 
+  /**
+   * `text` and `annotations` are part of the check-run output and need only
+   * `checks: write` -- the permission this token already holds. Publishing
+   * findings here rather than as a pull-request review is what keeps the
+   * app-gate worker inside its ADR 0541 boundary: it never needs
+   * `pull_requests: write`.
+   *
+   * GitHub accepts at most 50 annotations per request, so callers must batch.
+   */
   async completeCheck(options: {
     owner: string;
     repo: string;
@@ -220,14 +262,31 @@ export class GitHubInstallationClient {
     conclusion: 'success' | 'failure' | 'cancelled';
     title: string;
     summary: string;
+    text?: string;
+    annotations?: Array<{
+      path: string;
+      start_line: number;
+      end_line: number;
+      annotation_level: 'notice' | 'warning' | 'failure';
+      message: string;
+      title?: string;
+    }>;
   }): Promise<void> {
+    const output: Record<string, unknown> = {
+      title: options.title,
+      summary: options.summary.slice(0, 65_000),
+    };
+    if (options.text) output.text = options.text.slice(0, 65_000);
+    if (options.annotations && options.annotations.length > 0) {
+      output.annotations = options.annotations.slice(0, 50);
+    }
     await this.request(`/repos/${options.owner}/${options.repo}/check-runs/${options.checkId}`, {
       method: 'PATCH',
       body: JSON.stringify({
         status: 'completed',
         conclusion: options.conclusion,
         completed_at: new Date(this.now()).toISOString(),
-        output: { title: options.title, summary: options.summary.slice(0, 65_000) },
+        output,
       }),
     });
   }
@@ -318,6 +377,25 @@ export class GitHubInstallationClient {
       }
       return null;
     }
+  }
+
+  /**
+   * List every file path in the repository at `ref` (recursive git tree), not just files changed
+   * in a PR. Backs the panel engine's full-repository `find_files`/`read_file` persona tools (see
+   * `RepoFileProvider` in `src/panel/panelEngine.ts`) so a persona can confirm whether a file the
+   * diff references, but does not itself change, actually exists.
+   *
+   * GitHub truncates this response (`truncated: true`) past ~100k entries / ~7MB for very large
+   * trees; callers should treat a truncated result as a best-effort partial index, not proof of
+   * absence, rather than paginating further (the Git Trees API has no pagination parameter).
+   */
+  async getFileTree(owner: string, repo: string, ref: string): Promise<{ paths: string[]; truncated: boolean }> {
+    const data = await this.request(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`);
+    if (!Array.isArray(data.tree)) throw new Error('git tree response is not an array');
+    const paths = data.tree
+      .filter((entry: any) => entry && entry.type === 'blob' && typeof entry.path === 'string')
+      .map((entry: any) => String(entry.path));
+    return { paths, truncated: data.truncated === true };
   }
 
   /** Get reference SHA for a branch */

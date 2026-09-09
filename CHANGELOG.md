@@ -1,5 +1,82 @@
 # Changelog
 
+## [1.42.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.3...v1.42.4) (2026-09-08)
+
+
+### Performance
+
+* **panel:** optimize prompt caching, scope persona paths, and add pre-flight triage classifier ([#593](https://github.com/review-yeti-ai/review-yeti-bot/issues/593)) ([ca41a3f](https://github.com/review-yeti-ai/review-yeti-bot/commit/ca41a3fb391524c4b8ed57d8a2aac8d9d21013e3))
+
+## [1.42.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.2...v1.42.3) (2026-09-08)
+
+
+### Bug Fixes
+
+* **review:** give the panel repository visibility instead of letting it guess ([#594](https://github.com/review-yeti-ai/review-yeti-bot/issues/594)) ([698dac0](https://github.com/review-yeti-ai/review-yeti-bot/commit/698dac04af6da01e689d3431c62ece9657266d3a))
+
+## [1.42.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.1...v1.42.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **panel:** give persona find_files/read_file real repository scope ([#590](https://github.com/review-yeti-ai/review-yeti-bot/issues/590)) ([c60bbcf](https://github.com/review-yeti-ai/review-yeti-bot/commit/c60bbcf4ae3cbcc59357bca5062cfd97f4d9bc7f))
+
+## [1.42.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.0...v1.42.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **review:** downgrade blocking findings that hedge their own premise ([#589](https://github.com/review-yeti-ai/review-yeti-bot/issues/589)) ([c1c7449](https://github.com/review-yeti-ai/review-yeti-bot/commit/c1c7449db0a1bedd2ca753af481fb6b03d1ac8f9))
+
+## [1.42.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.6...v1.42.0) (2026-09-08)
+
+
+### Features
+
+* publish inline findings with one sticky review overview ([#584](https://github.com/review-yeti-ai/review-yeti-bot/issues/584)) ([192b0f1](https://github.com/review-yeti-ai/review-yeti-bot/commit/192b0f1b569a22c8619e7d389f5e6a7ca769a2b0))
+
+## [1.41.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.5...v1.41.6) (2026-09-08)
+
+
+### Bug Fixes
+
+* **review:** cluster paraphrased findings and calibrate advisory P1s ([#585](https://github.com/review-yeti-ai/review-yeti-bot/issues/585)) ([28ebd03](https://github.com/review-yeti-ai/review-yeti-bot/commit/28ebd03cc7cc4fc146d02dae2870cacdc0f54d2b))
+
+## [1.41.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.4...v1.41.5) (2026-09-08)
+
+
+### Bug Fixes
+
+* **publishing:** read diff paths that contain spaces, and stop dropping files silently ([#582](https://github.com/review-yeti-ai/review-yeti-bot/issues/582)) ([24a3a88](https://github.com/review-yeti-ai/review-yeti-bot/commit/24a3a88ed2c62342f18db3578a9160cff01efaae))
+
+## [1.41.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.3...v1.41.4) (2026-09-08)
+
+
+### Bug Fixes
+
+* **publishing:** repair the diff parser, the blocking count, and publish findings ([#580](https://github.com/review-yeti-ai/review-yeti-bot/issues/580)) ([95831d2](https://github.com/review-yeti-ai/review-yeti-bot/commit/95831d26c2f5f06fe5ae45fc84fdc36a7e192a36))
+
+## [1.41.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.2...v1.41.3) (2026-09-07)
+
+
+### Bug Fixes
+
+* **doks:** enforce canonical advisory severity policy ([#576](https://github.com/review-yeti-ai/review-yeti-bot/issues/576)) ([efb4d7c](https://github.com/review-yeti-ai/review-yeti-bot/commit/efb4d7c5f388216220c0f3c80e1d1e6e11ce8677))
+
+## [1.41.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.1...v1.41.2) (2026-09-07)
+
+
+### Bug Fixes
+
+* **doks:** bind publishing panel to Bifrost model ([#574](https://github.com/review-yeti-ai/review-yeti-bot/issues/574)) ([542083f](https://github.com/review-yeti-ai/review-yeti-bot/commit/542083f14e9e5e4c271b176f13c11de19f0319d9))
+
+## [1.41.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.41.0...v1.41.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* **publishing:** pass the full owner/repo to the qualification loader ([#572](https://github.com/review-yeti-ai/review-yeti-bot/issues/572)) ([44d5da1](https://github.com/review-yeti-ai/review-yeti-bot/commit/44d5da1e1f03c4732c354e61747e4a8757358252))
+
 ## [1.41.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.40.1...v1.41.0) (2026-09-07)
 
 

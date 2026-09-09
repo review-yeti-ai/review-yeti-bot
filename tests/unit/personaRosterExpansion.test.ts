@@ -30,7 +30,7 @@ describe('10-Persona Roster & Per-Persona Settings Dials Suite (Release v1.4.0)'
     
 
     const devopsLane = config.personas.find((p) => p.id === 'devops-lane');
-    expect(devopsLane?.paths).toEqual(['Dockerfile*', 'k8s/**', '.github/**', 'helm/**', '**/*.yaml']);
+    expect(devopsLane?.paths).toEqual(['Dockerfile*', 'k8s/**', '.github/**', 'helm/**', '**/*.yaml', '**/*.yml', 'scripts/**', 'Tiltfile*', 'Procfile*', 'Makefile*']);
 
     });
 
