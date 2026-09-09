@@ -1,4 +1,5 @@
 import type { PublicationMode } from '../review/reviewRun';
+import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 
 const exactSha = /^[a-f0-9]{40}$/u;
 const exactDigest = /^[a-f0-9]{64}$/u;
@@ -140,8 +141,8 @@ export function buildReviewJobProjection(
   if (!Number.isFinite(input.receivedAt) || !Number.isFinite(input.terminalDeadline) || !Number.isFinite(now)) {
     throw new Error('review projection timestamps must be finite');
   }
-  if (input.terminalDeadline !== input.receivedAt + 900_000) {
-    throw new Error('terminal deadline must be exactly 15 minutes after receipt');
+  if (input.terminalDeadline !== input.receivedAt + TERMINAL_DEADLINE_MS) {
+    throw new Error(`terminal deadline must be exactly ${TERMINAL_DEADLINE_MS}ms (the configured terminal-deadline window) after receipt`);
   }
   if (now < input.receivedAt) throw new Error('projection time cannot precede admission receipt');
   if (input.terminalDeadline - now < 120_000) {

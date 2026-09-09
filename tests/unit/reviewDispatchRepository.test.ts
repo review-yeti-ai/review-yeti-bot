@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const identity = {
   owner: 'calltelemetry',
@@ -43,7 +44,7 @@ function input() {
     repositoryId: 123,
     installationId: 456,
     receivedAt: 1_000,
-    terminalDeadline: 901_000,
+    terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
     payloadDigest: 'f'.repeat(64),
     publicationMode: 'disabled' as const,
     identity,
@@ -186,7 +187,7 @@ describe('PostgresReviewDispatchRepository', () => {
           head_sha: identity.headSha,
           base_sha: identity.baseSha,
           received_at: new Date(1_000),
-          terminal_deadline: new Date(901_000),
+          terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
           effective_policy_digest: identity.configDigest,
           effective_config_digest: identity.configDigest,
           lease_owner: 'dispatcher-a',
@@ -311,7 +312,7 @@ describe('PostgresReviewDispatchRepository', () => {
       head_sha: identity.headSha,
       base_sha: identity.baseSha,
       received_at: new Date(1_000),
-      terminal_deadline: new Date(901_000),
+      terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
       effective_policy_digest: 'c'.repeat(64),
       effective_config_digest: identity.configDigest,
       lease_owner: 'dispatcher-a',
@@ -327,7 +328,7 @@ describe('PostgresReviewDispatchRepository', () => {
       headSha: identity.headSha,
       baseSha: identity.baseSha,
       receivedAt: 1_000,
-      terminalDeadline: 901_000,
+      terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
       policyDigest: 'c'.repeat(64),
       configDigest: identity.configDigest,
       executionAttempt: 1,
@@ -371,7 +372,7 @@ describe('PostgresReviewDispatchRepository', () => {
           head_sha: identity.headSha,
           base_sha: identity.baseSha,
           received_at: new Date(1_000),
-          terminal_deadline: new Date(901_000),
+          terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
           effective_policy_digest: 'c'.repeat(64),
           effective_config_digest: identity.configDigest,
           lease_owner: 'dispatcher-a',
