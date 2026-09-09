@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.6...v1.45.7) (2026-09-09)
+
+
+### Bug Fixes
+
+* **REL-732:** GC Review Yeti worker Jobs immediately after finish ([#632](https://github.com/review-yeti-ai/review-yeti-bot/issues/632)) ([4048f8a](https://github.com/review-yeti-ai/review-yeti-bot/commit/4048f8a79d40680e1d81525df52a6775c36a1ed3))
+
 ## [1.45.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.5...v1.45.6) (2026-09-09)
 
 
