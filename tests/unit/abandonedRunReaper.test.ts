@@ -1,153 +1,96 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
+import type { AbandonedPublishingRun } from '../../src/persistence/reviewDispatchRepository';
+import { logger } from '../../src/utils/logger';
 
-const run = {
-  runId: `run_${'1'.repeat(32)}`,
-  owner: 'calltelemetry',
-  repo: 'ct-meta',
-  prNumber: 2795,
-  headSha: 'a'.repeat(40),
+const run: AbandonedPublishingRun = {
+  runId: `run_${'1'.repeat(32)}`, owner: 'calltelemetry', repo: 'ct-meta',
+  prNumber: 2795, headSha: 'a'.repeat(40), deliveryId: 'delivery-1',
+  executionAttempt: 1, receivedAt: 1_000, terminalDeadline: 901_000,
 };
 
-function reaper(over: Record<string, any> = {}) {
-  const client = {
-    createCheck: vi.fn(async () => 77),
-    completeCheck: vi.fn(async () => {}),
-    ...over.client,
-  };
+function fixture() {
+  const client = { failAbandonedCheck: vi.fn(async (_run: AbandonedPublishingRun, _appId: number, _signal: AbortSignal) => 'failed' as const) };
   const repository = {
     claimAbandonedPublishingRuns: vi.fn(async () => [run]),
-    ...over.repository,
+    reconcileAbandonedPublishingRun: vi.fn(async (
+      _run: AbandonedPublishingRun, _worker: string, _now: number, publish: () => Promise<void>,
+    ) => { await publish(); return true; }),
   };
-  const checkClientFor = over.checkClientFor || vi.fn(async () => client);
-  return {
-    client,
-    repository,
-    checkClientFor,
-    subject: new AbandonedRunReaper({
-      repository: repository as never,
-      checkClientFor: checkClientFor as never,
-      workerId: 'reaper-a',
-      now: () => 1_700_000_000_000,
-      ...over.options,
-    }),
-  };
+  const checkClientFor = vi.fn(async (_run: AbandonedPublishingRun, _signal: AbortSignal) => client);
+  const subject = new AbandonedRunReaper({
+    repository, checkClientFor, workerId: 'reaper-a', publisherAppId: 4385771,
+    now: () => 902_000, limit: 5,
+  });
+  return { client, repository, checkClientFor, subject };
 }
 
-describe('AbandonedRunReaper', () => {
-  // The consumer shims (.github/workflows/ct-review-bot.yml in cisco-cdr, ct-meta
-  // and ai-workspace) decide whether a head still needs a panel by matching the
-  // check title against a `dead_lane` predicate. A title outside that set reads to
-  // them as a live run: the label refresh returns dispatch=false, and a head the
-  // reaper just failed can never be re-reviewed -- red, required, and unretryable.
-  //
-  // This list mirrors `def dead_lane` in those workflows. If the reaper needs a
-  // title that is not here, the shims must be taught it FIRST, in their own PR.
-  //
-  // The shims match by PREFIX, not equality, so `startsWith` below is the exact
-  // mirror rather than a weaker approximation. Verbatim from cisco-cdr
-  // .github/workflows/ct-review-bot.yml on 0.8.7-stable:
-  //
-  //   def dead_lane: (.output.title // "")
-  //     | startswith("Review Yeti: DISPATCHED")
-  //       or startswith("Review Yeti: NO VERDICT")
-  //       or startswith("Review Yeti: review did not complete");
-  //
-  // So a suffixed title such as "...did not complete (deadline exceeded)" is
-  // still recognised and still re-dispatchable. Tightening this to equality
-  // would fail titles the shims accept, which is a different contract than the
-  // one that governs whether a head can be retried.
-  const DEAD_LANE_TITLES = [
-    'Review Yeti: DISPATCHED',
-    'Review Yeti: NO VERDICT',
-    'Review Yeti: review did not complete',
-  ];
-
-  it('publishes a title the consumer shims treat as a retryable dead lane', async () => {
-    const { subject, client } = reaper();
-    await subject.runOnce();
-    const { title } = client.completeCheck.mock.calls[0][0];
-    expect(
-      DEAD_LANE_TITLES.some((prefix) => String(title).startsWith(prefix)),
-      `reaper title ${JSON.stringify(title)} is not in the shims' dead_lane set; `
-        + 'a head reaped with it cannot be re-dispatched by a label refresh',
-    ).toBe(true);
+describe('AbandonedRunReaper exact-attempt ownership', () => {
+  it('publishes only through the locked attempt and authenticated App failure-only operation', async () => {
+    const { subject, client, repository } = fixture();
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 1, failed: 0 });
+    expect(repository.claimAbandonedPublishingRuns).toHaveBeenCalledWith('reaper-a', 902_000, 5);
+    expect(repository.reconcileAbandonedPublishingRun).toHaveBeenCalledWith(run, 'reaper-a', 902_000, expect.any(Function));
+    expect(client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal));
   });
 
-  it('does not claim the review never started -- it was admitted, then timed out', async () => {
-    // The summary says the run "was admitted but reached its terminal deadline",
-    // so "did not start" contradicted the body and misdescribed the failure.
-    const { subject, client } = reaper();
-    await subject.runOnce();
-    expect(client.completeCheck.mock.calls[0][0].title).not.toContain('did not start');
+  it('does not mint or publish if re-admission invalidated the claimed delivery', async () => {
+    const { subject, repository, checkClientFor } = fixture();
+    repository.reconcileAbandonedPublishingRun.mockResolvedValue(false);
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 0 });
+    expect(checkClientFor).not.toHaveBeenCalled();
   });
 
-  it('publishes failure — never neutral or success — for a run that never reviewed', async () => {
-    // A neutral check does not block a merge, so reporting an unrun review as
-    // neutral would turn a silent block into a silent pass, which is worse.
-    const { subject, client } = reaper();
-    const outcome = await subject.runOnce();
-    expect(outcome).toEqual({ swept: 1, published: 1, failed: 0 });
-    expect(client.completeCheck).toHaveBeenCalledWith(
-      expect.objectContaining({ conclusion: 'failure', checkId: 77 }),
-    );
-    // The summary must say plainly that this is a failure, not a pass, so nobody
-    // reads an unrun review as a clean one.
-    const summary = client.completeCheck.mock.calls[0][0].summary as string;
-    expect(summary).toMatch(/failed review rather than an approval/u);
-    expect(summary).toContain(run.headSha);
+  it('mints per repository and keeps sweeping after a failed publication without logging private responses', async () => {
+    const { subject, repository, checkClientFor } = fixture();
+    const second = { ...run, runId: `run_${'2'.repeat(32)}`, repo: 'ct-release' };
+    repository.claimAbandonedPublishingRuns.mockResolvedValue([run, second]);
+    checkClientFor.mockRejectedValueOnce(new Error('private token response'));
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      await expect(subject.runOnce()).resolves.toEqual({ swept: 2, published: 1, failed: 1 });
+      expect(checkClientFor).toHaveBeenCalledWith(run, expect.any(AbortSignal));
+      expect(checkClientFor).toHaveBeenCalledWith(second, expect.any(AbortSignal));
+      expect(JSON.stringify(log.mock.calls)).not.toContain('private token response');
+    } finally { log.mockRestore(); }
   });
 
-  it('creates the check on the abandoned head, in that run repository', async () => {
-    const { subject, client } = reaper();
-    await subject.runOnce();
-    expect(client.createCheck).toHaveBeenCalledWith('calltelemetry', 'ct-meta', run.headSha);
-  });
-
-  it('builds a client per run so the token is scoped to that repository', async () => {
-    // One token cannot serve two repositories; minting per run is the point.
-    const second = { ...run, runId: `run_${'2'.repeat(32)}`, repo: 'cisco-cdr' };
-    const { subject, checkClientFor } = reaper({
-      repository: { claimAbandonedPublishingRuns: vi.fn(async () => [run, second]) },
-    });
-    await subject.runOnce();
-    expect(checkClientFor).toHaveBeenCalledTimes(2);
-    expect(checkClientFor).toHaveBeenCalledWith(expect.objectContaining({ repo: 'ct-meta' }));
-    expect(checkClientFor).toHaveBeenCalledWith(expect.objectContaining({ repo: 'cisco-cdr' }));
-  });
-
-  it('keeps sweeping when one run fails to publish', async () => {
-    // One unreachable repository must not strand every other blocked head.
-    const bad = { ...run, runId: `run_${'3'.repeat(32)}` };
-    let call = 0;
-    const { subject } = reaper({
-      repository: { claimAbandonedPublishingRuns: vi.fn(async () => [bad, run]) },
-      checkClientFor: vi.fn(async () => {
-        call += 1;
-        if (call === 1) throw new Error('installation suspended');
-        return { createCheck: vi.fn(async () => 1), completeCheck: vi.fn(async () => {}) };
-      }),
-    });
-    await expect(subject.runOnce()).resolves.toEqual({ swept: 2, published: 1, failed: 1 });
-  });
-
-  it('does nothing when no run is abandoned', async () => {
-    const { subject, checkClientFor } = reaper({
-      repository: { claimAbandonedPublishingRuns: vi.fn(async () => []) },
-    });
+  it('does nothing when there are no expired attempts', async () => {
+    const { subject, repository, checkClientFor } = fixture();
+    repository.claimAbandonedPublishingRuns.mockResolvedValue([]);
     await expect(subject.runOnce()).resolves.toEqual({ swept: 0, published: 0, failed: 0 });
     expect(checkClientFor).not.toHaveBeenCalled();
   });
 
-  it('bounds each sweep so one pass cannot mint unboundedly', async () => {
-    const { subject, repository } = reaper({ options: { limit: 5 } });
-    await subject.runOnce();
-    expect(repository.claimAbandonedPublishingRuns).toHaveBeenCalledWith('reaper-a', 1_700_000_000_000, 5);
+  it('does not claim after cancellation', async () => {
+    const { subject, repository } = fixture();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(subject.runOnce(controller.signal)).resolves.toEqual({ swept: 0, published: 0, failed: 0 });
+    expect(repository.claimAbandonedPublishingRuns).not.toHaveBeenCalled();
   });
 
-  it('requires a worker id so two reapers are distinguishable in the audit trail', () => {
-    expect(() => new AbandonedRunReaper({
-      repository: {} as never, checkClientFor: (async () => ({})) as never, workerId: '  ',
-    })).toThrow(/worker id is required/u);
+  it('drains ordinary cancellation inside publication and leaves its acknowledgement uncommitted', async () => {
+    const { subject, client, repository } = fixture();
+    const controller = new AbortController();
+    let acknowledged = false;
+    repository.reconcileAbandonedPublishingRun.mockImplementation(async (_run, _worker, _now, publish) => {
+      await publish();
+      acknowledged = true;
+      return true;
+    });
+    client.failAbandonedCheck.mockImplementation(async (_run, _appId, signal) => {
+      controller.abort();
+      signal.throwIfAborted();
+      return 'failed';
+    });
+    await expect(subject.runOnce(controller.signal)).resolves.toEqual({ swept: 1, published: 0, failed: 1 });
+    expect(acknowledged).toBe(false);
+  });
+
+  it('requires a trusted publisher identity and a named lease owner', () => {
+    const options = { repository: {} as never, checkClientFor: vi.fn(), publisherAppId: 4385771, workerId: ' ' };
+    expect(() => new AbandonedRunReaper(options)).toThrow('worker id');
+    expect(() => new AbandonedRunReaper({ ...options, workerId: 'reaper', publisherAppId: 0 })).toThrow('App id');
   });
 });

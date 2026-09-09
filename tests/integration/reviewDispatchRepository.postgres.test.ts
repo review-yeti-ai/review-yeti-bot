@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 
@@ -281,5 +282,123 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const rolledBack = await client.query(`SELECT runs.status, outbox.status AS outbox_status, outbox.lease_owner
       FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE run_id = $1`, [first.run.runId]);
     expect(rolledBack.rows[0]).toMatchObject({ status: 'queued', outbox_status: 'claimed', lease_owner: 'dispatcher-c' });
+
+    // A worker that expires without a callback leaves a projected outbox and a
+    // terminal Kubernetes object. Reconciliation must not consume its failure
+    // publication on an HTTP error, and explicit re-admission needs attempt 5.
+    await repository.markProjected(first.run.runId, 'dispatcher-c', 'fourth-projection', 9_040, 'd'.repeat(64));
+    await client.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [first.run.runId]);
+    const expired = await repository.claimAbandonedPublishingRuns('reaper-a', 909_001, 20);
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({ runId: first.run.runId, deliveryId: 'delivery-5', executionAttempt: 4,
+      receivedAt: 9_000, terminalDeadline: 909_000 });
+    await expect(repository.claimAbandonedPublishingRuns('reaper-b', 909_002, 20)).resolves.toEqual([]);
+    await expect(repository.markProjected(first.run.runId, 'dispatcher-c', 'late-fourth-projection', 909_002, 'd'.repeat(64))).resolves.toBe(false);
+    let misboundPublished = false;
+    await expect(repository.reconcileAbandonedPublishingRun({ ...expired[0], headSha: 'f'.repeat(40) }, 'reaper-a', 909_003, async () => {
+      misboundPublished = true;
+    })).resolves.toBe(false);
+    expect(misboundPublished).toBe(false);
+    await expect(repository.reconcileAbandonedPublishingRun(expired[0], 'reaper-a', 909_003, async () => {
+      throw new Error('offline publish failure');
+    })).rejects.toThrow('offline publish failure');
+    const reclaim = await repository.claimAbandonedPublishingRuns('reaper-b', 970_000, 20);
+    expect(reclaim).toHaveLength(1);
+    await expect(repository.reconcileAbandonedPublishingRun(reclaim[0], 'reaper-b', 970_001, async () => {})).resolves.toBe(true);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-c', 1_040_000, 20)).resolves.toEqual([]);
+    const reaped = (await client.query('SELECT status, result_digest FROM review_runs WHERE run_id = $1', [first.run.runId])).rows[0];
+    expect(reaped).toMatchObject({ status: 'terminal', result_digest: null });
+    await repository.admit(admission('delivery-6', 1_040_001));
+    const afterExpiry = await repository.claimNext('dispatcher-d', 1_040_002, 30_000);
+    expect(afterExpiry).toMatchObject({ executionAttempt: 5, receivedAt: 1_040_001, terminalDeadline: 1_940_001 });
+    let stalePublished = false;
+    await expect(repository.reconcileAbandonedPublishingRun(reclaim[0], 'reaper-b', 1_040_003, async () => {
+      stalePublished = true;
+    })).resolves.toBe(false);
+    expect(stalePublished).toBe(false);
+
+    // A successful Kubernetes create can lose its acknowledgement. Even if the
+    // dispatcher eventually marks that attempt terminal, a bound worker token
+    // proves that its Secret/CR identity may already exist and must not be reused.
+    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-d', 'e'.repeat(64), 1_040_004)).resolves.toBe(true);
+    await expect(repository.markTerminal(first.run.runId, 'dispatcher-d', 1_040_005, 'projection acknowledgement lost')).resolves.toBe(true);
+    await expect(repository.markWorkerFailure({ ...failure, executionAttempt: 5 }, { workerTokenDigest: 'e'.repeat(64) }, 1_040_006))
+      .resolves.toMatchObject({ status: 'already_failed' });
+    await repository.admit(admission('delivery-7', 1_100_001));
+    expect((await repository.claimNext('dispatcher-e', 1_100_002, 30_000))?.executionAttempt).toBe(6);
+    await expect(repository.markWorkerFailure({ ...failure, executionAttempt: 5 }, { workerTokenDigest: 'e'.repeat(64) }, 1_100_003))
+      .resolves.toMatchObject({ status: 'unauthorized' });
+
+    const excluded = [
+      { status: 'queued', receivedAt: 1_100_000, mode: 'app-gate' },
+      { status: 'queued', receivedAt: 1_000, mode: 'disabled' },
+      { status: 'succeeded', receivedAt: 1_000, mode: 'app-gate' },
+      { status: 'cancelled', receivedAt: 1_000, mode: 'app-gate' },
+      { status: 'superseded', receivedAt: 1_000, mode: 'app-gate' },
+      { status: 'running', receivedAt: 1_000, mode: 'app-gate', result: 'a'.repeat(64) },
+      { status: 'running', receivedAt: 1_000, mode: 'app-gate', leaseUntil: new Date(1_300_000) },
+    ] as const;
+    for (const [index, example] of excluded.entries()) {
+      const value = await repository.admit({ ...admission(`excluded-${index}`, example.receivedAt),
+        publicationMode: example.mode, identity: { ...identity, prNumber: 100 + index } });
+      await client.query('UPDATE review_runs SET status = $2, result_digest = $3, lease_expires_at = $4 WHERE run_id = $1',
+        [value.run.runId, example.status, 'result' in example ? example.result : null,
+          'leaseUntil' in example ? example.leaseUntil : null]);
+    }
+    await expect(repository.claimAbandonedPublishingRuns('excluded-reaper', 1_200_000, 20)).resolves.toEqual([]);
+
+    // Exercise real concurrent transactions (not SQL-shaped mocks). Shared
+    // tables live only in this test's newly created schema; ordinary coverage
+    // above stays in connection-local pg_temp tables.
+    const schema = `rel721_test_${randomUUID().replaceAll('-', '')}`;
+    const peer = await pool.connect();
+    let unlock = () => {};
+    let publishing: Promise<boolean> | undefined;
+    let readmission: ReturnType<typeof repository.admit> | undefined;
+    await client.query(`CREATE SCHEMA "${schema}"`);
+    try {
+      for (const table of ['github_deliveries', 'review_runs', 'review_dispatch_outbox']) {
+        await client.query(`CREATE TABLE "${schema}".${table} (LIKE pg_temp.${table} INCLUDING ALL)`);
+      }
+      await client.query(`SET search_path TO "${schema}", pg_temp`);
+      await peer.query(`SET search_path TO "${schema}", pg_temp`);
+      const peerRepository = new PostgresReviewDispatchRepository({ connect: async () => ({
+        query: peer.query.bind(peer), release: () => {},
+      }) }, peer);
+      const admitted = await repository.admit(admission('concurrent-1', 1_000));
+      await repository.claimNext('concurrent-dispatch', 1_001, 30_000);
+      await repository.markProjected(admitted.run.runId, 'concurrent-dispatch', 'old-terminal-cr', 1_002, 'a'.repeat(64));
+      const [claimed] = await repository.claimAbandonedPublishingRuns('concurrent-reaper', 901_001, 1);
+      let entered = () => {};
+      const enteredPublication = new Promise<void>((resolve) => { entered = resolve; });
+      const publicationGate = new Promise<void>((resolve) => { unlock = resolve; });
+      publishing = repository.reconcileAbandonedPublishingRun(claimed, 'concurrent-reaper', 901_002, async () => {
+        entered();
+        await publicationGate;
+      });
+      await enteredPublication;
+      const peerPid = (await peer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      let advanced = false;
+      readmission = peerRepository.admit(admission('concurrent-2', 902_000)).then((result) => {
+        advanced = true; return result;
+      });
+      await vi.waitFor(async () => {
+        const wait = await pool!.query('SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1', [peerPid]);
+        expect(wait.rows[0].wait_event_type).toBe('Lock');
+      });
+      expect(advanced).toBe(false);
+      unlock();
+      await expect(publishing).resolves.toBe(true);
+      await expect(readmission).resolves.toMatchObject({ status: 'accepted', run: { deliveryId: 'concurrent-2' } });
+      expect((await peerRepository.claimNext('new-dispatch', 902_001, 30_000))?.executionAttempt).toBe(2);
+    } finally {
+      unlock();
+      await publishing?.catch(() => {});
+      await readmission?.catch(() => {});
+      await client.query('SET search_path TO pg_temp, public');
+      await peer.query('SET search_path TO public');
+      peer.release();
+      await client.query(`DROP SCHEMA "${schema}" CASCADE`);
+    }
   });
 });

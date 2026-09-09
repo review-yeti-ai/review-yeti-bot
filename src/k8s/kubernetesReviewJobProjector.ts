@@ -6,6 +6,7 @@ const GROUP = 'review-yeti.ai';
 const VERSION = 'v1alpha2';
 const PLURAL = 'prreviewjobs';
 const projectionConflictMessage = 'existing PRReviewJob conflicts with the durable projection';
+const projectionTerminalMessage = 'existing PRReviewJob is terminal; fresh admission is required';
 
 interface NamespacedCustomObjectIdentity {
   group: string;
@@ -109,6 +110,10 @@ function assertExact(existing: unknown, projection: PRReviewJobProjection): void
   if (!isDeepStrictEqual(comparisonContract(existing, projection), projection)) {
     throw new Error(projectionConflictMessage);
   }
+  const phase = record(record(existing)?.status)?.phase;
+  if (['Succeeded', 'Failed', 'Expired'].includes(String(phase))) {
+    throw new Error(projectionTerminalMessage);
+  }
 }
 
 function apiFailure(operation: 'get' | 'create', error: unknown): Error {
@@ -127,7 +132,7 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
       return;
     } catch (error) {
       if (kubernetesStatusCode(error) !== 404) {
-        if (error instanceof Error && error.message === projectionConflictMessage) {
+        if (error instanceof Error && [projectionConflictMessage, projectionTerminalMessage].includes(error.message)) {
           throw error;
         }
         throw apiFailure('get', error);
@@ -150,7 +155,7 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
         const raced = await this.client.getNamespacedCustomObject(request);
         assertExact(raced, projection);
       } catch (rereadError) {
-        if (rereadError instanceof Error && rereadError.message === projectionConflictMessage) {
+        if (rereadError instanceof Error && [projectionConflictMessage, projectionTerminalMessage].includes(rereadError.message)) {
           throw rereadError;
         }
         throw apiFailure('get', rereadError);

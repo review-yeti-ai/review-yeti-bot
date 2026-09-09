@@ -2,6 +2,7 @@ import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishRes
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
 import { ConfigResolver } from '../config/configResolver';
+import type { AbandonedPublishingRun } from '../persistence/reviewDispatchRepository';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -247,7 +248,7 @@ export class GitHubInstallationClient {
     return this.publisher.publishReview(request);
   }
 
-  async createCheck(owner: string, repo: string, headSha: string): Promise<number> {
+  async createCheck(owner: string, repo: string, headSha: string, externalId?: string): Promise<number> {
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
@@ -259,6 +260,7 @@ export class GitHubInstallationClient {
         // created. Do not rename this without updating the central publisher too.
         name: 'Review Yeti',
         head_sha: headSha,
+        ...(externalId ? { external_id: externalId } : {}),
         status: 'in_progress',
         output: {
           title: 'Configurable persona panel running',
@@ -267,6 +269,83 @@ export class GitHubInstallationClient {
       }),
     });
     return Number(data.id);
+  }
+
+  /** Failure-only recovery. The caller authenticates publisherAppId with the
+   * worker-token owner's App JWT, and holds the durable attempt's row lock.
+   * Never choose a check by its display name alone or replace a newer verdict.
+   */
+  async failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal):
+    Promise<'failed' | 'already-completed'> {
+    try {
+      if (!Number.isSafeInteger(publisherAppId) || publisherAppId <= 0
+        || !/^run_[a-f0-9]{32}$/u.test(run.runId) || !/^[a-f0-9]{40}$/u.test(run.headSha)
+        || !Number.isSafeInteger(run.executionAttempt) || run.executionAttempt <= 0
+        || !Number.isFinite(run.receivedAt) || run.terminalDeadline !== run.receivedAt + 900_000) {
+        throw new Error('invalid abandoned check identity');
+      }
+      const base = `/repos/${encodeURIComponent(run.owner)}/${encodeURIComponent(run.repo)}`;
+      const externalId = `${run.runId}:a${run.executionAttempt}`;
+      // GitHub legacy started_at may have second precision, unlike admission.
+      const earliestLegacyStart = Math.floor(run.receivedAt / 1_000) * 1_000;
+      const request = async (path: string, init: RequestInit = {}) => {
+        signal.throwIfAborted();
+        return this.request(path, { ...init, signal });
+      };
+      const checks: any[] = [];
+      for (let page = 1; ; page += 1) {
+        if (page > 5) throw new Error('check lookup exceeded bounded pagination');
+        const result = await request(`${base}/commits/${run.headSha}/check-runs?check_name=Review%20Yeti&filter=all&per_page=100&page=${page}`);
+        if (!Array.isArray(result.check_runs)) throw new Error('invalid check list');
+        checks.push(...result.check_runs);
+        if (result.check_runs.length < 100) break;
+      }
+      const exactHead = (check: any) => check?.name === 'Review Yeti' && check.head_sha === run.headSha;
+      const inWindow = (check: any) => {
+        const started = Date.parse(check.started_at);
+        return started >= earliestLegacyStart && started <= run.terminalDeadline;
+      };
+      const ownedAttempt = (check: any) => exactHead(check) && check.app?.id === publisherAppId
+        && (check.external_id === externalId || (!check.external_id && inWindow(check)));
+      const candidates = checks.filter(ownedAttempt);
+      if (candidates.length > 1) throw new Error('ambiguous abandoned check');
+      const failure = {
+        status: 'completed', conclusion: 'failure', completed_at: new Date(this.now()).toISOString(),
+        output: {
+          title: 'Review Yeti: review did not complete',
+          summary: `No durable verdict was recorded for \`${run.headSha}\` before its terminal deadline.\n\n`
+            + 'The worker may have started; this is a failed review rather than an approval.\n\n'
+            + 'Re-run the governed review workflow to request a fresh attempt.',
+        },
+      };
+      if (candidates.length === 1) {
+        const candidate = candidates[0];
+        if (!Number.isSafeInteger(candidate.id) || candidate.id <= 0) throw new Error('invalid check id');
+        const current = await request(`${base}/check-runs/${candidate.id}`);
+        if (current.id !== candidate.id || !ownedAttempt(current)) throw new Error('check identity changed');
+        if (current.status === 'completed') return 'already-completed';
+        if (!['queued', 'in_progress', 'pending', 'waiting', 'requested'].includes(current.status)) {
+          throw new Error('unknown check status');
+        }
+        await request(`${base}/check-runs/${candidate.id}`, { method: 'PATCH', body: JSON.stringify(failure) });
+      } else {
+        // A foreign App, another bound run, or a newer execution is not ours to
+        // replace. Earlier completed attempts do not prevent an unstarted retry
+        // from acquiring its own explicit failure check.
+        if (checks.some((check) => exactHead(check) &&
+          (!Number.isFinite(Date.parse(check.started_at)) || Date.parse(check.started_at) >= earliestLegacyStart))) {
+          throw new Error('unowned or newer check blocks failure creation');
+        }
+        await request(`${base}/check-runs`, { method: 'POST', body: JSON.stringify({
+          name: 'Review Yeti', head_sha: run.headSha, external_id: externalId, ...failure,
+        }) });
+      }
+      return 'failed';
+    } catch {
+      // Upstream response bodies may contain private payloads. Fixed diagnostic
+      // only; the durable pending publication is retried, never marked success.
+      throw new Error('Abandoned check failure publication refused or unavailable');
+    }
   }
 
   /**

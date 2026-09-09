@@ -99,6 +99,10 @@ export interface AbandonedPublishingRun {
   repo: string;
   prNumber: number;
   headSha: string;
+  deliveryId: string;
+  executionAttempt: number;
+  receivedAt: number;
+  terminalDeadline: number;
 }
 
 export interface ReviewDispatchRepository {
@@ -113,6 +117,8 @@ export interface ReviewDispatchRepository {
   markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
   /** REL-586: sweep publishing runs whose deadline passed without ever publishing. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
+  reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
+    publish: () => Promise<void>): Promise<boolean>;
 }
 
 export interface WorkerFailureTransition {
@@ -223,6 +229,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                status = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN 'queued' ELSE review_runs.status END,
                attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
                error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END,
+               lease_owner = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.lease_owner END,
+               lease_expires_at = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.lease_expires_at END,
                delivery_id = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
                received_at = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.received_at ELSE review_runs.received_at END,
                -- The old deadline is already in the past, so a retry would be
@@ -269,11 +277,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                lease_expires_at = NULL, projection_name = NULL,
          -- Re-arm only alongside a run the statement above just returned to
          -- 'queued'. A worker provider failure leaves the outbox 'projected'
-         -- and needs a new execution attempt; a dispatcher failure leaves it
-         -- 'terminal' with no worker identity to replace. Guarding on the
+         -- and needs a new execution attempt. A terminal dispatch with token
+         -- or projection evidence may also have created a worker before losing
+         -- its acknowledgement, so it too needs a fresh identity. Guarding on the
          -- run's status keeps a superseded run's terminal outbox row untouched,
          -- and an in-flight row is never disturbed.
                execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'
+                 OR review_dispatch_outbox.worker_token_digest IS NOT NULL
+                 OR review_dispatch_outbox.projection_name IS NOT NULL
                  THEN review_dispatch_outbox.execution_attempt + 1
                  ELSE review_dispatch_outbox.execution_attempt END,
                worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal')
@@ -376,26 +387,41 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     limit: number,
   ): Promise<AbandonedPublishingRun[]> {
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('reaper limit must be a positive integer');
-    // Marks terminal in the same statement it selects, under SKIP LOCKED, so two
-    // reapers cannot both publish for one run. A row is only swept once: after this
-    // its status is no longer 'queued'.
+    // A failure to reach GitHub must remain retryable. Claim with a short lease;
+    // only successful reconciliation removes the pending-publication marker.
     const result = await this.queryable.query(
       `WITH candidate AS (
-         SELECT run_id
-           FROM review_runs
-          WHERE status = 'queued'
+         SELECT runs.run_id
+           FROM review_runs runs
+           JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+          WHERE (runs.status IN ('queued', 'running') OR
+            (runs.status = 'terminal' AND runs.error_text LIKE
+              'publishing run reached its terminal deadline without a verdict; reaped by %'))
             AND publication_mode = 'app-gate'
+            AND result_digest IS NULL
             AND terminal_deadline <= to_timestamp($2 / 1000.0)
+            AND (runs.lease_expires_at IS NULL OR runs.lease_expires_at <= to_timestamp($2 / 1000.0))
           ORDER BY terminal_deadline
-          FOR UPDATE SKIP LOCKED
+          FOR UPDATE OF runs, outbox SKIP LOCKED
           LIMIT $3
+       ), retired AS (
+         UPDATE review_dispatch_outbox outbox
+            SET status = CASE WHEN outbox.status = 'projected' OR outbox.worker_token_digest IS NOT NULL
+                         THEN 'projected' ELSE 'terminal' END,
+                lease_owner = NULL, lease_expires_at = NULL,
+                updated_at = to_timestamp($2 / 1000.0)
+           FROM candidate WHERE outbox.run_id = candidate.run_id
+         RETURNING outbox.run_id, outbox.execution_attempt
        )
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
+              lease_owner = $1, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
               error_text = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1
-         FROM candidate
-        WHERE runs.run_id = candidate.run_id
-       RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha`,
+         FROM retired
+        WHERE runs.run_id = retired.run_id
+       RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
+                 runs.delivery_id, runs.received_at, runs.terminal_deadline,
+                 retired.execution_attempt + 1 AS execution_attempt`,
       [workerId, now, limit],
     );
     return result.rows.map((row: Record<string, unknown>) => ({
@@ -404,7 +430,56 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       repo: String(row.repo),
       prNumber: Number(row.pr_number),
       headSha: String(row.head_sha),
+      deliveryId: String(row.delivery_id),
+      executionAttempt: Number(row.execution_attempt),
+      receivedAt: milliseconds(row.received_at) || 0,
+      terminalDeadline: milliseconds(row.terminal_deadline) || 0,
     }));
+  }
+
+  /** Hold the exact attempt's row locks through bounded GitHub publication.
+   * Same-head admission cannot advance the delivery while its check is patched.
+   * A crash/HTTP error rolls back the acknowledgement, not the failure itself.
+   */
+  async reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
+    publish: () => Promise<void>): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const current = await client.query(
+        `SELECT runs.run_id FROM review_runs runs
+           JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+          WHERE runs.run_id = $1 AND runs.delivery_id = $2
+            AND outbox.delivery_id = $2
+            AND runs.status = 'terminal' AND runs.publication_mode = 'app-gate'
+            AND runs.result_digest IS NULL AND runs.lease_owner = $3
+            AND runs.lease_expires_at > to_timestamp($4 / 1000.0)
+            AND outbox.execution_attempt + 1 = $5
+            AND runs.owner = $6 AND runs.repo = $7 AND runs.pr_number = $8 AND runs.head_sha = $9
+            AND runs.received_at = to_timestamp($10 / 1000.0)
+            AND runs.terminal_deadline = to_timestamp($11 / 1000.0)
+          FOR UPDATE OF runs, outbox`,
+        [run.runId, run.deliveryId, workerId, now, run.executionAttempt,
+          run.owner, run.repo, run.prNumber, run.headSha, run.receivedAt, run.terminalDeadline],
+      );
+      if (current.rows.length === 0) {
+        await client.query('COMMIT');
+        return false;
+      }
+      await publish();
+      await client.query(
+        `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
+           error_text = 'publishing run reached its terminal deadline without a verdict; failure reconciled',
+           updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
+      );
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async heartbeat(runId: string, workerId: string, now: number, leaseMs: number): Promise<boolean> {
@@ -470,10 +545,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   async markTerminal(runId: string, workerId: string, now: number, error: string): Promise<boolean> {
+    // Retain the non-secret digest as execution evidence until re-admission
+    // advances the identity and clears it. The terminal status already prevents
+    // any worker callback from changing the run; deleting this evidence here
+    // would make an uncertain Kubernetes create reuse its old Secret/CR.
     const result = await this.queryable.query(
       `WITH terminalized AS (
          UPDATE review_dispatch_outbox
-            SET status = 'terminal', worker_token_digest = NULL, lease_owner = NULL, lease_expires_at = NULL,
+            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
                 updated_at = to_timestamp($3 / 1000.0)
           WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
         RETURNING run_id
