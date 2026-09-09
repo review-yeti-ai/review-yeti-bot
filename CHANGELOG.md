@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.5...v1.45.6) (2026-09-09)
+
+
+### Bug Fixes
+
+* persist worker failures with attempt-bound recovery ([#629](https://github.com/review-yeti-ai/review-yeti-bot/issues/629)) ([ddab4bc](https://github.com/review-yeti-ai/review-yeti-bot/commit/ddab4bcfe0d1b78e3c863dd8323a2c87adc4d3b4))
+
 ## [1.45.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.4...v1.45.5) (2026-09-09)
 
 
