@@ -23,4 +23,7 @@ render_review_job_dispatcher_template() {
     fi
   done
   envsubst "$REVIEW_JOB_DISPATCHER_ENVSUBST_VARS" < "$template" > "$output"
+  # shellcheck source=scripts/lib/assert-rendered.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/assert-rendered.sh"
+  assert_no_unsubstituted_placeholders "$output" render_review_job_dispatcher_template
 }
