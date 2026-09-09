@@ -692,6 +692,7 @@ async function invoke(
     providerId?: string;
     requestPolicy?: PanelRequestPolicy;
     repoFileProvider?: RepoFileProvider;
+    zoektConfig?: any;
   }
 ): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number; toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> }> {
   const requestNonce = nonce();
@@ -1233,7 +1234,7 @@ async function runPersona(
           });
           if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
               || !Array.isArray(result.parsed.findings)) {
-            if (result.turnsCount >= effectiveMaxTurns || !result.parsed) {
+            if ((result.turnsCount ?? 1) >= effectiveMaxTurns || !result.parsed) {
               throw new PanelConfigurationError(`persona ${persona.id} turn budget exhausted without verdict (INCOMPLETE)`);
             }
             throw new Error('invalid persona response contract');
