@@ -203,13 +203,13 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                -- force-push. Only 'failed' is re-armed: 'queued'/'running' are
                -- in flight and must stay idempotent, and 'superseded' belongs to
                -- an older head.
-               status = CASE WHEN review_runs.status = 'failed' THEN 'queued' ELSE review_runs.status END,
-               attempt = CASE WHEN review_runs.status = 'failed' THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
-               error_text = CASE WHEN review_runs.status = 'failed' THEN NULL ELSE review_runs.error_text END,
-               delivery_id = CASE WHEN review_runs.status = 'failed' THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
+               status = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN 'queued' ELSE review_runs.status END,
+               attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
+               error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END,
+               delivery_id = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
                -- The old deadline is already in the past, so a retry would be
                -- swept by the abandoned-run reaper before it could start.
-               terminal_deadline = CASE WHEN review_runs.status = 'failed' THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
+               terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
          WHERE review_runs.publication_mode = EXCLUDED.publication_mode
          RETURNING *`,
         [
@@ -356,7 +356,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
        )
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
-              last_error = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1
+              error_text = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1
          FROM candidate
         WHERE runs.run_id = candidate.run_id
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha`,

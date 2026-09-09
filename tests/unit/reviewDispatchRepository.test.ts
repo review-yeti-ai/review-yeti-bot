@@ -115,14 +115,16 @@ describe('PostgresReviewDispatchRepository', () => {
     // runnable ('queued'), be countable (attempt + 1), stop carrying the old
     // failure (error_text NULL), and get a deadline it can actually meet -- the
     // previous one is in the past and the reaper would sweep the retry at once.
-    expect(runSql).toContain("status = CASE WHEN review_runs.status = 'failed' THEN 'queued' ELSE review_runs.status END");
-    expect(runSql).toContain("attempt = CASE WHEN review_runs.status = 'failed' THEN review_runs.attempt + 1 ELSE review_runs.attempt END");
-    expect(runSql).toContain("error_text = CASE WHEN review_runs.status = 'failed' THEN NULL ELSE review_runs.error_text END");
-    expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status = 'failed' THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END");
+    expect(runSql).toContain("status = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN 'queued' ELSE review_runs.status END");
+    expect(runSql).toContain("attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN review_runs.attempt + 1 ELSE review_runs.attempt END");
+    expect(runSql).toContain("error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END");
+    expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END");
     // Every re-arm is conditioned on 'failed', and no other status is named:
     // 'queued'/'running' are in flight, 'superseded' belongs to an older head.
-    expect(runSql.match(/CASE WHEN review_runs\.status = 'failed'/gu) || []).toHaveLength(5);
-    expect(runSql).not.toMatch(/CASE WHEN review_runs\.status = '(?!failed)/u);
+    expect(runSql.match(/CASE WHEN review_runs\.status IN \('failed', 'terminal'\)/gu) || []).toHaveLength(5);
+    // markTerminal writes 'failed'; the reaper writes 'terminal'. Both are dead
+    // runs and both must be retryable, and no other status may be named.
+    expect(runSql).not.toMatch(/CASE WHEN review_runs\.status (=|IN \()\s*'?(queued|running|superseded)/u);
 
     const outboxSql = sqlFor(/INSERT INTO review_dispatch_outbox/u);
     // Payload and both guards, so a superseded run's terminal row is never
@@ -309,10 +311,18 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(sql).toMatch(/RETURNING/u);
   });
 
-  it('records which reaper swept the run', async () => {
+  // This assertion previously read `last_error`, a column that does not exist.
+  // The test passed while every sweep threw
+  // `column "last_error" of relation "review_runs" does not exist`, so the reaper
+  // never marked anything terminal and 161 app-gate runs sat 'queued' forever --
+  // each one a head that could never be re-dispatched. Pinning a column name is
+  // only useful if it is the real one.
+  it('records which reaper swept the run, in the column that exists', async () => {
     const { repository, query } = repositoryWith([swept]);
     await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
-    expect(String(query.mock.calls[0][0])).toMatch(/last_error/u);
+    const sql = String(query.mock.calls[0][0]);
+    expect(sql).toMatch(/error_text/u);
+    expect(sql).not.toMatch(/last_error/u);
     expect(query.mock.calls[0][1]).toEqual(['reaper-a', 1_700_000_000_000, 20]);
   });
 
