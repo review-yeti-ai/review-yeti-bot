@@ -9,6 +9,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -533,6 +534,49 @@ func TestPRReviewJobV1Alpha2ReconcilerExpiresBeforeCreatingResources(t *testing.
 	var pvc corev1.PersistentVolumeClaim
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)}, &pvc); err == nil {
 		t.Fatal("expired review must not create a PVC")
+	}
+}
+
+// REL-733 follow-up: validateProjectionWindow rewrote an exact 15-minute
+// equality check into a bounded [900s, 3600s] range check, but that rewrite
+// is a distinct code path from pkg/job's own validateInput (job_test.go's
+// TestBuildWorkerJobScalesActiveDeadlineWithAdmittedWindow does not exercise
+// this file). Pin all four boundary cases directly through Reconcile so a
+// regression in either bound fails here.
+func TestPRReviewJobV1Alpha2ReconcilerValidatesProjectionWindow(t *testing.T) {
+	received := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name        string
+		window      time.Duration
+		wantInvalid bool
+	}{
+		{name: "one second under the floor", window: time.Duration(job.MinTerminalDeadlineSeconds)*time.Second - time.Second, wantInvalid: true},
+		{name: "exactly the floor", window: time.Duration(job.MinTerminalDeadlineSeconds) * time.Second, wantInvalid: false},
+		{name: "exactly the ceiling", window: time.Duration(job.MaxTerminalDeadlineSeconds) * time.Second, wantInvalid: false},
+		{name: "one second over the ceiling", window: time.Duration(job.MaxTerminalDeadlineSeconds)*time.Second + time.Second, wantInvalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scheme := v1alpha2Scheme(t)
+			review := v1alpha2Review(received)
+			review.Spec.TerminalDeadline = metav1.NewTime(received.Add(test.window))
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+			// now == received: stay well inside whichever window is under test so a
+			// valid window does not also trip the separate DeadlineExpired path.
+			reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return received }}
+
+			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			var updated reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name}, &updated); err != nil {
+				t.Fatalf("get review: %v", err)
+			}
+			isInvalidProjection := updated.Status.Phase == reviewv1alpha2.PhaseFailed && meta.FindStatusCondition(updated.Status.Conditions, "Ready") != nil &&
+				meta.FindStatusCondition(updated.Status.Conditions, "Ready").Reason == "InvalidProjection"
+			if isInvalidProjection != test.wantInvalid {
+				t.Fatalf("phase=%s conditions=%#v, want InvalidProjection=%v", updated.Status.Phase, updated.Status.Conditions, test.wantInvalid)
+			}
+		})
 	}
 }
 

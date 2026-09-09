@@ -66,8 +66,8 @@ spec:
               x-kubernetes-validations:
                 - message: "PRReviewJob spec is immutable"
                   rule: "self == oldSelf"
-                - message: "terminalDeadline must be exactly 15 minutes after receivedAt"
-                  rule: "timestamp(self.terminalDeadline) - timestamp(self.receivedAt) == duration('900s')"
+                - message: "terminalDeadline must be between 15 and 60 minutes after receivedAt"
+                  rule: "duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')"
                 - message: "qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model"
                   rule: "(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')"
               properties:
