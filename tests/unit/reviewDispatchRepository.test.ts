@@ -88,6 +88,51 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(client.query.mock.calls.some(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(String(sql)))).toBe(false);
   });
 
+  // A run id is derived from the identity digest, so every re-dispatch of the
+  // same head lands on the same row. Without a retry path a terminally failed run
+  // pins that head forever: the run stays 'failed', the outbox stays 'terminal',
+  // and no label, re-run or re-dispatch can produce another review. Observed on
+  // cisco-cdr#4836, where three dispatches were accepted and none created a job.
+  //
+  // Known limit, stated plainly: this suite has no Postgres, so the retry rule
+  // cannot be executed here -- these assertions read it off the emitted SQL, as
+  // the other tests in this file do. They pin the payloads as well as the guards,
+  // so a re-arm that sets a wrong value fails. Collapsing whitespace only removes
+  // formatting differences; it does not survive reordering or aliasing the
+  // clauses, and a rewrite of these queries is expected to update this test.
+  it('re-arms a terminally failed run for the same head, and nothing else', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [], [row], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await repository.admit(input());
+
+    const sqlFor = (table: RegExp) => String(
+      client.query.mock.calls.find(([sql]) => table.test(String(sql)))?.[0] || '',
+    ).replace(/\s+/gu, ' ');
+
+    const runSql = sqlFor(/INSERT INTO review_runs/u);
+    // Each re-arm payload, not just that a CASE exists: a retry must become
+    // runnable ('queued'), be countable (attempt + 1), stop carrying the old
+    // failure (error_text NULL), and get a deadline it can actually meet -- the
+    // previous one is in the past and the reaper would sweep the retry at once.
+    expect(runSql).toContain("status = CASE WHEN review_runs.status = 'failed' THEN 'queued' ELSE review_runs.status END");
+    expect(runSql).toContain("attempt = CASE WHEN review_runs.status = 'failed' THEN review_runs.attempt + 1 ELSE review_runs.attempt END");
+    expect(runSql).toContain("error_text = CASE WHEN review_runs.status = 'failed' THEN NULL ELSE review_runs.error_text END");
+    expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status = 'failed' THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END");
+    // Every re-arm is conditioned on 'failed', and no other status is named:
+    // 'queued'/'running' are in flight, 'superseded' belongs to an older head.
+    expect(runSql.match(/CASE WHEN review_runs\.status = 'failed'/gu) || []).toHaveLength(5);
+    expect(runSql).not.toMatch(/CASE WHEN review_runs\.status = '(?!failed)/u);
+
+    const outboxSql = sqlFor(/INSERT INTO review_dispatch_outbox/u);
+    // Payload and both guards, so a superseded run's terminal row is never
+    // re-armed and an in-flight row is never disturbed.
+    expect(outboxSql).toContain("SET status = 'pending'");
+    expect(outboxSql).toContain("lease_owner = NULL");
+    expect(outboxSql).toContain("WHERE review_dispatch_outbox.status = 'terminal'");
+    expect(outboxSql).toContain("r.status = 'queued'");
+  });
+
   it('rejects a delivery id replayed with a different digest or repository', async () => {
     const client = clientWithRows([[], [], [], [{ ...row, payload_digest: '0'.repeat(64), repository_id: 999 }], []]);
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
