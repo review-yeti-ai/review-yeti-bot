@@ -782,3 +782,29 @@ func TestBuildWorkerJobHonorsLifecycleEnv(t *testing.T) {
 		t.Fatalf("memory request = %s, want 768Mi from env", mem.String())
 	}
 }
+
+func TestBuildWorkerJobFallsBackOnInvalidLifecycleEnv(t *testing.T) {
+	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "-5")
+	t.Setenv("REVIEW_YETI_WORKER_CPU_LIMIT", "banana")
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	result, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("job TTL = %v, want 0 fallback from negative env", result.Spec.TTLSecondsAfterFinished)
+	}
+	limitCPU := result.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU]
+	if limitCPU.String() != "1" {
+		t.Fatalf("cpu limit = %s, want 1 fallback from unparseable env", limitCPU.String())
+	}
+
+	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "nope")
+	result, err = job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatalf("build invalid ttl: %v", err)
+	}
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("job TTL = %v, want 0 fallback from unparseable env", result.Spec.TTLSecondsAfterFinished)
+	}
+}

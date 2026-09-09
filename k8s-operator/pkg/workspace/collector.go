@@ -32,7 +32,9 @@ import (
 )
 
 const (
-	IdleWorkspaceTTL               = 30 * time.Minute
+	// IdleWorkspaceTTL 0 reclaims a PR workspace as soon as the worker Job is
+	// terminal and no Lease/Pod still holds it. The Job itself is a separate TTL.
+	IdleWorkspaceTTL               = 0
 	ReclamationLeaseDuration int32 = 120
 	PodListPageSize          int64 = 100
 	MaxPodListPages                = 10
@@ -97,8 +99,8 @@ func (c *Collector) Touch(
 	return c.client.Update(ctx, updated)
 }
 
-// Reclaim removes an exact PR workspace only after its 30-minute idle window
-// has elapsed and both Lease and Pod evidence prove it is unused. Every
+// Reclaim removes an exact PR workspace once its idle window has elapsed
+// and both Lease and Pod evidence prove it is unused. Every
 // workspace Pod creator must acquire the same Lease through LeaseManager before
 // creating or using a Pod. Reclamation holds a unique Lease, issues a
 // resourceVersion-guarded delete while ProtectionFinalizer still protects the
