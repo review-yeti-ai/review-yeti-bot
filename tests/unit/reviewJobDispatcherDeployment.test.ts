@@ -132,6 +132,17 @@ describe('zero-replica review job dispatcher deployment', () => {
     },
   );
 
+  it('fails loudly if a first install does not land inert', () => {
+    // Symmetric to the update guard: on a create the manifest is applied as-is,
+    // so if it ever stops carrying replicas: 0 the dispatcher would come up
+    // consuming the queue before an operator activated it. Rendering without the
+    // line makes the create land at 1, which this guard must reject.
+    const result = runDeployScript({ FAKE_DEPLOYMENT_REPLICAS: '', FAKE_RENDER_REPLICAS: 'none' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('expected zero replicas after a first install');
+    expect(result.stderr).toContain('refusing activation');
+  });
+
   it('fails loudly if the apply itself moves a live replica count', () => {
     // Without a fake that mutates state, `after == before` held no matter what the
     // script did, so this guard was passing vacuously.
