@@ -45,6 +45,49 @@ describe('current-run-only publication evidence', () => {
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 
+  it.each(['sibling', 'runner-suffix'])('refuses a receipt outside RUNNER_TEMP (%s)', (outsideName) => {
+    const runner = path.join(dir, 'runner');
+    const outside = path.join(dir, outsideName);
+    fs.mkdirSync(runner);
+    fs.mkdirSync(outside);
+    vi.stubEnv('RUNNER_TEMP', runner);
+    expect(pipeline.writePublicationReceipt(context, plan, { success: true, postedViaGh: true }, outside)).toBeNull();
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(fs.readdirSync(runner)).toEqual([]);
+  });
+
+  it('permits a receipt in a child of RUNNER_TEMP', () => {
+    const child = path.join(dir, 'child');
+    fs.mkdirSync(child);
+    const receipt = pipeline.writePublicationReceipt(context, plan, { success: true, postedViaGh: true }, child);
+    expect(receipt).not.toBeNull();
+    expect(path.relative(child, receipt.path)).not.toMatch(/^\.\./);
+    expect(JSON.parse(fs.readFileSync(receipt.path, 'utf8')).publicationStatus).toBe('published');
+  });
+
+  it.each([
+    ['', '', false],
+    ['publication.json', '', true],
+    ['', 'telemetry.json', true],
+    ['publication.json', 'telemetry.json', true],
+  ])('uploads evidence iff either actual output is set (%j, %j)', (publicationPath, telemetryPath, expected) => {
+    const root = path.resolve(__dirname, '../..');
+    const workflow = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/review-bot.yaml'), 'utf8')) as any;
+    const uploads = workflow.jobs.review.steps.filter((s: any) => String(s.uses || '').startsWith('actions/upload-artifact@'));
+    expect(uploads).toHaveLength(1);
+    const outputs: Record<string, string> = {
+      'publication-receipt-path': String(publicationPath),
+      'provider-telemetry-path': String(telemetryPath),
+    };
+    const expression = String(uploads[0].if).replace(/^\$\{\{\s*|\s*\}\}$/g, '')
+      .replace(/always\(\)/g, 'true')
+      .replace(/steps\.review\.outputs\.([\w-]+)\s*!=\s*''/g, (_all, key: string) => String(Boolean(outputs[key])));
+    // Evaluate only boolean operators after resolving real workflow output names;
+    // no arbitrary workflow or provider code is executed by this test helper.
+    expect(expression.replace(/true|false|\s|[()&|]/g, '')).toBe('');
+    expect(Function(`"use strict"; return (${expression});`)()).toBe(expected);
+  });
+
   it('bounds plan metadata and excludes untrusted error/provider fields', () => {
     const largePlan = { ...plan, lineComments: Array.from({ length: 1000 }, () => plan.lineComments[0]) };
     const file = pipeline.writePublicationReceipt(context, largePlan, { success: false, diagnostics: [{ secret: 'PRIVATE_SECRET', validation: [{ resource: 'PRIVATE_RESOURCE' }], request: { body: 'PRIVATE_BODY' } }] }, dir);
