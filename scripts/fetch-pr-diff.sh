@@ -208,8 +208,18 @@ if [[ "$use_fallback" == "true" && -z "$raw_diff_file" ]]; then
 
     merge_base_sha="$(git merge-base "$diff_base" "$PR_HEAD_SHA")"
     if [[ "$used_mode" == "forward-merge-conflict-delta" ]]; then
-      mapfile -t scope_paths < "${work_dir}/touched-files.txt"
-      git diff --find-renames "$merge_base_sha" "$PR_HEAD_SHA" -- "${scope_paths[@]}" > "$clone_diff_file"
+      # bash 3.2 has no mapfile. It also errors on "${arr[@]}" for an empty
+      # array under `set -u` (bash 4.4+ tolerates it), so the empty case has to
+      # branch explicitly to keep the previous behaviour: no pathspec, full diff.
+      scope_paths=()
+      while IFS= read -r scope_path; do
+        [ -n "$scope_path" ] && scope_paths+=("$scope_path")
+      done < "${work_dir}/touched-files.txt"
+      if [ "${#scope_paths[@]}" -eq 0 ]; then
+        git diff --find-renames "$merge_base_sha" "$PR_HEAD_SHA" > "$clone_diff_file"
+      else
+        git diff --find-renames "$merge_base_sha" "$PR_HEAD_SHA" -- "${scope_paths[@]}" > "$clone_diff_file"
+      fi
     else
       git diff --find-renames "$merge_base_sha" "$PR_HEAD_SHA" > "$clone_diff_file"
     fi
