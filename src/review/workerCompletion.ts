@@ -42,6 +42,21 @@ export interface WorkerCompletionAdapter {
   reportTerminalFailure(event: WorkerTerminalFailure): Promise<void>;
 }
 
+export function validateWorkerCompletionEndpoint(endpoint: string): string {
+  const normalizedEndpoint = endpoint.trim();
+  if (!normalizedEndpoint) throw new Error('worker completion endpoint is required');
+  let parsed: URL;
+  try {
+    parsed = new URL(normalizedEndpoint);
+  } catch {
+    throw new Error('worker completion endpoint must be a valid URL');
+  }
+  if (parsed.protocol !== 'https:' || !parsed.host || parsed.username || parsed.password || parsed.hash) {
+    throw new Error('worker completion endpoint must be an HTTPS URL without userinfo or fragments');
+  }
+  return normalizedEndpoint;
+}
+
 /**
  * Sends only the typed terminal-failure event. The provider error itself never
  * crosses the worker boundary: upstream responses can contain prompts, keys, or
@@ -61,17 +76,7 @@ export class HttpWorkerCompletionAdapter implements WorkerCompletionAdapter {
     fetchImplementation?: typeof fetch;
   }) {
     if (!options.token.startsWith('ghs_')) throw new Error('worker completion requires a ghs_ installation token');
-    const endpoint = options.endpoint.trim();
-    if (!endpoint) throw new Error('worker completion endpoint is required');
-    let parsed: URL;
-    try {
-      parsed = new URL(endpoint);
-    } catch {
-      throw new Error('worker completion endpoint must be a valid URL');
-    }
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash) {
-      throw new Error('worker completion endpoint must be an HTTPS URL without userinfo or fragments');
-    }
+    const endpoint = validateWorkerCompletionEndpoint(options.endpoint);
     const timeoutMs = options.timeoutMs ?? 10_000;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > 30_000) {
       throw new Error('worker completion timeout must be between 250ms and 30000ms');

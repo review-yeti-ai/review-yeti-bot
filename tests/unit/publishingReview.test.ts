@@ -117,6 +117,19 @@ describe('callback rollout compatibility', () => {
     expect(d.checkClient.createCheck).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'http://dispatch.example.invalid/completion',
+    'https://user:password@dispatch.example.invalid/completion',
+    'https://dispatch.example.invalid/completion#redirect',
+  ])('validates an explicit callback URL before side effects with an injected adapter: %s', async (endpoint) => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const d = deps({ completion });
+    await expect(runPublishingReviewWorker(env({ REVIEW_COMPLETION_URL: endpoint }), d as never))
+      .rejects.toThrow(/contract is invalid/u);
+    expect(d.checkClient.createCheck).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+  });
+
   it('does not silently ignore a valid callback URL without an adapter', async () => {
     const d = deps();
     await expect(runPublishingReviewWorker(env({
