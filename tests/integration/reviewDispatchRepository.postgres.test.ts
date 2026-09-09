@@ -1,6 +1,36 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
+import { sha256 } from '../../src/review/reviewCore';
+
+function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
+  baseSha?: string; configDigest?: string; policyDigest?: string;
+} = {}) {
+  // Mirror the authoritative identity's policy provenance without depending on
+  // a network adapter. The repository must hash the entire supplied identity.
+  const identity = {
+    ...buildReviewRunIdentity({
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+      headSha: 'a'.repeat(40), baseSha: overrides.baseSha || 'b'.repeat(40),
+      configDigest: overrides.configDigest || 'd'.repeat(64),
+    }),
+    reviewPolicy: {
+      version: 'ReviewPolicyIdentity.v1' as const, repositoryId: 123,
+      effectivePolicyDigest: overrides.policyDigest || 'e'.repeat(64),
+      sources: [{
+        repositoryId: 789, repository: 'calltelemetry/ct-review-actions',
+        sha: 'c'.repeat(40), path: 'review-policy.json', contentDigest: 'f'.repeat(64),
+      }],
+    },
+  };
+  return {
+    deliveryId, eventName: 'pull_request', repositoryId: 123, installationId: 456,
+    receivedAt, terminalDeadline: receivedAt + 900_000,
+    payloadDigest: sha256(identity), publicationMode: 'app-gate' as const,
+    identity, effectivePolicyDigest: identity.reviewPolicy.effectivePolicyDigest,
+  };
+}
 
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 
@@ -20,7 +50,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     pool = undefined;
   });
 
-  it('keeps active claims single-owner and advances identity only after durable same-head re-admission', async () => {
+  async function createRepository() {
     pool = new Pool({ connectionString: databaseUrl });
     client = await pool.connect();
     await client.query(`
@@ -90,6 +120,11 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       { connect: async () => transactionClient },
       client,
     );
+    return { repository, client };
+  }
+
+  it('keeps active claims single-owner and advances identity only after durable same-head re-admission', async () => {
+    const { repository, client } = await createRepository();
     const identity = {
       owner: 'calltelemetry',
       repo: 'cisco-cdr',
@@ -281,5 +316,97 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const rolledBack = await client.query(`SELECT runs.status, outbox.status AS outbox_status, outbox.lease_owner
       FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE run_id = $1`, [first.run.runId]);
     expect(rolledBack.rows[0]).toMatchObject({ status: 'queued', outbox_status: 'claimed', lease_owner: 'dispatcher-c' });
+  });
+
+  it.each([
+    { change: 'base', overrides: { baseSha: '1'.repeat(40) } },
+    { change: 'config', overrides: { configDigest: '2'.repeat(64) } },
+    { change: 'policy only', overrides: { policyDigest: '3'.repeat(64) } },
+  ])('supersedes a same-head $change identity and keeps exact duplicates unchanged', async ({ change, overrides }) => {
+    const { repository, client } = await createRepository();
+    const priorInput = sameHeadAdmission('prior', 1_000);
+    const prior = await repository.admit(priorInput);
+    await repository.claimNext('dispatcher-prior', 1_100, 30_000);
+    await client.query(`UPDATE review_runs SET status = 'running', lease_owner = 'worker-prior',
+      lease_expires_at = to_timestamp(31) WHERE run_id = $1`, [prior.run.runId]);
+    const currentInput = sameHeadAdmission('current', 2_000, overrides);
+    const current = await repository.admit(currentInput);
+    expect(current.run.identity.headSha).toBe(prior.run.identity.headSha);
+    expect(current.run.identityDigest).toBe(sha256(currentInput.identity));
+    expect(current.run.runId).toBe(`run_${sha256(currentInput.identity).slice(0, 32)}`);
+    expect(current.run.runId).not.toBe(prior.run.runId);
+    if (change === 'policy only') {
+      expect(current.run.identity.baseSha).toBe(prior.run.identity.baseSha);
+      expect(current.run.identity.snapshotDigest).toBe(prior.run.identity.snapshotDigest);
+      expect(current.run.identity.configDigest).toBe(prior.run.identity.configDigest);
+      expect(current.run.effectivePolicyDigest).not.toBe(prior.run.effectivePolicyDigest);
+    }
+    const priorRun = (await client.query('SELECT * FROM review_runs WHERE run_id = $1', [prior.run.runId])).rows[0];
+    expect(priorRun).toMatchObject({
+      status: 'superseded', error_text: 'superseded by a newer review identity',
+      lease_owner: null, lease_expires_at: null,
+    });
+    expect((await client.query('SELECT * FROM review_dispatch_outbox WHERE run_id = $1', [prior.run.runId])).rows[0])
+      .toMatchObject({ status: 'terminal', lease_owner: null, lease_expires_at: null });
+    expect((await repository.claimNext('dispatcher-current', 2_100, 30_000))?.runId).toBe(current.run.runId);
+
+    const state = async () => ({
+      runs: (await client.query('SELECT * FROM review_runs ORDER BY run_id')).rows,
+      outboxes: (await client.query('SELECT * FROM review_dispatch_outbox ORDER BY run_id')).rows,
+    });
+    const before = await state();
+    expect((await repository.admit(currentInput)).status).toBe('duplicate');
+    expect(await state()).toEqual(before);
+    const newDelivery = await repository.admit(sameHeadAdmission('current-redelivery', 3_000, overrides));
+    expect(newDelivery.run.runId).toBe(current.run.runId);
+    expect(await state()).toEqual(before);
+
+    // Neither a stale delivery replay nor a new delivery for a superseded
+    // identity can replace/re-arm current work. The adapter must not reserve a
+    // gate from the historical run returned by a read-only delivery duplicate.
+    const priorDuplicate = await repository.admit(priorInput);
+    expect(priorDuplicate.status).toBe('duplicate');
+    expect(priorDuplicate.run.status).toBe('superseded');
+    await expect(repository.admit(sameHeadAdmission('stale-new-delivery', 4_000)))
+      .rejects.toThrow('review run identity conflict: identity is no longer current or publication mode differs');
+    expect(await state()).toEqual(before);
+    expect((await client.query("SELECT * FROM github_deliveries WHERE delivery_id = 'stale-new-delivery'")).rows).toEqual([]);
+    await expect(repository.claimNext('dispatcher-other', 4_100, 30_000)).resolves.toBeNull();
+  });
+
+  it.each(['publishing', 'failed', 'terminal'])('retires a prior %s identity so it cannot be retried after identity drift', async (status) => {
+    const { repository, client } = await createRepository();
+    const prior = await repository.admit(sameHeadAdmission('prior', 1_000));
+    await client.query('UPDATE review_runs SET status = $2 WHERE run_id = $1', [prior.run.runId, status]);
+    await client.query('UPDATE review_dispatch_outbox SET status = $2 WHERE run_id = $1', [prior.run.runId, status === 'terminal' ? 'terminal' : 'projected']);
+    const current = await repository.admit(sameHeadAdmission('current', 2_000, { policyDigest: '1'.repeat(64) }));
+    expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [prior.run.runId])).rows[0].status).toBe('superseded');
+    await expect(repository.admit(sameHeadAdmission('stale-retry', 3_000))).rejects.toThrow(/review run identity conflict/u);
+    expect((await repository.claimNext('dispatcher-current', 3_100, 30_000))?.runId).toBe(current.run.runId);
+  });
+
+  it.each([
+    { status: 'queued', currentReceivedAt: 2_000 },
+    { status: 'failed', currentReceivedAt: 2_000 },
+    { status: 'terminal', currentReceivedAt: 2_000 },
+    { status: 'succeeded', currentReceivedAt: 2_000 },
+    { status: 'queued', currentReceivedAt: 1_000 },
+  ])('fences legacy $status history behind a different identity admitted at $currentReceivedAt', async ({ status, currentReceivedAt }) => {
+    const { repository, client } = await createRepository();
+    const prior = await repository.admit(sameHeadAdmission('prior', 1_000));
+    const current = await repository.admit(sameHeadAdmission('current', currentReceivedAt, { baseSha: '1'.repeat(40) }));
+    // Model the pre-fix head-only admission bug: the old row remained active or
+    // retryable instead of being tombstoned when the same-head identity changed.
+    await client.query("UPDATE review_runs SET status = $2, error_text = NULL WHERE run_id = $1", [prior.run.runId, status]);
+    await client.query("UPDATE review_dispatch_outbox SET status = 'pending' WHERE run_id = $1", [prior.run.runId]);
+    const state = async () => ({
+      runs: (await client.query('SELECT * FROM review_runs ORDER BY run_id')).rows,
+      outboxes: (await client.query('SELECT * FROM review_dispatch_outbox ORDER BY run_id')).rows,
+    });
+    const before = await state();
+    await expect(repository.admit(sameHeadAdmission('stale-legacy', 3_000))).rejects.toThrow(/review run identity conflict/u);
+    expect(await state()).toEqual(before);
+    expect((await client.query("SELECT * FROM github_deliveries WHERE delivery_id = 'stale-legacy'")).rows).toEqual([]);
+    expect(before.runs.find((run) => run.run_id === current.run.runId).status).toBe('queued');
   });
 });

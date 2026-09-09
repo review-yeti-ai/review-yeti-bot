@@ -179,25 +179,6 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
 
       const identityDigest = sha256(input.identity);
       const runId = `run_${identityDigest.slice(0, 32)}`;
-      await client.query(
-        `WITH superseded AS (
-           UPDATE review_runs
-              SET status = 'superseded',
-                  error_text = 'superseded by a newer pull request head',
-                  lease_owner = NULL,
-                  lease_expires_at = NULL,
-                  updated_at = to_timestamp($5 / 1000.0)
-            WHERE owner = $1 AND repo = $2 AND pr_number = $3
-              AND head_sha <> $4 AND status IN ('queued', 'running')
-          RETURNING run_id
-         )
-         UPDATE review_dispatch_outbox AS outbox
-            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
-                updated_at = to_timestamp($5 / 1000.0)
-          WHERE outbox.run_id IN (SELECT run_id FROM superseded)`,
-        [input.identity.owner, input.identity.repo, input.identity.prNumber, input.identity.headSha, input.receivedAt],
-      );
-
       const inserted = await client.query(
         `INSERT INTO review_runs
            (run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha,
@@ -212,14 +193,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             to_timestamp($16 / 1000.0), to_timestamp($16 / 1000.0))
          ON CONFLICT (identity_digest) DO UPDATE
            SET updated_at = review_runs.updated_at,
-               -- A run that terminally FAILED on this exact head is retryable.
-               -- The run id is derived from the identity digest, so every
-               -- re-dispatch of the same head lands on the same row; without this
-               -- the row stays 'failed' forever, the outbox stays 'terminal', and
-               -- the head can never be reviewed again by any means short of a
-               -- force-push. Only 'failed' is re-armed: 'queued'/'running' are
-               -- in flight and must stay idempotent, and 'superseded' belongs to
-               -- an older head.
+               -- Retry only the same complete identity after a durable failure.
+               -- Active duplicates remain unchanged; superseded identities must
+               -- never be revived merely because a new delivery arrived.
                status = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN 'queued' ELSE review_runs.status END,
                attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
                error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END,
@@ -229,6 +205,22 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                -- swept by the abandoned-run reaper before it could start.
                terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
          WHERE review_runs.publication_mode = EXCLUDED.publication_mode
+           AND review_runs.status <> 'superseded'
+           -- Even a legitimate return to a historically superseded identity is
+           -- rejected here. Supporting that later requires fresh live authority
+           -- and an explicit new generation, not a guessed revival of this row.
+           -- Older deployments could leave multiple same-head identities active
+           -- or retryable. Fail closed on a later (or ambiguously simultaneous)
+           -- persisted identity rather than letting that legacy row displace it.
+           -- This rejection fence does not establish current GitHub truth.
+           AND NOT EXISTS (
+             SELECT 1 FROM review_runs AS other
+              WHERE other.owner = review_runs.owner AND other.repo = review_runs.repo
+                AND other.pr_number = review_runs.pr_number
+                AND other.identity_digest <> review_runs.identity_digest
+                AND other.status <> 'superseded'
+                AND other.created_at >= review_runs.created_at
+           )
          RETURNING *`,
         [
           runId,
@@ -253,7 +245,33 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       );
       const runRow = inserted.rows[0];
       if (!runRow) {
-        throw new Error('review run publication mode conflict: the admitted identity already uses another publication mode');
+        throw new Error('review run identity conflict: identity is no longer current or publication mode differs');
+      }
+
+      // Resolve the incoming identity before retiring anything. A historical
+      // completed duplicate must not supersede current work. Fresh GitHub truth
+      // and trusted policy resolution remain the admission adapter's obligation:
+      // persistence cannot recognize a never-before-seen stale identity.
+      if (['queued', 'running', 'publishing'].includes(runRow.status)) {
+        await client.query(
+          `WITH superseded AS (
+             UPDATE review_runs
+                SET status = 'superseded',
+                    error_text = 'superseded by a newer review identity',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = to_timestamp($5 / 1000.0)
+              WHERE owner = $1 AND repo = $2 AND pr_number = $3
+                AND identity_digest <> $4
+                AND status IN ('queued', 'running', 'publishing', 'failed', 'terminal')
+            RETURNING run_id
+           )
+           UPDATE review_dispatch_outbox AS outbox
+              SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($5 / 1000.0)
+            WHERE outbox.run_id IN (SELECT run_id FROM superseded)`,
+          [input.identity.owner, input.identity.repo, input.identity.prNumber, identityDigest, input.receivedAt],
+        );
       }
 
       await client.query(
