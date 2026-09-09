@@ -599,59 +599,53 @@ grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml
 
 # The check-run publication logic is an extracted, independently invocable script (not an
 # inline YAML `run:` block) precisely so it can be behaviorally proven here instead of only
-# grepped. review-yeti.yml must delegate to it and must forward REVIEW_YETI_PASSTHROUGH so the
-# script can tell a fabricated passthrough SHIP apart from a real one.
+# grepped. review-yeti.yml must delegate to it, forward the platform-owned backend, and keep
+# the asynchronous DOKS worker as the sole raw target-check publisher.
 grep -Fq 'run: .exampleorg-review-actions/scripts/publish-review-check-run.sh' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}' "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq "TRUSTED_EXECUTION_BACKEND: \${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}" "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq 'REVIEW_YETI_RESOLVED_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}' "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq "if: inputs.central_execution && steps.ry_token.outputs.token != '' && env.TRUSTED_EXECUTION_BACKEND != 'doks'" "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq "check-id: \${{ env.TRUSTED_EXECUTION_BACKEND != 'doks' && steps.init_check.outputs.check_id || '' }}" "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq 'execution-backend: ${{ env.TRUSTED_EXECUTION_BACKEND }}' "$repo_root/.github/workflows/review-yeti.yml"
+# shellcheck disable=SC2016
+grep -Fq 'REVIEW_YETI_EXECUTION_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}' "$repo_root/.github/workflows/review-yeti.yml"
+if [[ "$(grep -Fc 'inputs.execution_backend ||' "$repo_root/.github/workflows/review-yeti.yml")" != 1 ]]; then
+  echo "backend selection must be resolved once while preserving existing qualified central inputs" >&2
+  exit 1
+fi
 if grep -Fq 'Publishing Check Run' "$repo_root/.github/workflows/review-yeti.yml"; then
   echo "check-run publication logic must live in publish-review-check-run.sh, not inline in review-yeti.yml" >&2
   exit 1
 fi
 
-# DISPATCHED is not a verdict: the review was handed to the DOKS queue and no persona judged
-# this head. check-review-verdict.sh already treats DISPATCHED + PENDING as a pass, but the
-# publisher used to map "anything not SHIP" to `failure`, so a dispatched review published a red
-# required check that nothing superseded.
-#
-# Publishing `in_progress` fixed that false red and introduced a third failure mode: nothing in
-# this repository ever completes the check. The App gate the comment appealed to does not exist
-# here, and dispatched PRs were left pending indefinitely -- observed on example-workspace#2534 and
-# example-meta#2787, whose central runs both completed successfully while the consumer checks stayed
-# in_progress. A check stuck pending neither blocks nor informs.
-#
-# It must publish a TERMINAL check that BLOCKS. `neutral` was the previous answer and it was
-# wrong in the most expensive way available: honest in its text, non-blocking to the merge
-# button. 29 PRs across example-meta and example-api merged against a check that had never judged them
-# (REL-612). An absent verdict is a reason not to merge, not a neutral fact -- and `failure` is
-# not permanent here, because the real verdict supersedes this check run on the same head once
-# publishing is enabled.
-grep -Fq 'if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then' "$repo_root/scripts/publish-review-check-run.sh"
-# ...and the dispatched payload must be terminal, never left in progress.
+# DOKS is asynchronous: the worker is the only raw `Review Yeti` publisher. The central
+# publisher records a receipt and returns before its first curl, regardless of whether the
+# action reports a dispatch, error, missing verdict, success, or passthrough state. Hosted/local
+# publication remains below that boundary and retains the existing POST/PATCH path.
 python3 - "$repo_root/scripts/publish-review-check-run.sh" <<'PY_PUBLISH_CONTRACT_EOF'
-import re, sys
+import sys
 script = open(sys.argv[1]).read()
-block = script[script.index('== "DISPATCHED"'):script.index('REVIEW_YETI_PASSTHROUGH:-}" == "true"')]
-assert 'status: "completed"' in block, 'dispatched branch must publish a terminal check'
-assert 'in_progress' not in block, 'dispatched check must not be left pending; nothing completes it'
-assert 'conclusion: "failure"' in block, 'dispatched branch must BLOCK: an absent verdict is not a pass'
-assert 'conclusion: "neutral"' not in block, \
-    'dispatched must not be neutral: neutral does not block, which is how 29 PRs merged unjudged'
-assert '"success"' not in block, 'dispatched branch must never assert success'
-assert 'DISPATCHED' in block and 'no verdict' in block.lower(), \
-    'dispatched title/summary must plainly say no verdict was published for this head'
-assert re.search(r'exit 0', block), 'dispatched branch must not fall through to the verdict mapping'
-
-# REVIEW_YETI_PASSTHROUGH must publish `neutral`, never `success` -- neutral does not block a
-# required check (preserving the escape hatch) but is honest that no review ran, unlike success
-# which is indistinguishable from a real approval.
-passthrough_block = script[script.index('REVIEW_YETI_PASSTHROUGH:-}" == "true"'):script.index('conclusion="success"')]
-assert 'conclusion: "neutral"' in passthrough_block, 'passthrough branch must publish neutral'
-assert '"success"' not in passthrough_block, 'passthrough branch must never publish success'
-assert 'PASSTHROUGH' in passthrough_block and 'no review performed' in passthrough_block.lower(), \
-    'passthrough title/summary must plainly say no review was performed'
-assert re.search(r'exit 0', passthrough_block), 'passthrough branch must not fall through to the verdict mapping'
-print('  blocking-dispatched + neutral-passthrough check-run contract ok')
+doks_start = script.index('if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]]')
+doks_end = script.index('if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]')
+doks_block = script[doks_start:doks_end]
+first_curl = script.index('curl -sS')
+assert doks_start < doks_end < first_curl, 'DOKS ownership guard must precede every Checks API call'
+assert 'Central Checks API writes: 0' in doks_block, 'DOKS receipt must state zero central check writes'
+assert 'worker is the only raw' in doks_block, 'DOKS receipt must name the worker as sole publisher'
+assert 'CHECK_ID' not in doks_block, 'DOKS path must not inspect or claim a central check ID'
+assert 'PATCH' not in doks_block, 'DOKS path must not claim PATCH reuse'
+assert 'exit 0' in doks_block, 'DOKS path must not fall through to hosted publication'
+assert 'Worker will complete check-run via PATCH' not in script, 'publisher must not claim PATCH reuse for DOKS'
+hosted_block = script[script.index('conclusion="success"'):]
+assert 'if [[ -n "${CHECK_ID:-}" ]]' in hosted_block, 'hosted CHECK_ID PATCH path must remain'
+assert 'conclusion="failure"' in hosted_block, 'hosted non-SHIP publication must remain fail-closed'
+print('  DOKS sole-publisher and hosted publication contract ok')
 PY_PUBLISH_CONTRACT_EOF
 
 # Behavioral proof: invoke the real script (not a grep of its text) with a fake curl that

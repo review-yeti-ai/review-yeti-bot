@@ -69,6 +69,9 @@ jobs:
       # actually exercised. Fork PRs stay on trusted main to avoid executing fork code with
       # inherited provider secrets. Consumer repositories always run the promoted v1 line.
       CENTRAL_REF: ${{ inputs.central_execution && 'v1' || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
+      # Resolve once so policy, execution and publication agree. Preserve existing
+      # qualified central inputs; consumer override admission remains separately guarded.
+      TRUSTED_EXECUTION_BACKEND: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
     steps:
       # REL-519: mint the ct-review-bot App installation token once, up front,
       # and use it for every GitHub surface in this workflow. App installation
@@ -153,15 +156,13 @@ jobs:
         working-directory: .exampleorg-review-actions
         env:
           REVIEW_YETI_PASSTHROUGH: ${{ inputs.passthrough && 'true' || vars.REVIEW_YETI_PASSTHROUGH || '' }}
-          # Same resolution the "Run Review Yeti review panel" step below uses for
-          # execution-backend. emit-policy.mjs asserts review_yeti.incremental is only enabled
-          # when this resolves to "local" -- the only backend that implements incremental review --
-          # so an execution_backend input override is caught here too, not just the repository
-          # default.
-          REVIEW_YETI_RESOLVED_BACKEND: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
+          # Use the same platform-owned backend for policy validation and the action. emit-policy.mjs
+          # asserts review_yeti.incremental is only enabled when this resolves to "local" -- the
+          # only backend that implements incremental review.
+          REVIEW_YETI_RESOLVED_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}
           # emit-policy.mjs refuses a "doks" backend whose publish mode is not
-          # "enabled": that combination accepts the dispatch and never reports a
-          # verdict, leaving the DISPATCHED placeholder as the head's only evidence.
+          # "app-gate": that combination accepts the dispatch and never reports a
+          # verdict, so the run fails closed before it can leave incomplete evidence.
           REVIEW_YETI_DOKS_PUBLISH_MODE: ${{ vars.REVIEW_YETI_DOKS_PUBLISH_MODE || 'disabled' }}
         run: node scripts/emit-policy.mjs
 
@@ -245,7 +246,7 @@ jobs:
       # still hard-fails before this step.
       - name: Initialize Review Yeti check run
         id: init_check
-        if: inputs.central_execution && steps.ry_token.outputs.token != '' && (inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local') != 'doks'
+        if: inputs.central_execution && steps.ry_token.outputs.token != '' && env.TRUSTED_EXECUTION_BACKEND != 'doks'
         env:
           GH_TOKEN: ${{ steps.ry_token.outputs.token }}
           TARGET_REPO: ${{ inputs.repository }}
@@ -316,7 +317,7 @@ jobs:
           MEMORY_PROVIDER: 'composite'
           MCP_CONFIG_JSON: ${{ steps.policy.outputs.mcp_config_json }}
         with:
-          check-id: ${{ (inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local') != 'doks' && steps.init_check.outputs.check_id || '' }}
+          check-id: ${{ env.TRUSTED_EXECUTION_BACKEND != 'doks' && steps.init_check.outputs.check_id || '' }}
           github-token: ${{ steps.ry_token.outputs.token || github.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
           pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
@@ -346,7 +347,7 @@ jobs:
           personas: ${{ steps.policy.outputs.personas }}
           max-investigation-turns: ${{ steps.policy.outputs.max_investigation_turns }}
           lane-call-budget: ${{ steps.policy.outputs.lane_call_budget }}
-          execution-backend: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
+          execution-backend: ${{ env.TRUSTED_EXECUTION_BACKEND }}
           doks-dispatch-url: https://review-bot.example.com/api/dispatch/action
           doks-publish-mode: ${{ steps.policy.outputs.doks_publish_mode }}
           honcho-api-key: ${{ secrets.HONCHO_API_KEY }}
@@ -447,6 +448,7 @@ jobs:
           HEAD_SHA: ${{ inputs.head_sha }}
           REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
           REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}
+          REVIEW_YETI_EXECUTION_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}
           CENTRAL_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CHECK_ID: ${{ steps.init_check.outputs.check_id || '' }}
         run: .exampleorg-review-actions/scripts/publish-review-check-run.sh

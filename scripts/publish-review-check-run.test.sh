@@ -51,39 +51,51 @@ status1=$?
 set -e
 [[ "$status1" -eq 0 ]]
 
-# Test 2: DISPATCHED without CHECK_ID POSTs failure check-run
+# DOKS never writes a target check-run, regardless of whether the worker handoff
+# returned DISPATCHED, failed before a verdict, produced a verdict, or ran in
+# passthrough mode. A bogus CHECK_ID must be ignored rather than PATCHed.
+run_doks_case() {
+  local label="$1"
+  local status="$2"
+  local passthrough="$3"
+  local check_id="$4"
+  local summary="$TMP/${label}.summary"
+
+  rm -f "$TMP/curl_calls.log" "$summary"
+  env -i PATH="$TMP:$ORIG_PATH" \
+    GH_TOKEN="test-token" \
+    TARGET_REPO="exampleorg/ct-test" \
+    HEAD_SHA="abc1234" \
+    REVIEW_YETI_EXECUTION_BACKEND="doks" \
+    REVIEW_STATUS="$status" \
+    REVIEW_YETI_PASSTHROUGH="$passthrough" \
+    CHECK_ID="$check_id" \
+    CENTRAL_RUN_URL="https://example.com/run/1" \
+    GITHUB_STEP_SUMMARY="$summary" \
+    "$SCRIPT" >/dev/null
+
+  [[ ! -f "$TMP/curl_calls.log" ]]
+  grep -qF "DOKS backend returned" "$summary"
+  grep -qF "Central Checks API writes: 0" "$summary"
+  if grep -Eq '(^|[^A-Za-z])(PATCH|POST)([^A-Za-z]|$)' "$summary"; then
+    echo "$label receipt must not describe a check API write" >&2
+    exit 1
+  fi
+}
+
+run_doks_case dispatched DISPATCHED "" 45678
+run_doks_case error ERROR "" ""
+run_doks_case missing-verdict "" "" ""
+run_doks_case success SHIP "" ""
+run_doks_case passthrough NO_REVIEW true 45678
+
+# Hosted/local behavior remains unchanged: passthrough without CHECK_ID POSTs neutral.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
   TARGET_REPO="exampleorg/ct-test" \
   HEAD_SHA="abc1234" \
-  REVIEW_STATUS="DISPATCHED" \
-  CENTRAL_RUN_URL="https://example.com/run/1" \
-  "$SCRIPT" >/dev/null 2>&1
-
-grep -qF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log"
-grep -qF '"conclusion":"failure"' "$TMP/curl_calls.log"
-
-# Test 3: DISPATCHED with CHECK_ID exits 0 without curl call
-rm -f "$TMP/curl_calls.log"
-output3=$(env -i PATH="$TMP:$ORIG_PATH" \
-  GH_TOKEN="test-token" \
-  TARGET_REPO="exampleorg/ct-test" \
-  HEAD_SHA="abc1234" \
-  REVIEW_STATUS="DISPATCHED" \
-  CHECK_ID="45678" \
-  CENTRAL_RUN_URL="https://example.com/run/1" \
-  "$SCRIPT")
-
-[[ ! -f "$TMP/curl_calls.log" ]]
-grep -qF "Skipping placeholder publication" <<<"$output3"
-
-# Test 4: PASSTHROUGH without CHECK_ID POSTs neutral
-rm -f "$TMP/curl_calls.log"
-env -i PATH="$TMP:$ORIG_PATH" \
-  GH_TOKEN="test-token" \
-  TARGET_REPO="exampleorg/ct-test" \
-  HEAD_SHA="abc1234" \
+  REVIEW_YETI_EXECUTION_BACKEND="local" \
   REVIEW_YETI_PASSTHROUGH="true" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
   "$SCRIPT" >/dev/null 2>&1
@@ -91,12 +103,13 @@ env -i PATH="$TMP:$ORIG_PATH" \
 grep -qF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log"
 grep -qF '"conclusion":"neutral"' "$TMP/curl_calls.log"
 
-# Test 5: PASSTHROUGH with CHECK_ID PATCHes check-run
+# Hosted/local passthrough with CHECK_ID still PATCHes the existing check-run.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
   TARGET_REPO="exampleorg/ct-test" \
   HEAD_SHA="abc1234" \
+  REVIEW_YETI_EXECUTION_BACKEND="local" \
   REVIEW_YETI_PASSTHROUGH="true" \
   CHECK_ID="45678" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
@@ -105,12 +118,13 @@ env -i PATH="$TMP:$ORIG_PATH" \
 grep -qF "PATCH|https://api.github.com/repos/exampleorg/ct-test/check-runs/45678|" "$TMP/curl_calls.log"
 grep -qF '"conclusion":"neutral"' "$TMP/curl_calls.log"
 
-# Test 6: SHIP verdict without CHECK_ID POSTs success
+# Hosted/local SHIP without CHECK_ID still POSTs success.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
   TARGET_REPO="exampleorg/ct-test" \
   HEAD_SHA="abc1234" \
+  REVIEW_YETI_EXECUTION_BACKEND="local" \
   REVIEW_STATUS="SHIP" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
   "$SCRIPT" >/dev/null 2>&1
@@ -118,12 +132,13 @@ env -i PATH="$TMP:$ORIG_PATH" \
 grep -qF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log"
 grep -qF '"conclusion":"success"' "$TMP/curl_calls.log"
 
-# Test 7: SHIP verdict with CHECK_ID PATCHes success
+# Hosted/local SHIP with CHECK_ID still PATCHes success.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
   TARGET_REPO="exampleorg/ct-test" \
   HEAD_SHA="abc1234" \
+  REVIEW_YETI_EXECUTION_BACKEND="local" \
   REVIEW_STATUS="SHIP" \
   CHECK_ID="78901" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
@@ -132,12 +147,13 @@ env -i PATH="$TMP:$ORIG_PATH" \
 grep -qF "PATCH|https://api.github.com/repos/exampleorg/ct-test/check-runs/78901|" "$TMP/curl_calls.log"
 grep -qF '"conclusion":"success"' "$TMP/curl_calls.log"
 
-# Test 8: FIX_FIRST verdict with CHECK_ID PATCHes failure
+# Hosted/local FIX_FIRST with CHECK_ID still PATCHes failure.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
   TARGET_REPO="exampleorg/ct-test" \
   HEAD_SHA="abc1234" \
+  REVIEW_YETI_EXECUTION_BACKEND="local" \
   REVIEW_STATUS="FIX_FIRST" \
   CHECK_ID="78901" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
@@ -146,4 +162,18 @@ env -i PATH="$TMP:$ORIG_PATH" \
 grep -qF "PATCH|https://api.github.com/repos/exampleorg/ct-test/check-runs/78901|" "$TMP/curl_calls.log"
 grep -qF '"conclusion":"failure"' "$TMP/curl_calls.log"
 
-echo "publish-review-check-run.test.sh: all 8 test cases passed successfully"
+# Hosted/local unknown verdicts remain fail-closed and are still published as failures.
+rm -f "$TMP/curl_calls.log"
+env -i PATH="$TMP:$ORIG_PATH" \
+  GH_TOKEN="test-token" \
+  TARGET_REPO="exampleorg/ct-test" \
+  HEAD_SHA="abc1234" \
+  REVIEW_YETI_EXECUTION_BACKEND="local" \
+  REVIEW_STATUS="UNKNOWN_VERDICT" \
+  CENTRAL_RUN_URL="https://example.com/run/1" \
+  "$SCRIPT" >/dev/null 2>&1
+
+grep -qF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log"
+grep -qF '"conclusion":"failure"' "$TMP/curl_calls.log"
+
+echo "publish-review-check-run.test.sh: DOKS no-write and hosted publication contract passed"

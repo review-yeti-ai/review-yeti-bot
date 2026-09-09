@@ -7,6 +7,7 @@ set -euo pipefail
 : "${REVIEW_STATUS:=}"
 : "${CENTRAL_RUN_URL:=}"
 : "${REVIEW_YETI_PASSTHROUGH:=}"
+: "${REVIEW_YETI_EXECUTION_BACKEND:=local}"
 : "${CHECK_ID:=}"
 
 if [[ -z "${TARGET_REPO:-}" || -z "${HEAD_SHA:-}" ]]; then
@@ -14,51 +15,24 @@ if [[ -z "${TARGET_REPO:-}" || -z "${HEAD_SHA:-}" ]]; then
   exit 0
 fi
 
-# DISPATCHED is not a verdict: the review was handed to the DOKS queue and no
-# persona has judged this head.
-#
-# This state has now been all three conclusions, and the first two were wrong for
-# opposite reasons. `failure` was a false red on a review that had merely been
-# queued. `in_progress` never completed, because nothing in this repository
-# finishes it, so every dispatched PR hung forever. `neutral` fixed the hang and
-# is honest in its text -- but neutral does not block a required check, so 29 PRs
-# across example-meta and example-api merged against a check that had never judged them.
-#
-# Honest and non-blocking is the worst combination available: it reads as a
-# completed review to the merge button while asserting nothing. An absent verdict
-# must block. `failure` is correct here precisely because it is not terminal in
-# practice -- when publishing is enabled the real verdict supersedes this check
-# run on the same head, and until then "no persona judged this commit" is a
-# reason not to merge, not a neutral fact.
-if [[ "${REVIEW_STATUS:-}" == "DISPATCHED" ]]; then
-  if [[ -n "${CHECK_ID:-}" ]]; then
-    echo "Review Yeti dispatched to DOKS queue with check ID ${CHECK_ID}. Worker will complete check-run via PATCH. Skipping placeholder publication."
-    exit 0
+# DOKS is an asynchronous handoff. The worker owns the only raw `Review Yeti`
+# check-run publication for this backend; the central action must not create a
+# placeholder or try to reuse a check ID that does not exist in this workflow.
+if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]]; then
+  doks_status="${REVIEW_STATUS:-MISSING_VERDICT}"
+  doks_receipt="Review Yeti DOKS backend returned ${doks_status} for ${TARGET_REPO}@${HEAD_SHA}; central check-run publication was skipped because the DOKS worker is the only raw 'Review Yeti' publisher."
+  echo "::notice::${doks_receipt}"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo "### Review Yeti: DOKS dispatch/publication receipt"
+      echo
+      echo "${doks_receipt}"
+      echo "- Central Checks API writes: 0"
+      if [[ -n "${CENTRAL_RUN_URL}" ]]; then
+        echo "- Central run: ${CENTRAL_RUN_URL}"
+      fi
+    } >>"$GITHUB_STEP_SUMMARY"
   fi
-  echo "Publishing Check Run 'Review Yeti' (failure, dispatched — no verdict yet) to ${TARGET_REPO} on ${HEAD_SHA}..."
-  curl -sS -X POST \
-    -H "Accept: application/vnd.github+json" \
-    -H "Authorization: Bearer ${GH_TOKEN}" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
-    -d "$(jq -nc \
-      --arg name "Review Yeti" \
-      --arg head_sha "${HEAD_SHA}" \
-      --arg details_url "${CENTRAL_RUN_URL}" \
-      --arg summary "Review Yeti dispatched this exact head to the DOKS queue; no persona verdict was published for it. This is a queue handoff, not an approval, and it blocks until a verdict supersedes it. See [central run](${CENTRAL_RUN_URL})." \
-      '{
-        name: $name,
-        head_sha: $head_sha,
-        status: "completed",
-        conclusion: "failure",
-        details_url: $details_url,
-        output: {
-          title: "Review Yeti: DISPATCHED (no verdict for this head)",
-          summary: $summary
-        }
-      }')" || {
-    echo "::warning::Failed to publish dispatched check-run to ${TARGET_REPO}."
-  }
   exit 0
 fi
 
