@@ -138,6 +138,50 @@ describe('DOKS Action dispatch client', () => {
       .mockResolvedValueOnce(new Response('no', { status: 503 }));
     await expect(dispatchAction(environment(), rejected)).rejects.toThrow(/503/u);
 
+    // The operator's reason must survive into the error. Without it a dispatch failure is a bare
+    // status code, and the one line that explains it is the one line discarded.
+    const explained = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'unknown repository_id 42' }), { status: 400 }));
+    await expect(dispatchAction(environment(), explained)).rejects.toThrow(/unknown repository_id 42/u);
+
+    // Bounded, and single-line: a hostile or enormous body must not become the error message.
+    const flooded = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('z'.repeat(10_000), { status: 400 }));
+    const floodedError = await dispatchAction(environment(), flooded).catch((error: Error) => error);
+    expect(floodedError).toBeInstanceOf(Error);
+    expect((floodedError as Error).message).toMatch(/HTTP 400/u);
+    expect((floodedError as Error).message.length).toBeLessThan(700);
+
+    // A multi-line body must collapse to ONE line. Without the whitespace normalisation every
+    // other assertion here still passes, so this is the only thing holding the single-line
+    // contract in place.
+    const multiline = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('{\n  "error": "unknown repository_id 42",\n  "hint": "check org settings"\n}', { status: 400 }));
+    const multilineError = await dispatchAction(environment(), multiline).catch((error: Error) => error);
+    expect((multilineError as Error).message).toBe(
+      'DOKS dispatch failed with HTTP 400: { "error": "unknown repository_id 42", "hint": "check org settings" }',
+    );
+    expect((multilineError as Error).message).not.toContain('\n');
+
+    // An empty (or whitespace-only) body must not leave a dangling `: ` on the message.
+    const silent = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('   \n  ', { status: 400 }));
+    const silentError = await dispatchAction(environment(), silent).catch((error: Error) => error);
+    expect((silentError as Error).message).toBe('DOKS dispatch failed with HTTP 400');
+
+    // An unreadable body must not replace the failure it is describing.
+    const unreadable = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce({
+        status: 400,
+        arrayBuffer: () => Promise.reject(new Error('stream already consumed')),
+      });
+    await expect(dispatchAction(environment(), unreadable)).rejects.toThrow(/HTTP 400/u);
+
     const malformed = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'accepted' }), { status: 202 }));
