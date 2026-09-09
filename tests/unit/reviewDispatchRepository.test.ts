@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import { sha256 } from '../../src/review/reviewCore';
 
 const identity = {
   owner: 'calltelemetry',
@@ -71,7 +72,7 @@ function workerFailureRepository(query: (sql: string, values?: unknown[]) => Pro
 
 describe('PostgresReviewDispatchRepository', () => {
   it('admits delivery, run, and one outbox row in one committed transaction', async () => {
-    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [], [row], [], [], []]);
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
     const pool = { connect: vi.fn(async () => client) };
     const repository = new PostgresReviewDispatchRepository(pool);
 
@@ -80,13 +81,19 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(result.status).toBe('accepted');
     expect(result.run.runId).toBe(row.run_id);
     expect(client.query.mock.calls.map(([sql]) => String(sql).trim().split(/\s+/u)[0])).toEqual([
-      'BEGIN', 'SELECT', 'INSERT', 'WITH', 'INSERT', 'UPDATE', 'INSERT', 'COMMIT',
+      'BEGIN', 'SELECT', 'INSERT', 'INSERT', 'WITH', 'UPDATE', 'INSERT', 'COMMIT',
     ]);
     expect(client.query.mock.calls[6][0]).toMatch(/review_dispatch_outbox/u);
-    expect(client.query.mock.calls[3][0]).not.toContain('$6');
-    expect(client.query.mock.calls[3][1]).toHaveLength(5);
-    expect(client.query.mock.calls[4][0]).toMatch(/publication_mode/u);
-    expect(client.query.mock.calls[4][1]).toContain('disabled');
+    expect(client.query.mock.calls[4][0]).not.toContain('$6');
+    expect(client.query.mock.calls[4][1]).toEqual([
+      identity.owner, identity.repo, identity.prNumber, sha256(identity), input().receivedAt,
+    ]);
+    expect(client.query.mock.calls[4][0]).toContain('AND identity_digest <> $4');
+    expect(client.query.mock.calls[4][0]).not.toContain('head_sha <>');
+    expect(client.query.mock.calls[4][0]).toContain("status IN ('queued', 'running', 'publishing', 'failed', 'terminal')");
+    expect(client.query.mock.calls[4][0]).toContain("error_text = 'superseded by a newer review identity'");
+    expect(client.query.mock.calls[3][0]).toMatch(/publication_mode/u);
+    expect(client.query.mock.calls[3][1]).toContain('disabled');
     expect(client.release).toHaveBeenCalledOnce();
   });
 
@@ -102,7 +109,7 @@ describe('PostgresReviewDispatchRepository', () => {
   });
 
   // A run id is derived from the identity digest, so every re-dispatch of the
-  // same head lands on the same row. Without a retry path a terminally failed run
+  // same complete identity lands on the same row. Without a retry path a terminally failed run
   // pins that head forever: the run stays 'failed', the outbox stays 'projected'
   // or 'terminal', and no label, re-run or re-dispatch can produce another review. Observed on
   // cisco-cdr#4836, where three dispatches were accepted and none created a job.
@@ -113,8 +120,8 @@ describe('PostgresReviewDispatchRepository', () => {
   // so a re-arm that sets a wrong value fails. Collapsing whitespace only removes
   // formatting differences; it does not survive reordering or aliasing the
   // clauses, and a rewrite of these queries is expected to update this test.
-  it('re-arms a terminally failed run for the same head, and nothing else', async () => {
-    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [], [row], [], [], []]);
+  it('re-arms a terminally failed run for the same current identity, and nothing else', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
 
     await repository.admit(input());
@@ -133,12 +140,15 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(runSql).toContain("error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END");
     expect(runSql).toContain("received_at = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.received_at ELSE review_runs.received_at END");
     expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END");
-    // Every re-arm is conditioned on 'failed', and no other status is named:
-    // 'queued'/'running' are in flight, 'superseded' belongs to an older head.
+    // Every re-arm is conditioned on failure; active and superseded identities
+    // are not retryable. Older legacy identities are fenced by persisted history.
     expect(runSql.match(/CASE WHEN review_runs\.status IN \('failed', 'terminal'\)/gu) || []).toHaveLength(6);
     // markTerminal writes 'failed'; the reaper writes 'terminal'. Both are dead
     // runs and both must be retryable, and no other status may be named.
     expect(runSql).not.toMatch(/CASE WHEN review_runs\.status (=|IN \()\s*'?(queued|running|superseded)/u);
+    expect(runSql).toContain("AND review_runs.status <> 'superseded'");
+    expect(runSql).toContain('other.identity_digest <> review_runs.identity_digest');
+    expect(runSql).toContain('other.created_at >= review_runs.created_at');
 
     const outboxSql = sqlFor(/INSERT INTO review_dispatch_outbox/u);
     // Payload and both guards, so a superseded run's terminal row is never
@@ -150,6 +160,43 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(outboxSql).toContain('execution_attempt');
     expect(outboxSql).toContain("r.status = 'queued'");
     expect(outboxSql).toContain('r.delivery_id = EXCLUDED.delivery_id');
+  });
+
+  it('binds supersession and the stable run id to the entire policy-bearing identity', async () => {
+    const policyIdentity = {
+      ...identity,
+      reviewPolicy: {
+        version: 'ReviewPolicyIdentity.v1', repositoryId: 123,
+        effectivePolicyDigest: '1'.repeat(64), sources: [{
+          repositoryId: 789, repository: 'calltelemetry/ct-review-actions',
+          sha: 'c'.repeat(40), path: 'review-policy.json', contentDigest: 'f'.repeat(64),
+        }],
+      },
+    };
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: async () => client });
+    await repository.admit({ ...input(), identity: policyIdentity, effectivePolicyDigest: '1'.repeat(64) });
+    const digest = sha256(policyIdentity);
+    expect(digest).not.toBe(sha256(identity));
+    expect(client.query.mock.calls[3][1]?.slice(0, 2)).toEqual([`run_${digest.slice(0, 32)}`, digest]);
+    expect(client.query.mock.calls[4][1]?.[3]).toBe(digest);
+  });
+
+  it('rejects a fenced identity before superseding current work or inserting an outbox', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: async () => client });
+    await expect(repository.admit(input())).rejects.toThrow(
+      'review run identity conflict: identity is no longer current or publication mode differs',
+    );
+    expect(client.query.mock.calls.some(([sql]) => /WITH superseded|INSERT INTO review_dispatch_outbox/u.test(sql))).toBe(false);
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
+  });
+
+  it('does not supersede work when returning an already completed identity', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [{ ...row, status: 'succeeded' }], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: async () => client });
+    expect((await repository.admit(input())).run.status).toBe('succeeded');
+    expect(client.query.mock.calls.some(([sql]) => /WITH superseded/u.test(sql))).toBe(false);
   });
 
   it.each([
@@ -283,12 +330,12 @@ describe('PostgresReviewDispatchRepository', () => {
   });
 
   it('rolls back when the outbox insert fails so acknowledgement cannot lose work', async () => {
-    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [], [row], []]);
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], []]);
     client.query.mockImplementationOnce(async () => ({ rows: [] }));
     client.query.mockImplementationOnce(async () => ({ rows: [] }));
     client.query.mockImplementationOnce(async () => ({ rows: [{ delivery_id: input().deliveryId }] }));
-    client.query.mockImplementationOnce(async () => ({ rows: [] }));
     client.query.mockImplementationOnce(async () => ({ rows: [row] }));
+    client.query.mockImplementationOnce(async () => ({ rows: [] }));
     client.query.mockImplementationOnce(async () => ({ rows: [] }));
     client.query.mockImplementationOnce(async () => { throw new Error('outbox unavailable'); });
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
