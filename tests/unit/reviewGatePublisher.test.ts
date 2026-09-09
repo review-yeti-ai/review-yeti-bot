@@ -15,17 +15,23 @@ const check: ReviewGateCheck = { id: 1234, name: REVIEW_GATE_CHECK_NAME, appId: 
   headSha: coordinates.headSha, externalId: claim.externalId, status: 'queued' as const, conclusion: null };
 function fixture(overrides: Partial<GatePublicationClaim> = {}) {
   const active = { ...claim, ...overrides };
+  const notStarted = vi.fn();
   const repository = {
     claimPublication: vi.fn(async () => active as GatePublicationClaim | null),
-    publishLocked: vi.fn(async (_claim, publish): Promise<'published' | 'stale-claim'> => { await publish(active, active.mayCreate); return 'published'; }),
+    publishLocked: vi.fn(async (_claim, publish): Promise<'published' | 'stale-claim' | 'retry'> => {
+      const result = await publish(active, active.mayCreate);
+      if (result.kind === 'not-started') { notStarted(result); return 'retry'; }
+      return 'published';
+    }),
     retryPublication: vi.fn(async () => true),
   };
   const client = {
     createPending: vi.fn(async () => check), reconcile: vi.fn(async () => check as typeof check | null),
     updateExisting: vi.fn(async () => check),
   };
-  const publisher = new ReviewGatePublisher({ repository, clientFor: async () => client, workerId: 'test-publisher', now: () => 1_000 });
-  return { repository, client, publisher };
+  const clientFor = vi.fn(async () => client);
+  const publisher = new ReviewGatePublisher({ repository, clientFor, workerId: 'test-publisher', now: () => 1_000 });
+  return { repository, client, clientFor, notStarted, publisher };
 }
 
 describe('durable service gate publisher', () => {
@@ -47,6 +53,47 @@ describe('durable service gate publisher', () => {
     f.client.createPending.mockRejectedValue(new Error('synthetic private transport detail'));
     expect(await f.publisher.runOnce()).toEqual({ status: 'retry', attemptId: coordinates.attemptId });
     expect(f.client.createPending).toHaveBeenCalledOnce();
+    expect(f.repository.retryPublication).toHaveBeenCalledWith(expect.anything(), 1_000, 30_000, 'unknown-create');
+    expect(f.notStarted).not.toHaveBeenCalled();
+  });
+  it.each(['rejection', 'synchronous throw'] as const)('recovers a first-claim factory %s inside the locked publication', async (failure) => {
+    const f = fixture();
+    const detail = 'ghs_private_factory_token';
+    if (failure === 'rejection') f.clientFor.mockRejectedValue(new Error(detail));
+    else f.clientFor.mockImplementation(() => { throw new Error(detail); });
+    expect(await f.publisher.runOnce()).toEqual({ status: 'retry', attemptId: coordinates.attemptId });
+    expect(f.notStarted).toHaveBeenCalledExactlyOnceWith({ kind: 'not-started', retryDelayMs: 30_000 });
+    expect(f.repository.retryPublication).not.toHaveBeenCalled();
+    expect(f.client.createPending).not.toHaveBeenCalled();
+    expect(f.client.reconcile).not.toHaveBeenCalled();
+    expect(f.client.updateExisting).not.toHaveBeenCalled();
+  });
+  it.each([
+    { mayCreate: false },
+    { mayCreate: false, checkId: 1234, creationState: 'bound' as const },
+  ])('never rearms factory failure on an uncertain or bound intent: %j', async (overrides) => {
+    const f = fixture(overrides);
+    f.clientFor.mockRejectedValue(new Error('factory unavailable'));
+    expect(await f.publisher.runOnce()).toMatchObject({ status: 'retry' });
+    expect(f.notStarted).not.toHaveBeenCalled();
+    expect(f.repository.retryPublication).toHaveBeenCalledExactlyOnceWith(expect.anything(), 1_000, 30_000,
+      overrides.checkId ? 'transport' : 'unknown-create');
+    expect(f.client.createPending).not.toHaveBeenCalled();
+  });
+  it('never rearms after createPending is invoked, even if it throws a not-started-shaped value synchronously', async () => {
+    const f = fixture();
+    f.client.createPending.mockImplementation(() => { throw { kind: 'not-started', retryDelayMs: 30_000 }; });
+    expect(await f.publisher.runOnce()).toMatchObject({ status: 'retry' });
+    expect(f.client.createPending).toHaveBeenCalledOnce();
+    expect(f.notStarted).not.toHaveBeenCalled();
+    expect(f.repository.retryPublication).toHaveBeenCalledWith(expect.anything(), 1_000, 30_000, 'unknown-create');
+  });
+  it('does not rearm when update fails after a successfully returned create', async () => {
+    const f = fixture();
+    f.client.updateExisting.mockRejectedValue(new Error('PATCH timeout after accepted POST'));
+    expect(await f.publisher.runOnce()).toMatchObject({ status: 'retry' });
+    expect(f.client.createPending).toHaveBeenCalledOnce();
+    expect(f.notStarted).not.toHaveBeenCalled();
     expect(f.repository.retryPublication).toHaveBeenCalledWith(expect.anything(), 1_000, 30_000, 'unknown-create');
   });
   it('reconciles the same attempt after an uncertain create; empty reads never authorize another create', async () => {
@@ -79,5 +126,29 @@ describe('durable service gate publisher', () => {
     expect(await f.publisher.runOnce()).toEqual({ status: 'stale-claim', attemptId: coordinates.attemptId });
     expect(f.repository.retryPublication).toHaveBeenCalledWith(expect.anything(), 1_000, 30_000, 'stale-claim');
     expect(f.client.createPending).not.toHaveBeenCalled();
+  });
+  it('bounds an uncooperative client factory and cannot publish when it resolves late', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      let ready!: (client: typeof f.client) => void;
+      const publisher = new ReviewGatePublisher({ repository: f.repository, workerId: 'test-publisher', now: () => 1_000,
+        clientFactoryTimeoutMs: 250, clientFor: () => new Promise((resolve) => { ready = resolve; }) });
+      const outcome = publisher.runOnce();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await outcome).toMatchObject({ status: 'retry' });
+      expect(f.notStarted).toHaveBeenCalledExactlyOnceWith({ kind: 'not-started', retryDelayMs: 30_000 });
+      expect(f.repository.retryPublication).not.toHaveBeenCalled();
+      ready(f.client);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.client.createPending).not.toHaveBeenCalled();
+      expect(f.client.updateExisting).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each([0, 249, 45_001, 250.5, Infinity])('rejects an unbounded client deadline %s', (clientFactoryTimeoutMs) => {
+    const f = fixture();
+    expect(() => new ReviewGatePublisher({ repository: f.repository, workerId: 'test-publisher',
+      clientFor: async () => f.client, clientFactoryTimeoutMs })).toThrow('bounded');
   });
 });

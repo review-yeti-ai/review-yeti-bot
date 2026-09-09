@@ -1,4 +1,5 @@
 import type { PublicationMode } from '../review/reviewRun';
+import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
 
 const exactSha = /^[a-f0-9]{40}$/u;
 const exactDigest = /^[a-f0-9]{64}$/u;
@@ -43,6 +44,8 @@ export interface ReviewJobProjectionInput {
   workerImage: string;
   namespace: string;
   runnerMode?: RunnerMode;
+  /** Immutable PreparedReviewExecution.v1 envelope; presence enables the authoritative worker lane. */
+  preparedReview?: string;
 }
 
 export interface PRReviewJobProjection {
@@ -71,6 +74,7 @@ export interface PRReviewJobProjection {
     /** Optional for compatibility with projections created before attempt transport was added. */
     executionAttempt?: number;
     runnerMode?: RunnerMode;
+    preparedReview?: string;
   };
 }
 
@@ -121,6 +125,12 @@ export function buildReviewJobProjection(
   }
   if (!namespacePattern.test(input.namespace)) throw new Error('namespace must be a Kubernetes DNS label');
   const runnerMode: RunnerMode = input.runnerMode || 'prebaked';
+  if (input.preparedReview !== undefined) {
+    if (input.publicationMode !== 'app-gate' || runnerMode !== 'prebaked') {
+      throw new Error('prepared review requires the prebaked app-gate lane');
+    }
+    parsePreparedReviewExecution(input.preparedReview, input.configDigest);
+  }
   if (runnerMode === 'generic') {
     if (!GENERIC_RUNNER_IMAGE_PATTERN.test(input.workerImage) && !isTrustedWorkerImage(input.workerImage)) {
       throw new Error(
@@ -182,6 +192,7 @@ export function buildReviewJobProjection(
       runSecretName,
       ...(input.executionAttempt === undefined ? {} : { executionAttempt }),
       runnerMode,
+      ...(input.preparedReview === undefined ? {} : { preparedReview: input.preparedReview }),
     },
   };
 }

@@ -113,9 +113,9 @@ describe('PostgresReviewDispatchRepository', () => {
       'BEGIN', 'SELECT', 'INSERT', 'INSERT', 'WITH', 'UPDATE', 'INSERT', 'COMMIT',
     ]);
     expect(client.query.mock.calls[6][0]).toMatch(/review_dispatch_outbox/u);
-    expect(client.query.mock.calls[4][0]).not.toContain('$6');
+    expect(client.query.mock.calls[4][0]).toContain('AND (authoritative_gate_app_id IS NOT NULL) = $6');
     expect(client.query.mock.calls[4][1]).toEqual([
-      identity.owner, identity.repo, identity.prNumber, sha256(identity), input().receivedAt,
+      identity.owner, identity.repo, identity.prNumber, sha256(identity), input().receivedAt, false,
     ]);
     expect(client.query.mock.calls[4][0]).toContain('AND identity_digest <> $4');
     expect(client.query.mock.calls[4][0]).not.toContain('head_sha <>');
@@ -176,6 +176,7 @@ describe('PostgresReviewDispatchRepository', () => {
     // runs and both must be retryable, and no other status may be named.
     expect(runSql).not.toMatch(/CASE WHEN review_runs\.status (=|IN \()\s*'?(queued|running|superseded)/u);
     expect(runSql).toContain("AND review_runs.status <> 'superseded'");
+    expect(runSql).toContain('AND (other.authoritative_gate_app_id IS NOT NULL) = (review_runs.authoritative_gate_app_id IS NOT NULL)');
     expect(runSql).toContain('other.identity_digest <> review_runs.identity_digest');
     expect(runSql).toContain('other.created_at >= review_runs.created_at');
 
@@ -186,7 +187,8 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(outboxSql).toContain("lease_owner = NULL");
     expect(outboxSql).toContain('projection_name = NULL');
     expect(outboxSql).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
-    expect(outboxSql).toContain('execution_attempt');
+    expect(outboxSql).toContain("execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected' THEN review_dispatch_outbox.execution_attempt + 1 ELSE review_dispatch_outbox.execution_attempt END");
+    expect(outboxSql).toContain("worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal') THEN NULL ELSE review_dispatch_outbox.worker_token_digest END");
     expect(outboxSql).toContain("r.status = 'queued'");
     expect(outboxSql).toContain('r.delivery_id = EXCLUDED.delivery_id');
   });
@@ -479,7 +481,7 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(infrastructureRetry?.claimAttempt).toBe(2);
   });
 
-  it('terminalizes both the outbox and run only for the owning dispatcher lease', async () => {
+  it('fails the run atomically while retaining token-bound projected executions and terminalizing unbound executions', async () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{ run_id: row.run_id }] }));
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
     await expect(repository.markTerminal(
@@ -489,12 +491,20 @@ describe('PostgresReviewDispatchRepository', () => {
       1_000,
       'review job projection rejected',
     )).resolves.toBe(true);
-    expect(query.mock.calls[0][0]).toMatch(/WITH terminalized AS/u);
-    expect(query.mock.calls[0][0]).toMatch(/UPDATE review_dispatch_outbox/u);
-    expect(query.mock.calls[0][0]).toMatch(/SET status = 'terminal'/u);
-    expect(query.mock.calls[0][0]).toMatch(/UPDATE review_runs/u);
-    expect(query.mock.calls[0][0]).toMatch(/SET status = 'failed'/u);
-    expect(query.mock.calls[0][0]).toMatch(/lease_owner = \$2 AND status = 'claimed'/u);
+    expect(query).toHaveBeenCalledOnce();
+    const sql = query.mock.calls[0][0].replace(/\s+/gu, ' ');
+    expect(sql).toContain('WITH terminalized AS');
+    expect(sql).toContain('UPDATE review_dispatch_outbox');
+    // Pin both branches: a bound token can represent a worker with a lost ACK.
+    // Keep its digest/execution until explicit admission rotates them; an
+    // unbound failure has no worker to replace and remains safely terminal.
+    expect(sql).toContain("SET status = CASE WHEN worker_token_digest IS NOT NULL THEN 'projected' ELSE 'terminal' END");
+    expect(sql).not.toMatch(/\b(?:worker_token_digest|execution_attempt)\s*=/u);
+    expect(sql).toContain('lease_owner = NULL, lease_expires_at = NULL');
+    expect(sql).toContain('UPDATE review_runs AS runs');
+    expect(sql).toContain("SET status = 'failed'");
+    expect(sql).toContain("FROM terminalized WHERE runs.run_id = terminalized.run_id AND runs.status = 'queued'");
+    expect(sql).toContain("lease_owner = $2 AND status = 'claimed'");
     expect(query.mock.calls[0][1]).toEqual([
       row.run_id,
       'dispatcher-a',

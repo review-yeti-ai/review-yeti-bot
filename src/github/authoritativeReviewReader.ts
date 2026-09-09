@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { reviewPolicySourceSchema, type CurrentReviewCandidate, type TrustedResolvedReviewPolicy } from '../review/authoritativeReviewIdentity';
+import { reviewPolicySourceSchema, type CurrentReviewCandidate, type ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
+export type { ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
 
 const positive = z.number().int().positive().safe();
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -11,10 +12,12 @@ const repositoryResponse = z.object({ id: positive, full_name: z.string() });
 const pullResponse = z.object({
   number: positive, state: z.enum(['open', 'closed']), draft: z.boolean(), merged: z.boolean(),
   head: z.object({ sha }), base: z.object({ sha, repo: repositoryResponse }),
+  changed_files: z.number().int().nonnegative().safe().optional(),
 });
 const sourcePath = reviewPolicySourceSchema.shape.path;
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_RESPONSE_BYTES = 512 * 1024;
+export const MAX_AUTHORITATIVE_DIFF_BYTES = 2_000_000;
 
 function parse<T extends z.ZodTypeAny>(schema: T, input: unknown): z.infer<T> {
   try { return schema.parse(input); }
@@ -22,9 +25,12 @@ function parse<T extends z.ZodTypeAny>(schema: T, input: unknown): z.infer<T> {
 }
 
 export type ReviewRepositoryIdentity = z.infer<typeof repository>;
-export interface ImmutableReviewPolicyFile {
-  source: TrustedResolvedReviewPolicy['sources'][number];
-  content: string;
+export interface ExactCurrentReviewDiff {
+  current: CurrentReviewCandidate;
+  /** Empty when the candidate changed/closed before or during the read. */
+  diff: string;
+  /** Present only when GitHub reports the same file count on both PR reads. */
+  expectedFileCount?: number;
 }
 
 /** Read-only, bounded GitHub truth for authoritative admission. Event payloads
@@ -55,26 +61,31 @@ export class AuthoritativeReviewReader {
     this.fetcher = options.fetchImplementation || globalThis.fetch;
   }
 
-  private async json(path: string): Promise<unknown> {
+  private async text(path: string, accept: string, maxBytes: number, signal?: AbortSignal): Promise<string> {
     const abort = new AbortController();
     let bodyReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: () => void = () => undefined;
     const expired = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
+      onAbort = () => {
         abort.abort();
         void bodyReader?.cancel().catch(() => undefined);
         reject(new Error('Review reader request unavailable'));
-      }, this.timeoutMs);
+      };
+      timer = setTimeout(onAbort, this.timeoutMs);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
-    const read = async (): Promise<unknown> => {
+    const read = async (): Promise<string> => {
+      if (abort.signal.aborted) throw new Error('Review reader request unavailable');
       const response = await this.fetcher(`${this.api}${path}`, {
         method: 'GET', redirect: 'error', signal: abort.signal,
         headers: {
-          Accept: 'application/vnd.github+json', Authorization: `Bearer ${this.options.token}`,
+          Accept: accept, Authorization: `Bearer ${this.options.token}`,
           'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'review-yeti-authoritative-reader',
         },
       });
-      if (abort.signal.aborted || !response.ok || !response.body) {
+      if (abort.signal.aborted || response.status !== 200 || !response.body) {
         void response.body?.cancel().catch(() => undefined);
         throw new Error('Review reader request unavailable');
       }
@@ -85,12 +96,13 @@ export class AuthoritativeReviewReader {
       try {
         while (true) {
           const next = await reader.read();
+          if (abort.signal.aborted) throw new Error('Review reader request unavailable');
           if (next.done) break;
           bytes += next.value.byteLength;
-          if (bytes > MAX_RESPONSE_BYTES) throw new Error('Review reader response exceeds bound');
+          if (bytes > maxBytes) throw new Error('Review reader response exceeds bound');
           chunks.push(next.value);
         }
-        return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
+        return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
       } finally {
         void reader.cancel().catch(() => undefined);
         reader.releaseLock();
@@ -104,7 +116,15 @@ export class AuthoritativeReviewReader {
       // repository content. Neither belongs in admission logs or responses.
       abort.abort();
       throw new Error('Review reader request unavailable');
-    } finally { if (timer !== undefined) clearTimeout(timer); }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  private async json(path: string, signal?: AbortSignal): Promise<unknown> {
+    try { return JSON.parse(await this.text(path, 'application/vnd.github+json', MAX_RESPONSE_BYTES, signal)); }
+    catch { throw new Error('Review reader request unavailable'); }
   }
 
   private route(input: ReviewRepositoryIdentity): { target: ReviewRepositoryIdentity; path: string } {
@@ -118,19 +138,44 @@ export class AuthoritativeReviewReader {
     }
   }
 
-  async currentCandidate(input: ReviewRepositoryIdentity & { prNumber: number }): Promise<CurrentReviewCandidate> {
+  private async pullCandidate(input: ReviewRepositoryIdentity & { prNumber: number }, signal?: AbortSignal):
+    Promise<{ current: CurrentReviewCandidate; expectedFileCount?: number }> {
     const { prNumber, ...identity } = input;
     parse(positive, prNumber);
     const { target, path } = this.route(identity);
-    const current = parse(pullResponse, await this.json(`${path}/pulls/${prNumber}`));
+    const current = parse(pullResponse, await this.json(`${path}/pulls/${prNumber}`, signal));
     this.assertRepository(current.base.repo, target);
     if (current.number !== prNumber || (current.merged && current.state !== 'closed')) {
       throw new Error('Review reader pull request identity/state mismatch');
     }
-    return {
+    return { current: {
       ...target, prNumber, headSha: current.head.sha, baseSha: current.base.sha,
       open: current.state === 'open' && !current.merged, draft: current.draft,
-    };
+    }, ...(current.changed_files === undefined ? {} : { expectedFileCount: current.changed_files }) };
+  }
+
+  async currentCandidate(input: ReviewRepositoryIdentity & { prNumber: number }, signal?: AbortSignal): Promise<CurrentReviewCandidate> {
+    return (await this.pullCandidate(input, signal)).current;
+  }
+
+  /** Fetch the PR diff, not a two-dot commit comparison: it must match the
+   * worker's PR diff semantics. Both metadata reads bind numeric repository,
+   * PR, head and base; a raced/closed candidate carries no review evidence. */
+  async exactCurrentDiff(input: ReviewRepositoryIdentity & { prNumber: number; headSha: string; baseSha: string },
+    signal?: AbortSignal): Promise<ExactCurrentReviewDiff> {
+    const { headSha, baseSha, ...target } = input;
+    parse(sha, headSha); parse(sha, baseSha);
+    const matches = (current: CurrentReviewCandidate) => current.open && current.headSha === headSha && current.baseSha === baseSha;
+    const before = await this.pullCandidate(target, signal);
+    if (!matches(before.current)) return { current: before.current, diff: '' };
+    const { prNumber, ...identity } = target;
+    const { path } = this.route(identity);
+    const diff = await this.text(`${path}/pulls/${prNumber}`, 'application/vnd.github.v3.diff', MAX_AUTHORITATIVE_DIFF_BYTES, signal);
+    const after = await this.pullCandidate(target, signal);
+    if (!matches(after.current)) return { current: after.current, diff: '' };
+    return { current: after.current, diff,
+      ...(before.expectedFileCount !== undefined && before.expectedFileCount === after.expectedFileCount
+        ? { expectedFileCount: after.expectedFileCount } : {}) };
   }
 
   /** Resolve only a service-configured policy reference, then retain the exact

@@ -4,15 +4,20 @@ import { Pool, type PoolClient } from 'pg';
 import {
   deriveReviewGateExternalId,
   REVIEW_GATE_CHECK_NAME,
+  type ReviewGateCheck,
   type ReviewGateCoordinates,
+  type ReviewGateCreateRequest,
+  type ReviewGateUpdateRequest,
 } from '../../src/github/reviewGateClient';
 import {
   gateAttemptId,
   PostgresReviewGateRepository,
+  type GatePublicationClaim,
   type StoredReviewGate,
   type TrustedGateCompletionContext,
 } from '../../src/persistence/reviewGateRepository';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { ReviewGatePublisher, type ReviewGatePublisherOptions } from '../../src/review/reviewGatePublisher';
 import {
   workerReviewCompletionDigest,
   type WorkerReviewCompletion,
@@ -65,10 +70,10 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       INSERT INTO review_runs (
         run_id, owner, repo, pr_number, head_sha, base_sha,
         effective_policy_digest, publication_mode, status, attempt, repository_id,
-        effective_config_digest, received_at
+        effective_config_digest, received_at, terminal_deadline, authoritative_gate_app_id
       ) VALUES ($1, 'calltelemetry', 'ct-review-actions', $2, $3, $4,
-        $5, 'app-gate', 'queued', $6, $7, $8, to_timestamp($9/1000.0))
-    `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId, CONFIG_DIGEST, RECEIVED_AT]);
+        $5, 'app-gate', 'queued', $6, $7, $8, to_timestamp($9/1000.0), to_timestamp(($9+900000)/1000.0), $10)
+    `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId, CONFIG_DIGEST, RECEIVED_AT, APP_ID]);
     await pool!.query(`
       INSERT INTO review_dispatch_outbox (run_id, status, execution_attempt)
       VALUES ($1, 'pending', $2)
@@ -107,7 +112,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     pool = new Pool({
       connectionString: databaseUrl,
       max: 4,
-      options: `-c search_path=${schemaName},public`,
+      options: `-c search_path=${schemaName}`,
     });
     const client = await pool.connect();
     try {
@@ -127,6 +132,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           repository_id BIGINT NOT NULL,
           effective_config_digest VARCHAR(64) NOT NULL,
           received_at TIMESTAMPTZ NOT NULL,
+          terminal_deadline TIMESTAMPTZ,
           stage TEXT NOT NULL DEFAULT 'admission',
           result_digest VARCHAR(64),
           error_text TEXT,
@@ -512,6 +518,284 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     });
   });
 
+  describe('known-not-started publication recovery', () => {
+    async function publishingFixture() {
+      const id = runId(200);
+      let now = RECEIVED_AT + 1_000;
+      await insertRun(id);
+      const repository = new PostgresReviewGateRepository(pool!);
+      const gate = (await repository.reserve(id, APP_ID, now))!;
+      const external = new Map<string, ReviewGateCheck>();
+      const client = {
+        createPending: vi.fn(async (request: ReviewGateCoordinates | ReviewGateCreateRequest): Promise<ReviewGateCheck> => {
+          const coordinates = 'coordinates' in request ? request.coordinates : request;
+          const check: ReviewGateCheck = { id: 20_001, name: REVIEW_GATE_CHECK_NAME, appId: APP_ID,
+            headSha: coordinates.headSha, externalId: deriveReviewGateExternalId(coordinates), status: 'queued', conclusion: null };
+          external.set(check.externalId, check);
+          return check;
+        }),
+        reconcile: vi.fn(async (coordinates: ReviewGateCoordinates) => external.get(deriveReviewGateExternalId(coordinates)) ?? null),
+        updateExisting: vi.fn(async (request: ReviewGateUpdateRequest | ReviewGateCoordinates): Promise<ReviewGateCheck> => {
+          if (!('coordinates' in request)) throw new Error('Expected publisher request form');
+          const { coordinates, checkId, update } = request;
+          return {
+            id: checkId, name: REVIEW_GATE_CHECK_NAME, appId: APP_ID,
+            headSha: coordinates.headSha, externalId: deriveReviewGateExternalId(coordinates),
+            status: 'status' in update && update.status ? update.status : 'completed',
+            conclusion: 'conclusion' in update && update.conclusion ? update.conclusion : null,
+          };
+        }),
+      };
+      const clientFor = vi.fn<ReviewGatePublisherOptions['clientFor']>().mockResolvedValue(client);
+      const publisher = new ReviewGatePublisher({ repository, clientFor, workerId: 'preparation-worker',
+        retryDelayMs: 1_000, clientFactoryTimeoutMs: 250, now: () => now });
+      const state = async () => (await pool!.query(`SELECT to_jsonb(gate) AS gate FROM review_gate_attempts gate
+        WHERE attempt_id = $1`, [gate.coordinates.attemptId])).rows[0].gate;
+      return { id, repository, gate, client, clientFor, publisher, external, state,
+        clock: () => now, advance: (milliseconds: number) => { now += milliseconds; } };
+    }
+
+    it('commits factory-failure recovery and eventually creates exactly once under concurrent retry', async () => {
+      const f = await publishingFixture();
+      const claims = vi.spyOn(f.repository, 'claimPublication');
+      f.clientFor.mockRejectedValueOnce(new Error('ghs_private_preparation_detail'));
+      expect(await f.publisher.runOnce()).toMatchObject({ status: 'retry' });
+      const firstClaim = (await claims.mock.results[0].value)!;
+      expect(firstClaim.mayCreate).toBe(true);
+      const recovered = await f.state();
+      expect(recovered).toMatchObject({ creation_state: 'reserved', check_id: null,
+        desired_version: 0, published_version: -1, lease_owner: null, lease_token: null, lease_expires_at: null,
+        last_error_class: 'client-preparation' });
+      expect(Date.parse(recovered.available_at)).toBe(f.clock() + 1_000);
+      expect(f.client.createPending).not.toHaveBeenCalled();
+      f.advance(999);
+      expect(await f.publisher.runOnce()).toEqual({ status: 'idle' });
+      f.advance(1);
+      const retries = await Promise.all([f.publisher.runOnce(), f.publisher.runOnce()]);
+      expect(retries.map((result) => result.status).sort()).toEqual(['idle', 'published']);
+      const newClaim = (await Promise.all(claims.mock.results.map((result) => result.value)))
+        .find((claim) => claim && claim.leaseToken !== firstClaim.leaseToken)!;
+      expect(newClaim).toMatchObject({ mayCreate: true, coordinates: firstClaim.coordinates });
+      expect(f.client.createPending).toHaveBeenCalledExactlyOnceWith(firstClaim.coordinates);
+      expect(f.client.updateExisting).toHaveBeenCalledTimes(1);
+      expect(await f.state()).toMatchObject({ creation_state: 'bound', check_id: 20_001,
+        desired_version: 0, published_version: 0, lease_owner: null, lease_token: null, last_error_class: null });
+      expect(await f.publisher.runOnce()).toEqual({ status: 'idle' });
+    });
+
+    it('recovers a factory timeout but a late factory resolution cannot create after the recovered retry', async () => {
+      const f = await publishingFixture();
+      const late = Promise.withResolvers<typeof f.client>();
+      f.clientFor.mockReturnValueOnce(late.promise);
+      expect(await f.publisher.runOnce()).toMatchObject({ status: 'retry' });
+      expect(await f.state()).toMatchObject({ creation_state: 'reserved', last_error_class: 'client-preparation' });
+      f.advance(1_000);
+      expect(await f.publisher.runOnce()).toMatchObject({ status: 'published' });
+      late.resolve(f.client);
+      await pool!.query('SELECT 1'); // Let the original factory continuation drain.
+      expect(f.client.createPending).toHaveBeenCalledTimes(1);
+      expect(f.client.updateExisting).toHaveBeenCalledTimes(1);
+      expect(await f.state()).toMatchObject({ creation_state: 'bound', check_id: 20_001 });
+    });
+
+    it.each(['create lost ACK', 'update timeout'] as const)('never rearms after %s, even through empty reconciliation and later factory failure', async (failure) => {
+      const f = await publishingFixture();
+      if (failure === 'create lost ACK') {
+        const accept = f.client.createPending.getMockImplementation()!;
+        f.client.createPending.mockImplementationOnce(async (coordinates) => {
+          await accept(coordinates);
+          throw new Error('POST accepted but acknowledgement lost');
+        });
+      } else f.client.updateExisting.mockRejectedValueOnce(new Error('PATCH timed out after accepted POST'));
+      expect(await f.publisher.runOnce()).toMatchObject({ status: 'retry' });
+      expect(f.external.size).toBe(1);
+      expect(await f.state()).toMatchObject({ creation_state: 'creating', check_id: null, last_error_class: 'unknown-create' });
+      f.advance(1_000);
+      f.client.reconcile.mockResolvedValueOnce(null);
+      expect(await f.publisher.runOnce()).toMatchObject({ status: 'retry' });
+      f.advance(1_000);
+      f.clientFor.mockRejectedValueOnce(new Error('transient factory outage on an uncertain intent'));
+      expect(await f.publisher.runOnce()).toMatchObject({ status: 'retry' });
+      expect(await f.state()).toMatchObject({ creation_state: 'creating', check_id: null });
+      f.advance(1_000);
+      expect(await f.publisher.runOnce()).toMatchObject({ status: 'published' });
+      expect(f.client.reconcile).toHaveBeenCalledTimes(2);
+      expect(f.client.createPending).toHaveBeenCalledTimes(1);
+      expect(await f.state()).toMatchObject({ creation_state: 'bound', check_id: 20_001, published_version: 0 });
+    });
+
+    it('does not reset an expired original lease or let its same-worker ABA claim release the new lease', async () => {
+      const f = await publishingFixture();
+      const original = (await f.repository.claimPublication('same-worker', f.clock(), 1_000))!;
+      expect(await f.repository.publishLocked(original, async () => {
+        f.advance(1_000);
+        return { kind: 'not-started', retryDelayMs: 1_000 };
+      }, f.clock)).toBe('stale-claim');
+      expect(await f.state()).toMatchObject({ creation_state: 'creating', lease_token: original.leaseToken });
+      const current = (await f.repository.claimPublication('same-worker', f.clock(), 5_000))!;
+      expect(current).toMatchObject({ mayCreate: false, creationState: 'creating' });
+      expect(current.leaseToken).not.toBe(original.leaseToken);
+      const staleCallback = vi.fn(async () => ({ kind: 'not-started' as const, retryDelayMs: 1_000 }));
+      expect(await f.repository.publishLocked(original, staleCallback, f.clock)).toBe('stale-claim');
+      expect(staleCallback).not.toHaveBeenCalled();
+      expect(await f.repository.retryPublication(original, f.clock(), 1_000, 'transport')).toBe(false);
+      // Even the now-valid lease cannot manufacture known-not-started evidence.
+      await expect(f.repository.publishLocked(current, staleCallback, f.clock)).rejects.toThrow('Invalid gate preparation recovery');
+      expect(await f.state()).toMatchObject({ creation_state: 'creating', lease_token: current.leaseToken });
+    });
+
+    it.each(['attempt', 'owner', 'token', 'version', 'App', 'external ID'] as const)('fences a mismatched %s before accepting not-started recovery', async (mismatch) => {
+      const f = await publishingFixture();
+      const original = (await f.repository.claimPublication('same-worker', f.clock(), 5_000))!;
+      const invalid: GatePublicationClaim = { ...original, coordinates: { ...original.coordinates } };
+      switch (mismatch) {
+        case 'attempt': invalid.coordinates.attemptId += '-wrong'; break;
+        case 'owner': invalid.leaseOwner += '-wrong'; break;
+        case 'token': invalid.leaseToken = '00000000-0000-4000-8000-000000000001'; break;
+        case 'version': invalid.desiredVersion += 1; break;
+        case 'App': invalid.expectedAppId += 1; break;
+        case 'external ID': invalid.externalId += '-wrong'; break;
+      }
+      const before = await f.state();
+      const callback = vi.fn(async () => ({ kind: 'not-started' as const, retryDelayMs: 1_000 }));
+      expect(await f.repository.publishLocked(invalid, callback, f.clock)).toBe('stale-claim');
+      expect(callback).not.toHaveBeenCalled();
+      expect(await f.state()).toEqual(before);
+    });
+
+    it('cannot reset a bound check even if a caller supplies mayCreate true', async () => {
+      const f = await publishingFixture();
+      await f.publisher.runOnce();
+      await pool!.query(`UPDATE review_gate_attempts SET desired_state = 'failure', desired_version = desired_version + 1
+        WHERE attempt_id = $1`, [f.gate.coordinates.attemptId]);
+      const bound = (await f.repository.claimPublication('same-worker', f.clock(), 5_000))!;
+      const before = await f.state();
+      await expect(f.repository.publishLocked({ ...bound, mayCreate: true }, async () => ({
+        kind: 'not-started', retryDelayMs: 1_000,
+      }), f.clock)).rejects.toThrow('Invalid gate preparation recovery');
+      expect(await f.state()).toEqual(before);
+    });
+
+    it.each([999, 300_001, 1_000.5, Infinity, NaN])('rejects unbounded preparation backoff %s without resetting the intent', async (retryDelayMs) => {
+      const f = await publishingFixture();
+      const claim = (await f.repository.claimPublication('same-worker', f.clock(), 5_000))!;
+      const before = await f.state();
+      await expect(f.repository.publishLocked(claim, async () => ({ kind: 'not-started', retryDelayMs }), f.clock))
+        .rejects.toThrow('Invalid gate preparation recovery');
+      expect(await f.state()).toEqual(before);
+    });
+
+    it('rolls back every reset field together when the recovery UPDATE fails', async () => {
+      const f = await publishingFixture();
+      const claim = (await f.repository.claimPublication('same-worker', f.clock(), 5_000))!;
+      const before = await f.state();
+      await pool!.query(`ALTER TABLE review_gate_attempts ADD CONSTRAINT test_reject_preparation_reset
+        CHECK (NOT (creation_state = 'reserved' AND last_error_class = 'client-preparation'))`);
+      try {
+        await expect(f.repository.publishLocked(claim, async () => ({ kind: 'not-started', retryDelayMs: 1_000 }), f.clock))
+          .rejects.toMatchObject({ code: '23514', constraint: 'test_reject_preparation_reset' });
+        expect(await f.state()).toEqual(before);
+        f.advance(5_000);
+        expect(await f.repository.claimPublication('new-worker', f.clock(), 5_000))
+          .toMatchObject({ mayCreate: false, creationState: 'creating' });
+      } finally {
+        await pool!.query('ALTER TABLE review_gate_attempts DROP CONSTRAINT test_reject_preparation_reset');
+      }
+    });
+
+    it('serializes same-head supersession behind preparation recovery and tombstones the old reserved intent', async () => {
+      const f = await publishingFixture();
+      const newerRun = runId(201);
+      await insertRun(newerRun);
+      const entered = Promise.withResolvers<void>();
+      const factory = Promise.withResolvers<typeof f.client>();
+      f.clientFor.mockImplementationOnce(() => { entered.resolve(); return factory.promise; });
+      const publishing = f.publisher.runOnce();
+      await entered.promise;
+      const probe = await pool!.connect();
+      let superseding: Promise<StoredReviewGate | null> | undefined;
+      try {
+        await probe.query('BEGIN');
+        const lock = await probe.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired', ['review-dispatch:3210:42']);
+        expect(lock.rows[0].acquired).toBe(false);
+        await probe.query('COMMIT');
+        superseding = f.repository.reserve(newerRun, APP_ID, f.clock());
+        factory.reject(new Error('factory unavailable before POST'));
+        expect(await publishing).toMatchObject({ status: 'retry' });
+        expect(await superseding).toMatchObject({ current: true, coordinates: { runId: newerRun } });
+      } finally {
+        factory.reject(new Error('test cleanup'));
+        await publishing;
+        await superseding;
+        await probe.query('ROLLBACK');
+        probe.release();
+      }
+      expect(await f.state()).toMatchObject({ creation_state: 'reserved', current_attempt: false,
+        desired_state: 'cancelled', desired_version: 1, published_version: 1 });
+      f.advance(1_000);
+      expect(await f.publisher.runOnce()).toMatchObject({ status: 'published' });
+      expect(f.client.createPending).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runId: newerRun }));
+      expect(await f.publisher.runOnce()).toEqual({ status: 'idle' });
+    });
+
+    it.each(['failure', 'timeout', 'cancellation'] as const)('retains reaper %s semantics after recovering a never-started intent', async (terminal) => {
+      const f = await publishingFixture();
+      f.clientFor.mockRejectedValueOnce(new Error('preparation unavailable'));
+      await f.publisher.runOnce();
+      if (terminal === 'timeout') f.advance(900_000);
+      else await pool!.query('UPDATE review_runs SET status = $2 WHERE run_id = $1',
+        [f.id, terminal === 'cancellation' ? 'superseded' : 'failed']);
+      expect(await f.repository.reapTerminalAttempts(f.clock())).toBe(1);
+      const desired = terminal === 'timeout' ? 'timed_out' : terminal === 'cancellation' ? 'cancelled' : 'failure';
+      expect(await f.state()).toMatchObject({ creation_state: 'reserved', desired_state: desired,
+        desired_version: 1, published_version: terminal === 'cancellation' ? 1 : -1 });
+      expect(await f.publisher.runOnce()).toMatchObject({ status: terminal === 'cancellation' ? 'idle' : 'published' });
+      expect(f.client.createPending).toHaveBeenCalledTimes(terminal === 'cancellation' ? 0 : 1);
+      if (terminal !== 'cancellation') {
+        expect(f.client.updateExisting).toHaveBeenCalledWith({ coordinates: f.gate.coordinates,
+          checkId: 20_001, update: { conclusion: desired } });
+      }
+      expect(await f.repository.reapTerminalAttempts(f.clock())).toBe(0);
+    });
+
+    it.each(['failed', 'superseded'] as const)('a reaper transition to %s before publication invalidates the original creation claim', async (status) => {
+      const f = await publishingFixture();
+      const original = (await f.repository.claimPublication('same-worker', f.clock(), 5_000))!;
+      await pool!.query('UPDATE review_runs SET status = $2 WHERE run_id = $1', [f.id, status]);
+      expect(await f.repository.reapTerminalAttempts(f.clock())).toBe(1);
+      const before = await f.state();
+      const callback = vi.fn(async () => ({ kind: 'not-started' as const, retryDelayMs: 1_000 }));
+      expect(await f.repository.publishLocked(original, callback, f.clock)).toBe('stale-claim');
+      expect(callback).not.toHaveBeenCalled();
+      expect(await f.state()).toEqual(before);
+      const next = (await f.repository.claimPublication('same-worker', f.clock(), 5_000))!;
+      expect(next).toMatchObject({ mayCreate: false, creationState: 'creating',
+        desiredState: status === 'superseded' ? 'cancelled' : 'failure' });
+    });
+
+    it('lets the reaper skip an in-flight factory and cancel the recovered intent once its PR lock is released', async () => {
+      const f = await publishingFixture();
+      const entered = Promise.withResolvers<void>();
+      const factory = Promise.withResolvers<typeof f.client>();
+      f.clientFor.mockImplementationOnce(() => { entered.resolve(); return factory.promise; });
+      const publishing = f.publisher.runOnce();
+      await entered.promise;
+      try {
+        await pool!.query("UPDATE review_runs SET status = 'superseded' WHERE run_id = $1", [f.id]);
+        expect(await f.repository.reapTerminalAttempts(f.clock())).toBe(0);
+      } finally {
+        factory.reject(new Error('factory unavailable before POST'));
+        await publishing;
+      }
+      expect(await f.repository.reapTerminalAttempts(f.clock())).toBe(1);
+      expect(await f.state()).toMatchObject({ creation_state: 'reserved', current_attempt: false,
+        desired_state: 'cancelled', published_version: 1, lease_owner: null });
+      f.advance(1_000);
+      expect(await f.publisher.runOnce()).toEqual({ status: 'idle' });
+      expect(f.client.createPending).not.toHaveBeenCalled();
+    });
+  });
+
   describe('authenticated worker result transaction', () => {
     async function snapshot(id: string, database: Pick<PoolClient, 'query'> = pool!) {
       const result = await database.query(`
@@ -578,7 +862,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     function expectTerminalState(
       state: Awaited<ReturnType<typeof snapshot>>,
       event: WorkerReviewCompletion,
-      status: 'success' | 'failure' | 'cancelled',
+      status: 'success' | 'failure' | 'cancelled' | 'timed_out',
       reason: string,
     ): void {
       const digest = workerReviewCompletionDigest(event);
@@ -600,6 +884,103 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         lease_owner: null, lease_token: null, lease_expires_at: null,
       });
     }
+
+    it.each([null, APP_ID + 1])('rejects completion without the exact enrolled App marker (%s)', async (appId) => {
+      const { id, repository, event, resolve } = await completionFixture();
+      await pool!.query('UPDATE review_runs SET authoritative_gate_app_id = $2 WHERE run_id = $1', [id, appId]);
+      const before = await snapshot(id);
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('unauthorized');
+      expect(resolve).not.toHaveBeenCalled();
+      expect(await snapshot(id)).toEqual(before);
+    });
+
+    it.each(['pending', 'claimed', 'projected'] as const)('reaps expired %s work without losing the possible worker execution', async (outboxStatus) => {
+      const { id, repository, gate, event, resolve } = await completionFixture(outboxStatus);
+      const deadline = RECEIVED_AT + 900_000;
+      expect(await repository.reapTerminalAttempts(deadline - 1)).toBe(0);
+      expect(await repository.reapTerminalAttempts(deadline)).toBe(1);
+      const state = await snapshot(id);
+      expect(state.run).toMatchObject({ status: 'failed', stage: 'publish', error_text: 'review gate: review-deadline-exceeded' });
+      expect(state.outbox).toMatchObject({ status: 'projected', execution_attempt: 4,
+        worker_token_digest: WORKER_PROOF.workerTokenDigest, lease_owner: null, lease_expires_at: null });
+      expect(state.gates[0]).toMatchObject({ attempt_id: gate.coordinates.attemptId, check_id: 8080,
+        desired_state: 'timed_out', desired_version: 1, published_version: 0, current_attempt: true,
+        decision: { status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' } });
+      expect(await repository.reapTerminalAttempts(deadline + 1)).toBe(0);
+      expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, deadline + 1)).toBe('ignored');
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('reaps a pre-worker dispatch failure into the same gate without a fabricated worker result', async () => {
+      const { id, repository } = await completionFixture('claimed');
+      await pool!.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [id]);
+      await pool!.query("UPDATE review_dispatch_outbox SET status = 'terminal', worker_token_digest = NULL WHERE run_id = $1", [id]);
+      expect(await repository.reapTerminalAttempts(COMPLETED_AT)).toBe(1);
+      const state = await snapshot(id);
+      expect(state.gates[0]).toMatchObject({ check_id: 8080, desired_state: 'failure', worker_result_digest: null,
+        decision: { status: 'failure', eligible: false, reason: 'infrastructure-failure' } });
+      expect(state.outbox).toMatchObject({ status: 'terminal', worker_token_digest: null, execution_attempt: 4 });
+    });
+
+    it('never reaps a completed result, a foreign App marker or a new generation', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT);
+      const terminal = await snapshot(id);
+      expect(await repository.reapTerminalAttempts(RECEIVED_AT + 900_000)).toBe(0);
+      expect(await snapshot(id)).toEqual(terminal);
+      await pool!.query("UPDATE review_gate_attempts SET desired_state = 'queued' WHERE run_id = $1", [id]);
+      await pool!.query("UPDATE review_runs SET status = 'queued', authoritative_gate_app_id = $2 WHERE run_id = $1", [id, APP_ID + 1]);
+      expect(await repository.reapTerminalAttempts(RECEIVED_AT + 900_000)).toBe(0);
+      await pool!.query('UPDATE review_runs SET authoritative_gate_app_id = $2, attempt = attempt + 1 WHERE run_id = $1', [id, APP_ID]);
+      expect(await repository.reapTerminalAttempts(RECEIVED_AT + 900_000)).toBe(0);
+    });
+
+    it('skips a PR locked by admission rather than waiting or racing it', async () => {
+      const { repository } = await completionFixture();
+      const client = await pool!.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['review-dispatch:3210:42']);
+        expect(await repository.reapTerminalAttempts(RECEIVED_AT + 900_000)).toBe(0);
+      } finally { await client.query('ROLLBACK'); client.release(); }
+      expect(await repository.reapTerminalAttempts(RECEIVED_AT + 900_000)).toBe(1);
+    });
+
+    it.each([0, 101, 1.5, Infinity])('rejects unbounded reaper limit %s', async (limit) => {
+      await expect(new PostgresReviewGateRepository(pool!).reapTerminalAttempts(COMPLETED_AT, limit)).rejects.toThrow('bounds');
+    });
+
+    it('advances the same bound gate on projection exactly once and never over a terminal result', async () => {
+      const { id, repository, event, resolve } = await completionFixture('projected');
+      expect(await repository.advanceProjectedAttempts(COMPLETED_AT - 1)).toBe(1);
+      expect((await snapshot(id)).gates[0]).toMatchObject({ check_id: 8080, desired_state: 'in_progress', desired_version: 1 });
+      expect(await repository.advanceProjectedAttempts(COMPLETED_AT)).toBe(0);
+      await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT);
+      const terminal = await snapshot(id);
+      expect(await repository.advanceProjectedAttempts(COMPLETED_AT + 1)).toBe(0);
+      expect(await snapshot(id)).toEqual(terminal);
+    });
+
+    it.each(['pending', 'claimed'] as const)('does not treat %s dispatch as started work', async (status) => {
+      const { repository } = await completionFixture(status);
+      expect(await repository.advanceProjectedAttempts(COMPLETED_AT)).toBe(0);
+    });
+
+    it('does not advance expired or mismatched execution progress', async () => {
+      const { id, repository } = await completionFixture('projected');
+      expect(await repository.advanceProjectedAttempts(RECEIVED_AT + 900_000)).toBe(0);
+      await pool!.query('UPDATE review_dispatch_outbox SET execution_attempt = execution_attempt + 1 WHERE run_id = $1', [id]);
+      expect(await repository.advanceProjectedAttempts(COMPLETED_AT)).toBe(0);
+    });
+
+    it('cancels a closed candidate without requiring unavailable diff coverage', async () => {
+      const { id, repository, event, resolve, trusted } = await completionFixture();
+      trusted.current.open = false;
+      trusted.coverage.changedFiles = [];
+      trusted.coverage.coverageComplete = false;
+      expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
+      expectTerminalState(await snapshot(id), event, 'cancelled', 'pull-request-closed');
+    });
 
     it('atomically commits authenticated success, run completion, dispatch retirement and unpublished gate intent', async () => {
       const { id, event, resolve } = await completionFixture('claimed');
@@ -799,6 +1180,24 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         .resolves.toBe('unauthorized');
       expect(resolve).toHaveBeenCalledTimes(1);
       expect(await snapshot(id)).toEqual(recorded);
+    });
+
+    it('bounds an unresponsive completion resolver and leaves no terminal mutation behind', async () => {
+      const { id, event } = await completionFixture('claimed');
+      const repository = new PostgresReviewGateRepository(pool!, { completionResolutionTimeoutMs: 250 });
+      const before = await snapshot(id);
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF,
+        () => new Promise(() => undefined), COMPLETED_AT)).rejects.toThrow('resolution deadline exceeded');
+      expect(await snapshot(id)).toEqual(before);
+      // The transaction released its per-PR lock despite the unresolved reader.
+      expect(await repository.reserve(id, APP_ID, COMPLETED_AT + 1)).not.toBeNull();
+    });
+
+    it.each([RECEIVED_AT + 900_000, RECEIVED_AT + 900_001])('never accepts late worker success at %s', async (now) => {
+      const { id, repository, event, resolve } = await completionFixture();
+      expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, now)).toBe('recorded');
+      expect(resolve).not.toHaveBeenCalled();
+      expectTerminalState(await snapshot(id), event, 'timed_out', 'review-deadline-exceeded');
     });
 
     it('rolls back a resolver failure and permits retry against unchanged state', async () => {

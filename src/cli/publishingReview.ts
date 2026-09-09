@@ -36,7 +36,12 @@ import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { validateWorkerCompletionEndpoint, type WorkerCompletionAdapter, type WorkerTerminalFailure } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
+import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
+import { parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
+import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
 
+import { parseChangedFiles } from '../review/changedFiles';
+export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig };
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
@@ -239,102 +244,6 @@ export function createBifrostPublishingConfig(model: string): ReturnType<typeof 
   };
 }
 
-/**
- * Git writes a diff header as `diff --git a/<src> b/<dst>`. With no quoting and
- * a path containing a space that line is genuinely ambiguous -- `a/x y b/z` can
- * be split more than one way -- so the header is the LAST source consulted, not
- * the first. `+++`/`---`/`rename to` each carry exactly one path on their own
- * line and are unambiguous.
- *
- * The previous `(\S+)` header match stopped at the first space, so
- * `a/sip message.txt` yielded no usable path at all. That failed OPEN and
- * silently: the file dropped out of `changedFiles`, was never sent to the panel,
- * and any finding on it was discarded during arbitration. cisco-cdr has eight
- * such paths today.
- */
-function unquoteGitPath(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith('"') || !trimmed.endsWith('"') || trimmed.length < 2) return trimmed;
-  const inner = trimmed.slice(1, -1);
-  const simple: Record<string, number> = { n: 10, t: 9, r: 13, '"': 34, '\\': 92 };
-  const bytes: number[] = [];
-  for (let index = 0; index < inner.length; index += 1) {
-    if (inner[index] !== '\\') {
-      // Re-encode so a literal multi-byte character survives the Buffer round trip.
-      bytes.push(...Buffer.from(inner[index], 'utf8'));
-      continue;
-    }
-    const octal = /^[0-7]{3}/u.exec(inner.slice(index + 1, index + 4));
-    if (octal) {
-      bytes.push(parseInt(octal[0], 8));
-      index += 3;
-      continue;
-    }
-    const next = inner[index + 1];
-    if (next && Object.prototype.hasOwnProperty.call(simple, next)) {
-      bytes.push(simple[next]);
-      index += 1;
-      continue;
-    }
-    bytes.push(...Buffer.from(inner[index], 'utf8'));
-  }
-  return Buffer.from(bytes).toString('utf8');
-}
-
-function stripSidePrefix(path: string): string {
-  return /^[ab]\//u.test(path) ? path.slice(2) : path;
-}
-
-/** Reads the one path a finding could be anchored to, or '' if the chunk is unreadable. */
-function pathFromChunk(chunk: string): string {
-  const line = (pattern: RegExp): string => {
-    const match = pattern.exec(chunk);
-    return match ? unquoteGitPath(match[1].replace(/\r$/u, '')) : '';
-  };
-
-  // The post-image first: a finding anchors to an added line, which only the
-  // destination path can carry.
-  const plus = line(/^\+\+\+ (.+)$/mu);
-  if (plus && plus !== '/dev/null') return stripSidePrefix(plus);
-
-  // A pure rename or a binary change has no `+++` line.
-  const renamed = line(/^rename to (.+)$/mu);
-  if (renamed) return stripSidePrefix(renamed);
-
-  const minus = line(/^--- (.+)$/mu);
-  if (minus && minus !== '/dev/null') return stripSidePrefix(minus);
-
-  // Last resort. Only trustworthy when the header is unambiguous: either both
-  // sides are quoted, or neither path contains a space.
-  const quoted = /^diff --git ("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*")/u.exec(chunk);
-  if (quoted) return stripSidePrefix(unquoteGitPath(quoted[2]));
-  const plain = /^diff --git a\/(\S+) b\/(\S+)[ \t]*$/mu.exec(chunk);
-  if (plain) return stripSidePrefix(`b/${plain[2]}`);
-  return '';
-}
-
-export interface ChangedFile {
-  path: string;
-  patch: string;
-}
-
-/**
- * Splits a unified diff into per-file chunks. `unreadable` carries the header of
- * every chunk no path could be read from -- an unreviewable file, which the
- * caller must surface rather than drop.
- */
-export function parseChangedFiles(diff: string): { files: ChangedFile[]; unreadable: string[] } {
-  const files: ChangedFile[] = [];
-  const unreadable: string[] = [];
-  for (const chunk of String(diff).split(/^(?=diff --git )/mu)) {
-    if (!chunk.startsWith('diff --git ')) continue;
-    const path = pathFromChunk(chunk);
-    if (path && path !== '/dev/null') files.push({ path, patch: chunk });
-    else unreadable.push((chunk.split('\n', 1)[0] || '').slice(0, 200));
-  }
-  return { files, unreadable };
-}
-
 const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
@@ -362,6 +271,7 @@ export interface PublishingReviewDeps {
   checkClient: PublishingCheckClient;
   /** Reports a terminal worker failure without carrying provider error text. */
   completion?: WorkerCompletionAdapter;
+  reviewCompletion?: WorkerReviewCompletionAdapter;
   sourceLoader?: typeof loadSameHeadReviewSource;
   /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
   visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
@@ -426,19 +336,50 @@ export async function runPublishingReviewWorker(
   deps: PublishingReviewDeps,
 ): Promise<PublishingReviewReceipt> {
   if (!isPublishingReviewWorker(env)) throw invalidPublishingReviewContract();
+  const authoritative = value(env, 'REVIEW_AUTHORITATIVE_GATE') === 'true';
+  if ((value(env, 'REVIEW_AUTHORITATIVE_GATE') && !authoritative)
+    || (value(env, 'REVIEW_PREPARED_CONFIG_JSON') && !authoritative)
+    || (deps.reviewCompletion && !authoritative)) throw invalidPublishingReviewContract();
   const completionEndpoint = value(env, 'REVIEW_COMPLETION_URL');
   if (completionEndpoint) validateConfiguredCompletionEndpoint(completionEndpoint);
-  if (completionEndpoint && !deps.completion) throw invalidPublishingReviewContract();
+  if (authoritative && (!completionEndpoint || !deps.reviewCompletion || deps.completion
+    || value(env, 'REVIEW_CHECK_ID'))) throw invalidPublishingReviewContract();
+  if (completionEndpoint && !deps.completion && !deps.reviewCompletion) throw invalidPublishingReviewContract();
   const identity = publishingReviewIdentity(env, {
-    callbackEnabled: Boolean(completionEndpoint) || Boolean(deps.completion),
+    callbackEnabled: Boolean(completionEndpoint) || Boolean(deps.completion) || Boolean(deps.reviewCompletion),
   });
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
   const panelRunner = deps.panelRunner || executePersonaPanel;
+  let preparedPersonaIds: string[] = [];
+  let authoritativeCompletionAttempted = false;
+  const reportReviewResult = async (result: WorkerReviewResult): Promise<void> => {
+    if (!authoritative || !deps.reviewCompletion) return;
+    const event = parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
+      runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+      prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
+      policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+      executionAttempt: identity.executionAttempt, result });
+    // Once a terminal body may have reached the service, never replace it with
+    // a different failure body merely because its acknowledgement was lost.
+    authoritativeCompletionAttempted = true;
+    await deps.reviewCompletion.reportReviewResult(event);
+  };
 
   const reportTerminalFailure = async (error: unknown, failedCheckId?: number): Promise<void> => {
     const failureClass = classifyFailure(error);
+    if (authoritative && !authoritativeCompletionAttempted) {
+      try {
+        await reportReviewResult({ version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
+          personas: preparedPersonaIds.map((id) => ({ id, decision: 'ERROR', status: 'ERROR', errorClass: failureClass, findings: [] })),
+          coverageComplete: false, quorumSatisfied: false });
+      } catch {
+        logger.error('Authoritative worker failure could not be acknowledged', {
+          runId: identity.runId, reason: 'completion_callback_failed', failureClass,
+        });
+      }
+    }
     if (failedCheckId !== undefined) {
       try {
         await deps.checkClient.completeCheck({
@@ -510,6 +451,11 @@ export async function runPublishingReviewWorker(
     // worker can still persist a durable terminal failure for a configuration
     // error. The check id remains optional only for createCheck failures.
     const transport = bifrostTransport(env);
+    const workerConfig = authoritative
+      ? parsePreparedReviewExecution(value(env, 'REVIEW_PREPARED_CONFIG_JSON'), value(env, 'REVIEW_CONFIG_DIGEST'),
+        { baseUrl: transport.baseUrl, model: transport.model }).config
+      : resolveWorkerConfig(env, transport);
+    if (authoritative) preparedPersonaIds = workerConfig.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
     const repositoryVisibility = await resolveRepositoryVisibility(
       normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY')),
       {
@@ -539,7 +485,6 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
-    const workerConfig = resolveWorkerConfig(env, transport);
     const panelResult = await panelRunner({
       config: workerConfig,
       changedFiles,
@@ -682,6 +627,26 @@ export async function runPublishingReviewWorker(
     });
 
     const completedAt = new Date(now()).toISOString();
+    if (authoritative) {
+      const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
+        'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
+      const personas = panelResult.personas.map((persona) => ({ id: persona.id, decision: persona.decision,
+        status: 'COMPLETE' as const,
+        findings: persona.findings.map((finding) => Object.fromEntries(
+          Object.entries(finding).filter(([key, value]) => findingKeys.has(key) && value !== undefined))),
+      }));
+      const errors = (panelResult.optionalFailures || []).map((failure) => ({ id: failure.id,
+        decision: 'ERROR' as const, status: 'ERROR' as const, findings: [], errorClass: classifyFailure(failure.error) }));
+      const result = parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
+        runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+        prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+        executionAttempt: identity.executionAttempt,
+        result: { version: 'WorkerReviewResult.v1', completedAt, personas: [...personas, ...errors],
+          coverageComplete: unreadable.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true },
+      }).result;
+      await reportReviewResult(result);
+    }
     return {
       version: 'ReviewYetiPublishingReview.v1',
       runId: identity.runId,

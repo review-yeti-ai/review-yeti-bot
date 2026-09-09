@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuthoritativeReviewReader } from '../../src/github/authoritativeReviewReader';
+import { AuthoritativeReviewReader, MAX_AUTHORITATIVE_DIFF_BYTES } from '../../src/github/authoritativeReviewReader';
 
 const TOKEN = 'ghs_authoritative_reader_test';
 const PRIVATE_BODY = 'private-server-response-marker';
@@ -175,6 +175,115 @@ describe('AuthoritativeReviewReader', () => {
       const { reader, fetcher } = fixture(jsonResponse(pullBody(change)));
       await expect(reader.currentCandidate(PR)).rejects.toThrow();
       expect(fetcher).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('bounded exact-current diff evidence', () => {
+    const request = { ...PR, headSha: HEAD, baseSha: BASE };
+    const diff = 'diff --git a/café.ts b/café.ts\n--- a/café.ts\n+++ b/café.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    const before = () => jsonResponse(pullBody({ changed_files: 1 }));
+
+    it('binds both metadata reads and returns the exact UTF-8 PR diff and stable file count', async () => {
+      const wire = streamed(Buffer.from(diff), 1);
+      const { reader, fetcher } = fixture(before(), wire.response, jsonResponse(pullBody({ changed_files: 1, draft: true })));
+      await expect(reader.exactCurrentDiff(request)).resolves.toEqual({
+        current: { ...request, open: true, draft: true }, diff, expectedFileCount: 1,
+      });
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(fetcher.mock.calls.map(([url]) => url)).toEqual(Array(3).fill(`${API}/repos/calltelemetry/central-policy/pulls/42`));
+      expect(fetcher.mock.calls[1][1]).toMatchObject({ method: 'GET', redirect: 'error',
+        headers: { Accept: 'application/vnd.github.v3.diff', Authorization: `Bearer ${TOKEN}` } });
+      expect(wire.body.locked).toBe(false);
+    });
+
+    it.each(['before', 'after'] as const)('discards evidence for a %s-read head/base/closed race', async (stage) => {
+      for (const change of [
+        { head: { sha: 'd'.repeat(40) } }, { base: { sha: 'e'.repeat(40), repo: repositoryBody() } }, { state: 'closed' },
+      ]) {
+        const changed = jsonResponse(pullBody({ changed_files: 1, ...change }));
+        const f = stage === 'before' ? fixture(changed) : fixture(before(), new Response(diff), changed);
+        const source = await f.reader.exactCurrentDiff(request);
+        expect(source.diff).toBe(''); expect(source.expectedFileCount).toBeUndefined();
+        expect(f.fetcher).toHaveBeenCalledTimes(stage === 'before' ? 1 : 3);
+      }
+    });
+
+    it.each(['before', 'after'] as const)('rejects a wrong numeric repository on the %s read', async (stage) => {
+      const wrong = jsonResponse(pullBody({ base: { sha: BASE, repo: repositoryBody({ id: 999 }) } }));
+      const f = stage === 'before' ? fixture(wrong) : fixture(before(), new Response(diff), wrong);
+      await expect(f.reader.exactCurrentDiff(request)).rejects.toThrow(/repository identity mismatch/u);
+    });
+
+    it.each([[undefined, 1], [1, undefined], [1, 2], [undefined, undefined]])(
+      'does not claim a file count for missing/unstable metadata %s/%s', async (first, last) => {
+        const f = fixture(jsonResponse(pullBody({ changed_files: first })), new Response(diff), jsonResponse(pullBody({ changed_files: last })));
+        const source = await f.reader.exactCurrentDiff(request);
+        expect(source.diff).toBe(diff); expect(source).not.toHaveProperty('expectedFileCount');
+      },
+    );
+
+    it.each([-1, 1.5, '1', null])('rejects malformed GitHub changed_files=%s', async (changed_files) => {
+      const f = fixture(jsonResponse(pullBody({ changed_files })));
+      await expect(f.reader.exactCurrentDiff(request)).rejects.toThrow(); expect(f.fetcher).toHaveBeenCalledOnce();
+    });
+
+    it.each([{ headSha: 'main' }, { baseSha: 'B'.repeat(40) }, { prNumber: 0 }, { token: TOKEN }])(
+      'rejects invalid or extra requested diff coordinates before I/O %j', async (change) => {
+        const f = fixture(); await expect(f.reader.exactCurrentDiff({ ...request, ...change })).rejects.toThrow();
+        expect(f.fetcher).not.toHaveBeenCalled();
+      },
+    );
+
+    it('accepts exactly the 2 MB UTF-8 limit without truncating', async () => {
+      const exact = diff + ' '.repeat(MAX_AUTHORITATIVE_DIFF_BYTES - Buffer.byteLength(diff));
+      const f = fixture(before(), streamed(Buffer.from(exact)).response, before());
+      expect((await f.reader.exactCurrentDiff(request)).diff).toBe(exact);
+    });
+
+    it('stops an oversized multibyte stream and never performs the final metadata read', async () => {
+      const wire = streamed(Buffer.from('é'.repeat(MAX_AUTHORITATIVE_DIFF_BYTES)), 50_000);
+      const f = fixture(before(), wire.response, before());
+      expectRedacted(await rejected(f.reader.exactCurrentDiff(request)));
+      expect(wire.bytesRead()).toBe(MAX_AUTHORITATIVE_DIFF_BYTES + 50_000);
+      expect(wire.cancel).toHaveBeenCalledOnce(); expect(wire.body.locked).toBe(false);
+      expect(f.fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([206, 302, 403, 500])('rejects partial/error diff HTTP %i without reading further', async (status) => {
+      const f = fixture(before(), new Response(`${PRIVATE_BODY} ${TOKEN}`, { status }));
+      expectRedacted(await rejected(f.reader.exactCurrentDiff(request))); expect(f.fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects invalid UTF-8 in diff bytes without leaking response data', async () => {
+      const f = fixture(before(), new Response(new Uint8Array([0xff])));
+      expectRedacted(await rejected(f.reader.exactCurrentDiff(request))); expect(f.fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(['fetch', 'body'] as const)('bounds an uncooperative diff %s and prevents later reads', async (stage) => {
+      const f = fixture(before()); let finish: (() => void) | undefined;
+      const cancel = vi.fn();
+      if (stage === 'fetch') f.fetcher.mockImplementationOnce(() =>
+        new Promise<Response>((resolve) => { finish = () => resolve(new Response(diff)); }));
+      else f.fetcher.mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({ cancel })));
+      const pending = rejected(f.reader.exactCurrentDiff(request));
+      await vi.advanceTimersByTimeAsync(250); expectRedacted(await pending);
+      expect(f.fetcher.mock.calls[1][1]?.signal?.aborted).toBe(true);
+      if (stage === 'body') expect(cancel).toHaveBeenCalledOnce();
+      finish?.(); await vi.advanceTimersByTimeAsync(0); expect(f.fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('honors the whole-operation abort while a diff body is stalled', async () => {
+      const abort = new AbortController(); const cancel = vi.fn();
+      const f = fixture(before(), new Response(new ReadableStream<Uint8Array>({ cancel })));
+      const pending = rejected(f.reader.exactCurrentDiff(request, abort.signal));
+      await vi.advanceTimersByTimeAsync(1); abort.abort();
+      expectRedacted(await pending); expect(cancel).toHaveBeenCalledOnce();
+      expect(f.fetcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('does no network I/O with an already-aborted operation signal', async () => {
+      const f = fixture(); const abort = new AbortController(); abort.abort();
+      await expect(f.reader.exactCurrentDiff(request, abort.signal)).rejects.toThrow(); expect(f.fetcher).not.toHaveBeenCalled();
     });
   });
 

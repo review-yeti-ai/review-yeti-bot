@@ -2,9 +2,8 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
 import { ctReviewConfigV3Schema, type CtReviewConfigV3 } from '../config/schema';
-import type { ImmutableReviewPolicyFile } from '../github/authoritativeReviewReader';
 import { fingerprintEffectiveReviewConfig, fingerprintTrustedReviewPolicy, reviewPolicySourceSchema,
-  type TrustedResolvedReviewPolicy } from './authoritativeReviewIdentity';
+  type TrustedResolvedReviewPolicy, type ImmutableReviewPolicyFile } from './authoritativeReviewIdentity';
 
 const transportSchema = z.object({
   baseUrl: z.string().max(2_000).url().refine((value) => {
@@ -27,6 +26,24 @@ export interface PreparedPublishingPolicy {
   config: CtReviewConfigV3;
   expectedPersonaIds: string[];
   transport: z.infer<typeof transportSchema>;
+}
+
+/** The only config envelope permitted across the service/operator/worker seam. */
+export function parsePreparedReviewExecution(json: string, expectedDigest: string,
+  actualTransport?: PreparedPublishingPolicy['transport']): {
+    version: 'PreparedReviewExecution.v1'; config: CtReviewConfigV3;
+    transport: PreparedPublishingPolicy['transport'];
+  } {
+  try {
+    if (typeof json !== 'string' || !json || Buffer.byteLength(json, 'utf8') > 256 * 1024) throw new Error();
+    const parsed = z.object({ version: z.literal('PreparedReviewExecution.v1'),
+      config: z.unknown(), transport: transportSchema }).strict().parse(JSON.parse(json));
+    const config = verifyPreparedPublishingConfig(parsed.config, expectedDigest, actualTransport || parsed.transport);
+    // Verify both stored transport and the actual injected transport. Neither
+    // the operator nor a stale environment may silently select another model/URL.
+    verifyPreparedPublishingConfig(config, expectedDigest, parsed.transport);
+    return { version: parsed.version, config, transport: parsed.transport };
+  } catch { throw new Error('Prepared review execution does not match its admitted identity'); }
 }
 
 /** Input file must be resolved by the service at a trusted immutable revision.

@@ -21,6 +21,7 @@ limitations under the License.
 package job
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -29,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -51,6 +53,9 @@ const (
 	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
 	CompletionURLEnv              = "REVIEW_COMPLETION_URL"
 	ExecutionAttemptEnv           = "REVIEW_EXECUTION_ATTEMPT"
+	AuthoritativeGateEnv          = "REVIEW_AUTHORITATIVE_GATE"
+	PreparedConfigEnv             = "REVIEW_PREPARED_CONFIG_JSON"
+	MaxPreparedReviewBytes        = 256 * 1024
 	ReceiptPathEnv                = "REVIEW_RECEIPT_PATH"
 	ReceiptPath                   = "/workspace/.review-yeti/receipt.json"
 	PublicationModeAppGate        = "app-gate"
@@ -264,6 +269,12 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		if input.Publishing.CompletionURL != "" {
 			env = append(env, corev1.EnvVar{Name: CompletionURLEnv, Value: input.Publishing.CompletionURL})
 		}
+		if spec.PreparedReview != nil {
+			env = append(env,
+				corev1.EnvVar{Name: AuthoritativeGateEnv, Value: "true"},
+				corev1.EnvVar{Name: PreparedConfigEnv, Value: *spec.PreparedReview},
+			)
+		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
 	}
@@ -389,6 +400,14 @@ func validateInput(input Input) error {
 	if _, err := executionAttemptForSpec(spec); err != nil {
 		return err
 	}
+	if spec.PreparedReview != nil {
+		if spec.PublicationMode != PublicationModeAppGate || (spec.RunnerMode != "" && spec.RunnerMode != "prebaked") {
+			return configErr("prepared review requires the prebaked app-gate lane")
+		}
+		if err := validatePreparedReview(*spec.PreparedReview); err != nil {
+			return err
+		}
+	}
 	if err := validateQualification(spec.QualificationProfile, spec.QualificationModel); err != nil {
 		return err
 	}
@@ -410,6 +429,39 @@ func validateInput(input Input) error {
 		return workspace.ErrLeaseHeld
 	}
 	return workspace.ValidateLeaseForUse(lease.Lease, review.Namespace, spec.RepositoryID, spec.PRNumber, spec.RunID, input.Now)
+}
+
+// validatePreparedReview bounds the opaque transport and checks its envelope.
+// Config semantics/digest and agreement with the actual injected provider
+// transport remain with the shared TypeScript verifier, not this Go builder.
+func validatePreparedReview(raw string) error {
+	rejected := configErr("prepared review envelope is invalid")
+	if len(raw) == 0 || len(raw) > MaxPreparedReviewBytes || !utf8.ValidString(raw) {
+		return rejected
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &envelope) != nil || len(envelope) != 3 {
+		return rejected
+	}
+	var version string
+	var config map[string]json.RawMessage
+	var transport map[string]json.RawMessage
+	if json.Unmarshal(envelope["version"], &version) != nil || version != "PreparedReviewExecution.v1" ||
+		json.Unmarshal(envelope["config"], &config) != nil || config == nil ||
+		json.Unmarshal(envelope["transport"], &transport) != nil || len(transport) != 2 {
+		return rejected
+	}
+	var baseURL, model string
+	if json.Unmarshal(transport["baseUrl"], &baseURL) != nil || utf8.RuneCountInString(baseURL) > 2000 ||
+		json.Unmarshal(transport["model"], &model) != nil || len(model) == 0 || utf8.RuneCountInString(model) > 256 ||
+		strings.ContainsFunc(model, func(r rune) bool { return r < 32 || r == 127 }) {
+		return rejected
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return rejected
+	}
+	return nil
 }
 
 // executionAttemptForSpec uses the explicit CRD field whenever present. The

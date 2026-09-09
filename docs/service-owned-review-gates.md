@@ -1,8 +1,11 @@
 # Service-owned review gates
 
-Status: additive implementation in progress for API-3210. These modules do not
-install a schema, start a publisher, change a required check, or admit CI by
-themselves. The existing raw `Review Yeti` worker output remains separate.
+Status: additive implementation in progress for API-3210, not deployed acceptance.
+PostgresStore installs additive schema; the dedicated dispatch service can run
+the new controller only under explicit configuration. Controller and new-review
+admission both default off. No required checks, author readiness, provider policy
+or CI triggers are changed. The worker still owns the separate raw `Review Yeti`
+findings check; only the service owns `Review Yeti Gate`.
 
 ## Ownership and identity
 
@@ -32,8 +35,11 @@ review generation without advancing the execution counter.
 2. Commit a unique publication claim before external work. A separate UUID
    lease token prevents an expired claim from becoming valid when the same
    service identity reacquires the work.
-3. Only the first `reserved` to `creating` claim may create a pending check.
-   Every later claim without a persisted check ID reconciles exact App and
+3. Only a `reserved` to `creating` claim may create a pending check. If client
+   preparation fails before any check operation, a fenced recovery under the
+   same PR lock restores `reserved` with backoff. Once creation is invoked,
+   even a timeout or lost acknowledgement never restores create permission.
+   Every later uncertain claim without a persisted check ID reconciles exact App and
    external identity. An empty read after a lost acknowledgement never buys
    another POST.
 4. Verify the returned check identity and desired state, then persist its ID
@@ -47,12 +53,25 @@ creating an obsolete check. Already attempted or bound publications retain
 their cancellation intent for reconciliation. Network errors retain durable,
 redacted retry state with bounded service backoff; no Actions runner waits.
 
-The bounded external publication currently holds the admission lock. This
+The bounded external publication holds the admission lock. This
 prevents an old successful publisher from passing its check after a new
-same-head generation is admitted. Production integration must keep token
-resolution and the complete HTTP work inside the configured lease, limit lock
-waits and preserve service shutdown behavior. Reconciliation is bounded by both
+same-head generation is admitted. Startup uses bounded repository-token factories,
+bounded client preparation, five-second lock acquisition limits and non-overlapping
+service ticks; shutdown clears both timers. Reconciliation is bounded by both
 page count and a total deadline, not merely a per-page timeout.
+
+Admission revalidates current head, base and the complete prepared policy while
+holding its shared PR lock, before any writes. A previously prepared request that
+arrives late cannot supersede a newer candidate; unavailable or unbounded fresh
+reads fail closed. Nonpublishing work cannot supersede authoritative work.
+Admission stores normalized prepared config and its source fingerprints in the
+same transaction as the run, outbox and gate reservation. Dispatch cannot claim
+an enrolled run until its current gate ID is bound and the pending state is
+published. Projection acknowledgement advances the same gate to in-progress,
+never success. The reaper atomically queues non-success for expired attempts or
+pre-worker dispatch failures and retires their outbox work. It cannot overwrite
+an accepted terminal result. A possibly started worker retains its execution
+identity so explicit retry gets a fresh Job and Secret even after a lost ACK.
 
 ## Trusted input boundaries
 
@@ -74,29 +93,62 @@ evidence, not a worker-selected check ID, conclusion, URL or override. The
 service re-derives canonical eligibility using its own expected lanes and file
 coverage. Worker summary counts are consistency checks only. Infrastructure
 failure uses a bounded error classification, never raw provider transcripts.
-This typed module is not yet connected to authentication, persistence or a
-worker callback route.
+The completion route authenticates the exact persisted worker-token digest,
+coordinates, execution, generation and enrolled App. Canonical result, gate
+publication intent, terminal run and dispatch retirement commit atomically.
+The service reads fresh head/base/policy and exact diff coverage; changed or
+closed candidates cancel without fabricating review evidence. Duplicate identical
+callbacks are idempotent; changed results conflict. Late callbacks cannot revive
+expired or reaped attempts. Raw provider text is never an eligibility override.
+
+The dispatcher loads the stored preparation and projects only its credential-free
+`PreparedReviewExecution.v1` envelope. The operator preserves it verbatim; the
+worker verifies the actual model/URL and effective config digest before inference.
+Legacy Jobs omit the field and retain their old behavior. The callback sends
+one bounded typed result; an unknown HTTP outcome does not authorize a second,
+different failure result. Missing delivery remains recoverable non-success.
 
 Admission now supersedes on full identity, including same-head base/config or
 policy changes, while rejecting stale persisted identities. A legitimate return
 to a historically superseded identity still needs fresh live authority and an
 explicit new generation; the persistence layer alone cannot authorize it.
 
-## Required integration before activation
+## Explicit controller and admission controls
 
-- Resolve current PR/base and actual trusted effective policy/config identity;
-  the legacy `pending-base-policy` placeholder is not review evidence.
-- Fence admission by full candidate identity, including same-head base/policy
-  changes, and reject stale event hints using current GitHub truth.
-- Install the additive schema and wire a service-owned publisher. Persist the
-  pending check ID before handing the attempt to a worker.
-- Authenticate terminal evidence against the exact dispatched execution and
-  commit the authoritative terminal decision and delivery intent atomically.
-- Persist worker-crash, dispatch-failure, reaper and retry-exhaustion outcomes;
-  an uncertain create must remain visibly non-success until reconciled or an
-  explicitly new generation is requested.
+`AUTHORITATIVE_REVIEW_ENABLED=true` enables controller/completion wiring only.
+It requires all of these service-owned inputs:
+
+- `AUTHORITATIVE_REVIEW_APP_ID=4385771`, matching `GITHUB_APP_ID`.
+- `AUTHORITATIVE_REVIEW_REPOSITORY_IDS`: finite unique numeric IDs, a subset of
+  the existing Action OIDC repository allowlist, with app-gate permission enabled.
+- `AUTHORITATIVE_REVIEW_POLICY_SOURCE`: strict JSON with `repositoryId`, `owner`,
+  `repo`, `ref`, and `path`. The service resolves the configured ref, then reads
+  and fingerprints the policy file at its immutable SHA. Candidate inputs cannot
+  choose this source.
+- Explicit credential-free `BIFROST_BASE_URL` and `REVIEW_MODEL`, matching workers.
+- Optional `AUTHORITATIVE_REVIEW_TICK_MS`: 1,000–60,000; default 5,000. These are
+  service reconciliation ticks, not scheduled CI jobs or parked runners.
+
+`AUTHORITATIVE_REVIEW_ADMISSION_ENABLED=true` separately permits new enrolled
+review requests. Its default is false. While paused, enrolled app-gate requests
+return 503 before token mint/admission; they never silently use the legacy lane.
+Existing completion, reaping and publication keep draining. Unenrolled and
+nonpublishing legacy requests retain their existing route.
+
+Rollback must restore the captured old protections/triggers before disabling a
+required route. Pause new admission first and reconcile existing attempts; do not
+turn off all controllers with outstanding gate publications, drop additive tables,
+remove persisted CRD fields or infer that a skipped workflow is a safe replacement.
+
+## Remaining integration before production cutover
+
 - Re-evaluate close, draft, push, policy, rerequest and human-risk events without
-  changing author readiness automatically.
+  changing author readiness automatically. Wire the pure accepted-risk and
+  audited exemption policy to trusted event evidence; empty review output is not
+  an exemption. Historical superseded identities and explicit rerequests of
+  already successful reviews still need the fresh-generation event path.
+- Complete same-head crash/retry/lost-ACK proof in the deployed pilot. An uncertain
+  create must remain non-success until reconciled or explicitly superseded.
 - Prove deployed canary behavior before changing any protection or removing
   consumer waiters. API-3211 owns durable CI admission, API-3213 protected pilot
   migration, and API-3215 independent zero-runner-wait acceptance.

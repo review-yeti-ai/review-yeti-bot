@@ -1,4 +1,5 @@
 import type { PiStage } from './piWorkflow';
+import type { PreparedPublishingPolicy } from './preparedPublishingPolicy';
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -28,6 +29,7 @@ export interface ReviewRun {
   receivedAt?: number;
   terminalDeadline?: number;
   publicationMode?: PublicationMode;
+  authoritativeGateAppId?: number;
   status: ReviewRunStatus;
   stage: PiStage;
   attempt: number;
@@ -53,6 +55,8 @@ export interface ReviewAdmissionInput {
   identity: ReviewRunIdentity;
   effectivePolicyDigest?: string;
   indexEpoch?: number;
+  /** Service-resolved only; never decoded from an Action/worker request. */
+  authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
 }
 
 export interface ReviewAdmission {
@@ -84,6 +88,7 @@ export interface ReviewDispatchClaim {
   repositoryId: number;
   installationId: number;
   publicationMode: PublicationMode;
+  authoritativeGateAppId?: number;
   repo: string;
   prNumber: number;
   headSha: string;

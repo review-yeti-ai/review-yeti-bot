@@ -27,6 +27,10 @@ const resolvedPolicySchema = z.object({
 }).strict();
 
 export type TrustedResolvedReviewPolicy = z.infer<typeof resolvedPolicySchema>;
+export interface ImmutableReviewPolicyFile {
+  source: TrustedResolvedReviewPolicy['sources'][number];
+  content: string;
+}
 
 export interface AuthoritativeReviewRunIdentity extends ReviewRunIdentity {
   reviewPolicy: {

@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CHECK_RUN_PAGE_SIZE,
   MAX_CHECK_RUN_PAGES,
+  MAX_GATE_RESPONSE_BYTES,
   REVIEW_GATE_CHECK_NAME,
   GitHubReviewGateClient,
   deriveReviewGateExternalId,
@@ -256,5 +257,163 @@ describe('GitHubReviewGateClient', () => {
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(response(exactCheck({ id: 1234 })));
     await expect(client(fetchImplementation).updateExisting(coordinates, 9876, { conclusion: 'success' })).rejects.toThrow(/check id/u);
     expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+});
+
+describe('GitHubReviewGateClient hard request bounds', () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'] }));
+  afterEach(() => {
+    try { expect(vi.getTimerCount()).toBe(0); } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+
+  function stream(bytes: Uint8Array, close = true) {
+    let sent = false;
+    const cancel = vi.fn();
+    const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+      if (!sent) { sent = true; controller.enqueue(bytes); }
+      else if (close) controller.close();
+    });
+    return { response: new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 })), cancel, pull };
+  }
+
+  it.each(['GET', 'POST', 'PATCH'] as const)('hard-stops a non-cooperative %s without retry', async (method) => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(() => new Promise(() => undefined));
+    if (method === 'PATCH') fetcher.mockResolvedValueOnce(response(exactCheck()));
+    const gate = client(fetcher);
+    const pending = rejection(method === 'GET' ? gate.reconcile(coordinates)
+      : method === 'POST' ? gate.createPending(coordinates)
+        : gate.updateExisting(coordinates, 9876, { status: 'in_progress' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await pending).message).toBe('GitHub Review Yeti gate request timed out');
+    expect(fetcher).toHaveBeenCalledTimes(method === 'PATCH' ? 2 : 1);
+    expect(fetcher.mock.lastCall?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it('cancels a late fetch body without reading it or continuing to PATCH', async () => {
+    let deliver!: (response: Response) => void;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(() => new Promise((resolve) => { deliver = resolve; }));
+    const pending = rejection(client(fetcher).updateExisting(coordinates, 9876, { status: 'in_progress' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await pending).message).toContain('timed out');
+    const late = stream(Buffer.from(JSON.stringify(exactCheck())));
+    deliver(late.response);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(late.cancel).toHaveBeenCalledOnce();
+    expect(late.pull).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each(['hang', 'throw', 'reject'] as const)('bounds a stuck body even when cancellation will %s', async (behavior) => {
+    const reader = {
+      read: vi.fn(() => new Promise(() => undefined)),
+      cancel: vi.fn(() => {
+        if (behavior === 'throw') throw new Error(token);
+        if (behavior === 'reject') return Promise.reject(new Error(token));
+        return new Promise(() => undefined);
+      }),
+      releaseLock: vi.fn(),
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue({ ok: true, body: { getReader: () => reader } } as unknown as Response);
+    const pending = rejection(client(fetcher).createPending(coordinates));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await pending).message).toBe('GitHub Review Yeti gate request timed out');
+    expect(reader.cancel).toHaveBeenCalledOnce();
+    expect(reader.releaseLock).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it('shares one deadline across fetch and an unfinished JSON body', async () => {
+    const wire = stream(Buffer.from(JSON.stringify(exactCheck())), false);
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve(wire.response), 800);
+    }));
+    const pending = rejection(client(fetcher).createPending(coordinates));
+    await vi.advanceTimersByTimeAsync(999);
+    expect(wire.cancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await pending).message).toContain('timed out');
+    expect(wire.cancel).toHaveBeenCalledOnce();
+    expect(wire.response.body?.locked).toBe(false);
+  });
+
+  it('retains the total pagination deadline when the second page ignores abort', async () => {
+    const page = Array.from({ length: CHECK_RUN_PAGE_SIZE }, (_, index) => ({ id: index + 1 }));
+    const fetcher = vi.fn<typeof fetch>()
+      .mockImplementationOnce(() => new Promise((resolve) => { setTimeout(() => resolve(response({ check_runs: page })), 200); }))
+      .mockImplementation(() => new Promise(() => undefined));
+    const gate = new GitHubReviewGateClient({ token, expectedAppId: appId, fetchImplementation: fetcher,
+      timeoutMs: 1_000, reconcileTimeoutMs: 250 });
+    const pending = rejection(gate.reconcile(coordinates));
+    await vi.advanceTimersByTimeAsync(250);
+    expect((await pending).message).toMatch(/timed out|deadline/u);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts exactly the byte bound and never calls an unbounded response.json', async () => {
+    const json = JSON.stringify(exactCheck());
+    const remote = new Response(json + ' '.repeat(MAX_GATE_RESPONSE_BYTES - Buffer.byteLength(json)));
+    const jsonMethod = vi.spyOn(remote, 'json').mockImplementation(() => new Promise(() => undefined));
+    const textMethod = vi.spyOn(remote, 'text').mockImplementation(() => new Promise(() => undefined));
+    await expect(client(vi.fn<typeof fetch>().mockResolvedValue(remote)).createPending(coordinates)).resolves.toMatchObject({ id: 9876 });
+    expect(jsonMethod).not.toHaveBeenCalled();
+    expect(textMethod).not.toHaveBeenCalled();
+    expect(remote.body?.locked).toBe(false);
+  });
+
+  it.each(['one chunk', 'multiple chunks', 'multibyte'] as const)('rejects oversized %s by actual bytes and cancels', async (kind) => {
+    const json = JSON.stringify(exactCheck({ ignored: kind === 'multibyte' ? 'é'.repeat(MAX_GATE_RESPONSE_BYTES / 2) : '' }));
+    const bytes = Buffer.from(kind === 'multibyte' ? json : json + ' '.repeat(MAX_GATE_RESPONSE_BYTES + 1 - Buffer.byteLength(json)));
+    const chunks = kind === 'multiple chunks' ? [bytes.subarray(0, MAX_GATE_RESPONSE_BYTES), bytes.subarray(MAX_GATE_RESPONSE_BYTES)] : [bytes];
+    const cancel = vi.fn();
+    const pull = vi.fn((controller: ReadableStreamDefaultController<Uint8Array>) => {
+      const chunk = chunks.shift();
+      if (chunk) controller.enqueue(chunk);
+    });
+    const remote = new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), { headers: { 'Content-Length': '1' } });
+    const error = await rejection(client(vi.fn<typeof fetch>().mockResolvedValue(remote)).createPending(coordinates));
+    expect(error.message).toBe('GitHub Review Yeti gate response was invalid');
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(pull).toHaveBeenCalledTimes(kind === 'multiple chunks' ? 2 : 1);
+    expect(remote.body?.locked).toBe(false);
+  });
+
+  it.each([Buffer.from(''), Buffer.from(`{${token}`), Buffer.from([0xc3, 0x28])])('rejects invalid JSON/UTF-8 without remote diagnostics', async (bytes) => {
+    const remote = stream(bytes);
+    const error = await rejection(client(vi.fn<typeof fetch>().mockResolvedValue(remote.response)).createPending(coordinates));
+    expect(error.message).toBe('GitHub Review Yeti gate response was invalid');
+    expect(error.cause).toBeUndefined();
+    expect(error.stack).not.toContain(token);
+    expect(remote.response.body?.locked).toBe(false);
+  });
+
+  it('redacts a body read exception and releases the reader', async () => {
+    const reader = { read: vi.fn().mockRejectedValue(new Error(token)), cancel: vi.fn().mockResolvedValue(undefined), releaseLock: vi.fn() };
+    const remote = { ok: true, body: { getReader: () => reader } } as unknown as Response;
+    const error = await rejection(client(vi.fn<typeof fetch>().mockResolvedValue(remote)).createPending(coordinates));
+    expect(error.message).toBe('GitHub Review Yeti gate response was invalid');
+    expect(error.cause).toBeUndefined();
+    expect(reader.cancel).toHaveBeenCalledOnce();
+    expect(reader.releaseLock).toHaveBeenCalledOnce();
+  });
+
+  it.each([301, 302, 307, 308, 401, 403, 404, 429, 500])('cancels HTTP %s without consuming an error body', async (status) => {
+    const cancel = vi.fn();
+    const pull = vi.fn();
+    const remote = new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), { status });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(remote);
+    expect((await rejection(client(fetcher).createPending(coordinates))).message).toBe(`GitHub Review Yeti gate request failed HTTP ${status}`);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(pull).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an already-followed redirect even if an injected fetch ignores redirect:error', async () => {
+    const wire = stream(Buffer.from(JSON.stringify(exactCheck())));
+    Object.defineProperty(wire.response, 'redirected', { value: true });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(wire.response);
+    expect((await rejection(client(fetcher).createPending(coordinates))).message).toBe('GitHub Review Yeti gate request failed');
+    expect(wire.cancel).toHaveBeenCalledOnce();
+    expect(wire.pull).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls[0][1]?.redirect).toBe('error');
   });
 });

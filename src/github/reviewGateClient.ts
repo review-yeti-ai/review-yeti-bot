@@ -9,6 +9,8 @@ export const MIN_REQUEST_TIMEOUT_MS = 250;
 export const MAX_REQUEST_TIMEOUT_MS = 30_000;
 export const DEFAULT_RECONCILE_TIMEOUT_MS = 30_000;
 export const MAX_RECONCILE_TIMEOUT_MS = 30_000;
+/** Per response, counted from streamed UTF-8 bytes, never Content-Length. */
+export const MAX_GATE_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 const GITHUB_NAME = /^[A-Za-z0-9_.-]+$/u;
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
@@ -49,7 +51,7 @@ export interface ReviewGateClientOptions {
   fetchImplementation?: typeof fetch;
   /** Alias retained for callers that name the seam after the platform API. */
   fetch?: typeof fetch;
-  /** Each HTTP request has its own bounded timeout. */
+  /** Each complete HTTP request (fetch and body) has its own hard deadline. */
   timeoutMs?: number;
   /** The complete reconcile operation is bounded independently of page count. */
   reconcileTimeoutMs?: number;
@@ -97,6 +99,10 @@ export interface ReviewGateUpdateRequest {
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
+}
+
+function cancelBody(body: { cancel(): Promise<unknown> } | null): void {
+  try { void body?.cancel().catch(() => undefined); } catch { /* Best effort, never awaited. */ }
 }
 
 function requiredText(value: unknown, field: string, maxLength = 512): string {
@@ -325,32 +331,79 @@ export class GitHubReviewGateClient {
     if (init.body !== undefined) headers.set('Content-Type', 'application/json');
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    timer.unref?.();
-    try {
+    const deadline = performance.now() + timeoutMs;
+    const timedOut = () => new Error('GitHub Review Yeti gate request timed out');
+    const checkDeadline = () => {
+      if (controller.signal.aborted || performance.now() >= deadline) throw timedOut();
+    };
+    let cleanupBody: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(timedOut()); }, timeoutMs);
+    });
+    const execute = async (): Promise<T> => {
       let response: Response;
       try {
+        checkDeadline();
         response = await this.fetchImplementation(`${this.baseUrl}${path}`, {
           ...init,
           headers,
           redirect: 'error',
           signal: controller.signal,
         });
-      } catch (error) {
-        if (controller.signal.aborted) throw new Error('GitHub Review Yeti gate request timed out');
+      } catch {
+        checkDeadline();
         // Do not include the transport error: custom fetch implementations can
         // accidentally include the token or an untrusted provider response.
-        void error;
         throw new Error('GitHub Review Yeti gate request failed');
       }
+      // A fetch that ignores abort may resolve after this request has returned.
+      // Dispose its late body without ever reading it or continuing to a write.
+      if (controller.signal.aborted) { cancelBody(response.body); throw timedOut(); }
+      cleanupBody = () => cancelBody(response.body);
+      checkDeadline();
+      if (response.redirected) throw new Error('GitHub Review Yeti gate request failed');
       if (!response.ok) throw new Error(`GitHub Review Yeti gate request failed HTTP ${response.status}`);
       try {
-        return await response.json() as T;
+        if (!response.body) throw new Error();
+        const reader = response.body.getReader();
+        let cleaned = false;
+        const cleanup = () => {
+          if (cleaned) return;
+          cleaned = true;
+          cancelBody(reader);
+          try { reader.releaseLock(); } catch { /* Pending cancellation cannot extend the deadline. */ }
+        };
+        cleanupBody = cleanup;
+        try {
+          const chunks: Uint8Array[] = [];
+          let bytes = 0;
+          while (true) {
+            const chunk = await reader.read();
+            checkDeadline();
+            if (chunk.done) break;
+            if (!(chunk.value instanceof Uint8Array)) throw new Error();
+            bytes += chunk.value.byteLength;
+            if (bytes > MAX_GATE_RESPONSE_BYTES) throw new Error();
+            if (chunk.value.byteLength) chunks.push(chunk.value);
+          }
+          // Never call a response-provided json()/text() method. Only bounded,
+          // complete, valid UTF-8 reaches the local synchronous JSON parser.
+          const data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, bytes))) as T;
+          checkDeadline();
+          return data;
+        } finally { cleanup(); if (cleanupBody === cleanup) cleanupBody = undefined; }
       } catch {
+        checkDeadline();
         throw new Error('GitHub Review Yeti gate response was invalid');
       }
+    };
+    try {
+      return await Promise.race([execute(), expired]);
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
+      controller.abort();
+      cleanupBody?.();
     }
   }
 

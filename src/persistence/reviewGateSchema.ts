@@ -1,6 +1,8 @@
 /** Additive schema for the service-owned check publication outbox. No consumer
  * protection or CI admission is activated by installing these tables. */
 export const REVIEW_GATE_SCHEMA_SQL = `
+  ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS authoritative_gate_app_id BIGINT
+    CHECK (authoritative_gate_app_id > 0);
   CREATE TABLE IF NOT EXISTS review_gate_attempts (
     attempt_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
