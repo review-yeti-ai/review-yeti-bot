@@ -161,7 +161,7 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END");
     // Every re-arm is conditioned on failure; active and superseded identities
     // are not retryable. Older legacy identities are fenced by persisted history.
-    expect(runSql.match(/CASE WHEN review_runs\.status IN \('failed', 'terminal'\)/gu) || []).toHaveLength(6);
+    expect(runSql.match(/CASE WHEN review_runs\.status IN \('failed', 'terminal'\)/gu) || []).toHaveLength(8);
     // markTerminal writes 'failed'; the reaper writes 'terminal'. Both are dead
     // runs and both must be retryable, and no other status may be named.
     expect(runSql).not.toMatch(/CASE WHEN review_runs\.status (=|IN \()\s*'?(queued|running|superseded)/u);
@@ -177,7 +177,7 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(outboxSql).toContain("lease_owner = NULL");
     expect(outboxSql).toContain('projection_name = NULL');
     expect(outboxSql).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
-    expect(outboxSql).toContain("execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected' THEN review_dispatch_outbox.execution_attempt + 1 ELSE review_dispatch_outbox.execution_attempt END");
+    expect(outboxSql).toContain("execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected' OR review_dispatch_outbox.worker_token_digest IS NOT NULL OR review_dispatch_outbox.projection_name IS NOT NULL THEN review_dispatch_outbox.execution_attempt + 1 ELSE review_dispatch_outbox.execution_attempt END");
     expect(outboxSql).toContain("worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal') THEN NULL ELSE review_dispatch_outbox.worker_token_digest END");
     expect(outboxSql).toContain("r.status = 'queued'");
     expect(outboxSql).toContain('r.delivery_id = EXCLUDED.delivery_id');
@@ -271,7 +271,7 @@ describe('PostgresReviewDispatchRepository', () => {
         // projected worker failure must advance to a new CR/Secret name.
         const normalized = sql.replace(/\s+/gu, ' ');
         expect(normalized).toContain(
-          "execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected' THEN review_dispatch_outbox.execution_attempt + 1 ELSE review_dispatch_outbox.execution_attempt END",
+          "execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected' OR review_dispatch_outbox.worker_token_digest IS NOT NULL OR review_dispatch_outbox.projection_name IS NOT NULL THEN review_dispatch_outbox.execution_attempt + 1 ELSE review_dispatch_outbox.execution_attempt END",
         );
         expect(normalized).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
         expect(normalized).toContain("r.status = 'queued'");
@@ -794,6 +794,8 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     repo: 'ct-meta',
     pr_number: 2795,
     head_sha: 'a'.repeat(40),
+    delivery_id: 'delivery-1', execution_attempt: 2,
+    received_at: new Date(1_000), terminal_deadline: new Date(901_000),
   };
 
   function repositoryWith(rows: unknown[]) {
@@ -803,7 +805,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     return { repository, query };
   }
 
-  it('sweeps only queued app-gate runs whose deadline has passed', async () => {
+  it('binds expired publishing claims to a deadline (real eligibility is covered by the PostgreSQL lifecycle test)', async () => {
     // These three predicates are what keep the reaper from force-failing live
     // traffic. Dropping publication_mode would fail non-publishing runs; dropping
     // the status guard would fail runs a worker still owns; dropping the deadline
@@ -811,7 +813,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     const { repository, query } = repositoryWith([swept]);
     await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
     const sql = String(query.mock.calls[0][0]);
-    expect(sql).toMatch(/status\s*=\s*'queued'/u);
+    expect(sql).toMatch(/runs.status IN \('queued', 'running'\)/u);
     expect(sql).toMatch(/publication_mode\s*=\s*'app-gate'/u);
     expect(sql).toMatch(/terminal_deadline\s*<=\s*to_timestamp\(\$2/u);
   });
@@ -823,7 +825,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
     const sql = String(query.mock.calls[0][0]);
     expect(query).toHaveBeenCalledOnce();
-    expect(sql).toMatch(/FOR UPDATE SKIP LOCKED/u);
+    expect(sql).toMatch(/FOR UPDATE OF runs, outbox SKIP LOCKED/u);
     expect(sql).toMatch(/SET status = 'terminal'/u);
     expect(sql).toMatch(/RETURNING/u);
   });
@@ -851,6 +853,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       repo: 'ct-meta',
       prNumber: 2795,
       headSha: swept.head_sha,
+      deliveryId: 'delivery-1', executionAttempt: 2, receivedAt: 1_000, terminalDeadline: 901_000,
     }]);
   });
 

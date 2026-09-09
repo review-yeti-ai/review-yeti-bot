@@ -63,6 +63,31 @@ function legacyProjection(value: PRReviewJobProjection): PRReviewJobProjection {
 }
 
 describe('KubernetesReviewJobProjector', () => {
+  it.each(['Failed', 'Succeeded', 'Expired'])('does not acknowledge a terminal %s CR as an active projection', async (phase) => {
+    const client = {
+      getNamespacedCustomObject: vi.fn(async () => ({ ...projection, status: { phase } })),
+      createNamespacedCustomObject: vi.fn(),
+    };
+    await expect(new KubernetesReviewJobProjector(client).ensure(projection)).rejects.toThrow('terminal');
+    expect(client.createNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  it('creates the next attempt without deleting or reusing the prior terminal CR', async () => {
+    const old = { ...attemptProjection(1), status: { phase: 'Failed' } };
+    const created: unknown[] = [];
+    const client = {
+      getNamespacedCustomObject: vi.fn(async ({ name }: { name: string }) => {
+        if (name === old.metadata.name) return old;
+        throw notFound();
+      }),
+      createNamespacedCustomObject: vi.fn(async ({ body }: { body: unknown }) => { created.push(body); }),
+    };
+    await new KubernetesReviewJobProjector(client).ensure(attemptProjection(2));
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ metadata: { name: 'ct-review-11111111111111111111111111111111-a2' },
+      spec: { executionAttempt: 2, runSecretName: 'ct-review-run-11111111111111111111111111111111-a2' } });
+    expect(old.status.phase).toBe('Failed');
+  });
   it('accepts an existing exact resource without creating a duplicate', async () => {
     const client = {
       getNamespacedCustomObject: vi.fn(async () => ({

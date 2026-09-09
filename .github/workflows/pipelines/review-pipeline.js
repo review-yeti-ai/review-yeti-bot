@@ -6212,7 +6212,7 @@ function readActionReviews(commandRunner, prContext) {
     }));
 }
 
-function readActionReviewThreads(commandRunner, prContext) {
+function readActionReviewThreads(commandRunner, prContext, options = {}) {
   const [owner, name] = String(prContext.repo || '').split('/');
   const threads = [];
   let retainedComments = 0;
@@ -6226,6 +6226,12 @@ function readActionReviewThreads(commandRunner, prContext) {
       const pages = Array.isArray(decoded) ? decoded : [decoded];
       const graphError = pages.flatMap((page) => page?.errors || [])[0];
       if (graphError) throw new Error(graphError.message || 'GraphQL returned an error');
+      if (options.strict && (pages.length === 0 || pages.some((page) => {
+        const connection = label === 'reviewThread comments' ? page?.data?.node?.comments : page?.data?.repository?.pullRequest?.reviewThreads;
+        return !Array.isArray(connection?.nodes) || typeof connection?.pageInfo?.hasNextPage !== 'boolean'
+          || connection.nodes.some((thread) => label === 'reviewThreads'
+            && (!Array.isArray(thread?.comments?.nodes) || typeof thread.comments?.pageInfo?.hasNextPage !== 'boolean'));
+      }))) throw new Error('Incomplete publication snapshot shape');
       return pages;
     } catch (error) {
       throw new Error(`GitHub returned malformed ${label} JSON: ${error.message}`);
@@ -6524,6 +6530,9 @@ function postStickySummaryComment(commentBody, prContext, options = {}) {
     if (!expectedPublisherLogin) {
       return { success: false, postedViaGh: false, error: 'could not determine the publishing GitHub identity; refusing to adopt or patch an unverified summary comment' };
     }
+    if (options.expectedPublisherLogin && !isExpectedPublisherLogin(expectedPublisherLogin, options.expectedPublisherLogin)) {
+      throw new Error('Action review publisher changed before sticky publication');
+    }
     const existingIssueComment = findLatestIssueComment(commandRunner, prContext, (comment) => (
       typeof comment?.body === 'string'
       && comment.body.includes(anchor)
@@ -6557,7 +6566,7 @@ function postStickySummaryComment(commentBody, prContext, options = {}) {
       };
     }
 
-    assertCurrentPullRequest(prContext, { commandRunner });
+    assertPublicationIdentity(commandRunner, prContext, expectedPublisherLogin);
     if (existingIssueComment) {
       const updated = apiJson(commandRunner, 'PATCH', `repos/${prContext.repo}/issues/comments/${existingIssueComment.id}`, { body: rendered.body });
       return {
@@ -6628,15 +6637,93 @@ function commentBodyWithMarker(prContext, item) {
   return `${item.body}\n\n${actionFindingMarker(prContext, item)}`;
 }
 
+function assertPublicationIdentity(commandRunner, prContext, expectedPublisherLogin) {
+  assertCurrentPullRequest(prContext, { commandRunner });
+  if (!isExpectedPublisherLogin(readAuthenticatedPublisherLogin(commandRunner), expectedPublisherLogin)) {
+    throw new Error('Action review publisher changed during publication');
+  }
+  // Identity lookup can be slow; do not use the head/base read from before it.
+  assertCurrentPullRequest(prContext, { commandRunner });
+}
+
+/** Stronger, scoped proof for a create whose response was uncertain. Never adopt a
+ * marker-only match, a reply to somebody else's thread, or a truncated snapshot. */
+function findUniqueStrictPublicationThread(item, prContext, snapshot, expectedPublisherLogin) {
+  if (snapshot.complete !== true) return null;
+  const matches = snapshot.threads.filter((thread) => {
+    if (thread.isResolved !== false || thread.isOutdated !== false || thread.commentsComplete !== true) return false;
+    const line = Number.isInteger(item.line) ? item.line : null;
+    const start = thread.startLine === line ? null : (thread.startLine ?? null);
+    if (thread.path !== item.path || (thread.line ?? null) !== line
+      || (line !== null && thread.diffSide !== (item.side || 'RIGHT'))
+      || start !== (item.startLine ?? null)
+      || (start !== null ? thread.startDiffSide !== (item.side || 'RIGHT') : thread.startDiffSide != null)) return false;
+    const comments = thread.comments?.nodes || [];
+    const exact = (comment) => Number.isSafeInteger(comment?.databaseId) && comment.databaseId > 0
+      && comment.body === commentBodyWithMarker(prContext, item)
+      && isExpectedPublisherLogin(comment.author?.login, expectedPublisherLogin)
+      && comment.commit?.oid === prContext.headSha;
+    return exact(comments[0]) && comments.filter(exact).length === 1;
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+const PUBLICATION_ERROR_RESOURCES = new Set(['PullRequestReviewComment', 'PullRequestReview', 'IssueComment', 'Issue', 'PullRequest']);
+const PUBLICATION_ERROR_FIELDS = new Set(['body', 'path', 'line', 'side', 'start_line', 'start_side', 'commit_id', 'position', 'subject_type', 'in_reply_to', 'pull_request_review_id']);
+const PUBLICATION_ERROR_CODES = new Set(['invalid', 'missing', 'missing_field', 'already_exists', 'unprocessable', 'custom']);
+
+function publicationRequestShape(payload = {}) {
+  const digest = (value) => createHash('sha256').update(typeof value === 'string' ? value : '').digest('hex');
+  const positiveLine = (value) => Number.isSafeInteger(value) && value > 0 ? value : null;
+  return {
+    headSha: typeof payload.commit_id === 'string' && /^[a-f0-9]{40}$/.test(payload.commit_id) ? payload.commit_id : null,
+    pathDigest: digest(payload.path),
+    bodyDigest: digest(payload.body),
+    bodyBytes: typeof payload.body === 'string' ? Buffer.byteLength(payload.body, 'utf8') : 0,
+    line: positiveLine(payload.line), side: ['LEFT', 'RIGHT'].includes(payload.side) ? payload.side : null,
+    startLine: positiveLine(payload.start_line), startSide: ['LEFT', 'RIGHT'].includes(payload.start_side) ? payload.start_side : null,
+  };
+}
+
+function sanitizePublicationDiagnostic(diagnostic = {}) {
+  const validation = Array.isArray(diagnostic.validation) ? diagnostic.validation.slice(0, 8).flatMap((entry) => (
+    PUBLICATION_ERROR_RESOURCES.has(entry?.resource) && PUBLICATION_ERROR_FIELDS.has(entry?.field) && PUBLICATION_ERROR_CODES.has(entry?.code)
+      ? [{ resource: entry.resource, field: entry.field, code: entry.code }] : []
+  )) : [];
+  const request = diagnostic.request || {};
+  const sha = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null;
+  const dimension = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return {
+    httpStatus: Number.isInteger(diagnostic.httpStatus) && diagnostic.httpStatus >= 400 && diagnostic.httpStatus <= 599 ? diagnostic.httpStatus : null,
+    validation,
+    request: {
+      headSha: typeof request.headSha === 'string' && /^[a-f0-9]{40}$/.test(request.headSha) ? request.headSha : null,
+      pathDigest: sha(request.pathDigest), bodyDigest: sha(request.bodyDigest), bodyBytes: dimension(request.bodyBytes),
+      line: dimension(request.line), side: ['LEFT', 'RIGHT'].includes(request.side) ? request.side : null,
+      startLine: dimension(request.startLine), startSide: ['LEFT', 'RIGHT'].includes(request.startSide) ? request.startSide : null,
+    },
+  };
+}
+
 function apiJson(commandRunner, method, endpoint, payload) {
   const result = ghApi(commandRunner, ['api', '--method', method, endpoint, '--input', '-'], payload);
   if (!result || result.status !== 0) {
-    throw new Error(`gh api ${method} ${endpoint} failed: ${result?.stderr || result?.stdout || 'unknown error'}`);
+    let decoded;
+    try {
+      if (typeof result?.stdout === 'string' && result.stdout.length <= 65_536) decoded = JSON.parse(result.stdout);
+    } catch (_) { /* Missing/malformed JSON is not field-specific evidence. */ }
+    const status = String(result?.stderr || '').slice(0, 4096).match(/\(HTTP ([45]\d\d)\)/)?.[1];
+    const diagnostic = sanitizePublicationDiagnostic({ httpStatus: status ? Number(status) : decoded?.status, validation: decoded?.errors, request: publicationRequestShape(payload) });
+    const error = new Error(`GitHub publication API failed: ${JSON.stringify(diagnostic)}`);
+    error.publicationDiagnostic = diagnostic;
+    throw error;
   }
   try {
     return result.stdout ? JSON.parse(result.stdout) : {};
-  } catch (error) {
-    throw new Error(`GitHub returned malformed publication JSON for ${endpoint}: ${error.message}`);
+  } catch (_) {
+    const error = new Error('GitHub returned malformed publication JSON');
+    error.publicationDiagnostic = sanitizePublicationDiagnostic({ request: publicationRequestShape(payload) });
+    throw error;
   }
 }
 
@@ -6774,6 +6861,8 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
     rejected: publicationPlan.rejected || [],
     overflow: publicationPlan.overflow || [],
   };
+  const diagnostics = [];
+  const recoveredItems = new Set();
 
   if (prNumber) {
     if (!prContext.repo || !prContext.repo.includes('/') || !prContext.headSha) {
@@ -6821,28 +6910,47 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
       const missingFileComments = plan.fileComments.filter((item) => !findVerifiedThread(item, prContext, existingThreads, expectedPublisherLogin));
 
       for (const item of [...missingLineComments, ...missingFileComments]) {
-        assertCurrentPullRequest(prContext, { commandRunner });
-        const created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/comments`, {
-          commit_id: prContext.headSha,
-          path: item.path,
-          ...(Number.isInteger(item.line) ? {
-            line: item.line,
-            side: item.side || 'RIGHT',
-            ...(Number.isInteger(item.startLine) ? { start_line: item.startLine, start_side: item.side || 'RIGHT' } : {}),
-          } : { subject_type: 'file' }),
-          body: commentBodyWithMarker(prContext, item),
-        });
+        assertPublicationIdentity(commandRunner, prContext, expectedPublisherLogin);
+        let created;
+        try {
+          created = postApiJson(commandRunner, `repos/${prContext.repo}/pulls/${prNumber}/comments`, {
+            commit_id: prContext.headSha,
+            path: item.path,
+            ...(Number.isInteger(item.line) ? {
+              line: item.line,
+              side: item.side || 'RIGHT',
+              ...(Number.isInteger(item.startLine) ? { start_line: item.startLine, start_side: item.side || 'RIGHT' } : {}),
+            } : { subject_type: 'file' }),
+            body: commentBodyWithMarker(prContext, item),
+          });
+        } catch (error) {
+          if (!error.publicationDiagnostic) throw error;
+          diagnostics.push(error.publicationDiagnostic);
+          // One fresh read-back, no POST retry. Even HTTP 422 can accompany a
+          // persisted comment (PR638); only exact current state can disambiguate.
+          try {
+            assertPublicationIdentity(commandRunner, prContext, expectedPublisherLogin);
+            const snapshot = readActionReviewThreads(commandRunner, prContext, { strict: true });
+            assertPublicationIdentity(commandRunner, prContext, expectedPublisherLogin);
+            if (!findUniqueStrictPublicationThread(item, prContext, snapshot, expectedPublisherLogin)) throw new Error('unverified');
+            recoveredItems.add(item);
+            continue;
+          } catch (_) {
+            throw new Error('Uncertain inline creation was not strictly verified');
+          }
+        }
         if (!isExpectedPublisherLogin(requirePublisherLogin(created.user?.login), expectedPublisherLogin)) {
           throw new Error('Action review publisher changed during publication');
         }
       }
       assertCurrentPullRequest(prContext, { commandRunner });
       const verified = expectedItems.length > 0
-        ? readActionReviewThreads(commandRunner, prContext)
+        ? readActionReviewThreads(commandRunner, prContext, { strict: recoveredItems.size > 0 })
         : { threads: [] };
       const missingAfterWrite = expectedItems.filter((item) => !findVerifiedThread(item, prContext, verified, expectedPublisherLogin));
-      if (missingAfterWrite.length > 0) {
-        throw new Error(`${missingAfterWrite.length} expected unresolved review thread(s) failed exact-head verification`);
+      const missingRecovered = [...recoveredItems].some((item) => !findUniqueStrictPublicationThread(item, prContext, verified, expectedPublisherLogin));
+      if (missingAfterWrite.length > 0 || missingRecovered) {
+        throw new Error(`${Math.max(missingAfterWrite.length, missingRecovered ? 1 : 0)} expected unresolved review thread(s) failed exact-head verification`);
       }
 
       // Old conversations are tidied only after this round's own threads are verified present, so
@@ -6861,6 +6969,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         commandRunner,
         publicationAttemptId: attemptId,
         existingReviews: [],
+        expectedPublisherLogin,
       });
       if (!summaryPublication.success) {
         throw new Error(`sticky summary publication failed: ${summaryPublication.error || 'unknown error'}`);
@@ -6876,6 +6985,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         && comment.body === renderStickySummaryBody(bodyWithRejected, prContext, null, { publicationAttemptId: attemptId }).body
       ));
       if (!visibleSummary) throw new Error('exact-head sticky overview was not visible after publication');
+      assertPublicationIdentity(commandRunner, prContext, expectedPublisherLogin);
 
       const matchedThreads = expectedItems.map((item) => findVerifiedThread(item, prContext, verified, expectedPublisherLogin)).filter(Boolean);
       const reviewCommentIds = matchedThreads.flatMap((thread) => (thread.comments?.nodes || [])
@@ -6890,12 +7000,15 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
         ...(summaryPublication.historyRounds !== undefined ? { summaryHistoryRounds: summaryPublication.historyRounds } : {}),
         reviewCommentIds,
         threadIds: matchedThreads.map((thread) => thread.id),
+        diagnostics,
+        reconciledInlineCount: recoveredItems.size,
         ...(summaryPublication.deduplicated && missingLineComments.length === 0 && missingFileComments.length === 0 ? { deduplicated: true } : {}),
       };
     } catch (err) {
+      if (err.publicationDiagnostic) diagnostics.push(err.publicationDiagnostic);
       const error = `GitHub review publication failed: ${err.message}`;
       console.warn(`[Publish] ${error}`);
-      return { success: false, postedViaGh: false, error };
+      return { success: false, postedViaGh: false, error, diagnostics, reconciledInlineCount: recoveredItems.size };
     }
   } else {
     console.log('[Publish] No PR_NUMBER found in event context; writing local review artifacts.');
@@ -7143,7 +7256,49 @@ function writeProviderTelemetryReceiptBestEffort(personaResults, prContext, outp
   }
 }
 
-function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null, runReport = null, providerTelemetry = null) {
+/** Reporting-only, current-invocation evidence. No finding bodies, provider output,
+ * credentials, or computed verdict: failed delivery must never become a SHIP receipt. */
+function writePublicationReceipt(prContext, plan, publication, outputDirectory = process.env.RUNNER_TEMP) {
+  const runId = process.env.GITHUB_RUN_ID;
+  const attempt = process.env.GITHUB_RUN_ATTEMPT;
+  const runnerTemp = process.env.RUNNER_TEMP;
+  if (!runnerTemp || !outputDirectory || !isWithinDirectory(outputDirectory, runnerTemp)
+    || !/^[1-9]\d{0,19}$/.test(runId || '') || !/^[1-9]\d{0,8}$/.test(attempt || '')
+    || !/^[a-f0-9]{40}$/.test(prContext.headSha || '') || !/^[a-f0-9]{40}$/.test(prContext.baseSha || '')
+    || !/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/.test(prContext.repo || '')
+    || !Number.isSafeInteger(Number(prContext.prNumber)) || Number(prContext.prNumber) <= 0) return null;
+  const groups = { line: plan.lineComments, file: plan.fileComments, rejected: plan.rejected, advisory: plan.advisories, overflow: plan.overflow };
+  const items = [];
+  const plannedCounts = {};
+  for (const [kind, entries] of Object.entries(groups)) {
+    plannedCounts[kind] = Array.isArray(entries) ? entries.length : 0;
+    for (const item of (Array.isArray(entries) ? entries : []).slice(0, 100 - items.length)) {
+      const body = kind === 'line' || kind === 'file' ? commentBodyWithMarker(prContext, item) : '';
+      items.push({ kind, ...publicationRequestShape({ commit_id: prContext.headSha, path: item.path, body, line: item.line, side: item.side, start_line: item.startLine, start_side: item.startLine != null ? item.side : null }) });
+    }
+  }
+  const receipt = {
+    schemaVersion: 'review-publication-receipt-v1', repository: prContext.repo, prNumber: Number(prContext.prNumber),
+    headSha: prContext.headSha, baseSha: prContext.baseSha, runId, runAttempt: Number(attempt),
+    marker: `review-yeti-publication:v1:${prContext.repo}#${prContext.prNumber}:${prContext.headSha}:${runId}:${attempt}`,
+    publicationStatus: publication.success === true && publication.postedViaGh === true ? 'published' : 'failed',
+    plannedCounts, items,
+    diagnostics: (Array.isArray(publication.diagnostics) ? publication.diagnostics : []).slice(0, 8).map(sanitizePublicationDiagnostic),
+  };
+  const bytes = `${JSON.stringify(receipt, null, 2)}\n`;
+  try {
+    const directory = fs.mkdtempSync(path.join(outputDirectory, `review-yeti-publication-${runId}-${attempt}-`));
+    const receiptPath = path.join(directory, 'publication-receipt.json');
+    fs.writeFileSync(receiptPath, bytes, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    return { path: receiptPath, digest: createHash('sha256').update(bytes).digest('hex') };
+  } catch (_) {
+    // Never expose filesystem/credential state through an arbitrary exception.
+    console.warn('[Publication] Could not write current-run publication receipt');
+    return null;
+  }
+}
+
+function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, coverage = null, runReport = null, providerTelemetry = null, publicationReceipt = null) {
   if (!outputPath) return;
 
   const m = arbitration.metrics || {};
@@ -7164,6 +7319,8 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
     `run-report-path=${runReport?.path || ''}`,
     `provider-telemetry-digest=${providerTelemetry?.digest || ''}`,
     `provider-telemetry-path=${providerTelemetry?.path || ''}`,
+    `publication-receipt-path=${publicationReceipt?.path || ''}`,
+    `publication-receipt-digest=${publicationReceipt?.digest || ''}`,
     `rationale=${rationale}`,
     `findings-count=${m.totalFindings || 0}`,
     `total-findings=${m.totalFindings || 0}`,
@@ -7762,7 +7919,8 @@ async function main() {
   // verdict first, then decide the run's exit status.
   const runReport = writeRunReport(arbitration, personaResults, prContext, process.env.RUNNER_TEMP, reviewScope);
   const providerTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
-  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport, providerTelemetry);
+  const publicationReceipt = writePublicationReceipt(prContext, publicationPlan, publication);
+  writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport, providerTelemetry, publicationReceipt);
   emitWorkflowAnnotations(personaResults);
   writeStepSummary(arbitration, personaResults, prContext, coverage);
 
@@ -7884,6 +8042,7 @@ module.exports = {
   buildProviderTelemetryReceipt,
   writeProviderTelemetryReceipt,
   writeProviderTelemetryReceiptBestEffort,
+  writePublicationReceipt,
   initMcpFleet,
   setMcpFleetManager,
   getMcpFleetManager,

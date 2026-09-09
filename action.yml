@@ -329,6 +329,12 @@ outputs:
   provider-telemetry-path:
     description: 'Path to the reporting-only provider telemetry receipt JSON.'
     value: ${{ steps.review.outputs.provider-telemetry-path }}
+  publication-receipt-path:
+    description: 'Current-invocation reporting-only publication outcome and redacted plan; not a verdict.'
+    value: ${{ steps.review.outputs.publication-receipt-path }}
+  publication-receipt-digest:
+    description: 'SHA-256 of the current-invocation publication receipt.'
+    value: ${{ steps.review.outputs.publication-receipt-digest }}
   rationale:
     description: 'Executive rationale summarizing why this verdict was chosen.'
     value: ${{ steps.review.outputs.rationale || steps.doks-dispatch.outputs.rationale }}

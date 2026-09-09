@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import {
   generateGitHubAppJwt,
   getGitHubAppBotLogin,
+  getGitHubAppIdentity,
   getGitHubAppInstallationIdForRepository,
   getGitHubAppInstallationToken,
   getGitHubAppRepositoryReadToken,
@@ -14,6 +15,20 @@ describe('GitHub App Authentication & Installation Token Exchange', () => {
     modulusLength: 2048,
     publicKeyEncoding: { type: 'spki', format: 'pem' },
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+
+  it('authenticates the worker-token publisher App before any token mint or check write', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 4385771, slug: 'ct-review-bot' })));
+    await expect(getGitHubAppIdentity({ appId: '4385771', privateKey }, fetchFn)).resolves.toEqual({ id: 4385771 });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn.mock.calls[0][0]).toBe('https://api.github.com/app');
+    expect(fetchFn.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it.each([4435435, undefined, '4385771', 0])('refuses a missing or mismatched authenticated App identity (%s)', async (id) => {
+    const fetchFn = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id, slug: 'ct-review-bot' })));
+    await expect(getGitHubAppIdentity({ appId: '4385771', privateKey }, fetchFn)).rejects.toThrow();
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it('resolves publisher login from the documented App endpoint using an App JWT', async () => {
