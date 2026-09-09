@@ -747,6 +747,14 @@ describe('verified GraphQL publisher identity', () => {
     expect(state.threads[0].isResolved).toBe(false);
   });
 
+  it('accepts a verified GraphQL viewer with an empty errors array', () => {
+    const { state, commandRunner } = runner({
+      viewerRaw: JSON.stringify({ data: { viewer: { login: 'custom-review-app' } }, errors: [] }),
+    });
+    expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(true);
+    expect(state.writes).toHaveLength(2);
+  });
+
   const invalidLogins = [null, '', 'null', 'undefined', 'true', 'false', 'null[bot]', '"custom-review-app"',
     {}, [], 42, '["custom-review-app"]', '{"login":"custom-review-app"}', 'custom review app', 'custom\nreview-app', '-app', 'app-', 'app[bot][bot]'];
   it.each(invalidLogins.map((viewer, i) => [i, viewer] as const))(
