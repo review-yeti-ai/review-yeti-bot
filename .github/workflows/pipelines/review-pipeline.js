@@ -6934,7 +6934,7 @@ function parsePriorSummaryReview(body) {
   };
 }
 
-function cleanGhScalar(stdout) {
+function cleanPublisherLoginScalar(stdout) {
   if (typeof stdout !== 'string') return null;
   let value = stdout.trim();
   if (value.startsWith('"')) {
@@ -6946,7 +6946,7 @@ function cleanGhScalar(stdout) {
 function resolveAuthenticatedPublisher(commandRunner) {
   const result = ghApi(commandRunner, ['api', 'user', '--jq', '.login']);
   if (result && result.status === 0) {
-    const login = cleanGhScalar(result.stdout);
+    const login = cleanPublisherLoginScalar(result.stdout);
     if (login) return { login, verified: true };
   }
 
@@ -6954,7 +6954,7 @@ function resolveAuthenticatedPublisher(commandRunner) {
   // whose reviews must be trusted; GitHub exposes that App's comments as `<app_slug>[bot]`.
   const installation = ghApi(commandRunner, ['api', 'installation', '--jq', '.app_slug']);
   if (installation && installation.status === 0) {
-    const slug = cleanGhScalar(installation.stdout);
+    const slug = cleanPublisherLoginScalar(installation.stdout);
     if (slug) return { login: slug.endsWith('[bot]') ? slug : `${slug}[bot]`, verified: true };
   }
 
