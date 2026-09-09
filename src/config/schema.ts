@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export const MAX_FILE_SIZE_DEFAULT = 1_048_576;
+
 const legacyConfigSchema = z.object({
   version: z.union([z.literal(1), z.literal(2), z.literal('1'), z.literal('2'), z.literal('1.0')]).default('1.0'),
   profile: z.string().optional(),
@@ -284,8 +286,8 @@ const ctReviewConfigV3ObjectSchema = z.object({
   default_max_turns: z.number().int().min(1).max(20).optional(),
   confidence_threshold: z.number().min(0).max(100).optional(),
   mascot: z.boolean().optional(),
-  max_file_size: z.number().int().positive().default(1_048_576).optional(),
-  max_file_bytes: z.number().int().positive().default(1_048_576).optional(),
+  max_file_size: z.number().int().positive().default(MAX_FILE_SIZE_DEFAULT).optional(),
+  max_file_bytes: z.number().int().positive().default(MAX_FILE_SIZE_DEFAULT).optional(),
 
   // CodeRabbit-mirrored top-level sections
   reviews: reviewsSchema,
@@ -368,8 +370,8 @@ export const submodulePolicySchema = z.object({
 export const reviewLimitsSchema = z.object({
   max_files: z.number().int().positive().max(5000).default(1000),
   max_diff_bytes: z.number().int().positive().max(10_000_000).default(2_000_000),
-  max_file_size: z.number().int().positive().max(50_000_000).default(1_048_576),
-  max_file_bytes: z.number().int().positive().max(50_000_000).default(1_048_576),
+  max_file_size: z.number().int().positive().max(50_000_000).default(MAX_FILE_SIZE_DEFAULT),
+  max_file_bytes: z.number().int().positive().max(50_000_000).default(MAX_FILE_SIZE_DEFAULT),
   max_prompt_tokens: z.number().int().positive().max(4_000_000).default(128_000),
   max_completion_tokens: z.number().int().positive().max(128_000).default(8_000),
   max_cost_usd: z.number().positive().max(100).default(5),

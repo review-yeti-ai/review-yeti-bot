@@ -206,7 +206,9 @@ describe('POST /api/dispatch/action', () => {
 
     expect(result.status).toBe('accepted');
     expect(fixture.admission.admit).toHaveBeenCalledOnce();
-    expect(JSON.stringify(fixture.admission.admit.mock.calls[0][0])).not.toContain('must-not-cross-the-boundary');
+    const admittedPayload = fixture.admission.admit.mock.calls[0][0];
+    expect((admittedPayload as any).OPENROUTER_API_KEY).toBeUndefined();
+    expect(JSON.stringify(admittedPayload)).not.toContain('must-not-cross-the-boundary');
   });
 
   it('re-arms a previously failed run and returns status accepted with run.status queued', async () => {

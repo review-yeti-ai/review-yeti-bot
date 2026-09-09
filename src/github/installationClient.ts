@@ -1,6 +1,7 @@
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
+import { ConfigResolver } from '../config/configResolver';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -84,10 +85,7 @@ function parseGitmodules(content: string, owner: string, repo: string): Record<s
   return result;
 }
 
-export const BASE_POLICY_CANDIDATE_FILES = [
-  '.ct-review.yaml',
-  '.reviewyeti.yaml',
-] as const;
+export const BASE_POLICY_CANDIDATE_FILES = ConfigResolver.CONFIG_FILES;
 
 export class GitHubInstallationClient {
   private readonly baseUrl: string;

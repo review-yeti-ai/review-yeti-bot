@@ -1,5 +1,5 @@
 import { CtReviewConfigV3 } from '../config/schema';
-import { resolveMaxFileSize } from '../config/configLoader';
+import { resolveMaxFileSize, MAX_FILE_SIZE_DEFAULT } from '../config/configLoader';
 import { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { PanelRequestPolicy } from './types';
 import { logger } from '../utils/logger';
@@ -124,7 +124,7 @@ export function containsExecutableOrSensitiveCode(
       ? rawMax
       : typeof rawMax === 'string' && rawMax.trim() !== '' && Number.isFinite(Number(rawMax))
         ? Number(rawMax)
-        : 1_048_576;
+        : MAX_FILE_SIZE_DEFAULT;
   let isDocusaurusOrMdx = options?.isDocusaurusOrMdx ?? false;
 
   if (!isDocusaurusOrMdx) {

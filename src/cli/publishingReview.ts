@@ -632,11 +632,15 @@ export async function runPublishingReviewWorker(
       ? 'Review Yeti: SHIP (fast-ship)'
       : `Review Yeti: ${verdict}`;
 
+    const safeClassifierRationale = isFastShip && panelResult.classifierRationale
+      ? panelResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
+      : 'Approved via fast-ship triage classifier.';
+
     const summaryParts = isFastShip
       ? [
           `### Review Yeti: SHIP (fast-ship)`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,
-          `- **Classifier Rationale**: ${panelResult.classifierRationale}`,
+          `- **Classifier Rationale**: \`${safeClassifierRationale}\``,
           `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
           `Transport: bifrost \`${transport.model}\`.`,
           `Repository visibility: ${repositoryVisibility}.`,

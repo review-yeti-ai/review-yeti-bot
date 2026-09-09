@@ -1736,11 +1736,17 @@ export async function executePersonaPanel(options: {
         }
       );
 
-      // Await first token from Persona 1 OR its completion (handles non-streaming mock clients)
+      // Await first token from Persona 1 OR its completion OR bounded warmup timeout (handles non-streaming clients)
+      let timer: NodeJS.Timeout | undefined;
+      const warmupTimeout = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 3_000);
+      });
       await Promise.race([
         firstTokenPromise,
         firstPersonaPromise.catch(() => {}),
+        warmupTimeout,
       ]);
+      if (timer) clearTimeout(timer);
 
       // Fan out remaining personas concurrently while Persona 1 is still generating
       const restPromises = restPersonas.map(async (persona) => {

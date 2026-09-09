@@ -163,14 +163,18 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       }])).toBe(true);
     });
 
-    it('demonstrates vulnerability when maxFileSize is NaN (fails open without Number.isFinite check)', () => {
-      // When maxFileSize is NaN, byteSize > NaN is false in JS, so a 10MB file is not barred!
+    it('verifies that when maxFileSize is NaN, containsExecutableOrSensitiveCode falls back to MAX_FILE_SIZE_DEFAULT', () => {
+      // When maxFileSize is NaN, Number.isFinite check falls back to MAX_FILE_SIZE_DEFAULT (1MB), so a 10MB file is correctly barred
       const result = containsExecutableOrSensitiveCode(
         [{ path: 'docs/guide.md', size: 10_000_000 }],
         { maxFileSize: NaN }
       );
-      // Because options?.maxFileSize ?? 1_048_576 keeps NaN, byteSize > NaN evaluates to false
       expect(result).toBe(true);
+    });
+
+    it('rejects a zero-byte file when it has executable mode (100755)', () => {
+      const zeroByteExec = { path: 'script.sh', content: '', mode: '100755' };
+      expect(containsExecutableOrSensitiveCode([zeroByteExec])).toBe(true);
     });
 
     it('neutralizes delimiter breakouts and prompt injections in diff excerpts', () => {
