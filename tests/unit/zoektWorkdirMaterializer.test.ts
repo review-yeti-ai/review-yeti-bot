@@ -22,7 +22,7 @@ function buildFixtureTarball() {
   return { archivePath, stageDir };
 }
 
-function fakeFetchReturning(archivePath, { ok = true, status = 200, headers = {} } = {}) {
+function fakeFetchReturning(archivePath: string, { ok = true, status = 200, headers = {} as Record<string, string> } = {}) {
   return vi.fn(async () => {
     const buffer = fs.readFileSync(archivePath);
     const body = new ReadableStream({
@@ -35,7 +35,7 @@ function fakeFetchReturning(archivePath, { ok = true, status = 200, headers = {}
       ok,
       status,
       body,
-      headers: { get: (name) => headers[name.toLowerCase()] ?? null },
+      headers: { get: (name: string) => (headers as Record<string, string>)[name.toLowerCase()] ?? null },
     };
   });
 }
