@@ -1,0 +1,151 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const { postOrOutputComment } = require('../../.github/workflows/pipelines/review-pipeline.js');
+const head = '366e0d5d43dae75609821a8a8a63725a63b8e9c8';
+const base = '7357e129f56fe4d94a947bcc0c0b2a2f66ef7531';
+const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 638, headSha: head, baseSha: base };
+const item = { path: 'src/github/appAuth.ts', line: 48, side: 'RIGHT', markerKey: 'review-yeti-finding:fixture', body: '**P2 · Cancellation coverage**\n\nAdd cancellation tests.' };
+const plan = { lineComments: [item], fileComments: [], rejected: [], advisories: [] };
+const summary = '## 🟢 **Verdict: SHIP**\n\n- **Quorum Status**: `SATISFIED`';
+const ok = (value: unknown) => ({ status: 0, stdout: typeof value === 'string' ? value : JSON.stringify(value), stderr: '' });
+const failure = () => ({ status: 1, stdout: JSON.stringify({ message: 'PRIVATE_RESPONSE', errors: [{ resource: 'PullRequestReviewComment', field: 'line', code: 'invalid', value: 'PRIVATE_VALUE' }] }), stderr: 'gh: Validation Failed (HTTP 422) PRIVATE_STDERR' });
+
+type Options = {
+  mutate?: (state: any) => void;
+  afterSnapshot?: (state: any, reads: number) => void;
+  response?: ReturnType<typeof failure>;
+  stickyFailure?: boolean;
+  hideSummary?: boolean;
+  successfulCreate?: boolean;
+};
+
+// Only GitHub transport is fake. The real publisher must decide whether the persisted
+// comment is sufficient and must still publish/read back its own current sticky summary.
+function fixture(options: Options = {}, selectedPlan = plan) {
+  const state: any = { threads: [], comments: [], posts: [], reads: 0, publisher: 'github-actions[bot]', head, base, complete: true, readFailure: false };
+  const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
+    if (args[0] === 'pr') return ok({ headRefOid: state.head, baseRefOid: state.base });
+    if (args[1] === 'user') return ok(state.publisher);
+    if (args[1] === 'graphql') {
+      state.reads++;
+      if (state.readFailure) return { status: 1, stdout: '', stderr: 'PRIVATE_GRAPHQL' };
+      const snapshot = structuredClone({ data: { repository: { pullRequest: { reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: !state.complete, endCursor: null } } } } } });
+      options.afterSnapshot?.(state, state.reads);
+      return ok(snapshot);
+    }
+    if (args[1]?.startsWith('repos/review-yeti-ai/review-yeti-bot/issues/638/comments?') && !args.includes('--method')) {
+      return ok(options.hideSummary ? '' : state.comments.map((c: any) => JSON.stringify(c)).join('\n'));
+    }
+    if (args[1] === '--method') {
+      const payload = JSON.parse(commandOptions.input);
+      state.posts.push({ method: args[2], endpoint: args[3], payload });
+      if (args[3].endsWith('/pulls/638/comments')) {
+        state.threads.push({ id: 'thread-1', isResolved: false, isOutdated: false, path: payload.path, line: payload.line ?? null, diffSide: payload.side ?? null, startLine: payload.start_line ?? null, startDiffSide: payload.start_side ?? null, comments: { nodes: [{ databaseId: 3973120684, body: payload.body, author: { login: 'github-actions[bot]' }, commit: { oid: head } }], pageInfo: { hasNextPage: false, endCursor: null } } });
+        options.mutate?.(state);
+        return options.successfulCreate ? ok({ id: 3973120684, user: { login: state.publisher } }) : options.response ?? failure();
+      }
+      if (args[3].endsWith('/issues/638/comments')) {
+        if (options.stickyFailure) return failure();
+        state.comments.push({ id: 99, body: payload.body, user: { login: state.publisher } });
+        return ok({ id: 99, user: { login: state.publisher } });
+      }
+    }
+    throw new Error(`Unexpected fake GitHub call: ${args.slice(0, 4).join(' ')}`);
+  };
+  return { state, run: () => postOrOutputComment(summary, context, selectedPlan, { commandRunner }) };
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('uncertain inline creation: strict read-back, never POST retry', () => {
+  it.each([false, true])('requires a real visible sticky summary after creation (normal201=%s)', (successfulCreate) => {
+    const f = fixture({ successfulCreate });
+    expect(f.run()).toMatchObject({ success: true, summaryCommentId: 99 });
+    expect(f.state.posts.map((p: any) => p.endpoint)).toEqual(['repos/review-yeti-ai/review-yeti-bot/pulls/638/comments', 'repos/review-yeti-ai/review-yeti-bot/issues/638/comments']);
+    expect(f.state.posts[0].payload).toEqual({ commit_id: head, path: 'src/github/appAuth.ts', line: 48, side: 'RIGHT', body: `${item.body}\n\n<!-- review-yeti-bot:finding:v1:${head}:review-yeti-finding:fixture -->` });
+    expect(f.state.comments[0].body).toContain(head);
+    expect(f.state.reads).toBeGreaterThanOrEqual(successfulCreate ? 2 : 3);
+  });
+
+  const invalid: Array<[string, (s: any) => void]> = [
+    ['missing', s => { s.threads = []; }],
+    ['duplicate', s => { s.threads.push({ ...structuredClone(s.threads[0]), id: 'thread-2' }); }],
+    ['wrong body with correct marker', s => { s.threads[0].comments.nodes[0].body = s.threads[0].comments.nodes[0].body.replace('Add cancellation tests.', 'Different finding.'); }],
+    ['wrong marker', s => { s.threads[0].comments.nodes[0].body = s.threads[0].comments.nodes[0].body.replace('review-yeti-finding:fixture', 'review-yeti-finding:other'); }],
+    ['wrong head', s => { s.threads[0].comments.nodes[0].commit.oid = 'c'.repeat(40); }],
+    ['wrong author', s => { s.threads[0].comments.nodes[0].author.login = 'untrusted[bot]'; }],
+    ['wrong path', s => { s.threads[0].path = 'src/other.ts'; }],
+    ['wrong end line', s => { s.threads[0].line = 49; }],
+    ['wrong side', s => { s.threads[0].diffSide = 'LEFT'; }],
+    ['wrong start', s => { s.threads[0].startLine = 47; }],
+    ['resolved', s => { s.threads[0].isResolved = true; }],
+    ['outdated', s => { s.threads[0].isOutdated = true; }],
+    ['missing outdated evidence', s => { delete s.threads[0].isOutdated; }],
+    ['incomplete snapshot', s => { s.complete = false; }],
+    ['incomplete comments', s => { s.threads[0].comments.pageInfo = { hasNextPage: true, endCursor: null }; }],
+    ['failed readback', s => { s.readFailure = true; }],
+    ['fresh head drift', s => { s.head = 'c'.repeat(40); }],
+    ['fresh base drift', s => { s.base = 'd'.repeat(40); }],
+    ['fresh publisher drift', s => { s.publisher = 'different[bot]'; }],
+  ];
+  it.each(invalid)('refuses %s without a second POST or a summary', (_name, mutate) => {
+    const f = fixture({ mutate });
+    expect(f.run().success).toBe(false);
+    expect(f.state.posts).toHaveLength(1);
+  });
+
+  it.each(['head', 'base', 'publisher'])('rechecks %s after the recovery snapshot', (key) => {
+    const f = fixture({ afterSnapshot(s, reads) { if (reads === 2) s[key] = key === 'publisher' ? 'changed[bot]' : 'e'.repeat(40); } });
+    expect(f.run().success).toBe(false);
+    expect(f.state.posts).toHaveLength(1);
+  });
+
+  it('does not weaken the final all-thread verification after recovering', () => {
+    const f = fixture({ afterSnapshot(s, reads) { if (reads === 2) s.threads[0].diffSide = 'LEFT'; } });
+    expect(f.run().success).toBe(false);
+    expect(f.state.posts).toHaveLength(1);
+  });
+
+  it.each([{ stickyFailure: true }, { hideSummary: true }])('never reports success without the actual sticky receipt (%j)', (options) => {
+    const f = fixture(options);
+    expect(f.run().success).toBe(false);
+    expect(f.state.posts).toHaveLength(2);
+    expect(f.state.posts.filter((p: any) => p.endpoint.includes('/pulls/'))).toHaveLength(1);
+  });
+
+  it.each([false, true])('recovers only the exact multiline range (wrong start side=%s)', (wrong) => {
+    const selected = { ...plan, lineComments: [{ ...item, startLine: 46 }] };
+    const f = fixture({ mutate(s) { if (wrong) s.threads[0].startDiffSide = 'LEFT'; } }, selected);
+    expect(f.run().success).toBe(!wrong);
+    expect(f.state.posts.filter((p: any) => p.endpoint.includes('/pulls/'))).toHaveLength(1);
+  });
+
+  it('accepts GitHub single-line startLine echo without converting it to a range', () => {
+    const f = fixture({ mutate(s) { s.threads[0].startLine = 48; } });
+    expect(f.run().success).toBe(true);
+  });
+
+  it('recovers a lost-response process failure only with the same strict persisted proof', () => {
+    const f = fixture({ response: { status: 1, stdout: '', stderr: 'PRIVATE_SOCKET_FAILURE' } });
+    expect(f.run().success).toBe(true);
+    expect(f.state.posts).toHaveLength(2);
+  });
+});
+
+describe('publication API diagnostics have closed fields, not raw error messages', () => {
+  it('retains 422 resource/field/code and safe request dimensions, never values or raw streams', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = fixture({ mutate(s) { s.threads = []; } });
+    const result = f.run();
+    expect(result.diagnostics).toEqual([expect.objectContaining({ httpStatus: 422, validation: [{ resource: 'PullRequestReviewComment', field: 'line', code: 'invalid' }], request: expect.objectContaining({ headSha: head, line: 48, side: 'RIGHT', bodyBytes: expect.any(Number), bodyDigest: expect.stringMatching(/^[a-f0-9]{64}$/) }) })]);
+    expect(JSON.stringify([result, warn.mock.calls])).not.toMatch(/PRIVATE_|Add cancellation tests/);
+  });
+
+  it.each(['not json PRIVATE_RESPONSE', JSON.stringify({ errors: [{ resource: 'PRIVATE_RESOURCE', field: 'PRIVATE_FIELD', code: 'PRIVATE_CODE', message: 'PRIVATE_MESSAGE' }] }), 'x'.repeat(70_000)])('does not trust unknown/malformed/oversized error JSON', (stdout) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const f = fixture({ mutate(s) { s.threads = []; }, response: { status: 1, stdout, stderr: 'gh: Validation Failed (HTTP 422) PRIVATE_STDERR' } });
+    const result = f.run();
+    expect(result.diagnostics?.[0]).toMatchObject({ httpStatus: 422, validation: [] });
+    expect(JSON.stringify([result, warn.mock.calls])).not.toMatch(/PRIVATE_|xxxxxx/);
+  });
+});
