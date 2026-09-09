@@ -63,6 +63,7 @@ describe('ReviewJobDispatchEngine', () => {
       metadata: expect.objectContaining({ name: `ct-review-${'1'.repeat(32)}` }),
       spec: expect.objectContaining({
         runId: claim.runId,
+        executionAttempt: 1,
         publicationMode: 'disabled',
         workerImage: expect.stringMatching(/@sha256:[a-f0-9]{64}$/u),
       }),
@@ -254,6 +255,7 @@ describe('ReviewJobDispatchEngine', () => {
       metadata: expect.objectContaining({ name: `ct-review-${'1'.repeat(32)}-a2` }),
       spec: expect.objectContaining({
         runId: claim.runId,
+        executionAttempt: 2,
         runSecretName: `ct-review-run-${'1'.repeat(32)}-a2`,
       }),
     }));

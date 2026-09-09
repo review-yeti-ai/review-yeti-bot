@@ -87,9 +87,64 @@ func TestBuildWorkerJobAcceptsExecutionAttemptScopedSecret(t *testing.T) {
 	review := reviewFixture(now)
 	review.Name = review.Name + "-a2"
 	review.Spec.RunSecretName = review.Spec.RunSecretName + "-a2"
+	attempt := int32(2)
+	review.Spec.ExecutionAttempt = &attempt
 
-	if _, err := job.BuildWorkerJob(buildInput(review, now)); err != nil {
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
 		t.Fatalf("execution-attempt-scoped review was rejected: %v", err)
+	}
+	if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != "2" {
+		t.Fatalf("explicit execution attempt env = %q, want 2", got)
+	}
+}
+
+func TestBuildWorkerJobDefaultsLegacyUnsuffixedSecretToAttemptOne(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("legacy unsuffixed review was rejected: %v", err)
+	}
+	if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != "1" {
+		t.Fatalf("legacy unsuffixed execution attempt env = %q, want 1", got)
+	}
+}
+
+func TestBuildWorkerJobDecodesLegacySuffixedSecretWhenFieldIsAbsent(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Name = review.Name + "-a2"
+	review.Spec.RunSecretName += "-a2"
+
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("legacy suffixed review was rejected: %v", err)
+	}
+	if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != "2" {
+		t.Fatalf("legacy suffixed execution attempt env = %q, want 2", got)
+	}
+}
+
+func TestBuildWorkerJobRejectsExplicitExecutionAttemptSecretMismatch(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name        string
+		attempt     int32
+		secretDelta string
+	}{
+		{name: "explicit retry with unsuffixed Secret", attempt: 2},
+		{name: "explicit first attempt with retry Secret", attempt: 1, secretDelta: "-a2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.RunSecretName += test.secretDelta
+			review.Spec.ExecutionAttempt = &test.attempt
+			if _, err := job.BuildWorkerJob(buildInput(review, now)); err == nil {
+				t.Fatal("mismatched execution attempt and Secret unexpectedly built a Job")
+			}
+		})
 	}
 }
 

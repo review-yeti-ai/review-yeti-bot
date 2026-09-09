@@ -67,6 +67,8 @@ export interface PRReviewJobProjection {
     publicationMode: PublicationMode;
     workerImage: string;
     runSecretName: string;
+    /** Optional for compatibility with projections created before attempt transport was added. */
+    executionAttempt?: number;
     runnerMode?: RunnerMode;
   };
 }
@@ -163,6 +165,7 @@ export function buildReviewJobProjection(
       publicationMode: input.publicationMode,
       workerImage: input.workerImage,
       runSecretName: `ct-review-run-${identitySuffix}${attemptSuffix}`,
+      ...(input.executionAttempt === undefined ? {} : { executionAttempt }),
       runnerMode,
     },
   };

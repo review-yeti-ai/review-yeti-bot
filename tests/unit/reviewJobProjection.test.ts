@@ -69,8 +69,16 @@ describe('buildReviewJobProjection', () => {
     const retry = buildReviewJobProjection({ ...input, executionAttempt: 2 }, receivedAt + 60_000);
     expect(retry.metadata.name).toBe(`ct-review-${'1'.repeat(32)}-a2`);
     expect(retry.spec.runSecretName).toBe(`ct-review-run-${'1'.repeat(32)}-a2`);
+    expect(retry.spec.executionAttempt).toBe(2);
     expect(retry.spec.runId).toBe(input.runId);
     expect(retry.spec.deliveryId).toBe(input.deliveryId);
+  });
+
+  it('projects an explicit unsuffixed first execution attempt', () => {
+    const first = buildReviewJobProjection({ ...input, executionAttempt: 1 }, receivedAt + 60_000);
+    expect(first.metadata.name).toBe(`ct-review-${'1'.repeat(32)}`);
+    expect(first.spec.runSecretName).toBe(`ct-review-run-${'1'.repeat(32)}`);
+    expect(first.spec.executionAttempt).toBe(1);
   });
 
   it('accepts the maximum execution attempt and preserves its attempt-scoped identity', () => {
@@ -78,6 +86,7 @@ describe('buildReviewJobProjection', () => {
     const projection = buildReviewJobProjection({ ...input, executionAttempt: maxAttempt }, receivedAt + 60_000);
     expect(projection.metadata.name).toBe(`ct-review-${'1'.repeat(32)}-a${maxAttempt}`);
     expect(projection.spec.runSecretName).toBe(`ct-review-run-${'1'.repeat(32)}-a${maxAttempt}`);
+    expect(projection.spec.executionAttempt).toBe(maxAttempt);
   });
 
   it('rejects unknown publication modes and deadline expansion before producing a projection', () => {

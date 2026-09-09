@@ -481,6 +481,47 @@ describe('PostgresReviewDispatchRepository', () => {
     ]);
   });
 
+  it.each([
+    { name: 'missing run', runStatus: null, outboxStatus: 'projected' },
+    { name: 'superseded run', runStatus: 'superseded', outboxStatus: 'projected' },
+    { name: 'cancelled run', runStatus: 'cancelled', outboxStatus: 'projected' },
+    { name: 'successful run', runStatus: 'succeeded', outboxStatus: 'projected' },
+    { name: 'terminal outbox', runStatus: 'queued', outboxStatus: 'terminal' },
+  ])('ignores a callback for $name without changing durable state', async ({ runStatus, outboxStatus }) => {
+    const tokenDigest = 'a'.repeat(64);
+    const query = vi.fn(async () => ({ rows: runStatus === null ? [] : [{
+      ...row,
+      repository_id: 123,
+      publication_mode: 'app-gate',
+      status: runStatus,
+      outbox_status: outboxStatus,
+      execution_attempt: 0,
+      worker_token_digest: tokenDigest,
+    }] }));
+    const { repository, transactionQuery, release } = workerFailureRepository(query);
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1',
+      runId: row.run_id,
+      repositoryId: 123,
+      owner: identity.owner,
+      repo: identity.repo,
+      prNumber: identity.prNumber,
+      headSha: identity.headSha,
+      baseSha: identity.baseSha,
+      policyDigest: identity.configDigest,
+      configDigest: identity.configDigest,
+      executionAttempt: 1,
+      failureClass: 'transport',
+    }, { workerTokenDigest: tokenDigest }, 4_000)).resolves.toEqual({
+      runId: row.run_id,
+      status: 'ignored',
+    });
+    expect(query).toHaveBeenCalledOnce();
+    expect(transactionQuery.mock.calls.some(([sql]) => /\bUPDATE\s+(?:review_runs|review_dispatch_outbox)/u.test(sql))).toBe(false);
+    expect(transactionQuery.mock.calls.at(-1)?.[0]).toBe('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('treats a duplicate worker terminal failure as already failed', async () => {
     const tokenDigest = 'a'.repeat(64);
     const query = vi.fn(async () => ({ rows: [{
