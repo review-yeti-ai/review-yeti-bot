@@ -308,6 +308,17 @@ describe('POST /api/dispatch/action', () => {
 });
 
 describe('POST /api/dispatch/completion', () => {
+  it('returns a fixed 503 without invoking admission or authentication when completion is unconfigured', async () => {
+    const fixture = app();
+    const response = await request(fixture.instance).post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token').send(terminalFailure);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Worker completion is not configured' });
+    expect(fixture.verifier.verify).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+  });
+
   it('persists a typed terminal failure and returns no approval-shaped result', async () => {
     const fixture = completionApp();
     const response = await request(fixture.instance)
