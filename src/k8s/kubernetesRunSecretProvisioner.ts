@@ -1,6 +1,8 @@
 import { kubernetesStatusCode } from './kubernetesReviewJobProjector';
 import type { RunSecretProvisioner } from './reviewJobDispatchEngine';
+import { deriveRunSecretExecutionAttempt } from './reviewJobProjection';
 import { getGitHubAppRepositoryPublishToken, getGitHubAppRepositoryReadToken } from '../github/appAuth';
+import { sha256 } from '../review/reviewCore';
 
 export const PUBLISH_TOKEN_KEY = 'GITHUB_PUBLISH_TOKEN';
 // The operator wires GH_TOKEN from this key, non-optionally, for the publishing
@@ -8,7 +10,6 @@ export const PUBLISH_TOKEN_KEY = 'GITHUB_PUBLISH_TOKEN';
 // backoffLimit 0 -- it never starts, never creates a check run, and the pull
 // request sees nothing at all.
 export const READ_TOKEN_KEY = 'GITHUB_READ_TOKEN';
-const SECRET_NAME_PATTERN = /^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$/u;
 
 export interface CoreSecretClient {
   createNamespacedSecret(request: {
@@ -16,6 +17,10 @@ export interface CoreSecretClient {
     body: unknown;
     fieldManager: string;
     fieldValidation: 'Strict';
+  }): Promise<unknown>;
+  readNamespacedSecret(request: {
+    namespace: string;
+    name: string;
   }): Promise<unknown>;
 }
 
@@ -57,13 +62,20 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
     namespace: string;
     owner: string;
     repo: string;
-  }): Promise<void> {
+  }): Promise<{ workerTokenDigest: string }> {
     // The name is derived from the run id upstream; refusing an unexpected shape
     // keeps this from writing a Secret that some other component owns.
-    if (!SECRET_NAME_PATTERN.test(request.secretName)) {
+    if (deriveRunSecretExecutionAttempt(request.runId, request.secretName) === undefined) {
       throw new Error('run secret name does not match the expected run-scoped pattern');
     }
     if (!request.owner || !request.repo) throw new Error('run secret provisioner requires owner and repo');
+
+    // Recover a successful Secret create before minting anything. This is the
+    // normal path after a dispatcher crash between the Kubernetes write and the
+    // database digest bind, and it guarantees we never mint a replacement token
+    // merely because the durable bind was interrupted.
+    const existing = await readExistingRunSecret(this.options.client, request);
+    if (existing) return existing;
 
     const credentials = {
       appId: this.options.appId,
@@ -89,6 +101,8 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
           'review-yeti.ai/run-id': request.runId,
           'review-yeti.ai/component': 'run-credentials',
         },
+        // Repository names can exceed the 63-character Kubernetes label limit.
+        annotations: { 'review-yeti.ai/repository': `${request.owner}/${request.repo}` },
       },
       type: 'Opaque',
       stringData: {
@@ -105,21 +119,81 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
         fieldValidation: 'Strict',
       });
     } catch (error) {
-      if (kubernetesStatusCode(error) !== 409) throw error;
-      // A 409 means a sibling dispatcher already provisioned this run, moments ago
-      // and with its own freshly minted tokens -- so the existing Secret is good
-      // and this is success, not a conflict to resolve.
-      //
-      // It cannot be a stale Secret from an earlier execution attempt. The
-      // dispatcher keeps the run id derived from the immutable review identity
-      // (`run_${sha256(identity).slice(0,32)}`), while advancing the execution
-      // attempt in the Secret name whenever a worker must be recreated. A 409 is
-      // therefore only the idempotent race for this exact projection attempt.
-      //
-      // This is why the dispatcher needs `create` on secrets and NOT `delete`.
-      // Kubernetes cannot scope a verb to one Secret name, so `delete` here would
-      // also reach the App private key, the gateway credential and the ingress TLS
-      // key in this namespace. Treating 409 as success buys that reduction.
+      if (kubernetesStatusCode(error) === 409) {
+        // Secret creation and the durable DB binding are separate writes. If the
+        // process dies after the first succeeds, recover only the exact named
+        // Secret after checking its identity labels and both token keys. Never
+        // bind the freshly minted token from this attempt: it was not the token
+        // delivered by the already-existing Secret.
+        const recovered = await readExistingRunSecret(this.options.client, request);
+        if (recovered) return recovered;
+        throw new Error('run secret exists but trusted completion binding could not be recovered');
+      }
+      throw error;
     }
+    return { workerTokenDigest: sha256(minted.token) };
   }
+}
+
+async function readExistingRunSecret(
+  client: CoreSecretClient,
+  request: { runId: string; secretName: string; namespace: string; owner: string; repo: string },
+): Promise<{ workerTokenDigest: string } | undefined> {
+  let response: unknown;
+  try {
+    response = await client.readNamespacedSecret({ namespace: request.namespace, name: request.secretName });
+  } catch (error) {
+    if (kubernetesStatusCode(error) === 404) return undefined;
+    throw new Error('run secret could not be read for trusted completion binding');
+  }
+  const secret = (response as { body?: unknown }).body ?? response;
+  if (!isTrustedRunSecret(secret, request)) {
+    throw new Error('run secret identity could not be verified');
+  }
+  const publishToken = decodeSecretToken(secret, PUBLISH_TOKEN_KEY);
+  // The worker contract requires the sibling read token too. Requiring both
+  // prevents an unrelated Secret with a copied publish key from being treated
+  // as the run credential object.
+  decodeSecretToken(secret, READ_TOKEN_KEY);
+  return { workerTokenDigest: sha256(publishToken) };
+}
+
+function isTrustedRunSecret(
+  value: unknown,
+  request: { runId: string; secretName: string; namespace: string; owner: string; repo: string },
+): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const metadata = (value as { metadata?: unknown }).metadata;
+  if (!metadata || typeof metadata !== 'object') return false;
+  const record = metadata as {
+    name?: unknown;
+    namespace?: unknown;
+    labels?: unknown;
+    annotations?: Record<string, unknown>;
+  };
+  if (record.name !== request.secretName || record.namespace !== request.namespace) {
+    return false;
+  }
+  if (!record.labels || typeof record.labels !== 'object') return false;
+  const labels = record.labels as Record<string, unknown>;
+  // Legacy run Secrets have only the run-id/component labels. Their exact
+  // identity-derived name still binds them to this run; optional additional
+  // identity metadata must match when present.
+  const repository = record.annotations?.['review-yeti.ai/repository'];
+  return labels['review-yeti.ai/run-id'] === request.runId
+    && (repository === undefined || repository === `${request.owner}/${request.repo}`)
+    && (labels['review-yeti.ai/owner'] === undefined || labels['review-yeti.ai/owner'] === request.owner)
+    && (labels['review-yeti.ai/repo'] === undefined || labels['review-yeti.ai/repo'] === request.repo)
+    && labels['review-yeti.ai/component'] === 'run-credentials';
+}
+
+function decodeSecretToken(value: unknown, key: string): string {
+  if (!value || typeof value !== 'object') throw new Error('secret data unavailable');
+  const data = (value as { data?: unknown }).data;
+  if (!data || typeof data !== 'object') throw new Error('secret data unavailable');
+  const encoded = (data as Record<string, unknown>)[key];
+  if (typeof encoded !== 'string' || !encoded) throw new Error('secret token unavailable');
+  const token = Buffer.from(encoded, 'base64').toString('utf8');
+  if (!token.startsWith('ghs_')) throw new Error('secret token invalid');
+  return token;
 }

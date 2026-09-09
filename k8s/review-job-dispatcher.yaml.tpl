@@ -29,15 +29,14 @@ rules:
   # REL-586: provisions one Secret per publishing run, holding tokens minted from
   # the installed GitHub App and scoped to that run's repository.
   #
-  # `create` only, deliberately. Kubernetes cannot scope a verb to a single Secret
-  # name, so `delete` or `patch` here would also reach the App private key below,
-  # the gateway credential, and the ingress TLS key in this namespace. A 409 is
-  # treated as success instead: the run id is identity-derived and re-admission
-  # does not reset terminal_deadline, so one run-secret name is only ever written
-  # inside a single fifteen-minute window.
+  # `get` and `create` are the minimum verbs for split-write recovery. Reads are
+  # accepted only for the exact run-derived name and then identity-checked in the
+  # dispatcher before its publish-token digest is bound. `delete` or `patch` remain
+  # forbidden because Kubernetes cannot scope those verbs to one Secret name and
+  # they could reach the App private key, gateway credential, or ingress TLS key.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create"]
+    verbs: ["get", "create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

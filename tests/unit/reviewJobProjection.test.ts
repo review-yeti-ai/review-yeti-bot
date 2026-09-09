@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildReviewJobProjection } from '../../src/k8s/reviewJobProjection';
+import { buildReviewJobProjection, buildRunSecretName, deriveRunSecretExecutionAttempt } from '../../src/k8s/reviewJobProjection';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const input = {
@@ -18,6 +18,33 @@ const input = {
   workerImage: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:${'e'.repeat(64)}`,
   namespace: 'ct-review-qualification',
 };
+
+describe('shared run Secret name contract', () => {
+  const baseName = `ct-review-run-${'1'.repeat(32)}`;
+
+  // Mirrored by TestBuildWorkerJobRejectsLegacySecretSuffixBoundaries in Go.
+  it.each(['-a0', '-a-1', '-anonsense', '-a2147483648', '-a+2', '-a01'])('rejects legacy suffix %s', (suffix) => {
+    expect(deriveRunSecretExecutionAttempt(input.runId, baseName + suffix)).toBeUndefined();
+  });
+
+  it.each([['', 1], ['-a1', 1], ['-a2', 2], ['-a2147483647', 2_147_483_647]] as const)(
+    'derives legacy suffix "%s" as %i', (suffix, attempt) => {
+      expect(deriveRunSecretExecutionAttempt(input.runId, baseName + suffix)).toBe(attempt);
+    },
+  );
+
+  it('binds even a valid suffix to its exact run', () => {
+    expect(deriveRunSecretExecutionAttempt(`run_${'2'.repeat(32)}`, `${baseName}-a2`)).toBeUndefined();
+    expect(deriveRunSecretExecutionAttempt('invalid', `${baseName}-a2`)).toBeUndefined();
+    expect(deriveRunSecretExecutionAttempt(undefined, null)).toBeUndefined();
+  });
+
+  it('writes canonical names while retaining the legacy -a1 read alias', () => {
+    expect(buildRunSecretName(input.runId, 1)).toBe(baseName);
+    expect(buildRunSecretName(input.runId, 2)).toBe(`${baseName}-a2`);
+    expect(buildRunSecretName(input.runId, 2_147_483_647)).toBe(`${baseName}-a2147483647`);
+  });
+});
 
 describe('buildReviewJobProjection', () => {
   it('builds the exact deterministic nonpublishing PRReviewJob contract', () => {
@@ -69,8 +96,16 @@ describe('buildReviewJobProjection', () => {
     const retry = buildReviewJobProjection({ ...input, executionAttempt: 2 }, receivedAt + 60_000);
     expect(retry.metadata.name).toBe(`ct-review-${'1'.repeat(32)}-a2`);
     expect(retry.spec.runSecretName).toBe(`ct-review-run-${'1'.repeat(32)}-a2`);
+    expect(retry.spec.executionAttempt).toBe(2);
     expect(retry.spec.runId).toBe(input.runId);
     expect(retry.spec.deliveryId).toBe(input.deliveryId);
+  });
+
+  it('projects an explicit unsuffixed first execution attempt', () => {
+    const first = buildReviewJobProjection({ ...input, executionAttempt: 1 }, receivedAt + 60_000);
+    expect(first.metadata.name).toBe(`ct-review-${'1'.repeat(32)}`);
+    expect(first.spec.runSecretName).toBe(`ct-review-run-${'1'.repeat(32)}`);
+    expect(first.spec.executionAttempt).toBe(1);
   });
 
   it('accepts the maximum execution attempt and preserves its attempt-scoped identity', () => {
@@ -78,6 +113,7 @@ describe('buildReviewJobProjection', () => {
     const projection = buildReviewJobProjection({ ...input, executionAttempt: maxAttempt }, receivedAt + 60_000);
     expect(projection.metadata.name).toBe(`ct-review-${'1'.repeat(32)}-a${maxAttempt}`);
     expect(projection.spec.runSecretName).toBe(`ct-review-run-${'1'.repeat(32)}-a${maxAttempt}`);
+    expect(projection.spec.executionAttempt).toBe(maxAttempt);
   });
 
   it('rejects unknown publication modes and deadline expansion before producing a projection', () => {

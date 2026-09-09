@@ -77,6 +77,8 @@ export interface ReviewDispatchClaim {
    * object after the previous one reached a terminal state.
    */
   executionAttempt: number;
+  /** Digest of the per-attempt worker bearer, if this execution was provisioned before a retry. */
+  workerTokenDigest?: string;
   repositoryId: number;
   installationId: number;
   publicationMode: PublicationMode;

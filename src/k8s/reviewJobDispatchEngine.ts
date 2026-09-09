@@ -24,13 +24,13 @@ export interface RunSecretProvisioner {
     namespace: string;
     owner: string;
     repo: string;
-  }): Promise<void>;
+  }): Promise<{ workerTokenDigest: string }>;
 }
 
 export interface ReviewJobDispatchEngineOptions {
   repository: Pick<
     ReviewDispatchRepository,
-    'claimNext' | 'markProjected' | 'releaseForRetry' | 'markTerminal'
+    'claimNext' | 'markProjected' | 'bindWorkerTokenDigest' | 'releaseForRetry' | 'markTerminal'
   >;
   projector: ReviewJobProjector;
   /** Required to dispatch an app-gate review; absent, publishing runs are refused. */
@@ -102,6 +102,7 @@ export class ReviewJobDispatchEngine {
         : { status: 'lease-lost', runId: claim.runId };
     }
 
+    let workerTokenDigest = claim.workerTokenDigest;
     // A publishing review needs its credential in place before the Job can start.
     // Provision first and fail closed: creating the PRReviewJob without the Secret
     // would start a worker that cannot publish, and because the lane fails closed
@@ -122,13 +123,23 @@ export class ReviewJobDispatchEngine {
       }
       const [owner, repoName] = claim.repo.split('/');
       try {
-        await provisioner.provision({
-          runId: claim.runId,
-          secretName: projection.spec.runSecretName,
-          namespace: this.options.namespace,
-          owner,
-          repo: repoName,
-        });
+        if (!workerTokenDigest) {
+          const provisioned = await provisioner.provision({
+            runId: claim.runId,
+            secretName: projection.spec.runSecretName,
+            namespace: this.options.namespace,
+            owner,
+            repo: repoName,
+          });
+          workerTokenDigest = provisioned.workerTokenDigest;
+          const bound = await this.options.repository.bindWorkerTokenDigest(
+            claim.runId,
+            this.options.workerId,
+            workerTokenDigest,
+            now,
+          );
+          if (!bound) return { status: 'lease-lost', runId: claim.runId };
+        }
       } catch {
         // Retry rather than terminate: a token mint is a network call and GitHub
         // rate limits are transient. The terminal deadline still bounds it.
@@ -168,12 +179,20 @@ export class ReviewJobDispatchEngine {
         : { status: 'lease-lost', runId: claim.runId };
     }
 
-    const projected = await this.options.repository.markProjected(
-      claim.runId,
-      this.options.workerId,
-      projection.metadata.name,
-      now,
-    );
+    const projected = workerTokenDigest
+      ? await this.options.repository.markProjected(
+        claim.runId,
+        this.options.workerId,
+        projection.metadata.name,
+        now,
+        workerTokenDigest,
+      )
+      : await this.options.repository.markProjected(
+        claim.runId,
+        this.options.workerId,
+        projection.metadata.name,
+        now,
+      );
     return projected
       ? { status: 'projected', runId: claim.runId, projectionName: projection.metadata.name }
       : { status: 'lease-lost', runId: claim.runId };

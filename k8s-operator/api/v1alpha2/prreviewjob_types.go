@@ -45,6 +45,13 @@ type PRReviewJobSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
 	DeliveryID string `json:"deliveryId"`
+	// ExecutionAttempt is the explicit execution identity for this run. It is
+	// optional so the upgraded operator can continue processing CRs persisted by
+	// older dispatchers, which recover the value from the validated Secret name.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=2147483647
+	// +optional
+	ExecutionAttempt *int32 `json:"executionAttempt,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	RepositoryID int64 `json:"repositoryId"`
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`
