@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ReviewJobDispatchEngine } from '../../src/k8s/reviewJobDispatchEngine';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const now = receivedAt + 60_000;
@@ -15,7 +16,7 @@ const claim = {
   headSha: 'a'.repeat(40),
   baseSha: 'b'.repeat(40),
   receivedAt,
-  terminalDeadline: receivedAt + 900_000,
+  terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
   policyDigest: 'c'.repeat(64),
   configDigest: 'd'.repeat(64),
   workerTokenDigest: undefined,
