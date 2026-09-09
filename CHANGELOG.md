@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.3...v1.45.4) (2026-09-09)
+
+
+### Bug Fixes
+
+* **deploy:** a dispatcher redeploy must not scale production to zero ([#623](https://github.com/review-yeti-ai/review-yeti-bot/issues/623)) ([0337a94](https://github.com/review-yeti-ai/review-yeti-bot/commit/0337a942abdfe3765683669392072b1762b06f6e))
+
 ## [1.45.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.2...v1.45.3) (2026-09-09)
 
 
