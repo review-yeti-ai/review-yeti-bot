@@ -25,6 +25,43 @@ The installer verifies:
 - Least-privilege RBAC definitions in an isolated namespace.
 - Application of the `review-yeti.ai/v1alpha2` Custom Resource Definition (CRD).
 
+Both the installer and `scripts/deploy-review-job-dispatcher.sh` are
+deliberately install/upgrade boundaries: they apply at `replicas: 0` and
+refuse to activate a deployment. Neither script has -- nor is meant to have
+-- a path to move the worker image forward once a dispatcher is already
+serving production traffic.
+
+---
+
+## 🔁 Advancing the Production Worker Digest
+
+Production runs the review-job-dispatcher's worker image at a single pinned
+digest, stored in the `ct-review-job-dispatcher` ConfigMap's
+`REVIEW_JOB_WORKER_IMAGE` key. A merge to `main` does not, by itself, reach
+production: it only makes a new commit's image available to pull. Advancing
+the live dispatcher to that commit is a separate, explicit operational step,
+run against an already-active dispatcher:
+
+```bash
+scripts/advance-review-worker.sh <commit-sha|release-tag> [--dry-run]
+```
+
+The script resolves the argument to a commit, resolves that commit to the
+GHCR multi-architecture image index digest (refusing anything that is not a
+multi-arch index covering both `amd64` and `arm64`), and -- if the dispatcher
+is already active and running in `prebaked` runner mode -- applies the new
+digest through the same rendered ConfigMap document
+`deploy-review-job-dispatcher.sh` uses (never a hand `kubectl patch`), restarts
+the dispatcher, and verifies the new value from inside the running pod before
+exiting successfully. Running it again with the same target is a no-op.
+
+This is intentionally a distinct, deliberately manual action from the `v1`
+action-tag promotion described in the release workflows: promoting `v1` moves
+which release of this repository's GitHub Action consumers pin to, gated
+behind its own canary window; `advance-review-worker.sh` moves which worker
+image the production dispatcher in `ct-review-system` actually runs. Neither
+step implies the other.
+
 ---
 
 ## 📋 Operational Verification & Qualification Order
