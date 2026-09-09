@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.47.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.46.0...v1.47.0) (2026-09-09)
+
+
+### Features
+
+* add opt-in service-owned review gates ([#635](https://github.com/review-yeti-ai/review-yeti-bot/issues/635)) ([1a7f237](https://github.com/review-yeti-ai/review-yeti-bot/commit/1a7f2370d296b41296ee73e41cf25dc40cdccb23))
+
 ## [1.46.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.7...v1.46.0) (2026-09-09)
 
 
