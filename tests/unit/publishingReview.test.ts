@@ -584,3 +584,35 @@ describe('parseChangedFiles', () => {
     expect(unreadable).toEqual(['diff --git nonsense']);
   });
 });
+
+describe('hosted lane — repository visibility resolution', () => {
+  const summaryOf = (client: ReturnType<typeof checkClient>) =>
+    String(((client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+
+  it('trusts a definite value from the dispatching workflow and does not look up', async () => {
+    const client = checkClient();
+    const visibilityLookup = vi.fn(async () => 'PUBLIC' as const);
+    await runPublishingReviewWorker(env({ REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE' }), deps({ checkClient: client, visibilityLookup }) as never);
+    expect(visibilityLookup).not.toHaveBeenCalled();
+    expect(summaryOf(client)).toContain('Repository visibility: PRIVATE.');
+  });
+
+  it("asks GitHub with the run's own token when the workflow did not say", async () => {
+    // The first live run after visibility was introduced published UNKNOWN for a
+    // private repository because nothing in production sets the env var. The lane
+    // already holds a repository-scoped read token for the diff; it can ask.
+    const client = checkClient();
+    const visibilityLookup = vi.fn(async () => 'PRIVATE' as const);
+    await runPublishingReviewWorker(env(), deps({ checkClient: client, visibilityLookup }) as never);
+    expect(visibilityLookup).toHaveBeenCalledWith({ owner: 'calltelemetry', repo: 'ct-meta', token: 'ghs_test' });
+    expect(summaryOf(client)).toContain('Repository visibility: PRIVATE.');
+  });
+
+  it('settles to UNKNOWN and still completes the review when the lookup fails', async () => {
+    const client = checkClient();
+    const visibilityLookup = vi.fn(async () => { throw new Error('repos 502'); });
+    const receipt = await runPublishingReviewWorker(env(), deps({ checkClient: client, visibilityLookup }) as never);
+    expect(receipt.conclusion).toBe('success');
+    expect(summaryOf(client)).toContain('Repository visibility: UNKNOWN.');
+  });
+});
