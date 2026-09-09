@@ -595,6 +595,7 @@ func TestPRReviewJobV1Alpha2ReconcilerKeepsItsOwnAppGateWorker(t *testing.T) {
 			Model:             "ollama/glm-5.3-flash",
 			GatewaySecretName: "review-yeti-gateway-credentials",
 			GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+			CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 		},
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
@@ -674,6 +675,7 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsTamperedAppGateWorkers(t *testing.T) 
 					Model:             "ollama/glm-5.3-flash",
 					GatewaySecretName: "review-yeti-gateway-credentials",
 					GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+					CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 				},
 			}
 			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}

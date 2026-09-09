@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { sha256 } from '../review/reviewCore';
 import {
   ReviewAdmission,
@@ -6,6 +7,7 @@ import {
   PublicationMode,
   ReviewRun,
 } from '../review/reviewRun';
+import type { WorkerCompletionProof, WorkerTerminalFailure } from '../review/workerCompletion';
 
 interface QueryResult {
   rows: any[];
@@ -21,6 +23,13 @@ interface TransactionClient extends Queryable {
 
 interface ConnectionPool {
   connect(): Promise<TransactionClient>;
+}
+
+function constantTimeDigestEqual(expected: unknown, actual: string): boolean {
+  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/u.test(expected) || !/^[a-f0-9]{64}$/u.test(actual)) {
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(actual, 'hex'));
 }
 
 function milliseconds(value: unknown): number | undefined {
@@ -96,11 +105,19 @@ export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null>;
   heartbeat(runId: string, workerId: string, now: number, leaseMs: number): Promise<boolean>;
-  markProjected(runId: string, workerId: string, projectionName: string, now: number): Promise<boolean>;
+  markProjected(runId: string, workerId: string, projectionName: string, now: number, workerTokenDigest?: string): Promise<boolean>;
+  bindWorkerTokenDigest(runId: string, workerId: string, workerTokenDigest: string, now: number): Promise<boolean>;
   releaseForRetry(runId: string, workerId: string, now: number, availableAt: number): Promise<boolean>;
   markTerminal(runId: string, workerId: string, now: number, error: string): Promise<boolean>;
+  /** Persist a worker's fail-closed terminal outcome without approving the head. */
+  markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
   /** REL-586: sweep publishing runs whose deadline passed without ever publishing. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
+}
+
+export interface WorkerFailureTransition {
+  runId: string;
+  status: 'failed' | 'already_failed' | 'ignored' | 'unauthorized';
 }
 
 export class PostgresReviewDispatchRepository implements ReviewDispatchRepository {
@@ -259,6 +276,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'
                  THEN review_dispatch_outbox.execution_attempt + 1
                  ELSE review_dispatch_outbox.execution_attempt END,
+               worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal')
+                 THEN NULL ELSE review_dispatch_outbox.worker_token_digest END,
                updated_at = EXCLUDED.updated_at
          WHERE review_dispatch_outbox.status IN ('projected', 'terminal')
            AND EXISTS (
@@ -325,6 +344,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                  candidate.terminal_deadline, candidate.effective_policy_digest,
                  candidate.effective_config_digest,
                  outbox.execution_attempt + 1 AS execution_attempt,
+                 outbox.worker_token_digest,
                  outbox.lease_owner, outbox.lease_expires_at`,
       [workerId, now, leaseMs],
     );
@@ -333,6 +353,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       runId: row.run_id,
       deliveryId: row.delivery_id,
       executionAttempt: Number(row.execution_attempt || 1),
+      workerTokenDigest: row.worker_token_digest || undefined,
       repositoryId: Number(row.repository_id),
       installationId: Number(row.installation_id),
       publicationMode: publicationMode(row.publication_mode),
@@ -398,14 +419,40 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     return result.rows.length > 0;
   }
 
-  async markProjected(runId: string, workerId: string, projectionName: string, now: number): Promise<boolean> {
+  async markProjected(
+    runId: string,
+    workerId: string,
+    projectionName: string,
+    now: number,
+    workerTokenDigest?: string,
+  ): Promise<boolean> {
+    if (workerTokenDigest !== undefined && !/^[a-f0-9]{64}$/u.test(workerTokenDigest)) {
+      throw new Error('worker token digest must be 64 lowercase hex characters');
+    }
     const result = await this.queryable.query(
       `UPDATE review_dispatch_outbox
-          SET status = 'projected', projection_name = $3, lease_owner = NULL,
-              lease_expires_at = NULL, updated_at = to_timestamp($4 / 1000.0)
+          SET status = 'projected', projection_name = $3, worker_token_digest = COALESCE($5, worker_token_digest),
+              lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($4 / 1000.0)
         WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
+          AND ($5::text IS NULL OR worker_token_digest IS NULL OR worker_token_digest = $5)
       RETURNING run_id`,
-      [runId, workerId, projectionName, now],
+      [runId, workerId, projectionName, now, workerTokenDigest || null],
+    );
+    return result.rows.length > 0;
+  }
+
+  async bindWorkerTokenDigest(runId: string, workerId: string, workerTokenDigest: string, now: number): Promise<boolean> {
+    if (!/^[a-f0-9]{64}$/u.test(workerTokenDigest)) {
+      throw new Error('worker token digest must be 64 lowercase hex characters');
+    }
+    const result = await this.queryable.query(
+      `UPDATE review_dispatch_outbox
+          SET worker_token_digest = COALESCE(worker_token_digest, $3),
+              updated_at = to_timestamp($4 / 1000.0)
+        WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
+          AND (worker_token_digest IS NULL OR worker_token_digest = $3)
+      RETURNING run_id`,
+      [runId, workerId, workerTokenDigest, now],
     );
     return result.rows.length > 0;
   }
@@ -426,7 +473,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     const result = await this.queryable.query(
       `WITH terminalized AS (
          UPDATE review_dispatch_outbox
-            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+            SET status = 'terminal', worker_token_digest = NULL, lease_owner = NULL, lease_expires_at = NULL,
                 updated_at = to_timestamp($3 / 1000.0)
           WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
         RETURNING run_id
@@ -440,5 +487,126 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       [runId, workerId, now, error],
     );
     return result.rows.length > 0;
+  }
+
+  async markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now = Date.now()): Promise<WorkerFailureTransition> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      // Use admission's repository/PR lock so a same-head rerequest cannot
+      // interleave the run transition with the execution's outbox transition.
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `review-dispatch:${input.repositoryId}:${input.prNumber}`,
+      ]);
+      const result = await this.persistWorkerFailure(client, input, proof, now);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async persistWorkerFailure(
+    client: Queryable,
+    input: WorkerTerminalFailure,
+    proof: WorkerCompletionProof,
+    now: number,
+  ): Promise<WorkerFailureTransition> {
+    const safeError = `worker terminal failure: ${input.failureClass}`;
+    const current = await client.query(
+      `SELECT runs.status, runs.repository_id, runs.owner, runs.repo, runs.pr_number,
+              runs.head_sha, runs.base_sha, runs.effective_policy_digest,
+              runs.effective_config_digest, runs.publication_mode,
+              outbox.status AS outbox_status, outbox.execution_attempt,
+              outbox.worker_token_digest
+         FROM review_runs AS runs
+         JOIN review_dispatch_outbox AS outbox ON outbox.run_id = runs.run_id
+        WHERE runs.run_id = $1
+        FOR UPDATE OF runs, outbox`,
+      [input.runId],
+    );
+    const row = current.rows[0] as Record<string, unknown> | undefined;
+    if (!row) return { runId: input.runId, status: 'ignored' };
+
+    // The bearer must be the exact token minted for this execution attempt. A
+    // GitHub installation-token prefix or public check visibility is not proof
+    // of provenance. Compare fixed-length digests with a constant-time primitive.
+    if (!constantTimeDigestEqual(row.worker_token_digest, proof.workerTokenDigest)) {
+      return { runId: input.runId, status: 'unauthorized' };
+    }
+
+    const metadataMatches = Number(row.repository_id) === input.repositoryId
+      && String(row.owner) === input.owner
+      && String(row.repo) === input.repo
+      && Number(row.pr_number) === input.prNumber
+      && String(row.head_sha) === input.headSha
+      && String(row.base_sha) === input.baseSha
+      && String(row.effective_policy_digest) === input.policyDigest
+      && String(row.effective_config_digest) === input.configDigest
+      && String(row.publication_mode) === 'app-gate'
+      && Number(row.execution_attempt) + 1 === input.executionAttempt;
+    if (!metadataMatches) return { runId: input.runId, status: 'unauthorized' };
+
+    const status = String(row.status || '');
+    if (status === 'failed' || status === 'terminal') return { runId: input.runId, status: 'already_failed' };
+    if (!['queued', 'running'].includes(status)
+      || !['pending', 'claimed', 'projected'].includes(String(row.outbox_status))) {
+      return { runId: input.runId, status: 'ignored' };
+    }
+
+    // A valid per-execution callback proves the worker was projected, even if
+    // Kubernetes accepted it before the dispatcher persisted its acknowledgement.
+    // Retire that dispatch lease atomically with failure. An old dispatcher then
+    // cannot resurrect/retry this execution; explicit re-admission advances the
+    // existing projected-execution counter and allocates a fresh Job and Secret.
+    await client.query(
+      `UPDATE review_dispatch_outbox
+          SET status = 'projected', lease_owner = NULL, lease_expires_at = NULL,
+              updated_at = to_timestamp($2 / 1000.0)
+        WHERE run_id = $1`,
+      [input.runId, now],
+    );
+    const transitioned = await client.query(
+      `UPDATE review_runs AS runs
+          SET status = 'failed', error_text = $2, lease_owner = NULL,
+              lease_expires_at = NULL, updated_at = to_timestamp($3 / 1000.0)
+        FROM review_dispatch_outbox AS outbox
+        WHERE runs.run_id = $1
+          AND outbox.run_id = runs.run_id
+          AND runs.owner = $4
+          AND runs.repo = $5
+          AND runs.pr_number = $6
+          AND runs.head_sha = $7
+          AND runs.base_sha = $8
+          AND runs.repository_id = $9
+          AND runs.effective_policy_digest = $10
+          AND runs.effective_config_digest = $11
+          AND runs.publication_mode = 'app-gate'
+          AND runs.status IN ('queued', 'running')
+          AND outbox.status = 'projected'
+          AND outbox.execution_attempt + 1 = $12
+          AND outbox.worker_token_digest = $13
+        RETURNING runs.run_id`,
+      [
+        input.runId,
+        safeError,
+        now,
+        input.owner,
+        input.repo,
+        input.prNumber,
+        input.headSha,
+        input.baseSha,
+        input.repositoryId,
+        input.policyDigest,
+        input.configDigest,
+        input.executionAttempt,
+        proof.workerTokenDigest,
+      ],
+    );
+    if (transitioned.rows.length !== 1) throw new Error('worker failure transition lost its locked identity');
+    return { runId: input.runId, status: 'failed' };
   }
 }

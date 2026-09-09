@@ -1,7 +1,7 @@
 import express from 'express';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
-import { createActionDispatchRouter } from '../../src/api/actionDispatchApi';
+import { createActionDispatchRouter, createWorkerCompletionVerifier } from '../../src/api/actionDispatchApi';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { GitHubActionsOidcVerifier } from '../../src/auth/githubActionsOidc';
 import path from 'node:path';
@@ -49,6 +49,42 @@ function app(overrides: Record<string, any> = {}) {
   instance.use(express.json({ limit: '64kb' }));
   instance.use('/api/dispatch', createActionDispatchRouter({ verifier, admission, resolveInstallationId }));
   return { instance, verifier, admission, resolveInstallationId };
+}
+
+const terminalFailure = {
+  version: 'WorkerTerminalFailure.v1',
+  runId: `run_${'1'.repeat(32)}`,
+  repositoryId: 123,
+  owner: 'calltelemetry',
+  repo: 'cisco-cdr',
+  prNumber: 42,
+  headSha: 'b'.repeat(40),
+  baseSha: 'c'.repeat(40),
+  policyDigest: 'd'.repeat(64),
+  configDigest: 'e'.repeat(64),
+  executionAttempt: 1,
+  checkId: 4242,
+  failureClass: 'rate_limit',
+} as const;
+
+function completionApp(overrides: Record<string, any> = {}) {
+  const verifier = {
+    verify: vi.fn(async () => ({ workerTokenDigest: 'f'.repeat(64) })),
+    ...(overrides.verifier || {}),
+  };
+  const repository = {
+    markWorkerFailure: vi.fn(async (event: typeof terminalFailure) => ({ runId: event.runId, status: 'failed' as const })),
+    ...(overrides.repository || {}),
+  };
+  const instance = express();
+  instance.use(express.json({ limit: '64kb' }));
+  instance.use('/api/dispatch', createActionDispatchRouter({
+    verifier: { verify: vi.fn(async () => verified) },
+    admission: { admit: vi.fn() },
+    resolveInstallationId: vi.fn(),
+    workerCompletion: { verifier, repository },
+  }));
+  return { instance, verifier, repository };
 }
 
 describe('POST /api/dispatch/action', () => {
@@ -268,5 +304,93 @@ describe('POST /api/dispatch/action', () => {
     expect(admissionResult.run.status).toBe('queued');
     expect(admissionResult.run.attempt).toBe(0);
     expect(admissionResult.run.stage).toBe('admission');
+  });
+});
+
+describe('POST /api/dispatch/completion', () => {
+  it('returns a fixed 503 without invoking admission or authentication when completion is unconfigured', async () => {
+    const fixture = app();
+    const response = await request(fixture.instance).post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token').send(terminalFailure);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Worker completion is not configured' });
+    expect(fixture.verifier.verify).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+  });
+
+  it('persists a typed terminal failure and returns no approval-shaped result', async () => {
+    const fixture = completionApp();
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send(terminalFailure);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      version: 'WorkerTerminalFailureAccepted.v1',
+      runId: terminalFailure.runId,
+      status: 'failed',
+    });
+    expect(fixture.repository.markWorkerFailure).toHaveBeenCalledWith(
+      terminalFailure,
+      expect.objectContaining({ workerTokenDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) }),
+      expect.any(Number),
+    );
+    expect(JSON.stringify(response.body)).not.toMatch(/success|ship|approve/iu);
+  });
+
+  it('rejects missing or invalid worker authentication before touching durable state', async () => {
+    const fixture = completionApp();
+    expect((await request(fixture.instance).post('/api/dispatch/completion').send(terminalFailure)).status).toBe(401);
+    const invalid = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send({ ...terminalFailure, failureClass: 'provider-secret' });
+    expect(invalid.status).toBe(400);
+    expect(fixture.repository.markWorkerFailure).not.toHaveBeenCalled();
+  });
+
+  it('rejects a worker token or check identity that the verifier does not authorize', async () => {
+    const fixture = completionApp({ verifier: { verify: vi.fn(async () => { throw new Error('wrong credential'); }) } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send(terminalFailure);
+    expect(response.status).toBe(403);
+    expect(fixture.repository.markWorkerFailure).not.toHaveBeenCalled();
+  });
+
+  it('rejects a valid-looking bearer when its digest is not bound to this attempt', async () => {
+    const fixture = completionApp({
+      repository: {
+        markWorkerFailure: vi.fn(async () => ({ runId: terminalFailure.runId, status: 'unauthorized' as const })),
+      },
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_arbitrary_public_check_reader')
+      .send(terminalFailure);
+    expect(response.status).toBe(403);
+    expect(JSON.stringify(response.body)).not.toMatch(/token|digest|exception/iu);
+  });
+
+  it('derives only a bearer digest and never performs a public-check lookup', async () => {
+    const verifier = createWorkerCompletionVerifier();
+    const proof = await verifier.verify('ghs_synthetic_worker_token', terminalFailure);
+    expect(proof.workerTokenDigest).toMatch(/^[a-f0-9]{64}$/u);
+    await expect(verifier.verify('ghp_wrong_token', terminalFailure)).rejects.toThrow(/ghs_/u);
+  });
+
+  it('returns a generic retryable 503 when failure persistence is unavailable', async () => {
+    const fixture = completionApp({ repository: {
+      markWorkerFailure: vi.fn(async () => { throw new Error('synthetic sensitive database diagnostic'); }),
+    } });
+    const response = await request(fixture.instance).post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token').send(terminalFailure);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Worker terminal failure could not be persisted' });
+    expect(response.text).not.toContain('database diagnostic');
+    expect(fixture.repository.markWorkerFailure).toHaveBeenCalledOnce();
   });
 });

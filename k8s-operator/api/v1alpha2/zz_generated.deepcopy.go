@@ -11,7 +11,7 @@ func (in *PRReviewJob) DeepCopyInto(out *PRReviewJob) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = in.Spec
+	in.Spec.DeepCopyInto(&out.Spec)
 	in.Status.DeepCopyInto(&out.Status)
 }
 
@@ -61,6 +61,11 @@ func (in *PRReviewJobList) DeepCopyObject() runtime.Object {
 
 func (in *PRReviewJobSpec) DeepCopyInto(out *PRReviewJobSpec) {
 	*out = *in
+	if in.ExecutionAttempt != nil {
+		in, out := &in.ExecutionAttempt, &out.ExecutionAttempt
+		*out = new(int32)
+		**out = **in
+	}
 }
 
 func (in *PRReviewJobSpec) DeepCopy() *PRReviewJobSpec {

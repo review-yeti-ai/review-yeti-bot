@@ -93,6 +93,10 @@ spec:
               value: ":8080"
             - name: REVIEW_YETI_OPERATOR_HEALTH_ADDR
               value: ":8081"
+            # Optional failure callback. Keep the installer inert; final activation
+            # changes only this setting through a separately guarded env patch.
+            - name: REVIEW_YETI_COMPLETION_URL
+              value: ""
           ports:
             - name: metrics
               containerPort: 8080

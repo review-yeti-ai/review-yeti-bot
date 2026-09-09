@@ -1,6 +1,11 @@
 import { Router, type Request, type Response } from 'express';
 import type { GitHubActionsOidcClaims } from '../auth/githubActionsOidc';
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
+import {
+  workerTerminalFailureSchema,
+  type WorkerCompletionProof,
+  type WorkerTerminalFailure,
+} from '../review/workerCompletion';
 import { buildReviewRunIdentity } from '../review/reviewAdmission';
 import {
   actionDispatchRequestSchema,
@@ -14,11 +19,19 @@ export interface ActionOidcVerifier {
   verify(token: string): Promise<GitHubActionsOidcClaims>;
 }
 
+export interface WorkerCompletionVerifier {
+  verify(token: string, event: WorkerTerminalFailure): Promise<WorkerCompletionProof>;
+}
+
 export interface ActionDispatchRouterOptions {
   verifier: ActionOidcVerifier;
   admission: Pick<ReviewDispatchRepository, 'admit'>;
   resolveInstallationId(owner: string, repo: string): Promise<number>;
   allowAppGate?: boolean;
+  workerCompletion?: {
+    verifier: WorkerCompletionVerifier;
+    repository: Pick<ReviewDispatchRepository, 'markWorkerFailure'>;
+  };
   now?: () => number;
 }
 
@@ -95,5 +108,58 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     }
   });
 
+  router.post('/completion', async (request: Request, response: Response) => {
+    const token = bearerToken(request);
+    if (!token) return response.status(401).json({ error: 'Worker installation bearer token is required' });
+    const parsed = workerTerminalFailureSchema.safeParse(request.body);
+    if (!parsed.success) return response.status(400).json({ error: 'Invalid worker terminal failure' });
+    const event = parsed.data;
+    const completion = options.workerCompletion;
+    if (!completion) return response.status(503).json({ error: 'Worker completion is not configured' });
+
+    let proof: WorkerCompletionProof;
+    try {
+      proof = await completion.verifier.verify(token, event);
+    } catch {
+      logger.warn('Rejected worker terminal failure callback', {
+        reason: 'worker_completion_credential_rejected',
+        runId: event.runId,
+      });
+      return response.status(403).json({ error: 'Worker completion is not authorized' });
+    }
+
+    try {
+      const transition = await completion.repository.markWorkerFailure(event, proof, now());
+      if (transition.status === 'unauthorized') {
+        return response.status(403).json({ error: 'Worker completion is not authorized' });
+      }
+      return response.status(200).json({
+        version: 'WorkerTerminalFailureAccepted.v1',
+        runId: transition.runId,
+        status: transition.status,
+      });
+    } catch (error) {
+      logger.error('Failed to persist worker terminal failure callback', {
+        reason: 'persistence_unavailable',
+        runId: event.runId,
+      });
+      return response.status(503).json({ error: 'Worker terminal failure could not be persisted' });
+    }
+  });
+
   return router;
+}
+
+/**
+ * The bearer is not trusted merely because it has a GitHub installation-token
+ * prefix. The repository compares this digest, constant-time, with the digest
+ * the trusted dispatcher stored for the exact projected execution attempt.
+ */
+export function createWorkerCompletionVerifier(): WorkerCompletionVerifier {
+  return {
+    async verify(token: string, _event: WorkerTerminalFailure): Promise<WorkerCompletionProof> {
+      if (!token.startsWith('ghs_')) throw new Error('worker completion requires a ghs_ installation token');
+      return { workerTokenDigest: sha256(token) };
+    },
+  };
 }

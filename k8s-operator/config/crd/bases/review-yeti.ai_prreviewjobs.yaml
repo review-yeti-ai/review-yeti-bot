@@ -65,6 +65,12 @@ spec:
                 maxLength: 512
                 minLength: 1
                 type: string
+              executionAttempt:
+                description: ExecutionAttempt is the explicit execution identity for this run.
+                format: int32
+                maximum: 2147483647
+                minimum: 1
+                type: integer
               headSha:
                 pattern: ^[a-f0-9]{40}$
                 type: string

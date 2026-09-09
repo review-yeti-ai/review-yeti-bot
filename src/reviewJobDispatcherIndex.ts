@@ -45,6 +45,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
             fieldManager: request.fieldManager,
             fieldValidation: request.fieldValidation,
           }),
+          readNamespacedSecret: (request: { namespace: string; name: string }) =>
+            core.readNamespacedSecret({ namespace: request.namespace, name: request.name }),
           deleteNamespacedSecret: (request: { namespace: string; name: string }) =>
             core.deleteNamespacedSecret({ namespace: request.namespace, name: request.name }),
         };
