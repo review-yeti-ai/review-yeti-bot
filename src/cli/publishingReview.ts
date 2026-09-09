@@ -23,7 +23,9 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { executePersonaPanel } from '../panel/panelEngine';
-import { normalizeRepositoryVisibility } from '../review/repositoryVisibility';
+import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
+import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
+import { Octokit } from '@octokit/core';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
@@ -440,6 +442,8 @@ export function resolveWorkerConfig(
 export interface PublishingReviewDeps {
   checkClient: PublishingCheckClient;
   sourceLoader?: typeof loadSameHeadReviewSource;
+  /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
+  visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
   panelRunner?: typeof executePersonaPanel;
   client?: ReviewModelClient;
   now?: () => number;
@@ -490,6 +494,12 @@ export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount:
   ].join('\n');
 }
 
+async function lookupRepositoryVisibility(input: { owner: string; repo: string; token: string }): Promise<RepositoryVisibility> {
+  const octokit = new Octokit({ auth: input.token });
+  const { data } = await octokit.request('GET /repos/{owner}/{repo}', { owner: input.owner, repo: input.repo });
+  return repositoryVisibilityFrom(data);
+}
+
 export async function runPublishingReviewWorker(
   env: NodeJS.ProcessEnv,
   deps: PublishingReviewDeps,
@@ -497,11 +507,22 @@ export async function runPublishingReviewWorker(
   if (!isPublishingReviewWorker(env)) throw invalidPublishingReviewContract();
   const identity = publishingReviewIdentity(env);
   const transport = bifrostTransport(env);
-  // This lane's admitted identity is entirely env-driven (no GitHub client is available to
-  // look the repository up); the dispatching workflow is the only source of visibility here.
-  // Absent or unrecognised input normalizes to 'UNKNOWN', never to a guess, and never blocks
-  // the run (ct-meta#2884: visibility must be told to the persona, not guessed).
-  const repositoryVisibility = normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY'));
+  // The dispatching workflow may tell this lane the repository's visibility. In
+  // production nothing does yet, and the first live run after the visibility
+  // change published "Repository visibility: UNKNOWN" for a private repository
+  // (ct-meta#2884). This lane already holds a repository-scoped read token for
+  // the diff, so it can ask GitHub itself. A failed lookup settles to UNKNOWN
+  // and never blocks the run; it is never allowed to become a guess.
+  const repositoryVisibility = await resolveRepositoryVisibility(
+    normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY')),
+    {
+      lookup: () => (deps.visibilityLookup || lookupRepositoryVisibility)({
+        owner: identity.owner,
+        repo: identity.repoName,
+        token: value(env, 'GH_TOKEN'),
+      }),
+    },
+  );
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
