@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.0...v1.45.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **reaper:** publish a title the consumer shims can retry [no-linear] ([#616](https://github.com/review-yeti-ai/review-yeti-bot/issues/616)) ([325b12b](https://github.com/review-yeti-ai/review-yeti-bot/commit/325b12b48d586c9318285a23e19b461228a9a0d8))
+
 ## [1.45.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.44.3...v1.45.0) (2026-09-09)
 
 
