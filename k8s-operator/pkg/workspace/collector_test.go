@@ -74,17 +74,18 @@ func TestTouchPVCRejectsClockRollbackAndStaleResourceVersion(t *testing.T) {
 func TestReclaimRetainsAt1799SecondsAndDeletesAt1800(t *testing.T) {
 	lastUsed := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 
-	t.Run("closed PR trigger at 1799 seconds remains retained", func(t *testing.T) {
+	t.Run("zero idle TTL reclaims as soon as last-used is observed", func(t *testing.T) {
 		pvc := mustPVC(t, 123, 42, lastUsed)
-		kube := fakeClient(t, pvc)
-		result, err := workspace.NewCollector(kube).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed.Add(1799*time.Second))
+		pvc.ResourceVersion = "11"
+		base := fakeClient(t, pvc)
+		capturing := &deleteCaptureClient{Client: base}
+		result, err := workspace.NewCollector(capturing).Reclaim(context.Background(), pvc.DeepCopy(), collectorNamespace, 123, 42, lastUsed)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Reclaimed || result.RequeueAfter != time.Second || result.Reason != workspace.RetainedIdleWindow {
-			t.Fatalf("result = %#v, want retained for one second", result)
+		if !result.Reclaimed || result.Reason != workspace.ReclaimedIdleWorkspace {
+			t.Fatalf("result = %#v, want reclaimed immediately", result)
 		}
-		assertPVCExists(t, kube, pvc.Name)
 	})
 
 	t.Run("idle workspace is deleted at exactly 1800 seconds", func(t *testing.T) {
