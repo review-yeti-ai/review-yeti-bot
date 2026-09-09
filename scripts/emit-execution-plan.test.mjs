@@ -27,10 +27,10 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.deepEqual(fixture, committedFixture);
   assert.match(fixture.normalized_plan_sha256, /^[0-9a-f]{64}$/);
   assert.equal(fixture.normalized_plan_sha256, sha256(canonicalJson(fixture.plan)));
-  assert.deepEqual(fixture.plan.transport_order, ['bifrost']);
+  assert.deepEqual(fixture.plan.transport_order, ['bifrost', 'openrouter-primary']);
   assert.deepEqual(fixture.plan.dispatch, {
     mode: 'ordered',
-    weights: { bifrost: 1 },
+    weights: { bifrost: 1, 'openrouter-primary': 2 },
   });
   assert.deepEqual(fixture.plan.scope, {
     max_diff_chars: 2000000,
@@ -40,7 +40,7 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.equal(fixture.plan.lane.max_review_assignments, 24);
   assert.deepEqual(
     fixture.plan.transports.map((transport) => transport.base_url_class),
-    ['exampleorg-bifrost-openai-compatible'],
+    ['exampleorg-bifrost-openai-compatible', 'openrouter-gateway'],
   );
   const bifrost = fixture.plan.transports.find((transport) => transport.name === 'bifrost');
   assert.equal(bifrost.reasoning.wire_shape, 'reasoning_effort');
@@ -56,9 +56,11 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   for (const forbidden of [
     'api_key_env',
     'BIFROST_PR_REVIEW_API_KEY',
+    'REVIEW_YETI_BIFROST_API_KEY',
     'FIREWORKS_PR_REVIEW_API_KEY',
     'OLLAMA_PR_REVIEW_API_KEY',
     'OPENROUTER_PR_REVIEW_API_KEY',
+    'OPENROUTER_REVIEW_FLEET_KEY',
     'https://',
     'authorization',
     'bearer',
@@ -87,14 +89,14 @@ test('derives execution deadlines from each transport handoff contract', () => {
   }
 });
 
-test('Every repository emits the same Bifrost-only ordered execution plan (no OpenRouter)', () => {
+test('Every repository emits Bifrost primary plus OpenRouter fleet fallback', () => {
   const defaultPlan = buildExecutionPlan(committedPolicy);
   const ciscoPlan = buildExecutionPlan(committedPolicy, EXAMPLE_API_REPOSITORY);
 
-  assert.deepEqual(defaultPlan.transport_order, ['bifrost']);
+  assert.deepEqual(defaultPlan.transport_order, ['bifrost', 'openrouter-primary']);
   assert.equal(defaultPlan.dispatch.mode, 'ordered');
-  assert.deepEqual(ciscoPlan.transport_order, ['bifrost']);
-  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { bifrost: 1 } });
+  assert.deepEqual(ciscoPlan.transport_order, ['bifrost', 'openrouter-primary']);
+  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { bifrost: 1, 'openrouter-primary': 2 } });
   assert.deepEqual(ciscoPlan.transports[0].capacity, {
     max_in_flight: 6,
     concurrency_scope: 'provider',
@@ -102,34 +104,39 @@ test('Every repository emits the same Bifrost-only ordered execution plan (no Op
   });
   assert.equal(ciscoPlan.transports[0].timeouts.connect_ms, 90000);
   assert.equal(ciscoPlan.transports[0].base_url_class, 'exampleorg-bifrost-openai-compatible');
-  assert.equal(ciscoPlan.transports.length, 1, 'bifrost must be the only plan entry');
-  assert.equal(ciscoPlan.transport_order.includes('openrouter-primary'), false);
+  assert.equal(ciscoPlan.transports.length, 2, 'bifrost primary plus OpenRouter fallback');
+  assert.equal(ciscoPlan.transports[1].name, 'openrouter-primary');
   assert.equal(ciscoPlan.transport_order.includes('synthetic'), false);
   assert.equal(ciscoPlan.transport_order.includes('fireworks'), false);
   assert.equal(ciscoPlan.transport_order.includes('ollama'), false);
 });
 
 test('rejects unknown keys at every execution-policy object boundary', () => {
+  const openrouterIndex = committedPolicy.review_yeti.transports.findIndex((transport) => transport.name === 'openrouter-primary');
   const cases = [
     ['policy', (policy) => { policy.unexpected = true; }],
     ['policy.review_yeti', (policy) => { policy.review_yeti.unexpected = true; }],
     ['policy.review_yeti.budget', (policy) => { policy.review_yeti.budget.unexpected = true; }],
     ['policy.review_yeti.transports[0]', (policy) => { policy.review_yeti.transports[0].unexpected = true; }],
     [
-      'policy.review_yeti.transports[0].provider_routing',
-      (policy) => { policy.review_yeti.transports[0].provider_routing.unexpected = true; },
+      `policy.review_yeti.transports[${openrouterIndex}].provider_routing`,
+      (policy) => { policy.review_yeti.transports[openrouterIndex].provider_routing.unexpected = true; },
     ],
     [
-      'policy.review_yeti.transports[0].provider_routing.preferred_min_throughput',
-      (policy) => { policy.review_yeti.transports[0].provider_routing.preferred_min_throughput.unexpected = true; },
+      `policy.review_yeti.transports[${openrouterIndex}].provider_routing.preferred_min_throughput`,
+      (policy) => {
+        policy.review_yeti.transports[openrouterIndex].provider_routing.preferred_min_throughput.unexpected = true;
+      },
     ],
     [
-      'policy.review_yeti.transports[0].provider_routing.preferred_max_latency',
-      (policy) => { policy.review_yeti.transports[0].provider_routing.preferred_max_latency.unexpected = true; },
+      `policy.review_yeti.transports[${openrouterIndex}].provider_routing.preferred_max_latency`,
+      (policy) => {
+        policy.review_yeti.transports[openrouterIndex].provider_routing.preferred_max_latency.unexpected = true;
+      },
     ],
     [
-      'policy.review_yeti.transports[0].models',
-      (policy) => { policy.review_yeti.transports[0].models = { unexpected: true }; },
+      `policy.review_yeti.transports[${openrouterIndex}].models`,
+      (policy) => { policy.review_yeti.transports[openrouterIndex].models = { unexpected: true }; },
     ],
   ];
 
@@ -139,7 +146,7 @@ test('rejects unknown keys at every execution-policy object boundary', () => {
     if (path.endsWith('.models')) {
       assert.throws(
         () => buildExecutionPlan(policy),
-        /policy\.review_yeti\.transports\[0\]\.models must be an array of non-empty strings/,
+        /policy\.review_yeti\.transports\[\d+\]\.models must be an array of non-empty strings/,
       );
       continue;
     }

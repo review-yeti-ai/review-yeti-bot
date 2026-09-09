@@ -177,11 +177,13 @@ jobs:
         if: steps.policy.outputs.passthrough != 'true'
         working-directory: .exampleorg-review-actions
         env:
-          BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY || secrets.BIFROST_PR_REVIEW_API_KEY }}
-          GEMINI_API_KEY: ${{ !inputs.central_execution && secrets.GEMINI_API_KEY || '' }}
+          REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
+          BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
-          SYNTHETIC_API_KEY: ${{ !inputs.central_execution && secrets.SYNTHETIC_API_KEY || '' }}
+          OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 90000
         run: |
           echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
@@ -279,17 +281,31 @@ jobs:
             echo "::warning::Failed to initialize check-run: $(echo "$response" | head -c 200)"
           fi
 
+      - name: Align panel seed key
+        id: seed_key
+        if: steps.policy.outputs.passthrough != 'true'
+        working-directory: .exampleorg-review-actions
+        env:
+          RESOLVED_API_KEY_ENV: ${{ steps.smoke.outputs.resolved_api_key_env }}
+          REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
+          BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
+          OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
+        run: node scripts/align-panel-seed-key.mjs
+
       - name: Run Review Yeti review panel
         id: review
         if: steps.policy.outputs.passthrough != 'true'
         uses: ./.review-yeti-bot
         env:
-          BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY || secrets.BIFROST_PR_REVIEW_API_KEY }}
-          GEMINI_API_KEY: ${{ !inputs.central_execution && secrets.GEMINI_API_KEY || '' }}
+          REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
+          BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
-          SYNTHETIC_API_KEY: ${{ !inputs.central_execution && secrets.SYNTHETIC_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ !inputs.central_execution && secrets.OPENROUTER_REVIEW_FLEET_KEY || '' }}
+          OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
           HONCHO_BASE_URL: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.do.example.com' }}
           HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
           HONCHO_WORKSPACE: ${{ vars.HONCHO_WORKSPACE || 'exampleorg' }}
@@ -304,7 +320,7 @@ jobs:
           github-token: ${{ steps.ry_token.outputs.token || github.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
           pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
-          llm-api-key: ${{ inputs.central_execution && (secrets.REVIEW_YETI_BIFROST_API_KEY || secrets.BIFROST_PR_REVIEW_API_KEY || secrets.OLLAMA_PR_REVIEW_API_KEY) || secrets.OPENROUTER_REVIEW_FLEET_KEY }}
+          llm-api-key: ${{ steps.seed_key.outputs.llm_api_key }}
           llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}
           model: ${{ steps.smoke.outputs.resolved_model }}

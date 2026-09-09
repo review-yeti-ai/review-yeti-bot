@@ -28,11 +28,12 @@ export {
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'bifrost',
+  'openrouter-primary',
 ]);
 export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
+  'bifrost',
   'openrouter-primary',
   'gemini',
-  'bifrost',
   'synthetic',
   'fireworks',
   'ollama',
@@ -152,6 +153,12 @@ export function validatePolicy(policy, repository = '') {
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
   if (!gemini || !ollama || !synthetic || !fireworks || !openrouter || !bifrost) {
     throw new Error('policy must define OpenRouter, Gemini, Ollama, Synthetic, and Bifrost transports');
+  }
+  if (bifrost.api_key_env !== 'BIFROST_PR_REVIEW_API_KEY') {
+    throw new Error('Bifrost must use BIFROST_PR_REVIEW_API_KEY');
+  }
+  if (openrouter.api_key_env !== 'OPENROUTER_PR_REVIEW_API_KEY') {
+    throw new Error('OpenRouter must use OPENROUTER_PR_REVIEW_API_KEY sourced from OPENROUTER_REVIEW_FLEET_KEY');
   }
   if (gemini.base_url !== EXPECTED_GEMINI_BASE_URL
       || gemini.api_key_env !== 'GEMINI_API_KEY'

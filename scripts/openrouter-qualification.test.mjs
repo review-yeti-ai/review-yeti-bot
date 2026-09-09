@@ -308,6 +308,7 @@ test('child environment strips every non-OpenRouter provider credential', () => 
       FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
       OLLAMA_PR_REVIEW_API_KEY: 'ollama-secret',
       OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
+      OPENROUTER_REVIEW_FLEET_KEY: 'must-not-be-used',
       GITHUB_TOKEN: 'github-secret',
       QUALIFICATION_GH_TOKEN: 'qualification-secret',
     },
@@ -316,6 +317,7 @@ test('child environment strips every non-OpenRouter provider credential', () => 
     fixturePath: '/tmp/matrix.json',
   });
   assert.equal(environment.OPENROUTER_PR_REVIEW_API_KEY, 'openrouter-secret');
+  assert.equal(environment.OPENROUTER_REVIEW_FLEET_KEY, undefined);
   assert.equal(environment.FIREWORKS_PR_REVIEW_API_KEY, undefined);
   assert.equal(environment.OLLAMA_PR_REVIEW_API_KEY, undefined);
   assert.equal(environment.GITHUB_TOKEN, undefined);

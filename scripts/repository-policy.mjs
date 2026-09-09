@@ -2,7 +2,7 @@
 // Bifrost internal LLM gateway is the primary OpenAI-compatible provider with dedicated virtual key
 // and usage/cost tracking).
 export const EXAMPLE_API_REPOSITORY = 'exampleorg/example-api';
-export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['bifrost']);
+export const EXAMPLE_API_TRANSPORT_ORDER = Object.freeze(['bifrost', 'openrouter-primary']);
 // Retired vocabulary: this set once selected repositories into the Ollama
 // policy. Kept as an empty set so historical imports keep resolving while
 // every guard now reads the default-order contract instead.

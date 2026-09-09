@@ -47,6 +47,8 @@ jobs:
           node --check scripts/transport-telemetry-report.mjs
           node --check scripts/annotate-transport-failover.mjs
           node --check scripts/annotate-transport-failover.test.mjs
+          node --check scripts/align-panel-seed-key.mjs
+          node --check scripts/align-panel-seed-key.test.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
           node scripts/emit-execution-plan.mjs --check
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
@@ -90,6 +92,7 @@ jobs:
           grep -Eq '^repository<<' "$RUNNER_TEMP/policy-output"
           node --test scripts/deliver-passthrough.test.mjs
           node --test scripts/review-yeti-smoke.test.mjs
+          node --test scripts/align-panel-seed-key.test.mjs
           node --test scripts/emit-execution-plan.test.mjs
           node --test scripts/validate-central-dispatch.test.mjs
           node --test scripts/validate-central-dispatch.replay.test.mjs
@@ -121,15 +124,19 @@ jobs:
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
-          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .enabled == false' policy/review-yeti.json >/dev/null
+          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .enabled == true' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "synthetic") | .enabled == false' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .provider_routing.ignore == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .ignore_providers == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           grep -Eq 'review-yeti.yml@main$' .github/workflows/self-review.yml
-          grep -Fq 'OPENROUTER_API_KEY:' .github/workflows/review-yeti.yml
+          grep -Fq 'OPENROUTER_REVIEW_FLEET_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OPENROUTER_REVIEW_FLEET_KEY' .github/workflows/review-yeti.yml
-          grep -Fq 'BIFROST_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
+          grep -Fq 'REVIEW_YETI_BIFROST_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.REVIEW_YETI_BIFROST_API_KEY' .github/workflows/review-yeti.yml
+          if grep -E 'secrets\.[A-Z0-9_]+[[:space:]]*\|\|[[:space:]]*secrets\.' .github/workflows/review-yeti.yml .github/workflows/transport-telemetry.yml; then
+            echo '::error::secret-key || fallback is forbidden; use a single canonical secret name'
+            exit 1
+          fi
           grep -Fq 'OLLAMA_PR_REVIEW_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.OLLAMA_PR_REVIEW_API_KEY' .github/workflows/review-yeti.yml
           # Policy-derived, not another hardcoded name: every ENABLED transport's api_key_env must

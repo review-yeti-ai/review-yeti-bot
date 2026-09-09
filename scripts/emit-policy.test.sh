@@ -37,12 +37,12 @@ configured_transports = review.get('transports', [])
 if any(type(item.get('enabled')) is not bool for item in configured_transports):
     raise SystemExit('every configured transport must declare enabled as a boolean')
 transports = [item for item in configured_transports if item.get('enabled') is True]
-if [item.get('name') for item in transports] != ['bifrost']:
-    raise SystemExit('policy must be Bifrost-only (operator 2026-09-03: Bifrost LLM gateway primary)')
+if [item.get('name') for item in transports] != ['bifrost', 'openrouter-primary']:
+    raise SystemExit('policy must be Bifrost primary with OpenRouter fleet fallback (REL-710)')
 if review.get('dispatch_mode') != 'ordered':
-    raise SystemExit('policy must use ordered persona dispatch for the Bifrost-only default')
-if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'bifrost': 1}:
-    raise SystemExit('active provider weights must keep the single Bifrost lane at weight 1')
+    raise SystemExit('policy must use ordered persona dispatch with Bifrost first')
+if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'bifrost': 1, 'openrouter-primary': 2}:
+    raise SystemExit('active provider weights must keep Bifrost at 1 and OpenRouter fleet fallback at 2')
 # Measured ablation 2026-08-20: reasoning_effort=max scored recall 0.425 with 25/72 errors,
 # versus unset at 0.750 with 7/72. Never 'max'. Operator 2026-09-03 (REL-525):
 # with NO max_tokens on the wire the provider's own limit ended high-effort
@@ -56,10 +56,10 @@ if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'b
 # reasoning that fits the budget. 'high' and 'max' are both forbidden on the live lane.
 if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
-if any(item.get('reasoning_effort') not in ('medium', 'none') for item in transports):
-    raise SystemExit("live transports must use reasoning_effort 'medium' or 'none' (REL-525: 'high' overran the 65536 budget on 2 of 6 lanes)")
-if any(not isinstance(item.get('max_tokens'), int) or item.get('max_tokens') < 65536 for item in transports):
-    raise SystemExit('live transports must declare an explicit max_tokens budget of at least 65536')
+if any(item.get('name') == 'bifrost' and item.get('reasoning_effort') not in ('medium', 'none') for item in transports):
+    raise SystemExit("Bifrost must use reasoning_effort 'medium' or 'none' (REL-525: 'high' overran the 65536 budget on 2 of 6 lanes)")
+if any(item.get('name') == 'bifrost' and (not isinstance(item.get('max_tokens'), int) or item.get('max_tokens') < 65536) for item in transports):
+    raise SystemExit('Bifrost must declare an explicit max_tokens budget of at least 65536')
 bifrost = next((item for item in configured_transports if item.get('name') == 'bifrost'), None)
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
 gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
@@ -68,11 +68,11 @@ openrouter = next((item for item in configured_transports if item.get('name') ==
 if not openrouter or not ollama or not gemini or not synthetic or not bifrost:
     raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, Synthetic, and Bifrost transports')
 if gemini.get('enabled') is not False or ollama.get('enabled') is not False or bifrost.get('enabled') is not True:
-    raise SystemExit('Bifrost must be the only enabled transport; Gemini and Ollama must stay declared-but-disabled')
+    raise SystemExit('Bifrost must stay enabled; Gemini and Ollama must stay declared-but-disabled')
 if synthetic is None or synthetic.get('enabled') is not False:
     raise SystemExit('Synthetic must be declared-but-disabled (retired)')
-if openrouter is None or openrouter.get('enabled') is not False:
-    raise SystemExit('OpenRouter must be declared-but-disabled (retired)')
+if openrouter is None or openrouter.get('enabled') is not True:
+    raise SystemExit('OpenRouter fleet fallback must be enabled (REL-710)')
 if any(item.get('name') == 'fireworks' for item in transports):
     raise SystemExit('Fireworks transport must be disabled')
 fireworks = next((item for item in configured_transports if item.get('name') == 'fireworks'), None)
@@ -103,7 +103,7 @@ for key in ('lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_rev
 if openrouter is None:
     openrouter = next((item for item in configured_transports if item.get('name') == 'openrouter-primary'), None)
 if openrouter is None:
-    raise SystemExit('policy must define the openrouter-primary transport (declared, disabled)')
+    raise SystemExit('policy must define the openrouter-primary transport')
 if openrouter.get('stream') is not True:
     raise SystemExit('openrouter-primary must use streaming for provider attribution')
 if openrouter.get('model') != 'z-ai/glm-5.3-flash':
@@ -510,8 +510,8 @@ transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_d
 TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
 import base64, json, os
 plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
-if [item.get('name') for item in plan] != ['bifrost']:
-    raise SystemExit('base64 transport plan must be Bifrost-only (operator 2026-09-03)')
+if [item.get('name') for item in plan] != ['bifrost', 'openrouter-primary']:
+    raise SystemExit('base64 transport plan must be Bifrost primary with OpenRouter fleet fallback (REL-710)')
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
@@ -662,10 +662,39 @@ for value in 0 -1 abc '' __missing__; do
   echo "[$name] passed"
 done
 
+write_openrouter_capacity_wait_policy() {
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
+import json
+import sys
+
+source, destination = sys.argv[1:]
+policy = json.load(open(source))
+openrouter = next(item for item in policy['review_yeti']['transports'] if item['name'] == 'openrouter-primary')
+openrouter['capacity_wait_timeout_ms'] = 179999
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+}
+
+run_openrouter_capacity_wait_case() {
+  local output_file="$tmp_dir/invalid-openrouter-capacity-wait.output"
+  write_openrouter_capacity_wait_policy
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/invalid-openrouter-capacity-wait.log" 2>&1
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 1 ]]; then
+    echo "[invalid-openrouter-capacity-wait] expected exit 1, got $rc" >&2
+    cat "$tmp_dir/invalid-openrouter-capacity-wait.log" >&2
+    exit 1
+  fi
+  grep -q 'openrouter-primary.capacity_wait_timeout_ms must cover the OpenRouter request retry envelope' "$tmp_dir/invalid-openrouter-capacity-wait.log"
+  echo "[invalid-openrouter-capacity-wait] passed"
+}
+
 run_openrouter_timeout_mismatch_case
 run_short_lane_deadline_case
-run_case invalid-openrouter-capacity-wait transport.0.capacity_wait_timeout_ms 179999 1
-grep -q 'openrouter-primary.capacity_wait_timeout_ms must cover the OpenRouter request retry envelope' "$tmp_dir/invalid-openrouter-capacity-wait.log"
+run_openrouter_capacity_wait_case
 run_transport_overhead_overflow_case
 
 echo "emit-policy lane_call_budget contract passed"
@@ -700,8 +729,9 @@ for value in v v1.2.3.4; do
 done
 echo "[channel-edge-cases] passed"
 
-# Exact repository overrides are resolved centrally. Example API gets only Ollama with a
-# six-lane/30-second admission envelope; unrelated consumers retain the default.
+# Exact repository overrides are resolved centrally. Every consumer emits Bifrost
+# primary plus the OpenRouter fleet fallback; Example API also keeps the six-lane /
+# 30-second Bifrost admission envelope.
 cp "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json"
 cisco_output="$tmp_dir/cisco-policy.output"
 (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$cisco_output" node emit-policy.mjs)
@@ -713,8 +743,8 @@ lines = open(sys.argv[1]).read().splitlines()
 start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
 end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
 transports = json.loads('\n'.join(lines[start + 1:end]))
-if [transport['name'] for transport in transports] != ['bifrost']:
-    raise SystemExit('Example API must emit only the Bifrost transport (operator 2026-09-03)')
+if [transport['name'] for transport in transports] != ['bifrost', 'openrouter-primary']:
+    raise SystemExit('Example API must emit Bifrost primary plus OpenRouter fleet fallback (REL-710)')
 bifrost = transports[0]
 if (bifrost.get('max_in_flight'), bifrost.get('concurrency_scope'), bifrost.get('capacity_wait_timeout_ms'), bifrost.get('connect_timeout_ms'), bifrost.get('max_wall_clock_ms')) != (6, 'provider', 30000, 90000, 900000):
     raise SystemExit('Example API Bifrost admission must cover the six-persona panel, a 90s connect deadline, and a 15-minute live thinking stream')
@@ -733,8 +763,8 @@ lines = open(sys.argv[1]).read().splitlines()
 start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
 end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
 transports = json.loads('\n'.join(lines[start + 1:end]))
-if [transport['name'] for transport in transports] != ['bifrost']:
-    raise SystemExit(f'{sys.argv[2]} must emit only the Bifrost transport (operator directive 2026-09-03)')
+if [transport['name'] for transport in transports] != ['bifrost', 'openrouter-primary']:
+    raise SystemExit(f'{sys.argv[2]} must emit Bifrost primary plus OpenRouter fleet fallback (REL-710)')
 if transports[0].get('max_in_flight') != 6 or transports[0].get('connect_timeout_ms') != 90000:
     raise SystemExit(f'{sys.argv[2]} Bifrost admission must cover the six-persona panel and a 90s connect deadline')
 PY

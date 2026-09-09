@@ -82,7 +82,7 @@ for (const transport of review.transports) {
   }
   validateTransportEnvelope(transport);
 }
-const expectedTransportNames = ['bifrost'];
+const expectedTransportNames = ['bifrost', 'openrouter-primary'];
 if (JSON.stringify(transportNames) !== JSON.stringify(expectedTransportNames)) {
   throw new Error(`enabled transport order must be ${expectedTransportNames.join(' -> ')}`);
 }

@@ -20,8 +20,34 @@
     ],
     "transports": [
       {
+        "name": "bifrost",
+        "enabled": true,
+        "base_url": "https://llm-gateway.example.com/v1",
+        "api_key_env": "BIFROST_PR_REVIEW_API_KEY",
+        "model": "ollama/glm-5.3-flash",
+        "compat": "openai",
+        "max_tokens": 65536,
+        "timeout_ms": 90000,
+        "connect_timeout_ms": 90000,
+        "ttft_ms": 60000,
+        "stall_ms": 30000,
+        "max_wall_clock_ms": 900000,
+        "stream": true,
+        "dispatch_weight": 1,
+        "max_in_flight": 6,
+        "concurrency_scope": "provider",
+        "capacity_wait_timeout_ms": 30000,
+        "rate_limit": {
+          "scope": "provider",
+          "max_retries": 1,
+          "max_retry_after_ms": 5000
+        },
+        "reasoning_effort": "medium",
+        "quarantine_on_timeout": false
+      },
+      {
         "name": "openrouter-primary",
-        "enabled": false,
+        "enabled": true,
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_PR_REVIEW_API_KEY",
         "model": "z-ai/glm-5.3-flash",
@@ -88,32 +114,6 @@
         },
         "structured_output": "strict",
         "reasoning_effort": "high"
-      },
-      {
-        "name": "bifrost",
-        "enabled": true,
-        "base_url": "https://llm-gateway.example.com/v1",
-        "api_key_env": "BIFROST_PR_REVIEW_API_KEY",
-        "model": "ollama/glm-5.3-flash",
-        "compat": "openai",
-        "max_tokens": 65536,
-        "timeout_ms": 90000,
-        "connect_timeout_ms": 90000,
-        "ttft_ms": 60000,
-        "stall_ms": 30000,
-        "max_wall_clock_ms": 900000,
-        "stream": true,
-        "dispatch_weight": 1,
-        "max_in_flight": 6,
-        "concurrency_scope": "provider",
-        "capacity_wait_timeout_ms": 30000,
-        "rate_limit": {
-          "scope": "provider",
-          "max_retries": 1,
-          "max_retry_after_ms": 5000
-        },
-        "reasoning_effort": "medium",
-        "quarantine_on_timeout": false
       },
       {
         "name": "synthetic",

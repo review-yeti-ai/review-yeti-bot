@@ -41,14 +41,12 @@ jobs:
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
+      OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
       OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
       SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
       FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
-      # Same two-name resolution review-yeti.yml uses, so the probe reads the identical credential
-      # the production review path does. Without this the sole *enabled* transport recorded
-      # `skipped: no_credential` on every run while five disabled ones were probed -- the ledger
-      # looked healthy and carried no evidence for the transport actually serving reviews.
-      BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY || secrets.BIFROST_PR_REVIEW_API_KEY }}
+      REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
+      BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
     steps:
       - name: Checkout main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd

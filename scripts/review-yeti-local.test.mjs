@@ -18,11 +18,11 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const policy = loadLocalPolicy();
 const bifrostTransport = policy.review_yeti.transports.find((t) => t.name === 'bifrost');
 
-test('materializes the committed provider order and routing into the local CLI contract (bifrost-only)', () => {
+test('materializes the committed provider order and routing into the local CLI contract (Bifrost primary, OpenRouter fallback)', () => {
   const config = buildLocalConfig(policy);
   const transports = config.github_action.transports;
 
-  assert.deepEqual(transports.map((transport) => transport.name), ['bifrost']);
+  assert.deepEqual(transports.map((transport) => transport.name), ['bifrost', 'openrouter-primary']);
   assert.equal(config.github_action.openrouter.stream, true);
   // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
   assert.equal(config.github_action.openrouter.timeout_ms, bifrostTransport.timeout_ms);
@@ -68,8 +68,9 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.OPENROUTER_TTFT_MS, String(policy.review_yeti.openrouter_ttft_ms));
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
   const transports = JSON.parse(env.REVIEW_YETI_TRANSPORTS);
-  assert.deepEqual(transports.map((transport) => transport.name), ['bifrost']);
+  assert.deepEqual(transports.map((transport) => transport.name), ['bifrost', 'openrouter-primary']);
   assert.equal(transports[0].model, 'ollama/glm-5.3-flash');
+  assert.equal(transports[1].model, 'z-ai/glm-5.3-flash');
 });
 
 test('accepts only immutable SHA pairs, diff files, or GitHub pull requests', () => {
@@ -144,7 +145,7 @@ process.stdout.write(JSON.stringify({ delegated: true }) + '\\n');
     assert.equal(JSON.parse(output).delegated, true);
     assert.deepEqual(delegated.args, ['review', '--base', 'a'.repeat(40), '--head', 'b'.repeat(40), '--json']);
     assert.equal(delegated.configMode, 0o600);
-    assert.deepEqual(delegated.transportNames, ['bifrost']);
+    assert.deepEqual(delegated.transportNames, ['bifrost', 'openrouter-primary']);
     assert.deepEqual(delegated.mcpServerIds, ['context7-local']);
     assert.equal(delegated.mcpSecretPresent, true);
     assert.equal(delegated.publicationFlag, 'false');
