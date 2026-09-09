@@ -87,13 +87,57 @@ render_review_job_dispatcher_template k8s/review-job-dispatcher.yaml.tpl "$rende
 if [[ -n "$force_conflicts" ]]; then
   echo "deploy-review-job-dispatcher: --force-conflicts given; this manifest will take ownership of any field another manager holds" >&2
 fi
-# shellcheck disable=SC2086
-kubectl apply --server-side $force_conflicts -f "$render_dir/review-job-dispatcher.yaml"
-
-replicas="$(kubectl -n ct-review-system get deployment ct-review-job-dispatcher -o jsonpath='{.spec.replicas}')"
-if [[ "$replicas" != "0" ]]; then
-  echo "deploy-review-job-dispatcher: expected zero replicas after apply; refusing activation" >&2
-  exit 1
+# `replicas: 0` in the template is an INSTALL boundary -- a first install must not
+# start consuming the queue before an operator activates it. It is not a statement
+# that the dispatcher should be off. Applying it unconditionally made this script
+# scale a live production dispatcher from 1 to 0 and then report success:
+#
+#   - replicas: 1
+#   + replicas: 0
+#   "Review job dispatcher resources are installed at zero replicas"
+#
+# Since this is also the only script that moves the dispatcher image, the only way
+# to deploy a fix was to take review dispatch down. So: keep `replicas` in the
+# manifest for a create (inert install, no start-up race), and strip it for an
+# update so server-side apply never takes ownership of a field the operator and
+# the scale subresource own. This is the documented pattern for a replica count
+# managed outside the manifest.
+if kubectl -n ct-review-system get deployment ct-review-job-dispatcher >/dev/null 2>&1; then
+  deployment_existed="1"
+  replicas_before="$(kubectl -n ct-review-system get deployment ct-review-job-dispatcher -o jsonpath='{.spec.replicas}')"
+else
+  deployment_existed=""
+  replicas_before=""
 fi
 
-echo "Review job dispatcher resources are installed at zero replicas; no queue consumption was activated."
+manifest="$render_dir/review-job-dispatcher.yaml"
+if [[ -n "$deployment_existed" ]]; then
+  # Remove exactly the one replica line, and refuse to guess if the template
+  # shape ever changes.
+  found="$(grep -c '^  replicas: 0$' "$manifest" || true)"
+  if [[ "$found" != "1" ]]; then
+    echo "deploy-review-job-dispatcher: expected exactly one 'replicas: 0' line in the rendered manifest, found ${found}" >&2
+    exit 2
+  fi
+  # Strip in place so the applied path stays exactly the rendered manifest.
+  grep -v '^  replicas: 0$' "$manifest" > "${manifest}.tmp"
+  mv "${manifest}.tmp" "$manifest"
+fi
+
+# shellcheck disable=SC2086
+kubectl apply --server-side $force_conflicts -f "$manifest"
+
+replicas="$(kubectl -n ct-review-system get deployment ct-review-job-dispatcher -o jsonpath='{.spec.replicas}')"
+if [[ -z "$deployment_existed" ]]; then
+  if [[ "$replicas" != "0" ]]; then
+    echo "deploy-review-job-dispatcher: expected zero replicas after a first install; refusing activation" >&2
+    exit 1
+  fi
+  echo "Review job dispatcher resources are installed at zero replicas; no queue consumption was activated."
+else
+  if [[ "$replicas" != "$replicas_before" ]]; then
+    echo "deploy-review-job-dispatcher: apply changed replicas ${replicas_before} -> ${replicas}; this script must never scale a live dispatcher" >&2
+    exit 1
+  fi
+  echo "Review job dispatcher resources updated; replicas left unchanged at ${replicas} (activation state is not this script's to change)."
+fi
