@@ -70,6 +70,13 @@ export interface ReviewAdmission {
 export interface ReviewDispatchClaim {
   runId: string;
   deliveryId: string;
+  /**
+   * Monotonic execution attempt for the projected Job/Secret identity. This is
+   * deliberately separate from the outbox claim count: a projection retry must
+   * remain idempotent, while a new worker execution needs a fresh Kubernetes
+   * object after the previous one reached a terminal state.
+   */
+  executionAttempt: number;
   repositoryId: number;
   installationId: number;
   publicationMode: PublicationMode;

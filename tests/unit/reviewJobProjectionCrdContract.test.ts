@@ -72,5 +72,27 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     const nodeImage = 'node:24-bookworm-slim';
     expect(nodeImage).toMatch(new RegExp(properties.workerImage.pattern, 'u'));
   });
-});
 
+  it('accepts the fresh Secret identity used by a retry execution', () => {
+    const properties = crdSchema().properties.spec.properties;
+    const retry = buildReviewJobProjection({
+      runId: projection.spec.runId,
+      deliveryId: projection.spec.deliveryId,
+      repositoryId: projection.spec.repositoryId,
+      repo: projection.spec.repo,
+      prNumber: projection.spec.prNumber,
+      headSha: projection.spec.headSha,
+      baseSha: projection.spec.baseSha,
+      receivedAt: Date.parse(projection.spec.receivedAt),
+      terminalDeadline: Date.parse(projection.spec.terminalDeadline),
+      policyDigest: projection.spec.policyDigest,
+      configDigest: projection.spec.configDigest,
+      publicationMode: projection.spec.publicationMode,
+      workerImage: projection.spec.workerImage,
+      namespace: projection.metadata.namespace,
+      executionAttempt: 2,
+    }, Date.parse(projection.spec.receivedAt) + 60_000);
+    expect(retry.spec.runSecretName).toMatch(new RegExp(properties.runSecretName.pattern, 'u'));
+    expect(retry.metadata.name).toBe(`ct-review-${'1'.repeat(32)}-a2`);
+  });
+});
