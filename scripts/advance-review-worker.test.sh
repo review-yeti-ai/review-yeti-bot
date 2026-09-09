@@ -129,7 +129,8 @@ case "$*" in
     exit "${FAKE_ROLLOUT_STATUS_EXIT:-0}"
     ;;
   *"get pods -l app.kubernetes.io/name=ct-review-job-dispatcher --field-selector=status.phase=Running -o jsonpath={.items[-1:].metadata.name}"*)
-    printf '%s' "${FAKE_POD_NAME:?FAKE_POD_NAME not set}"
+    # Empty is a legitimate answer ("no running pod"); only unset is a harness bug.
+    printf '%s' "${FAKE_POD_NAME?FAKE_POD_NAME not set}"
     ;;
   *"exec "*"-- sh -c"*)
     printf '%s' "${FAKE_VERIFY_IMAGE:-}"
@@ -174,8 +175,17 @@ printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
 
 case "$*" in
   "rev-parse --verify -q refs/tags/"*)
-    # Deterministically simulate "no such local tag" so tag resolution always
-    # falls through to the GitHub API fallback under test.
+    # Default: no such local tag, so resolution falls through to the GitHub API.
+    # With FAKE_LOCAL_TAG_SHA set, the tag exists locally as an ANNOTATED tag:
+    # the ^{commit} peel yields the commit; the bare ref yields the tag object.
+    if [[ -n "${FAKE_LOCAL_TAG_SHA:-}" ]]; then
+      if [[ "$*" == *"^{commit}" ]]; then
+        printf '%s\n' "$FAKE_LOCAL_TAG_SHA"
+      else
+        printf '%s\n' "${FAKE_LOCAL_TAG_OBJECT_SHA:?FAKE_LOCAL_TAG_OBJECT_SHA not set}"
+      fi
+      exit 0
+    fi
     exit 1
     ;;
   *)
@@ -232,7 +242,10 @@ run_script() {
       FAKE_RUNNER_MODE="${SCENARIO_RUNNER_MODE:-prebaked}" \
       FAKE_CURRENT_IMAGE="${SCENARIO_CURRENT_IMAGE:-$old_image}" \
       FAKE_DISPATCHER_IMAGE="$dispatcher_image" \
-      FAKE_POD_NAME="$pod_name" \
+      FAKE_POD_NAME="${SCENARIO_POD_NAME-$pod_name}" \
+      FAKE_ROLLOUT_STATUS_EXIT="${SCENARIO_ROLLOUT_STATUS_EXIT:-0}" \
+      FAKE_LOCAL_TAG_SHA="${SCENARIO_LOCAL_TAG_SHA:-}" \
+      FAKE_LOCAL_TAG_OBJECT_SHA="${SCENARIO_LOCAL_TAG_OBJECT_SHA:-}" \
       FAKE_VERIFY_IMAGE="${SCENARIO_VERIFY_IMAGE:-$target_image}" \
       FAKE_DEPLOYMENT_MISSING="${SCENARIO_DEPLOYMENT_MISSING:-}" \
       FAKE_TAG_OBJECT_TYPE="${SCENARIO_TAG_OBJECT_TYPE:-}" \
@@ -292,6 +305,42 @@ curl_log="$([[ -f "$scenario_dir/curl.log" ]] && cat "$scenario_dir/curl.log" ||
 gh_log="$([[ -f "$scenario_dir/gh.log" ]] && cat "$scenario_dir/gh.log" || true)"
 assert_equal "hostile ref: no curl call was made" "" "$curl_log"
 assert_equal "hostile ref: no gh call was made" "" "$gh_log"
+
+# --- Scenario 1e: a generic-runner lane is refused ---------------------------
+
+scenario_dir="$(new_scenario_dir)"
+SCENARIO_RUNNER_MODE="generic" run_script "$scenario_dir" "$commit_sha"
+assert_equal "generic runner mode: exits non-zero" "1" "$status"
+assert_contains "generic runner mode: error names the expected mode" "$stderr" "REVIEW_JOB_RUNNER_MODE=prebaked"
+assert_not_contains "generic runner mode: never applies" "$kubectl_log" "apply"
+
+# --- Scenario 1f: a failed rollout status is a failure, not a pass -----------
+
+scenario_dir="$(new_scenario_dir)"
+SCENARIO_ROLLOUT_STATUS_EXIT="1" run_script "$scenario_dir" "$commit_sha"
+assert_equal "rollout status failure: exits non-zero" "1" "$status"
+assert_not_contains "rollout status failure: never claims verification" "$stdout" "verified"
+
+# --- Scenario 1g: rollout ready but no running pod cannot verify --------------
+
+scenario_dir="$(new_scenario_dir)"
+SCENARIO_POD_NAME="" run_script "$scenario_dir" "$commit_sha"
+assert_equal "no running pod: exits non-zero" "1" "$status"
+assert_contains "no running pod: error says it cannot verify" "$stderr" "no running pod was found"
+
+# --- Scenario 1h: a local annotated tag resolves to its commit, not the tag object
+
+scenario_dir="$(new_scenario_dir)"
+tag_object_sha="$(printf 'd%.0s' $(seq 1 40))"
+SCENARIO_LOCAL_TAG_SHA="$commit_sha" \
+  SCENARIO_LOCAL_TAG_OBJECT_SHA="$tag_object_sha" \
+  SCENARIO_CURRENT_IMAGE="$target_image" \
+  run_script "$scenario_dir" "v9.9.9"
+assert_equal "local tag: exits zero (already pinned path)" "0" "$status"
+gh_log="$([[ -f "$scenario_dir/gh.log" ]] && cat "$scenario_dir/gh.log" || true)"
+assert_equal "local tag: the GitHub API was not consulted" "" "$gh_log"
+assert_contains "local tag: the commit, not the tag object, was resolved" "$stdout" "$commit_sha"
+assert_not_contains "local tag: the tag object sha never appears" "$stdout" "$tag_object_sha"
 
 # --- Scenario 2: inactive dispatcher (replicas 0) is refused -----------------
 
