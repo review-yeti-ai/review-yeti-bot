@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -59,9 +60,14 @@ const (
 	FullPanelQualificationProfile = "full-panel"
 	SameHeadQualificationProfile  = "same-head"
 	ReceiptOnlyWorkerComponent    = "receipt-only-worker"
-	// Jobs are disposable execution records. The reusable PR workspace has a
+	// Jobs are disposable execution records. TTL 0 makes kube delete the Job
+	// as soon as it reaches Complete/Failed. The reusable PR workspace has a
 	// separate, exact 1,800-second idle reclamation policy.
-	JobTTLSeconds = int32(300)
+	JobTTLSeconds       = int32(0)
+	WorkerCPURequest    = "250m"
+	WorkerMemoryRequest = "512Mi"
+	WorkerCPULimit      = "1"
+	WorkerMemoryLimit   = "1536Mi"
 	// Keep a one-minute publication/failure-conclusion reserve inside the
 	// original 15-minute run deadline. The worker itself may never consume the
 	// full admission window.
@@ -145,7 +151,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	templateAnnotations := copyStringMap(annotations)
 	one := int32(1)
 	zero := int32(0)
-	ttl := JobTTLSeconds
+	ttl := int32FromEnv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", JobTTLSeconds)
 	active := activeDeadlineSeconds
 	automountToken := false
 	allowPrivilegeEscalation := false
@@ -273,12 +279,12 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("768Mi"),
+				corev1.ResourceCPU:    quantityFromEnv("REVIEW_YETI_WORKER_CPU_REQUEST", WorkerCPURequest),
+				corev1.ResourceMemory: quantityFromEnv("REVIEW_YETI_WORKER_MEMORY_REQUEST", WorkerMemoryRequest),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("1"),
-				corev1.ResourceMemory: resource.MustParse("1536Mi"),
+				corev1.ResourceCPU:    quantityFromEnv("REVIEW_YETI_WORKER_CPU_LIMIT", WorkerCPULimit),
+				corev1.ResourceMemory: quantityFromEnv("REVIEW_YETI_WORKER_MEMORY_LIMIT", WorkerMemoryLimit),
 			},
 		},
 		SecurityContext: &corev1.SecurityContext{
@@ -528,4 +534,28 @@ func copyStringMap(input map[string]string) map[string]string {
 		output[key] = value
 	}
 	return output
+}
+
+func int32FromEnv(name string, fallback int32) int32 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return int32(parsed)
+}
+
+func quantityFromEnv(name, fallback string) resource.Quantity {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		raw = fallback
+	}
+	quantity, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return resource.MustParse(fallback)
+	}
+	return quantity
 }
