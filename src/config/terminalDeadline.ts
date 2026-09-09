@@ -58,3 +58,30 @@ export function resolveTerminalDeadlineMs(env: NodeJS.ProcessEnv = process.env):
 
 /** The resolved terminal-deadline window in milliseconds, computed once at module load. */
 export const TERMINAL_DEADLINE_MS = resolveTerminalDeadlineMs();
+
+/**
+ * Validates that `terminalDeadline - receivedAt` falls inside the bounded
+ * [MIN_TERMINAL_DEADLINE_MS, MAX_TERMINAL_DEADLINE_MS] window -- the same
+ * range the CRD's CEL rule and the Go operator's `validateInput` enforce.
+ * Deliberately a range check, not exact equality to the current process's
+ * `TERMINAL_DEADLINE_MS`: a run admitted under one env-resolved value must
+ * not fail this check later (retry claim, re-admission, projection) just
+ * because a dispatcher restart or rolling config update picked up a
+ * different `REVIEW_YETI_TERMINAL_DEADLINE_MS`. Shared by
+ * `reviewDispatchRepository`'s persistence invariant and
+ * `reviewJobProjection`'s Kubernetes projection invariant so the two
+ * cannot drift apart from each other the way they drifted from the CRD
+ * before REL-733.
+ */
+export function assertTerminalDeadlineWindow(receivedAt: number, terminalDeadline: number): void {
+  const window = terminalDeadline - receivedAt;
+  if (
+    !Number.isFinite(receivedAt)
+    || !Number.isFinite(terminalDeadline)
+    || !Number.isFinite(window)
+    || window < MIN_TERMINAL_DEADLINE_MS
+    || window > MAX_TERMINAL_DEADLINE_MS
+  ) {
+    throw new Error(`terminal deadline must be between ${MIN_TERMINAL_DEADLINE_MS}ms and ${MAX_TERMINAL_DEADLINE_MS}ms after receipt`);
+  }
+}

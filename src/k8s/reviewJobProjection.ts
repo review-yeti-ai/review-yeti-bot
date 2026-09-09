@@ -1,5 +1,5 @@
 import type { PublicationMode } from '../review/reviewRun';
-import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
+import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
 
 const exactSha = /^[a-f0-9]{40}$/u;
 const exactDigest = /^[a-f0-9]{64}$/u;
@@ -141,14 +141,7 @@ export function buildReviewJobProjection(
   if (!Number.isFinite(input.receivedAt) || !Number.isFinite(input.terminalDeadline) || !Number.isFinite(now)) {
     throw new Error('review projection timestamps must be finite');
   }
-  // Bounded [MIN, MAX] range, matching the CRD's CEL rule and the Go operator's
-  // own validateInput -- not exact equality to this process's current
-  // TERMINAL_DEADLINE_MS. A run admitted under a since-changed env value must
-  // still project cleanly on retry.
-  const window = input.terminalDeadline - input.receivedAt;
-  if (window < MIN_TERMINAL_DEADLINE_MS || window > MAX_TERMINAL_DEADLINE_MS) {
-    throw new Error(`terminal deadline must be between ${MIN_TERMINAL_DEADLINE_MS}ms and ${MAX_TERMINAL_DEADLINE_MS}ms after receipt`);
-  }
+  assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
   if (now < input.receivedAt) throw new Error('projection time cannot precede admission receipt');
   if (input.terminalDeadline - now < 120_000) {
     throw new Error('at least 120 seconds must remain before projection');

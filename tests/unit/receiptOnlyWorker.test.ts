@@ -1132,8 +1132,14 @@ describe('qualificationTimeoutMs', () => {
     expect(qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: '900000' } as unknown as NodeJS.ProcessEnv)).toBe(900_000);
   });
 
-  it('accepts a value strictly between 900_000 and the current TERMINAL_DEADLINE_MS', () => {
-    expect(qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: '1200000' } as unknown as NodeJS.ProcessEnv)).toBe(1_200_000);
+  it('accepts a value between 900_000 and the current TERMINAL_DEADLINE_MS', () => {
+    // Derived relative to TERMINAL_DEADLINE_MS rather than a hardcoded literal so
+    // this stays deterministic regardless of the ambient
+    // REVIEW_YETI_TERMINAL_DEADLINE_MS the suite happened to load under -- a
+    // hardcoded '1200000' would exceed TERMINAL_DEADLINE_MS (and wrongly throw)
+    // if that env var were set below 1_200_000 when the suite runs.
+    const midValue = Math.round((900_000 + TERMINAL_DEADLINE_MS) / 2);
+    expect(qualificationTimeoutMs({ REVIEW_QUALIFICATION_TIMEOUT_MS: String(midValue) } as unknown as NodeJS.ProcessEnv)).toBe(midValue);
   });
 
   it('accepts TERMINAL_DEADLINE_MS itself', () => {

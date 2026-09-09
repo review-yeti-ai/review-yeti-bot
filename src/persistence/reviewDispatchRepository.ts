@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { sha256 } from '../review/reviewCore';
-import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
+import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
 import {
   ReviewAdmission,
   ReviewAdmissionInput,
@@ -80,17 +80,7 @@ function validateAdmission(input: ReviewAdmissionInput): void {
   if (input.publicationMode !== 'disabled' && input.publicationMode !== 'app-gate') {
     throw new Error('publication mode must be disabled or app-gate');
   }
-  // Validate against the bounded [MIN, MAX] range -- the same range the CRD's CEL
-  // rule and the Go operator enforce -- rather than exact equality to the current
-  // process's TERMINAL_DEADLINE_MS. A run admitted under one env-resolved value
-  // must not fail this invariant later (retry claim, re-admission) just because a
-  // dispatcher restart or rolling config update changed REVIEW_YETI_TERMINAL_DEADLINE_MS
-  // in the meantime; the admitted window is what was persisted, not what the
-  // currently-running process would compute today.
-  const window = input.terminalDeadline - input.receivedAt;
-  if (!Number.isFinite(input.receivedAt) || !Number.isFinite(window) || window < MIN_TERMINAL_DEADLINE_MS || window > MAX_TERMINAL_DEADLINE_MS) {
-    throw new Error(`terminal deadline must be between ${MIN_TERMINAL_DEADLINE_MS}ms and ${MAX_TERMINAL_DEADLINE_MS}ms after receipt`);
-  }
+  assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
 }
 
 /**
