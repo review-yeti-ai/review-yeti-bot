@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.44.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.43.1...v1.44.0) (2026-09-09)
+
+
+### Features
+
+* **ops:** advance the production worker digest through the manifest, not a hand patch ([#604](https://github.com/review-yeti-ai/review-yeti-bot/issues/604)) ([1d9c164](https://github.com/review-yeti-ai/review-yeti-bot/commit/1d9c164c0fe460587511900fe78e5a8472058d48))
+
 ## [1.43.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.43.0...v1.43.1) (2026-09-09)
 
 
