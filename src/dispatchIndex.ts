@@ -1,10 +1,14 @@
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
 import { createActionDispatchApp } from './dispatchServer';
 import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
-import { getGitHubAppInstallationIdForRepository } from './github/appAuth';
+import { getBoundedRepositoryInstallationId, validateGitHubAppApiBaseUrl } from './github/boundedAppToken';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
+import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
+import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
 import { PostgresStore } from './persistence/postgresStore';
 import { logger } from './utils/logger';
+import { authoritativeServiceConfigFromEnv } from './auth/authoritativeServiceConfig';
+import { createAuthoritativeReviewService } from './review/authoritativeReviewService';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -16,24 +20,34 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   if (environment.ACTION_DISPATCH_ENABLED !== 'true') {
     throw new Error('ACTION_DISPATCH_ENABLED must be true for the dedicated Action dispatch service');
   }
-  const store = new PostgresStore();
-  await store.initialize();
-  const pool = store.getPool();
   const policy = githubActionsOidcPolicyFromEnv(environment);
   const appId = required(environment, 'GITHUB_APP_ID');
   const privateKey = required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
-  const baseUrl = environment.GITHUB_API_BASE_URL || 'https://api.github.com';
-  const repository = new PostgresReviewDispatchRepository(pool);
+  const baseUrl = validateGitHubAppApiBaseUrl(environment.GITHUB_API_BASE_URL);
+  const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy);
+  const store = new PostgresStore();
+  await store.initialize();
+  const pool = store.getPool();
+  const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
+    config: authoritativeConfig, appId, privateKey, baseUrl,
+    repository: new PostgresReviewGateRepository(pool, { completionResolutionTimeoutMs: 15_000 }),
+    getStoredPrepared: (policyDigest) => getPreparedPublishingPolicy(pool, policyDigest),
+    workerId: `authoritative-review-${environment.HOSTNAME || 'local'}`,
+  }) : undefined;
+  const repository = new PostgresReviewDispatchRepository(pool, undefined,
+    authoritative ? { validateAuthoritativeAdmission: authoritative.validateAdmission } : undefined);
   const app = createActionDispatchApp({
     verifier: new GitHubActionsOidcVerifier({ policy }),
     admission: repository,
     allowAppGate: policy.allowAppGate,
+    ...(authoritative ? { authoritativePublishing: authoritative.admission,
+      authoritativeWorkerCompletion: authoritative.completion } : {}),
     workerCompletion: {
       verifier: createWorkerCompletionVerifier(),
       repository,
     },
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
-    resolveInstallationId: (owner, repo) => getGitHubAppInstallationIdForRepository({
+    resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId({
       appId,
       privateKey,
       owner,
@@ -41,8 +55,13 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       baseUrl,
     }),
   });
-  // Admission credentials may belong to a different App. The worker-token
-  // dispatcher alone owns check publication and abandoned-run reconciliation.
+  // Admission credentials may belong to a different App. Only the worker-token
+  // dispatcher reconciles legacy raw checks. The separately opted-in service
+  // controller validates its authoritative App identity before it is constructed.
+  const authoritativeTimer = authoritative && authoritativeConfig ? setInterval(() => {
+    void authoritative.runOnce().catch(() => logger.error('Authoritative review reconciliation unavailable'));
+  }, authoritativeConfig.tickMs) : undefined;
+  authoritativeTimer?.unref();
 
   const port = Number(environment.PORT || 3000);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error('PORT must be a valid TCP port');
@@ -51,6 +70,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
 
   const shutdown = (signal: string) => {
     logger.info('Stopping Review Yeti Action dispatch service', { signal });
+    if (authoritativeTimer) clearInterval(authoritativeTimer);
     server.close(() => void store.close().finally(() => process.exit(0)));
     setTimeout(() => process.exit(1), 10_000).unref();
   };

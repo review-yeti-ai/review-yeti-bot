@@ -39,6 +39,8 @@ const (
 // The CRD schema rejects updates and all fields not declared here.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="PRReviewJob spec is immutable"
 // +kubebuilder:validation:XValidation:rule="duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')",message="terminalDeadline must be between 15 and 60 minutes after receivedAt"
+// +kubebuilder:validation:XValidation:rule="(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')",message="qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model"
+// +kubebuilder:validation:XValidation:rule="!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))",message="preparedReview requires the prebaked app-gate lane"
 type PRReviewJobSpec struct {
 	// +kubebuilder:validation:Pattern=`^run_[a-f0-9]{32}$`
 	RunID string `json:"runId"`
@@ -70,6 +72,15 @@ type PRReviewJobSpec struct {
 	ConfigDigest string `json:"configDigest"`
 	// +kubebuilder:validation:Enum=disabled;app-gate
 	PublicationMode string `json:"publicationMode"`
+	// PreparedReview is an immutable, non-secret PreparedReviewExecution.v1 JSON
+	// envelope containing config and transport. Presence opts into authoritative
+	// result reporting in addition to the worker's existing raw review check.
+	// The dispatcher and worker verify the config digest; the operator transports
+	// the exact envelope without selecting providers or changing credentials.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=262144
+	// +optional
+	PreparedReview *string `json:"preparedReview,omitempty"`
 	// +kubebuilder:validation:Pattern=`^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`
 	WorkerImage string `json:"workerImage"`
 	// RunnerMode defines whether the worker image is an immutable prebaked container

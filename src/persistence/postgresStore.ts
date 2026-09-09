@@ -11,6 +11,8 @@ import {
   CustomMcpServerConfig,
 } from './dashboardStore';
 import { logger } from '../utils/logger';
+import { REVIEW_GATE_SCHEMA_SQL } from './reviewGateSchema';
+import { PREPARED_REVIEW_SCHEMA_SQL } from './preparedReviewRepository';
 
 export const ADVISORY_LOCK_ID = 1029384;
 
@@ -303,6 +305,8 @@ export class PostgresStore {
       `);
 
       // 2. Check if database tables are empty and seed if initial startup
+      await client.query(REVIEW_GATE_SCHEMA_SQL);
+      await client.query(PREPARED_REVIEW_SCHEMA_SQL);
       const checkRes = await client.query('SELECT COUNT(*)::int as count FROM dashboard_settings');
       const count = checkRes.rows[0]?.count || 0;
 

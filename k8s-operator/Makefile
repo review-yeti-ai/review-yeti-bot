@@ -4,12 +4,24 @@ MAIN_SRC ?= main.go
 CRD_DIR ?= config/crd/bases
 CRD_FILES ?= $(CRD_DIR)/review.calltelemetry.com_prreviewjobs.yaml $(CRD_DIR)/review-yeti.ai_prreviewjobs.yaml
 
+# Match the generator recorded in the CRDs. Its x/tools dependency requires
+# the matching Go toolchain rather than the host's potentially newer Go.
+CONTROLLER_GEN_VERSION := v0.15.0
+CONTROLLER_GEN_GO_TOOLCHAIN := go1.22.12
+CONTROLLER_GEN_ENV := GOTOOLCHAIN=$(CONTROLLER_GEN_GO_TOOLCHAIN)
+CONTROLLER_GEN_FLAGS :=
+# New macOS loaders require LC_UUID, which Go 1.22's internal linker omits.
+ifeq ($(shell uname -s),Darwin)
+CONTROLLER_GEN_ENV += CGO_ENABLED=1
+CONTROLLER_GEN_FLAGS += -ldflags=-linkmode=external
+endif
+
 # Go Toolchain Settings
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 CGO_ENABLED ?= 0
 
-.PHONY: all build test crd clean fmt vet run help
+.PHONY: all build test generate crd clean fmt vet run help
 
 all: fmt vet build test
 
@@ -23,6 +35,10 @@ build: fmt vet
 test:
 	@echo "==> Running Go unit tests..."
 	go test -v ./... -coverprofile=cover.out
+
+## generate: Regenerate the v1alpha2 CRD and deepcopy code (leaves legacy v1alpha1 untouched)
+generate:
+	$(CONTROLLER_GEN_ENV) go run $(CONTROLLER_GEN_FLAGS) sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) object crd paths="./api/v1alpha2" output:crd:artifacts:config=$(CRD_DIR)
 
 ## crd: Validate CRD manifest existence and structure
 crd:

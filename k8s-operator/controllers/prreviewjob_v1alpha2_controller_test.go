@@ -411,6 +411,8 @@ func TestPRReviewJobV1Alpha2ReconcilerImmediatelyReclaimsIdleWorkspaceAfterTermi
 		t.Fatalf("build PVC: %v", err)
 	}
 	kube := fake.NewClientBuilder().WithScheme(v1alpha2Scheme(t)).WithObjects(review, pvc).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	// REL-732 changed the idle window to zero. The terminal state still needs
+	// the collector's exact lease/Pod safety checks, but no thirty-minute wait.
 	currentNow := lastUsed
 	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: v1alpha2Scheme(t), Now: func() time.Time { return currentNow }}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}

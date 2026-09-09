@@ -66,7 +66,10 @@ spec:
                 minLength: 1
                 type: string
               executionAttempt:
-                description: ExecutionAttempt is the explicit execution identity for this run.
+                description: |-
+                  ExecutionAttempt is the explicit execution identity for this run. It is
+                  optional so the upgraded operator can continue processing CRs persisted by
+                  older dispatchers, which recover the value from the validated Secret name.
                 format: int32
                 maximum: 2147483647
                 minimum: 1
@@ -81,22 +84,34 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              preparedReview:
+                description: |-
+                  PreparedReview is an immutable, non-secret PreparedReviewExecution.v1 JSON
+                  envelope containing config and transport. Presence opts into authoritative
+                  result reporting in addition to the worker's existing raw review check.
+                  The dispatcher and worker verify the config digest; the operator transports
+                  the exact envelope without selecting providers or changing credentials.
+                maxLength: 262144
+                minLength: 1
+                type: string
               publicationMode:
                 enum:
                 - disabled
                 - app-gate
                 type: string
               qualificationModel:
-                description: QualificationModel is required by explicit qualification profiles
-                  and is never accepted for the default receipt-only worker.
+                description: |-
+                  QualificationModel is required by explicit qualification profiles and is
+                  never accepted for the default receipt-only worker.
                 maxLength: 256
                 minLength: 1
                 type: string
               qualificationProfile:
-                description: QualificationProfile is optional. An omitted profile preserves
-                  the production-safe receipt-only worker contract. Admitted non-default
-                  profiles are the manual, non-publishing full-panel and read-only same-head
-                  lanes.
+                description: |-
+                  QualificationProfile is optional. An omitted profile preserves the
+                  production-safe receipt-only worker contract. The only admitted
+                  non-default profiles are the manual, non-publishing full-panel and
+                  read-only same-head lanes.
                 enum:
                 - full-panel
                 - same-head
@@ -118,8 +133,9 @@ spec:
                 pattern: ^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$
                 type: string
               runnerMode:
-                description: RunnerMode defines whether the worker image is an immutable
-                  prebaked container or a generic runner image that executes runtime install steps.
+                description: |-
+                  RunnerMode defines whether the worker image is an immutable prebaked container
+                  or a generic runner image that executes runtime install steps. Defaults to prebaked.
                 enum:
                 - prebaked
                 - generic
@@ -151,13 +167,22 @@ spec:
               rule: self == oldSelf
             - message: terminalDeadline must be between 15 and 60 minutes after receivedAt
               rule: duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt))
-                && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <=
-                duration('3600s')
-            - message: qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model
-              rule: (!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')
+                && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt))
+                <= duration('3600s')
+            - message: qualificationProfile and qualificationModel must both be omitted
+                for receipt-only workers or use an explicit qualification profile
+                with a non-auto model
+              rule: (!has(self.qualificationProfile) && !has(self.qualificationModel))
+                || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel)
+                && self.qualificationModel != 'auto' && self.qualificationModel !=
+                'openrouter/auto')
+            - message: preparedReview requires the prebaked app-gate lane
+              rule: '!has(self.preparedReview) || (self.publicationMode == ''app-gate''
+                && (!has(self.runnerMode) || self.runnerMode == ''prebaked''))'
           status:
-            description: PRReviewJobStatus contains execution references only; PostgreSQL
-              remains lifecycle authority.
+            description: |-
+              PRReviewJobStatus contains execution references and a bounded timing receipt;
+              PostgreSQL remains lifecycle authority.
             properties:
               completionTime:
                 format: date-time
@@ -256,7 +281,10 @@ spec:
                 format: date-time
                 type: string
               timing:
-                description: DispatchTimingStatus is a durable, bounded lifecycle receipt. It contains timestamps only; prompts, provider responses, credentials, and review contents must never be written to the CR status.
+                description: |-
+                  DispatchTimingStatus is a durable, bounded lifecycle receipt. It contains
+                  timestamps only; prompts, provider responses, credentials, and review
+                  contents must never be written to the CR status.
                 properties:
                   completedAt:
                     format: date-time
