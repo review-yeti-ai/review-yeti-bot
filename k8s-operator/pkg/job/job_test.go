@@ -337,8 +337,8 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if result.Spec.Completions == nil || *result.Spec.Completions != 1 || result.Spec.Parallelism == nil || *result.Spec.Parallelism != 1 {
 		t.Fatalf("job cardinality = completions %v parallelism %v, want one", result.Spec.Completions, result.Spec.Parallelism)
 	}
-	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 300 {
-		t.Fatalf("job TTL = %v, want 300", result.Spec.TTLSecondsAfterFinished)
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("job TTL = %v, want 0", result.Spec.TTLSecondsAfterFinished)
 	}
 	if len(result.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("containers = %d, want one", len(result.Spec.Template.Spec.Containers))
@@ -349,8 +349,8 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	}
 	requestCPU := container.Resources.Requests[corev1.ResourceCPU]
 	requestMemory := container.Resources.Requests[corev1.ResourceMemory]
-	if got := requestCPU.String(); got != "500m" || requestMemory.String() != "768Mi" {
-		t.Fatalf("resource requests = %v, want 500m/768Mi", container.Resources.Requests)
+	if got := requestCPU.String(); got != "250m" || requestMemory.String() != "512Mi" {
+		t.Fatalf("resource requests = %v, want 250m/512Mi", container.Resources.Requests)
 	}
 	limitCPU := container.Resources.Limits[corev1.ResourceCPU]
 	limitMemory := container.Resources.Limits[corev1.ResourceMemory]
@@ -890,5 +890,54 @@ func TestBuildWorkerJobStampsTheSharedComponent(t *testing.T) {
 				t.Fatalf("%s component = %q, want %q", mode, labels["review-yeti.ai/component"], want)
 			}
 		}
+	}
+}
+
+func TestBuildWorkerJobHonorsLifecycleEnv(t *testing.T) {
+	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "300")
+	t.Setenv("REVIEW_YETI_WORKER_CPU_REQUEST", "500m")
+	t.Setenv("REVIEW_YETI_WORKER_MEMORY_REQUEST", "768Mi")
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	result, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 300 {
+		t.Fatalf("job TTL = %v, want 300 from env", result.Spec.TTLSecondsAfterFinished)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	cpu := container.Resources.Requests[corev1.ResourceCPU]
+	mem := container.Resources.Requests[corev1.ResourceMemory]
+	if cpu.String() != "500m" {
+		t.Fatalf("cpu request = %s, want 500m from env", cpu.String())
+	}
+	if mem.String() != "768Mi" {
+		t.Fatalf("memory request = %s, want 768Mi from env", mem.String())
+	}
+}
+
+func TestBuildWorkerJobFallsBackOnInvalidLifecycleEnv(t *testing.T) {
+	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "-5")
+	t.Setenv("REVIEW_YETI_WORKER_CPU_LIMIT", "banana")
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	result, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("job TTL = %v, want 0 fallback from negative env", result.Spec.TTLSecondsAfterFinished)
+	}
+	limitCPU := result.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU]
+	if limitCPU.String() != "1" {
+		t.Fatalf("cpu limit = %s, want 1 fallback from unparseable env", limitCPU.String())
+	}
+
+	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "nope")
+	result, err = job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatalf("build invalid ttl: %v", err)
+	}
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("job TTL = %v, want 0 fallback from unparseable env", result.Spec.TTLSecondsAfterFinished)
 	}
 }
