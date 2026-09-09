@@ -325,7 +325,7 @@ function invalidPanelQualificationContract(): Error {
   return new Error('panel qualification worker contract is invalid');
 }
 
-function qualificationTimeoutMs(
+export function qualificationTimeoutMs(
   env: NodeJS.ProcessEnv,
   invalidContract: () => Error = invalidProviderQualificationContract,
 ): number {

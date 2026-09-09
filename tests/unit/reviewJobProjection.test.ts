@@ -122,6 +122,11 @@ describe('buildReviewJobProjection', () => {
       .toThrow(/publication mode/i);
     expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + MAX_TERMINAL_DEADLINE_MS + 1 }, receivedAt + 60_000))
       .toThrow(/terminal deadline must be between/i);
+    // The below-floor rejection is an independent branch from the above-ceiling one
+    // (buildReviewJobProjection has its own copy of this check, separate from
+    // reviewDispatchRepository's), so it needs its own direct assertion here too.
+    expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + MIN_TERMINAL_DEADLINE_MS - 1 }, receivedAt + 60_000))
+      .toThrow(/terminal deadline must be between/i);
     // A window between MIN and MAX that is neither the boundary nor the current
     // TERMINAL_DEADLINE_MS -- simulating a run admitted before a config change --
     // must still project cleanly.
