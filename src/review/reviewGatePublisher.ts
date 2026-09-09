@@ -1,8 +1,8 @@
 import type { GitHubReviewGateClient } from '../github/reviewGateClient';
-import { isGateProgressState, type PostgresReviewGateRepository, type StoredReviewGate } from '../persistence/reviewGateRepository';
+import { isGateProgressState, type ReviewGateRepository, type StoredReviewGate } from './reviewGateContracts';
 
 export interface ReviewGatePublisherOptions {
-  repository: Pick<PostgresReviewGateRepository, 'claimPublication' | 'publishLocked' | 'retryPublication'>;
+  repository: ReviewGateRepository;
   clientFor(gate: StoredReviewGate): Promise<Pick<GitHubReviewGateClient, 'createPending' | 'reconcile' | 'updateExisting'>>;
   workerId: string;
   now?: () => number;
