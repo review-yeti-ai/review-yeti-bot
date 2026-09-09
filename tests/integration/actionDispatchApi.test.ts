@@ -1,6 +1,7 @@
 import express from 'express';
 import request from 'supertest';
-import { describe, expect, it, vi } from 'vitest';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createActionDispatchRouter, createWorkerCompletionVerifier, type ActionDispatchRouterOptions } from '../../src/api/actionDispatchApi';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { GitHubActionsOidcVerifier } from '../../src/auth/githubActionsOidc';
@@ -360,7 +361,7 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
     expect(fixture.admission.admit).toHaveBeenCalledExactlyOnceWith({
       deliveryId: body.deliveryId, eventName: body.caller.eventName,
       repositoryId: body.repositoryId, installationId: 456,
-      receivedAt: publishing.now, terminalDeadline: publishing.now + 900_000,
+      receivedAt: publishing.now, terminalDeadline: publishing.now + TERMINAL_DEADLINE_MS,
       payloadDigest: sha256(actionDispatchDigestInput(dispatch)), publicationMode: 'app-gate',
       identity: publishing.resolution.identity,
       effectivePolicyDigest: publishing.resolution.prepared.policy.effectivePolicyDigest,
@@ -558,6 +559,74 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
     expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
     expect(publishing.resolve).not.toHaveBeenCalled();
     expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+});
+
+// REL-733: the admission handler must actually observe
+// REVIEW_YETI_TERMINAL_DEADLINE_MS, not just re-derive the same eagerly-resolved
+// constant every other touched test already imports. TERMINAL_DEADLINE_MS is
+// computed once at module load, so observing a different env value requires a
+// fresh module graph -- vi.resetModules() + a dynamic re-import -- rather than
+// the static import used by the rest of this file.
+describe('POST /api/dispatch/action (configurable terminal deadline, REL-733)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  async function freshApp(overrides: Record<string, any> = {}) {
+    const { createActionDispatchRouter: freshRouter } = await import('../../src/api/actionDispatchApi');
+    const verifier = { verify: vi.fn(async () => verified), ...(overrides.verifier || {}) };
+    const admission = { admit: vi.fn(async () => ({
+      status: 'accepted',
+      run: { runId: `run_${'1'.repeat(32)}` },
+    })), ...(overrides.admission || {}) };
+    const resolveInstallationId = overrides.resolveInstallationId || vi.fn(async () => 456);
+    const instance = express();
+    instance.use(express.json({ limit: '64kb' }));
+    instance.use('/api/dispatch', freshRouter({ verifier, admission, resolveInstallationId }));
+    return { instance, verifier, admission, resolveInstallationId };
+  }
+
+  it('admits a run whose terminalDeadline window equals the resolved REVIEW_YETI_TERMINAL_DEADLINE_MS', async () => {
+    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '2400000');
+    vi.resetModules();
+    const fixture = await freshApp();
+
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send(body);
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledOnce();
+    const admitted = fixture.admission.admit.mock.calls[0][0];
+    expect(admitted.terminalDeadline - admitted.receivedAt).toBe(2_400_000);
+  });
+
+  it('admits a run whose terminalDeadline window differs when REVIEW_YETI_TERMINAL_DEADLINE_MS differs, and matches the default when unset', async () => {
+    vi.resetModules();
+    const { DEFAULT_TERMINAL_DEADLINE_MS } = await import('../../src/config/terminalDeadline');
+    const defaultFixture = await freshApp();
+    const defaultResponse = await request(defaultFixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send(body);
+    expect(defaultResponse.status).toBe(202);
+    const defaultAdmitted = defaultFixture.admission.admit.mock.calls[0][0];
+    expect(defaultAdmitted.terminalDeadline - defaultAdmitted.receivedAt).toBe(DEFAULT_TERMINAL_DEADLINE_MS);
+
+    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '1200000');
+    vi.resetModules();
+    const distinctFixture = await freshApp();
+    const distinctResponse = await request(distinctFixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...body, deliveryId: `actions:98765:2:123:42:${'c'.repeat(40)}`, headSha: 'c'.repeat(40) });
+    expect(distinctResponse.status).toBe(202);
+    const distinctAdmitted = distinctFixture.admission.admit.mock.calls[0][0];
+    expect(distinctAdmitted.terminalDeadline - distinctAdmitted.receivedAt).toBe(1_200_000);
+    expect(distinctAdmitted.terminalDeadline - distinctAdmitted.receivedAt).not.toBe(DEFAULT_TERMINAL_DEADLINE_MS);
   });
 });
 

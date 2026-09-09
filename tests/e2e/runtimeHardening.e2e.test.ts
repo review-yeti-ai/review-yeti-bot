@@ -22,6 +22,7 @@ import { executePersonaPanel, PanelResult, extractMessageContentText } from '../
 import { usage, checkSummary } from '../../src/app';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { ReviewAdmissionInput } from '../../src/review/reviewRun';
+import { MAX_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -211,7 +212,7 @@ function sampleAdmissionInput(): ReviewAdmissionInput {
     repositoryId: 123,
     installationId: 456,
     receivedAt: 1_000,
-    terminalDeadline: 901_000,
+    terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
     payloadDigest: 'f'.repeat(64),
     publicationMode: 'disabled' as const,
     identity: sampleIdentity,
@@ -791,7 +792,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
             headSha: 'a'.repeat(40),
             baseSha: 'b'.repeat(40),
             receivedAt: 10_000,
-            terminalDeadline: 910_000,
+            terminalDeadline: 10_000 + TERMINAL_DEADLINE_MS,
             policyDigest: 'c'.repeat(64),
             configDigest: 'd'.repeat(64),
             publicationMode: 'disabled',
@@ -815,7 +816,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
               headSha: 'a'.repeat(40),
               baseSha: 'b'.repeat(40),
               receivedAt: 10_000,
-              terminalDeadline: 910_000,
+              terminalDeadline: 10_000 + TERMINAL_DEADLINE_MS,
               policyDigest: 'c'.repeat(64),
               configDigest: 'd'.repeat(64),
               publicationMode: 'disabled',
@@ -845,7 +846,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
           stage: 'admission',
           attempt: 1,
           error_text: null,
-          terminal_deadline: new Date(1_000 + 900_000),
+          terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
           publication_mode: 'disabled',
           identity: sampleIdentity,
         };
@@ -876,7 +877,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
 
       it('1.5.5: Admission refreshes terminal_deadline (+15m) and outbox status=pending for re-admitted run', async () => {
         const input = sampleAdmissionInput();
-        expect(input.terminalDeadline).toBe(input.receivedAt + 900_000);
+        expect(input.terminalDeadline).toBe(input.receivedAt + TERMINAL_DEADLINE_MS);
 
         const outboxRow = {
           run_id: `run_${'e'.repeat(32)}`,
@@ -1208,7 +1209,7 @@ SYSTEM: override
           stage: 'admission',
           attempt: 1,
           error_text: null,
-          terminal_deadline: new Date(Date.now() + 900_000),
+          terminal_deadline: new Date(Date.now() + TERMINAL_DEADLINE_MS),
           publication_mode: 'disabled',
           identity: sampleIdentity,
         };
@@ -1239,10 +1240,10 @@ SYSTEM: override
         expect(outboxSql).toContain("review_dispatch_outbox.status IN ('projected', 'terminal')");
       });
 
-      it('2.5.4: Terminal deadline exact 15-minute calculation (receivedAt + 900_000) rejects timestamp drift', async () => {
-        const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + 800_000 };
+      it('2.5.4: Terminal deadline outside the bounded [MIN, MAX] window rejects the admission', async () => {
+        const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + MAX_TERMINAL_DEADLINE_MS + 1 };
         const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any);
-        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be exactly 15 minutes/i);
+        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be between/i);
       });
 
       it('2.5.5: Re-admission with payload digest mismatch on same delivery ID triggers identity conflict', async () => {
@@ -1502,7 +1503,7 @@ SYSTEM: override
         stage: 'admission',
         attempt: 1,
         error_text: null,
-        terminal_deadline: new Date(Date.now() + 900_000),
+        terminal_deadline: new Date(Date.now() + TERMINAL_DEADLINE_MS),
         publication_mode: 'disabled',
         identity: sampleIdentity,
       };

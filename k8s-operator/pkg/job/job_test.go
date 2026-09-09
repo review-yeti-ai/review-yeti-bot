@@ -575,6 +575,48 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 	}
 }
 
+// REL-733: the CRD's CEL rule (and validateInput) accept any admitted window in
+// [900s, 3600s], not just the original fixed 15 minutes. The worker's active
+// deadline must scale with whichever window this run was actually admitted
+// with, capped at that window minus the publication/failure-conclusion reserve.
+func TestBuildWorkerJobScalesActiveDeadlineWithAdmittedWindow(t *testing.T) {
+	received := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		window   time.Duration
+		now      time.Time
+		wantSecs int64
+	}{
+		{name: "thirty minute window at admission", window: 30 * time.Minute, now: received, wantSecs: 1740},
+		{name: "sixty minute window at admission", window: 60 * time.Minute, now: received, wantSecs: 3540},
+		{name: "thirty minute window mid-run", window: 30 * time.Minute, now: received.Add(10 * time.Minute), wantSecs: 1140},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			review := reviewFixture(received)
+			review.Spec.TerminalDeadline = metav1.NewTime(received.Add(test.window))
+			result, err := job.BuildWorkerJob(buildInput(review, test.now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Spec.ActiveDeadlineSeconds == nil || *result.Spec.ActiveDeadlineSeconds != test.wantSecs {
+				t.Fatalf("active deadline = %v, want %d", result.Spec.ActiveDeadlineSeconds, test.wantSecs)
+			}
+		})
+	}
+	// Beyond the CRD's 3600s ceiling, the run was never admissible.
+	tooLong := reviewFixture(received)
+	tooLong.Spec.TerminalDeadline = metav1.NewTime(received.Add(61 * time.Minute))
+	if _, err := job.BuildWorkerJob(buildInput(tooLong, received)); !errors.Is(err, job.ErrJobDeadline) {
+		t.Fatalf("over-ceiling window error = %v, want ErrJobDeadline", err)
+	}
+	// Below the CRD's 900s floor, the run was never admissible either.
+	tooShort := reviewFixture(received)
+	tooShort.Spec.TerminalDeadline = metav1.NewTime(received.Add(14 * time.Minute))
+	if _, err := job.BuildWorkerJob(buildInput(tooShort, received)); !errors.Is(err, job.ErrJobDeadline) {
+		t.Fatalf("under-floor window error = %v, want ErrJobDeadline", err)
+	}
+}
+
 func TestBuildWorkerJobNeverExtendsTerminalDeadline(t *testing.T) {
 	received := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	for _, test := range []struct {

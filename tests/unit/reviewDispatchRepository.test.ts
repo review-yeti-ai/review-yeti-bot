@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { sha256 } from '../../src/review/reviewCore';
+import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const identity = {
   owner: 'calltelemetry',
@@ -44,7 +45,7 @@ function input() {
     repositoryId: 123,
     installationId: 456,
     receivedAt: 1_000,
-    terminalDeadline: 901_000,
+    terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
     payloadDigest: 'f'.repeat(64),
     publicationMode: 'disabled' as const,
     identity,
@@ -265,7 +266,7 @@ describe('PostgresReviewDispatchRepository', () => {
           head_sha: identity.headSha,
           base_sha: identity.baseSha,
           received_at: new Date(1_000),
-          terminal_deadline: new Date(901_000),
+          terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
           effective_policy_digest: identity.configDigest,
           effective_config_digest: identity.configDigest,
           lease_owner: 'dispatcher-a',
@@ -361,6 +362,34 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  // A run's persisted terminalDeadline reflects whichever REVIEW_YETI_TERMINAL_DEADLINE_MS
+  // value was in effect at admission time. A later dispatcher restart or rolling config
+  // update must not orphan that already-admitted run: this invariant validates the
+  // bounded [MIN, MAX] window (the same range the CRD's CEL rule and the Go operator
+  // enforce), not exact equality to whatever this process currently resolves.
+  it('accepts an admitted window that differs from the current TERMINAL_DEADLINE_MS but is still within [MIN, MAX]', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) } as any);
+    const admittedUnderADifferentWindow = {
+      ...input(),
+      // Neither MIN_TERMINAL_DEADLINE_MS nor the current TERMINAL_DEADLINE_MS -- a
+      // third in-range value simulating an env change between admission and now.
+      terminalDeadline: input().receivedAt + Math.round((MIN_TERMINAL_DEADLINE_MS + MAX_TERMINAL_DEADLINE_MS) / 2),
+    };
+    expect(admittedUnderADifferentWindow.terminalDeadline).not.toBe(input().terminalDeadline);
+    await expect(repository.admit(admittedUnderADifferentWindow)).resolves.toMatchObject({ status: 'accepted' });
+  });
+
+  it('rejects a terminal deadline outside the bounded [MIN, MAX] window before opening a transaction', async () => {
+    const connect = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect } as any);
+    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + MIN_TERMINAL_DEADLINE_MS - 1 }))
+      .rejects.toThrow(/terminal deadline must be between/i);
+    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + MAX_TERMINAL_DEADLINE_MS + 1 }))
+      .rejects.toThrow(/terminal deadline must be between/i);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
   it('rolls back when the outbox insert fails so acknowledgement cannot lose work', async () => {
     const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], []]);
     client.query.mockImplementationOnce(async () => ({ rows: [] }));
@@ -391,7 +420,7 @@ describe('PostgresReviewDispatchRepository', () => {
       head_sha: identity.headSha,
       base_sha: identity.baseSha,
       received_at: new Date(1_000),
-      terminal_deadline: new Date(901_000),
+      terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
       effective_policy_digest: 'c'.repeat(64),
       effective_config_digest: identity.configDigest,
       lease_owner: 'dispatcher-a',
@@ -407,7 +436,7 @@ describe('PostgresReviewDispatchRepository', () => {
       headSha: identity.headSha,
       baseSha: identity.baseSha,
       receivedAt: 1_000,
-      terminalDeadline: 901_000,
+      terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
       policyDigest: 'c'.repeat(64),
       configDigest: identity.configDigest,
       claimAttempt: 7,
@@ -455,7 +484,7 @@ describe('PostgresReviewDispatchRepository', () => {
           head_sha: identity.headSha,
           base_sha: identity.baseSha,
           received_at: new Date(1_000),
-          terminal_deadline: new Date(901_000),
+          terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
           effective_policy_digest: 'c'.repeat(64),
           effective_config_digest: identity.configDigest,
           lease_owner: 'dispatcher-a',

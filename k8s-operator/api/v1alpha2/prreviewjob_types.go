@@ -38,7 +38,7 @@ const (
 // PRReviewJobSpec is an immutable, non-secret projection of an authenticated review run.
 // The CRD schema rejects updates and all fields not declared here.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="PRReviewJob spec is immutable"
-// +kubebuilder:validation:XValidation:rule="timestamp(self.terminalDeadline) - timestamp(self.receivedAt) == duration('900s')",message="terminalDeadline must be exactly 15 minutes after receivedAt"
+// +kubebuilder:validation:XValidation:rule="duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')",message="terminalDeadline must be between 15 and 60 minutes after receivedAt"
 // +kubebuilder:validation:XValidation:rule="(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')",message="qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model"
 // +kubebuilder:validation:XValidation:rule="!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))",message="preparedReview requires the prebaked app-gate lane"
 type PRReviewJobSpec struct {
