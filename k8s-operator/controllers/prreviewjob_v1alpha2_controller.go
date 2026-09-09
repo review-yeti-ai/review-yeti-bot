@@ -45,6 +45,7 @@ const (
 	DefaultV1Alpha2MaxConcurrentJobs = 4
 	v1Alpha2RequeueAfter             = 5 * time.Second
 	v1Alpha2PVCCreateRequeue         = 1 * time.Second
+	workerCreationReserved           = "WorkerCreationReserved"
 )
 
 // PRReviewJobV1Alpha2Reconciler is the disabled-by-default receipt-only
@@ -53,6 +54,8 @@ const (
 // PostgreSQL remains the lifecycle and publication authority.
 type PRReviewJobV1Alpha2Reconciler struct {
 	client.Client
+	// Confirm cached Job misses before treating an execution as lost.
+	APIReader         client.Reader
 	Scheme            *runtime.Scheme
 	Now               func() time.Time
 	MaxConcurrentJobs int
@@ -98,6 +101,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	workerName := review.Name + "-worker"
 	var existing batchv1.Job
 	existingErr := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
+	if apierrors.IsNotFound(existingErr) && r.APIReader != nil {
+		existingErr = r.APIReader.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
+	}
 	if existingErr != nil && !apierrors.IsNotFound(existingErr) {
 		return ctrl.Result{}, existingErr
 	}
@@ -106,6 +112,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, r.failWorkerContractMismatch(ctx, &review, &existing, "existing worker Job does not match the immutable receipt-only contract")
 		}
 		return r.reconcileExistingJob(ctx, &review, &existing, now)
+	}
+	if workerCreationWasAttempted(&review) {
+		// A Job can finish and be garbage-collected before we observe its
+		// terminal state. Missing execution evidence is not a fresh admission.
+		// Do not release its workspace here: surviving Pods or a newer Lease
+		// must still pass the normal guarded terminal cleanup path.
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, r.fail(ctx, &review,
+			"WorkerJobMissing", "previous worker creation was reserved or observed but its Job is missing; execution outcome is unknown and fresh admission is required")
 	}
 
 	limit := r.MaxConcurrentJobs
@@ -188,6 +202,21 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, err
 		}
 	}
+	// Persist intent before Create, whose response or following status update
+	// can be lost. This condition reserves at most one creation attempt, not a
+	// claim that a Job started. Even an uncertain/unsent Create cannot be
+	// retried under the same admitted identity once this write succeeds.
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: workerCreationReserved, Status: metav1.ConditionTrue,
+		Reason: "CreateAttemptReserved", Message: "worker Job creation is reserved; outcome has not yet been observed",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(now),
+	})
+	if err := r.Status().Update(ctx, &review); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.Create(ctx, worker); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return ctrl.Result{}, err
@@ -212,6 +241,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+func workerCreationWasAttempted(review *reviewv1alpha2.PRReviewJob) bool {
+	// Also recognize status written by older operators that had no reservation.
+	return meta.IsStatusConditionTrue(review.Status.Conditions, workerCreationReserved) ||
+		review.Status.Phase == reviewv1alpha2.PhaseRunning || review.Status.JobName != "" ||
+		review.Status.StartTime != nil ||
+		(review.Status.Timing != nil && review.Status.Timing.JobCreatedAt != nil)
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context, review *reviewv1alpha2.PRReviewJob, worker *batchv1.Job, now time.Time) (ctrl.Result, error) {
@@ -433,9 +470,8 @@ func (r *PRReviewJobV1Alpha2Reconciler) markWorkspaceUsed(ctx context.Context, r
 // the worker Job has reached a terminal phase. The PVC is intentionally not
 // owned by the review CR, so it must be reclaimed through the guarded
 // workspace collector rather than Kubernetes owner-reference garbage
-// collection. Returning the collector's bounded requeue allows the exact
-// 30-minute idle boundary to be observed even when no further Kubernetes
-// event arrives for the terminal review.
+// collection. Idle workspaces are immediately eligible; bounded requeues keep
+// cleanup moving while active Pods or Leases still protect the workspace.
 func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
@@ -506,7 +542,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Con
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(review.Namespace), client.MatchingLabels{
 		"review-yeti.ai/run-id":    review.Spec.RunID,
-		"review-yeti.ai/component": job.ReceiptOnlyWorkerComponent,
+		"review-yeti.ai/component": job.WorkerComponentFor(review.Spec.PublicationMode, review.Spec.QualificationProfile),
 	}); err != nil {
 		return false, err
 	}
@@ -715,6 +751,9 @@ func timePtr(value metav1.Time) *metav1.Time { return &value }
 // SetupWithManager registers only the v1alpha2 projection and its owned Jobs.
 // PVCs are intentionally not owned because their lifecycle is PR-scoped.
 func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&reviewv1alpha2.PRReviewJob{}).
 		Owns(&batchv1.Job{}).
