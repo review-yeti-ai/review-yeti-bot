@@ -212,7 +212,11 @@ if [[ "$use_fallback" == "true" && -z "$raw_diff_file" ]]; then
       # array under `set -u` (bash 4.4+ tolerates it), so the empty case has to
       # branch explicitly to keep the previous behaviour: no pathspec, full diff.
       scope_paths=()
-      while IFS= read -r scope_path; do
+      # `|| [ -n "$scope_path" ]` keeps the final line when the file has no
+      # trailing newline. Plain `read` returns non-zero there and the loop body
+      # never runs for it, silently shrinking the diff scope by one path --
+      # mapfile did not drop it, so omitting this would be a regression.
+      while IFS= read -r scope_path || [ -n "$scope_path" ]; do
         [ -n "$scope_path" ] && scope_paths+=("$scope_path")
       done < "${work_dir}/touched-files.txt"
       if [ "${#scope_paths[@]}" -eq 0 ]; then

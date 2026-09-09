@@ -46,6 +46,8 @@ const BASH4_CONSTRUCTS: Array<{ name: string; pattern: RegExp; why: string }> = 
   },
   { name: '&>> redirect', pattern: /&>>/, why: 'use `>>file 2>&1`' },
   { name: ';;& case fallthrough', pattern: /;;&/, why: 'bash 4 only' },
+  { name: 'coproc', pattern: /(^|[^A-Za-z0-9_-])coproc\s/, why: 'bash 4 only' },
+  { name: 'negative string index ${v: -n}', pattern: /\$\{[A-Za-z_][A-Za-z0-9_]*:\s-[0-9]/, why: 'bash 4.2+' },
 ];
 
 describe('scripts/ must run on bash 3.2 (macOS /bin/bash)', () => {
@@ -73,10 +75,22 @@ describe('scripts/ must run on bash 3.2 (macOS /bin/bash)', () => {
     expect(violations, `bash 4+ constructs found:\n  ${violations.join('\n  ')}`).toEqual([]);
   });
 
-  it('parses cleanly under the real /bin/bash', () => {
-    // A syntax-only check (`-n`), so nothing executes. Catches constructs the
-    // regexes above do not model.
-    if (!fs.existsSync('/bin/bash')) return;
+  const bashVersion = (() => {
+    if (!fs.existsSync('/bin/bash')) return null;
+    try {
+      return execFileSync('/bin/bash', ['-c', 'echo $BASH_VERSION'], { encoding: 'utf8' }).trim();
+    } catch {
+      return null;
+    }
+  })();
+  const haveBash3 = Boolean(bashVersion && bashVersion.startsWith('3.'));
+
+  // Reported as SKIPPED rather than silently returning: on Ubuntu CI /bin/bash is
+  // bash 5, which accepts every bash 4 construct, so running `bash -n` there would
+  // assert nothing while looking green. The regex scan above is the portable gate
+  // that does run everywhere; this is the stronger check, and it only means
+  // something on a host that actually has bash 3.x.
+  it.skipIf(!haveBash3)(`parses cleanly under real bash 3.x (found: ${bashVersion ?? 'none'})`, () => {
     const failures: string[] = [];
     for (const file of scripts) {
       try {
@@ -85,6 +99,12 @@ describe('scripts/ must run on bash 3.2 (macOS /bin/bash)', () => {
         failures.push(`${path.relative(root, file)}: ${(error as Error).message.split('\n')[0]}`);
       }
     }
-    expect(failures, `scripts failed \`bash -n\`:\n  ${failures.join('\n  ')}`).toEqual([]);
+    expect(failures, `scripts failed \`bash -n\` under bash ${bashVersion}:\n  ${failures.join('\n  ')}`).toEqual([]);
+  });
+
+  it('reports which bash the parse check used, so a skip is never invisible', () => {
+    // Fails loudly if /bin/bash disappears entirely; a missing shell is a real
+    // environment problem, not something to swallow.
+    expect(bashVersion, '/bin/bash not found or not runnable').toBeTruthy();
   });
 });
