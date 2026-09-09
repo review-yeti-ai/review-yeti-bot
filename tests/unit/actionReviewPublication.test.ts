@@ -461,9 +461,7 @@ describe('the sticky summary refuses to adopt a comment it did not write', () =>
     vi.unstubAllEnvs();
   });
 
-  // `readAuthenticatedPublisherLogin` falls back to 'github-actions[bot]' when GITHUB_ACTIONS is
-  // 'true', so the no-identity path only exists off-Actions. The runner sets that variable, so the
-  // test has to unset it explicitly rather than inherit whatever the host happens to be.
+  // A runner environment never authenticates the token's publishing identity.
   it('fails loudly when the publishing identity cannot be established', () => {
     vi.stubEnv('GITHUB_ACTIONS', '');
     const { state, commandRunner } = runner([], { publisher: null });
@@ -475,16 +473,16 @@ describe('the sticky summary refuses to adopt a comment it did not write', () =>
     expect(state.posted).toHaveLength(0);
   });
 
-  // The complement: on Actions the identity is always resolvable, so the guard must not fire.
-  it('uses the Actions identity fallback when the API cannot name the publisher', () => {
+  it('does not adopt an Actions comment when no API verifies the publisher', () => {
     vi.stubEnv('GITHUB_ACTIONS', 'true');
     const own = { id: 6004, body: `earlier round ${anchor}`, user: { login: 'github-actions[bot]' } };
     const { state, commandRunner } = runner([own], { publisher: null });
 
     const result = postStickySummaryComment('later round', context, { commandRunner, existingReviews: [] });
 
-    expect(result).toMatchObject({ success: true, updatedInPlace: true, commentId: 6004 });
-    expect(state.posted.filter((post) => post.method === 'PATCH')).toHaveLength(1);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('could not determine the publishing GitHub identity');
+    expect(state.posted).toHaveLength(0);
   });
 });
 
@@ -638,6 +636,185 @@ describe('resolving the publishing identity', () => {
 });
 
 /* -------------------------------------------------------------------------------------------- */
+
+describe('verified GraphQL publisher identity', () => {
+  const context = { repo: 'example-org/example-repo', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
+  const body = '## **Verdict: SHIP**\n\n- **Quorum Status**: SATISFIED\n- **Review Status**: SHIP';
+  const plan = () => planFindingPublication([{
+    displayName: 'Testing',
+    findings: [{
+      severity: 'P2' as const, path: 'src/alpha.ts', line: 4,
+      title: 'Missing regression for the changed publisher identity',
+      body: 'A custom App identity must be covered before accepting publication.',
+    }],
+  }], [{ path: 'src/alpha.ts', patch: '@@ -0,0 +1,5 @@\n+a\n+b\n+c\n+d\n+e' }]);
+
+  function runner(options: {
+    restUser?: string; installation?: string; viewer?: unknown; viewerRaw?: string;
+    viewerStatus?: number; createdAuthor?: unknown; threadAuthor?: string;
+    staleReadback?: boolean; foreignMarkers?: boolean;
+  } = {}) {
+    const item = plan().lineComments[0];
+    const state = { calls: [] as any[], writes: [] as any[], comments: [] as any[], threads: [] as any[], nextId: 100 };
+    function thread(id: number, payload: any, author: unknown) {
+      return {
+        id: 'thread-' + id, isResolved: false, isOutdated: false,
+        path: payload.path, line: payload.line, diffSide: 'RIGHT', startLine: null,
+        comments: {
+          nodes: [{
+            databaseId: id, body: payload.body, author: { login: author },
+            commit: { oid: options.staleReadback ? 'oldhead' : 'newhead' },
+          }],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      };
+    }
+    if (options.foreignMarkers) {
+      state.comments.push({
+        id: 1, body: renderStickySummaryBody(body, context, null).body,
+        user: { login: 'foreign-app[bot]' },
+      });
+      state.threads.push(thread(2, {
+        path: item.path, line: item.line,
+        body: item.body + '\n\n<!-- review-yeti-bot:finding:v1:newhead:' + item.markerKey + ' -->',
+      }, 'foreign-app'));
+    }
+    const commandRunner = (_exe: string, args: string[], commandOptions: any) => {
+      state.calls.push({ args, token: commandOptions.env.GH_TOKEN });
+      const ok = (value: unknown) => ({ status: 0, stdout: JSON.stringify(value), stderr: '' });
+      if (args[0] === 'pr') return ok({ headRefOid: 'newhead', baseRefOid: 'base' });
+      if (args[1] === 'user' || args[1] === 'installation') {
+        const output = args[1] === 'user' ? options.restUser : options.installation;
+        return output === undefined
+          ? { status: 1, stdout: '', stderr: 'Resource not accessible by integration' }
+          : { status: 0, stdout: output, stderr: '' };
+      }
+      if (args[1] === 'graphql') {
+        if (args.some(arg => arg.includes('query ReviewYetiPublisher'))) {
+          return {
+            status: options.viewerStatus ?? 0,
+            stdout: options.viewerRaw ?? JSON.stringify({ data: { viewer: { login: options.viewer === undefined ? 'custom-review-app' : options.viewer } } }),
+            stderr: '',
+          };
+        }
+        if (isReviewListQuery(args)) return { status: 0, stdout: reviewListPage([]), stderr: '' };
+        return ok({ data: { repository: { pullRequest: {
+          reviewThreads: { nodes: state.threads, pageInfo: { hasNextPage: false, endCursor: null } },
+        } } } });
+      }
+      if (args.includes('--method')) {
+        const endpoint = args[3];
+        const payload = JSON.parse(commandOptions.input);
+        const author = Object.hasOwn(options, 'createdAuthor') ? options.createdAuthor : 'custom-review-app[bot]';
+        state.writes.push({ endpoint, payload, method: args[args.indexOf('--method') + 1] });
+        const id = ++state.nextId;
+        if (endpoint.endsWith('/pulls/42/comments')) {
+          state.threads.push(thread(id, payload, options.threadAuthor ?? 'custom-review-app'));
+        } else if (endpoint.endsWith('/issues/42/comments')) {
+          state.comments.push({ id, body: payload.body, user: { login: author } });
+        }
+        return ok({ id, body: payload.body, user: { login: author } });
+      }
+      if (args[1].includes('/issues/42/comments')) return ok(state.comments);
+      return { status: 1, stdout: '', stderr: 'unexpected mock request' };
+    };
+    return { state, commandRunner };
+  }
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each(['custom-review-app', 'custom-review-app[bot]', 'Custom-Review-App'])(
+    'publishes a P2 thread and exact-head summary as verified viewer %s', (viewer) => {
+      vi.stubEnv('GH_TOKEN', 'fixture-installation-token');
+      const { state, commandRunner } = runner({ viewer });
+      expect(plan().lineComments).toHaveLength(1);
+      expect(postOrOutputComment(body, context, plan(), { commandRunner })).toMatchObject({
+        success: true, postedViaGh: true, threadIds: ['thread-101'],
+      });
+      expect(state.writes).toHaveLength(2);
+      expect(state.calls.every(call => call.token === 'fixture-installation-token')).toBe(true);
+      expect(state.calls.find(call => call.args.some((arg: string) => arg.includes('query ReviewYetiPublisher'))).args)
+        .toEqual(['api', 'graphql', '-f', 'query=query ReviewYetiPublisher { viewer { login } }']);
+    },
+  );
+
+  it('rejects a foreign planted summary and thread instead of adopting their markers', () => {
+    const { state, commandRunner } = runner({ foreignMarkers: true });
+    expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(true);
+    expect(state.writes).toHaveLength(2);
+    expect(state.writes.every(write => write.method === 'POST')).toBe(true);
+    expect(state.comments[0].user.login).toBe('foreign-app[bot]');
+    expect(state.threads[0].isResolved).toBe(false);
+  });
+
+  it('accepts a verified GraphQL viewer with an empty errors array', () => {
+    const { state, commandRunner } = runner({
+      viewerRaw: JSON.stringify({ data: { viewer: { login: 'custom-review-app' } }, errors: [] }),
+    });
+    expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(true);
+    expect(state.writes).toHaveLength(2);
+  });
+
+  const invalidLogins = [null, '', 'null', 'undefined', 'true', 'false', 'null[bot]', '"custom-review-app"',
+    {}, [], 42, '["custom-review-app"]', '{"login":"custom-review-app"}', 'custom review app', 'custom\nreview-app', '-app', 'app-', 'app[bot][bot]'];
+  it.each(invalidLogins.map((viewer, i) => [i, viewer] as const))(
+    'invalid GraphQL identity case %s cannot mutate even inside Actions', (_i, viewer) => {
+      vi.stubEnv('GITHUB_ACTIONS', 'true');
+      const { state, commandRunner } = runner({ viewer });
+      expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(false);
+      expect(postStickySummaryComment(body, context, { commandRunner, existingReviews: [] }).success).toBe(false);
+      expect(state.writes).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    { viewerStatus: 1 }, { viewerRaw: 'undefined' }, { viewerRaw: 'null' },
+    { viewerRaw: '{"data":{"viewer":null}}' },
+    { viewerRaw: '{"data":{"viewer":{"login":"custom-review-app"}},"errors":[{"message":"denied"}]}' },
+    { viewerRaw: '{"data":{"viewer":{"login":"custom-review-app"}},"errors":{}}' },
+  ])('unknown/failed viewer resolution is nonmutating: %j', (options) => {
+    vi.stubEnv('GITHUB_ACTIONS', 'true');
+    const { state, commandRunner } = runner(options);
+    expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(false);
+    expect(state.writes).toHaveLength(0);
+  });
+
+  it.each(['null', 'undefined', '""', '"null"', '{}', '["custom-review-app"]', 'bad login'])(
+    'invalid REST scalar %s falls through to verified GraphQL', (invalid) => {
+      const { state, commandRunner } = runner({ restUser: invalid, installation: invalid });
+      expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(true);
+      expect(state.calls.some(call => call.args.some((arg: string) => arg.includes('query ReviewYetiPublisher')))).toBe(true);
+    },
+  );
+
+  it.each([
+    { restUser: 'custom-review-app[bot]\n' },
+    { restUser: '"custom-review-app[bot]"\n' },
+    { installation: 'custom-review-app\n' },
+  ])('keeps valid REST identity precedence: %j', (options) => {
+    const { state, commandRunner } = runner({ ...options, viewerStatus: 1 });
+    expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(true);
+    expect(state.calls.some(call => call.args.some((arg: string) => arg.includes('query ReviewYetiPublisher')))).toBe(false);
+  });
+
+  it.each(['foreign-app[bot]', 'github-actions[bot]', null, 'null', '', {}])(
+    'rejects actual write-author drift or missing author %j', (createdAuthor) => {
+      const { state, commandRunner } = runner({ createdAuthor });
+      expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(false);
+      expect(state.writes).toHaveLength(1);
+      expect(state.comments).toHaveLength(0);
+    },
+  );
+
+  it.each([{ staleReadback: true }, { threadAuthor: 'foreign-app' }])(
+    'retains exact-head and readback-author guards: %j', (options) => {
+      const { state, commandRunner } = runner(options);
+      expect(postOrOutputComment(body, context, plan(), { commandRunner }).success).toBe(false);
+      expect(state.writes).toHaveLength(1);
+      expect(state.comments).toHaveLength(0);
+    },
+  );
+});
 
 describe('repairing a partially published round', () => {
   const context = { repo: 'review-yeti-ai/review-yeti-bot', prNumber: 42, headSha: 'newhead', baseSha: 'base' };
