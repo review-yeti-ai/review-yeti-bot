@@ -240,4 +240,55 @@ personas:
     const claudeProvider = config.reviewers.providers.find((p) => p.id === 'claude');
     expect(claudeProvider?.model).toBe('gpt-5.6-sol');
   });
+
+  it('includes .reviewyeti.yaml, .reviewyeti.yml, and reviewyeti.yaml in ConfigResolver.CONFIG_FILES', () => {
+    expect(ConfigResolver.CONFIG_FILES).toContain('.reviewyeti.yaml');
+    expect(ConfigResolver.CONFIG_FILES).toContain('.reviewyeti.yml');
+    expect(ConfigResolver.CONFIG_FILES).toContain('reviewyeti.yaml');
+  });
+
+  it('resolves configuration from .reviewyeti.yaml when present', async () => {
+    const resolver = new ConfigResolver();
+    const repoYaml = `
+version: 3
+profile: assertive
+max_file_size: 750000
+personas:
+  - id: sec-lane
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["src/**"]
+    providers: [claude]
+`;
+    const client = mockClient({ '.reviewyeti.yaml': repoYaml });
+
+    const config = await resolver.resolveConfig({
+      owner: 'myorg',
+      repo: 'myrepo',
+      ref: 'main',
+      client,
+    });
+
+    expect(config.profile).toBe('assertive');
+    expect(config.max_file_size).toBe(750000);
+  });
+
+  it('preserves max_file_size and max_file_bytes when merging configs', async () => {
+    const resolver = new ConfigResolver();
+    const repoYaml = `
+version: 3
+max_file_size: 400000
+`;
+    const client = mockClient({ '.reviewyeti.yaml': repoYaml });
+
+    const config = await resolver.resolveConfig({
+      owner: 'myorg',
+      repo: 'myrepo',
+      ref: 'main',
+      client,
+    });
+
+    expect(config.max_file_size).toBe(400000);
+  });
 });

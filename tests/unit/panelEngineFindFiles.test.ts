@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, RepoFileProvider, REPO_FIND_FILES_MAX_HITS, REPO_READ_FILE_MAX_CHARS } from '../../src/panel/panelEngine';
+import { executePersonaPanel, RepoFileProvider, REPO_FIND_FILES_MAX_HITS, REPO_READ_FILE_MAX_CHARS, extractMessageContentText } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -65,7 +65,7 @@ async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefin
 
   const mockClient: any = {
     complete: vi.fn(async (opts: any) => {
-      const prompt = (opts.messages[1]?.content as string) || '';
+      const prompt = extractMessageContentText(opts.messages[1]?.content);
       const isPersonaCall = prompt.includes('Role: PERSONA');
       const isArbiterCall = prompt.includes('Role: ARBITER');
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(\S+)/);

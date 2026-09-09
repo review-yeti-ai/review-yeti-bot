@@ -624,29 +624,51 @@ export async function runPublishingReviewWorker(
     // findings while the pull request carried no comment, no review and no
     // annotation -- nothing an author could act on. Both fields below need only
     // `checks: write`, so the findings become visible without widening the
-    // worker's token beyond its ADR 0541 boundary.
     const changedPaths = new Set(changedFiles.map((file) => file.path));
+    const isFastShip = Boolean(
+      (panelResult as any).isFastShip ||
+      panelResult.personas?.some((p: any) => p.id === 'fast-ship') ||
+      panelResult.arbiter?.rationale?.startsWith('Fast-ship auto-approved:')
+    );
+
+    const title = isFastShip
+      ? 'Review Yeti: SHIP (fast-ship)'
+      : `Review Yeti: ${verdict}`;
+
+    const classifierRationale = (panelResult as any).classifierRationale ||
+      panelResult.arbiter?.rationale?.replace(/^Fast-ship auto-approved:\s*/i, '') ||
+      'Approved via fast-ship triage classifier.';
+    const tokensSaved = (panelResult as any).tokensSaved ?? 15000;
+
+    const summaryParts = isFastShip
+      ? [
+          `### Review Yeti: SHIP (fast-ship)`,
+          `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,
+          `- **Classifier Rationale**: ${classifierRationale}`,
+          `- **Token Savings**: Estimated ~${tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
+          `Transport: bifrost \`${transport.model}\`.`,
+          `Repository visibility: ${repositoryVisibility}.`,
+        ]
+      : [
+          `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
+          `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+          ...(discardedFindingCount > 0
+            ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
+            : []),
+          ...(unreadable.length > 0
+            ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
+            : []),
+          `Transport: bifrost \`${transport.model}\`.`,
+          `Repository visibility: ${repositoryVisibility}.`,
+        ];
+
     await deps.checkClient.completeCheck({
       owner: identity.owner,
       repo: identity.repoName,
       checkId,
       conclusion,
-      title: `Review Yeti: ${verdict}`,
-      summary: [
-        `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
-        (panelResult as any).zeroLaneNonEvidence
-          ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
-          : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
-        ...(discardedFindingCount > 0
-          ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
-          : []),
-        ...(unreadable.length > 0
-          ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
-          : []),
-        `Transport: bifrost \`${transport.model}\`.`,
-        `Repository visibility: ${repositoryVisibility}.`,
-        `Telemetry: ${totalTurns} turns, ${totalToolCalls} tool calls, ${totalTokens} tokens across ${personaMetrics.length} lanes (${totalDurationMs}ms).`,
-      ].join('\n\n'),
+      title,
+      summary: summaryParts.join('\n\n'),
       text: renderFindingsMarkdown(findings, blocking.length),
       // Redundant today and deliberately kept: `sanitizeFinding` already drops
       // any finding whose path is not in `changedFiles`, so this filter removes

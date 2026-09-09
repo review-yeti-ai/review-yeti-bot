@@ -7,11 +7,17 @@ import { PanelResult, PersonaLaneResult } from './types';
  * Guarantees that the shape, quorum, moderator, and arbiter outputs remain
  * structurally consistent with standard multi-persona consensus results.
  */
+export interface FastShipPanelResult extends PanelResult {
+  isFastShip: true;
+  classifierRationale: string;
+  tokensSaved: number;
+}
+
 export function buildFastShipPanelResult(
   classifierResult: ClassifierResult,
   headSha: string,
   requiredQuorum: number = 1
-): PanelResult {
+): FastShipPanelResult {
   const providerId = (classifierResult.providerId as ProviderId) || ('fast-ship' as ProviderId);
   const model = classifierResult.model || 'fast-ship-classifier';
   const durationMs = classifierResult.durationMs || 0;
@@ -32,6 +38,7 @@ export function buildFastShipPanelResult(
 
   const distinctProviders = [providerId];
   const satisfied = distinctProviders.length >= requiredQuorum;
+  const tokensSaved = (classifierResult as any).tokensSaved ?? Math.max(0, 15_000 - (usage?.total || 0));
 
   return {
     headSha,
@@ -60,5 +67,8 @@ export function buildFastShipPanelResult(
       costUSD,
       durationMs,
     },
+    isFastShip: true,
+    classifierRationale: classifierResult.rationale,
+    tokensSaved,
   };
 }

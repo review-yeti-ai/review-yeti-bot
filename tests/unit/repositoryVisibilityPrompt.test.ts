@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { executePersonaPanel, repositoryVisibilityPromptLines } from '../../src/panel/panelEngine';
+import { executePersonaPanel, repositoryVisibilityPromptLines, extractMessageContentText } from '../../src/panel/panelEngine';
 import { normalizeRepositoryVisibility, REPOSITORY_VISIBILITY_INSTRUCTION } from '../../src/review/repositoryVisibility';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
@@ -55,7 +55,7 @@ function makeCapturingClient() {
     arbiter: [],
   };
   const complete = vi.fn().mockImplementation(async (opts: any) => {
-    const prompt = opts.messages[1].content as string;
+    const prompt = extractMessageContentText(opts.messages[1].content);
     const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
     const nonce = nonceMatch ? nonceMatch[1].trim() : '';
     const allMsg = JSON.stringify(opts.messages);
