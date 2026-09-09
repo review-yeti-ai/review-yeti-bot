@@ -64,6 +64,10 @@ echo "deploy-action-dispatch: app-gate admission = ${ACTION_DISPATCH_ALLOW_APP_G
 envsubst '${CT_REVIEW_DISPATCH_IMAGE} ${ACTION_DISPATCH_REPOSITORY_IDS} ${ACTION_DISPATCH_OWNER_IDS} ${ACTION_DISPATCH_WORKFLOW_REFS} ${ACTION_DISPATCH_WORKFLOW_SHAS} ${ACTION_DISPATCH_ALLOW_APP_GATE}' \
   < k8s/action-dispatch.yaml.tpl > "$render_dir/action-dispatch.yaml"
 
+# shellcheck source=scripts/lib/assert-rendered.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assert-rendered.sh"
+assert_no_unsubstituted_placeholders "$render_dir/action-dispatch.yaml" deploy-action-dispatch
+
 kubectl apply --server-side -f k8s/namespace.yaml
 kubectl -n ct-review-system get secret ct-review-action-dispatch-runtime >/dev/null
 kubectl -n ct-review-system get secret calltelemetry >/dev/null
