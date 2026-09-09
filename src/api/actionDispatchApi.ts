@@ -13,6 +13,7 @@ import {
   assertActionDispatchMatchesClaims,
 } from '../review/actionDispatch';
 import { sha256 } from '../review/reviewCore';
+import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
 import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, AuthoritativeReviewCompletion } from '../review/authoritativeServiceContracts';
@@ -101,7 +102,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         repositoryId: dispatch.repositoryId,
         installationId,
         receivedAt,
-        terminalDeadline: receivedAt + 900_000,
+        terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
         payloadDigest: sha256(actionDispatchDigestInput(dispatch)),
         publicationMode: dispatch.publishMode,
         identity: resolved?.identity || buildReviewRunIdentity({

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { PostgresReviewDispatchRepository, type ReviewDispatchRepositoryOptions } from '../../src/persistence/reviewDispatchRepository';
 import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { sha256 } from '../../src/review/reviewCore';
@@ -626,7 +627,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       repositoryId: 123,
       installationId: 456,
       receivedAt,
-      terminalDeadline: receivedAt + 900_000,
+      terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
       payloadDigest: 'f'.repeat(64),
       publicationMode: 'app-gate' as const,
       identity,
@@ -765,7 +766,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       [first.run.runId],
     );
     expect(terminalRow.rows[0].received_at.getTime()).toBe(6_000);
-    expect(terminalRow.rows[0].terminal_deadline.getTime()).toBe(906_000);
+    expect(terminalRow.rows[0].terminal_deadline.getTime()).toBe(6_000 + TERMINAL_DEADLINE_MS);
     const terminalRetry = await repository.claimNext('dispatcher-a', 7_000, 30_000);
     expect(terminalRetry?.executionAttempt).toBe(2);
 
