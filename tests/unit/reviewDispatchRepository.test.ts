@@ -93,26 +93,36 @@ describe('PostgresReviewDispatchRepository', () => {
   // pins that head forever: the run stays 'failed', the outbox stays 'terminal',
   // and no label, re-run or re-dispatch can produce another review. Observed on
   // cisco-cdr#4836, where three dispatches were accepted and none created a job.
-  it('re-arms a terminally failed run for the same head', async () => {
+  //
+  // This suite has no Postgres, so the contract is asserted on the emitted SQL.
+  // Whitespace is normalised first so reformatting the query cannot break the
+  // test, and only the clauses that carry the contract are asserted -- which
+  // status is re-armed, which are not, and what each upsert is guarded on.
+  it('re-arms a terminally failed run for the same head, and nothing else', async () => {
     const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [], [row], [], [], []]);
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
 
     await repository.admit(input());
 
-    const runSql = String(client.query.mock.calls.find(([sql]) => /INSERT INTO review_runs/u.test(String(sql)))?.[0] || '');
-    expect(runSql).toMatch(/ON CONFLICT \(identity_digest\) DO UPDATE/u);
-    // 'failed' is the only status re-armed; in-flight and superseded stay put.
-    expect(runSql).toMatch(/status = CASE WHEN review_runs\.status = 'failed' THEN 'queued'/u);
-    expect(runSql).toMatch(/attempt = CASE WHEN review_runs\.status = 'failed' THEN review_runs\.attempt \+ 1/u);
-    // The old deadline is already past; a retry would be swept before it started.
-    expect(runSql).toMatch(/terminal_deadline = CASE WHEN review_runs\.status = 'failed'/u);
+    const sqlFor = (table: RegExp) => String(
+      client.query.mock.calls.find(([sql]) => table.test(String(sql)))?.[0] || '',
+    ).replace(/\s+/gu, ' ');
 
-    const outboxSql = String(client.query.mock.calls.find(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(String(sql)))?.[0] || '');
-    expect(outboxSql).toMatch(/ON CONFLICT \(run_id\) DO UPDATE/u);
-    expect(outboxSql).toMatch(/status = 'pending'/u);
-    // Both guards: only a terminal outbox row, and only beside a re-armed run.
-    expect(outboxSql).toMatch(/WHERE review_dispatch_outbox\.status = 'terminal'/u);
-    expect(outboxSql).toMatch(/r\.status = 'queued'/u);
+    const runSql = sqlFor(/INSERT INTO review_runs/u);
+    // 'failed' is re-armed to 'queued' with a deadline it can actually meet; the
+    // old one is in the past and the reaper would sweep the retry immediately.
+    expect(runSql).toContain("status = CASE WHEN review_runs.status = 'failed' THEN 'queued'");
+    expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status = 'failed'");
+    // Every re-arm is conditioned on 'failed', so no other status is touched:
+    // 'queued'/'running' are in flight, 'superseded' belongs to an older head.
+    const rearms = runSql.match(/CASE WHEN review_runs\.status = /gu) || [];
+    expect(rearms).toHaveLength(5);
+    expect(runSql).not.toMatch(/CASE WHEN review_runs\.status = '(queued|running|superseded)'/u);
+
+    const outboxSql = sqlFor(/INSERT INTO review_dispatch_outbox/u);
+    // Both guards, so a superseded run's terminal row is never re-armed.
+    expect(outboxSql).toContain("WHERE review_dispatch_outbox.status = 'terminal'");
+    expect(outboxSql).toContain("r.status = 'queued'");
   });
 
   it('rejects a delivery id replayed with a different digest or repository', async () => {
