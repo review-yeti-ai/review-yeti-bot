@@ -44,7 +44,7 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 		"workerImage", "runSecretName",
 	}
 	wantProperties := append([]string(nil), wantRequired...)
-	wantProperties = append(wantProperties, "executionAttempt", "qualificationModel", "qualificationProfile", "runnerMode")
+	wantProperties = append(wantProperties, "executionAttempt", "preparedReview", "qualificationModel", "qualificationProfile", "runnerMode")
 	sort.Strings(wantRequired)
 	sort.Strings(wantProperties)
 	gotRequired := append([]string(nil), spec.Required...)
@@ -123,6 +123,28 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 	model := spec.Properties["qualificationModel"]
 	if model.MinLength == nil || *model.MinLength != 1 || model.MaxLength == nil || *model.MaxLength != 256 {
 		t.Fatalf("qualificationModel bounds = min %v/max %v, want 1/256", model.MinLength, model.MaxLength)
+	}
+}
+
+func TestV1Alpha2CRDPreparedReviewIsOptionalBoundedAndImmutable(t *testing.T) {
+	spec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	prepared := spec.Properties["preparedReview"]
+	if prepared.Type != "string" || prepared.MinLength == nil || *prepared.MinLength != 1 ||
+		prepared.MaxLength == nil || *prepared.MaxLength != 256*1024 || prepared.Default != nil {
+		t.Fatal("preparedReview must be a bounded nonempty string without a default")
+	}
+	for _, required := range spec.Required {
+		if required == "preparedReview" {
+			t.Fatal("preparedReview must remain optional for legacy CRs")
+		}
+	}
+	rules := map[string]bool{}
+	for _, validation := range spec.XValidations {
+		rules[validation.Rule] = true
+	}
+	if !rules["self == oldSelf"] ||
+		!rules["!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))"] {
+		t.Fatal("preparedReview must remain immutable and restricted to the prebaked app-gate lane")
 	}
 }
 
