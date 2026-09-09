@@ -108,6 +108,7 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		Model:             strings.TrimSpace(os.Getenv("REVIEW_YETI_REVIEW_MODEL")),
 		GatewaySecretName: envOr("REVIEW_YETI_GATEWAY_SECRET_NAME", "review-yeti-gateway-credentials"),
 		GatewaySecretKey:  envOr("REVIEW_YETI_GATEWAY_SECRET_KEY", "REVIEW_YETI_BIFROST_API_KEY"),
+		CompletionURL:     strings.TrimSpace(os.Getenv("REVIEW_YETI_COMPLETION_URL")),
 	}
 }
 

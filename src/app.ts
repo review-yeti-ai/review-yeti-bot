@@ -23,7 +23,7 @@ import { createIntegrationsRouter } from './dashboard/integrationsApi';
 import { createLiveRouter } from './api/liveApi';
 import { createGitHubAppApiRouter } from './api/githubAppApi';
 import { createOnboardingRouter } from './api/onboarding';
-import { createActionDispatchRouter } from './api/actionDispatchApi';
+import { createActionDispatchRouter, createWorkerCompletionVerifier } from './api/actionDispatchApi';
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
 import { getSystemVersionInfo } from './utils/versionInfo';
 import { requireAuth } from './api/authMiddleware';
@@ -854,6 +854,10 @@ export function createApp(): Express {
       verifier: new GitHubActionsOidcVerifier({ policy: oidcPolicy }),
       admission: dispatchRepository,
       allowAppGate: oidcPolicy.allowAppGate,
+      workerCompletion: {
+        verifier: createWorkerCompletionVerifier(),
+        repository: dispatchRepository,
+      },
       resolveInstallationId: (owner, repo) => getGitHubAppInstallationIdForRepository({
         appId: requiredEnv('GITHUB_APP_ID'),
         privateKey: privateKey(),

@@ -87,9 +87,83 @@ func TestBuildWorkerJobAcceptsExecutionAttemptScopedSecret(t *testing.T) {
 	review := reviewFixture(now)
 	review.Name = review.Name + "-a2"
 	review.Spec.RunSecretName = review.Spec.RunSecretName + "-a2"
+	attempt := int32(2)
+	review.Spec.ExecutionAttempt = &attempt
 
-	if _, err := job.BuildWorkerJob(buildInput(review, now)); err != nil {
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
 		t.Fatalf("execution-attempt-scoped review was rejected: %v", err)
+	}
+	if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != "2" {
+		t.Fatalf("explicit execution attempt env = %q, want 2", got)
+	}
+}
+
+func TestBuildWorkerJobDefaultsLegacyUnsuffixedSecretToAttemptOne(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("legacy unsuffixed review was rejected: %v", err)
+	}
+	if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != "1" {
+		t.Fatalf("legacy unsuffixed execution attempt env = %q, want 1", got)
+	}
+}
+
+func TestBuildWorkerJobDecodesLegacySuffixedSecretWhenFieldIsAbsent(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, attempt := range []string{"1", "2", "2147483647"} {
+		t.Run(attempt, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Name += "-a" + attempt
+			review.Spec.RunSecretName += "-a" + attempt
+			built, err := job.BuildWorkerJob(buildInput(review, now))
+			if err != nil {
+				t.Fatalf("legacy suffixed review was rejected: %v", err)
+			}
+			if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != attempt {
+				t.Fatalf("legacy execution attempt env = %q, want %q", got, attempt)
+			}
+		})
+	}
+}
+
+func TestBuildWorkerJobRejectsLegacySecretSuffixBoundaries(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	// Exercise the public builder, including validateInput's canonical-digit
+	// guard before ParseInt. Mirrored in the TypeScript run Secret contract tests.
+	for _, suffix := range []string{"-a0", "-a-1", "-anonsense", "-a2147483648", "-a+2", "-a01"} {
+		t.Run(suffix, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.RunSecretName += suffix
+			built, err := job.BuildWorkerJob(buildInput(review, now))
+			if built != nil || !errors.Is(err, job.ErrJobConfiguration) {
+				t.Fatalf("invalid legacy Secret built a Job or returned wrong error: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildWorkerJobRejectsExplicitExecutionAttemptSecretMismatch(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name        string
+		attempt     int32
+		secretDelta string
+	}{
+		{name: "explicit retry with unsuffixed Secret", attempt: 2},
+		{name: "explicit first attempt with retry Secret", attempt: 1, secretDelta: "-a2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.RunSecretName += test.secretDelta
+			review.Spec.ExecutionAttempt = &test.attempt
+			if _, err := job.BuildWorkerJob(buildInput(review, now)); err == nil {
+				t.Fatal("mismatched execution attempt and Secret unexpectedly built a Job")
+			}
+		})
 	}
 }
 
@@ -223,6 +297,10 @@ func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
 	if envValue(container, "REVIEW_PUBLICATION_MODE") != "app-gate" {
 		t.Fatalf("app-gate publication env = %q", envValue(container, "REVIEW_PUBLICATION_MODE"))
 	}
+	if envValue(container, "REVIEW_COMPLETION_URL") != "https://dispatch.example.invalid/api/dispatch/completion" ||
+		envValue(container, "REVIEW_EXECUTION_ATTEMPT") != "1" {
+		t.Fatalf("app-gate callback identity env missing: %#v", container.Env)
+	}
 	if result.Labels["review-yeti.ai/publication-mode"] != "app-gate" {
 		t.Fatalf("app-gate job label = %q", result.Labels["review-yeti.ai/publication-mode"])
 	}
@@ -230,6 +308,23 @@ func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
 		if hasEnv(container, forbidden) {
 			t.Fatalf("app-gate worker exposes forbidden credential %s", forbidden)
 		}
+	}
+}
+
+func TestBuildWorkerJobKeepsLegacyPublishingWhenCompletionURLIsUnset(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.CompletionURL = ""
+	result, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build legacy app-gate job: %v", err)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if hasEnv(container, "REVIEW_COMPLETION_URL") {
+		t.Fatalf("legacy publishing job unexpectedly enables completion callback: %#v", container.Env)
 	}
 }
 
@@ -491,6 +586,7 @@ func publishingFixture() job.PublishingConfig {
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
 		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 	}
 }
 
@@ -545,11 +641,17 @@ func TestBuildWorkerJobDisabledStaysReceiptOnly(t *testing.T) {
 func TestBuildWorkerJobRefusesIncompletePublishingConfig(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	for name, mutate := range map[string]func(*job.PublishingConfig){
-		"no gateway url":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "" },
-		"no model":        func(c *job.PublishingConfig) { c.Model = "" },
-		"no secret name":  func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
-		"no secret key":   func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
-		"plaintext http":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://gateway.example.invalid/v1" },
+		"no gateway url": func(c *job.PublishingConfig) { c.GatewayBaseURL = "" },
+		"no model":       func(c *job.PublishingConfig) { c.Model = "" },
+		"no secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
+		"no secret key":  func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
+		"plaintext http": func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://gateway.example.invalid/v1" },
+		"completion userinfo": func(c *job.PublishingConfig) {
+			c.CompletionURL = "https://user:password@dispatch.example.invalid/completion"
+		},
+		"completion fragment": func(c *job.PublishingConfig) {
+			c.CompletionURL = "https://dispatch.example.invalid/completion#redirect"
+		},
 		"whitespace":      func(c *job.PublishingConfig) { c.Model = "ollama/glm 5.3" },
 		"bad secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "Not_A_Subdomain" },
 	} {

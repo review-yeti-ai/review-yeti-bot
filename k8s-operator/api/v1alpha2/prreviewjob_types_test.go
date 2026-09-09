@@ -88,14 +88,20 @@ func TestPRReviewJobV1Alpha2SchemeAndDeepCopy(t *testing.T) {
 	}
 
 	original := contractFixture()
+	attempt := int32(2)
+	original.Spec.ExecutionAttempt = &attempt
 	copy := original.DeepCopy()
 	copy.Labels["review-yeti.ai/publication-mode"] = "changed"
 	copy.Status.Conditions[0].Reason = "Changed"
+	*copy.Spec.ExecutionAttempt = 3
 	if original.Labels["review-yeti.ai/publication-mode"] != "disabled" {
 		t.Fatal("metadata labels were not deep copied")
 	}
 	if original.Status.Conditions[0].Reason != "Authenticated" {
 		t.Fatal("status conditions were not deep copied")
+	}
+	if *original.Spec.ExecutionAttempt != 2 {
+		t.Fatal("execution attempt was not deep copied")
 	}
 }
 

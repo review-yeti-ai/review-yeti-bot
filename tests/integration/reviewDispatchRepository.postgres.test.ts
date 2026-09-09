@@ -75,6 +75,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         projection_name TEXT,
         attempt INTEGER NOT NULL DEFAULT 0,
         execution_attempt INTEGER NOT NULL DEFAULT 0,
+        worker_token_digest VARCHAR(64),
         available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -106,7 +107,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       receivedAt,
       terminalDeadline: receivedAt + 900_000,
       payloadDigest: 'f'.repeat(64),
-      publicationMode: 'disabled' as const,
+      publicationMode: 'app-gate' as const,
       identity,
     });
 
@@ -123,11 +124,25 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.releaseForRetry(first.run.runId, 'dispatcher-a', 2_000, 2_000)).resolves.toBe(true);
     const projectionRetry = await repository.claimNext('dispatcher-a', 3_000, 30_000);
     expect(projectionRetry?.executionAttempt).toBe(1);
+    // Exercise digest fencing while every status/lease predicate is valid.
+    // A mismatched token must not publish or mutate the still-claimed row.
+    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', 'a'.repeat(64), 3_000))
+      .resolves.toBe(true);
+    await expect(repository.markProjected(
+      first.run.runId, 'dispatcher-a', 'wrong-token-projection', 3_000, 'b'.repeat(64),
+    )).resolves.toBe(false);
+    expect((await client.query(
+      'SELECT status, lease_owner, projection_name, worker_token_digest FROM pg_temp.review_dispatch_outbox WHERE run_id = $1',
+      [first.run.runId],
+    )).rows[0]).toMatchObject({
+      status: 'claimed', lease_owner: 'dispatcher-a', projection_name: null, worker_token_digest: 'a'.repeat(64),
+    });
     await expect(repository.markProjected(
       first.run.runId,
       'dispatcher-a',
       'ct-review-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
       3_000,
+      'a'.repeat(64),
     )).resolves.toBe(true);
 
     // A new delivery while the worker is still admitted must not re-arm a
@@ -165,17 +180,56 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimNext('dispatcher-b', 3_800, 30_000)).resolves.toBeNull();
 
     // Only a durable worker failure followed by same-head re-admission creates
-    // a fresh execution identity. This also proves the DO UPDATE SQL parses.
-    await client.query("UPDATE review_runs SET status = 'failed', error_text = 'provider failed' WHERE run_id = $1", [first.run.runId]);
+    // a fresh execution identity. The callback is idempotent and leaves the
+    // projected outbox untouched until admission explicitly re-arms it.
+    const failure = {
+      version: 'WorkerTerminalFailure.v1' as const,
+      runId: first.run.runId,
+      owner: identity.owner,
+      repo: identity.repo,
+      prNumber: identity.prNumber,
+      headSha: identity.headSha,
+      baseSha: identity.baseSha,
+      repositoryId: 123,
+      policyDigest: identity.configDigest,
+      configDigest: identity.configDigest,
+      executionAttempt: 1,
+      checkId: 4242,
+      failureClass: 'provider_error' as const,
+    };
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest: 'a'.repeat(64) }, 3_900)).resolves.toEqual({
+      runId: first.run.runId,
+      status: 'failed',
+    });
+    const failedRow = await client.query(
+      'SELECT status, error_text FROM pg_temp.review_runs WHERE run_id = $1',
+      [first.run.runId],
+    );
+    expect(failedRow.rows[0]).toMatchObject({
+      status: 'failed',
+      error_text: 'worker terminal failure: provider_error',
+    });
+    const failedOutbox = await client.query(
+      'SELECT status, execution_attempt, projection_name FROM pg_temp.review_dispatch_outbox WHERE run_id = $1',
+      [first.run.runId],
+    );
+    expect(failedOutbox.rows[0]).toMatchObject({
+      status: 'projected',
+      execution_attempt: 0,
+      projection_name: 'ct-review-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+    });
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest: 'a'.repeat(64) }, 3_950)).resolves.toEqual({
+      runId: first.run.runId,
+      status: 'already_failed',
+    });
     const projectedReAdmission = await repository.admit(admission('delivery-2', 4_000));
     expect(projectedReAdmission.status).toBe('accepted');
     expect(projectedReAdmission.run.runId).toBe(first.run.runId);
     const projectedRow = await client.query(
-      'SELECT received_at, terminal_deadline FROM review_runs WHERE run_id = $1',
+      'SELECT worker_token_digest FROM review_dispatch_outbox WHERE run_id = $1',
       [first.run.runId],
     );
-    expect(projectedRow.rows[0].received_at.getTime()).toBe(4_000);
-    expect(projectedRow.rows[0].terminal_deadline.getTime()).toBe(904_000);
+    expect(projectedRow.rows[0].worker_token_digest).toBeNull();
     const secondClaim = await repository.claimNext('dispatcher-a', 5_000, 30_000);
     expect(secondClaim?.executionAttempt).toBe(2);
 
@@ -192,5 +246,40 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(terminalRow.rows[0].terminal_deadline.getTime()).toBe(906_000);
     const terminalRetry = await repository.claimNext('dispatcher-a', 7_000, 30_000);
     expect(terminalRetry?.executionAttempt).toBe(2);
+
+    // The Kubernetes write may succeed before markProjected acknowledges it.
+    // An authenticated failure from that worker must close the execution and
+    // fence both the original dispatch lease and a subsequent projection retry.
+    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', 'b'.repeat(64), 7_010)).resolves.toBe(true);
+    const earlyFailure = { ...failure, executionAttempt: 2, failureClass: 'transport' as const };
+    await expect(repository.markWorkerFailure(earlyFailure, { workerTokenDigest: 'b'.repeat(64) }, 7_020)).resolves.toMatchObject({ status: 'failed' });
+    await expect(repository.markProjected(first.run.runId, 'dispatcher-a', 'late-projection', 7_030, 'b'.repeat(64))).resolves.toBe(false);
+    await expect(repository.releaseForRetry(first.run.runId, 'dispatcher-a', 7_030, 7_040)).resolves.toBe(false);
+    await repository.admit(admission('delivery-4', 8_000));
+    const thirdClaim = await repository.claimNext('dispatcher-b', 8_010, 30_000);
+    expect(thirdClaim?.executionAttempt).toBe(3);
+    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-b', 'c'.repeat(64), 8_020)).resolves.toBe(true);
+    await expect(repository.markWorkerFailure(earlyFailure, { workerTokenDigest: 'b'.repeat(64) }, 8_030)).resolves.toMatchObject({ status: 'unauthorized' });
+
+    // An uncertain ensure failure can return the claimed outbox to pending
+    // while the already-created worker is reporting its failure.
+    await repository.releaseForRetry(first.run.runId, 'dispatcher-b', 8_040, 8_050);
+    await expect(repository.markWorkerFailure({ ...failure, executionAttempt: 3 }, { workerTokenDigest: 'c'.repeat(64) }, 8_060)).resolves.toMatchObject({ status: 'failed' });
+    await repository.admit(admission('delivery-5', 9_000));
+    expect((await repository.claimNext('dispatcher-c', 9_010, 30_000))?.executionAttempt).toBe(4);
+    await repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-c', 'd'.repeat(64), 9_020);
+    const failingRepository = new PostgresReviewDispatchRepository({ connect: async () => ({
+      release: () => undefined,
+      query: async (sql: string, values?: unknown[]) => {
+        if (/UPDATE review_runs AS runs/u.test(sql)) throw new Error('injected run-write failure');
+        return client!.query(sql, values);
+      },
+    }) });
+    await expect(failingRepository.markWorkerFailure({ ...failure, executionAttempt: 4 }, { workerTokenDigest: 'd'.repeat(64) }, 9_030))
+      .rejects.toThrow('injected run-write failure');
+    // The outbox write preceded the injected fault but must not survive it.
+    const rolledBack = await client.query(`SELECT runs.status, outbox.status AS outbox_status, outbox.lease_owner
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE run_id = $1`, [first.run.runId]);
+    expect(rolledBack.rows[0]).toMatchObject({ status: 'queued', outbox_status: 'claimed', lease_owner: 'dispatcher-c' });
   });
 });
