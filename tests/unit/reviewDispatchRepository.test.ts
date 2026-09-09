@@ -522,13 +522,13 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('treats a duplicate worker terminal failure as already failed', async () => {
+  it.each(['failed', 'terminal'])('treats a duplicate worker failure in %s state as already failed', async (status) => {
     const tokenDigest = 'a'.repeat(64);
     const query = vi.fn(async () => ({ rows: [{
       ...row,
       repository_id: 123,
       publication_mode: 'app-gate',
-      status: 'failed',
+      status,
       outbox_status: 'projected',
       execution_attempt: 0,
       worker_token_digest: tokenDigest,
@@ -601,7 +601,18 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(transactionQuery.mock.calls.some(([sql]) => /\bUPDATE\s+(?:review_runs|review_dispatch_outbox)/u.test(sql))).toBe(false);
   });
 
-  it('rejects a late callback from the prior attempt even when the head is unchanged', async () => {
+  it.each([
+    { name: 'prior execution attempt', mismatch: { execution_attempt: 1 } },
+    { name: 'different repository ID', mismatch: { repository_id: 124 } },
+    { name: 'different owner', mismatch: { owner: 'another-owner' } },
+    { name: 'different repository name', mismatch: { repo: 'another-repo' } },
+    { name: 'different PR', mismatch: { pr_number: 43 } },
+    { name: 'different head', mismatch: { head_sha: 'f'.repeat(40) } },
+    { name: 'different base', mismatch: { base_sha: 'f'.repeat(40) } },
+    { name: 'different policy', mismatch: { effective_policy_digest: 'f'.repeat(64) } },
+    { name: 'different config', mismatch: { effective_config_digest: 'f'.repeat(64) } },
+    { name: 'nonpublishing run', mismatch: { publication_mode: 'disabled' } },
+  ])('rejects $name with an otherwise valid credential before any UPDATE', async ({ mismatch }) => {
     const query = vi.fn(async (sql: string) => /SELECT runs\.status/u.test(sql)
       ? { rows: [{
         ...row,
@@ -609,11 +620,12 @@ describe('PostgresReviewDispatchRepository', () => {
         publication_mode: 'app-gate',
         status: 'running',
         outbox_status: 'projected',
-        execution_attempt: 1,
+        execution_attempt: 0,
         worker_token_digest: 'b'.repeat(64),
+        ...mismatch,
       }] }
       : { rows: [{ run_id: row.run_id }] });
-    const { repository } = workerFailureRepository(query);
+    const { repository, transactionQuery } = workerFailureRepository(query);
     const failure = {
       version: 'WorkerTerminalFailure.v1' as const,
       runId: row.run_id,
@@ -628,11 +640,12 @@ describe('PostgresReviewDispatchRepository', () => {
       executionAttempt: 1,
       failureClass: 'transport' as const,
     };
-    await expect(repository.markWorkerFailure(failure, { workerTokenDigest: 'a'.repeat(64) }, 4_200)).resolves.toEqual({
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest: 'b'.repeat(64) }, 4_200)).resolves.toEqual({
       runId: row.run_id,
       status: 'unauthorized',
     });
     expect(query).toHaveBeenCalledOnce();
+    expect(transactionQuery.mock.calls.some(([sql]) => /\bUPDATE\s+(?:review_runs|review_dispatch_outbox)/u.test(sql))).toBe(false);
   });
 
   it.each(['NOT-A-DIGEST', 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), ''])('rejects invalid worker digest %j before SQL', async (digest) => {
