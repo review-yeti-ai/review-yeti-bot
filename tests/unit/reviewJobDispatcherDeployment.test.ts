@@ -306,11 +306,15 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(result.calls).not.toContain('apply');
   });
 
-  it('uses only in-cluster Kubernetes identity and excludes GitHub/provider clients', () => {
+  it('uses only in-cluster Kubernetes identity and excludes model-provider clients', () => {
     const source = fs.readFileSync(path.join(root, 'src/reviewJobDispatcherIndex.ts'), 'utf8');
     expect(source).toContain('loadFromCluster()');
     expect(source).not.toContain('loadFromDefault');
-    for (const forbidden of ['github/appAuth', 'openRouter', 'fireworks', 'omniRoute', 'synthetic']) {
+    // This service already owns the worker-token App key (credential posture
+    // below). It now also reconciles orphan checks using that same authenticated
+    // App, verified behaviorally in reaperPublishingOwnership.test.ts. Model
+    // execution and provider credentials remain outside the dispatcher.
+    for (const forbidden of ['openRouter', 'fireworks', 'omniRoute', 'synthetic']) {
       expect(source).not.toContain(forbidden);
     }
   });

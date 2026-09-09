@@ -313,7 +313,8 @@ describe('authoritative prepared publishing worker', () => {
     await runPublishingReviewWorker(f.env, f.deps);
     expect(f.panelRunner.mock.calls[0][0].config.personas.map((p) => p.id)).toEqual(['policy-lane']);
     expect(f.panelRunner.mock.calls[0][0].config.default_max_turns).toBe(3);
-    expect(f.checkClient.createCheck).toHaveBeenCalledExactlyOnceWith('example', 'project', HEAD);
+    expect(f.checkClient.createCheck).toHaveBeenCalledExactlyOnceWith('example', 'project', HEAD,
+      `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}`);
     expect(f.checkClient.completeCheck).toHaveBeenCalledTimes(1);
     expect(f.legacyFailure).not.toHaveBeenCalled();
     expect(f.reportReviewResult).not.toHaveBeenCalled();
@@ -355,7 +356,8 @@ describe('authoritative prepared publishing worker', () => {
     ]);
     const created = JSON.parse(String(rawCalls[0][1]?.body));
     const completed = JSON.parse(String(rawCalls[1][1]?.body));
-    expect(created).toMatchObject({ name: 'Review Yeti', head_sha: HEAD, status: 'in_progress' });
+    expect(created).toMatchObject({ name: 'Review Yeti', head_sha: HEAD, status: 'in_progress',
+      external_id: `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}` });
     expect(created.name).not.toBe('Review Yeti Gate');
     expect(completed).not.toHaveProperty('name');
     expect(completed).toMatchObject({ status: 'completed', output: {
@@ -364,7 +366,8 @@ describe('authoritative prepared publishing worker', () => {
         annotation_level: 'warning', title: `P2: ${finding.title}`, message: finding.body }],
     } });
     expect(completed.output.text).toContain(finding.body);
-    expect(createCheck).toHaveBeenCalledExactlyOnceWith('example', 'project', HEAD);
+    expect(createCheck).toHaveBeenCalledExactlyOnceWith('example', 'project', HEAD,
+      `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}`);
     expect(completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       owner: 'example', repo: 'project', checkId: 4242,
     }));
