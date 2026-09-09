@@ -557,7 +557,16 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(query).toHaveBeenCalledOnce();
   });
 
-  it('rejects a same-head callback signed by a different token digest', async () => {
+  it.each([
+    { name: 'different bound token', stored: 'a'.repeat(64) },
+    { name: 'unbound NULL token', stored: null },
+    { name: 'missing token', stored: undefined },
+    { name: 'empty token', stored: '' },
+    { name: 'non-hex token', stored: 'z'.repeat(64) },
+    { name: 'uppercase token', stored: 'B'.repeat(64) },
+    { name: 'short token', stored: 'b'.repeat(63) },
+    { name: 'long token', stored: 'b'.repeat(65) },
+  ])('rejects a same-head callback with $name before any UPDATE', async ({ stored }) => {
     const query = vi.fn(async (sql: string) => /SELECT runs\.status/u.test(sql)
       ? { rows: [{
         ...row,
@@ -566,10 +575,10 @@ describe('PostgresReviewDispatchRepository', () => {
         status: 'running',
         outbox_status: 'projected',
         execution_attempt: 0,
-        worker_token_digest: 'a'.repeat(64),
+        worker_token_digest: stored,
       }] }
       : { rows: [{ run_id: row.run_id }] });
-    const { repository } = workerFailureRepository(query);
+    const { repository, transactionQuery } = workerFailureRepository(query);
     const failure = {
       version: 'WorkerTerminalFailure.v1' as const,
       runId: row.run_id,
@@ -589,6 +598,7 @@ describe('PostgresReviewDispatchRepository', () => {
       status: 'unauthorized',
     });
     expect(query).toHaveBeenCalledOnce();
+    expect(transactionQuery.mock.calls.some(([sql]) => /\bUPDATE\s+(?:review_runs|review_dispatch_outbox)/u.test(sql))).toBe(false);
   });
 
   it('rejects a late callback from the prior attempt even when the head is unchanged', async () => {
