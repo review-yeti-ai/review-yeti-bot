@@ -5,10 +5,16 @@ import { ctReviewConfigV3Schema, type CtReviewConfigV3 } from '../config/schema'
 import { fingerprintEffectiveReviewConfig, fingerprintTrustedReviewPolicy, reviewPolicySourceSchema,
   type TrustedResolvedReviewPolicy, type ImmutableReviewPolicyFile } from './authoritativeReviewIdentity';
 
+// Shared envelope/transport cases live in the operator's
+// pkg/job/testdata/prepared-review-execution.json and run in both languages.
 const transportSchema = z.object({
   baseUrl: z.string().max(2_000).url().refine((value) => {
+    // Check the original spelling before WHATWG URL parsing can normalize it.
+    // Empty userinfo/query/fragment and malformed escapes are not permitted.
+    if (/[\u0000-\u0020\u007f\\?#]/u.test(value) || /%(?![0-9a-f]{2})/iu.test(value)
+      || /^https:\/\/[^/]*@/iu.test(value)) return false;
     const url = new URL(value);
-    return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
+    return url.protocol === 'https:' && !!url.hostname && !url.username && !url.password && !url.search && !url.hash;
   }),
   model: z.string().min(1).max(256).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
 }).strict();
