@@ -65,6 +65,15 @@ See the [GitHub App Setup & Permissions Guide](docs/github-app-setup.md) for ful
 ### Step 2: Add the Trigger Workflow
 Add `.github/workflows/review-yeti.yml` to your repository:
 
+> The workflow below is an illustrative, generic async onboarding example,
+> not a qualification-ready exampleorg template. For governed CT adoption,
+> start from the reviewed base-owned caller at
+> `.github/workflows/ct-review-bot.yml` (the `CALLER_WORKFLOW_PATH` contract)
+> and the read-only collector at `.github/workflows/review-readiness.yml`.
+> Keep exactly one native `Review Yeti / Review Yeti` context-producing job in
+> that caller; do not treat the placeholder `my-org`, `@v1`, secret names, or
+> `review-yeti.yml` filename below as qualification evidence.
+
 ```yaml
 name: Review Yeti
 
@@ -72,8 +81,6 @@ on:
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
-  merge_group:
-    types: [checks_requested]
 
 concurrency:
   group: review-yeti-${{ github.event.pull_request.number || github.ref }}
@@ -141,19 +148,51 @@ jobs:
           echo "Dispatched central Review Yeti for ${TARGET_REPOSITORY}#${PR_NUMBER}."
           echo "Review executes asynchronously and publishes directly to GitHub Check Runs."
 
-  merge-group-review:
+```
+
+### Step 2b: Add the Dedicated Merge-Group Qualifier
+
+Add `.github/workflows/ct-review-merge-group.yml` separately. This workflow is
+only for merge-group checks and contains exactly one required verifier job:
+
+```yaml
+# .github/workflows/ct-review-merge-group.yml
+name: Review Yeti merge group
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  checks: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
     name: Review Yeti / Review Yeti
-    if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Report merge-group result
-        run: |
-          echo "Merge-group admission relies on constituent PR exact-head review."
+      - name: Verify constituent exact-head checks
+        uses: exampleorg/example-review-actions/.github/actions/verify-merge-group@<full-40-hex-central-release-sha>
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          branch: ${{ github.event.merge_group.base_ref }}
 ```
 
 ### Step 3: Require the Check in GitHub Rulesets
-In your repository settings under **Rules > Rulesets**, add **`Review Yeti`** as a required status check on your protected branches.
+For governed CT merge queues, the required context is
+**`Review Yeti / Review Yeti`**, published by GitHub Actions (App `15368`).
+The reviewed PR caller produces it on each constituent head; the dedicated
+merge-group workflow produces the same context on the synthetic combined head.
+The verifier separately requires the official **`Review Yeti`** verdict from
+`ct-review-bot` on every constituent's exact head. It does not claim that the
+review App publishes that direct verdict on the combined head. Do not require
+an additional direct-review context that the merge-group workflow cannot emit.
+The generic non-queue examples above are not this governed queue setup.
+See [GitHub's merge-queue check requirements](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#status-checks-with-github-actions-and-a-merge-queue).
 
 For more details, see the [Consumer Repository Onboarding Guide](docs/onboarding-guide.md).
 
@@ -216,6 +255,59 @@ Developers can execute identical review sweeps on their local machines before pu
 ./scripts/review-yeti-local review --diff-file ./feature.diff --json
 ./scripts/review-yeti-local review --pr example-org/my-project#42 --json
 ```
+
+## Readiness Qualification
+
+The central repository includes a manual, read-only readiness workflow at
+`.github/workflows/review-readiness.yml`. It admits only `exampleorg/*`
+repositories, resolves the selected consumer branch to an immutable commit,
+and checks the caller/merge-group workflows, exact required publisher, live
+PR head, dispatch correlation, rulesets, and merge-queue state. Runtime mode
+also requires the correlated central dispatch run to be terminal and
+successful.
+
+The result includes a dependency/authority matrix whose rows bind the central
+owner, immutable source ref, artifact, runtime schema, operator, service, and
+consumer process identities. The readiness collector is owned by
+`exampleorg/example-review-actions`; the runtime artifact is owned by
+`review-yeti-ai/review-yeti-bot`, its k8s-operator owns the runtime schema and
+lifecycle, and `exampleorg/example-infra` owns the deployed gateway
+service. Missing, stale, or untrusted observations are recorded as
+`unknown`. Configuration and runtime qualification preserve their existing
+source/GitHub exact-head status semantics and include a digest-bound
+`observed_at`/`content_digest` result. Consumers that need runtime authority
+must gate dependent work on both a compatible matrix and the explicit
+`evidence.runtime_qualification` object with `ready: true` and
+`status: "ready"`, rather than on top-level readiness status alone.
+
+The merge-group consumer shim must pin
+`exampleorg/example-review-actions/.github/actions/verify-merge-group` to the
+exact full commit SHA returned by the fresh read-only `v1` release observation.
+The readiness collector records the expected and actual action pins and rejects
+syntactically valid but arbitrary, missing, mismatched, stale, or unknown
+central release references. Do not substitute a tag, branch, or guessed SHA.
+
+Merge-queue entry-shape validation remains readiness-specific because queue
+entries carry position and pull-request identity in caller-specific shapes.
+The shared `review-check-contract` exports the qualifying state policy and
+named check-run publisher identity; it does not merge the two queue schemas.
+
+The native publisher App `15368` owns the required context on both constituent
+and combined heads. The direct review verdict is a separate `ct-review-bot`
+check on constituent heads only; the verifier reads it without re-reviewing
+the synthetic group. These instructions do not change repository settings.
+
+No owner-produced deployment readback is wired into this read-only collector
+yet. It therefore emits `runtime_qualification.ready: false` and
+`runtime_qualification.status: "unknown"`, and artifact, schema, operator, and
+service rows stay `unknown`. A caller field such as
+`deployed_schema_compatibility: compatible` is never accepted as deployment
+proof; the legacy `deployed_schema_compatibility` field remains `not_checked`
+because this workflow does not certify images or production receivers. The
+matrix's `authority_delta.technically_compatible` entries are technical
+qualification only, not approval grants; `authority_delta.authorization` stays
+`unknown` with the full required scope preserved until a separate authorized
+approval evidence boundary exists.
 
 ---
 

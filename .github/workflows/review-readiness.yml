@@ -1,0 +1,86 @@
+name: Review Yeti readiness qualification
+
+# Manual, read-only qualification for a consumer before a central release is
+# promoted. This workflow never dispatches a review, publishes a check, changes
+# branch protection, or enters a merge queue.
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'exampleorg-owned consumer repository'
+        required: true
+        default: 'exampleorg/dashboard'
+        type: string
+      branch:
+        description: 'Consumer branch to qualify (blank uses the default branch)'
+        required: false
+        default: ''
+        type: string
+      pr_number:
+        description: 'Optional open PR number for exact-head dispatch/check correlation'
+        required: false
+        default: ''
+        type: string
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Readiness qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout central qualification tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Resolve admitted consumer repository
+        id: target
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          import { assertAdmittedRepository } from './scripts/validate-central-dispatch.mjs';
+
+          const repositoryName = assertAdmittedRepository(process.env.REPOSITORY);
+          appendFileSync(process.env.GITHUB_OUTPUT, `repository_name=${repositoryName}\n`);
+          NODE
+
+      # Ruleset discovery needs the existing read-only reader App. It is
+      # deliberately separate from ct-review-bot, whose contents:write
+      # permission is reserved for runtime repository_dispatch publishing.
+      # Installation metadata is fetched separately with the Review Yeti App
+      # JWT by the Node process, never by this reader token. Deployment
+      # compatibility is intentionally not certified by this workflow.
+      - name: Mint scoped readiness reader token
+        id: ro_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned
+        with:
+          app-id: ${{ secrets.CT_READONLY_APP_ID }}
+          private-key: ${{ secrets.CT_READONLY_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: ${{ steps.target.outputs.repository_name }},example-review-actions
+
+      - name: Qualify consumer and queue readiness
+        env:
+          GH_TOKEN: ${{ steps.ro_token.outputs.token }}
+          REVIEW_YETI_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          REVIEW_YETI_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          REPOSITORY: ${{ inputs.repository }}
+          BRANCH: ${{ inputs.branch }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          args=(--repository "$REPOSITORY" --json)
+          if [[ -n "$BRANCH" ]]; then args+=(--branch "$BRANCH"); fi
+          if [[ -n "$PR_NUMBER" ]]; then args+=(--pr-number "$PR_NUMBER"); fi
+          node scripts/review-readiness.mjs "${args[@]}" | tee "$RUNNER_TEMP/review-yeti-readiness.json"

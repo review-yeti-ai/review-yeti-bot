@@ -36,6 +36,12 @@ jobs:
           node --check scripts/validate-central-dispatch.mjs
           node --check scripts/validate-central-dispatch.test.mjs
           node --check scripts/validate-central-dispatch.replay.test.mjs
+          node --check scripts/review-readiness.mjs
+          node --check scripts/review-check-contract.mjs
+          node --check scripts/review-check-contract.test.mjs
+          node --check scripts/review-readiness.test.mjs
+          node --check scripts/verify-merge-group.test.mjs
+          node --check .github/actions/verify-merge-group/verify-merge-group.mjs
           node --check scripts/validate-transport-handoff.mjs
           node --check scripts/review-yeti-local.mjs
           node --check scripts/review-yeti-mcp.mjs
@@ -96,6 +102,9 @@ jobs:
           node --test scripts/emit-execution-plan.test.mjs
           node --test scripts/validate-central-dispatch.test.mjs
           node --test scripts/validate-central-dispatch.replay.test.mjs
+          node --test scripts/review-readiness.test.mjs
+          node --test scripts/review-check-contract.test.mjs
+          node --test scripts/verify-merge-group.test.mjs
           node --test scripts/validate-transport-handoff.test.mjs
           node --test scripts/review-yeti-local.test.mjs
           node --test scripts/review-yeti-mcp.test.mjs

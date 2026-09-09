@@ -1,0 +1,22 @@
+name: Verify Review Yeti merge group
+description: Verify every merge-group constituent has the latest exact-head Review Yeti checks
+inputs:
+  github-token:
+    description: Read-only token for the consumer repository checks and merge queue
+    required: true
+  repository:
+    description: Fully qualified exampleorg consumer repository
+    required: true
+  branch:
+    description: Branch whose merge queue emitted the merge_group event
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Verify constituent exact-head checks
+      shell: bash
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+      run: node "${{ github.action_path }}/verify-merge-group.mjs"
