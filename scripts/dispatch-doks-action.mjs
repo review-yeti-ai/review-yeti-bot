@@ -108,7 +108,6 @@ export function buildDispatchRequest(environment) {
     baseSha,
     actionSha,
     publishMode,
-    ...(environment.CHECK_ID ? { checkId: positiveInteger(environment, 'CHECK_ID') } : {}),
     requestedAt: new Date().toISOString(),
     caller: {
       runId,
