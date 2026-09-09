@@ -280,6 +280,9 @@ secrets:
 publishing:
   gatewayBaseUrl: ""
   model: ""
+  # Optional HTTPS failure callback; empty preserves legacy check-only workers.
+  # Enable only after the CRD, API/ingress, dispatcher and worker rollout.
+  completionUrl: ""
   gatewaySecretName: "review-yeti-gateway-credentials"
   gatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY"
   # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
