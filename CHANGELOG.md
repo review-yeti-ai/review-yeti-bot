@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.44.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.44.2...v1.44.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* **dispatch:** the abandoned-run reaper wrote to a column that does not exist ([#610](https://github.com/review-yeti-ai/review-yeti-bot/issues/610)) ([a336193](https://github.com/review-yeti-ai/review-yeti-bot/commit/a33619389bedcb437c8b5f1383922678e7ea6dbb))
+
 ## [1.44.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.44.1...v1.44.2) (2026-09-09)
 
 
