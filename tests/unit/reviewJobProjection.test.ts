@@ -73,6 +73,13 @@ describe('buildReviewJobProjection', () => {
     expect(retry.spec.deliveryId).toBe(input.deliveryId);
   });
 
+  it('accepts the maximum execution attempt and preserves its attempt-scoped identity', () => {
+    const maxAttempt = 2_147_483_647;
+    const projection = buildReviewJobProjection({ ...input, executionAttempt: maxAttempt }, receivedAt + 60_000);
+    expect(projection.metadata.name).toBe(`ct-review-${'1'.repeat(32)}-a${maxAttempt}`);
+    expect(projection.spec.runSecretName).toBe(`ct-review-run-${'1'.repeat(32)}-a${maxAttempt}`);
+  });
+
   it('rejects unknown publication modes and deadline expansion before producing a projection', () => {
     expect(() => buildReviewJobProjection({ ...input, publicationMode: 'enabled' as any }, receivedAt + 60_000))
       .toThrow(/publication mode/i);
