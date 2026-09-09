@@ -129,6 +129,13 @@ resolve_commit() {
   printf '%s\n' "${object_sha,,}"
 }
 
+# The ref is interpolated into a GitHub API path. Refuse anything outside the
+# characters a tag or commit can contain, and any path-traversal segment, before
+# it is used anywhere; gh api does not percent-encode path components.
+if [[ ! "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || "$ref" == *..* ]]; then
+  echo "advance-review-worker: refusing ref '${ref}': only [A-Za-z0-9._/-] are allowed and '..' is not" >&2
+  exit 1
+fi
 commit_sha="$(resolve_commit "$ref")" || exit 1
 echo "advance-review-worker: resolved ${ref} -> commit ${commit_sha}"
 
@@ -235,8 +242,8 @@ fi
 
 # --- Step 4: apply the change through the manifest, not a patch ------------
 #
-# Render the full template (the same three variables deploy-review-job-dispatcher.sh
-# restricts envsubst to), then keep only the first YAML document -- the
+# Render the full template through the shared renderer (one variable list for
+# this script and the deploy script), then keep only the first YAML document -- the
 # ConfigMap -- so nothing else in the manifest (Deployment, RBAC, NetworkPolicy)
 # is re-applied or re-evaluated by this script. CT_REVIEW_JOB_DISPATCHER_IMAGE
 # is read from the live deployment purely so envsubst has every variable the
@@ -252,9 +259,9 @@ export CT_REVIEW_JOB_DISPATCHER_IMAGE="$dispatcher_image"
 export CT_REVIEW_WORKER_IMAGE="$target_image"
 export CT_REVIEW_RUNNER_MODE="$runner_mode"
 
-# shellcheck disable=SC2016
-envsubst '${CT_REVIEW_JOB_DISPATCHER_IMAGE} ${CT_REVIEW_WORKER_IMAGE} ${CT_REVIEW_RUNNER_MODE}' \
-  < k8s/review-job-dispatcher.yaml.tpl > "$work_dir/rendered-full.yaml"
+# shellcheck source=scripts/lib/review-job-dispatcher-render.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-job-dispatcher-render.sh"
+render_review_job_dispatcher_template k8s/review-job-dispatcher.yaml.tpl "$work_dir/rendered-full.yaml"
 
 awk '/^---[[:space:]]*$/{exit} {print}' "$work_dir/rendered-full.yaml" > "$work_dir/configmap-only.yaml"
 
