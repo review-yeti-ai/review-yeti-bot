@@ -85,6 +85,18 @@ export function buildDispatchRequest(environment) {
   const workflowSha = String(environment.GITHUB_WORKFLOW_SHA || '').trim().toLowerCase();
   if (workflowSha && !SHA_PATTERN.test(workflowSha)) throw new Error('GitHub workflow SHA must be an exact 40-hex commit SHA');
 
+  const personas = String(environment.PERSONAS || '').trim();
+  const maxInvestigationTurnsRaw = String(environment.MAX_INVESTIGATION_TURNS || '').trim();
+  const laneCallBudgetRaw = String(environment.LANE_CALL_BUDGET || '').trim();
+  const maxInvestigationTurns = maxInvestigationTurnsRaw ? Number(maxInvestigationTurnsRaw) : undefined;
+  const laneCallBudget = laneCallBudgetRaw ? Number(laneCallBudgetRaw) : undefined;
+
+  const policy = (personas || maxInvestigationTurns || laneCallBudget) ? {
+    ...(personas ? { personas } : {}),
+    ...(maxInvestigationTurns && Number.isSafeInteger(maxInvestigationTurns) && maxInvestigationTurns > 0 ? { maxInvestigationTurns } : {}),
+    ...(laneCallBudget && Number.isSafeInteger(laneCallBudget) && laneCallBudget > 0 ? { laneCallBudget } : {}),
+  } : undefined;
+
   return {
     version: 'ActionDispatch.v1',
     deliveryId: `actions:${runId}:${runAttempt}:${repositoryId}:${prNumber}:${headSha}`,
@@ -104,6 +116,7 @@ export function buildDispatchRequest(environment) {
       ...(environment.GITHUB_WORKFLOW_REF ? { workflowRef: String(environment.GITHUB_WORKFLOW_REF) } : {}),
       ...(workflowSha ? { workflowSha } : {}),
     },
+    ...(policy && Object.keys(policy).length > 0 ? { policy } : {}),
   };
 }
 

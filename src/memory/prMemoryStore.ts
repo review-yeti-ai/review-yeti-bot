@@ -10,6 +10,7 @@ const { DatabaseSync: DatabaseSyncImpl } = (() => {
 const DatabaseSync: any = DatabaseSyncImpl;
 type DatabaseSync = DatabaseSyncType;
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { logger } from '../utils/logger';
 import { postgresStore } from '../persistence/postgresStore';
@@ -126,11 +127,29 @@ export class PRMemoryStore {
     if (this.dbPath === ':memory:' || this.dbPath.startsWith(':memory:')) {
       this.db = new DatabaseSync(':memory:');
     } else {
-      const dir = path.dirname(this.dbPath);
-      if (dir && dir !== '.' && !fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+      let resolvedDbPath = this.dbPath;
+      try {
+        const dir = path.dirname(resolvedDbPath);
+        if (dir && dir !== '.' && !fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        this.db = new DatabaseSync(resolvedDbPath);
+      } catch (err: any) {
+        logger.warn('Failed to initialize database at specified path, falling back to temp directory or in-memory', {
+          requestedPath: this.dbPath,
+          error: err?.message || String(err),
+        });
+        try {
+          const fallbackDir = path.join(os.tmpdir(), '.ct-memory');
+          fs.mkdirSync(fallbackDir, { recursive: true });
+          resolvedDbPath = path.join(fallbackDir, 'team_memory.db');
+          this.db = new DatabaseSync(resolvedDbPath);
+        } catch {
+          resolvedDbPath = ':memory:';
+          this.db = new DatabaseSync(':memory:');
+        }
       }
-      this.db = new DatabaseSync(this.dbPath);
+      this.dbPath = resolvedDbPath;
     }
     this.initDatabase();
 
