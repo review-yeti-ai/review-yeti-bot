@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.44.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.44.0...v1.44.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **ops:** reclaim manifest ownership even when the digest already matches ([#606](https://github.com/review-yeti-ai/review-yeti-bot/issues/606)) ([067802a](https://github.com/review-yeti-ai/review-yeti-bot/commit/067802a1c8cc9d532f612b35d4f6f383a0f5af3f))
+
 ## [1.44.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.43.1...v1.44.0) (2026-09-09)
 
 
