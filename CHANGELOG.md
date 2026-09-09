@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.43.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.4...v1.43.0) (2026-09-09)
+
+
+### Features
+
+* **review:** implement 5-phase Review Yeti remediation and Zoekt evidence tools ([#598](https://github.com/review-yeti-ai/review-yeti-bot/issues/598)) ([50692f5](https://github.com/review-yeti-ai/review-yeti-bot/commit/50692f5e89245244c43c80728681bf5a83319609))
+
+
+### Bug Fixes
+
+* **ci:** fix CtReviewConfigV3 evidence optionality and panelEngine typecheck ([#600](https://github.com/review-yeti-ai/review-yeti-bot/issues/600)) ([53c0fa0](https://github.com/review-yeti-ai/review-yeti-bot/commit/53c0fa0055184b697401b3f31ba902a8dce98c44))
+
 ## [1.42.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.42.3...v1.42.4) (2026-09-08)
 
 
