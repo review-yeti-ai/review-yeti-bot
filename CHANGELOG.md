@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.4...v1.45.5) (2026-09-09)
+
+
+### Bug Fixes
+
+* **dispatch:** retry failed review executions on same head ([#622](https://github.com/review-yeti-ai/review-yeti-bot/issues/622)) ([3de6db5](https://github.com/review-yeti-ai/review-yeti-bot/commit/3de6db5d4d70ac18466c271697326d3d8ddab293))
+
 ## [1.45.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.3...v1.45.4) (2026-09-09)
 
 
