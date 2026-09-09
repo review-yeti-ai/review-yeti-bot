@@ -12,7 +12,7 @@ data:
   # accepted publishing dispatch that cannot complete leaves the head with no check
   # run at all -- a required gate that blocks with nothing red. Turn it on
   # deliberately, per environment, once the lane is proven.
-  ACTION_DISPATCH_ALLOW_APP_GATE: "${ACTION_DISPATCH_ALLOW_APP_GATE:-false}"
+  ACTION_DISPATCH_ALLOW_APP_GATE: "${ACTION_DISPATCH_ALLOW_APP_GATE}"
   ACTION_DISPATCH_REPOSITORY_IDS: "${ACTION_DISPATCH_REPOSITORY_IDS}"
   ACTION_DISPATCH_OWNER_IDS: "${ACTION_DISPATCH_OWNER_IDS}"
   ACTION_DISPATCH_WORKFLOW_REFS: "${ACTION_DISPATCH_WORKFLOW_REFS}"
