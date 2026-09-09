@@ -382,7 +382,7 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   // unverified premise, then collapse paraphrases. Severity of a cluster is the highest any
   // reporter kept after these per-finding passes, so one lane naming the real, verified defect is
   // enough to keep it P1 even when another lane only filed the same claim as a question.
-  const findings = clusterFindings(rawFindings.map(calibrateSeverity).map(downgradeUnverifiedPremise));
+  const findings = clusterFindings(rawFindings.map(calibrateSeverity).map(downgradeUnverifiedPremise), options);
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;

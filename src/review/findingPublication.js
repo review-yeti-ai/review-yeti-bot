@@ -34,6 +34,13 @@ function normalizePersona(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+const ABSENCE_CLAIM_PATTERN = /\b(?:(?:function|method|symbol|module|variable|identifier|type|class)\s+[`"']?[a-zA-Z0-9_/]+[`"']?\s+is\s+(?:undefined|not defined|not found|missing)|undefined\s+(?:function|method|symbol|module|variable|identifier|reference)|(?:call to|invocation of)\s+(?:undefined|unresolved)|(?:missing|no)\s+definition\s+for|not\s+found\s+anywhere\s+in\b|unresolved\s+(?:symbol|identifier|reference)\b)/i;
+
+function isAbsenceClaim(title, body) {
+  const text = `${title || ''} ${body || ''}`;
+  return ABSENCE_CLAIM_PATTERN.test(text);
+}
+
 function isGitlinkFile(file) {
   return Boolean(file && (
     file.isSubmodule === true
@@ -427,17 +434,31 @@ function planFindingPublication(input, changedFiles, options = {}) {
       }
     }
 
+    let effectiveSeverity = severity;
+    let effectiveBody = body;
+    const hasExhaustiveEvidence = Boolean(
+      raw.exhaustive
+      || raw.hasExhaustiveEvidence
+      || raw.scope === 'full-repository-zoekt'
+      || options.exhaustiveEvidence
+    );
+    if ((severity === 'P0' || severity === 'P1') && !hasExhaustiveEvidence && isAbsenceClaim(title, body)) {
+      effectiveSeverity = 'P2';
+      effectiveBody += '\n\n> [!NOTE]\n> **Evidence-of-absence downgrade**: This finding asserts that a symbol or function is undefined or missing. Under patch-scoped exploration without exhaustive repository evidence, this finding is downgraded to a P2 advisory to prevent false-positive blocking reviews.';
+    }
+
     const candidate = {
-      severity,
+      severity: effectiveSeverity,
       path,
       line,
       side,
       title,
-      body,
+      body: effectiveBody,
       ...(typeof raw.suggestion === 'string' && raw.suggestion.trim() ? { suggestion: raw.suggestion.trim() } : {}),
       ...replacement,
       ...(typeof raw.recommendation === 'string' && raw.recommendation.trim() ? { recommendation: raw.recommendation.trim() } : {}),
       ...(typeof raw.confidence === 'number' && Number.isFinite(raw.confidence) ? { confidence: raw.confidence } : {}),
+      ...(effectiveSeverity !== severity ? { downgradedFrom: severity, absenceClaimDowngraded: true } : {}),
       personas,
     };
     const key = findingDedupeKey(candidate, subjectType);
@@ -474,7 +495,15 @@ function planFindingPublication(input, changedFiles, options = {}) {
       personas: finding.personas,
       finding,
     };
-    if (subjectType === 'file') {
+    if (finding.absenceClaimDowngraded) {
+      advisories.push({
+        ...common,
+        line: finding.line,
+        side: finding.side,
+        title: finding.title,
+        severity: finding.severity,
+      });
+    } else if (subjectType === 'file') {
       fileComments.push({ ...common, body: `${formatFindingCommentBody(finding)}\n\nReported location: line ${finding.line} (${finding.side}).` });
     } else {
       lineComments.push({ ...common, body: formatFindingCommentBody(finding) });
@@ -559,4 +588,6 @@ module.exports = {
   mergeNearDuplicateClaims,
   mergeReplacementMetadata,
   planFindingPublication,
+  isAbsenceClaim,
+  ABSENCE_CLAIM_PATTERN,
 };

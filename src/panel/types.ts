@@ -40,6 +40,7 @@ export interface PersonaLaneResult {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>;
   isRedTeam?: boolean;
   crossExaminedModel?: string;
   mermaidDiagram?: string;
@@ -51,6 +52,7 @@ export interface PanelResult {
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];
   optionalFailures: Array<{ id: string; error: string }>;
+  zeroLaneNonEvidence?: boolean;
   quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
   moderator: {
     providerId: ProviderId;
