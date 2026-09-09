@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { buildAuthoritativeReviewIdentity, fingerprintTrustedReviewPolicy } from '../../src/review/authoritativeReviewIdentity';
+import { buildAuthoritativeReviewIdentity, fingerprintEffectiveReviewConfig, fingerprintTrustedReviewPolicy } from '../../src/review/authoritativeReviewIdentity';
+import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { sha256 } from '../../src/review/reviewCore';
 
 const current = { repositoryId: 123, owner: 'example', repo: 'repo', prNumber: 42,
@@ -10,6 +11,16 @@ const source = { repositoryId: 456, repository: 'example/central-policy', sha: '
   path: 'policy/review.json', contentDigest: 'd'.repeat(64) };
 const prepared = { effectiveConfig: { personas: ['security', 'testing'] }, effectivePolicy: { completeness: 'all' }, sources: [source] };
 const policy = fingerprintTrustedReviewPolicy(prepared);
+
+it('lets the worker verify actual configuration without carrying source credentials', () => {
+  const config = resolveWorkerConfig({}, { baseUrl: 'https://gateway.example.invalid', apiKey: '', model: 'test-model' });
+  const original = fingerprintTrustedReviewPolicy({ ...prepared, effectiveConfig: config });
+  const updatedSource = fingerprintTrustedReviewPolicy({ ...prepared, effectiveConfig: config,
+    sources: [{ ...source, sha: 'e'.repeat(40) }] });
+  expect(original.effectiveConfigDigest).toBe(fingerprintEffectiveReviewConfig(config));
+  expect(updatedSource.effectiveConfigDigest).toBe(original.effectiveConfigDigest);
+  expect(updatedSource.effectivePolicyDigest).not.toBe(original.effectivePolicyDigest);
+});
 
 describe('trusted immutable admission identity', () => {
   it('binds policy, config, numeric repository and source revision into the run hash', () => {

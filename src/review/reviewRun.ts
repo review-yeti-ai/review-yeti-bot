@@ -70,6 +70,8 @@ export interface ReviewAdmission {
 export interface ReviewDispatchClaim {
   runId: string;
   deliveryId: string;
+  /** Monotonic outbox claim generation; advances even when executionAttempt does not. */
+  claimAttempt: number;
   /**
    * Monotonic execution attempt for the projected Job/Secret identity. This is
    * deliberately separate from the outbox claim count: a projection retry must

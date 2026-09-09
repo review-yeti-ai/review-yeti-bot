@@ -89,12 +89,13 @@ export class ReviewJobDispatchEngine {
         workerImage: this.options.workerImage,
         namespace: this.options.namespace,
         runnerMode: this.options.runnerMode,
-      }, now);
+      }, this.now());
     } catch {
       const marked = await this.options.repository.markTerminal(
         claim.runId,
         this.options.workerId,
-        now,
+        claim.claimAttempt,
+        this.now(),
         'review job projection rejected',
       );
       return marked
@@ -114,7 +115,8 @@ export class ReviewJobDispatchEngine {
         const marked = await this.options.repository.markTerminal(
           claim.runId,
           this.options.workerId,
-          now,
+          claim.claimAttempt,
+          this.now(),
           'publishing review dispatched without a run secret provisioner',
         );
         return marked
@@ -135,8 +137,9 @@ export class ReviewJobDispatchEngine {
           const bound = await this.options.repository.bindWorkerTokenDigest(
             claim.runId,
             this.options.workerId,
+            claim.claimAttempt,
             workerTokenDigest,
-            now,
+            this.now(),
           );
           if (!bound) return { status: 'lease-lost', runId: claim.runId };
         }
@@ -150,11 +153,13 @@ export class ReviewJobDispatchEngine {
         // source. A fixed label restores that signal; interpolating the caught
         // error would not, because upstream failures can carry credential material.
         const reason = 'run-secret-provisioning' as const;
-        const availableAt = now + this.retryDelayMs;
+        const retryNow = this.now();
+        const availableAt = retryNow + this.retryDelayMs;
         const released = await this.options.repository.releaseForRetry(
           claim.runId,
           this.options.workerId,
-          now,
+          claim.claimAttempt,
+          retryNow,
           availableAt,
         );
         return released
@@ -167,11 +172,13 @@ export class ReviewJobDispatchEngine {
       await this.options.projector.ensure(projection);
     } catch {
       const reason = 'projection' as const;
-      const availableAt = now + this.retryDelayMs;
+      const retryNow = this.now();
+      const availableAt = retryNow + this.retryDelayMs;
       const released = await this.options.repository.releaseForRetry(
         claim.runId,
         this.options.workerId,
-        now,
+        claim.claimAttempt,
+        retryNow,
         availableAt,
       );
       return released
@@ -183,15 +190,17 @@ export class ReviewJobDispatchEngine {
       ? await this.options.repository.markProjected(
         claim.runId,
         this.options.workerId,
+        claim.claimAttempt,
         projection.metadata.name,
-        now,
+        this.now(),
         workerTokenDigest,
       )
       : await this.options.repository.markProjected(
         claim.runId,
         this.options.workerId,
+        claim.claimAttempt,
         projection.metadata.name,
-        now,
+        this.now(),
       );
     return projected
       ? { status: 'projected', runId: claim.runId, projectionName: projection.metadata.name }

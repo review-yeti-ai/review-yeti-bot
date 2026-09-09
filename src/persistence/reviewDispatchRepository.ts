@@ -104,11 +104,11 @@ export interface AbandonedPublishingRun {
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null>;
-  heartbeat(runId: string, workerId: string, now: number, leaseMs: number): Promise<boolean>;
-  markProjected(runId: string, workerId: string, projectionName: string, now: number, workerTokenDigest?: string): Promise<boolean>;
-  bindWorkerTokenDigest(runId: string, workerId: string, workerTokenDigest: string, now: number): Promise<boolean>;
-  releaseForRetry(runId: string, workerId: string, now: number, availableAt: number): Promise<boolean>;
-  markTerminal(runId: string, workerId: string, now: number, error: string): Promise<boolean>;
+  heartbeat(runId: string, workerId: string, claimAttempt: number, now: number, leaseMs: number): Promise<boolean>;
+  markProjected(runId: string, workerId: string, claimAttempt: number, projectionName: string, now: number, workerTokenDigest?: string): Promise<boolean>;
+  bindWorkerTokenDigest(runId: string, workerId: string, claimAttempt: number, workerTokenDigest: string, now: number): Promise<boolean>;
+  releaseForRetry(runId: string, workerId: string, claimAttempt: number, now: number, availableAt: number): Promise<boolean>;
+  markTerminal(runId: string, workerId: string, claimAttempt: number, now: number, error: string): Promise<boolean>;
   /** Persist a worker's fail-closed terminal outcome without approving the head. */
   markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
   /** REL-586: sweep publishing runs whose deadline passed without ever publishing. */
@@ -118,6 +118,12 @@ export interface ReviewDispatchRepository {
 export interface WorkerFailureTransition {
   runId: string;
   status: 'failed' | 'already_failed' | 'ignored' | 'unauthorized';
+}
+
+function validateClaimAttempt(claimAttempt: number): void {
+  if (!Number.isSafeInteger(claimAttempt) || claimAttempt <= 0) {
+    throw new Error('dispatcher claim attempt must be a positive integer');
+  }
 }
 
 export class PostgresReviewDispatchRepository implements ReviewDispatchRepository {
@@ -361,6 +367,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                  candidate.head_sha, candidate.base_sha, candidate.received_at,
                  candidate.terminal_deadline, candidate.effective_policy_digest,
                  candidate.effective_config_digest,
+                 outbox.attempt AS claim_attempt,
                  outbox.execution_attempt + 1 AS execution_attempt,
                  outbox.worker_token_digest,
                  outbox.lease_owner, outbox.lease_expires_at`,
@@ -370,6 +377,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     return row ? {
       runId: row.run_id,
       deliveryId: row.delivery_id,
+      claimAttempt: Number(row.claim_attempt),
       executionAttempt: Number(row.execution_attempt || 1),
       workerTokenDigest: row.worker_token_digest || undefined,
       repositoryId: Number(row.repository_id),
@@ -425,14 +433,19 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     }));
   }
 
-  async heartbeat(runId: string, workerId: string, now: number, leaseMs: number): Promise<boolean> {
+  async heartbeat(runId: string, workerId: string, claimAttempt: number, now: number, leaseMs: number): Promise<boolean> {
+    validateClaimAttempt(claimAttempt);
     const result = await this.queryable.query(
       `UPDATE review_dispatch_outbox
           SET lease_expires_at = to_timestamp(($3 + $4) / 1000.0), updated_at = to_timestamp($3 / 1000.0)
         WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
+          AND attempt = $5
           AND lease_expires_at > to_timestamp($3 / 1000.0)
+          AND EXISTS (SELECT 1 FROM review_runs AS runs
+            WHERE runs.run_id = review_dispatch_outbox.run_id
+              AND runs.terminal_deadline > to_timestamp($3 / 1000.0))
       RETURNING run_id`,
-      [runId, workerId, now, leaseMs],
+      [runId, workerId, now, leaseMs, claimAttempt],
     );
     return result.rows.length > 0;
   }
@@ -440,10 +453,12 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   async markProjected(
     runId: string,
     workerId: string,
+    claimAttempt: number,
     projectionName: string,
     now: number,
     workerTokenDigest?: string,
   ): Promise<boolean> {
+    validateClaimAttempt(claimAttempt);
     if (workerTokenDigest !== undefined && !/^[a-f0-9]{64}$/u.test(workerTokenDigest)) {
       throw new Error('worker token digest must be 64 lowercase hex characters');
     }
@@ -452,14 +467,20 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           SET status = 'projected', projection_name = $3, worker_token_digest = COALESCE($5, worker_token_digest),
               lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($4 / 1000.0)
         WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
+          AND attempt = $6
+          AND lease_expires_at > to_timestamp($4 / 1000.0)
+          AND EXISTS (SELECT 1 FROM review_runs AS runs
+            WHERE runs.run_id = review_dispatch_outbox.run_id
+              AND runs.terminal_deadline > to_timestamp($4 / 1000.0))
           AND ($5::text IS NULL OR worker_token_digest IS NULL OR worker_token_digest = $5)
       RETURNING run_id`,
-      [runId, workerId, projectionName, now, workerTokenDigest || null],
+      [runId, workerId, projectionName, now, workerTokenDigest || null, claimAttempt],
     );
     return result.rows.length > 0;
   }
 
-  async bindWorkerTokenDigest(runId: string, workerId: string, workerTokenDigest: string, now: number): Promise<boolean> {
+  async bindWorkerTokenDigest(runId: string, workerId: string, claimAttempt: number, workerTokenDigest: string, now: number): Promise<boolean> {
+    validateClaimAttempt(claimAttempt);
     if (!/^[a-f0-9]{64}$/u.test(workerTokenDigest)) {
       throw new Error('worker token digest must be 64 lowercase hex characters');
     }
@@ -468,32 +489,49 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           SET worker_token_digest = COALESCE(worker_token_digest, $3),
               updated_at = to_timestamp($4 / 1000.0)
         WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
+          AND attempt = $5
+          AND lease_expires_at > to_timestamp($4 / 1000.0)
+          AND EXISTS (SELECT 1 FROM review_runs AS runs
+            WHERE runs.run_id = review_dispatch_outbox.run_id
+              AND runs.terminal_deadline > to_timestamp($4 / 1000.0))
           AND (worker_token_digest IS NULL OR worker_token_digest = $3)
       RETURNING run_id`,
-      [runId, workerId, workerTokenDigest, now],
+      [runId, workerId, workerTokenDigest, now, claimAttempt],
     );
     return result.rows.length > 0;
   }
 
-  async releaseForRetry(runId: string, workerId: string, now: number, availableAt: number): Promise<boolean> {
+  async releaseForRetry(runId: string, workerId: string, claimAttempt: number, now: number, availableAt: number): Promise<boolean> {
+    validateClaimAttempt(claimAttempt);
     const result = await this.queryable.query(
       `UPDATE review_dispatch_outbox
           SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,
               available_at = to_timestamp($4 / 1000.0), updated_at = to_timestamp($3 / 1000.0)
         WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
+          AND attempt = $5
+          AND lease_expires_at > to_timestamp($3 / 1000.0)
+          AND EXISTS (SELECT 1 FROM review_runs AS runs
+            WHERE runs.run_id = review_dispatch_outbox.run_id
+              AND runs.terminal_deadline > to_timestamp($3 / 1000.0))
       RETURNING run_id`,
-      [runId, workerId, now, availableAt],
+      [runId, workerId, now, availableAt, claimAttempt],
     );
     return result.rows.length > 0;
   }
 
-  async markTerminal(runId: string, workerId: string, now: number, error: string): Promise<boolean> {
+  async markTerminal(runId: string, workerId: string, claimAttempt: number, now: number, error: string): Promise<boolean> {
+    validateClaimAttempt(claimAttempt);
     const result = await this.queryable.query(
       `WITH terminalized AS (
          UPDATE review_dispatch_outbox
             SET status = 'terminal', worker_token_digest = NULL, lease_owner = NULL, lease_expires_at = NULL,
                 updated_at = to_timestamp($3 / 1000.0)
           WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
+            AND attempt = $5
+            AND lease_expires_at > to_timestamp($3 / 1000.0)
+            AND EXISTS (SELECT 1 FROM review_runs AS runs
+              WHERE runs.run_id = review_dispatch_outbox.run_id
+                AND runs.terminal_deadline > to_timestamp($3 / 1000.0))
         RETURNING run_id
        )
        UPDATE review_runs AS runs
@@ -502,7 +540,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          FROM terminalized
         WHERE runs.run_id = terminalized.run_id AND runs.status = 'queued'
       RETURNING runs.run_id`,
-      [runId, workerId, now, error],
+      [runId, workerId, now, error, claimAttempt],
     );
     return result.rows.length > 0;
   }

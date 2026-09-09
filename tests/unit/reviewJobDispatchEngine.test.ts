@@ -6,6 +6,7 @@ const now = receivedAt + 60_000;
 const claim = {
   runId: `run_${'1'.repeat(32)}`,
   deliveryId: 'actions:98765:2:123:42:head',
+  claimAttempt: 7,
   executionAttempt: 1,
   repositoryId: 123,
   installationId: 456,
@@ -43,7 +44,7 @@ function fixture(overrides: Record<string, any> = {}) {
     workerId: 'dispatcher-a',
     workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     namespace: 'ct-review-qualification',
-    now: () => now,
+    now: overrides.now || (() => now),
     leaseMs: 30_000,
     retryDelayMs: 5_000,
   });
@@ -71,6 +72,7 @@ describe('ReviewJobDispatchEngine', () => {
     expect(repository.markProjected).toHaveBeenCalledWith(
       claim.runId,
       'dispatcher-a',
+      claim.claimAttempt,
       `ct-review-${'1'.repeat(32)}`,
       now,
     );
@@ -100,12 +102,14 @@ describe('ReviewJobDispatchEngine', () => {
     expect(repository.bindWorkerTokenDigest).toHaveBeenCalledWith(
       claim.runId,
       'dispatcher-a',
+      claim.claimAttempt,
       'f'.repeat(64),
       now,
     );
     expect(repository.markProjected).toHaveBeenCalledWith(
       claim.runId,
       'dispatcher-a',
+      claim.claimAttempt,
       `ct-review-${'1'.repeat(32)}`,
       now,
       'f'.repeat(64),
@@ -130,6 +134,7 @@ describe('ReviewJobDispatchEngine', () => {
     expect(repository.markProjected).toHaveBeenCalledWith(
       claim.runId,
       'dispatcher-a',
+      claim.claimAttempt,
       `ct-review-${'1'.repeat(32)}`,
       now,
       'a'.repeat(64),
@@ -203,6 +208,7 @@ describe('ReviewJobDispatchEngine', () => {
     expect(repository.markTerminal).toHaveBeenCalledWith(
       claim.runId,
       'dispatcher-a',
+      claim.claimAttempt,
       now,
       'review job projection rejected',
     );
@@ -217,12 +223,86 @@ describe('ReviewJobDispatchEngine', () => {
     // what makes a retry loop diagnosable, and it costs nothing in disclosure.
     expect(outcome).toEqual({ status: 'retry', runId: claim.runId, availableAt: now + 5_000, reason: 'projection' });
     expect(JSON.stringify(outcome)).not.toContain('secret-bearing');
-    expect(repository.releaseForRetry).toHaveBeenCalledWith(claim.runId, 'dispatcher-a', now, now + 5_000);
+    expect(repository.releaseForRetry).toHaveBeenCalledWith(claim.runId, 'dispatcher-a', claim.claimAttempt, now, now + 5_000);
   });
 
   it('reports lease loss instead of acknowledging a projection it could not persist', async () => {
     const { engine } = fixture({ repository: { markProjected: vi.fn(async () => false) } });
     await expect(engine.runOnce()).resolves.toEqual({ status: 'lease-lost', runId: claim.runId });
+  });
+
+  it.each(['bind', 'project'] as const)('uses the current clock when a delayed %s reaches lease expiry', async (stage) => {
+    let clock = now;
+    const acknowledge = vi.fn(async (_runId: string, _owner: string, attempt: number, _payload: string, mutationNow: number) =>
+      attempt === claim.claimAttempt && mutationNow < claim.leaseExpiresAt);
+    const { engine, projector } = fixture({
+      now: () => clock,
+      repository: stage === 'bind'
+        ? {
+          claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })),
+          bindWorkerTokenDigest: acknowledge,
+        }
+        : { markProjected: acknowledge },
+      runSecretProvisioner: { provision: vi.fn(async () => {
+        clock = claim.leaseExpiresAt;
+        return { workerTokenDigest: 'f'.repeat(64) };
+      }) },
+      projector: { ensure: vi.fn(async () => { clock = claim.leaseExpiresAt; }) },
+    });
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'lease-lost', runId: claim.runId });
+    expect(acknowledge.mock.calls[0][2]).toBe(claim.claimAttempt);
+    expect(acknowledge.mock.calls[0][4]).toBe(claim.leaseExpiresAt);
+    if (stage === 'bind') expect(projector.ensure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { stage: 'run-secret-provisioning', delay: 10_000 },
+    { stage: 'run-secret-provisioning', delay: 30_000 },
+    { stage: 'projection', delay: 10_000 },
+    { stage: 'projection', delay: 30_000 },
+  ])('fences a $stage retry after a $delay ms delay using a fresh timestamp', async ({ stage, delay }) => {
+    let clock = now;
+    const delayedFailure = vi.fn(async () => {
+      clock += delay;
+      throw new Error('transient upstream failure');
+    });
+    const release = vi.fn(async (_runId: string, _owner: string, attempt: number, mutationNow: number) =>
+      attempt === claim.claimAttempt && mutationNow < claim.leaseExpiresAt);
+    const { engine } = fixture({
+      now: () => clock,
+      repository: {
+        claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })),
+        releaseForRetry: release,
+      },
+      ...(stage === 'run-secret-provisioning'
+        ? { runSecretProvisioner: { provision: delayedFailure } }
+        : { projector: { ensure: delayedFailure } }),
+    });
+    await expect(engine.runOnce()).resolves.toEqual(delay < 30_000
+      ? { status: 'retry', runId: claim.runId, availableAt: now + delay + 5_000, reason: stage }
+      : { status: 'lease-lost', runId: claim.runId });
+    expect(release).toHaveBeenCalledWith(claim.runId, claim.leaseOwner, claim.claimAttempt, now + delay, now + delay + 5_000);
+  });
+
+  it.each(['projection-rejected', 'run-secret-unavailable'] as const)('passes the claim fence and current time when marking %s', async (reason) => {
+    let clock = now;
+    const { engine, repository } = fixture({
+      now: () => clock,
+      repository: { claimNext: vi.fn(async () => {
+        clock += 1_000;
+        return reason === 'projection-rejected'
+          ? { ...claim, terminalDeadline: now + 119_999 }
+          : { ...claim, publicationMode: 'app-gate' as const };
+      }) },
+      runSecretProvisioner: null,
+    });
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'terminal', runId: claim.runId, reason });
+    expect(repository.markTerminal).toHaveBeenCalledWith(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, now + 1_000,
+      reason === 'projection-rejected'
+        ? 'review job projection rejected'
+        : 'publishing review dispatched without a run secret provisioner',
+    );
   });
 
   it('reports lease loss when terminal or retry acknowledgement loses ownership', async () => {
@@ -262,6 +342,7 @@ describe('ReviewJobDispatchEngine', () => {
     expect(repository.markProjected).toHaveBeenCalledWith(
       claim.runId,
       'dispatcher-a',
+      claim.claimAttempt,
       `ct-review-${'1'.repeat(32)}-a2`,
       now,
     );

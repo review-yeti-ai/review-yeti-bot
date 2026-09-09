@@ -70,7 +70,36 @@ function workerFailureRepository(query: (sql: string, values?: unknown[]) => Pro
   };
 }
 
+const claimMutations = [
+  { name: 'heartbeat', invoke: (r: PostgresReviewDispatchRepository, attempt: number) => r.heartbeat(row.run_id, 'dispatcher-a', attempt, 2_000, 30_000) },
+  { name: 'bindWorkerTokenDigest', invoke: (r: PostgresReviewDispatchRepository, attempt: number) => r.bindWorkerTokenDigest(row.run_id, 'dispatcher-a', attempt, 'a'.repeat(64), 2_000) },
+  { name: 'markProjected', invoke: (r: PostgresReviewDispatchRepository, attempt: number) => r.markProjected(row.run_id, 'dispatcher-a', attempt, 'projection', 2_000) },
+  { name: 'releaseForRetry', invoke: (r: PostgresReviewDispatchRepository, attempt: number) => r.releaseForRetry(row.run_id, 'dispatcher-a', attempt, 2_000, 3_000) },
+  { name: 'markTerminal', invoke: (r: PostgresReviewDispatchRepository, attempt: number) => r.markTerminal(row.run_id, 'dispatcher-a', attempt, 2_000, 'projection rejected') },
+];
+
 describe('PostgresReviewDispatchRepository', () => {
+  it.each(claimMutations)('$name requires the exact claim generation and both unexpired deadlines', async ({ invoke }) => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [] }));
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
+    await expect(invoke(repository, 7)).resolves.toBe(false);
+    const [sql, values] = query.mock.calls[0];
+    expect(values?.at(-1)).toBe(7);
+    expect(sql).toContain(`AND attempt = $${values!.length}`);
+    expect(sql).toContain("lease_owner = $2 AND status = 'claimed'");
+    expect(sql).toMatch(/lease_expires_at > to_timestamp\(\$[34] \/ 1000\.0\)/u);
+    expect(sql).toMatch(/runs\.terminal_deadline > to_timestamp\(\$[34] \/ 1000\.0\)/u);
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, undefined])('rejects an invalid claim generation %s before any mutation', async (attempt) => {
+    const query = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
+    for (const { invoke } of claimMutations) {
+      await expect(invoke(repository, attempt as number)).rejects.toThrow(/claim attempt must be a positive integer/u);
+    }
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('admits delivery, run, and one outbox row in one committed transaction', async () => {
     const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
     const pool = { connect: vi.fn(async () => client) };
@@ -223,6 +252,7 @@ describe('PostgresReviewDispatchRepository', () => {
         return { rows: [{
           run_id: row.run_id,
           delivery_id: input().deliveryId,
+          claim_attempt: 1,
           execution_attempt: outbox.executionAttempt + 1,
           repository_id: 123,
           installation_id: 456,
@@ -348,6 +378,7 @@ describe('PostgresReviewDispatchRepository', () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{
       run_id: row.run_id,
       delivery_id: input().deliveryId,
+      claim_attempt: 7,
       execution_attempt: 0,
       repository_id: 123,
       installation_id: 456,
@@ -377,18 +408,21 @@ describe('PostgresReviewDispatchRepository', () => {
       terminalDeadline: 901_000,
       policyDigest: 'c'.repeat(64),
       configDigest: identity.configDigest,
+      claimAttempt: 7,
       executionAttempt: 1,
     }));
     expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE OF outbox SKIP LOCKED/u);
     expect(query.mock.calls[0][0]).toContain("outbox.status = 'pending'");
     expect(query.mock.calls[0][0]).toContain('execution_attempt');
-    expect(await repository.heartbeat(row.run_id, 'dispatcher-a', 2_000, 30_000)).toBe(true);
+    expect(query.mock.calls[0][0]).toContain('outbox.attempt AS claim_attempt');
+    expect(await repository.heartbeat(row.run_id, 'dispatcher-a', claim!.claimAttempt, 2_000, 30_000)).toBe(true);
   });
 
   it('keeps active claims single-owner and stable across projection retries', async () => {
     let dispatchStatus: 'pending' | 'claimed' = 'pending';
     let leaseActive = false;
     let executionAttempt = 0;
+    let claimAttempt = 0;
     const query = vi.fn(async (sql: string, values: unknown[] = []) => {
       if (/WITH candidate/u.test(sql)) {
         // This stateful double follows the UPDATE ... RETURNING contract rather
@@ -408,6 +442,7 @@ describe('PostgresReviewDispatchRepository', () => {
         return { rows: [{
           run_id: row.run_id,
           delivery_id: input().deliveryId,
+          claim_attempt: ++claimAttempt,
           execution_attempt: storedExecutionAttempt + 1,
           repository_id: 123,
           installation_id: 456,
@@ -437,9 +472,11 @@ describe('PostgresReviewDispatchRepository', () => {
     const initial = await repository.claimNext('dispatcher-a', 1_000, 30_000);
     expect(initial?.executionAttempt).toBe(1);
     await expect(repository.claimNext('dispatcher-b', 2_000, 30_000)).resolves.toBeNull();
-    await expect(repository.releaseForRetry(row.run_id, 'dispatcher-a', 2_000, 3_000)).resolves.toBe(true);
+    await expect(repository.releaseForRetry(row.run_id, 'dispatcher-a', initial!.claimAttempt, 2_000, 3_000)).resolves.toBe(true);
     const infrastructureRetry = await repository.claimNext('dispatcher-a', 3_000, 30_000);
     expect(infrastructureRetry?.executionAttempt).toBe(1);
+    expect(initial?.claimAttempt).toBe(1);
+    expect(infrastructureRetry?.claimAttempt).toBe(2);
   });
 
   it('terminalizes both the outbox and run only for the owning dispatcher lease', async () => {
@@ -448,6 +485,7 @@ describe('PostgresReviewDispatchRepository', () => {
     await expect(repository.markTerminal(
       row.run_id,
       'dispatcher-a',
+      7,
       1_000,
       'review job projection rejected',
     )).resolves.toBe(true);
@@ -462,6 +500,7 @@ describe('PostgresReviewDispatchRepository', () => {
       'dispatcher-a',
       1_000,
       'review job projection rejected',
+      7,
     ]);
   });
 
@@ -698,9 +737,9 @@ describe('PostgresReviewDispatchRepository', () => {
   it.each(['NOT-A-DIGEST', 'A'.repeat(64), 'a'.repeat(63), 'a'.repeat(65), ''])('rejects invalid worker digest %j before SQL', async (digest) => {
     const query = vi.fn(async () => ({ rows: [] }));
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() }, { query });
-    await expect(repository.markProjected(row.run_id, 'dispatcher-a', 'projection', 1_000, digest))
+    await expect(repository.markProjected(row.run_id, 'dispatcher-a', 1, 'projection', 1_000, digest))
       .rejects.toThrow('worker token digest must be 64 lowercase hex characters');
-    await expect(repository.bindWorkerTokenDigest(row.run_id, 'dispatcher-a', digest, 1_000))
+    await expect(repository.bindWorkerTokenDigest(row.run_id, 'dispatcher-a', 1, digest, 1_000))
       .rejects.toThrow('worker token digest must be 64 lowercase hex characters');
     expect(query).not.toHaveBeenCalled();
   });

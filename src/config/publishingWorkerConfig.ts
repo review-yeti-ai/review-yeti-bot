@@ -3,7 +3,7 @@ import type { CtReviewConfigV3, ProviderId } from './schema';
 import { logger } from '../utils/logger';
 
 export function resolveWorkerConfig(
-  env: NodeJS.ProcessEnv,
+  env: Readonly<Record<string, string | undefined>>,
   transport: { baseUrl: string; apiKey: string; model: string },
 ): CtReviewConfigV3 {
   const baseConfig = createDefaultV3Config();

@@ -122,15 +122,22 @@ export function buildAuthoritativeReviewIdentity(input: {
 
 /** Fingerprints a trusted prepared policy/config without storing their content.
  * Selection and normalization remain with the central policy owner. */
+export function fingerprintEffectiveReviewConfig(effectiveConfig: unknown): string {
+  requireBoundedJsonObject(effectiveConfig);
+  // The worker can verify its actual config with this same function without
+  // receiving repository credentials or resolving mutable policy references.
+  // Immutable source provenance remains bound by the outer policy/run identity.
+  return sha256({ version: 'ReviewConfigFingerprint.v1', config: effectiveConfig });
+}
+
 export function fingerprintTrustedReviewPolicy(input: {
   effectiveConfig: unknown;
   effectivePolicy: unknown;
   sources: TrustedResolvedReviewPolicy['sources'];
 }): TrustedResolvedReviewPolicy {
   const sources = normalizeSources(input.sources);
-  requireBoundedJsonObject(input.effectiveConfig);
   requireBoundedJsonObject(input.effectivePolicy);
-  const effectiveConfigDigest = sha256({ version: 'ReviewConfigFingerprint.v1', sources, config: input.effectiveConfig });
+  const effectiveConfigDigest = fingerprintEffectiveReviewConfig(input.effectiveConfig);
   return {
     effectiveConfigDigest,
     effectivePolicyDigest: sha256({ version: 'ReviewPolicyFingerprint.v1', sources, effectiveConfigDigest, policy: input.effectivePolicy }),
