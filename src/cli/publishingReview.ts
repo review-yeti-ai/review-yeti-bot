@@ -33,7 +33,7 @@ import { createDefaultV3Config } from '../config/configLoader';
 import type { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
-import type { WorkerCompletionAdapter, WorkerTerminalFailure } from '../review/workerCompletion';
+import { validateWorkerCompletionEndpoint, type WorkerCompletionAdapter, type WorkerTerminalFailure } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
@@ -179,13 +179,9 @@ export function publishingReviewIdentity(
 }
 
 function validateConfiguredCompletionEndpoint(endpoint: string): void {
-  let parsed: URL;
   try {
-    parsed = new URL(endpoint);
+    validateWorkerCompletionEndpoint(endpoint);
   } catch {
-    throw invalidPublishingReviewContract();
-  }
-  if (parsed.protocol !== 'https:' || !parsed.host || parsed.username || parsed.password || parsed.hash) {
     throw invalidPublishingReviewContract();
   }
 }
