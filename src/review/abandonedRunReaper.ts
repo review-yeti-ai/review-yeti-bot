@@ -1,37 +1,24 @@
-import type { AbandonedPublishingRun } from '../persistence/reviewDispatchRepository';
+import type { AbandonedPublishingRun, ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
 import { logger } from '../utils/logger';
 
 /**
- * Publishes a fail-closed check for publishing runs that died before their worker
- * ever started (REL-586).
+ * Reconciles publishing attempts that expired without a durable verdict.
+ * The worker may have started. Only the worker-token owner's App can publish.
  *
- * The only component that creates a check run is the worker itself. Every failure
- * upstream of its pod -- token mint, RBAC denial, capacity wait, workspace
- * contention, CR conflict, deadline expiry -- therefore leaves the head with no
- * check at all. On a required gate that is the worst possible shape: merges are
- * blocked and nothing is red, so there is nothing for anyone to go look at. This
- * closes that hole by turning silence into an explicit failure.
- *
- * It publishes `failure`, never `neutral`: a neutral check does not block a merge,
- * so reporting an unrun review as neutral would convert a silent block into a
- * silent *pass*, which is strictly worse.
+ * Recover an existing orphan check, or create an explicit failure if no worker
+ * check exists. Publication errors remain pending; no success is synthesized.
  */
 export interface ReaperCheckClient {
-  createCheck(owner: string, repo: string, headSha: string): Promise<number>;
-  completeCheck(options: {
-    owner: string;
-    repo: string;
-    checkId: number;
-    conclusion: 'success' | 'failure' | 'cancelled';
-    title: string;
-    summary: string;
-  }): Promise<void>;
+  failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal):
+    Promise<'failed' | 'already-completed'>;
 }
 
 export interface AbandonedRunReaperOptions {
-  repository: { claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]> };
+  repository: Pick<ReviewDispatchRepository, 'claimAbandonedPublishingRuns' | 'reconcileAbandonedPublishingRun'>;
   /** Built per run: the token must be scoped to that run's repository. */
-  checkClientFor(run: AbandonedPublishingRun): Promise<ReaperCheckClient>;
+  checkClientFor(run: AbandonedPublishingRun, signal: AbortSignal): Promise<ReaperCheckClient>;
+  /** Authenticated with the worker-token owner's App JWT, never PR metadata. */
+  publisherAppId: number;
   workerId: string;
   now?: () => number;
   limit?: number;
@@ -49,51 +36,47 @@ export class AbandonedRunReaper {
 
   constructor(private readonly options: AbandonedRunReaperOptions) {
     if (!options.workerId.trim()) throw new Error('reaper worker id is required');
+    if (!Number.isSafeInteger(options.publisherAppId) || options.publisherAppId <= 0) {
+      throw new Error('authenticated publisher App id is required');
+    }
     this.now = options.now || Date.now;
     this.limit = options.limit ?? 20;
   }
 
-  async runOnce(): Promise<AbandonedRunReaperOutcome> {
+  async runOnce(signal?: AbortSignal): Promise<AbandonedRunReaperOutcome> {
+    if (signal?.aborted) return { swept: 0, published: 0, failed: 0 };
     const now = this.now();
     const runs = await this.options.repository.claimAbandonedPublishingRuns(this.options.workerId, now, this.limit);
     let published = 0;
     let failed = 0;
 
     for (const run of runs) {
+      if (signal?.aborted) break;
       try {
-        const client = await this.options.checkClientFor(run);
-        const checkId = await client.createCheck(run.owner, run.repo, run.headSha);
-        await client.completeCheck({
-          owner: run.owner,
-          repo: run.repo,
-          checkId,
-          conclusion: 'failure',
-          // MUST stay inside the consumer shims' `dead_lane` predicate in
-          // .github/workflows/ct-review-bot.yml (cisco-cdr, ct-meta, ai-workspace).
-          // Those shims decide whether a head still needs a panel by matching this
-          // title; a title they do not recognise reads as a live run, so the label
-          // refresh refuses to re-dispatch and the head is stuck red with no way
-          // back. 'did not start' was also simply wrong -- the run was admitted and
-          // dispatched, it just never produced a verdict.
-          title: 'Review Yeti: review did not complete',
-          summary: [
-            `No persona reviewed \`${run.headSha}\`.`,
-            'The run was admitted but reached its terminal deadline before a worker'
-            + ' published a verdict, so this is a failed review rather than an approval.',
-            'Re-run the review workflow, or push a new commit, to dispatch a fresh run.',
-          ].join('\n\n'),
-        });
-        published += 1;
-      } catch (error) {
-        // The row is already terminal, so a publish failure does not resurrect it.
-        // Log loudly: this is the last line of defence against a silent block, and
-        // if it fails the head is left with no check after all.
+        const reconciled = await this.options.repository.reconcileAbandonedPublishingRun(
+          run, this.options.workerId, this.now(), async () => {
+            // Started after acquiring the lock, and below the 60-second claim
+            // lease. Shutdown aborts fetch and the transaction drains before DB
+            // close; there is no detached timer racing an admission or a retry.
+            const deadline = AbortSignal.timeout(20_000);
+            const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
+            bounded.throwIfAborted();
+            const client = await this.options.checkClientFor(run, bounded);
+            const outcome = await client.failAbandonedCheck(run, this.options.publisherAppId, bounded);
+            bounded.throwIfAborted();
+            if (outcome === 'failed') published += 1;
+          },
+        );
+        if (!reconciled) continue;
+      } catch {
+        // The claim expires and remains eligible after rollback. Never expose
+        // token-mint or GitHub response bodies in logs.
         failed += 1;
         logger.error('Failed to publish a fail-closed check for an abandoned review', {
           runId: run.runId,
           repo: `${run.owner}/${run.repo}`,
           headSha: run.headSha,
-          error: error instanceof Error ? error.message : String(error),
+          reason: 'failure_publication_pending',
         });
       }
     }
