@@ -124,6 +124,19 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.releaseForRetry(first.run.runId, 'dispatcher-a', 2_000, 2_000)).resolves.toBe(true);
     const projectionRetry = await repository.claimNext('dispatcher-a', 3_000, 30_000);
     expect(projectionRetry?.executionAttempt).toBe(1);
+    // Exercise digest fencing while every status/lease predicate is valid.
+    // A mismatched token must not publish or mutate the still-claimed row.
+    await expect(repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', 'a'.repeat(64), 3_000))
+      .resolves.toBe(true);
+    await expect(repository.markProjected(
+      first.run.runId, 'dispatcher-a', 'wrong-token-projection', 3_000, 'b'.repeat(64),
+    )).resolves.toBe(false);
+    expect((await client.query(
+      'SELECT status, lease_owner, projection_name, worker_token_digest FROM pg_temp.review_dispatch_outbox WHERE run_id = $1',
+      [first.run.runId],
+    )).rows[0]).toMatchObject({
+      status: 'claimed', lease_owner: 'dispatcher-a', projection_name: null, worker_token_digest: 'a'.repeat(64),
+    });
     await expect(repository.markProjected(
       first.run.runId,
       'dispatcher-a',
