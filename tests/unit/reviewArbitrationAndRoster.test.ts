@@ -155,3 +155,117 @@ describe('Built-in charters are written as reviewer instructions', () => {
     expect(testing?.charter).not.toMatch(/vacuous|format.?evadable|absence.?guard|default.?value/i);
   });
 });
+
+describe('Cross-lane claim clustering and deduplication', () => {
+  it('deduplicates identical findings across different personas to prevent premature BLOCK', () => {
+    const lane1 = {
+      id: 'sec-lane',
+      findings: [
+        {
+          severity: 'P1',
+          path: 'src/auth/token.ts',
+          line: 42,
+          title: 'Missing authentication verification check',
+          body: 'Token validation fails to verify the expiration timestamp.',
+        },
+      ],
+    };
+    const lane2 = {
+      id: 'qual-lane',
+      findings: [
+        {
+          severity: 'P1',
+          path: 'src/auth/token.ts',
+          line: 42,
+          title: 'Missing authentication verification check',
+          body: 'Token validation fails to verify the expiration timestamp.',
+        },
+      ],
+    };
+    const lane3 = {
+      id: 'arch-lane',
+      findings: [
+        {
+          severity: 'P1',
+          path: 'src/auth/token.ts',
+          line: 44,
+          title: 'Missing authentication expiration check',
+          body: 'Token validation fails to verify the expiration timestamp before accepting request.',
+        },
+      ],
+    };
+
+    // A 3-persona panel has blockP1 = max(3, ceil(3/2)) = 3.
+    // Without cross-lane deduplication, 3 identical/near-duplicate P1s would sum to 3 and trigger BLOCK.
+    // With deduplication, they merge into 1 P1 finding, resulting in FIX_FIRST.
+    const arb = computeArbitrationQuorum([lane1, lane2, lane3] as any, 3);
+    expect(arb.metrics.totalFindings).toBe(1);
+    expect(arb.metrics.p1Count).toBe(1);
+    expect(arb.verdict).toBe('FIX_FIRST');
+  });
+
+  it('upgrades severity when a near-duplicate claim is reported at higher severity in another lane', () => {
+    const laneP2 = {
+      id: 'opt-lane',
+      findings: [
+        {
+          severity: 'P2',
+          path: 'src/cache/store.ts',
+          line: 10,
+          title: 'Unbounded memory cache growth',
+          body: 'Cache map has no eviction policy and will grow without bounds.',
+        },
+      ],
+    };
+    const laneP1 = {
+      id: 'sec-lane',
+      findings: [
+        {
+          severity: 'P1',
+          path: 'src/cache/store.ts',
+          line: 12,
+          title: 'Unbounded cache growth causes memory exhaustion',
+          body: 'Cache map has no eviction policy allowing denial of service via unbounded memory.',
+        },
+      ],
+    };
+
+    const arb = computeArbitrationQuorum([laneP2, laneP1] as any, 2);
+    expect(arb.metrics.totalFindings).toBe(1);
+    expect(arb.metrics.p1Count).toBe(1);
+    expect(arb.metrics.p2Count).toBe(0);
+    expect(arb.findings[0].severity).toBe('P1');
+  });
+
+  it('preserves distinct claims on the same file and across files', () => {
+    const lane1 = {
+      id: 'sec-lane',
+      findings: [
+        {
+          severity: 'P1',
+          path: 'src/auth/token.ts',
+          line: 42,
+          title: 'Missing authentication verification check',
+          body: 'Token validation fails to verify signature.',
+        },
+      ],
+    };
+    const lane2 = {
+      id: 'perf-lane',
+      findings: [
+        {
+          severity: 'P1',
+          path: 'src/db/query.ts',
+          line: 99,
+          title: 'N+1 query loop in user lookup',
+          body: 'Iterates through records executing one SQL query per row.',
+        },
+      ],
+    };
+
+    const arb = computeArbitrationQuorum([lane1, lane2] as any, 2);
+    expect(arb.metrics.totalFindings).toBe(2);
+    expect(arb.metrics.p1Count).toBe(2);
+    expect(arb.verdict).toBe('FIX_FIRST');
+  });
+});

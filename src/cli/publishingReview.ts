@@ -27,6 +27,7 @@ import { normalizeRepositoryVisibility } from '../review/repositoryVisibility';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
+import type { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { logger } from '../utils/logger';
@@ -79,6 +80,19 @@ export interface PublishingCheckClient {
   }): Promise<void>;
 }
 
+export interface PublishingReviewPersonaMetrics {
+  id: string;
+  decision: string;
+  findingsCount: number;
+  blockingCount: number;
+  turnsCount: number;
+  toolCallsCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  durationMs: number;
+}
+
 export interface PublishingReviewReceipt {
   version: 'ReviewYetiPublishingReview.v1';
   runId: string;
@@ -97,6 +111,15 @@ export interface PublishingReviewReceipt {
   failureClass: string | null;
   startedAt: string;
   completedAt: string;
+  personas?: PublishingReviewPersonaMetrics[];
+  metrics?: {
+    totalPromptTokens: number;
+    totalCompletionTokens: number;
+    totalTokens: number;
+    totalTurns: number;
+    totalToolCalls: number;
+    totalDurationMs: number;
+  };
 }
 
 function value(env: NodeJS.ProcessEnv, name: string): string {
@@ -303,10 +326,115 @@ export function classifyFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
   if (/timeout|timed out|ETIMEDOUT/iu.test(message)) return 'timeout';
+  if (/budget exhausted|incomplete/iu.test(message)) return 'budget_exhausted';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
   if (/429|rate limit/iu.test(message)) return 'rate_limit';
   if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
   return 'provider_error';
+}
+
+export function resolveWorkerConfig(
+  env: NodeJS.ProcessEnv,
+  transport: { baseUrl: string; apiKey: string; model: string },
+): CtReviewConfigV3 {
+  const baseConfig = createDefaultV3Config();
+
+  let maxInvestigationTurns = 2;
+  let personasList: string[] = [];
+
+  if (env.REVIEW_YETI_POLICY_JSON) {
+    try {
+      const raw = JSON.parse(env.REVIEW_YETI_POLICY_JSON);
+      const policy = raw.review_yeti || raw;
+      if (policy.budget?.max_investigation_turns) {
+        maxInvestigationTurns = Number(policy.budget.max_investigation_turns);
+      }
+      if (typeof policy.personas === 'string') {
+        personasList = policy.personas.split(',').map((p: string) => p.trim()).filter(Boolean);
+      } else if (Array.isArray(policy.personas)) {
+        personasList = policy.personas;
+      }
+    } catch (e) {
+      logger.warn('Failed to parse REVIEW_YETI_POLICY_JSON', { error: e });
+    }
+  }
+
+  if (personasList.length === 0 && env.REVIEW_PERSONAS) {
+    personasList = env.REVIEW_PERSONAS.split(',').map((p) => p.trim()).filter(Boolean);
+  }
+
+  if (env.MAX_INVESTIGATION_TURNS) {
+    const turns = Number(env.MAX_INVESTIGATION_TURNS);
+    if (Number.isSafeInteger(turns) && turns > 0) {
+      maxInvestigationTurns = turns;
+    }
+  }
+
+  const default6 = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'];
+  const effectivePersonaNames = personasList.length > 0 ? personasList : default6;
+
+  const personaMap: Record<string, { id: string; required: boolean; charter: string; paths: string[] }> = {
+    'security': { id: 'sec-lane', required: true, charter: 'builtin:security', paths: ['**'] },
+    'sec-lane': { id: 'sec-lane', required: true, charter: 'builtin:security', paths: ['**'] },
+    'performance': { id: 'perf-lane', required: false, charter: 'builtin:performance', paths: ['**'] },
+    'perf-lane': { id: 'perf-lane', required: false, charter: 'builtin:performance', paths: ['**'] },
+    'architecture': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals', paths: ['**'] },
+    'arch-lane': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals', paths: ['**'] },
+    'testing': { id: 'qual-lane', required: false, charter: 'builtin:consistency', paths: ['**'] },
+    'qual-lane': { id: 'qual-lane', required: false, charter: 'builtin:consistency', paths: ['**'] },
+    'dependencies': { id: 'dep-lane', required: false, charter: 'builtin:contract', paths: ['**'] },
+    'dep-lane': { id: 'dep-lane', required: false, charter: 'builtin:contract', paths: ['**'] },
+    'licensing': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance', paths: ['**'] },
+    'policy-lane': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance', paths: ['**'] },
+  };
+
+  const personas = effectivePersonaNames.map((name) => {
+    const key = name.toLowerCase().trim();
+    const matched = personaMap[key] || {
+      id: name,
+      required: false,
+      charter: 'builtin:correctness',
+      paths: ['**'],
+    };
+    return {
+      id: matched.id,
+      enabled: true,
+      required: matched.required,
+      charter: matched.charter,
+      paths: matched.paths,
+      providers: ['bifrost'] as ProviderId[],
+    };
+  });
+
+  return {
+    ...baseConfig,
+    personas,
+    default_max_turns: Math.min(3, Math.max(1, maxInvestigationTurns || 2)),
+    reviewer_effort: 'medium',
+    reviewers: {
+      execution: 'personas',
+      fallback: 'ordered',
+      overall_timeout_s: 900,
+      providers: [
+        {
+          id: 'bifrost' as ProviderId,
+          enabled: true,
+          model: transport.model,
+          effort: 'medium',
+          review_timeout_s: 300,
+          arbiter_timeout_s: 300,
+        },
+      ],
+      arbiter: {
+        order: ['bifrost' as ProviderId],
+      },
+    },
+    evidence: {
+      zoekt: {
+        enabled: true,
+      },
+    },
+  };
 }
 
 export interface PublishingReviewDeps {
@@ -403,8 +531,9 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
+    const workerConfig = resolveWorkerConfig(env, transport);
     const panelResult = await panelRunner({
-      config: createBifrostPublishingConfig(transport.model),
+      config: workerConfig,
       changedFiles,
       repository: identity.repo,
       headSha: identity.headSha,
@@ -421,7 +550,7 @@ export async function runPublishingReviewWorker(
     // the same fail-closed severity contract as the hosted review path.
     const canonical = computeArbitration(panelResult.personas, panelResult.personas.length, {
       changedFiles,
-      coverageComplete: panelResult.quorum.satisfied,
+      coverageComplete: panelResult?.quorum ? panelResult.quorum.satisfied : true,
     });
     const verdict = canonical.verdict;
     // Count blocking findings from the canonical set, not the raw persona
@@ -443,6 +572,32 @@ export async function runPublishingReviewWorker(
       ? ('failure' as const)
       : publishingConclusion(verdict, blocking.length);
 
+    const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
+      const pFindings = p.findings || [];
+      const pBlocking = pFindings.filter((f: any) =>
+        BLOCKING_SEVERITIES.has(String(f?.severity || 'P2').toUpperCase())
+      );
+      return {
+        id: p.id,
+        decision: p.decision || 'UNKNOWN',
+        findingsCount: pFindings.length,
+        blockingCount: pBlocking.length,
+        turnsCount: p.turnsCount || 1,
+        toolCallsCount: (p.toolCalls || []).length,
+        promptTokens: p.promptTokens || p.usage?.prompt || 0,
+        completionTokens: p.completionTokens || p.usage?.completion || 0,
+        totalTokens: p.totalTokens || p.usage?.total || 0,
+        durationMs: p.durationMs || 0,
+      };
+    });
+
+    const totalPromptTokens = personaMetrics.reduce((sum, p) => sum + p.promptTokens, 0);
+    const totalCompletionTokens = personaMetrics.reduce((sum, p) => sum + p.completionTokens, 0);
+    const totalTokens = personaMetrics.reduce((sum, p) => sum + p.totalTokens, 0);
+    const totalTurns = personaMetrics.reduce((sum, p) => sum + p.turnsCount, 0);
+    const totalToolCalls = personaMetrics.reduce((sum, p) => sum + p.toolCallsCount, 0);
+    const totalDurationMs = personaMetrics.reduce((sum, p) => sum + p.durationMs, 0);
+
     // A count with nothing attached is not reviewable. Until now the check
     // published only a title and a summary, so a run could report four blocking
     // findings while the pull request carried no comment, no review and no
@@ -458,11 +613,9 @@ export async function runPublishingReviewWorker(
       title: `Review Yeti: ${verdict}`,
       summary: [
         `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
-        `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
-        // Arbitration drops a finding it cannot anchor to a changed line. That is
-        // deliberate -- an unanchorable finding cannot be rendered -- but doing it
-        // silently would make a real blocking finding the model mislocated simply
-        // disappear, so the count is published.
+        (panelResult as any).zeroLaneNonEvidence
+          ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
+          : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
         ...(discardedFindingCount > 0
           ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
           : []),
@@ -471,6 +624,7 @@ export async function runPublishingReviewWorker(
           : []),
         `Transport: bifrost \`${transport.model}\`.`,
         `Repository visibility: ${repositoryVisibility}.`,
+        `Telemetry: ${totalTurns} turns, ${totalToolCalls} tool calls, ${totalTokens} tokens across ${personaMetrics.length} lanes (${totalDurationMs}ms).`,
       ].join('\n\n'),
       text: renderFindingsMarkdown(findings, blocking.length),
       // Redundant today and deliberately kept: `sanitizeFinding` already drops
@@ -518,6 +672,15 @@ export async function runPublishingReviewWorker(
       failureClass: null,
       startedAt,
       completedAt,
+      personas: personaMetrics,
+      metrics: {
+        totalPromptTokens,
+        totalCompletionTokens,
+        totalTokens,
+        totalTurns,
+        totalToolCalls,
+        totalDurationMs,
+      },
     };
   } catch (error) {
     const failureClass = classifyFailure(error);

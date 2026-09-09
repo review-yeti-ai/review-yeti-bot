@@ -7,6 +7,7 @@ import {
   parseChangedFiles,
   publishingConclusion,
   publishingReviewIdentity,
+  resolveWorkerConfig,
   runPublishingReviewWorker,
 } from '../../src/cli/publishingReview';
 
@@ -411,6 +412,103 @@ describe('the worker never holds the App private key', () => {
       env({ GITHUB_PUBLISH_TOKEN: 'ghp_personal_access_token' }),
       noop, noop, noop, noop, noop,
     )).rejects.toThrow(/requires a ghs_ installation token/u);
+  });
+});
+
+describe('resolveWorkerConfig policy projection & telemetry persistence', () => {
+  const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'vk-test', model: 'ollama/glm-5.3-flash' };
+
+  it('defaults to 6 central personas and max 2 turns under default env', () => {
+    const config = resolveWorkerConfig(env(), transport);
+    expect(config.personas).toHaveLength(6);
+    expect(config.personas.map((p) => p.id)).toEqual([
+      'sec-lane',
+      'perf-lane',
+      'arch-lane',
+      'qual-lane',
+      'dep-lane',
+      'policy-lane',
+    ]);
+    expect(config.personas.find((p) => p.id === 'sec-lane')?.required).toBe(true);
+    expect(config.personas.find((p) => p.id === 'perf-lane')?.required).toBe(false);
+    expect(config.personas.every((p) => p.providers.length === 1 && p.providers[0] === 'bifrost')).toBe(true);
+    expect(config.default_max_turns).toBe(2);
+    expect(config.reviewers.arbiter.order).toEqual(['bifrost']);
+    expect(config.reviewers.providers[0].id).toBe('bifrost');
+    expect(config.reviewers.providers[0].model).toBe('ollama/glm-5.3-flash');
+  });
+
+  it('projects central policy from REVIEW_YETI_POLICY_JSON', () => {
+    const policyJson = JSON.stringify({
+      schema: 'calltelemetry.review-policy.v1',
+      review_yeti: {
+        personas: 'security,architecture,testing',
+        budget: {
+          max_investigation_turns: '3',
+          lane_call_budget: '24',
+        },
+      },
+    });
+    const config = resolveWorkerConfig(env({ REVIEW_YETI_POLICY_JSON: policyJson }), transport);
+    expect(config.personas.map((p) => p.id)).toEqual(['sec-lane', 'arch-lane', 'qual-lane']);
+    expect(config.default_max_turns).toBe(3);
+  });
+
+  it('caps default_max_turns at 3 even if policy declares higher turns', () => {
+    const policyJson = JSON.stringify({
+      review_yeti: {
+        personas: 'security',
+        budget: { max_investigation_turns: '10' },
+      },
+    });
+    const config = resolveWorkerConfig(env({ REVIEW_YETI_POLICY_JSON: policyJson }), transport);
+    expect(config.default_max_turns).toBe(3);
+  });
+
+  it('persists per-lane metrics and totals in receipt', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        personas: [
+          {
+            id: 'sec-lane',
+            decision: 'APPROVE',
+            findings: [],
+            turnsCount: 2,
+            toolCalls: [{ tool: 'read_file' }],
+            promptTokens: 1200,
+            completionTokens: 300,
+            totalTokens: 1500,
+            durationMs: 4000,
+          },
+          {
+            id: 'perf-lane',
+            decision: 'APPROVE',
+            findings: [],
+            turnsCount: 1,
+            toolCalls: [],
+            promptTokens: 800,
+            completionTokens: 200,
+            totalTokens: 1000,
+            durationMs: 2500,
+          },
+        ],
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('success');
+    expect(receipt.personas).toHaveLength(2);
+    expect(receipt.personas?.[0].id).toBe('sec-lane');
+    expect(receipt.personas?.[0].turnsCount).toBe(2);
+    expect(receipt.personas?.[0].toolCallsCount).toBe(1);
+    expect(receipt.metrics).toEqual({
+      totalPromptTokens: 2000,
+      totalCompletionTokens: 500,
+      totalTokens: 2500,
+      totalTurns: 3,
+      totalToolCalls: 1,
+      totalDurationMs: 6500,
+    });
   });
 });
 

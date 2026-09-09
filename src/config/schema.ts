@@ -262,6 +262,18 @@ export const onPRCloseSchema = z.object({
 
 export type OnPRCloseConfig = z.infer<typeof onPRCloseSchema>;
 
+export const evidenceSchema = z.object({
+  zoekt: z.object({
+    enabled: z.boolean().default(true),
+    maxCalls: z.number().int().positive().optional(),
+    maxFindResults: z.number().int().positive().optional(),
+    maxResultBytes: z.number().int().positive().optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  }).default({ enabled: true }),
+}).default({ zoekt: { enabled: true } });
+
+export type EvidenceConfig = z.infer<typeof evidenceSchema>;
+
 const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
@@ -285,6 +297,7 @@ const ctReviewConfigV3ObjectSchema = z.object({
   // Milestone 18 Extensions
   mcps: mcpsSchema,
   on_pr_close: onPRCloseSchema,
+  evidence: evidenceSchema.default({ zoekt: { enabled: true } }),
 
   reviewers: z.object({
     execution: z.literal('personas'),

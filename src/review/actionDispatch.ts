@@ -23,6 +23,11 @@ export const actionDispatchRequestSchema = z.object({
     workflowRef: z.string().min(1).max(512).optional(),
     workflowSha: sha.optional(),
   }).strict(),
+  policy: z.object({
+    personas: z.string().optional(),
+    maxInvestigationTurns: z.number().int().positive().optional(),
+    laneCallBudget: z.number().int().positive().optional(),
+  }).strict().optional(),
 }).strict();
 
 export type ActionDispatchRequest = z.infer<typeof actionDispatchRequestSchema>;

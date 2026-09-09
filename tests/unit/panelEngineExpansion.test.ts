@@ -65,19 +65,20 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     expect(err.message).toBe('test msg');
   });
 
-  it('throws PanelConfigurationError when no enabled personas apply to changed paths', async () => {
+  it('returns clean non-evidence receipt when no enabled personas apply to changed paths', async () => {
     const config = buildMinimalConfig();
     const changedFiles = [{ path: 'docs/README.md' }]; // does not match src/**
 
-    await expect(
-      executePersonaPanel({
-        config,
-        changedFiles,
-        repository: 'owner/repo',
-        headSha: 'sha-1',
-        client: mockClient as unknown as OmniRouteClient,
-      })
-    ).rejects.toThrow('no enabled persona applies to the changed paths');
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'owner/repo',
+      headSha: 'sha-1',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+    expect(result.zeroLaneNonEvidence).toBe(true);
+    expect(result.arbiter.verdict).toBe('SHIP');
+    expect(result.personas).toHaveLength(0);
   });
 
   it('throws PanelConfigurationError when required persona fails closed', async () => {
