@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.45.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.1...v1.45.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* **REL-543:** verify installation-token publisher identity before writing ([#613](https://github.com/review-yeti-ai/review-yeti-bot/issues/613)) ([761e3ef](https://github.com/review-yeti-ai/review-yeti-bot/commit/761e3ef0fa86bae51c369e5daf2a71518bc89ba1))
+
 ## [1.45.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.0...v1.45.1) (2026-09-09)
 
 
