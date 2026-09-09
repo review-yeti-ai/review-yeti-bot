@@ -23,6 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { executePersonaPanel } from '../panel/panelEngine';
+import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
 import { Octokit } from '@octokit/core';
@@ -625,25 +626,18 @@ export async function runPublishingReviewWorker(
     // annotation -- nothing an author could act on. Both fields below need only
     // `checks: write`, so the findings become visible without widening the
     const changedPaths = new Set(changedFiles.map((file) => file.path));
-    const isFastShip = Boolean(
-      (panelResult as any).isFastShip ||
-      (panelResult.personas?.length === 1 && panelResult.personas[0]?.id === 'fast-ship' && (panelResult as any).isFastShip !== false)
-    );
+    const isFastShip = isFastShipPanelResult(panelResult);
 
     const title = isFastShip
       ? 'Review Yeti: SHIP (fast-ship)'
       : `Review Yeti: ${verdict}`;
 
-    const classifierRationale = (panelResult as any).classifierRationale ||
-      'Approved via fast-ship triage classifier.';
-    const tokensSaved = typeof (panelResult as any).tokensSaved === 'number' ? (panelResult as any).tokensSaved : 15000;
-
     const summaryParts = isFastShip
       ? [
           `### Review Yeti: SHIP (fast-ship)`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,
-          `- **Classifier Rationale**: ${classifierRationale}`,
-          `- **Token Savings**: Estimated ~${tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
+          `- **Classifier Rationale**: ${panelResult.classifierRationale}`,
+          `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
           `Transport: bifrost \`${transport.model}\`.`,
           `Repository visibility: ${repositoryVisibility}.`,
         ]

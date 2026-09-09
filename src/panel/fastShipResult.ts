@@ -13,6 +13,10 @@ export interface FastShipPanelResult extends PanelResult {
   tokensSaved: number;
 }
 
+export function isFastShipPanelResult(result: unknown): result is FastShipPanelResult {
+  return Boolean(result && typeof result === 'object' && (result as FastShipPanelResult).isFastShip === true);
+}
+
 export function buildFastShipPanelResult(
   classifierResult: ClassifierResult,
   headSha: string,

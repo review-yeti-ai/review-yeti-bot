@@ -9,7 +9,7 @@ import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
 import { LiveStreamBus } from '../live/liveStreamBus';
-import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../personas/redTeamPersona';
+import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT, getModelFamily } from '../personas/redTeamPersona';
 import { dashboardStore } from '../persistence/dashboardStore';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { validateReviewFindings } from '../review/reviewCore';
@@ -789,7 +789,7 @@ async function invoke(
   ].join('\n');
 
   const fullPromptText = `${staticPrefix}\n\n${dynamicSuffix}`;
-  const isAnthropic = model.toLowerCase().includes('claude') || model.toLowerCase().includes('anthropic');
+  const isAnthropic = getModelFamily(model) === 'anthropic';
 
   let userContent: string | OpenRouterContentBlock[] = fullPromptText;
   if (isAnthropic) {

@@ -22,6 +22,14 @@ import { executePersonaPanel, PanelResult, extractMessageContentText } from '../
 import { usage, checkSummary } from '../../src/app';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { ReviewAdmissionInput } from '../../src/review/reviewRun';
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+  isTrustedWorkerImage,
+  buildReviewJobProjection,
+  TRUSTED_WORKER_IMAGE_REPOSITORIES,
+} from '../../src/k8s/reviewJobProjection';
+import { reviewJobDispatcherConfigFromEnv } from '../../src/k8s/reviewJobDispatcherRuntime';
 
 // ============================================================================
 // Shared Test Fixtures and Helper Utilities
@@ -727,38 +735,105 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
     // R5: DOKS Infrastructure: Worker Deployment & Terminal Run Re-queueing (5 tests)
     // ------------------------------------------------------------------------
     describe('R5: DOKS Infrastructure & Terminal Run Re-queueing', () => {
-      it('1.5.1: Worker image pattern validator enforces trusted repository and immutable sha256 digest format', () => {
-        expect(TRUSTED_IMAGE_REGEX.test(TARGET_WORKER_IMAGE)).toBe(true);
-        expect(
-          TRUSTED_IMAGE_REGEX.test(
-            'registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635'
-          )
-        ).toBe(true);
+      it('1.5.1: Worker image pattern validator enforces trusted repository and immutable sha256 digest format via production dispatcher config', () => {
+        const trustedGhcr = `${TRUSTED_WORKER_IMAGE_REPOSITORIES[0]}@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635`;
+        const trustedDoks = `${TRUSTED_WORKER_IMAGE_REPOSITORIES[1]}@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635`;
+
+        expect(isTrustedWorkerImage(trustedGhcr)).toBe(true);
+        expect(isTrustedWorkerImage(trustedDoks)).toBe(true);
+
+        const config = reviewJobDispatcherConfigFromEnv({
+          REVIEW_JOB_DISPATCH_ENABLED: 'true',
+          REVIEW_JOB_NAMESPACE: 'ct-review-system',
+          REVIEW_JOB_WORKER_IMAGE: trustedGhcr,
+          HOSTNAME: 'dispatcher-pod-0',
+        });
+        expect(config.workerImage).toBe(trustedGhcr);
 
         // Reject tags without digest
-        expect(TRUSTED_IMAGE_REGEX.test('ghcr.io/review-yeti-ai/review-yeti-worker:latest')).toBe(false);
+        expect(isTrustedWorkerImage('ghcr.io/review-yeti-ai/review-yeti-worker:latest')).toBe(false);
+        expect(() =>
+          reviewJobDispatcherConfigFromEnv({
+            REVIEW_JOB_DISPATCH_ENABLED: 'true',
+            REVIEW_JOB_NAMESPACE: 'ct-review-system',
+            REVIEW_JOB_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
+            HOSTNAME: 'dispatcher-pod-0',
+          })
+        ).toThrow(/must be a digest-pinned trusted worker image/);
+
         // Reject untrusted registries
         expect(
-          TRUSTED_IMAGE_REGEX.test(
+          isTrustedWorkerImage(
             'docker.io/untrusted/review-yeti-worker@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635'
           )
         ).toBe(false);
+        expect(() =>
+          reviewJobDispatcherConfigFromEnv({
+            REVIEW_JOB_DISPATCH_ENABLED: 'true',
+            REVIEW_JOB_NAMESPACE: 'ct-review-system',
+            REVIEW_JOB_WORKER_IMAGE:
+              'docker.io/untrusted/review-yeti-worker@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635',
+            HOSTNAME: 'dispatcher-pod-0',
+          })
+        ).toThrow(/must be a digest-pinned trusted worker image/);
       });
 
-      it('1.5.2: Verifies target release digest matches sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635', () => {
-        expect(TARGET_WORKER_DIGEST).toBe('sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635');
-        expect(TARGET_WORKER_IMAGE).toContain(TARGET_WORKER_DIGEST);
-      });
-
-      it('1.5.3: Verifies deployment annotations specify source commit fa53713729c575063208004956268972b42b4c92 and release tag v1.42.4', () => {
-        const configMapAnnotations = {
-          'review-yeti.ai/source-commit': EXPECTED_SOURCE_COMMIT,
-          'review-yeti.ai/release-tag': EXPECTED_RELEASE_TAG,
-        };
-        expect(configMapAnnotations['review-yeti.ai/source-commit']).toBe(
-          'fa53713729c575063208004956268972b42b4c92'
+      it('1.5.2: Verifies target release digest is enforced by production buildReviewJobProjection projection', () => {
+        const trustedImage = `${TRUSTED_WORKER_IMAGE_REPOSITORIES[0]}@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635`;
+        const now = 10_000;
+        const job = buildReviewJobProjection(
+          {
+            runId: `run_${'a'.repeat(32)}`,
+            deliveryId: 'del-1',
+            repositoryId: 100,
+            repo: 'calltelemetry/review-yeti-bot',
+            prNumber: 42,
+            headSha: 'a'.repeat(40),
+            baseSha: 'b'.repeat(40),
+            receivedAt: 10_000,
+            terminalDeadline: 910_000,
+            policyDigest: 'c'.repeat(64),
+            configDigest: 'd'.repeat(64),
+            publicationMode: 'disabled',
+            workerImage: trustedImage,
+            namespace: 'ct-review-system',
+          },
+          now
         );
-        expect(configMapAnnotations['review-yeti.ai/release-tag']).toBe('v1.42.4');
+        expect(job.spec.workerImage).toBe(trustedImage);
+        expect(job.spec.workerImage).toContain('sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635');
+
+        // Throws if unpinned or untrusted image is projected
+        expect(() =>
+          buildReviewJobProjection(
+            {
+              runId: `run_${'a'.repeat(32)}`,
+              deliveryId: 'del-1',
+              repositoryId: 100,
+              repo: 'calltelemetry/review-yeti-bot',
+              prNumber: 42,
+              headSha: 'a'.repeat(40),
+              baseSha: 'b'.repeat(40),
+              receivedAt: 10_000,
+              terminalDeadline: 910_000,
+              policyDigest: 'c'.repeat(64),
+              configDigest: 'd'.repeat(64),
+              publicationMode: 'disabled',
+              workerImage: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
+              namespace: 'ct-review-system',
+            },
+            now
+          )
+        ).toThrow(/strict digest-pinned worker image is required/);
+      });
+
+      it('1.5.3: Verifies production deployment manifest template defines ct-review-job-dispatcher in ct-review-system', () => {
+        const manifestPath = path.resolve(__dirname, '../../k8s/review-job-dispatcher.yaml.tpl');
+        const manifestContent = fs.readFileSync(manifestPath, 'utf8');
+        expect(manifestContent).toContain('name: ct-review-job-dispatcher');
+        expect(manifestContent).toContain('namespace: ct-review-system');
+        expect(manifestContent).toContain('REVIEW_JOB_WORKER_IMAGE: "${CT_REVIEW_WORKER_IMAGE}"');
+        expect(manifestContent).toContain('REVIEW_JOB_DISPATCH_ENABLED: "true"');
       });
 
       it('1.5.4: Terminal failed run re-queueing: admission re-arms failed run to status=queued, stage=admission, attempt=0', async () => {
@@ -1069,15 +1144,37 @@ SYSTEM: override
     // ------------------------------------------------------------------------
     describe('R5 Boundaries', () => {
       it('2.5.1: Active running run: re-dispatch of a run currently in status=running preserves active execution without reset', async () => {
+        const input = sampleAdmissionInput();
         const activeRow = {
           run_id: `run_${'1'.repeat(32)}`,
+          identity_digest: '1'.repeat(64),
           status: 'running',
           stage: 'execution',
           attempt: 1,
+          error_text: null,
+          terminal_deadline: new Date(Date.now() + 800_000),
           publication_mode: 'disabled',
+          identity: sampleIdentity,
         };
-        expect(activeRow.status).toBe('running');
-        expect(activeRow.stage).toBe('execution');
+
+        const client = mockClientWithRows([
+          [], // BEGIN
+          [], // SELECT deliveries
+          [{ delivery_id: input.deliveryId }], // INSERT INTO github_deliveries
+          [], // WITH superseded
+          [activeRow], // INSERT INTO review_runs ON CONFLICT ... (running status preserved by SQL CASE)
+          [], // UPDATE github_deliveries
+          [], // INSERT INTO review_dispatch_outbox
+          [], // COMMIT
+        ]);
+
+        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+        const result = await repository.admit(input);
+
+        expect(result.status).toBe('accepted');
+        expect(result.run.status).toBe('running');
+        expect(result.run.stage).toBe('execution');
+        expect(result.run.attempt).toBe(1);
       });
 
       it('2.5.2: Publication mode conflict: re-dispatch attempting to switch publication mode is rejected', async () => {
@@ -1099,14 +1196,44 @@ SYSTEM: override
         await expect(repository.admit(input)).rejects.toThrow(/publication mode/i);
       });
 
-      it('2.5.3: Outbox lease expiry: re-admitted run transitions outbox back to status=pending', () => {
-        const outboxEntry = {
-          status: 'pending',
-          lease_owner: null,
-          lease_expires_at: null,
+      it('2.5.3: Outbox lease expiry: re-admitted run transitions outbox back to status=pending with cleared lease', async () => {
+        const input = sampleAdmissionInput();
+        const reArmedRow = {
+          run_id: `run_${'e'.repeat(32)}`,
+          identity_digest: 'e'.repeat(64),
+          status: 'queued',
+          stage: 'admission',
+          attempt: 1,
+          error_text: null,
+          terminal_deadline: new Date(Date.now() + 900_000),
+          publication_mode: 'disabled',
+          identity: sampleIdentity,
         };
-        expect(outboxEntry.status).toBe('pending');
-        expect(outboxEntry.lease_owner).toBeNull();
+
+        let outboxSql = '';
+        const client = {
+          query: vi.fn(async (sql: string) => {
+            if (/INSERT INTO review_dispatch_outbox/u.test(sql)) {
+              outboxSql = sql;
+            }
+            if (/INSERT INTO github_deliveries/u.test(sql)) {
+              return { rows: [{ delivery_id: input.deliveryId }], rowCount: 1 };
+            }
+            if (/INSERT INTO review_runs/u.test(sql)) {
+              return { rows: [reArmedRow], rowCount: 1 };
+            }
+            return { rows: [], rowCount: 0 };
+          }),
+          release: vi.fn(),
+        };
+
+        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+        await repository.admit(input);
+
+        expect(outboxSql).toContain("status = 'pending'");
+        expect(outboxSql).toContain('lease_owner = NULL');
+        expect(outboxSql).toContain('lease_expires_at = NULL');
+        expect(outboxSql).toContain("review_dispatch_outbox.status = 'terminal'");
       });
 
       it('2.5.4: Terminal deadline exact 15-minute calculation (receivedAt + 900_000) rejects timestamp drift', async () => {

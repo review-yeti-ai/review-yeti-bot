@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { GitHubInstallationClient, BASE_POLICY_CANDIDATE_FILES } from '../../src/github/installationClient';
 import { ConfigResolver } from '../../src/config/configResolver';
 
 describe('installationClient.ts — Comprehensive Unit Expansion Tests', () => {
@@ -335,7 +335,7 @@ describe('installationClient.ts — Comprehensive Unit Expansion Tests', () => {
       /^GitHub API 404\b/u
     );
 
-    expect(mockFetch).toHaveBeenCalledTimes(ConfigResolver.CONFIG_FILES.length);
+    expect(mockFetch).toHaveBeenCalledTimes(BASE_POLICY_CANDIDATE_FILES.length);
 
     vi.unstubAllGlobals();
   });
