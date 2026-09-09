@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { GitHubInstallationClient, BASE_POLICY_CANDIDATE_FILES } from '../../src/github/installationClient';
+import { ConfigResolver } from '../../src/config/configResolver';
 
 describe('installationClient.ts — Comprehensive Unit Expansion Tests', () => {
   const token = 'ghs_test_installation_token_12345';
@@ -315,6 +316,75 @@ describe('installationClient.ts — Comprehensive Unit Expansion Tests', () => {
       'https://api.github.com/repos/calltelemetry/repo-1/pulls/42/comments/555/replies',
       expect.objectContaining({ method: 'POST' })
     );
+
+    vi.unstubAllGlobals();
+  });
+
+  it('getBasePolicy preserves GitHub API 404 error when all config files 404', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({
+        message: 'Not Found',
+        documentation_url: 'https://docs.github.com/rest/repos/contents#get-repository-content',
+      }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await expect(client.getBasePolicy('calltelemetry', 'repo-1', 'base-sha-456')).rejects.toThrow(
+      /^GitHub API 404\b/u
+    );
+
+    expect(mockFetch).toHaveBeenCalledTimes(BASE_POLICY_CANDIDATE_FILES.length);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('getBasePolicy falls back to secondary config file when primary 404s', async () => {
+    const mockFetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('.ct-review.yaml')) {
+        return {
+          ok: false,
+          status: 404,
+          text: async () => JSON.stringify({ message: 'Not Found' }),
+        };
+      }
+      if (url.includes('.reviewyeti.yaml')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            encoding: 'base64',
+            content: Buffer.from('version: 3\nprofile: chill').toString('base64'),
+          }),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => JSON.stringify({ message: 'Not Found' }),
+      };
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    const policy = await client.getBasePolicy('calltelemetry', 'repo-1', 'base-sha-456');
+    expect(policy).toContain('profile: chill');
+
+    vi.unstubAllGlobals();
+  });
+
+  it('getBasePolicy rethrows non-404 API error immediately without searching further', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => JSON.stringify({ message: 'Internal Server Error' }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await expect(client.getBasePolicy('calltelemetry', 'repo-1', 'base-sha-456')).rejects.toThrow(
+      'GitHub API 500'
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(1);
 
     vi.unstubAllGlobals();
   });

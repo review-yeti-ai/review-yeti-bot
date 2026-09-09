@@ -23,8 +23,15 @@ export interface ResolvedConfigProvenance {
 }
 
 export class ConfigResolver {
+  /**
+   * Candidate configuration files searched in order of priority.
+   * Shared contract consumed by ConfigResolver and GitHubInstallationClient.getBasePolicy.
+   */
   public static CONFIG_FILES = [
     '.ct-review.yaml',
+    '.reviewyeti.yaml',
+    '.reviewyeti.yml',
+    'reviewyeti.yaml',
     '.ct-review.yml',
     'ct-review.yaml',
     '.coderabbit.yaml',
@@ -265,6 +272,22 @@ export class ConfigResolver {
       ...(default_max_turns !== undefined ? { default_max_turns } : {}),
       ...(confidence_threshold !== undefined ? { confidence_threshold } : {}),
       ...(mascot !== undefined ? { mascot } : {}),
+      ...(repoObj.max_file_size !== undefined || repoObj.max_file_bytes !== undefined
+        ? {
+            max_file_size: repoObj.max_file_size ?? repoObj.max_file_bytes,
+            max_file_bytes: repoObj.max_file_bytes ?? repoObj.max_file_size,
+          }
+        : orgObj.max_file_size !== undefined || orgObj.max_file_bytes !== undefined
+        ? {
+            max_file_size: orgObj.max_file_size ?? orgObj.max_file_bytes,
+            max_file_bytes: orgObj.max_file_bytes ?? orgObj.max_file_size,
+          }
+        : sys.max_file_size !== undefined || sys.max_file_bytes !== undefined
+        ? {
+            max_file_size: sys.max_file_size ?? sys.max_file_bytes,
+            max_file_bytes: sys.max_file_bytes ?? sys.max_file_size,
+          }
+        : {}),
       personas: mergedPersonas,
       reviewers: mergedReviewers,
       reviews: mergedReviews,

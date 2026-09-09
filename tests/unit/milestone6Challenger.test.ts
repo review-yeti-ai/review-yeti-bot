@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelConfigurationError, extractMessageContentText } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { ReviewRunStore } from '../../src/persistence/reviewRunStore';
@@ -89,7 +89,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const changedFiles = [{ path: 'src/gateway/providerPool.ts', patch: '+ export function test() {}' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -141,7 +141,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const changedFiles = [{ path: 'src/app.ts', patch: '+ const x = 1;' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -207,7 +207,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const changedFiles = [{ path: 'src/security.ts', patch: '+ const token = "hardcoded";' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -256,7 +256,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       let codexArbiterAttempted = false;
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -311,7 +311,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log(1);' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -478,7 +478,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const changedFiles = [{ path: 'src/app.ts', patch: '+ const a = 1;' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -529,7 +529,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const changedFiles = [{ path: 'src/app.ts', patch: '+ const a = 1;' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         if (prompt.includes('"persona":"security-tenancy"')) {
           throw new Error('Security provider HTTP 500 error');
         }
@@ -567,7 +567,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const changedFiles = [{ path: 'src/app.ts', patch: '+ const a = 1;' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -653,7 +653,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const changedFiles = [{ path: 'src/app.ts', patch: '+ const a = 1;' }];
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelConfigurationError, extractMessageContentText } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
@@ -63,7 +63,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
       if (prompt.includes('Role: ARBITER')) {
@@ -107,7 +107,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
       const body = prompt.includes('Role: ARBITER')
@@ -149,7 +149,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
 
     expect(mockClient.complete).toHaveBeenCalledTimes(4);
     const requests = mockClient.complete.mock.calls.map(([request]: any[]) => request);
-    expect(requests.every((request: any) => request.messages[1].content.includes(`"nonce"`))).toBe(true);
+    expect(requests.every((request: any) => extractMessageContentText(request.messages[1].content).includes(`"nonce"`))).toBe(true);
     expect(requests.map((request: any) => request.persona).sort()).toEqual([
       'arbiter', 'correct-lane', 'moderator', 'sec-lane',
     ]);
@@ -201,7 +201,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const config = buildDeepConfig();
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const body = prompt.includes('Role: ARBITER')
         ? { verdict: 'SHIP', rationale: 'Wrong nonce must still fail.' }
         : prompt.includes('Role: MODERATOR')
@@ -233,7 +233,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
     const calls: any[] = [];
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
       const role = opts.metadata.role;
@@ -292,7 +292,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const changedFiles = [{ path: 'src/security/auth.ts' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
       if (prompt.includes('Role: ARBITER')) {
@@ -368,7 +368,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     let arbiterAttempts = 0;
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const requestNonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
       if (prompt.includes('Role: ARBITER')) {
@@ -419,7 +419,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const changedFiles = [{ path: 'src/security/auth.ts' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
 
@@ -448,7 +448,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const personaAttempts = new Map<string, number>();
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const requestNonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
       if (prompt.includes('Role: ARBITER')) {
@@ -503,7 +503,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const changedFiles = [{ path: 'src/security/auth.ts' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
       if (prompt.includes('Role: ARBITER')) {

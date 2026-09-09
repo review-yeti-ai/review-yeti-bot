@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { randomUUID } from 'node:crypto';
 import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
-import { OpenRouterClient } from './gateway/openRouterClient';
+import { OpenRouterClient, resolveCachedTokens } from './gateway/openRouterClient';
 import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
@@ -105,10 +105,11 @@ function openRouterClient(): OpenRouterClient {
   });
 }
 
-function usage(value: { prompt: number; completion: number; total: number } | null): string {
-  return value
-    ? `${value.total} total (${value.prompt} prompt, ${value.completion} completion)`
-    : 'unavailable';
+export function usage(value: { prompt: number; completion: number; total: number; cached?: number; cached_tokens?: number } | null): string {
+  if (!value) return 'unavailable';
+  const cached = resolveCachedTokens(value);
+  const cachedText = cached > 0 ? `, ${cached} cached` : '';
+  return `${value.total} total (${value.prompt} prompt, ${value.completion} completion${cachedText})`;
 }
 
 function cost(value: number | null): string {
@@ -130,6 +131,19 @@ export function checkSummary(result: PanelResult): string {
   const moderatorFindings = result.moderator.findings.map((finding) =>
     `- **${finding.severity}** \`${finding.path}:${finding.line}\` — ${finding.title}: ${finding.body}`,
   );
+
+  const allUsages = [
+    ...result.personas.map((lane) => lane.usage),
+    result.moderator.usage,
+    result.arbiter.usage,
+  ].filter((u): u is NonNullable<typeof u> => Boolean(u));
+  const aggregatePrompt = allUsages.reduce((sum, u) => sum + (u.prompt || 0), 0);
+  const aggregateCached = allUsages.reduce((sum, u) => sum + resolveCachedTokens(u), 0);
+  const hitPercentage = aggregatePrompt > 0 ? Math.round((aggregateCached / aggregatePrompt) * 100) : 0;
+  const cacheSummaryLines = aggregateCached > 0
+    ? ['', `Prompt caching: ${aggregateCached} / ${aggregatePrompt} tokens (${hitPercentage}% cache hit rate)`]
+    : [];
+
   return [
     `Exact head: \`${result.headSha}\``,
     `Repository visibility: ${result.repositoryVisibility || 'UNKNOWN'}.`,
@@ -155,6 +169,7 @@ export function checkSummary(result: PanelResult): string {
     `Verdict: \`${result.arbiter.verdict}\``,
     `Rationale: ${result.arbiter.rationale}`,
     `Arbiter tokens: ${usage(result.arbiter.usage)}; cost: ${cost(result.arbiter.costUSD)}`,
+    ...cacheSummaryLines,
   ].join('\n');
 }
 

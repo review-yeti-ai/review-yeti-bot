@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT } from './schema';
 import { logger } from '../utils/logger';
 import { OMNIROUTE_GENERATED_PROVIDERS, OMNIROUTE_GENERATED_MODEL_LIST } from '../types/providers.generated';
 import { CommunityPersonaLoader, CommunityPersonaLoaderOptions, sanitizePersonaId } from '../personas/communityPersonaLoader';
@@ -17,6 +17,8 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
     profile: 'balanced',
     quorum: 1,
     mascot: true,
+    max_file_size: MAX_FILE_SIZE_DEFAULT,
+    max_file_bytes: MAX_FILE_SIZE_DEFAULT,
     default_max_turns: 20,
     default_effort: 'low',
     reviews: {
@@ -123,23 +125,57 @@ export function createDefaultV4Config(): CtReviewConfigV4 {
   return ctReviewConfigV4Schema.parse({
     ...createDefaultV3Config(),
     version: 4,
+    max_file_size: MAX_FILE_SIZE_DEFAULT,
+    max_file_bytes: MAX_FILE_SIZE_DEFAULT,
     submodules: {},
-    limits: {},
+    limits: {
+      max_file_size: MAX_FILE_SIZE_DEFAULT,
+      max_file_bytes: MAX_FILE_SIZE_DEFAULT,
+    },
   });
 }
 
+export { MAX_FILE_SIZE_DEFAULT };
+
+/**
+ * Canonical helper to resolve the maximum file size limit (in bytes) from configuration.
+ * Defaults to 1MB (1,048,576 bytes) if not explicitly configured.
+ */
+export function resolveMaxFileSize(config: any): number {
+  if (!config) return MAX_FILE_SIZE_DEFAULT;
+  const val = config.max_file_size ??
+    config.max_file_bytes ??
+    config.limits?.max_file_size ??
+    config.limits?.max_file_bytes ??
+    MAX_FILE_SIZE_DEFAULT;
+  const num = typeof val === 'number' ? val : Number(val);
+  return Number.isFinite(num) && num >= 0 ? num : MAX_FILE_SIZE_DEFAULT;
+}
+
 export function normalizeConfigToV4(config: CtReviewConfigV3 | CtReviewConfigV4): CtReviewConfigV4 {
+  const rawLimits = (config as any).limits || {};
+  const maxFileSize = resolveMaxFileSize(config);
+  const maxFileBytes = maxFileSize;
+
   return ctReviewConfigV4Schema.parse({
     ...config,
+    max_file_size: maxFileSize,
+    max_file_bytes: maxFileBytes,
     version: 4,
     submodules: (config as any).submodules || {},
-    limits: (config as any).limits || {},
+    limits: {
+      ...rawLimits,
+      max_file_size: maxFileSize,
+      max_file_bytes: maxFileBytes,
+    },
   });
 }
 
 const V4_SAFETY_CAPS = {
   max_files: 5000,
   max_diff_bytes: 2_000_000,
+  max_file_size: 50_000_000,
+  max_file_bytes: 50_000_000,
   max_prompt_tokens: 200_000,
   max_completion_tokens: 32_000,
   max_cost_usd: 100,
@@ -284,6 +320,8 @@ export function translateLegacyConfigToV3(raw: any): CtReviewConfigV3 {
     path_instructions: raw.path_instructions || [],
     mcps: raw.mcps || [],
     on_pr_close: raw.on_pr_close || raw.onPrClose || { create_followup_prs: [], sync_productlane: false },
+    ...(raw.max_file_size !== undefined ? { max_file_size: raw.max_file_size } : {}),
+    ...(raw.max_file_bytes !== undefined ? { max_file_bytes: raw.max_file_bytes } : {}),
   } as any;
 }
 
