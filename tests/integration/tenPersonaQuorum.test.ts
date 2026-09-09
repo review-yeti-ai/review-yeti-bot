@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -62,7 +62,7 @@ describe('10-Persona Fan-Out Quorum Integration Suite (Milestone 40)', () => {
     const changedFiles = [{ path: 'src/core/engine.ts', patch: '+ export function runEngine() {}' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -127,7 +127,7 @@ describe('10-Persona Fan-Out Quorum Integration Suite (Milestone 40)', () => {
     const changedFiles = [{ path: 'src/core/auth.ts', patch: '+ function bypassAuth() {}' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 
@@ -159,7 +159,7 @@ describe('10-Persona Fan-Out Quorum Integration Suite (Milestone 40)', () => {
     const changedFiles = [{ path: 'src/core/docs.ts', patch: '+ // doc update' }];
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = opts.messages[1].content as string;
+      const prompt = extractMessageContentText(opts.messages[1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
       const nonce = nonceMatch ? nonceMatch[1].trim() : '';
 

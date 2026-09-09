@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { isRedTeamPersona, getModelFamily, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../../src/personas/redTeamPersona';
 import { ctReviewConfigV3Schema, CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
 describe('redTeamPersona unit tests', () => {
@@ -191,7 +191,7 @@ describe('redTeamPersona unit tests', () => {
       };
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
         const allMsg = JSON.stringify(opts.messages);
@@ -268,7 +268,7 @@ describe('redTeamPersona unit tests', () => {
       };
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
         const allMsg = JSON.stringify(opts.messages);
@@ -344,7 +344,7 @@ describe('redTeamPersona unit tests', () => {
       };
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
         const allMsg = JSON.stringify(opts.messages);
@@ -418,7 +418,7 @@ describe('redTeamPersona unit tests', () => {
       };
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const prompt = opts.messages[1].content as string;
+        const prompt = extractMessageContentText(opts.messages[1].content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : '';
         return {

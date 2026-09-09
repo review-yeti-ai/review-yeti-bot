@@ -1,4 +1,5 @@
 import { CtReviewConfigV3 } from '../config/schema';
+import { resolveMaxFileSize, MAX_FILE_SIZE_DEFAULT } from '../config/configLoader';
 import { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { PanelRequestPolicy } from './types';
 import { logger } from '../utils/logger';
@@ -16,9 +17,23 @@ export interface ClassifierResult {
   providerId?: string;
 }
 
+export interface FileForSensitivityCheck {
+  path: string;
+  patch?: string;
+  content?: string;
+  mode?: string | number;
+  size?: number;
+  byteSize?: number;
+}
+
+export interface ContainsCodeOptions {
+  maxFileSize?: number;
+  isDocusaurusOrMdx?: boolean;
+}
+
 export interface ClassifyScopeOptions {
   config: CtReviewConfigV3;
-  changedFiles: Array<{ path: string; patch?: string; content?: string }>;
+  changedFiles: Array<FileForSensitivityCheck>;
   candidatePersonas: Array<{ id: string; charter: string; required?: boolean; paths: string[] }>;
   repository: string;
   headSha: string;
@@ -29,10 +44,11 @@ export interface ClassifyScopeOptions {
 
 /**
  * Safe extensions that cannot execute arbitrary code and are purely documentation, markup, or static imagery.
+ * Note: .txt is excluded from blanket safe extensions.
+ * Note: .adoc and .rst are inspected for build-time directives.
  */
 const SAFE_DOC_OR_ASSET_EXTENSIONS = new Set([
   '.md', '.markdown', '.mdown', '.mkdn',
-  '.txt', '.rst', '.adoc',
   '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.avif', '.bmp',
 ]);
 
@@ -43,6 +59,30 @@ const SAFE_STANDALONE_FILENAMES = new Set([
   'license', 'license.md', 'license.txt',
   'notice', 'notice.md', 'notice.txt',
   '.gitignore', '.gitattributes', '.prettierignore', '.eslintignore', '.editorconfig',
+]);
+
+/**
+ * Harmless .txt basenames explicitly allowed for fast-ship.
+ */
+const SAFE_TXT_BASENAMES = new Set([
+  'robots.txt',
+  'humans.txt',
+  'license.txt',
+  'notice.txt',
+  'security.txt',
+]);
+
+/**
+ * Explicit blocked dependency, lock, or build files.
+ */
+const BLOCKED_BUILD_OR_DEP_FILENAMES = new Set([
+  'requirements.txt',
+  'constraints.txt',
+  'cmakelists.txt',
+  'gemfile',
+  'gemfile.lock',
+  'rakefile',
+  'makefile',
 ]);
 
 /**
@@ -74,7 +114,26 @@ const SENSITIVE_PATH_PATTERNS = [
  * safe non-executable documentation or static assets. The deterministic guard
  * is the sole authority for safety.
  */
-export function containsExecutableOrSensitiveCode(files: Array<{ path: string }>): boolean {
+export function containsExecutableOrSensitiveCode(
+  files: Array<FileForSensitivityCheck>,
+  options?: ContainsCodeOptions
+): boolean {
+  const rawMax: unknown = options?.maxFileSize;
+  const maxFileSize =
+    typeof rawMax === 'number' && Number.isFinite(rawMax)
+      ? rawMax
+      : typeof rawMax === 'string' && rawMax.trim() !== '' && Number.isFinite(Number(rawMax))
+        ? Number(rawMax)
+        : MAX_FILE_SIZE_DEFAULT;
+  let isDocusaurusOrMdx = options?.isDocusaurusOrMdx ?? false;
+
+  if (!isDocusaurusOrMdx) {
+    isDocusaurusOrMdx = files.some((f) => {
+      const lp = (f.path || '').toLowerCase();
+      return lp.includes('docusaurus.config') || lp.endsWith('.mdx');
+    });
+  }
+
   for (const file of files) {
     const rawPath = file.path || '';
     const p = rawPath.toLowerCase().trim();
@@ -82,19 +141,161 @@ export function containsExecutableOrSensitiveCode(files: Array<{ path: string }>
 
     const baseName = p.split('/').pop() || p;
 
-    // 1. Sensitive pattern check: any path matching a sensitive token is immediately barred
+    // 1. Max file size limit: strictly bar files exceeding maxFileSize from fast-ship
+    let byteSize = 0;
+    let hasExplicitInvalidSize = false;
+
+    const parsePositiveSize = (val: unknown): number | null => {
+      if (typeof val === 'number') {
+        if (Number.isFinite(val) && val >= 0) return val;
+        hasExplicitInvalidSize = true;
+        return null;
+      }
+      if (typeof val === 'string' && val.trim() !== '') {
+        const parsed = Number(val);
+        if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+        hasExplicitInvalidSize = true;
+        return null;
+      }
+      if (val !== undefined && val !== null) {
+        hasExplicitInvalidSize = true;
+      }
+      return null;
+    };
+
+    const validSize = parsePositiveSize(file.size);
+    const validByteSize = parsePositiveSize(file.byteSize);
+
+    if (validSize !== null) {
+      byteSize = Math.max(byteSize, validSize);
+    }
+    if (validByteSize !== null) {
+      byteSize = Math.max(byteSize, validByteSize);
+    }
+
+    if (file.content) {
+      byteSize = Math.max(byteSize, Buffer.byteLength(file.content, 'utf8'));
+    } else if (file.patch) {
+      byteSize = Math.max(byteSize, Buffer.byteLength(file.patch, 'utf8'));
+    }
+
+    // Explicit invalid size (e.g. negative or NaN) without valid verified content cannot be trusted
+    if (hasExplicitInvalidSize && !file.content && !file.patch) {
+      return true;
+    }
+
+    if (byteSize > maxFileSize) {
+      return true;
+    }
+
+    // 2. Reject symlinks and executable mode bits
+    if (file.mode !== undefined && file.mode !== null) {
+      const modeStr = String(file.mode).trim();
+      const normalizedModeStr = modeStr.replace(/^0+/, '');
+
+      // Symlink checks: git 120000 mode (string, number, or octal constant 40960), handling leading zero "0120000"
+      if (
+        modeStr === '120000' ||
+        normalizedModeStr === '120000' ||
+        file.mode === 120000 ||
+        file.mode === 0o120000 ||
+        modeStr === '40960' ||
+        normalizedModeStr === '40960' ||
+        parseInt(modeStr, 8) === 0o120000
+      ) {
+        return true;
+      }
+
+      // Executable bit checks: test octal permission bits (last 3 octal digits: user 0o100, group 0o010, other 0o001 -> 0o111)
+      if (/^[0-7]+$/.test(modeStr)) {
+        const octalPerms = parseInt(modeStr.slice(-3), 8);
+        if (!Number.isNaN(octalPerms) && (octalPerms & 0o111) !== 0) {
+          return true;
+        }
+      }
+
+      // Explicit pattern fallback for common executable mode variations
+      if (
+        /^(?:100)?(?:0)?[0-7]*[1357][0-7]{0,2}$/.test(modeStr) ||
+        modeStr === '100755' ||
+        modeStr === '100775' ||
+        modeStr === '100777' ||
+        modeStr === '755' ||
+        modeStr === '775' ||
+        modeStr === '777' ||
+        modeStr === '0755' ||
+        modeStr === '0775' ||
+        modeStr === '0777'
+      ) {
+        return true;
+      }
+    }
+
+    if (file.patch) {
+      if (
+        // Symlink diff indicators: new file mode, mode change, or git index header for existing symlinks (including 0120000)
+        /\b(?:new\s+file\s+mode|old\s+mode|new\s+mode|deleted\s+file\s+mode|mode)\s+0?120000\b/i.test(file.patch) ||
+        /\bindex\s+[0-9a-fA-F]+\.\.[0-9a-fA-F]+\s+0?120000\b/i.test(file.patch) ||
+        // Executable bit diff indicators: 100700, 100750, 100744, 100755, 100775, 100777, etc.
+        /\b(?:new\s+file\s+mode|old\s+mode|new\s+mode|mode)\s+100(?:[1357][0-7]{2}|[0-7][1357][0-7]|[0-7]{2}[1357])\b/i.test(file.patch) ||
+        /\bindex\s+[0-9a-fA-F]+\.\.[0-9a-fA-F]+\s+100(?:[1357][0-7]{2}|[0-7][1357][0-7]|[0-7]{2}[1357])\b/i.test(file.patch) ||
+        /old\s+mode\s+100[0-7]{3}[\s\S]*?new\s+mode\s+100(?:[1357][0-7]{2}|[0-7][1357][0-7]|[0-7]{2}[1357])/i.test(file.patch) ||
+        // Chmod variations: chmod +x, chmod u+x, chmod a+x, chmod 755, chmod 700, etc.
+        /\bchmod\s+(?:[+-]?[ugoa]*\+[rwx]*x[rwx]*|[0-7]*[1357][0-7]{0,2})\b/i.test(file.patch)
+      ) {
+        return true;
+      }
+    }
+
+    // 3. Blocked dependency, lock, or build files
+    if (
+      BLOCKED_BUILD_OR_DEP_FILENAMES.has(baseName) ||
+      /^requirements.*\.txt$/i.test(baseName) ||
+      /^constraints.*\.txt$/i.test(baseName) ||
+      baseName === 'cmakelists.txt'
+    ) {
+      return true;
+    }
+
+    // 4. Exact safe standalone filenames (e.g. LICENSE, .gitignore)
+    if (SAFE_STANDALONE_FILENAMES.has(baseName)) {
+      continue;
+    }
+
+    // 5. Restrict .txt to explicit harmless basenames (checked BEFORE SENSITIVE_PATH_PATTERNS
+    // so that standard RFC 9116 security.txt is not prematurely blocked by 'security' substring)
+    if (baseName.endsWith('.txt')) {
+      if (SAFE_TXT_BASENAMES.has(baseName)) {
+        continue;
+      }
+      return true;
+    }
+
+    // 6. Sensitive pattern check: any path matching a sensitive token is immediately barred
     for (const pattern of SENSITIVE_PATH_PATTERNS) {
       if (p.includes(pattern)) {
         return true;
       }
     }
 
-    // 2. Exact safe standalone filenames (e.g. LICENSE, .gitignore)
-    if (SAFE_STANDALONE_FILENAMES.has(baseName)) {
+    // 7. Disallow .adoc and .rst if they contain include:: or raw:: build-time inclusion directives
+    if (baseName.endsWith('.adoc') || baseName.endsWith('.rst')) {
+      const text = rawPath + '\n' + (file.patch || '') + '\n' + (file.content || '');
+      if (/(?:include|raw)::/i.test(text)) {
+        return true;
+      }
       continue;
     }
 
-    // 3. Extension check: MUST be an explicitly safe doc or asset extension
+    // 8. Guard Markdown in MDX/Docusaurus
+    if (
+      isDocusaurusOrMdx &&
+      (baseName.endsWith('.md') || baseName.endsWith('.markdown') || baseName.endsWith('.mdown') || baseName.endsWith('.mkdn'))
+    ) {
+      return true;
+    }
+
+    // 9. Extension check: MUST be an explicitly safe doc or asset extension
     const dotIdx = baseName.lastIndexOf('.');
     if (dotIdx <= 0) {
       // Extension-less files (like Makefile, scripts, or root executables) or hidden dotfiles not in allowlist
@@ -137,8 +338,18 @@ function extractJson(text: string): any {
   return null;
 }
 
-function sanitizeDiffExcerpt(patch: string): string {
+export function escapeXmlAttr(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export function sanitizeDiffExcerpt(patch: string): string {
   return patch
+    .replace(/<\s*[\/\s]*untrusted_diff_data\b[^>]*>/gi, '[ESCAPED_UNTRUSTED_DIFF_TAG]')
     .replace(/(?:SYSTEM|ASSISTANT|USER)\s*:/gi, '[REDACTED_ROLE]:')
     .replace(/```/g, "'''")
     .replace(/CT_REVIEW_(?:BEGIN|END|NONCE)/gi, 'CT_REVIEW_REDACTED');
@@ -202,14 +413,15 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
   const MAX_DIFF_CHARS = 3500;
 
   for (const f of options.changedFiles) {
-    let entry = `- ${f.path}`;
+    const safePath = escapeXmlAttr(f.path);
+    let body = `path: ${safePath}`;
     if (f.patch && charCount < MAX_DIFF_CHARS) {
       const excerpt = f.patch.slice(0, Math.min(f.patch.length, 300));
       const sanitized = sanitizeDiffExcerpt(excerpt);
-      entry += `\n  <untrusted_diff_data file="${f.path}">\n  ${sanitized.replace(/\n/g, '\n  ')}\n  </untrusted_diff_data>`;
+      body += `\n  patch:\n  ${sanitized.replace(/\n/g, '\n  ')}`;
       charCount += excerpt.length;
     }
-    fileLines.push(entry);
+    fileLines.push(`<untrusted_diff_data file="${safePath}">\n  ${body}\n</untrusted_diff_data>`);
   }
 
   const personaLines = options.candidatePersonas.map(
@@ -265,7 +477,8 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
 
     // Code guardrail: never fast-ship executable, script, or sensitive changes
     let effectiveFastShip = fastShipRaw;
-    if (effectiveFastShip && containsExecutableOrSensitiveCode(options.changedFiles)) {
+    const maxFileSize = resolveMaxFileSize(options.config);
+    if (effectiveFastShip && containsExecutableOrSensitiveCode(options.changedFiles, { maxFileSize })) {
       logger.info('Classifier suggested fastShip, but PR contains executable or sensitive code; forcing full panel review', {
         repository: options.repository,
         headSha: options.headSha,

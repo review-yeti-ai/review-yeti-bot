@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import { DashboardStore, dashboardStore } from '../../src/persistence/dashboardStore';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -108,7 +108,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
     bus.clearHistory(jobId);
 
     const mockComplete = async ({ model, messages }: any) => {
-      const prompt = messages[messages.length - 1].content as string;
+      const prompt = extractMessageContentText(messages[messages.length - 1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       const allMsg = JSON.stringify(messages);
@@ -183,7 +183,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
     const capturedPersonaCharters: Record<string, string> = {};
 
     const mockComplete = async ({ model, messages }: any) => {
-      const prompt = messages[messages.length - 1].content as string;
+      const prompt = extractMessageContentText(messages[messages.length - 1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       
@@ -219,7 +219,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
 
     const capturedChartersPhase2: Record<string, string> = {};
     const mockCompletePhase2 = async ({ model, messages }: any) => {
-      const prompt = messages[messages.length - 1].content as string;
+      const prompt = extractMessageContentText(messages[messages.length - 1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       
@@ -261,7 +261,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
     const capturedPersonaCharters: Record<string, string> = {};
 
     const mockComplete = async ({ model, messages }: any) => {
-      const prompt = messages[messages.length - 1].content as string;
+      const prompt = extractMessageContentText(messages[messages.length - 1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       

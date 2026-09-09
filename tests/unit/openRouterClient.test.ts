@@ -564,6 +564,100 @@ describe('OpenRouterClient', () => {
     });
   });
 
+  it('extracts cached tokens from OpenAI prompt_tokens_details.cached_tokens', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...sdkChatResult('SHIP', {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+        prompt_tokens_details: { cached_tokens: 64 },
+      } as any),
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.test/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation,
+    });
+
+    const res = await client.complete({ ...request, stream: false });
+    expect(res.usage?.cached).toBe(64);
+    expect(res.usage?.cached_tokens).toBe(64);
+  });
+
+  it('extracts cached tokens from Anthropic cache_read_input_tokens', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...sdkChatResult('SHIP', {
+        prompt_tokens: 150,
+        completion_tokens: 30,
+        total_tokens: 180,
+        cache_read_input_tokens: 110,
+      } as any),
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.test/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation,
+    });
+
+    const res = await client.complete({ ...request, stream: false });
+    expect(res.usage?.cached).toBe(110);
+    expect(res.usage?.cache_read_input_tokens).toBe(110);
+  });
+
+  it('extracts cached tokens from DeepSeek/Google prompt_cache_hit_tokens', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...sdkChatResult('SHIP', {
+        prompt_tokens: 200,
+        completion_tokens: 40,
+        total_tokens: 240,
+        prompt_cache_hit_tokens: 180,
+      } as any),
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.test/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation,
+    });
+
+    const res = await client.complete({ ...request, stream: false });
+    expect(res.usage?.cached).toBe(180);
+    expect(res.usage?.prompt_cache_hit_tokens).toBe(180);
+  });
+
+  it('triggers onFirstToken callback upon receiving the first streaming token chunk', async () => {
+    let firstTokenCalled = false;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${sdkChunk({ content: '{"verdict"' })}\n\n`));
+        controller.enqueue(new TextEncoder().encode(`data: ${sdkChunk({ content: ':"SHIP"}' })}\n\n`));
+        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(stream, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.test/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation,
+    });
+
+    const res = await client.complete({
+      ...request,
+      stream: true,
+      onFirstToken: () => {
+        firstTokenCalled = true;
+      },
+    });
+
+    expect(firstTokenCalled).toBe(true);
+    expect(res.content).toBe('{"verdict":"SHIP"}');
+  });
+
   it('replays a credential-free OpenRouter cassette and rejects an unmatched request', async () => {
     const cassette = createCassetteFetch({
       cassettePath: path.resolve(__dirname, '../fixtures/cassettes/openrouter-chat.json'),
