@@ -83,11 +83,19 @@ is_full_sha() {
   [[ "$1" =~ ^[0-9a-fA-F]{40}$ ]]
 }
 
+# macOS ships bash 3.2 as /bin/bash, and `#!/usr/bin/env bash` finds it whenever
+# /usr/bin precedes a newer bash on PATH -- which is the default. ${var,,} is a
+# bash 4 feature, so using it here made this script exit 1 during argument
+# parsing on the one platform an operator actually runs it from.
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
 resolve_commit() {
   local input="$1"
 
   if is_full_sha "$input"; then
-    printf '%s\n' "${input,,}"
+    printf '%s\n' "$(lower "$input")"
     return 0
   fi
 
@@ -96,7 +104,7 @@ resolve_commit() {
   local local_sha=""
   if local_sha="$(git rev-parse --verify -q "refs/tags/${input}^{commit}" 2>/dev/null)"; then
     if is_full_sha "$local_sha"; then
-      printf '%s\n' "${local_sha,,}"
+      printf '%s\n' "$(lower "$local_sha")"
       return 0
     fi
   fi
@@ -126,7 +134,7 @@ resolve_commit() {
     echo "advance-review-worker: resolved '${input}' to a non-commit-shaped value: ${object_sha}" >&2
     return 1
   fi
-  printf '%s\n' "${object_sha,,}"
+  printf '%s\n' "$(lower "$object_sha")"
 }
 
 # The ref is interpolated into a GitHub API path. Refuse anything outside the
