@@ -154,6 +154,18 @@ describe('DOKS Action dispatch client', () => {
     expect((floodedError as Error).message).toMatch(/HTTP 400/u);
     expect((floodedError as Error).message.length).toBeLessThan(700);
 
+    // A multi-line body must collapse to ONE line. Without the whitespace normalisation every
+    // other assertion here still passes, so this is the only thing holding the single-line
+    // contract in place.
+    const multiline = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('{\n  "error": "unknown repository_id 42",\n  "hint": "check org settings"\n}', { status: 400 }));
+    const multilineError = await dispatchAction(environment(), multiline).catch((error: Error) => error);
+    expect((multilineError as Error).message).toBe(
+      'DOKS dispatch failed with HTTP 400: { "error": "unknown repository_id 42", "hint": "check org settings" }',
+    );
+    expect((multilineError as Error).message).not.toContain('\n');
+
     // An empty (or whitespace-only) body must not leave a dangling `: ` on the message.
     const silent = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
