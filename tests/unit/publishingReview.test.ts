@@ -74,6 +74,26 @@ describe('qualification source arguments', () => {
   });
 });
 
+describe('check run ownership', () => {
+  it('reuses REVIEW_CHECK_ID from environment and does not call createCheck', async () => {
+    const d = deps();
+    await runPublishingReviewWorker(env({ REVIEW_CHECK_ID: '998877' }), d);
+    expect(d.checkClient.createCheck).not.toHaveBeenCalled();
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ checkId: 998877 }),
+    );
+  });
+
+  it('calls createCheck when REVIEW_CHECK_ID is absent', async () => {
+    const d = deps();
+    await runPublishingReviewWorker(env(), d);
+    expect(d.checkClient.createCheck).toHaveBeenCalledWith('calltelemetry', 'ct-meta', HEAD);
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ checkId: 4242 }),
+    );
+  });
+});
+
 describe('publishing review lane admission', () => {
   it('admits only an app-gate dispatch', () => {
     expect(isPublishingReviewWorker(env())).toBe(true);
