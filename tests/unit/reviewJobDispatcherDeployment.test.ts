@@ -41,6 +41,8 @@ if [[ "$*" == *"apply --server-side -f "*"/review-job-dispatcher.yaml" ]]; then
   # update leaves the existing count alone. That is the behaviour under test.
   if [[ ! -f "\$FAKE_STATE" ]]; then
     if grep -q '^  replicas: 0$' "\${@: -1}"; then printf '0' > "\$FAKE_STATE"; else printf '1' > "\$FAKE_STATE"; fi
+  elif [[ -n "\${FAKE_APPLY_SCALES_TO_ZERO:-}" ]]; then
+    printf '0' > "\$FAKE_STATE"
   fi
 fi
 `);
@@ -52,7 +54,9 @@ fi
     "process.stdin.on('end', () => process.stdout.write(input",
     "  .replaceAll('${CT_REVIEW_JOB_DISPATCHER_IMAGE}', process.env.CT_REVIEW_JOB_DISPATCHER_IMAGE || '')",
     "  .replaceAll('${CT_REVIEW_WORKER_IMAGE}', process.env.CT_REVIEW_WORKER_IMAGE || '')",
-    "  .replaceAll('${CT_REVIEW_RUNNER_MODE}', process.env.CT_REVIEW_RUNNER_MODE || 'prebaked')));",
+    "  .replaceAll('${CT_REVIEW_RUNNER_MODE}', process.env.CT_REVIEW_RUNNER_MODE || 'prebaked')",
+    "  .replace(/^  replicas: 0$/mu, (m) => process.env.FAKE_RENDER_REPLICAS === 'none' ? '  # replicas removed'",
+    "    : process.env.FAKE_RENDER_REPLICAS === 'double' ? m + String.fromCharCode(10) + m : m)));",
     '',
   ].join('\n'));
   fs.chmodSync(path.join(binaryDirectory, 'kubectl'), 0o755);
@@ -107,13 +111,34 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(result.calls).not.toContain('scale');
   });
 
-  it('refuses to guess if the template stops carrying exactly one replica line', () => {
-    // The strip is a line match. If the template shape changes, failing is correct;
-    // silently applying an unstripped manifest would scale production to zero.
+  it('pins the template to exactly one replica line, which the strip depends on', () => {
     const deployment = documents().find((d) => d.kind === 'Deployment');
     const raw = fs.readFileSync(path.join(root, 'k8s/review-job-dispatcher.yaml.tpl'), 'utf8');
     expect(deployment!.spec.replicas).toBe(0);
     expect(raw.split('\n').filter((l) => l === '  replicas: 0')).toHaveLength(1);
+  });
+
+  it.each([['no', 'none'], ['two', 'double']])(
+    'refuses to apply when an update renders %s replica lines',
+    (_label, mode) => {
+      // Executes the guard instead of asserting the template around it. Applying
+      // an unstripped manifest is the outage, so refusing is the correct outcome.
+      const result = runDeployScript({ FAKE_DEPLOYMENT_REPLICAS: '1', FAKE_RENDER_REPLICAS: mode });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('expected exactly one');
+      // The namespace apply happens earlier and is fine; what must not happen is
+      // applying the dispatcher manifest whose shape was not recognised.
+      expect(result.calls).not.toContain('review-job-dispatcher.yaml');
+    },
+  );
+
+  it('fails loudly if the apply itself moves a live replica count', () => {
+    // Without a fake that mutates state, `after == before` held no matter what the
+    // script did, so this guard was passing vacuously.
+    const result = runDeployScript({ FAKE_DEPLOYMENT_REPLICAS: '1', FAKE_APPLY_SCALES_TO_ZERO: '1' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('apply changed replicas 1 -> 0');
+    expect(result.stderr).toContain('must never scale a live dispatcher');
   });
 
   it('is inert by default and carries no review execution credentials', () => {
