@@ -3,30 +3,17 @@ import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateChec
 import type { WorkerCompletionProof } from '../review/workerCompletion';
 import {
   deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, workerReviewCompletionDigest,
-  type TrustedReviewCoverageContract,
 } from '../review/workerReviewCompletion';
-import { evaluateReviewGate, type ReviewGateCandidate, type ReviewGateDecision, type ReviewGateEvidence } from '../review/reviewGatePolicy';
+import { evaluateReviewGate, type ReviewGateDecision, type ReviewGateEvidence } from '../review/reviewGatePolicy';
+import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
+  type GateWorkerResultTransition } from '../review/reviewGateContracts';
+export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
+  type GateWorkerResultTransition } from '../review/reviewGateContracts';
 
 interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
 interface Client extends Queryable { release(): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
 
-export type GateDesiredState = 'queued' | 'in_progress' | 'success' | 'failure' | 'cancelled' | 'timed_out';
-export function isGateProgressState(state: GateDesiredState): state is 'queued' | 'in_progress' {
-  return state === 'queued' || state === 'in_progress';
-}
-export interface StoredReviewGate {
-  coordinates: ReviewGateCoordinates;
-  reviewGeneration: number;
-  expectedAppId: number;
-  externalId: string;
-  checkId: number | null;
-  creationState: 'reserved' | 'creating' | 'bound';
-  desiredState: GateDesiredState;
-  desiredVersion: number;
-  publishedVersion: number;
-  current: boolean;
-}
 export interface GatePublicationClaim extends StoredReviewGate {
   leaseOwner: string;
   /** Fences a stale claim even when the same process identity reacquires it. */
@@ -43,13 +30,6 @@ export interface GatePublicationNotStarted {
   kind: 'not-started';
   retryDelayMs: number;
 }
-
-export interface TrustedGateCompletionContext {
-  current: ReviewGateCandidate & { open: boolean; draft: boolean };
-  coverage: Omit<TrustedReviewCoverageContract, 'expectedCoordinates'>;
-}
-
-export type GateWorkerResultTransition = 'recorded' | 'duplicate' | 'ignored' | 'unauthorized' | 'conflict';
 
 export function gateAttemptId(runId: string, generation: number, executionAttempt: number): string {
   if (!/^run_[a-f0-9]{32}$/u.test(runId)

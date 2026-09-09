@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import type { ReviewGateCoordinates } from '../review/reviewGateContracts';
+export type { ReviewGateCoordinates } from '../review/reviewGateContracts';
 
 export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
 export const DEFAULT_GITHUB_API_BASE_URL = 'https://api.github.com';
@@ -26,19 +28,6 @@ export type ReviewGateObservedConclusion = ReviewGateTerminalConclusion
   | 'neutral'
   | 'skipped'
   | 'stale';
-
-export interface ReviewGateCoordinates {
-  owner: string;
-  repo: string;
-  repositoryId: number;
-  prNumber: number;
-  headSha: string;
-  baseSha: string;
-  policyDigest: string;
-  runId: string;
-  attemptId: string;
-  executionAttempt: number;
-}
 
 export interface ReviewGateClientOptions {
   /** A repository-scoped GitHub App installation token. */

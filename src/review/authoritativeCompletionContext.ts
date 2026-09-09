@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MAX_AUTHORITATIVE_DIFF_BYTES, type AuthoritativeReviewReader, type ReviewRepositoryIdentity } from '../github/authoritativeReviewReader';
-import type { StoredReviewGate, TrustedGateCompletionContext } from '../persistence/reviewGateRepository';
+import type { StoredReviewGate, TrustedGateCompletionContext } from './reviewGateContracts';
 import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
 import { parseChangedFiles } from './changedFiles';
