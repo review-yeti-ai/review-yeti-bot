@@ -88,6 +88,7 @@ pod_name="ct-review-job-dispatcher-abc123"
 
 multi_arch_body='{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"platform":{"architecture":"amd64","os":"linux"}},{"platform":{"architecture":"arm64","os":"linux"}}]}'
 single_arch_body='{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"platform":{"architecture":"amd64","os":"linux"}}]}'
+single_manifest_body='{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{},"layers":[]}'
 
 # --- Fake binaries ------------------------------------------------------------
 #
@@ -151,7 +152,9 @@ case "$*" in
     ;;
   "-fsSI "*)
     printf 'HTTP/1.1 200 OK\r\n'
-    printf 'Docker-Content-Digest: %s\r\n' "${FAKE_DIGEST:?FAKE_DIGEST not set}"
+    if [[ -z "${FAKE_NO_DIGEST_HEADER:-}" ]]; then
+      printf 'Docker-Content-Digest: %s\r\n' "${FAKE_DIGEST:?FAKE_DIGEST not set}"
+    fi
     printf '\r\n'
     ;;
   "-fsS "*)
@@ -221,6 +224,7 @@ run_script() {
       FAKE_CURL_LOG="$scenario_dir/curl.log" \
       FAKE_GIT_LOG="$scenario_dir/git.log" \
       FAKE_GH_LOG="$scenario_dir/gh.log" \
+      FAKE_NO_DIGEST_HEADER="${SCENARIO_NO_DIGEST_HEADER:-}" \
       FAKE_APPLIED_MANIFEST="$scenario_dir/applied.yaml" \
       FAKE_DIGEST="${SCENARIO_DIGEST:-$good_digest}" \
       FAKE_MANIFEST_BODY_FILE="$manifest_body_file" \
@@ -256,6 +260,38 @@ SCENARIO_MANIFEST_BODY="$single_arch_body" \
 assert_equal "single-arch index: exits non-zero" "1" "$status"
 assert_contains "single-arch index: error explains the amd64/arm64 requirement" "$stderr" "amd64 and arm64"
 assert_not_contains "single-arch index: never reaches kubectl" "$kubectl_log" "get deployment"
+
+# --- Scenario 1b: a single image manifest (not an index) is refused ----------
+
+scenario_dir="$(new_scenario_dir)"
+SCENARIO_MANIFEST_BODY="$single_manifest_body" \
+  SCENARIO_DIGEST="$single_arch_digest" \
+  run_script "$scenario_dir" "$commit_sha"
+assert_equal "single manifest: exits non-zero" "1" "$status"
+assert_contains "single manifest: error says an index is required" "$stderr" "multi-arch index is required"
+assert_not_contains "single manifest: never reaches kubectl" "$kubectl_log" "get deployment"
+
+# --- Scenario 1c: a HEAD response without Docker-Content-Digest is refused ---
+
+scenario_dir="$(new_scenario_dir)"
+SCENARIO_NO_DIGEST_HEADER="1" \
+  SCENARIO_MANIFEST_BODY="$multi_arch_body" \
+  SCENARIO_DIGEST="$good_digest" \
+  run_script "$scenario_dir" "$commit_sha"
+assert_equal "missing digest header: exits non-zero" "1" "$status"
+assert_contains "missing digest header: error names the header" "$stderr" "Docker-Content-Digest"
+assert_not_contains "missing digest header: never reaches kubectl" "$kubectl_log" "get deployment"
+
+# --- Scenario 1d: a ref with path metacharacters is refused before any call --
+
+scenario_dir="$(new_scenario_dir)"
+run_script "$scenario_dir" "../../other-repo/git/ref?x=1"
+assert_equal "hostile ref: exits non-zero" "1" "$status"
+assert_contains "hostile ref: error explains the allowed characters" "$stderr" "refusing ref"
+curl_log="$([[ -f "$scenario_dir/curl.log" ]] && cat "$scenario_dir/curl.log" || true)"
+gh_log="$([[ -f "$scenario_dir/gh.log" ]] && cat "$scenario_dir/gh.log" || true)"
+assert_equal "hostile ref: no curl call was made" "" "$curl_log"
+assert_equal "hostile ref: no gh call was made" "" "$gh_log"
 
 # --- Scenario 2: inactive dispatcher (replicas 0) is refused -----------------
 
