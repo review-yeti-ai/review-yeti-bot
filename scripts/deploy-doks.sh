@@ -32,6 +32,11 @@ trap cleanup EXIT
 envsubst '${CT_REVIEW_BOT_IMAGE}' < k8s/bot-deployment.yaml.tpl > "$render_dir/bot-deployment.yaml"
 envsubst '${OMNIROUTE_IMAGE}' < k8s/omniroute-statefulset.yaml.tpl > "$render_dir/omniroute-statefulset.yaml"
 
+# shellcheck source=scripts/lib/assert-rendered.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/assert-rendered.sh"
+assert_no_unsubstituted_placeholders "$render_dir/bot-deployment.yaml" deploy-doks
+assert_no_unsubstituted_placeholders "$render_dir/omniroute-statefulset.yaml" deploy-doks
+
 kubectl apply --server-side -f k8s/namespace.yaml
 kubectl apply --server-side -f k8s/rbac.yaml
 kubectl apply --server-side -f k8s/config.yaml
