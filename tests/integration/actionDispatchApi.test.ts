@@ -370,4 +370,16 @@ describe('POST /api/dispatch/completion', () => {
     expect(proof.workerTokenDigest).toMatch(/^[a-f0-9]{64}$/u);
     await expect(verifier.verify('ghp_wrong_token', terminalFailure)).rejects.toThrow(/ghs_/u);
   });
+
+  it('returns a generic retryable 503 when failure persistence is unavailable', async () => {
+    const fixture = completionApp({ repository: {
+      markWorkerFailure: vi.fn(async () => { throw new Error('synthetic sensitive database diagnostic'); }),
+    } });
+    const response = await request(fixture.instance).post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token').send(terminalFailure);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Worker terminal failure could not be persisted' });
+    expect(response.text).not.toContain('database diagnostic');
+    expect(fixture.repository.markWorkerFailure).toHaveBeenCalledOnce();
+  });
 });

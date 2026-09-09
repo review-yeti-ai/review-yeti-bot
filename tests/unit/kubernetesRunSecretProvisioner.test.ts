@@ -161,11 +161,23 @@ describe('KubernetesRunSecretProvisioner', () => {
     expect(client.createNamespacedSecret).not.toHaveBeenCalled();
   });
 
-  it('accepts an execution-attempt-scoped Secret name', async () => {
+  it.each(['-a1', '-a2', '-a2147483647'])('accepts run-bound legacy Secret suffix %s', async (suffix) => {
     const { subject, client } = provisioner();
-    await subject.provision({ ...request, secretName: `${request.secretName}-a2` });
+    await subject.provision({ ...request, secretName: request.secretName + suffix });
     expect(client.createNamespacedSecret).toHaveBeenCalledOnce();
   });
+
+  it.each(['-a0', '-a-1', '-anonsense', '-a2147483648', '-a+2', '-a01'])(
+    'rejects suffix %s before reading, minting or creating', async (suffix) => {
+      const { subject, client, mintToken, mintReadToken } = provisioner();
+      await expect(subject.provision({ ...request, secretName: request.secretName + suffix }))
+        .rejects.toThrow(/run-scoped pattern/u);
+      expect(client.readNamespacedSecret).not.toHaveBeenCalled();
+      expect(mintToken).not.toHaveBeenCalled();
+      expect(mintReadToken).not.toHaveBeenCalled();
+      expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a different valid-looking run name before any read or write', async () => {
     const { subject, client } = provisioner();

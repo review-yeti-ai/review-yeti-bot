@@ -1,5 +1,6 @@
 import { kubernetesStatusCode } from './kubernetesReviewJobProjector';
 import type { RunSecretProvisioner } from './reviewJobDispatchEngine';
+import { deriveRunSecretExecutionAttempt } from './reviewJobProjection';
 import { getGitHubAppRepositoryPublishToken, getGitHubAppRepositoryReadToken } from '../github/appAuth';
 import { sha256 } from '../review/reviewCore';
 
@@ -9,7 +10,6 @@ export const PUBLISH_TOKEN_KEY = 'GITHUB_PUBLISH_TOKEN';
 // backoffLimit 0 -- it never starts, never creates a check run, and the pull
 // request sees nothing at all.
 export const READ_TOKEN_KEY = 'GITHUB_READ_TOKEN';
-const SECRET_NAME_PATTERN = /^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$/u;
 
 export interface CoreSecretClient {
   createNamespacedSecret(request: {
@@ -65,9 +65,7 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
   }): Promise<{ workerTokenDigest: string }> {
     // The name is derived from the run id upstream; refusing an unexpected shape
     // keeps this from writing a Secret that some other component owns.
-    if (!/^run_[a-f0-9]{32}$/u.test(request.runId)
-      || !SECRET_NAME_PATTERN.test(request.secretName)
-      || !new RegExp(`^ct-review-run-${request.runId.slice(4)}(?:-a[1-9][0-9]*)?$`, 'u').test(request.secretName)) {
+    if (deriveRunSecretExecutionAttempt(request.runId, request.secretName) === undefined) {
       throw new Error('run secret name does not match the expected run-scoped pattern');
     }
     if (!request.owner || !request.repo) throw new Error('run secret provisioner requires owner and repo');
