@@ -286,6 +286,8 @@ jobs:
           max-incremental-chain: ${{ steps.policy.outputs.max_incremental_chain }}
           max-review-assignments: ${{ steps.policy.outputs.max_review_assignments }}
           personas: ${{ steps.policy.outputs.personas }}
+          max-investigation-turns: ${{ steps.policy.outputs.max_investigation_turns }}
+          lane-call-budget: ${{ steps.policy.outputs.lane_call_budget }}
           execution-backend: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
           doks-dispatch-url: https://review-bot.example.com/api/dispatch/action
           doks-publish-mode: ${{ steps.policy.outputs.doks_publish_mode }}
