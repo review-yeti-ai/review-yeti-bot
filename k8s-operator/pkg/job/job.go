@@ -68,11 +68,17 @@ const (
 	WorkerMemoryRequest = "512Mi"
 	WorkerCPULimit      = "1"
 	WorkerMemoryLimit   = "1536Mi"
+	// The CRD's CEL rule bounds terminalDeadline - receivedAt to [900s, 3600s]
+	// (see charts/review-yeti/templates/crd.yaml and
+	// k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml). Keep
+	// these two in lockstep with that rule and with the TypeScript dispatch
+	// side's src/config/terminalDeadline.ts MIN/MAX.
+	MinTerminalDeadlineSeconds = int64(900)
+	MaxTerminalDeadlineSeconds = int64(3600)
 	// Keep a one-minute publication/failure-conclusion reserve inside the
-	// original 15-minute run deadline. The worker itself may never consume the
-	// full admission window.
-	MaxActiveDeadlineSeconds = int64(840)
-	DeadlineReserveSeconds   = int64(60)
+	// admitted run deadline. The worker itself may never consume the full
+	// admission window.
+	DeadlineReserveSeconds = int64(60)
 	// The panel deadline stays inside the Kubernetes Job deadline so a failed
 	// qualification still has time to persist its bounded diagnostic receipt.
 	WorkerReceiptReserveSeconds = int64(60)
@@ -137,7 +143,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	}
 	review := input.Review
 	spec := review.Spec
-	activeDeadlineSeconds, err := remainingDeadlineSeconds(spec.TerminalDeadline.Time, input.Now)
+	activeDeadlineSeconds, err := remainingDeadlineSeconds(spec.ReceivedAt.Time, spec.TerminalDeadline.Time, input.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +411,9 @@ func validateInput(input Input) error {
 	if spec.QualificationProfile != "" && spec.PublicationMode != PublicationModeDisabled {
 		return configErr("a qualification profile cannot be combined with publication mode " + spec.PublicationMode)
 	}
-	if spec.TerminalDeadline.Sub(spec.ReceivedAt.Time) != 15*time.Minute || input.Now.Before(spec.ReceivedAt.Time) {
+	window := spec.TerminalDeadline.Sub(spec.ReceivedAt.Time)
+	if window < time.Duration(MinTerminalDeadlineSeconds)*time.Second || window > time.Duration(MaxTerminalDeadlineSeconds)*time.Second ||
+		input.Now.Before(spec.ReceivedAt.Time) {
 		return ErrJobDeadline
 	}
 	if input.WorkspacePVCName != workspace.PVCName(spec.RepositoryID, spec.PRNumber) {
@@ -509,21 +517,25 @@ func validateQualification(profile, model string) error {
 	return nil
 }
 
-func remainingDeadlineSeconds(deadline, now time.Time) (int64, error) {
+func remainingDeadlineSeconds(receivedAt, deadline, now time.Time) (int64, error) {
 	remaining := deadline.Sub(now)
 	if remaining < time.Duration(MinRemainingSeconds)*time.Second {
 		return 0, workspace.ErrInsufficientDeadline
 	}
+	// The worker's own budget must never exceed this run's admitted window
+	// (validateInput already bounds that window to [900s, 3600s]) minus the
+	// publication/failure-conclusion reserve, even when more of the terminal
+	// deadline happens to remain.
+	windowCapSeconds := int64(math.Round(deadline.Sub(receivedAt).Seconds())) - DeadlineReserveSeconds
 	// Floor rather than ceil: an integer Kubernetes deadline must not extend
 	// past the authenticated terminal deadline when `now` includes fractions
 	// of a second.
 	seconds := int64(math.Floor(remaining.Seconds())) - DeadlineReserveSeconds
-	if seconds <= 0 || seconds > MaxActiveDeadlineSeconds {
-		if seconds > MaxActiveDeadlineSeconds {
-			seconds = MaxActiveDeadlineSeconds
-		} else {
-			return 0, ErrJobDeadline
-		}
+	if seconds <= 0 || windowCapSeconds <= 0 {
+		return 0, ErrJobDeadline
+	}
+	if seconds > windowCapSeconds {
+		seconds = windowCapSeconds
 	}
 	return seconds, nil
 }

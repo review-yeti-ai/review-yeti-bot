@@ -15,6 +15,7 @@ import {
   TokensUsed,
 } from '../../src/gateway/openRouterClient';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { GitHubInstallationClient, BASE_POLICY_CANDIDATE_FILES } from '../../src/github/installationClient';
 import { ConfigResolver } from '../../src/config/configResolver';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
@@ -632,7 +633,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
         repositoryId: 1001,
         installationId: 2002,
         receivedAt: 1_000,
-        terminalDeadline: 901_000,
+        terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
         payloadDigest: 'e'.repeat(64),
         publicationMode: 'disabled' as const,
         identity,
@@ -657,7 +658,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
         attempt: 3,
         error_text: 'OOM error',
         received_at: new Date(1_000),
-        terminal_deadline: new Date(901_000),
+        terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
         created_at: new Date(1_000),
         updated_at: new Date(1_000),
       };
