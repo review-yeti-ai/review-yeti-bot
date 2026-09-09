@@ -314,9 +314,20 @@ assert_contains "missing dispatcher: points at install-doks-review-runtime.sh" "
 scenario_dir="$(new_scenario_dir)"
 SCENARIO_CURRENT_IMAGE="$target_image" run_script "$scenario_dir" "$commit_sha"
 assert_equal "already pinned: exits zero" "0" "$status"
-assert_contains "already pinned: says there is nothing to do" "$stdout" "nothing to do"
-assert_not_contains "already pinned: never applies" "$kubectl_log" "apply"
-assert_not_contains "already pinned: never restarts" "$kubectl_log" "rollout restart"
+assert_contains "already pinned: says it is reclaiming manifest ownership" "$stdout" "reclaim manifest ownership"
+assert_contains "already pinned: still applies the ConfigMap through the manifest" "$kubectl_log" "apply --server-side --force-conflicts"
+assert_contains "already pinned: the applied document is the ConfigMap" "$applied_manifest" "kind: ConfigMap"
+assert_not_contains "already pinned: does not restart when the pod already matches" "$kubectl_log" "rollout restart"
+
+# --- Scenario 3b: pinned in the ConfigMap but the running pod disagrees -------
+
+scenario_dir="$(new_scenario_dir)"
+SCENARIO_CURRENT_IMAGE="$target_image" SCENARIO_VERIFY_IMAGE="$old_image" run_script "$scenario_dir" "$commit_sha"
+assert_contains "pinned but pod stale: restarts so the pod matches the manifest" "$kubectl_log" "rollout restart"
+assert_contains "pinned but pod stale: explains why it restarted" "$stdout" "restarting so the running dispatcher matches"
+# The fake pod answers the same both times, so the second verification still
+# fails -- which is the correct outcome for a pod that will not pick up the pin.
+assert_equal "pinned but pod stale: still fails when the restarted pod does not match" "1" "$status"
 
 # --- Scenario 4: --dry-run stops before any apply ----------------------------
 
