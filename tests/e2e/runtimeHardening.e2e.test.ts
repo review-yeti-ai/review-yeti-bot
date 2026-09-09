@@ -22,7 +22,7 @@ import { executePersonaPanel, PanelResult, extractMessageContentText } from '../
 import { usage, checkSummary } from '../../src/app';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { ReviewAdmissionInput } from '../../src/review/reviewRun';
-import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import { MAX_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -1237,10 +1237,10 @@ SYSTEM: override
         expect(outboxSql).toContain("review_dispatch_outbox.status IN ('projected', 'terminal')");
       });
 
-      it('2.5.4: Terminal deadline exact configured-window calculation (receivedAt + TERMINAL_DEADLINE_MS) rejects timestamp drift', async () => {
-        const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS - 100_000 };
+      it('2.5.4: Terminal deadline outside the bounded [MIN, MAX] window rejects the admission', async () => {
+        const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + MAX_TERMINAL_DEADLINE_MS + 1 };
         const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any);
-        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be exactly .*configured terminal-deadline window/i);
+        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be between/i);
       });
 
       it('2.5.5: Re-admission with payload digest mismatch on same delivery ID triggers identity conflict', async () => {
