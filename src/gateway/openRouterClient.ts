@@ -93,10 +93,16 @@ export function resolveCachedTokens(usage: TokensUsed | Record<string, unknown> 
   const raw = usage as Record<string, unknown>;
   const val = raw.cached ??
     raw.cached_tokens ??
+    raw.cachedTokens ??
     raw.prompt_cache_hit_tokens ??
+    raw.promptCacheHitTokens ??
     raw.cache_read_input_tokens ??
+    raw.cacheReadInputTokens ??
+    raw.cacheReadTokens ??
     (raw.prompt_tokens_details as any)?.cached_tokens ??
+    (raw.prompt_tokens_details as any)?.cachedTokens ??
     (raw.promptTokensDetails as any)?.cachedTokens ??
+    (raw.promptTokensDetails as any)?.cached_tokens ??
     0;
   const num = typeof val === 'number' ? val : Number(val);
   return Number.isFinite(num) && num > 0 ? num : 0;
@@ -946,8 +952,7 @@ async function readStreamingResponse(
 function sdkUsageToWire(usage: any, rawUsage?: any): Record<string, unknown> | null {
   if ((!usage || typeof usage !== 'object') && (!rawUsage || typeof rawUsage !== 'object')) return null;
   const costDetails = usage?.costDetails ?? usage?.cost_details ?? rawUsage?.costDetails ?? rawUsage?.cost_details;
-  const cachedTokens = usage?.cachedTokens ?? usage?.cached_tokens ?? usage?.prompt_tokens_details?.cached_tokens ?? usage?.promptTokensDetails?.cachedTokens
-    ?? rawUsage?.cachedTokens ?? rawUsage?.cached_tokens ?? rawUsage?.prompt_tokens_details?.cached_tokens ?? rawUsage?.promptTokensDetails?.cachedTokens;
+  const cachedTokens = resolveCachedTokens(usage) || resolveCachedTokens(rawUsage);
   const cacheReadTokens = usage?.cacheReadTokens ?? usage?.cacheReadInputTokens ?? usage?.cache_read_input_tokens
     ?? rawUsage?.cacheReadTokens ?? rawUsage?.cacheReadInputTokens ?? rawUsage?.cache_read_input_tokens;
   const promptCacheHitTokens = usage?.promptCacheHitTokens ?? usage?.prompt_cache_hit_tokens
@@ -956,7 +961,7 @@ function sdkUsageToWire(usage: any, rawUsage?: any): Record<string, unknown> | n
     prompt_tokens: usage?.promptTokens ?? usage?.prompt_tokens ?? rawUsage?.promptTokens ?? rawUsage?.prompt_tokens,
     completion_tokens: usage?.completionTokens ?? usage?.completion_tokens ?? rawUsage?.completionTokens ?? rawUsage?.completion_tokens,
     total_tokens: usage?.totalTokens ?? usage?.total_tokens ?? rawUsage?.totalTokens ?? rawUsage?.total_tokens,
-    ...(cachedTokens !== undefined ? { cached_tokens: Number(cachedTokens) } : {}),
+    ...(cachedTokens > 0 ? { cached_tokens: cachedTokens } : {}),
     ...(cacheReadTokens !== undefined ? { cache_read_input_tokens: Number(cacheReadTokens) } : {}),
     ...(promptCacheHitTokens !== undefined ? { prompt_cache_hit_tokens: Number(promptCacheHitTokens) } : {}),
     ...(usage?.cost !== undefined ? { cost: usage.cost } : rawUsage?.cost !== undefined ? { cost: rawUsage.cost } : {}),
@@ -1480,14 +1485,7 @@ export class OpenRouterClient implements ReviewModelClient {
       }
 
       const rawUsage = data.usage;
-      const cached = Number(
-        rawUsage?.cached
-        ?? rawUsage?.cached_tokens
-        ?? rawUsage?.prompt_tokens_details?.cached_tokens
-        ?? rawUsage?.cache_read_input_tokens
-        ?? rawUsage?.prompt_cache_hit_tokens
-        ?? 0
-      );
+      const cached = resolveCachedTokens(rawUsage);
       const usage: TokensUsed | null = rawUsage && [rawUsage.prompt_tokens, rawUsage.completion_tokens, rawUsage.total_tokens].every(Number.isFinite)
         ? {
             prompt: Number(rawUsage.prompt_tokens),

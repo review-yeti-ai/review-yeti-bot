@@ -15,7 +15,7 @@ import {
   TokensUsed,
 } from '../../src/gateway/openRouterClient';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
-import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { GitHubInstallationClient, BASE_POLICY_CANDIDATE_FILES } from '../../src/github/installationClient';
 import { ConfigResolver } from '../../src/config/configResolver';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 
@@ -462,9 +462,9 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
         /^GitHub API 404\b/u
       );
 
-      // Must have queried all files in ConfigResolver.CONFIG_FILES
-      expect(mockFetch).toHaveBeenCalledTimes(ConfigResolver.CONFIG_FILES.length);
-      for (const configFile of ConfigResolver.CONFIG_FILES) {
+      // Must have queried all files in BASE_POLICY_CANDIDATE_FILES
+      expect(mockFetch).toHaveBeenCalledTimes(BASE_POLICY_CANDIDATE_FILES.length);
+      for (const configFile of BASE_POLICY_CANDIDATE_FILES) {
         expect(requestedUrls.some((u) => u.includes(configFile))).toBe(true);
       }
 
@@ -693,7 +693,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
 
       // Verify that the SQL query handles failed status re-arm
       const reviewRunInsertCall = query.mock.calls.find(([sql]) => /INSERT INTO review_runs/u.test(sql));
-      expect(reviewRunInsertCall?.[0]).toMatch(/review_runs\.status = 'failed'/);
+      expect(reviewRunInsertCall?.[0]).toMatch(/review_runs\.status IN \('failed', 'terminal'\)/);
 
       // Verify that outbox reset query handles terminal status and checks queued run
       const outboxInsertCall = query.mock.calls.find(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(sql));
