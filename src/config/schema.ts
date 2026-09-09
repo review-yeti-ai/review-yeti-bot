@@ -297,7 +297,7 @@ const ctReviewConfigV3ObjectSchema = z.object({
   // Milestone 18 Extensions
   mcps: mcpsSchema,
   on_pr_close: onPRCloseSchema,
-  evidence: evidenceSchema.default({ zoekt: { enabled: true } }),
+  evidence: evidenceSchema.optional(),
 
   reviewers: z.object({
     execution: z.literal('personas'),
