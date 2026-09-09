@@ -17,6 +17,7 @@ import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { executeMillerTool } from '../services/millerTool';
 import { ASTParser } from '../indexer/astParser';
+import { matchOne } from '../pipeline/domainIndex';
 import { classifyReviewScope, ClassifierResult, containsExecutableOrSensitiveCode } from './classifierEngine';
 import { buildFastShipPanelResult } from './fastShipResult';
 export type {
@@ -496,7 +497,7 @@ function globRegex(pattern: string): RegExp {
 
 function pathMatches(pattern: string, path: string): boolean {
   if (pattern === '**') return true;
-  return globRegex(pattern).test(path);
+  return matchOne(pattern, path);
 }
 
 function isDocumentationOrAssetPath(filePath: string): boolean {
@@ -1656,10 +1657,8 @@ export async function executePersonaPanel(options: {
       throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
     }
 
-    let settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[];
-
-    if (applicable.length <= 1) {
-      settledResults = await Promise.allSettled(
+    const settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[] =
+      await Promise.allSettled(
         applicable.map(async (persona) => {
           const stillCurrent = isCurrentHead ? isCurrentHead() : true;
           const currentActiveId = activeRuns.get(runKey);
@@ -1683,97 +1682,6 @@ export async function executePersonaPanel(options: {
           return { persona, result, error: undefined };
         })
       );
-    } else {
-      const [firstPersona, ...restPersonas] = applicable;
-
-      let onFirstTokenTriggered = false;
-      let resolveFirstToken: () => void;
-      const firstTokenPromise = new Promise<void>((resolve) => {
-        resolveFirstToken = resolve;
-      });
-
-      const notifyFirstToken = () => {
-        if (!onFirstTokenTriggered) {
-          onFirstTokenTriggered = true;
-          resolveFirstToken();
-        }
-      };
-
-      const firstPolicy = {
-        ...(requestPolicy || {}),
-        onFirstToken: notifyFirstToken,
-      } as any;
-
-      const firstPersonaPromise = (async () => {
-        const stillCurrent = isCurrentHead ? isCurrentHead() : true;
-        const currentActiveId = activeRuns.get(runKey);
-        if (!stillCurrent || currentActiveId !== runId) {
-          throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
-        }
-        const result = await runPersona(
-          config,
-          client,
-          firstPersona,
-          effectiveFiles,
-          repository,
-          headSha,
-          memoryRules,
-          effectiveJobId,
-          primaryAuthoringModel,
-          firstPolicy,
-          repoFileProvider,
-          repositoryVisibility
-        );
-        return { persona: firstPersona, result, error: undefined };
-      })().then(
-        (val) => {
-          notifyFirstToken();
-          return val;
-        },
-        (err) => {
-          notifyFirstToken();
-          throw err;
-        }
-      );
-
-      // Await first token from Persona 1 OR its completion OR bounded warmup timeout (handles non-streaming clients)
-      let timer: NodeJS.Timeout | undefined;
-      const warmupTimeout = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, 3_000);
-      });
-      await Promise.race([
-        firstTokenPromise,
-        firstPersonaPromise.catch(() => {}),
-        warmupTimeout,
-      ]);
-      if (timer) clearTimeout(timer);
-
-      // Fan out remaining personas concurrently while Persona 1 is still generating
-      const restPromises = restPersonas.map(async (persona) => {
-        const stillCurrent = isCurrentHead ? isCurrentHead() : true;
-        const currentActiveId = activeRuns.get(runKey);
-        if (!stillCurrent || currentActiveId !== runId) {
-          throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
-        }
-        const result = await runPersona(
-          config,
-          client,
-          persona,
-          effectiveFiles,
-          repository,
-          headSha,
-          memoryRules,
-          effectiveJobId,
-          primaryAuthoringModel,
-          requestPolicy,
-          repoFileProvider,
-          repositoryVisibility
-        );
-        return { persona, result, error: undefined };
-      });
-
-      settledResults = await Promise.allSettled([firstPersonaPromise, ...restPromises]);
-    }
 
     const settled = settledResults.map((res, index) => {
       const persona = applicable[index];

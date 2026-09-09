@@ -168,7 +168,7 @@ personas:
 `;
     const config = parseAndValidateConfig(multiPersonaConfigYaml) as unknown as CtReviewConfigV3;
 
-    it('proves that non-streaming mock clients drop concurrency and serialize Persona 1 execution', async () => {
+    it('proves that personas execute concurrently without serial waiting for Persona 1', async () => {
       const timestamps: Array<{ persona: string; event: 'start' | 'end'; time: number }> = [];
 
       const mockClient: ReviewModelClient = {
@@ -176,7 +176,6 @@ personas:
           const persona = (request as any).persona || 'unknown';
           timestamps.push({ persona, event: 'start', time: Date.now() });
 
-          // Non-streaming client: does NOT invoke request.onFirstToken
           await new Promise((r) => setTimeout(r, 60));
 
           timestamps.push({ persona, event: 'end', time: Date.now() });
@@ -206,14 +205,13 @@ personas:
         client: mockClient,
       });
 
-      // Persona 1 (security) finished BEFORE Persona 2 (performance) and Persona 3 (architecture) even started!
+      // All 3 personas started concurrently without serial warmup waiting
       const securityEnd = timestamps.find((t) => t.persona === 'security' && t.event === 'end')!.time;
       const performanceStart = timestamps.find((t) => t.persona === 'performance' && t.event === 'start')!.time;
       const architectureStart = timestamps.find((t) => t.persona === 'architecture' && t.event === 'start')!.time;
 
-      // In non-streaming execution, warm-then-fan-out forces complete serialization of Persona 1
-      expect(performanceStart).toBeGreaterThanOrEqual(securityEnd);
-      expect(architectureStart).toBeGreaterThanOrEqual(securityEnd);
+      expect(performanceStart).toBeLessThanOrEqual(securityEnd);
+      expect(architectureStart).toBeLessThanOrEqual(securityEnd);
     });
 
     it('proves that Anthropic ephemeral cache control produces an Array in messages[1].content that breaks standard string assertions', async () => {
