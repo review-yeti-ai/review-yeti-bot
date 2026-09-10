@@ -57,6 +57,12 @@ import type {
  */
 export const REPO_FIND_FILES_MAX_HITS = 50;
 export const REPO_READ_FILE_MAX_CHARS = 512 * 1024;
+/** Max investigation turns per persona. After that the session must emit findings. */
+export const MAX_INVESTIGATION_TURNS = 5;
+/** Idle budget after the last completed turn: start the next turn or end the session. */
+export const TURN_IDLE_MS = 180_000;
+/** Outer persona budget: 5 turns × 3 minutes. Not a mid-stream hard stop. */
+export const MAX_PERSONA_BUDGET_MS = MAX_INVESTIGATION_TURNS * TURN_IDLE_MS;
 
 /** Skip PR file patches larger than this. Plumbed from policy `max_file_diff_chars`. */
 export function resolveMaxFileDiffChars(): number {
@@ -906,7 +912,7 @@ async function invoke(
     .filter((tool) => tool.name === 'fetch_docs' || tool.name === 'context7_search');
   const mcpToolListStr = availableMcpTools.map((t) => `${t.name} (${t.description})`).join(', ');
 
-  const maxTurns = Math.min(20, Math.max(1, options?.maxTurns ?? 3));
+  const maxTurns = Math.min(MAX_INVESTIGATION_TURNS, Math.max(1, options?.maxTurns ?? MAX_INVESTIGATION_TURNS));
   const effectiveEffort = options?.effort || 'medium';
 
   const messages: OpenRouterMessage[] = [
@@ -922,7 +928,7 @@ async function invoke(
      Use Context7 when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Do NOT call Context7 if the code is self-explanatory or contained in the repository.
 - IMPORTANT EVIDENCE BOUNDARY: Default code reading and symbol search tools are patch-scoped: they only inspect the patch hunks of files modified in this PR. They DO NOT search unchanged files across the repository. Never claim a function, module, or symbol is undefined, missing, or broken in the repository simply because a patch-scoped search returns no hits.
 - Do NOT try to ingest the entire PR at once. A 1M context filled with one giant diff is worse than a few targeted files. Rank the file index by risk (auth, purge, migrations, public API), then get_diff one path per turn. Never request the whole git range as a single payload.
-- You are granted up to ${maxTurns} execution turns for active codebase exploration.
+- You are granted up to ${maxTurns} execution turns. After each turn you have ${Math.round(TURN_IDLE_MS / 60000)} minutes to request the next turn or emit findings; the session then ends. Do not wait out a hard stop while you are still working.
 - Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.
 ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 `- ACTIVE DEEP EXPLORATION REQUIRED: Perform multi-turn tool calls to search symbol dependencies, inspect related imported files, verify caller/callee context, and audit cross-file contracts before rendering your final decision.` :
@@ -1321,7 +1327,6 @@ async function runPersona(
     span.setAttribute('ct.persona.required', persona.required);
 
     const personaStartedAt = Date.now();
-    const MAX_PERSONA_BUDGET_MS = 150_000;
 
     const isRedTeam = isRedTeamPersona(persona.id, persona.charter);
 
@@ -1383,7 +1388,7 @@ async function runPersona(
 
     for (const providerId of providersToTry) {
       if (Date.now() - personaStartedAt >= MAX_PERSONA_BUDGET_MS) {
-        errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of 150s`);
+        errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s`);
         break;
       }
       const spec = provider(config, providerId);
@@ -1406,12 +1411,12 @@ async function runPersona(
       }
 
       const effectiveEffort = (storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? 3;
+      const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? MAX_INVESTIGATION_TURNS;
 
       const configuredTimeoutS = typeof spec.review_timeout_s === 'number' && spec.review_timeout_s > 0
         ? spec.review_timeout_s
-        : 90;
-      const perCallTimeoutMs = Math.min(configuredTimeoutS * 1_000, 90_000);
+        : TURN_IDLE_MS / 1000;
+      const perCallTimeoutMs = Math.min(configuredTimeoutS * 1_000, TURN_IDLE_MS);
 
       let attempts = 0;
       const maxAttempts = 2;
@@ -1420,7 +1425,7 @@ async function runPersona(
         const elapsedMs = Date.now() - personaStartedAt;
         const remainingPersonaBudgetMs = MAX_PERSONA_BUDGET_MS - elapsedMs;
         if (remainingPersonaBudgetMs <= 0) {
-          errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of 150s`);
+          errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s`);
           break;
         }
         attempts++;
@@ -1607,8 +1612,8 @@ async function runPersona(
           };
         } catch (error: any) {
           if (Date.now() - personaStartedAt >= MAX_PERSONA_BUDGET_MS) {
-            logger.warn(`[Persona: ${persona.id}] Total execution budget of 150s exhausted; failing closed.`);
-            errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of 150s`);
+            logger.warn(`[Persona: ${persona.id}] Total execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s exhausted; failing closed.`);
+            errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s`);
             break;
           }
           if (error instanceof PanelFindingsValidationError) {
@@ -1958,8 +1963,8 @@ export async function executePersonaPanel(options: {
       runInSpan('ct_moderator', async (modSpan) => {
         const modTimeoutS = typeof moderatorProvider.review_timeout_s === 'number' && moderatorProvider.review_timeout_s > 0
           ? moderatorProvider.review_timeout_s
-          : 90;
-        const moderatorTimeoutMs = Math.min(modTimeoutS * 1_000, 90_000);
+          : TURN_IDLE_MS / 1000;
+        const moderatorTimeoutMs = Math.min(modTimeoutS * 1_000, TURN_IDLE_MS);
         const run = await invoke(client, moderatorProvider.model, moderatorTimeoutMs, 'moderator', {
           repository,
           headSha,
@@ -2058,8 +2063,8 @@ export async function executePersonaPanel(options: {
         arbiterResult = await runInSpan('ct_arbiter', async (arbSpan) => {
           const arbTimeoutS = typeof spec.arbiter_timeout_s === 'number' && spec.arbiter_timeout_s > 0
             ? spec.arbiter_timeout_s
-            : 90;
-          const arbiterTimeoutMs = Math.min(arbTimeoutS * 1_000, 90_000);
+            : TURN_IDLE_MS / 1000;
+          const arbiterTimeoutMs = Math.min(arbTimeoutS * 1_000, TURN_IDLE_MS);
           const run = await invoke(client, spec.model, arbiterTimeoutMs, 'arbiter', {
             repository,
             headSha,
