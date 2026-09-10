@@ -2,16 +2,36 @@ import express, { type Express, type NextFunction, type Request, type Response, 
 import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './api/actionDispatchApi';
 import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
 import { createRateLimiter } from './security/rateLimiter';
+import { createWebhookRouter, type RequestWithRawBody } from './github/webhookServer';
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
   rateLimiter?: RequestHandler;
+  githubWebhook?: {
+    secret: string;
+    onEvent(request: RequestWithRawBody): Promise<Record<string, unknown>>;
+  };
 }
 
 export function createActionDispatchApp(options: ActionDispatchAppOptions): Express {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
+  const limiter = options.rateLimiter !== undefined
+    ? options.rateLimiter
+    : createRateLimiter({ windowMs: 60_000, max: 60, trustProxy: true });
+  // Mount before the generic JSON parser so signature verification receives
+  // GitHub's exact raw bytes. The production Ingress exposes only the exact
+  // /api/webhooks/github path even though the shared router keeps compatibility
+  // aliases for standalone installations.
+  if (options.githubWebhook) {
+    app.use(createWebhookRouter({
+      path: '/api/webhooks/github',
+      secret: options.githubWebhook.secret,
+      onEvent: options.githubWebhook.onEvent,
+      rateLimiter: limiter,
+    }));
+  }
   // Only the typed completion endpoint accepts bounded full persona evidence.
   // Action admission retains its smaller limit and strict request schema.
   app.use('/api/dispatch/completion', express.json({ limit: MAX_COMPLETION_BYTES, strict: true }));
@@ -34,10 +54,6 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
       return response.status(503).json({ status: 'not_ready', databaseReady: false });
     }
   });
-
-  const limiter = options.rateLimiter !== undefined
-    ? options.rateLimiter
-    : createRateLimiter({ windowMs: 60_000, max: 60, trustProxy: true });
 
   app.use('/api/dispatch', limiter, createActionDispatchRouter(options));
   app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {

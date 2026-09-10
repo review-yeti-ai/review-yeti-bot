@@ -37,7 +37,7 @@ describe('admission-only Action dispatch server', () => {
     expect(response.body).toEqual({ status: 'not_ready', databaseReady: false });
   });
 
-  it('does not mount webhook, dashboard, provider, metrics, or generic API routes', async () => {
+  it('does not mount webhook, dashboard, provider, metrics, or generic API routes unless the webhook lane is configured', async () => {
     for (const route of ['/webhook', '/api/webhook/github', '/api/dashboard', '/api/router/providers', '/metrics']) {
       expect((await request(app()).post(route).send({})).status, route).toBe(404);
     }

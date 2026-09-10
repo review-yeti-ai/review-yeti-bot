@@ -1,0 +1,228 @@
+import { z } from 'zod';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../auth/authoritativeServiceConfig';
+import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
+import type { MergeGroupGateRepository, MergeGroupGateState } from '../persistence/mergeGroupGateRepository';
+
+const sha = z.string().regex(/^[a-f0-9]{40}$/u);
+const positiveInteger = z.number().int().positive().safe();
+const mergeGroupWebhook = z.object({
+  action: z.literal('checks_requested'),
+  installation: z.object({ id: positiveInteger }).passthrough(),
+  repository: z.object({
+    id: positiveInteger,
+    name: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u),
+    full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u),
+    owner: z.object({ id: positiveInteger, login: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u) }).passthrough(),
+  }).passthrough(),
+  merge_group: z.object({
+    head_sha: sha, head_ref: z.string().min(1).max(512),
+    base_sha: sha, base_ref: z.string().min(1).max(512),
+  }).passthrough(),
+}).passthrough();
+
+const QUEUE_QUERY = 'query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id entries(first:100){totalCount nodes{position state baseCommit{oid} headCommit{oid} pullRequest{number state baseRefName headRefOid repository{nameWithOwner}}} pageInfo{hasNextPage}}}}}';
+const QUALIFYING_STATES = new Set(['QUEUED', 'AWAITING_CHECKS', 'LOCKED', 'MERGEABLE']);
+const APP_SLUG = 'ct-review-bot';
+const CHECK_NAME = 'Review Yeti';
+const MAX_GITHUB_RESPONSE_BYTES = 2 * 1024 * 1024;
+
+export interface MergeGroupGateOptions {
+  config: GitHubWebhookConfig;
+  repository: MergeGroupGateRepository;
+  tokenFor(owner: string, repo: string): Promise<string>;
+  fetchImplementation?: typeof fetch;
+  baseUrl?: string;
+}
+
+async function githubJson(url: string, token: string, fetchImpl: typeof fetch, init: RequestInit = {}): Promise<any> {
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      ...init,
+      redirect: 'error',
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        accept: 'application/vnd.github+json', authorization: `Bearer ${token}`,
+        'x-github-api-version': '2022-11-28', ...(init.headers || {}),
+      },
+    });
+  } catch { throw new Error('GitHub merge-group request failed before response'); }
+  if (!response.ok || response.redirected || !response.body) {
+    void response.body?.cancel().catch(() => undefined);
+    throw new Error(`GitHub merge-group request failed with HTTP ${response.status}`);
+  }
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_GITHUB_RESPONSE_BYTES) {
+    void response.body.cancel().catch(() => undefined);
+    throw new Error('GitHub merge-group response exceeded the byte limit');
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > MAX_GITHUB_RESPONSE_BYTES) throw new Error('GitHub merge-group response exceeded the byte limit');
+      chunks.push(chunk.value);
+    }
+    const joined = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(joined));
+  } catch {
+    try { await reader.cancel(); } catch { /* best-effort bounded cleanup */ }
+    throw new Error('GitHub merge-group response was unavailable');
+  }
+}
+
+function branchName(ref: string): string { return ref.replace(/^refs\/heads\//u, ''); }
+
+function validatePayload(value: unknown, config: GitHubWebhookConfig) {
+  const parsed = mergeGroupWebhook.parse(value);
+  const owner = parsed.repository.owner.login;
+  const repo = parsed.repository.name;
+  const branch = branchName(parsed.merge_group.base_ref);
+  const prefix = `refs/heads/gh-readonly-queue/${branch}/`;
+  const match = parsed.merge_group.head_ref.startsWith(prefix)
+    ? /^pr-([1-9][0-9]*)-[0-9a-f]{7,40}$/u.exec(parsed.merge_group.head_ref.slice(prefix.length)) : null;
+  if (parsed.repository.full_name !== `${owner}/${repo}` || !branch
+    || !config.repositoryIds.has(String(parsed.repository.id))
+    || !config.ownerIds.has(String(parsed.repository.owner.id)) || !match) {
+    throw new Error('Merge-group webhook identity is not enrolled');
+  }
+  return { ...parsed, owner, repo, branch, currentNumber: Number(match[1]) };
+}
+
+function selectEntries(response: any, identity: ReturnType<typeof validatePayload>) {
+  if (Array.isArray(response?.errors) && response.errors.length > 0) throw new Error('Merge queue lookup returned errors');
+  const queue = response?.data?.repository?.mergeQueue;
+  if (!queue || typeof queue.id !== 'string' || !Array.isArray(queue.entries?.nodes)
+    || queue.entries.pageInfo?.hasNextPage !== false
+    || !Number.isSafeInteger(queue.entries.totalCount)
+    || queue.entries.totalCount !== queue.entries.nodes.length
+    || queue.entries.totalCount < 1 || queue.entries.totalCount > 100) {
+    throw new Error('Merge queue evidence is incomplete');
+  }
+  const numbers = new Set<number>();
+  const positions = new Set<number>();
+  for (const entry of queue.entries.nodes) {
+    const number = entry?.pullRequest?.number;
+    if (!Number.isSafeInteger(number) || number < 1 || numbers.has(number)
+      || !Number.isSafeInteger(entry?.position) || entry.position < 1 || positions.has(entry.position)) {
+      throw new Error('Merge queue entries are malformed');
+    }
+    numbers.add(number); positions.add(entry.position);
+  }
+  const current = queue.entries.nodes.find((entry: any) => entry.pullRequest.number === identity.currentNumber);
+  if (!current || current.headCommit?.oid !== identity.merge_group.head_sha
+    || current.baseCommit?.oid !== identity.merge_group.base_sha) throw new Error('Merge queue no longer matches the webhook');
+  const entries = queue.entries.nodes.filter((entry: any) => entry.position <= current.position)
+    .sort((left: any, right: any) => left.position - right.position);
+  for (const entry of entries) {
+    const pull = entry.pullRequest;
+    if (!sha.safeParse(pull?.headRefOid).success || !QUALIFYING_STATES.has(entry.state)
+      || pull.state !== 'OPEN' || pull.baseRefName !== identity.branch
+      || pull.repository?.nameWithOwner !== identity.repository.full_name) {
+      throw new Error('Merge queue contains an ineligible constituent');
+    }
+  }
+  return { id: queue.id, entries };
+}
+
+function exactReviewFailure(checks: any, expectedHead: string): string | undefined {
+  if (!Number.isSafeInteger(checks?.total_count) || !Array.isArray(checks?.check_runs)
+    || checks.total_count !== checks.check_runs.length || checks.total_count > 100) return 'check-run evidence is incomplete';
+  const runs = checks.check_runs.filter((run: any) => run?.name === CHECK_NAME
+    && Number(run?.app?.id) === AUTHORITATIVE_REVIEW_APP_ID && run?.app?.slug === APP_SLUG);
+  if (runs.length === 0) return 'has no Review Yeti check from the official App';
+  if (runs.some((run: any) => run.head_sha !== expectedHead || !Number.isSafeInteger(Number(run.id)) || Number(run.id) < 1)) {
+    return 'contains malformed or stale Review Yeti evidence';
+  }
+  const latest = [...runs].sort((left, right) => Number(left.id) - Number(right.id)).at(-1);
+  return latest?.status === 'completed' && latest?.conclusion === 'success'
+    ? undefined : 'latest exact-head Review Yeti check is not successful';
+}
+
+function externalId(repositoryId: number, headSha: string): string {
+  return `review-yeti-merge-group:${repositoryId}:${headSha}`;
+}
+
+export function createMergeGroupGate(options: MergeGroupGateOptions) {
+  const fetchImpl = options.fetchImplementation || globalThis.fetch;
+  const apiRoot = (options.baseUrl || 'https://api.github.com').replace(/\/+$/u, '');
+  if (apiRoot !== 'https://api.github.com') {
+    throw new Error('Native merge-group admission currently requires the GitHub.com API');
+  }
+  return async (payload: unknown): Promise<MergeGroupGateState & { constituents: number }> => {
+    const identity = validatePayload(payload, options.config);
+    const repositoryName = identity.repository.full_name;
+    return options.repository.runExclusive(identity.repository.id, identity.merge_group.head_sha, async (stored) => {
+      if (stored) return { ...stored, constituents: 0 };
+      const token = await options.tokenFor(identity.owner, identity.repo);
+      if (!token.startsWith('ghs_')) throw new Error('Merge-group App token is unavailable');
+      const api = `${apiRoot}/repos/${repositoryName}`;
+      const existing = await githubJson(`${api}/commits/${identity.merge_group.head_sha}/check-runs?filter=all&per_page=100`, token, fetchImpl);
+      if (!Number.isSafeInteger(existing?.total_count) || !Array.isArray(existing?.check_runs)
+        || existing.total_count !== existing.check_runs.length || existing.total_count > 100) {
+        throw new Error('Merge-group check reconciliation is incomplete');
+      }
+      const stableId = externalId(identity.repository.id, identity.merge_group.head_sha);
+      const candidates = existing.check_runs.filter((run: any) => run?.name === CHECK_NAME
+        && run?.head_sha === identity.merge_group.head_sha && run?.external_id === stableId
+        && Number(run?.app?.id) === AUTHORITATIVE_REVIEW_APP_ID && run?.app?.slug === APP_SLUG);
+      let check = [...candidates].sort((left, right) => Number(left.id) - Number(right.id)).at(-1);
+      if (check?.status === 'completed' && (check.conclusion === 'success' || check.conclusion === 'failure')) {
+        return { checkId: Number(check.id), conclusion: check.conclusion, constituents: 0 };
+      }
+      if (!check) {
+        check = await githubJson(`${api}/check-runs`, token, fetchImpl, {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+            name: CHECK_NAME, head_sha: identity.merge_group.head_sha, external_id: stableId,
+            status: 'in_progress', output: {
+              title: 'Review Yeti merge-group verification running',
+              summary: 'Validating every queued pull request against its latest exact-head Review Yeti verdict.',
+            },
+          }),
+        });
+      }
+      if (!Number.isSafeInteger(Number(check?.id)) || Number(check.id) < 1) {
+        throw new Error('Review Yeti merge-group check creation returned no id');
+      }
+      const queueRead = async () => selectEntries(await githubJson(`${apiRoot}/graphql`, token, fetchImpl, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: QUEUE_QUERY, variables: { owner: identity.owner, name: identity.repo, branch: identity.branch } }),
+      }), identity);
+      const failures: string[] = [];
+      let constituentCount = 0;
+      try {
+        const queue = await queueRead();
+        constituentCount = queue.entries.length;
+        for (const entry of queue.entries) {
+          const head = entry.pullRequest.headRefOid;
+          const result = await githubJson(`${api}/commits/${head}/check-runs?filter=all&per_page=100`, token, fetchImpl);
+          const failure = exactReviewFailure(result, head);
+          if (failure) failures.push(`PR #${entry.pullRequest.number}: ${failure}`);
+        }
+        const fresh = await queueRead();
+        const signature = (value: typeof queue) => JSON.stringify(value.entries.map((entry: any) => ({
+          number: entry.pullRequest.number, head: entry.pullRequest.headRefOid, position: entry.position,
+        })));
+        if (signature(queue) !== signature(fresh)) failures.push('merge queue changed during exact-head qualification');
+      } catch {
+        failures.push('merge-group evidence could not be verified');
+      }
+      const conclusion: 'success' | 'failure' = failures.length === 0 ? 'success' : 'failure';
+      await githubJson(`${api}/check-runs/${Number(check.id)}`, token, fetchImpl, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+          status: 'completed', conclusion, completed_at: new Date().toISOString(), output: {
+            title: conclusion === 'success' ? 'Review Yeti merge group approved' : 'Review Yeti merge group rejected',
+            summary: conclusion === 'success'
+              ? `Every constituent has a successful exact-head Review Yeti check from the official App. Verified ${constituentCount} constituent(s).`
+              : failures.slice(0, 12).map((failure) => `- ${failure.slice(0, 500)}`).join('\n').slice(0, 6_000),
+          },
+        }),
+      });
+      return { checkId: Number(check.id), conclusion, constituents: constituentCount };
+    });
+  };
+}

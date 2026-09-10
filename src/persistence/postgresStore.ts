@@ -206,6 +206,16 @@ export class PostgresStore {
           created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS merge_group_gates (
+          repository_id BIGINT NOT NULL,
+          head_sha CHAR(40) NOT NULL,
+          check_id BIGINT NOT NULL,
+          conclusion TEXT NOT NULL CHECK (conclusion IN ('success', 'failure')),
+          created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (repository_id, head_sha)
+        );
+
         CREATE TABLE IF NOT EXISTS review_dispatch_outbox (
           run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
           delivery_id TEXT UNIQUE NOT NULL REFERENCES github_deliveries(delivery_id) ON DELETE CASCADE,

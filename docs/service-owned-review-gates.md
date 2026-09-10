@@ -135,6 +135,44 @@ return 503 before token mint/admission; they never silently use the legacy lane.
 Existing completion, reaping and publication keep draining. Unenrolled and
 nonpublishing legacy requests retain their existing route.
 
+## Direct GitHub App webhook admission
+
+The dedicated dispatch service can receive signed GitHub App deliveries at
+`POST /api/webhooks/github`, eliminating a repository-owned Actions dispatch
+job. This transport is independently default-off and preserves the existing
+finite Actions/OIDC repository and owner allowlists:
+
+- `GITHUB_APP_WEBHOOK_ENABLED=true` mounts the signed route. It requires a
+  32–1,024 byte `GITHUB_WEBHOOK_SECRET`, plus finite
+  `GITHUB_APP_WEBHOOK_REPOSITORY_IDS` and `GITHUB_APP_WEBHOOK_OWNER_IDS` values
+  that are subsets of the existing app-gate allowlists.
+- `GITHUB_APP_WEBHOOK_ADMISSION_ENABLED=true` admits new `pull_request` and
+  `merge_group` work. Its default is false so ingress, signature verification,
+  and delivery can be proven before the old producer is removed.
+- Pull requests admit only open, non-draft exact candidates from `opened`,
+  `synchronize`, `reopened`, and `ready_for_review` deliveries. The GitHub
+  delivery ID remains the idempotency boundary.
+- Merge groups publish one `Review Yeti` check on the synthetic head. A
+  PostgreSQL advisory transaction serializes replicas and stores the terminal
+  check ID. The gate succeeds only when every constituent at or ahead of the
+  current queue entry has a latest exact-head successful `Review Yeti` check
+  from the configured App and a second queue read is unchanged. Unavailable,
+  partial, changed, or malformed evidence completes the synthetic check as
+  failure instead of leaving it pending.
+
+The GitHub App registration must have an active webhook, subscribe to both
+`pull_request` and `merge_group`, and grant read access to merge queues. The
+runtime installation token is still minted for exactly one repository with
+only `checks:write`, `contents:read`, `pull_requests:read`, and
+`merge_queues:read`; broader effective grants are refused. Expose only the exact
+webhook path at ingress and preserve the namespace's deny-by-default network
+policy.
+
+Cut over in this order: deploy the route with admission paused; configure and
+prove signed delivery; remove the repository producer under its old required
+checks; enable direct admission; then prove one pull-request check and one
+merge-group check at their exact heads before changing further consumers.
+
 Rollback must restore the captured old protections/triggers before disabling a
 required route. Pause new admission first and reconcile existing attempts; do not
 turn off all controllers with outstanding gate publications, drop additive tables,
