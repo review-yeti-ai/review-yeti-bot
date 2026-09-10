@@ -178,6 +178,37 @@ step implies the other.
 
 ---
 
+## Distinguishing queue delay, stream inactivity and the panel deadline
+
+These are separate failure stages; increasing every timeout does not repair
+all of them:
+
+- **Queued without a worker:** inspect admission time, terminal deadline and
+  reservation state. Eligible work is admitted oldest-first at the existing
+  capacity limit. A pending worker-creation reservation still occupies its
+  slot. Expired or invalid requests do not block healthy queued work.
+- **Worker active, provider stalled:** the publishing policy permits 180
+  seconds without meaningful provider output. Text, reasoning or tool-call
+  progress resets this inactivity timer; heartbeat-only traffic does not.
+  A progressing stream may run longer than 180 seconds.
+- **Overall panel deadline:** the existing 900-second budget still bounds
+  the complete panel. Expiry propagates cancellation and rejects late results;
+  progress does not reset this overall clock. Five investigation turns is an
+  upper bound, not a requirement to consume the full budget.
+
+For new authoritative prepared admissions, the API serializes this policy
+into the digest-bound execution envelope. A worker-only rollout cannot change
+already-admitted policy. Upgrade the reviewed API and worker together when
+changing publishing defaults, and include the operator for admission fixes.
+Never edit a queued envelope or its digest to retrofit a new policy.
+
+Qualify changes with synthetic active-stream, stalled-stream, caller-abort and
+late-result tests, plus reservation/FIFO controller tests. Then verify one
+current-head review on the exact deployed images. Record the queue and worker
+times separately; an accepted dispatch, healthy pod, or green wrapper is not
+a completed review. Capture only bounded, sanitized diagnostic categories;
+do not retain raw review prompts or credentials.
+
 ## 📋 Operational Verification & Qualification Order
 
 To verify your cluster deployment before rolling out to production repositories:
