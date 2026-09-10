@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.52.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.0...v1.52.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **API-3215:** accept current GitHub App tokens ([#673](https://github.com/review-yeti-ai/review-yeti-bot/issues/673)) ([2666237](https://github.com/review-yeti-ai/review-yeti-bot/commit/26662374c165d1dac038d8727f76eea446e31997))
+* **API-3215:** remove duplicate panel helpers ([#676](https://github.com/review-yeti-ai/review-yeti-bot/issues/676)) ([4a2cea8](https://github.com/review-yeti-ai/review-yeti-bot/commit/4a2cea8a1e95f1097c80e8b614fd1eb2d9316d4d))
+* **panel:** 5 turns, 3 min idle, drop 90s/150s hard stops ([#674](https://github.com/review-yeti-ai/review-yeti-bot/issues/674)) ([af02db3](https://github.com/review-yeti-ai/review-yeti-bot/commit/af02db3146ee11d449a76fce2e25f72ec7ab2b95))
+
 ## [1.52.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.51.2...v1.52.0) (2026-09-10)
 
 
