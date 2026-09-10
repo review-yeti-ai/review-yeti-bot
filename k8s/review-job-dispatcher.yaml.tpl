@@ -9,6 +9,7 @@ data:
   REVIEW_JOB_NAMESPACE: ct-review-system
   REVIEW_JOB_WORKER_IMAGE: "${CT_REVIEW_WORKER_IMAGE}"
   REVIEW_JOB_RUNNER_MODE: "${CT_REVIEW_RUNNER_MODE}"
+  CT_REVIEW_DATA_DIR: "/tmp/.ct-memory"
 ---
 apiVersion: v1
 kind: ServiceAccount

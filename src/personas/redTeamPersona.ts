@@ -1,6 +1,9 @@
 import { ProviderId } from '../config/schema';
 
-export function isRedTeamPersona(personaId: string, charter?: string): boolean {
+export function isRedTeamPersona(personaId?: string, charter?: string): boolean {
+  if (!personaId || typeof personaId !== 'string') {
+    return false;
+  }
   const idLower = personaId.toLowerCase();
   if (idLower === 'red_team' || idLower === 'red-team' || idLower === 'skeptic') {
     return true;

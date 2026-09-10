@@ -324,5 +324,16 @@ reviewers:
       expect(resolved.length).toBe(1);
       expect(resolved[0].charter).toMatch(/compliance/i);
     });
+
+    it('respects process.env.CT_REVIEW_DATA_DIR for default cacheDir', () => {
+      const original = process.env.CT_REVIEW_DATA_DIR;
+      try {
+        process.env.CT_REVIEW_DATA_DIR = '/tmp/.ct-memory';
+        const loader = new CommunityPersonaLoader();
+        expect((loader as any).cacheDir).toBe(path.join('/tmp/.ct-memory', 'cache/personas'));
+      } finally {
+        process.env.CT_REVIEW_DATA_DIR = original;
+      }
+    });
   });
 });

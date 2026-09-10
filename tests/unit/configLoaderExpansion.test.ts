@@ -154,4 +154,66 @@ reviewers:
     expect(config.version).toBe(3);
     expect(config.profile).toBe('balanced');
   });
+
+  it('clamps review_timeout_s and arbiter_timeout_s to [1, 90]', () => {
+    const yamlOver90 = `
+version: 3
+profile: balanced
+quorum: 1
+personas:
+  - id: sec-lane
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["**"]
+    providers: [claude]
+reviewers:
+  execution: personas
+  fallback: ordered
+  overall_timeout_s: 600
+  providers:
+    - id: claude
+      enabled: true
+      model: claude-5-sonnet
+      effort: high
+      review_timeout_s: 300
+      arbiter_timeout_s: 180
+  arbiter:
+    order: [claude]
+`;
+    const config = parseAndValidateConfig(yamlOver90);
+    const provider = (config as any).reviewers.providers[0];
+    expect(provider.review_timeout_s).toBe(90);
+    expect(provider.arbiter_timeout_s).toBe(90);
+
+    const yamlUnder1 = `
+version: 3
+profile: balanced
+quorum: 1
+personas:
+  - id: sec-lane
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["**"]
+    providers: [claude]
+reviewers:
+  execution: personas
+  fallback: ordered
+  overall_timeout_s: 600
+  providers:
+    - id: claude
+      enabled: true
+      model: claude-5-sonnet
+      effort: high
+      review_timeout_s: 0
+      arbiter_timeout_s: -10
+  arbiter:
+    order: [claude]
+`;
+    const configUnder = parseAndValidateConfig(yamlUnder1);
+    const providerUnder = (configUnder as any).reviewers.providers[0];
+    expect(providerUnder.review_timeout_s).toBe(1);
+    expect(providerUnder.arbiter_timeout_s).toBe(1);
+  });
 });

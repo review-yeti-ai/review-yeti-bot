@@ -187,4 +187,15 @@ describe('Context7Adapter', () => {
 
     delete process.env.CONTEXT7_API_KEY;
   });
+
+  it('respects process.env.CT_REVIEW_DATA_DIR for default cacheDir', () => {
+    const original = process.env.CT_REVIEW_DATA_DIR;
+    try {
+      process.env.CT_REVIEW_DATA_DIR = '/tmp/.ct-memory';
+      const testAdapter = new Context7Adapter();
+      expect((testAdapter as any).cacheDir).toBe(path.join('/tmp/.ct-memory', 'cache', 'context7'));
+    } finally {
+      process.env.CT_REVIEW_DATA_DIR = original;
+    }
+  });
 });

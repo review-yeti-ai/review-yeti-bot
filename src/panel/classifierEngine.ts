@@ -404,7 +404,10 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
   }
 
   const model = providerSpec.model;
-  const timeoutMs = Math.min(providerSpec.review_timeout_s * 1000, 15_000);
+  const rawTimeoutS = typeof providerSpec.review_timeout_s === 'number' && providerSpec.review_timeout_s > 0
+    ? providerSpec.review_timeout_s
+    : 30;
+  const timeoutMs = Math.min(rawTimeoutS * 1000, 30_000);
   const startTime = Date.now();
 
   // Build compact file list and excerpt
@@ -424,7 +427,7 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
     fileLines.push(`<untrusted_diff_data file="${safePath}">\n  ${body}\n</untrusted_diff_data>`);
   }
 
-  const personaLines = options.candidatePersonas.map(
+  const personaLines = (options.candidatePersonas || []).map(
     (p) => `- ${p.id} (${p.required ? 'required' : 'optional'}): ${p.charter.slice(0, 120)}`
   );
 
@@ -435,7 +438,7 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
     `=== CHANGED FILES (${options.changedFiles.length} files) ===`,
     fileLines.join('\n'),
     ``,
-    `=== CANDIDATE REVIEW PERSONAS (${options.candidatePersonas.length}) ===`,
+    `=== CANDIDATE REVIEW PERSONAS (${(options.candidatePersonas || []).length}) ===`,
     personaLines.join('\n'),
     ``,
     `Evaluate if fastShip applies, select relevant personas, and return JSON.`,
@@ -455,6 +458,7 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
       stream: false,
       temperature: 0.1,
       responseFormat: { type: 'json_object' },
+      reasoningEffort: 'low',
       ...(options.requestPolicy?.provider ? { provider: options.requestPolicy.provider } : {}),
       ...(options.requestPolicy?.metadata ? { metadata: options.requestPolicy.metadata } : {}),
     });
