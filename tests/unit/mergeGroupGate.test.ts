@@ -108,6 +108,60 @@ describe('native merge-group Review Yeti gate', () => {
     expect(JSON.stringify(body)).not.toContain('unavailable');
   });
 
+  it.each([
+    ['pending', PR_HEAD, 'in_progress', null, 'latest exact-head Review Yeti check is not successful'],
+    ['failed', PR_HEAD, 'completed', 'failure', 'latest exact-head Review Yeti check is not successful'],
+    ['stale', 'd'.repeat(40), 'completed', 'success', 'contains malformed or stale Review Yeti evidence'],
+  ])('fails the synthetic check for %s constituent evidence', async (_label, observedHead, status, conclusion, reason) => {
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return response({ id: 9004 });
+      if (url === 'https://api.github.com/graphql') return response(queue());
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({ total_count: 1, check_runs: [{
+        id: 8002, name: 'Review Yeti', head_sha: observedHead, status, conclusion,
+        app: { id: AUTHORITATIVE_REVIEW_APP_ID, slug: 'ct-review-bot' },
+      }] });
+      if (url.endsWith('/check-runs/9004') && init?.method === 'PATCH') return response({ id: 9004 });
+      return response({}, 500);
+    }) as typeof fetch;
+    const gate = createMergeGroupGate({
+      config, repository: repository() as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
+    });
+    await expect(gate(payload())).resolves.toEqual({ checkId: 9004, conclusion: 'failure', constituents: 1 });
+    const completion = (fetchImplementation as any).mock.calls.find(([url, init]: [unknown, RequestInit]) =>
+      String(url).endsWith('/check-runs/9004') && init?.method === 'PATCH');
+    expect(JSON.parse(String(completion[1].body)).output.summary).toContain(`PR #42: ${reason}`);
+  });
+
+  it('fails when the merge queue changes between qualification reads', async () => {
+    let graphqlReads = 0;
+    const changedHead = 'e'.repeat(40);
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return response({ id: 9005 });
+      if (url === 'https://api.github.com/graphql') {
+        graphqlReads += 1;
+        return response(queue(graphqlReads === 1 ? PR_HEAD : changedHead));
+      }
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({ total_count: 1, check_runs: [{
+        id: 8003, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success',
+        app: { id: AUTHORITATIVE_REVIEW_APP_ID, slug: 'ct-review-bot' },
+      }] });
+      if (url.endsWith('/check-runs/9005') && init?.method === 'PATCH') return response({ id: 9005 });
+      return response({}, 500);
+    }) as typeof fetch;
+    const gate = createMergeGroupGate({
+      config, repository: repository() as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
+    });
+    await expect(gate(payload())).resolves.toEqual({ checkId: 9005, conclusion: 'failure', constituents: 1 });
+    const completion = (fetchImplementation as any).mock.calls.find(([url, init]: [unknown, RequestInit]) =>
+      String(url).endsWith('/check-runs/9005') && init?.method === 'PATCH');
+    expect(JSON.parse(String(completion[1].body)).output.summary)
+      .toContain('merge queue changed during exact-head qualification');
+  });
+
   it('reuses a transactionally stored result without minting a token or touching GitHub', async () => {
     const tokenFor = vi.fn(async () => 'ghs_test');
     const fetchImplementation = vi.fn() as unknown as typeof fetch;
