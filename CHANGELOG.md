@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.52.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.1...v1.52.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **operator:** preserve FIFO after stale job removal ([8be9ddd](https://github.com/review-yeti-ai/review-yeti-bot/commit/8be9ddd53b3266850298e4797a07bd63c4553723))
+* **operator:** preserve FIFO after stale job removal ([d64dc37](https://github.com/review-yeti-ai/review-yeti-bot/commit/d64dc37ac32bcf625412dffb8a087e1e8c504b60))
+
 ## [1.52.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.0...v1.52.1) (2026-09-10)
 
 
