@@ -127,12 +127,22 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	if limit <= 0 {
 		limit = DefaultV1Alpha2MaxConcurrentJobs
 	}
-	active, err := r.activeWorkerJobs(ctx, review.Namespace)
+	active, err := r.activeWorkerJobs(ctx, review.Namespace, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if active >= limit {
 		if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	olderWaiting, err := r.hasOlderWaitingReview(ctx, &review, now)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if olderWaiting {
+		if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
@@ -442,7 +452,8 @@ func (r *PRReviewJobV1Alpha2Reconciler) recordDispatchTiming(review *reviewv1alp
 	operatorMetrics.RecordDispatchTiming(timing)
 }
 
-func (r *PRReviewJobV1Alpha2Reconciler) activeWorkerJobs(ctx context.Context, namespace string) (int, error) {
+func (r *PRReviewJobV1Alpha2Reconciler) activeWorkerJobs(ctx context.Context, namespace string, now time.Time) (int, error) {
+	reader := r.admissionReader()
 	var jobs batchv1.JobList
 	component, err := labels.NewRequirement("review-yeti.ai/component", selection.In, []string{
 		job.ReceiptOnlyWorkerComponent,
@@ -452,16 +463,113 @@ func (r *PRReviewJobV1Alpha2Reconciler) activeWorkerJobs(ctx context.Context, na
 		return 0, fmt.Errorf("build Review Yeti worker selector: %w", err)
 	}
 	selector := labels.NewSelector().Add(*component)
-	if err := r.List(ctx, &jobs, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	if err := reader.List(ctx, &jobs, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return 0, err
 	}
 	active := 0
+	visibleWorkers := make(map[string]struct{}, len(jobs.Items))
 	for i := range jobs.Items {
+		visibleWorkers[jobs.Items[i].Name] = struct{}{}
 		if jobs.Items[i].Status.Succeeded == 0 && jobs.Items[i].Status.Failed == 0 {
 			active++
 		}
 	}
+
+	// WorkerCreationReserved is persisted before Job Create. If the response
+	// or the cache observation is lost, the Job may still exist even though it
+	// is absent from this list. Count valid nonterminal execution evidence as a
+	// slot until the review's own reconcile observes its expected Job or makes
+	// the guarded terminal missing-Job attempt. This is deliberately read-only;
+	// sibling reconciliation must not repair the candidate's status.
+	var reviews reviewv1alpha2.PRReviewJobList
+	if err := reader.List(ctx, &reviews, client.InNamespace(namespace)); err != nil {
+		return 0, err
+	}
+	for i := range reviews.Items {
+		candidate := &reviews.Items[i]
+		if !validWorkerAdmissionCandidate(candidate, now) || !workerCreationWasAttempted(candidate) {
+			continue
+		}
+		if _, visible := visibleWorkers[candidate.Name+"-worker"]; !visible {
+			active++
+		}
+	}
 	return active, nil
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) admissionReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
+// hasOlderWaitingReview prevents controller-runtime workqueue order from
+// deciding which review claims the next account-wide worker slot. A review
+// whose execution has already been attempted is deliberately excluded: its
+// existing Job or reservation must follow the guarded replay/missing-Job path
+// above, rather than being treated as fresh queued work. Expired, malformed,
+// or unknown-phase reviews are likewise not admission candidates; this helper
+// only observes them so a sibling reconcile never repairs unrelated status.
+func (r *PRReviewJobV1Alpha2Reconciler) hasOlderWaitingReview(ctx context.Context, review *reviewv1alpha2.PRReviewJob, now time.Time) (bool, error) {
+	reader := r.admissionReader()
+	var reviews reviewv1alpha2.PRReviewJobList
+	if err := reader.List(ctx, &reviews, client.InNamespace(review.Namespace)); err != nil {
+		return false, err
+	}
+	for index := range reviews.Items {
+		candidate := &reviews.Items[index]
+		if candidate.Name == review.Name || !waitingForWorkerAdmission(candidate, now) {
+			continue
+		}
+		if admissionPrecedes(candidate, review) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func waitingForWorkerAdmission(review *reviewv1alpha2.PRReviewJob, now time.Time) bool {
+	if !validWorkerAdmissionCandidate(review, now) || workerCreationWasAttempted(review) {
+		return false
+	}
+	return true
+}
+
+func validWorkerAdmissionCandidate(review *reviewv1alpha2.PRReviewJob, now time.Time) bool {
+	if review == nil || isTerminalPhase(review.Status.Phase) {
+		return false
+	}
+	// Empty status is the initial, unmarked state of a newly projected review;
+	// every other nonterminal state must be an explicitly supported waiting phase.
+	if review.Status.Phase != "" && review.Status.Phase != reviewv1alpha2.PhaseQueued && review.Status.Phase != reviewv1alpha2.PhaseRunning {
+		return false
+	}
+	// A sibling reconcile must never mutate an invalid or expired object, but it
+	// must not let either one strand newer, otherwise valid admission candidates.
+	if validateProjectionWindow(review) != nil || !now.Before(review.Spec.TerminalDeadline.Time) {
+		return false
+	}
+	return true
+}
+
+// admissionPrecedes supplies a stable FIFO order even when two receipts share
+// the same receivedAt value. ReceivedAt is immutable admission evidence;
+// creation timestamp and name are only deterministic tie-breakers.
+func admissionPrecedes(candidate, review *reviewv1alpha2.PRReviewJob) bool {
+	if candidate.Spec.ReceivedAt.Time.Before(review.Spec.ReceivedAt.Time) {
+		return true
+	}
+	if review.Spec.ReceivedAt.Time.Before(candidate.Spec.ReceivedAt.Time) {
+		return false
+	}
+	if candidate.CreationTimestamp.Time.Before(review.CreationTimestamp.Time) {
+		return true
+	}
+	if review.CreationTimestamp.Time.Before(candidate.CreationTimestamp.Time) {
+		return false
+	}
+	return candidate.Name < review.Name
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) markWorkspaceUsed(ctx context.Context, review *reviewv1alpha2.PRReviewJob, now time.Time) error {

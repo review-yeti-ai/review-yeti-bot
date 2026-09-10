@@ -2,6 +2,7 @@ package controllers_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -703,6 +704,478 @@ func TestPRReviewJobV1Alpha2ReconcilerCountsPublishingWorkersAgainstGlobalLimit(
 		Name:      workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber),
 	}, &pvc); err == nil {
 		t.Fatal("capacity-queued review must not allocate a workspace PVC")
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerAdmitsOldestWaitingReviewFirst(t *testing.T) {
+	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	oldest := v1alpha2Review(now)
+	newer := v1alpha2Review(now.Add(time.Minute))
+	newer.Name = "ct-review-22222222222222222222222222222222"
+	newer.Spec.RunID = "run_22222222222222222222222222222222"
+	newer.Spec.DeliveryID = "delivery-2"
+	newer.Spec.PRNumber = 43
+	newer.Spec.RunSecretName = "ct-review-run-22222222222222222222222222222222"
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oldest, newer).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+	}
+
+	newerReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: newer.Namespace, Name: newer.Name}}
+	result, err := reconciler.Reconcile(context.Background(), newerReq)
+	if err != nil {
+		t.Fatalf("reconcile newer review: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatal("newer review must requeue behind the older waiting review")
+	}
+	var queued reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), newerReq.NamespacedName, &queued); err != nil {
+		t.Fatalf("get queued newer review: %v", err)
+	}
+	if queued.Status.Phase != reviewv1alpha2.PhaseQueued {
+		t.Fatalf("newer phase = %s, want Queued", queued.Status.Phase)
+	}
+	ready := meta.FindStatusCondition(queued.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "CapacityExceeded" {
+		t.Fatalf("newer ready condition = %#v, want CapacityExceeded", ready)
+	}
+	if err := kube.Get(context.Background(), types.NamespacedName{
+		Namespace: newer.Namespace,
+		Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
+	}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("newer review must not allocate a workspace before the older review: %v", err)
+	}
+
+	oldestReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: oldest.Namespace, Name: oldest.Name}}
+	if result, err := reconciler.Reconcile(context.Background(), oldestReq); err != nil || result.RequeueAfter <= 0 {
+		t.Fatalf("provision oldest workspace: result=%#v err=%v", result, err)
+	}
+	if result, err := reconciler.Reconcile(context.Background(), oldestReq); err != nil || result.RequeueAfter != 0 {
+		t.Fatalf("admit oldest review: result=%#v err=%v", result, err)
+	}
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: oldest.Namespace, Name: oldest.Name + "-worker"}, &batchv1.Job{}); err != nil {
+		t.Fatalf("oldest review worker was not created: %v", err)
+	}
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: newer.Namespace, Name: newer.Name + "-worker"}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("newer review must remain unadmitted: %v", err)
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerUsesAPIReaderForReservationAdmissionSnapshot(t *testing.T) {
+	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	cachedCandidate := v1alpha2Review(now.Add(-time.Minute))
+	cachedCandidate.Name = "ct-review-77777777777777777777777777777777"
+	cachedCandidate.Spec.RunID = "run_77777777777777777777777777777777"
+	cachedCandidate.Spec.DeliveryID = "delivery-7"
+	cachedCandidate.Spec.PRNumber = 47
+	cachedCandidate.Spec.RunSecretName = "ct-review-run-77777777777777777777777777777777"
+	authoritativeCandidate := cachedCandidate.DeepCopy()
+	meta.SetStatusCondition(&authoritativeCandidate.Status.Conditions, metav1.Condition{
+		Type:               "WorkerCreationReserved",
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.NewTime(now),
+	})
+
+	cachedNewer := v1alpha2Review(now)
+	cachedNewer.Name = "ct-review-88888888888888888888888888888888"
+	cachedNewer.Spec.RunID = "run_88888888888888888888888888888888"
+	cachedNewer.Spec.DeliveryID = "delivery-8"
+	cachedNewer.Spec.PRNumber = 48
+	cachedNewer.Spec.RunSecretName = "ct-review-run-88888888888888888888888888888888"
+	authoritativeNewer := cachedNewer.DeepCopy()
+
+	cached := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cachedCandidate, cachedNewer).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	authoritative := fake.NewClientBuilder().WithScheme(scheme).WithObjects(authoritativeCandidate, authoritativeNewer).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client: cached, APIReader: authoritative, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+	}
+	newerReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cachedNewer.Namespace, Name: cachedNewer.Name}}
+	result, err := reconciler.Reconcile(context.Background(), newerReq)
+	if err != nil {
+		t.Fatalf("reconcile newer review: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatal("authoritative reservation must keep the newer review queued")
+	}
+	var queued reviewv1alpha2.PRReviewJob
+	if err := cached.Get(context.Background(), newerReq.NamespacedName, &queued); err != nil {
+		t.Fatalf("get queued newer review: %v", err)
+	}
+	ready := meta.FindStatusCondition(queued.Status.Conditions, "Ready")
+	if queued.Status.Phase != reviewv1alpha2.PhaseQueued || ready == nil || ready.Reason != "CapacityExceeded" {
+		t.Fatalf("newer status = %#v, want CapacityExceeded queue", queued.Status)
+	}
+	if err := cached.Get(context.Background(), types.NamespacedName{
+		Namespace: cachedNewer.Namespace,
+		Name:      workspace.PVCName(cachedNewer.Spec.RepositoryID, cachedNewer.Spec.PRNumber),
+	}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("newer review must not allocate against a stale cache: %v", err)
+	}
+	var cachedCandidateAfter reviewv1alpha2.PRReviewJob
+	if err := cached.Get(context.Background(), types.NamespacedName{Namespace: cachedCandidate.Namespace, Name: cachedCandidate.Name}, &cachedCandidateAfter); err != nil {
+		t.Fatalf("get cached candidate: %v", err)
+	}
+	if meta.IsStatusConditionTrue(cachedCandidateAfter.Status.Conditions, "WorkerCreationReserved") {
+		t.Fatal("cached unreserved candidate was unexpectedly mutated")
+	}
+	var authoritativeCandidateAfter reviewv1alpha2.PRReviewJob
+	if err := authoritative.Get(context.Background(), types.NamespacedName{Namespace: authoritativeCandidate.Namespace, Name: authoritativeCandidate.Name}, &authoritativeCandidateAfter); err != nil {
+		t.Fatalf("get authoritative candidate: %v", err)
+	}
+	if !meta.IsStatusConditionTrue(authoritativeCandidateAfter.Status.Conditions, "WorkerCreationReserved") {
+		t.Fatal("authoritative reservation was not preserved")
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerUsesAPIReaderForFIFOAdmissionSnapshot(t *testing.T) {
+	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	oldest := v1alpha2Review(now.Add(-time.Minute))
+	oldest.Name = "ct-review-99999999999999999999999999999999"
+	oldest.Spec.RunID = "run_99999999999999999999999999999999"
+	oldest.Spec.DeliveryID = "delivery-9"
+	oldest.Spec.PRNumber = 49
+	oldest.Spec.RunSecretName = "ct-review-run-99999999999999999999999999999999"
+
+	newer := v1alpha2Review(now)
+	newer.Name = "ct-review-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	newer.Spec.RunID = "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	newer.Spec.DeliveryID = "delivery-a"
+	newer.Spec.PRNumber = 50
+	newer.Spec.RunSecretName = "ct-review-run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	cached := fake.NewClientBuilder().WithScheme(scheme).WithObjects(newer).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	authoritative := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oldest, newer.DeepCopy()).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client: cached, APIReader: authoritative, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+	}
+	newerReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: newer.Namespace, Name: newer.Name}}
+	result, err := reconciler.Reconcile(context.Background(), newerReq)
+	if err != nil {
+		t.Fatalf("reconcile newer review: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatal("authoritative older candidate must keep the newer review queued")
+	}
+	var queued reviewv1alpha2.PRReviewJob
+	if err := cached.Get(context.Background(), newerReq.NamespacedName, &queued); err != nil {
+		t.Fatalf("get queued newer review: %v", err)
+	}
+	ready := meta.FindStatusCondition(queued.Status.Conditions, "Ready")
+	if queued.Status.Phase != reviewv1alpha2.PhaseQueued || ready == nil || ready.Reason != "CapacityExceeded" {
+		t.Fatalf("newer status = %#v, want CapacityExceeded queue", queued.Status)
+	}
+	if err := cached.Get(context.Background(), types.NamespacedName{
+		Namespace: newer.Namespace,
+		Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
+	}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("newer review must not allocate against a stale FIFO cache: %v", err)
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerSkipsInvalidAdmissionCandidates(t *testing.T) {
+	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name   string
+		mutate func(*reviewv1alpha2.PRReviewJob)
+	}{
+		{
+			name: "unmarked expired",
+			mutate: func(candidate *reviewv1alpha2.PRReviewJob) {
+				received := now.Add(-20 * time.Minute)
+				candidate.Spec.ReceivedAt = metav1.NewTime(received)
+				candidate.Spec.TerminalDeadline = metav1.NewTime(received.Add(15 * time.Minute))
+			},
+		},
+		{
+			name: "malformed projection window",
+			mutate: func(candidate *reviewv1alpha2.PRReviewJob) {
+				candidate.Spec.TerminalDeadline = metav1.NewTime(candidate.Spec.ReceivedAt.Time.Add(10 * time.Minute))
+			},
+		},
+		{
+			name: "unknown phase",
+			mutate: func(candidate *reviewv1alpha2.PRReviewJob) {
+				candidate.Status.Phase = reviewv1alpha2.PRReviewJobPhase("Unknown")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scheme := v1alpha2Scheme(t)
+			candidate := v1alpha2Review(now.Add(-time.Minute))
+			candidate.Name = "ct-review-33333333333333333333333333333333"
+			candidate.Spec.RunID = "run_33333333333333333333333333333333"
+			candidate.Spec.DeliveryID = "delivery-3"
+			candidate.Spec.PRNumber = 43
+			candidate.Spec.RunSecretName = "ct-review-run-33333333333333333333333333333333"
+			test.mutate(candidate)
+			beforeStatus := candidate.Status.DeepCopy()
+
+			newer := v1alpha2Review(now)
+			newer.Name = "ct-review-44444444444444444444444444444444"
+			newer.Spec.RunID = "run_44444444444444444444444444444444"
+			newer.Spec.DeliveryID = "delivery-4"
+			newer.Spec.PRNumber = 44
+			newer.Spec.RunSecretName = "ct-review-run-44444444444444444444444444444444"
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(candidate, newer).
+				WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+			reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+				Client: kube, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+			}
+
+			newerReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: newer.Namespace, Name: newer.Name}}
+			result, err := reconciler.Reconcile(context.Background(), newerReq)
+			if err != nil {
+				t.Fatalf("reconcile newer review: %v", err)
+			}
+			if result.RequeueAfter <= 0 {
+				t.Fatal("valid newer review must continue through workspace admission")
+			}
+			var updated reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), newerReq.NamespacedName, &updated); err != nil {
+				t.Fatalf("get newer review: %v", err)
+			}
+			ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+			if ready != nil && ready.Reason == "CapacityExceeded" {
+				t.Fatal("invalid sibling must not make a valid newer review capacity-queued")
+			}
+			if err := kube.Get(context.Background(), types.NamespacedName{
+				Namespace: newer.Namespace,
+				Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
+			}, &corev1.PersistentVolumeClaim{}); err != nil {
+				t.Fatalf("valid newer review did not reach workspace admission: %v", err)
+			}
+
+			var storedCandidate reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), types.NamespacedName{Namespace: candidate.Namespace, Name: candidate.Name}, &storedCandidate); err != nil {
+				t.Fatalf("get sibling candidate: %v", err)
+			}
+			gotStatus := storedCandidate.Status.DeepCopy()
+			wantStatus := beforeStatus.DeepCopy()
+			for index := range gotStatus.Conditions {
+				gotStatus.Conditions[index].LastTransitionTime = metav1.NewTime(gotStatus.Conditions[index].LastTransitionTime.Time.UTC())
+			}
+			for index := range wantStatus.Conditions {
+				wantStatus.Conditions[index].LastTransitionTime = metav1.NewTime(wantStatus.Conditions[index].LastTransitionTime.Time.UTC())
+			}
+			if !reflect.DeepEqual(*gotStatus, *wantStatus) {
+				t.Fatalf("sibling candidate status mutated during newer reconcile: got=%#v want=%#v", *gotStatus, *wantStatus)
+			}
+		})
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerCountsUnobservedWorkerAttemptAgainstCapacity(t *testing.T) {
+	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name   string
+		mutate func(*reviewv1alpha2.PRReviewJob)
+	}{
+		{
+			name: "creation reservation",
+			mutate: func(candidate *reviewv1alpha2.PRReviewJob) {
+				meta.SetStatusCondition(&candidate.Status.Conditions, metav1.Condition{
+					Type:               "WorkerCreationReserved",
+					Status:             metav1.ConditionTrue,
+					LastTransitionTime: metav1.NewTime(now),
+				})
+			},
+		},
+		{
+			name: "legacy running phase",
+			mutate: func(candidate *reviewv1alpha2.PRReviewJob) {
+				candidate.Status.Phase = reviewv1alpha2.PhaseRunning
+			},
+		},
+		{
+			name: "legacy job name",
+			mutate: func(candidate *reviewv1alpha2.PRReviewJob) {
+				candidate.Status.JobName = candidate.Name + "-worker"
+			},
+		},
+		{
+			name: "legacy start time",
+			mutate: func(candidate *reviewv1alpha2.PRReviewJob) {
+				started := metav1.NewTime(now)
+				candidate.Status.StartTime = &started
+			},
+		},
+		{
+			name: "legacy timing",
+			mutate: func(candidate *reviewv1alpha2.PRReviewJob) {
+				started := metav1.NewTime(now)
+				candidate.Status.Timing = &reviewv1alpha2.DispatchTimingStatus{JobCreatedAt: &started}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scheme := v1alpha2Scheme(t)
+			candidate := v1alpha2Review(now.Add(-time.Minute))
+			candidate.Name = "ct-review-55555555555555555555555555555555"
+			candidate.Spec.RunID = "run_55555555555555555555555555555555"
+			candidate.Spec.DeliveryID = "delivery-5"
+			candidate.Spec.PRNumber = 45
+			candidate.Spec.RunSecretName = "ct-review-run-55555555555555555555555555555555"
+			test.mutate(candidate)
+
+			newer := v1alpha2Review(now)
+			newer.Name = "ct-review-66666666666666666666666666666666"
+			newer.Spec.RunID = "run_66666666666666666666666666666666"
+			newer.Spec.DeliveryID = "delivery-6"
+			newer.Spec.PRNumber = 46
+			newer.Spec.RunSecretName = "ct-review-run-66666666666666666666666666666666"
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(candidate, newer).
+				WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+			reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+				Client: kube, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+			}
+			newerReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: newer.Namespace, Name: newer.Name}}
+			result, err := reconciler.Reconcile(context.Background(), newerReq)
+			if err != nil {
+				t.Fatalf("reconcile newer review: %v", err)
+			}
+			if result.RequeueAfter <= 0 {
+				t.Fatal("unobserved worker attempt must keep the valid newer review queued")
+			}
+			var queued reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), newerReq.NamespacedName, &queued); err != nil {
+				t.Fatalf("get queued newer review: %v", err)
+			}
+			ready := meta.FindStatusCondition(queued.Status.Conditions, "Ready")
+			if queued.Status.Phase != reviewv1alpha2.PhaseQueued || ready == nil || ready.Reason != "CapacityExceeded" {
+				t.Fatalf("newer status = %#v, want CapacityExceeded queue", queued.Status)
+			}
+			if err := kube.Get(context.Background(), types.NamespacedName{
+				Namespace: newer.Namespace,
+				Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
+			}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("newer review must not allocate while worker evidence is unobserved: %v", err)
+			}
+
+			candidateReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: candidate.Namespace, Name: candidate.Name}}
+			if result, err := reconciler.Reconcile(context.Background(), candidateReq); err != nil || result.RequeueAfter <= 0 {
+				t.Fatalf("terminalize unobserved candidate: result=%#v err=%v", result, err)
+			}
+			var terminal reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), candidateReq.NamespacedName, &terminal); err != nil {
+				t.Fatalf("get terminal candidate: %v", err)
+			}
+			if terminal.Status.Phase != reviewv1alpha2.PhaseFailed {
+				t.Fatalf("candidate phase = %s, want Failed after guarded missing-Job attempt", terminal.Status.Phase)
+			}
+			if _, err := reconciler.Reconcile(context.Background(), newerReq); err != nil {
+				t.Fatalf("reconcile newer review after terminal attempt: %v", err)
+			}
+			if err := kube.Get(context.Background(), types.NamespacedName{
+				Namespace: newer.Namespace,
+				Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
+			}, &corev1.PersistentVolumeClaim{}); err != nil {
+				t.Fatalf("newer review did not proceed after candidate terminalized: %v", err)
+			}
+		})
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerUsesStableEqualReceivedAtTieBreakers(t *testing.T) {
+	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name             string
+		candidateName    string
+		newerName        string
+		candidateCreated time.Time
+		newerCreated     time.Time
+		wantBlocked      bool
+	}{
+		{
+			name:             "creation timestamp wins before name",
+			candidateName:    "ct-review-99999999999999999999999999999999",
+			newerName:        "ct-review-11111111111111111111111111111111",
+			candidateCreated: now.Add(-time.Minute),
+			newerCreated:     now,
+			wantBlocked:      true,
+		},
+		{
+			name:             "newer creation timestamp does not block",
+			candidateName:    "ct-review-11111111111111111111111111111111",
+			newerName:        "ct-review-99999999999999999999999999999999",
+			candidateCreated: now,
+			newerCreated:     now.Add(-time.Minute),
+			wantBlocked:      false,
+		},
+		{
+			name:             "name wins when creation timestamps match",
+			candidateName:    "ct-review-11111111111111111111111111111111",
+			newerName:        "ct-review-99999999999999999999999999999999",
+			candidateCreated: now,
+			newerCreated:     now,
+			wantBlocked:      true,
+		},
+		{
+			name:             "higher name does not block when timestamps match",
+			candidateName:    "ct-review-99999999999999999999999999999999",
+			newerName:        "ct-review-11111111111111111111111111111111",
+			candidateCreated: now,
+			newerCreated:     now,
+			wantBlocked:      false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scheme := v1alpha2Scheme(t)
+			candidate := v1alpha2Review(now)
+			candidate.Name = test.candidateName
+			candidate.Spec.RunID = "run_11111111111111111111111111111111"
+			candidate.Spec.DeliveryID = "delivery-tie-candidate"
+			candidate.Spec.PRNumber = 43
+			candidate.Spec.RunSecretName = "ct-review-run-11111111111111111111111111111111"
+			candidate.CreationTimestamp = metav1.NewTime(test.candidateCreated)
+
+			newer := v1alpha2Review(now)
+			newer.Name = test.newerName
+			newer.Spec.RunID = "run_99999999999999999999999999999999"
+			newer.Spec.DeliveryID = "delivery-tie-newer"
+			newer.Spec.PRNumber = 44
+			newer.Spec.RunSecretName = "ct-review-run-99999999999999999999999999999999"
+			newer.CreationTimestamp = metav1.NewTime(test.newerCreated)
+
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(candidate, newer).
+				WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+			reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+				Client: kube, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+			}
+			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Namespace: newer.Namespace, Name: newer.Name},
+			})
+			if err != nil {
+				t.Fatalf("reconcile newer review: %v", err)
+			}
+			var updated reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), types.NamespacedName{Namespace: newer.Namespace, Name: newer.Name}, &updated); err != nil {
+				t.Fatalf("get newer review: %v", err)
+			}
+			ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+			blocked := ready != nil && ready.Reason == "CapacityExceeded"
+			if blocked != test.wantBlocked {
+				t.Fatalf("blocked=%v condition=%#v result=%#v, want %v", blocked, ready, result, test.wantBlocked)
+			}
+			var pvc corev1.PersistentVolumeClaim
+			err = kube.Get(context.Background(), types.NamespacedName{
+				Namespace: newer.Namespace,
+				Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
+			}, &pvc)
+			if test.wantBlocked && !apierrors.IsNotFound(err) {
+				t.Fatalf("blocked newer review must not create a PVC: %v", err)
+			}
+			if !test.wantBlocked && err != nil {
+				t.Fatalf("unblocked newer review must create a PVC: %v", err)
+			}
+		})
 	}
 }
 
