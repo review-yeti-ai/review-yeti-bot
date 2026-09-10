@@ -1,4 +1,5 @@
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
+import type { ReviewDispatchClaim } from '../review/reviewRun';
 import {
   buildReviewJobProjection,
   type PRReviewJobProjection,
@@ -24,13 +25,13 @@ export interface RunSecretProvisioner {
     namespace: string;
     owner: string;
     repo: string;
-  }): Promise<void>;
+  }): Promise<{ workerTokenDigest: string }>;
 }
 
 export interface ReviewJobDispatchEngineOptions {
   repository: Pick<
     ReviewDispatchRepository,
-    'claimNext' | 'markProjected' | 'releaseForRetry' | 'markTerminal'
+    'claimNext' | 'markProjected' | 'bindWorkerTokenDigest' | 'releaseForRetry' | 'markTerminal'
   >;
   projector: ReviewJobProjector;
   /** Required to dispatch an app-gate review; absent, publishing runs are refused. */
@@ -39,6 +40,8 @@ export interface ReviewJobDispatchEngineOptions {
   workerImage: string;
   namespace: string;
   runnerMode?: RunnerMode;
+  /** Service-owned immutable policy read; absence must not fall back to legacy publishing. */
+  preparedReviewFor?(claim: ReviewDispatchClaim): Promise<string>;
   now?: () => number;
   leaseMs?: number;
   retryDelayMs?: number;
@@ -72,6 +75,20 @@ export class ReviewJobDispatchEngine {
 
     let projection: PRReviewJobProjection;
     try {
+      let preparedReview: string | undefined;
+      if (claim.authoritativeGateAppId !== undefined) {
+        if (!this.options.preparedReviewFor) throw new Error('Authoritative worker projection is not configured');
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          preparedReview = await Promise.race([
+            this.options.preparedReviewFor(claim),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error('Prepared policy read deadline exceeded')), 5_000);
+            }),
+          ]);
+        } finally { if (timer !== undefined) clearTimeout(timer); }
+        if (!preparedReview) throw new Error('Prepared policy is required for authoritative review');
+      }
       projection = buildReviewJobProjection({
         runId: claim.runId,
         deliveryId: claim.deliveryId,
@@ -89,12 +106,14 @@ export class ReviewJobDispatchEngine {
         workerImage: this.options.workerImage,
         namespace: this.options.namespace,
         runnerMode: this.options.runnerMode,
-      }, now);
+        ...(preparedReview !== undefined ? { preparedReview } : {}),
+      }, this.now());
     } catch {
       const marked = await this.options.repository.markTerminal(
         claim.runId,
         this.options.workerId,
-        now,
+        claim.claimAttempt,
+        this.now(),
         'review job projection rejected',
       );
       return marked
@@ -102,6 +121,7 @@ export class ReviewJobDispatchEngine {
         : { status: 'lease-lost', runId: claim.runId };
     }
 
+    let workerTokenDigest = claim.workerTokenDigest;
     // A publishing review needs its credential in place before the Job can start.
     // Provision first and fail closed: creating the PRReviewJob without the Secret
     // would start a worker that cannot publish, and because the lane fails closed
@@ -113,7 +133,8 @@ export class ReviewJobDispatchEngine {
         const marked = await this.options.repository.markTerminal(
           claim.runId,
           this.options.workerId,
-          now,
+          claim.claimAttempt,
+          this.now(),
           'publishing review dispatched without a run secret provisioner',
         );
         return marked
@@ -122,13 +143,24 @@ export class ReviewJobDispatchEngine {
       }
       const [owner, repoName] = claim.repo.split('/');
       try {
-        await provisioner.provision({
-          runId: claim.runId,
-          secretName: projection.spec.runSecretName,
-          namespace: this.options.namespace,
-          owner,
-          repo: repoName,
-        });
+        if (!workerTokenDigest) {
+          const provisioned = await provisioner.provision({
+            runId: claim.runId,
+            secretName: projection.spec.runSecretName,
+            namespace: this.options.namespace,
+            owner,
+            repo: repoName,
+          });
+          workerTokenDigest = provisioned.workerTokenDigest;
+          const bound = await this.options.repository.bindWorkerTokenDigest(
+            claim.runId,
+            this.options.workerId,
+            claim.claimAttempt,
+            workerTokenDigest,
+            this.now(),
+          );
+          if (!bound) return { status: 'lease-lost', runId: claim.runId };
+        }
       } catch {
         // Retry rather than terminate: a token mint is a network call and GitHub
         // rate limits are transient. The terminal deadline still bounds it.
@@ -139,11 +171,13 @@ export class ReviewJobDispatchEngine {
         // source. A fixed label restores that signal; interpolating the caught
         // error would not, because upstream failures can carry credential material.
         const reason = 'run-secret-provisioning' as const;
-        const availableAt = now + this.retryDelayMs;
+        const retryNow = this.now();
+        const availableAt = retryNow + this.retryDelayMs;
         const released = await this.options.repository.releaseForRetry(
           claim.runId,
           this.options.workerId,
-          now,
+          claim.claimAttempt,
+          retryNow,
           availableAt,
         );
         return released
@@ -156,11 +190,13 @@ export class ReviewJobDispatchEngine {
       await this.options.projector.ensure(projection);
     } catch {
       const reason = 'projection' as const;
-      const availableAt = now + this.retryDelayMs;
+      const retryNow = this.now();
+      const availableAt = retryNow + this.retryDelayMs;
       const released = await this.options.repository.releaseForRetry(
         claim.runId,
         this.options.workerId,
-        now,
+        claim.claimAttempt,
+        retryNow,
         availableAt,
       );
       return released
@@ -168,12 +204,22 @@ export class ReviewJobDispatchEngine {
         : { status: 'lease-lost', runId: claim.runId };
     }
 
-    const projected = await this.options.repository.markProjected(
-      claim.runId,
-      this.options.workerId,
-      projection.metadata.name,
-      now,
-    );
+    const projected = workerTokenDigest
+      ? await this.options.repository.markProjected(
+        claim.runId,
+        this.options.workerId,
+        claim.claimAttempt,
+        projection.metadata.name,
+        this.now(),
+        workerTokenDigest,
+      )
+      : await this.options.repository.markProjected(
+        claim.runId,
+        this.options.workerId,
+        claim.claimAttempt,
+        projection.metadata.name,
+        this.now(),
+      );
     return projected
       ? { status: 'projected', runId: claim.runId, projectionName: projection.metadata.name }
       : { status: 'lease-lost', runId: claim.runId };

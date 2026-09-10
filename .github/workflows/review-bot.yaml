@@ -158,16 +158,15 @@ jobs:
               ;;
           esac
 
-      # Session logs are uploaded rather than committed. Pushing back into the checked-out
-      # repository fails on detached PR checkouts and cannot work for a cross-repo target.
-      - name: Upload Session Ledger
-        if: always()
+      # Only paths emitted by this invocation are evidence. The tracked review-comment.md
+      # is a historical sample, and sessions/ may contain prior rounds.
+      - name: Upload Current Run Evidence
+        if: ${{ always() && (steps.review.outputs.publication-receipt-path != '' || steps.review.outputs.provider-telemetry-path != '') }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: session-ledger-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+          name: review-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            sessions/
-            review-comment.md
+            ${{ steps.review.outputs.publication-receipt-path }}
             ${{ steps.review.outputs.provider-telemetry-path }}
           if-no-files-found: ignore
           retention-days: 14

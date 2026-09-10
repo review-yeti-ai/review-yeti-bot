@@ -14,10 +14,20 @@ import {
   createGitHubAppCIRequestClientFactory,
 } from './k8s/reviewCompletionDeliveryRuntime';
 import { PostgresStore } from './persistence/postgresStore';
+import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
+import { parsePreparedReviewExecution } from './review/preparedPublishingPolicy';
 import { logger } from './utils/logger';
+import { getGitHubAppIdentity, getGitHubAppRepositoryPublishToken } from './github/appAuth';
+import { GitHubInstallationClient } from './github/installationClient';
+import { AbandonedRunReaper } from './review/abandonedRunReaper';
 
 async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
   const config = reviewJobDispatcherConfigFromEnv(environment);
+  // Exactly the credentials used to provision worker publish tokens. Admission
+  // has no publishing ownership, even when it runs under another installed App.
+  const appId = String(environment.GITHUB_APP_ID || '').trim();
+  const privateKey = String(environment.GITHUB_APP_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+  const publisher = appId && privateKey ? await getGitHubAppIdentity({ appId, privateKey }) : undefined;
   const store = new PostgresStore();
   await store.initialize();
 
@@ -30,8 +40,6 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   // never publish -- and because that lane fails closed, an unpublishable worker
   // would surface as a failed check on the pull request rather than a dispatch
   // error anyone would look at.
-  const appId = String(environment.GITHUB_APP_ID || '').trim();
-  const privateKey = String(environment.GITHUB_APP_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
   const runSecretProvisioner = appId && privateKey
     ? new KubernetesRunSecretProvisioner({
       // Thin adapter rather than widening CoreSecretClient: the generated client
@@ -51,6 +59,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
             fieldManager: request.fieldManager,
             fieldValidation: request.fieldValidation,
           }),
+          readNamespacedSecret: (request: { namespace: string; name: string }) =>
+            core.readNamespacedSecret({ namespace: request.namespace, name: request.name }),
           deleteNamespacedSecret: (request: { namespace: string; name: string }) =>
             core.deleteNamespacedSecret({ namespace: request.namespace, name: request.name }),
         };
@@ -63,14 +73,25 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     logger.warn('No GitHub App credentials: publishing (app-gate) reviews will be refused');
   }
 
+  const repository = new PostgresReviewDispatchRepository(store.getPool());
   const engine = new ReviewJobDispatchEngine({
-    repository: new PostgresReviewDispatchRepository(store.getPool()),
+    repository,
     projector: new KubernetesReviewJobProjector(customObjects),
     runSecretProvisioner,
     workerId: config.workerId,
     workerImage: config.workerImage,
     namespace: config.namespace,
     runnerMode: config.runnerMode,
+    preparedReviewFor: async (claim) => {
+      const prepared = await getPreparedPublishingPolicy(store.getPool(), claim.policyDigest);
+      if (!prepared || prepared.policy.effectiveConfigDigest !== claim.configDigest) {
+        throw new Error('Admitted prepared review policy is unavailable');
+      }
+      const json = JSON.stringify({ version: 'PreparedReviewExecution.v1',
+        config: prepared.config, transport: prepared.transport });
+      parsePreparedReviewExecution(json, claim.configDigest);
+      return json;
+    },
   });
 
   const completionRepository = new PostgresReviewCompletionRepository(store.getPool());
@@ -83,6 +104,19 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     : undefined;
 
   const controller = new AbortController();
+  const reaper = publisher ? new AbandonedRunReaper({
+    repository,
+    workerId: config.workerId,
+    publisherAppId: publisher.id,
+    // One attempt per loop keeps the sweep bounded without starving dispatch.
+    limit: 1,
+    checkClientFor: async (run, signal) => {
+      const minted = await getGitHubAppRepositoryPublishToken({
+        appId, privateKey, owner: run.owner, repo: run.repo, signal,
+      });
+      return new GitHubInstallationClient({ token: minted.token });
+    },
+  }) : undefined;
   const stop = (signal: 'SIGTERM' | 'SIGINT') => {
     logger.info('Stopping Review Yeti review job dispatcher', { signal });
     controller.abort();
@@ -95,8 +129,14 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     namespace: config.namespace,
   });
   try {
+    // Serial with dispatch and awaited through shutdown: no detached sweep may
+    // publish after the DB pool closes. Failed publications retain a 60s lease.
     await Promise.all([
-      runReviewJobDispatcherLoop(engine, {
+      runReviewJobDispatcherLoop({ runOnce: async () => {
+        await reaper?.runOnce(controller.signal);
+        if (controller.signal.aborted) return { status: 'idle' };
+        return engine.runOnce();
+      } }, {
         signal: controller.signal,
         idleDelayMs: config.idleDelayMs,
         activeDelayMs: config.activeDelayMs,

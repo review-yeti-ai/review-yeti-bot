@@ -1,10 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { ReviewJobProjector } from './reviewJobDispatchEngine';
-import type { PRReviewJobProjection } from './reviewJobProjection';
+import { deriveRunSecretExecutionAttempt, type PRReviewJobProjection } from './reviewJobProjection';
 
 const GROUP = 'review-yeti.ai';
 const VERSION = 'v1alpha2';
 const PLURAL = 'prreviewjobs';
+const projectionConflictMessage = 'existing PRReviewJob conflicts with the durable projection';
+const projectionTerminalMessage = 'existing PRReviewJob is terminal; fresh admission is required';
 
 interface NamespacedCustomObjectIdentity {
   group: string;
@@ -77,9 +79,40 @@ function projectedContract(value: unknown): unknown {
   };
 }
 
+function legacyExecutionAttempt(spec: Record<string, unknown>): number {
+  const attempt = deriveRunSecretExecutionAttempt(spec.runId, spec.runSecretName);
+  if (attempt === undefined) throw new Error(projectionConflictMessage);
+  return attempt;
+}
+
+function comparisonContract(existing: unknown, projection: PRReviewJobProjection): unknown {
+  const contract = projectedContract(existing);
+  if (projection.spec.executionAttempt === undefined) return contract;
+  const projected = record(contract);
+  const observedSpec = record(projected?.spec);
+  if (!projected || !observedSpec || Object.prototype.hasOwnProperty.call(observedSpec, 'executionAttempt')) {
+    return contract;
+  }
+
+  // Kubernetes may return a legacy CR after pruning the new optional field.
+  // Clone only the comparison value; never write defaults back to the object
+  // returned by the API or treat unrelated fields as part of this migration.
+  return {
+    ...projected,
+    spec: {
+      ...observedSpec,
+      executionAttempt: legacyExecutionAttempt(observedSpec),
+    },
+  };
+}
+
 function assertExact(existing: unknown, projection: PRReviewJobProjection): void {
-  if (!isDeepStrictEqual(projectedContract(existing), projection)) {
-    throw new Error('existing PRReviewJob conflicts with the durable projection');
+  if (!isDeepStrictEqual(comparisonContract(existing, projection), projection)) {
+    throw new Error(projectionConflictMessage);
+  }
+  const phase = record(record(existing)?.status)?.phase;
+  if (['Succeeded', 'Failed', 'Expired'].includes(String(phase))) {
+    throw new Error(projectionTerminalMessage);
   }
 }
 
@@ -99,7 +132,7 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
       return;
     } catch (error) {
       if (kubernetesStatusCode(error) !== 404) {
-        if (error instanceof Error && error.message === 'existing PRReviewJob conflicts with the durable projection') {
+        if (error instanceof Error && [projectionConflictMessage, projectionTerminalMessage].includes(error.message)) {
           throw error;
         }
         throw apiFailure('get', error);
@@ -122,7 +155,7 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
         const raced = await this.client.getNamespacedCustomObject(request);
         assertExact(raced, projection);
       } catch (rereadError) {
-        if (rereadError instanceof Error && rereadError.message === 'existing PRReviewJob conflicts with the durable projection') {
+        if (rereadError instanceof Error && [projectionConflictMessage, projectionTerminalMessage].includes(rereadError.message)) {
           throw rereadError;
         }
         throw apiFailure('get', rereadError);

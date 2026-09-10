@@ -1,4 +1,4 @@
-import express, { Express, Router, Request, Response, NextFunction } from 'express';
+import express, { Express, Router, Request, Response, NextFunction, RequestHandler } from 'express';
 import { logger } from '../utils/logger';
 import { verifyGitHubSignatureDetailed } from './signature';
 import { dashboardStore } from '../persistence/dashboardStore';
@@ -6,6 +6,7 @@ import { GitHubEventHandler, ParsedPRPayload } from './eventHandler';
 import { CommandDispatcher, defaultDispatcher, ChatContext, DispatchResult } from '../chat/commandDispatcher';
 import { createEphemeralChatClient } from './appAuth';
 import { ReviewModelClient } from '../gateway/openRouterClient';
+import { createRateLimiter } from '../security/rateLimiter';
 
 export interface RequestWithRawBody extends Request {
   rawBody?: Buffer;
@@ -18,6 +19,8 @@ export interface WebhookServerOptions {
   path?: string;
   /** Pluggable event handler callback function */
   onEvent?: (req: RequestWithRawBody) => Promise<any>;
+  /** Optional rate limiter middleware */
+  rateLimiter?: RequestHandler;
   /** Optional GitHubEventHandler instance */
   eventHandler?: GitHubEventHandler;
   /** Optional CommandDispatcher instance */
@@ -60,6 +63,11 @@ export function resolveWebhookSecret(overrideSecret?: string): string {
 export function createWebhookRouter(options: WebhookServerOptions = {}): Router {
   const router = Router();
   const primaryPath = options.path || '/webhook';
+
+  const limiter = options.rateLimiter !== undefined
+    ? options.rateLimiter
+    : createRateLimiter({ windowMs: 60_000, max: 120, trustProxy: true });
+  router.use(limiter);
 
   // Middleware 1: Parse JSON and retain raw body buffer
   router.use((req: RequestWithRawBody, res: Response, next: NextFunction) => {

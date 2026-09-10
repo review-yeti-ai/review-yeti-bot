@@ -44,7 +44,7 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 		"workerImage", "runSecretName",
 	}
 	wantProperties := append([]string(nil), wantRequired...)
-	wantProperties = append(wantProperties, "qualificationModel", "qualificationProfile", "runnerMode")
+	wantProperties = append(wantProperties, "executionAttempt", "preparedReview", "qualificationModel", "qualificationProfile", "runnerMode")
 	sort.Strings(wantRequired)
 	sort.Strings(wantProperties)
 	gotRequired := append([]string(nil), spec.Required...)
@@ -71,8 +71,8 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 	if !rules["self == oldSelf"] {
 		t.Fatal("spec immutability rule is missing")
 	}
-	if !rules["timestamp(self.terminalDeadline) - timestamp(self.receivedAt) == duration('900s')"] {
-		t.Fatal("exact 15-minute deadline rule is missing")
+	if !rules["duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')"] {
+		t.Fatal("bounded 15-to-60-minute deadline rule is missing")
 	}
 	if !rules["(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')"] {
 		t.Fatal("qualification profile/model rule is missing")
@@ -110,6 +110,12 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 	if spec.Properties["prNumber"].Minimum == nil || *spec.Properties["prNumber"].Minimum != 1 {
 		t.Fatal("prNumber minimum must be one")
 	}
+	attempt := spec.Properties["executionAttempt"]
+	if attempt.Type != "integer" || attempt.Format != "int32" || attempt.Minimum == nil || *attempt.Minimum != 1 ||
+		attempt.Maximum == nil || *attempt.Maximum != 2_147_483_647 {
+		t.Fatalf("executionAttempt bounds = type %q/format %q/min %v/max %v, want positive int32",
+			attempt.Type, attempt.Format, attempt.Minimum, attempt.Maximum)
+	}
 	profile := spec.Properties["qualificationProfile"]
 	if len(profile.Enum) != 2 || string(profile.Enum[0].Raw) != `"full-panel"` || string(profile.Enum[1].Raw) != `"same-head"` {
 		t.Fatalf("qualificationProfile enum = %#v, want full-panel and same-head", profile.Enum)
@@ -117,6 +123,28 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 	model := spec.Properties["qualificationModel"]
 	if model.MinLength == nil || *model.MinLength != 1 || model.MaxLength == nil || *model.MaxLength != 256 {
 		t.Fatalf("qualificationModel bounds = min %v/max %v, want 1/256", model.MinLength, model.MaxLength)
+	}
+}
+
+func TestV1Alpha2CRDPreparedReviewIsOptionalBoundedAndImmutable(t *testing.T) {
+	spec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	prepared := spec.Properties["preparedReview"]
+	if prepared.Type != "string" || prepared.MinLength == nil || *prepared.MinLength != 1 ||
+		prepared.MaxLength == nil || *prepared.MaxLength != 256*1024 || prepared.Default != nil {
+		t.Fatal("preparedReview must be a bounded nonempty string without a default")
+	}
+	for _, required := range spec.Required {
+		if required == "preparedReview" {
+			t.Fatal("preparedReview must remain optional for legacy CRs")
+		}
+	}
+	rules := map[string]bool{}
+	for _, validation := range spec.XValidations {
+		rules[validation.Rule] = true
+	}
+	if !rules["self == oldSelf"] ||
+		!rules["!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))"] {
+		t.Fatal("preparedReview must remain immutable and restricted to the prebaked app-gate lane")
 	}
 }
 

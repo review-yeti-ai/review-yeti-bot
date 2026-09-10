@@ -27,14 +27,29 @@ import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
 import { Octokit } from '@octokit/core';
-import { OpenRouterClient } from '../gateway/openRouterClient';
+import {
+  OpenRouterClient,
+  OpenRouterConnectionError,
+  OpenRouterResponseError,
+  OpenRouterTimeoutError,
+} from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
+import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManager';
 import { createDefaultV3Config } from '../config/configLoader';
-import type { CtReviewConfigV3, ProviderId } from '../config/schema';
+import type { ProviderId } from '../config/schema';
+import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
+import { validateWorkerCompletionEndpoint, type WorkerCompletionAdapter, type WorkerTerminalFailure } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '../pipeline/domainIndex';
+import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
+import { parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
+import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
+
+import { parseChangedFiles } from '../review/changedFiles';
+export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
+export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
 
@@ -50,6 +65,7 @@ export interface PublishingReviewIdentity {
   prNumber: number;
   headSha: string;
   baseSha: string;
+  executionAttempt: number;
 }
 
 /** One canonical finding, as arbitration emits it. */
@@ -71,7 +87,7 @@ export interface CheckAnnotation {
 }
 
 export interface PublishingCheckClient {
-  createCheck(owner: string, repo: string, headSha: string): Promise<number>;
+  createCheck(owner: string, repo: string, headSha: string, externalId?: string): Promise<number>;
   completeCheck(options: {
     owner: string;
     repo: string;
@@ -163,20 +179,37 @@ const RUN_ID = /^run_[a-f0-9]{32}$/u;
 const SHA = /^[a-f0-9]{40}$/u;
 const REPO = /^[^/\s]+\/[^/\s]+$/u;
 
-export function publishingReviewIdentity(env: NodeJS.ProcessEnv): PublishingReviewIdentity {
+export function publishingReviewIdentity(
+  env: NodeJS.ProcessEnv,
+  options: { callbackEnabled?: boolean } = {},
+): PublishingReviewIdentity {
   const runId = value(env, 'REVIEW_RUN_ID');
   const repo = value(env, 'REVIEW_REPO');
   const headSha = value(env, 'REVIEW_HEAD_SHA');
   const baseSha = value(env, 'REVIEW_BASE_SHA');
   const repositoryId = Number(value(env, 'REVIEW_REPOSITORY_ID'));
   const prNumber = Number(value(env, 'REVIEW_PR_NUMBER'));
+  const rawExecutionAttempt = value(env, 'REVIEW_EXECUTION_ATTEMPT');
+  const executionAttempt = rawExecutionAttempt ? Number(rawExecutionAttempt) : 1;
+  const callbackEnabled = options.callbackEnabled ?? Boolean(value(env, 'REVIEW_COMPLETION_URL'));
+  const invalidExecutionAttempt = !Number.isSafeInteger(executionAttempt) || executionAttempt <= 0;
+  const missingExecutionAttempt = !rawExecutionAttempt;
   if (!RUN_ID.test(runId) || !REPO.test(repo) || !SHA.test(headSha) || !SHA.test(baseSha)
     || !Number.isSafeInteger(repositoryId) || repositoryId <= 0
-    || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
+    || !Number.isSafeInteger(prNumber) || prNumber <= 0
+    || invalidExecutionAttempt || (callbackEnabled && missingExecutionAttempt)) {
     throw invalidPublishingReviewContract();
   }
   const [owner, repoName] = repo.split('/');
-  return { runId, repositoryId, repo, owner, repoName, prNumber, headSha, baseSha };
+  return { runId, repositoryId, repo, owner, repoName, prNumber, headSha, baseSha, executionAttempt };
+}
+
+function validateConfiguredCompletionEndpoint(endpoint: string): void {
+  try {
+    validateWorkerCompletionEndpoint(endpoint);
+  } catch {
+    throw invalidPublishingReviewContract();
+  }
 }
 
 /**
@@ -229,102 +262,6 @@ export function createBifrostPublishingConfig(model: string): ReturnType<typeof 
   };
 }
 
-/**
- * Git writes a diff header as `diff --git a/<src> b/<dst>`. With no quoting and
- * a path containing a space that line is genuinely ambiguous -- `a/x y b/z` can
- * be split more than one way -- so the header is the LAST source consulted, not
- * the first. `+++`/`---`/`rename to` each carry exactly one path on their own
- * line and are unambiguous.
- *
- * The previous `(\S+)` header match stopped at the first space, so
- * `a/sip message.txt` yielded no usable path at all. That failed OPEN and
- * silently: the file dropped out of `changedFiles`, was never sent to the panel,
- * and any finding on it was discarded during arbitration. cisco-cdr has eight
- * such paths today.
- */
-function unquoteGitPath(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith('"') || !trimmed.endsWith('"') || trimmed.length < 2) return trimmed;
-  const inner = trimmed.slice(1, -1);
-  const simple: Record<string, number> = { n: 10, t: 9, r: 13, '"': 34, '\\': 92 };
-  const bytes: number[] = [];
-  for (let index = 0; index < inner.length; index += 1) {
-    if (inner[index] !== '\\') {
-      // Re-encode so a literal multi-byte character survives the Buffer round trip.
-      bytes.push(...Buffer.from(inner[index], 'utf8'));
-      continue;
-    }
-    const octal = /^[0-7]{3}/u.exec(inner.slice(index + 1, index + 4));
-    if (octal) {
-      bytes.push(parseInt(octal[0], 8));
-      index += 3;
-      continue;
-    }
-    const next = inner[index + 1];
-    if (next && Object.prototype.hasOwnProperty.call(simple, next)) {
-      bytes.push(simple[next]);
-      index += 1;
-      continue;
-    }
-    bytes.push(...Buffer.from(inner[index], 'utf8'));
-  }
-  return Buffer.from(bytes).toString('utf8');
-}
-
-function stripSidePrefix(path: string): string {
-  return /^[ab]\//u.test(path) ? path.slice(2) : path;
-}
-
-/** Reads the one path a finding could be anchored to, or '' if the chunk is unreadable. */
-function pathFromChunk(chunk: string): string {
-  const line = (pattern: RegExp): string => {
-    const match = pattern.exec(chunk);
-    return match ? unquoteGitPath(match[1].replace(/\r$/u, '')) : '';
-  };
-
-  // The post-image first: a finding anchors to an added line, which only the
-  // destination path can carry.
-  const plus = line(/^\+\+\+ (.+)$/mu);
-  if (plus && plus !== '/dev/null') return stripSidePrefix(plus);
-
-  // A pure rename or a binary change has no `+++` line.
-  const renamed = line(/^rename to (.+)$/mu);
-  if (renamed) return stripSidePrefix(renamed);
-
-  const minus = line(/^--- (.+)$/mu);
-  if (minus && minus !== '/dev/null') return stripSidePrefix(minus);
-
-  // Last resort. Only trustworthy when the header is unambiguous: either both
-  // sides are quoted, or neither path contains a space.
-  const quoted = /^diff --git ("(?:[^"\\]|\\.)*") ("(?:[^"\\]|\\.)*")/u.exec(chunk);
-  if (quoted) return stripSidePrefix(unquoteGitPath(quoted[2]));
-  const plain = /^diff --git a\/(\S+) b\/(\S+)[ \t]*$/mu.exec(chunk);
-  if (plain) return stripSidePrefix(`b/${plain[2]}`);
-  return '';
-}
-
-export interface ChangedFile {
-  path: string;
-  patch: string;
-}
-
-/**
- * Splits a unified diff into per-file chunks. `unreadable` carries the header of
- * every chunk no path could be read from -- an unreviewable file, which the
- * caller must surface rather than drop.
- */
-export function parseChangedFiles(diff: string): { files: ChangedFile[]; unreadable: string[] } {
-  const files: ChangedFile[] = [];
-  const unreadable: string[] = [];
-  for (const chunk of String(diff).split(/^(?=diff --git )/mu)) {
-    if (!chunk.startsWith('diff --git ')) continue;
-    const path = pathFromChunk(chunk);
-    if (path && path !== '/dev/null') files.push({ path, patch: chunk });
-    else unreadable.push((chunk.split('\n', 1)[0] || '').slice(0, 200));
-  }
-  return { files, unreadable };
-}
-
 const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
@@ -337,190 +274,34 @@ export function publishingConclusion(verdict: string, blockingFindingCount: numb
   return String(verdict).toUpperCase() === 'SHIP' ? 'success' : 'failure';
 }
 
-export function classifyFailure(error: unknown): string {
+export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
+  if (error instanceof OpenRouterTimeoutError) return 'timeout';
+  if (error instanceof UpstreamCapacityRejectionError) return 'rate_limit';
+  if (error instanceof OpenRouterConnectionError) return 'transport';
+  if (error instanceof OpenRouterResponseError) {
+    if (error.status === 401 || error.status === 403) return 'auth';
+    if (error.status === 429) return 'rate_limit';
+    return 'provider_error';
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
-  if (/timeout|timed out|ETIMEDOUT/iu.test(message)) return 'timeout';
+  if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
   if (/budget exhausted|incomplete/iu.test(message)) return 'budget_exhausted';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
   if (/429|rate limit/iu.test(message)) return 'rate_limit';
   if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
-  return 'provider_error';
-}
-
-let cachedCompiledIndex: CompiledDomainIndex | null = null;
-
-export function getCompiledDomainIndex(): CompiledDomainIndex | null {
-  if (cachedCompiledIndex) return cachedCompiledIndex;
-  try {
-    cachedCompiledIndex = loadCompiledIndex();
-    return cachedCompiledIndex;
-  } catch (err) {
-    logger.warn('Failed to load compiled domain index; falling back to open paths', { error: err });
-    return null;
+  if (/invalid (?:native )?JSON|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output/iu.test(message)) {
+    return 'malformed_output';
   }
-}
-
-export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDomainIndex | null): string[] {
-  const loadedIndex = index !== undefined ? index : getCompiledDomainIndex();
-  if (!loadedIndex) {
-    return ['**'];
-  }
-
-  const canonicalMap: Record<string, string> = {
-    'security': 'security',
-    'sec-lane': 'security',
-    'performance': 'performance',
-    'perf-lane': 'performance',
-    'architecture': 'architecture',
-    'arch-lane': 'architecture',
-    'testing': 'testing',
-    'qual-lane': 'testing',
-    'dependencies': 'dependencies',
-    'dep-lane': 'dependencies',
-    'licensing': 'licensing',
-    'policy-lane': 'licensing',
-    'devops': 'devops',
-    'devops-lane': 'devops',
-    'database': 'database',
-    'db-lane': 'database',
-    'style': 'style',
-    'documentation': 'documentation',
-    'accessibility': 'accessibility',
-    'i18n': 'i18n',
-  };
-  const target = canonicalMap[personaName.toLowerCase().trim()] || personaName.toLowerCase().trim();
-
-  const classes = new Set<string>();
-  for (const [cls, personas] of Object.entries(loadedIndex.classes)) {
-    if (personas.includes(target)) {
-      classes.add(cls);
-    }
-  }
-
-  if (classes.size === 0) {
-    return ['**'];
-  }
-
-  const globs = new Set<string>();
-  for (const eco of Object.values(loadedIndex.ecosystems)) {
-    for (const cls of classes) {
-      if (eco.classes[cls]) {
-        for (const g of eco.classes[cls]) {
-          globs.add(g);
-        }
-      }
-    }
-  }
-
-  return Array.from(globs).sort();
-}
-
-export function resolveWorkerConfig(
-  env: NodeJS.ProcessEnv,
-  transport: { baseUrl: string; apiKey: string; model: string },
-): CtReviewConfigV3 {
-  const baseConfig = createDefaultV3Config();
-
-  let maxInvestigationTurns = 2;
-  let personasList: string[] = [];
-
-  if (env.REVIEW_YETI_POLICY_JSON) {
-    try {
-      const raw = JSON.parse(env.REVIEW_YETI_POLICY_JSON);
-      const policy = raw.review_yeti || raw;
-      if (policy.budget?.max_investigation_turns) {
-        maxInvestigationTurns = Number(policy.budget.max_investigation_turns);
-      }
-      if (typeof policy.personas === 'string') {
-        personasList = policy.personas.split(',').map((p: string) => p.trim()).filter(Boolean);
-      } else if (Array.isArray(policy.personas)) {
-        personasList = policy.personas;
-      }
-    } catch (e) {
-      logger.warn('Failed to parse REVIEW_YETI_POLICY_JSON', { error: e });
-    }
-  }
-
-  if (personasList.length === 0 && env.REVIEW_PERSONAS) {
-    personasList = env.REVIEW_PERSONAS.split(',').map((p) => p.trim()).filter(Boolean);
-  }
-
-  if (env.MAX_INVESTIGATION_TURNS) {
-    const turns = Number(env.MAX_INVESTIGATION_TURNS);
-    if (Number.isSafeInteger(turns) && turns > 0) {
-      maxInvestigationTurns = turns;
-    }
-  }
-
-  const default6 = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'];
-  const effectivePersonaNames = personasList.length > 0 ? personasList : default6;
-
-  const personaMap: Record<string, { id: string; required: boolean; charter: string }> = {
-    'security': { id: 'sec-lane', required: true, charter: 'builtin:security' },
-    'sec-lane': { id: 'sec-lane', required: true, charter: 'builtin:security' },
-    'performance': { id: 'perf-lane', required: false, charter: 'builtin:performance' },
-    'perf-lane': { id: 'perf-lane', required: false, charter: 'builtin:performance' },
-    'architecture': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals' },
-    'arch-lane': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals' },
-    'testing': { id: 'qual-lane', required: false, charter: 'builtin:consistency' },
-    'qual-lane': { id: 'qual-lane', required: false, charter: 'builtin:consistency' },
-    'dependencies': { id: 'dep-lane', required: false, charter: 'builtin:contract' },
-    'dep-lane': { id: 'dep-lane', required: false, charter: 'builtin:contract' },
-    'licensing': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
-    'policy-lane': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
-  };
-
-  const personas = effectivePersonaNames.map((name) => {
-    const key = name.toLowerCase().trim();
-    const matched = personaMap[key] || {
-      id: name,
-      required: false,
-      charter: 'builtin:correctness',
-    };
-    return {
-      id: matched.id,
-      enabled: true,
-      required: matched.required,
-      charter: matched.charter,
-      paths: getPersonaEcosystemPaths(key),
-      providers: ['bifrost'] as ProviderId[],
-    };
-  });
-
-  return {
-    ...baseConfig,
-    personas,
-    default_max_turns: Math.min(3, Math.max(1, maxInvestigationTurns || 2)),
-    reviewer_effort: 'medium',
-    reviewers: {
-      execution: 'personas',
-      fallback: 'ordered',
-      overall_timeout_s: 900,
-      providers: [
-        {
-          id: 'bifrost' as ProviderId,
-          enabled: true,
-          model: transport.model,
-          effort: 'medium',
-          review_timeout_s: 90,
-          arbiter_timeout_s: 90,
-        },
-      ],
-      arbiter: {
-        order: ['bifrost' as ProviderId],
-      },
-    },
-    evidence: {
-      zoekt: {
-        enabled: true,
-      },
-    },
-  };
+  if (/provider|gateway|model/iu.test(message)) return 'provider_error';
+  return 'internal_error';
 }
 
 export interface PublishingReviewDeps {
   checkClient: PublishingCheckClient;
+  /** Reports a terminal worker failure without carrying provider error text. */
+  completion?: WorkerCompletionAdapter;
+  reviewCompletion?: WorkerReviewCompletionAdapter;
   sourceLoader?: typeof loadSameHeadReviewSource;
   /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
   visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
@@ -585,37 +366,151 @@ export async function runPublishingReviewWorker(
   deps: PublishingReviewDeps,
 ): Promise<PublishingReviewReceipt> {
   if (!isPublishingReviewWorker(env)) throw invalidPublishingReviewContract();
-  const identity = publishingReviewIdentity(env);
-  const transport = bifrostTransport(env);
+  const authoritative = value(env, 'REVIEW_AUTHORITATIVE_GATE') === 'true';
+  if ((value(env, 'REVIEW_AUTHORITATIVE_GATE') && !authoritative)
+    || (value(env, 'REVIEW_PREPARED_CONFIG_JSON') && !authoritative)
+    || (deps.reviewCompletion && !authoritative)) throw invalidPublishingReviewContract();
+  const completionEndpoint = value(env, 'REVIEW_COMPLETION_URL');
+  if (completionEndpoint) validateConfiguredCompletionEndpoint(completionEndpoint);
+  if (authoritative && (!completionEndpoint || !deps.reviewCompletion || deps.completion
+    || value(env, 'REVIEW_CHECK_ID'))) throw invalidPublishingReviewContract();
+  if (completionEndpoint && !deps.completion && !deps.reviewCompletion) throw invalidPublishingReviewContract();
+  const identity = publishingReviewIdentity(env, {
+    callbackEnabled: Boolean(completionEndpoint) || Boolean(deps.completion) || Boolean(deps.reviewCompletion),
+  });
+  const now = deps.now || Date.now;
+  const startedAt = new Date(now()).toISOString();
+  const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
+  const panelRunner = deps.panelRunner || executePersonaPanel;
+  let preparedPersonaIds: string[] = [];
+  let authoritativeCompletionAttempted = false;
+  const reportReviewResult = async (result: WorkerReviewResult): Promise<void> => {
+    if (!authoritative || !deps.reviewCompletion) return;
+    const event = parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
+      runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+      prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
+      policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+      executionAttempt: identity.executionAttempt, result });
+    // Once a terminal body may have reached the service, never replace it with
+    // a different failure body merely because its acknowledgement was lost.
+    authoritativeCompletionAttempted = true;
+    await deps.reviewCompletion.reportReviewResult(event);
+  };
+
+  const reportTerminalFailure = async (error: unknown, failedCheckId?: number): Promise<void> => {
+    const failureClass = classifyFailure(error);
+    if (authoritative && !authoritativeCompletionAttempted) {
+      try {
+        await reportReviewResult({ version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
+          personas: preparedPersonaIds.map((id) => ({ id, decision: 'ERROR', status: 'ERROR', errorClass: failureClass, findings: [] })),
+          coverageComplete: false, quorumSatisfied: false });
+      } catch {
+        logger.error('Authoritative worker failure could not be acknowledged', {
+          runId: identity.runId, reason: 'completion_callback_failed', failureClass,
+        });
+      }
+    }
+    if (failedCheckId !== undefined) {
+      try {
+        await deps.checkClient.completeCheck({
+          owner: identity.owner,
+          repo: identity.repoName,
+          checkId: failedCheckId,
+          conclusion: 'failure',
+          title: 'Review Yeti: review did not complete',
+          summary: `Failure class \`${failureClass}\` at \`${identity.headSha}\`. This is a failed review, not an approval.`,
+        });
+      } catch {
+        logger.error('Failed to publish the fail-closed conclusion', {
+          runId: identity.runId,
+          failureClass,
+          reason: 'check_publication_failed',
+        });
+      }
+    }
+    if (deps.checkClient.publishGateCheck) {
+      try {
+        await deps.checkClient.publishGateCheck(identity.owner, identity.repoName, identity.headSha, {
+          conclusion: 'failure',
+          title: 'Review Yeti Gate: Ineligible (review failed)',
+          summary: `Review failed closed with class \`${failureClass}\` at \`${identity.headSha}\`. Policy gate closed.`,
+        });
+      } catch (gatePublishError) {
+        logger.warn('Failed to publish fail-closed Review Yeti Gate', {
+          runId: identity.runId,
+          error: gatePublishError instanceof Error ? gatePublishError.message : String(gatePublishError),
+        });
+      }
+    }
+    if (deps.completion) {
+      const event: WorkerTerminalFailure = {
+        version: 'WorkerTerminalFailure.v1',
+        runId: identity.runId,
+        repositoryId: identity.repositoryId,
+        owner: identity.owner,
+        repo: identity.repoName,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        baseSha: identity.baseSha,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
+        configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+        executionAttempt: identity.executionAttempt,
+        ...(failedCheckId === undefined ? {} : { checkId: failedCheckId }),
+        failureClass,
+      };
+      try {
+        await deps.completion.reportTerminalFailure(event);
+      } catch {
+        // The original failure remains authoritative. The callback is a durable
+        // recovery aid, never a reason to swallow or rewrite that failure.
+        logger.error('Failed to persist worker terminal failure', {
+          runId: identity.runId,
+          failureClass,
+          reason: 'completion_callback_failed',
+        });
+      }
+    }
+  };
+
+  let checkId: number | undefined;
+  try {
+    // A check is useful evidence, but it is not a prerequisite for durable
+    // failure recovery: createCheck itself can fail before a check id exists.
+    checkId = value(env, 'REVIEW_CHECK_ID')
+      ? Number(value(env, 'REVIEW_CHECK_ID'))
+      : await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha,
+        `${identity.runId}:a${identity.executionAttempt}`);
+  } catch (error) {
+    await reportTerminalFailure(error);
+    throw error;
+  }
+
   // The dispatching workflow may tell this lane the repository's visibility. In
   // production nothing does yet, and the first live run after the visibility
   // change published "Repository visibility: UNKNOWN" for a private repository
   // (ct-meta#2884). This lane already holds a repository-scoped read token for
   // the diff, so it can ask GitHub itself. A failed lookup settles to UNKNOWN
   // and never blocks the run; it is never allowed to become a guess.
-  const repositoryVisibility = await resolveRepositoryVisibility(
-    normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY')),
-    {
-      lookup: () => (deps.visibilityLookup || lookupRepositoryVisibility)({
-        owner: identity.owner,
-        repo: identity.repoName,
-        token: value(env, 'GH_TOKEN'),
-      }),
-    },
-  );
-  const now = deps.now || Date.now;
-  const startedAt = new Date(now()).toISOString();
-  const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
-  const panelRunner = deps.panelRunner || executePersonaPanel;
-
-  // Created before any provider work so an in-flight run is visible on the head,
-  // and so a crash leaves a check this lane owns rather than nothing at all.
-  // When REVIEW_CHECK_ID is provided by central dispatch, reuse it directly via PATCH.
-  const checkId = value(env, 'REVIEW_CHECK_ID')
-    ? Number(value(env, 'REVIEW_CHECK_ID'))
-    : await deps.checkClient.createCheck(identity.owner, identity.repoName, identity.headSha);
-
   try {
+    // Validate the provider contract after check creation so a validly identified
+    // worker can still persist a durable terminal failure for a configuration
+    // error. The check id remains optional only for createCheck failures.
+    const transport = bifrostTransport(env);
+    const workerConfig = authoritative
+      ? parsePreparedReviewExecution(value(env, 'REVIEW_PREPARED_CONFIG_JSON'), value(env, 'REVIEW_CONFIG_DIGEST'),
+        { baseUrl: transport.baseUrl, model: transport.model }).config
+      : resolveWorkerConfig(env, transport);
+    if (authoritative) preparedPersonaIds = workerConfig.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
+    const repositoryVisibility = await resolveRepositoryVisibility(
+      normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY')),
+      {
+        lookup: () => (deps.visibilityLookup || lookupRepositoryVisibility)({
+          owner: identity.owner,
+          repo: identity.repoName,
+          token: value(env, 'GH_TOKEN'),
+        }),
+      },
+    );
     // `repo` is the full `owner/repo`: the loader parses the slash itself and has
     // no `owner` field. Passing the bare name made every app-gate run die on
     // "GitHub qualification repository is invalid". The `as Parameters<...>` cast
@@ -635,7 +530,6 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
-    const workerConfig = resolveWorkerConfig(env, transport);
     const panelResult = await panelRunner({
       config: workerConfig,
       changedFiles,
@@ -806,6 +700,26 @@ export async function runPublishingReviewWorker(
     }
 
     const completedAt = new Date(now()).toISOString();
+    if (authoritative) {
+      const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
+        'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
+      const personas = panelResult.personas.map((persona) => ({ id: persona.id, decision: persona.decision,
+        status: 'COMPLETE' as const,
+        findings: persona.findings.map((finding) => Object.fromEntries(
+          Object.entries(finding).filter(([key, value]) => findingKeys.has(key) && value !== undefined))),
+      }));
+      const errors = (panelResult.optionalFailures || []).map((failure) => ({ id: failure.id,
+        decision: 'ERROR' as const, status: 'ERROR' as const, findings: [], errorClass: classifyFailure(failure.error) }));
+      const result = parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
+        runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+        prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+        executionAttempt: identity.executionAttempt,
+        result: { version: 'WorkerReviewResult.v1', completedAt, personas: [...personas, ...errors],
+          coverageComplete: unreadable.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true },
+      }).result;
+      await reportReviewResult(result);
+    }
     return {
       version: 'ReviewYetiPublishingReview.v1',
       runId: identity.runId,
@@ -835,42 +749,7 @@ export async function runPublishingReviewWorker(
       },
     };
   } catch (error) {
-    const failureClass = classifyFailure(error);
-    // Fail closed: an outage concludes `failure`, never `neutral` or `success`.
-    // Publication is best-effort because the check may be unreachable; the
-    // rethrow below still fails the Job so the admission deadline can reap it.
-    try {
-      await deps.checkClient.completeCheck({
-        owner: identity.owner,
-        repo: identity.repoName,
-        checkId,
-        conclusion: 'failure',
-        title: 'Review Yeti: review did not complete',
-        summary: `Failure class \`${failureClass}\` at \`${identity.headSha}\`. This is a failed review, not an approval.`,
-      });
-    } catch (publishError) {
-      logger.error('Failed to publish the fail-closed conclusion', {
-        runId: identity.runId,
-        failureClass,
-        error: publishError instanceof Error ? publishError.message : String(publishError),
-      });
-    }
-
-    if (deps.checkClient.publishGateCheck) {
-      try {
-        await deps.checkClient.publishGateCheck(identity.owner, identity.repoName, identity.headSha, {
-          conclusion: 'failure',
-          title: 'Review Yeti Gate: Ineligible (review failed)',
-          summary: `Review failed closed with class \`${failureClass}\` at \`${identity.headSha}\`. Policy gate closed.`,
-        });
-      } catch (gatePublishError) {
-        logger.warn('Failed to publish fail-closed Review Yeti Gate', {
-          runId: identity.runId,
-          error: gatePublishError instanceof Error ? gatePublishError.message : String(gatePublishError),
-        });
-      }
-    }
-
+    await reportTerminalFailure(error, checkId);
     throw error;
   }
 }

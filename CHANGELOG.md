@@ -1,5 +1,82 @@
 # Changelog
 
+## [1.48.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.4...v1.48.5) (2026-09-10)
+
+
+### Bug Fixes
+
+* **operator:** queue while prior workspace terminates ([#653](https://github.com/review-yeti-ai/review-yeti-bot/issues/653)) ([b81b039](https://github.com/review-yeti-ai/review-yeti-bot/commit/b81b03973b6e17f0f55d15837d4df04eb2f12fe2))
+
+## [1.48.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.3...v1.48.4) (2026-09-10)
+
+
+### Bug Fixes
+
+* **deploy:** guard Flux-owned worker advances ([#651](https://github.com/review-yeti-ai/review-yeti-bot/issues/651)) ([d5346d1](https://github.com/review-yeti-ai/review-yeti-bot/commit/d5346d1c4e1e8ed57236419fd31259f1678e2e4d))
+
+## [1.48.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.2...v1.48.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* **review:** preserve findings from malformed approvals ([#649](https://github.com/review-yeti-ai/review-yeti-bot/issues/649)) ([b7c5d33](https://github.com/review-yeti-ai/review-yeti-bot/commit/b7c5d33e4659e0934a8bea68ad984e34fe2fa436))
+
+## [1.48.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.1...v1.48.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **review:** classify wrapped provider failures ([#647](https://github.com/review-yeti-ai/review-yeti-bot/issues/647)) ([95bbab1](https://github.com/review-yeti-ai/review-yeti-bot/commit/95bbab1ac9eebd2f35aefcfbf61846fbe34167ab))
+
+## [1.48.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.0...v1.48.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* guard worker upgrades with exact-state receipts ([#645](https://github.com/review-yeti-ai/review-yeti-bot/issues/645)) ([8a01f4c](https://github.com/review-yeti-ai/review-yeti-bot/commit/8a01f4c653eb61fb7f3e77d00158e9b11eadf2ba))
+
+## [1.48.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.47.1...v1.48.0) (2026-09-10)
+
+
+### Features
+
+* **security:** add rate limiting and harden hmac signature verification ([#642](https://github.com/review-yeti-ai/review-yeti-bot/issues/642)) ([0ca45f6](https://github.com/review-yeti-ai/review-yeti-bot/commit/0ca45f6b6c6cecb9804066c9f42cea6fcfe24f8c))
+
+## [1.47.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.47.0...v1.47.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **review:** recover abandoned attempts without replaying workers ([#638](https://github.com/review-yeti-ai/review-yeti-bot/issues/638)) ([ecd789d](https://github.com/review-yeti-ai/review-yeti-bot/commit/ecd789d5836968b1903a81a6333d7d39b947f982))
+
+## [1.47.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.46.0...v1.47.0) (2026-09-09)
+
+
+### Features
+
+* add opt-in service-owned review gates ([#635](https://github.com/review-yeti-ai/review-yeti-bot/issues/635)) ([1a7f237](https://github.com/review-yeti-ai/review-yeti-bot/commit/1a7f2370d296b41296ee73e41cf25dc40cdccb23))
+
+## [1.46.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.7...v1.46.0) (2026-09-09)
+
+
+### Features
+
+* **dispatch:** make the terminal review deadline configurable, default 30 minutes (REL-733) ([#634](https://github.com/review-yeti-ai/review-yeti-bot/issues/634)) ([6e7725a](https://github.com/review-yeti-ai/review-yeti-bot/commit/6e7725ab0a8d30753df5619af0e1289b933f77f7))
+
+## [1.45.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.6...v1.45.7) (2026-09-09)
+
+
+### Bug Fixes
+
+* **REL-732:** GC Review Yeti worker Jobs immediately after finish ([#632](https://github.com/review-yeti-ai/review-yeti-bot/issues/632)) ([4048f8a](https://github.com/review-yeti-ai/review-yeti-bot/commit/4048f8a79d40680e1d81525df52a6775c36a1ed3))
+
+## [1.45.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.5...v1.45.6) (2026-09-09)
+
+
+### Bug Fixes
+
+* persist worker failures with attempt-bound recovery ([#629](https://github.com/review-yeti-ai/review-yeti-bot/issues/629)) ([ddab4bc](https://github.com/review-yeti-ai/review-yeti-bot/commit/ddab4bcfe0d1b78e3c863dd8323a2c87adc4d3b4))
+
 ## [1.45.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.45.4...v1.45.5) (2026-09-09)
 
 

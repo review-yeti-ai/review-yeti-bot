@@ -1,8 +1,11 @@
 import type { PublicationMode } from '../review/reviewRun';
+import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
+import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
 
 const exactSha = /^[a-f0-9]{40}$/u;
 const exactDigest = /^[a-f0-9]{64}$/u;
 const runIdPattern = /^run_([a-f0-9]{32})$/u;
+const runSecretNamePattern = /^ct-review-run-([a-f0-9]{32})(?:-a([1-9][0-9]*))?$/u;
 const maxExecutionAttempt = 2_147_483_647;
 const repositoryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const namespacePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
@@ -42,6 +45,8 @@ export interface ReviewJobProjectionInput {
   workerImage: string;
   namespace: string;
   runnerMode?: RunnerMode;
+  /** Immutable PreparedReviewExecution.v1 envelope; presence enables the authoritative worker lane. */
+  preparedReview?: string;
 }
 
 export interface PRReviewJobProjection {
@@ -67,7 +72,10 @@ export interface PRReviewJobProjection {
     publicationMode: PublicationMode;
     workerImage: string;
     runSecretName: string;
+    /** Optional for compatibility with projections created before attempt transport was added. */
+    executionAttempt?: number;
     runnerMode?: RunnerMode;
+    preparedReview?: string;
   };
 }
 
@@ -79,17 +87,33 @@ function exactHex(value: string, pattern: RegExp, field: string): void {
   if (!pattern.test(value)) throw new Error(`${field} must be exact lowercase hexadecimal`);
 }
 
+/** Canonical writer: first execution is unsuffixed; retries use a positive int32. */
+export function buildRunSecretName(runId: string, executionAttempt: number = 1): string {
+  const runMatch = runIdPattern.exec(runId);
+  if (!runMatch) throw new Error('run id must be run_ followed by 32 lowercase hexadecimal characters');
+  if (!Number.isSafeInteger(executionAttempt) || executionAttempt <= 0 || executionAttempt > maxExecutionAttempt) {
+    throw new Error('execution attempt must be a positive int32');
+  }
+  return `ct-review-run-${runMatch[1]}${executionAttempt === 1 ? '' : `-a${executionAttempt}`}`;
+}
+
+/** Legacy reader: accepts -a1 as well as the canonical unsuffixed first attempt. */
+export function deriveRunSecretExecutionAttempt(runId: unknown, secretName: unknown): number | undefined {
+  if (typeof runId !== 'string' || typeof secretName !== 'string') return undefined;
+  const runMatch = runIdPattern.exec(runId);
+  const secretMatch = runSecretNamePattern.exec(secretName);
+  if (!runMatch || !secretMatch || secretMatch[1] !== runMatch[1]) return undefined;
+  const attempt = secretMatch[2] === undefined ? 1 : Number(secretMatch[2]);
+  return Number.isSafeInteger(attempt) && attempt > 0 && attempt <= maxExecutionAttempt ? attempt : undefined;
+}
+
 export function buildReviewJobProjection(
   input: ReviewJobProjectionInput,
   now: number = Date.now(),
 ): PRReviewJobProjection {
-  const runMatch = runIdPattern.exec(input.runId);
-  if (!runMatch) throw new Error('run id must be run_ followed by 32 lowercase hexadecimal characters');
-  if (!input.deliveryId || input.deliveryId.length > 512) throw new Error('delivery id must contain 1 to 512 characters');
   const executionAttempt = input.executionAttempt ?? 1;
-  if (!Number.isSafeInteger(executionAttempt) || executionAttempt <= 0 || executionAttempt > maxExecutionAttempt) {
-    throw new Error('execution attempt must be a positive safe integer');
-  }
+  const runSecretName = buildRunSecretName(input.runId, executionAttempt);
+  if (!input.deliveryId || input.deliveryId.length > 512) throw new Error('delivery id must contain 1 to 512 characters');
   positiveSafeInteger(input.repositoryId, 'repository id');
   positiveSafeInteger(input.prNumber, 'pull request number');
   if (!repositoryPattern.test(input.repo)) throw new Error('repository must be an owner/name identity');
@@ -102,6 +126,12 @@ export function buildReviewJobProjection(
   }
   if (!namespacePattern.test(input.namespace)) throw new Error('namespace must be a Kubernetes DNS label');
   const runnerMode: RunnerMode = input.runnerMode || 'prebaked';
+  if (input.preparedReview !== undefined) {
+    if (input.publicationMode !== 'app-gate' || runnerMode !== 'prebaked') {
+      throw new Error('prepared review requires the prebaked app-gate lane');
+    }
+    parsePreparedReviewExecution(input.preparedReview, input.configDigest);
+  }
   if (runnerMode === 'generic') {
     if (!GENERIC_RUNNER_IMAGE_PATTERN.test(input.workerImage) && !isTrustedWorkerImage(input.workerImage)) {
       throw new Error(
@@ -121,21 +151,17 @@ export function buildReviewJobProjection(
   if (!Number.isFinite(input.receivedAt) || !Number.isFinite(input.terminalDeadline) || !Number.isFinite(now)) {
     throw new Error('review projection timestamps must be finite');
   }
-  if (input.terminalDeadline !== input.receivedAt + 900_000) {
-    throw new Error('terminal deadline must be exactly 15 minutes after receipt');
-  }
+  assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
   if (now < input.receivedAt) throw new Error('projection time cannot precede admission receipt');
   if (input.terminalDeadline - now < 120_000) {
     throw new Error('at least 120 seconds must remain before projection');
   }
 
-  const identitySuffix = runMatch[1];
   // A retry of the same projection keeps this name. Once a worker has reached a
   // terminal state, the dispatcher advances executionAttempt and gets a fresh
   // CR/Secret identity while the immutable run id and review artifacts remain
   // stable. This prevents Kubernetes from accepting a stale terminal object.
-  const attemptSuffix = executionAttempt === 1 ? '' : `-a${executionAttempt}`;
-  const projectionName = `ct-review-${identitySuffix}${attemptSuffix}`;
+  const projectionName = runSecretName.replace('ct-review-run-', 'ct-review-');
   return {
     apiVersion: 'review-yeti.ai/v1alpha2',
     kind: 'PRReviewJob',
@@ -162,8 +188,10 @@ export function buildReviewJobProjection(
       configDigest: input.configDigest,
       publicationMode: input.publicationMode,
       workerImage: input.workerImage,
-      runSecretName: `ct-review-run-${identitySuffix}${attemptSuffix}`,
+      runSecretName,
+      ...(input.executionAttempt === undefined ? {} : { executionAttempt }),
       runnerMode,
+      ...(input.preparedReview === undefined ? {} : { preparedReview: input.preparedReview }),
     },
   };
 }

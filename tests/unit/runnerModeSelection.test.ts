@@ -5,6 +5,7 @@ import {
   TRUSTED_WORKER_IMAGE_REPOSITORY,
 } from '../../src/k8s/reviewJobProjection';
 import { reviewJobDispatcherConfigFromEnv } from '../../src/k8s/reviewJobDispatcherRuntime';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const validBaseSpec = {
   runId: `run_${'1'.repeat(32)}`,
@@ -15,7 +16,7 @@ const validBaseSpec = {
   headSha: 'a'.repeat(40),
   baseSha: 'b'.repeat(40),
   receivedAt: 1_700_000_000_000,
-  terminalDeadline: 1_700_000_000_000 + 900_000,
+  terminalDeadline: 1_700_000_000_000 + TERMINAL_DEADLINE_MS,
   policyDigest: 'c'.repeat(64),
   configDigest: 'd'.repeat(64),
   publicationMode: 'disabled' as const,

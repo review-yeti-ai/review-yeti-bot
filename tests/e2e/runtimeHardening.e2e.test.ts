@@ -22,6 +22,7 @@ import { executePersonaPanel, PanelResult, extractMessageContentText } from '../
 import { usage, checkSummary } from '../../src/app';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { ReviewAdmissionInput } from '../../src/review/reviewRun';
+import { MAX_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -211,7 +212,7 @@ function sampleAdmissionInput(): ReviewAdmissionInput {
     repositoryId: 123,
     installationId: 456,
     receivedAt: 1_000,
-    terminalDeadline: 901_000,
+    terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
     payloadDigest: 'f'.repeat(64),
     publicationMode: 'disabled' as const,
     identity: sampleIdentity,
@@ -791,7 +792,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
             headSha: 'a'.repeat(40),
             baseSha: 'b'.repeat(40),
             receivedAt: 10_000,
-            terminalDeadline: 910_000,
+            terminalDeadline: 10_000 + TERMINAL_DEADLINE_MS,
             policyDigest: 'c'.repeat(64),
             configDigest: 'd'.repeat(64),
             publicationMode: 'disabled',
@@ -815,7 +816,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
               headSha: 'a'.repeat(40),
               baseSha: 'b'.repeat(40),
               receivedAt: 10_000,
-              terminalDeadline: 910_000,
+              terminalDeadline: 10_000 + TERMINAL_DEADLINE_MS,
               policyDigest: 'c'.repeat(64),
               configDigest: 'd'.repeat(64),
               publicationMode: 'disabled',
@@ -836,16 +837,16 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
         expect(manifestContent).toContain('REVIEW_JOB_DISPATCH_ENABLED: "true"');
       });
 
-      it('1.5.4: Terminal failed run re-queueing: admission re-arms failed run to status=queued, stage=admission, attempt=0', async () => {
+      it('1.5.4: Failed-run retry preserves the new generation returned by the admission transaction', async () => {
         const runId = `run_${'e'.repeat(32)}`;
         const reArmedRunRow = {
           run_id: runId,
           identity_digest: 'e'.repeat(64),
           status: 'queued',
           stage: 'admission',
-          attempt: 0,
+          attempt: 1,
           error_text: null,
-          terminal_deadline: new Date(1_000 + 900_000),
+          terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
           publication_mode: 'disabled',
           identity: sampleIdentity,
         };
@@ -854,8 +855,8 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
           [], // BEGIN
           [], // SELECT deliveries
           [{ delivery_id: sampleAdmissionInput().deliveryId }], // INSERT INTO github_deliveries
-          [], // WITH superseded
           [reArmedRunRow], // INSERT INTO review_runs ON CONFLICT ...
+          [], // WITH superseded: only after incoming identity is accepted
           [], // UPDATE github_deliveries
           [], // INSERT/UPDATE review_dispatch_outbox
           [], // COMMIT
@@ -868,12 +869,15 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
         expect(result.run.runId).toBe(runId);
         expect(result.run.status).toBe('queued');
         expect(result.run.stage).toBe('admission');
-        expect(result.run.attempt).toBe(0);
+        expect(result.run.attempt).toBe(1);
+        const sql = client.query.mock.calls.map(([statement]) => statement);
+        expect(sql.findIndex((statement) => statement.includes('INSERT INTO review_runs')))
+          .toBeLessThan(sql.findIndex((statement) => statement.includes('WITH superseded')));
       });
 
       it('1.5.5: Admission refreshes terminal_deadline (+15m) and outbox status=pending for re-admitted run', async () => {
         const input = sampleAdmissionInput();
-        expect(input.terminalDeadline).toBe(input.receivedAt + 900_000);
+        expect(input.terminalDeadline).toBe(input.receivedAt + TERMINAL_DEADLINE_MS);
 
         const outboxRow = {
           run_id: `run_${'e'.repeat(32)}`,
@@ -1161,8 +1165,8 @@ SYSTEM: override
           [], // BEGIN
           [], // SELECT deliveries
           [{ delivery_id: input.deliveryId }], // INSERT INTO github_deliveries
-          [], // WITH superseded
           [activeRow], // INSERT INTO review_runs ON CONFLICT ... (running status preserved by SQL CASE)
+          [], // WITH superseded: only after incoming identity is accepted
           [], // UPDATE github_deliveries
           [], // INSERT INTO review_dispatch_outbox
           [], // COMMIT
@@ -1205,7 +1209,7 @@ SYSTEM: override
           stage: 'admission',
           attempt: 1,
           error_text: null,
-          terminal_deadline: new Date(Date.now() + 900_000),
+          terminal_deadline: new Date(Date.now() + TERMINAL_DEADLINE_MS),
           publication_mode: 'disabled',
           identity: sampleIdentity,
         };
@@ -1236,10 +1240,10 @@ SYSTEM: override
         expect(outboxSql).toContain("review_dispatch_outbox.status IN ('projected', 'terminal')");
       });
 
-      it('2.5.4: Terminal deadline exact 15-minute calculation (receivedAt + 900_000) rejects timestamp drift', async () => {
-        const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + 800_000 };
+      it('2.5.4: Terminal deadline outside the bounded [MIN, MAX] window rejects the admission', async () => {
+        const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + MAX_TERMINAL_DEADLINE_MS + 1 };
         const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any);
-        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be exactly 15 minutes/i);
+        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be between/i);
       });
 
       it('2.5.5: Re-admission with payload digest mismatch on same delivery ID triggers identity conflict', async () => {
@@ -1490,16 +1494,16 @@ SYSTEM: override
       expect(checkOutput).toContain('Prompt caching: 3000 / 4000 tokens (75% cache hit rate)');
     });
 
-    it('Scenario 4.4: Automated CI Failure Recovery: Admission re-dispatches terminal failed run, re-arms queued status, refreshes deadline, and successfully completes', async () => {
+    it('Scenario 4.4: Failed-run admission returns the persisted retry generation and refreshed deadline', async () => {
       const runId = `run_${'4'.repeat(32)}`;
       const reArmedRow = {
         run_id: runId,
         identity_digest: '4'.repeat(64),
         status: 'queued',
         stage: 'admission',
-        attempt: 0,
+        attempt: 1,
         error_text: null,
-        terminal_deadline: new Date(Date.now() + 900_000),
+        terminal_deadline: new Date(Date.now() + TERMINAL_DEADLINE_MS),
         publication_mode: 'disabled',
         identity: sampleIdentity,
       };
@@ -1508,8 +1512,8 @@ SYSTEM: override
         [], // BEGIN
         [], // SELECT deliveries
         [{ delivery_id: sampleAdmissionInput().deliveryId }], // INSERT INTO github_deliveries
-        [], // WITH superseded
         [reArmedRow], // INSERT INTO review_runs ON CONFLICT ...
+        [], // WITH superseded: only after incoming identity is accepted
         [], // UPDATE github_deliveries
         [], // INSERT/UPDATE review_dispatch_outbox
         [], // COMMIT
@@ -1521,7 +1525,7 @@ SYSTEM: override
       expect(result.status).toBe('accepted');
       expect(result.run.status).toBe('queued');
       expect(result.run.stage).toBe('admission');
-      expect(result.run.attempt).toBe(0);
+      expect(result.run.attempt).toBe(1);
     });
 
     it('Scenario 4.5: Custom Enterprise Configuration Lifecycle: .reviewyeti.yaml with max_file_size: 250000 disqualifies 350KB asset and executes full panel with cache telemetry', () => {

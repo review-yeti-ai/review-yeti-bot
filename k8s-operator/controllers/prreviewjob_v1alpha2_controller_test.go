@@ -9,6 +9,7 @@ import (
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -399,7 +400,7 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	}
 }
 
-func TestPRReviewJobV1Alpha2ReconcilerReclaimsIdleWorkspaceAfterTerminalReview(t *testing.T) {
+func TestPRReviewJobV1Alpha2ReconcilerImmediatelyReclaimsIdleWorkspaceAfterTerminalReview(t *testing.T) {
 	lastUsed := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	review := v1alpha2Review(lastUsed.Add(-30 * time.Minute))
 	review.Status.Phase = reviewv1alpha2.PhaseSucceeded
@@ -410,33 +411,25 @@ func TestPRReviewJobV1Alpha2ReconcilerReclaimsIdleWorkspaceAfterTerminalReview(t
 		t.Fatalf("build PVC: %v", err)
 	}
 	kube := fake.NewClientBuilder().WithScheme(v1alpha2Scheme(t)).WithObjects(review, pvc).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
-	currentNow := lastUsed.Add(29*time.Minute + 59*time.Second)
+	// REL-732 changed the idle window to zero. The terminal state still needs
+	// the collector's exact lease/Pod safety checks, but no thirty-minute wait.
+	currentNow := lastUsed
 	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: v1alpha2Scheme(t), Now: func() time.Time { return currentNow }}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
 
 	result, err := reconciler.Reconcile(context.Background(), req)
 	if err != nil {
-		t.Fatalf("reconcile before idle TTL: %v", err)
-	}
-	if result.RequeueAfter != time.Second {
-		t.Fatalf("requeue after 1799 seconds = %s, want 1s", result.RequeueAfter)
-	}
-	var retained corev1.PersistentVolumeClaim
-	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: pvc.Name}, &retained); err != nil {
-		t.Fatalf("get retained PVC: %v", err)
-	}
-
-	currentNow = lastUsed.Add(30 * time.Minute)
-	result, err = reconciler.Reconcile(context.Background(), req)
-	if err != nil {
-		t.Fatalf("reconcile at idle TTL: %v", err)
+		t.Fatalf("reconcile immediately after terminal review: %v", err)
 	}
 	if result.RequeueAfter != 0 {
 		t.Fatalf("requeue after reclamation = %s, want zero", result.RequeueAfter)
 	}
 	var reclaimed corev1.PersistentVolumeClaim
-	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: pvc.Name}, &reclaimed); err == nil {
-		t.Fatal("idle terminal review must reclaim its workspace PVC")
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: pvc.Name}, &reclaimed); !apierrors.IsNotFound(err) {
+		t.Fatalf("idle terminal review must immediately reclaim its workspace PVC: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("repeated cleanup of an absent workspace: %v", err)
 	}
 }
 
@@ -482,6 +475,59 @@ func TestPRReviewJobV1Alpha2ReconcilerFailsClosedOnPVCIdentityMismatch(t *testin
 	var worker batchv1.Job
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err == nil {
 		t.Fatal("identity mismatch must not create a worker Job")
+	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerQueuesWhilePriorWorkspacePVCTerminates(t *testing.T) {
+	now := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	pvc, err := workspace.BuildPVC(review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("build PVC: %v", err)
+	}
+	deletingAt := metav1.NewTime(now.Add(-time.Second))
+	pvc.DeletionTimestamp = &deletingAt
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review, pvc).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile terminating workspace: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatal("terminating workspace must requeue within the existing review deadline")
+	}
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get queued review: %v", err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseQueued || updated.Status.Message != workspace.ErrWorkspaceTerminating.Error() {
+		t.Fatalf("status = %#v, want queued terminating-workspace state", updated.Status)
+	}
+	var worker batchv1.Job
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); !apierrors.IsNotFound(err) {
+		t.Fatalf("terminating workspace must not create a worker Job: %v", err)
+	}
+
+	// Simulate Kubernetes finishing the prior PVC deletion. The next two
+	// reconciles provision the replacement PVC and then admit this attempt.
+	pvc.Finalizers = nil
+	if err := kube.Update(context.Background(), pvc); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("release terminating PVC finalizer: %v", err)
+	}
+	if err := kube.Delete(context.Background(), pvc); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("finish terminating PVC deletion: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("provision replacement workspace: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("admit review after workspace deletion: %v", err)
+	}
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
+		t.Fatalf("get worker after workspace deletion: %v", err)
 	}
 }
 
@@ -533,6 +579,49 @@ func TestPRReviewJobV1Alpha2ReconcilerExpiresBeforeCreatingResources(t *testing.
 	var pvc corev1.PersistentVolumeClaim
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)}, &pvc); err == nil {
 		t.Fatal("expired review must not create a PVC")
+	}
+}
+
+// REL-733 follow-up: validateProjectionWindow rewrote an exact 15-minute
+// equality check into a bounded [900s, 3600s] range check, but that rewrite
+// is a distinct code path from pkg/job's own validateInput (job_test.go's
+// TestBuildWorkerJobScalesActiveDeadlineWithAdmittedWindow does not exercise
+// this file). Pin all four boundary cases directly through Reconcile so a
+// regression in either bound fails here.
+func TestPRReviewJobV1Alpha2ReconcilerValidatesProjectionWindow(t *testing.T) {
+	received := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name        string
+		window      time.Duration
+		wantInvalid bool
+	}{
+		{name: "one second under the floor", window: time.Duration(job.MinTerminalDeadlineSeconds)*time.Second - time.Second, wantInvalid: true},
+		{name: "exactly the floor", window: time.Duration(job.MinTerminalDeadlineSeconds) * time.Second, wantInvalid: false},
+		{name: "exactly the ceiling", window: time.Duration(job.MaxTerminalDeadlineSeconds) * time.Second, wantInvalid: false},
+		{name: "one second over the ceiling", window: time.Duration(job.MaxTerminalDeadlineSeconds)*time.Second + time.Second, wantInvalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scheme := v1alpha2Scheme(t)
+			review := v1alpha2Review(received)
+			review.Spec.TerminalDeadline = metav1.NewTime(received.Add(test.window))
+			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+			// now == received: stay well inside whichever window is under test so a
+			// valid window does not also trip the separate DeadlineExpired path.
+			reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return received }}
+
+			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			var updated reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name}, &updated); err != nil {
+				t.Fatalf("get review: %v", err)
+			}
+			isInvalidProjection := updated.Status.Phase == reviewv1alpha2.PhaseFailed && meta.FindStatusCondition(updated.Status.Conditions, "Ready") != nil &&
+				meta.FindStatusCondition(updated.Status.Conditions, "Ready").Reason == "InvalidProjection"
+			if isInvalidProjection != test.wantInvalid {
+				t.Fatalf("phase=%s conditions=%#v, want InvalidProjection=%v", updated.Status.Phase, updated.Status.Conditions, test.wantInvalid)
+			}
+		})
 	}
 }
 
@@ -595,6 +684,7 @@ func TestPRReviewJobV1Alpha2ReconcilerKeepsItsOwnAppGateWorker(t *testing.T) {
 			Model:             "ollama/glm-5.3-flash",
 			GatewaySecretName: "review-yeti-gateway-credentials",
 			GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+			CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 		},
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
@@ -674,6 +764,7 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsTamperedAppGateWorkers(t *testing.T) 
 					Model:             "ollama/glm-5.3-flash",
 					GatewaySecretName: "review-yeti-gateway-credentials",
 					GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+					CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 				},
 			}
 			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}

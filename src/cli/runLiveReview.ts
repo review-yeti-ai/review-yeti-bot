@@ -13,6 +13,7 @@ import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
+import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import type { CtReviewConfigV3 } from '../config/schema';
 import type { PanelFinding, PanelResult, PanelRequestPolicy } from '../panel/panelEngine';
 import {
@@ -26,6 +27,7 @@ import {
   runPublishingReviewWorker,
 } from './publishingReview';
 import { GitHubInstallationClient } from '../github/installationClient';
+import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -323,13 +325,13 @@ function invalidPanelQualificationContract(): Error {
   return new Error('panel qualification worker contract is invalid');
 }
 
-function qualificationTimeoutMs(
+export function qualificationTimeoutMs(
   env: NodeJS.ProcessEnv,
   invalidContract: () => Error = invalidProviderQualificationContract,
 ): number {
   const raw = receiptValue(env, 'REVIEW_QUALIFICATION_TIMEOUT_MS') || '120000';
   const timeoutMs = Number(raw);
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 900_000) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > TERMINAL_DEADLINE_MS) {
     throw invalidContract();
   }
   return timeoutMs;
@@ -1699,7 +1701,15 @@ export async function runWorker(
       throw new Error('publishing review worker requires a ghs_ installation token');
     }
     const checkClient = new GitHubInstallationClient({ token });
-    const receipt = await runPublishingReviewWorker(workerEnv, { checkClient });
+    // Completion reporting is additive. Existing publishing workers may not yet
+    // have the operator callback URL; they retain the legacy check-only behavior
+    // until the explicit URL is configured. A nonempty value still constructs the
+    // strict adapter, so malformed configuration fails closed rather than opting
+    // out silently.
+    const receipt = await runPublishingReviewWorker(workerEnv, {
+      checkClient,
+      ...publishingWorkerAdapters(workerEnv, token),
+    });
     logger.info('Publishing review worker completed', {
       runId: receipt.runId,
       repo: receipt.repo,

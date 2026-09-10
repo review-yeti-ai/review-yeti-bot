@@ -136,6 +136,8 @@ metadata:
   annotations:
     kubernetes.io/ingress.class: haproxy-ct-dev
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    haproxy.ingress.kubernetes.io/limit-rps: "10"
+    haproxy.ingress.kubernetes.io/limit-connections: "5"
 spec:
   ingressClassName: haproxy-ct-dev
   tls:
@@ -146,6 +148,13 @@ spec:
       http:
         paths:
           - path: /api/dispatch/action
+            pathType: Exact
+            backend:
+              service:
+                name: ct-review-action-dispatch
+                port:
+                  name: http
+          - path: /api/dispatch/completion
             pathType: Exact
             backend:
               service:

@@ -1361,9 +1361,6 @@ async function runPersona(
             validateParsed: (candidate) => {
               try {
                 const findings = validateFindings((candidate as any)?.findings);
-                if ((candidate as any)?.decision === 'APPROVE' && findings.length > 0) {
-                  return 'APPROVE cannot contain findings';
-                }
                 if ((candidate as any)?.decision === 'FINDINGS' && findings.length === 0) {
                   return 'FINDINGS requires at least one finding';
                 }
@@ -1384,11 +1381,14 @@ async function runPersona(
           // field validation is safe in both cases; final publication performs diff anchoring when
           // patch metadata is available, so do not reject a valid finding solely on fixture shape.
           let findings = validateFindings(result.parsed.findings);
-          if (result.parsed.decision === 'APPROVE' && findings.length > 0) {
-            throw new Error('APPROVE cannot contain findings');
-          }
           if (result.parsed.decision === 'FINDINGS' && findings.length === 0) {
             throw new Error('FINDINGS requires at least one finding');
+          }
+          const decision: 'APPROVE' | 'FINDINGS' = findings.length > 0
+            ? 'FINDINGS'
+            : result.parsed.decision as 'APPROVE' | 'FINDINGS';
+          if (decision !== result.parsed.decision) {
+            logger.warn(`[Persona: ${persona.id}] Normalized APPROVE with validated findings to FINDINGS.`);
           }
 
           const promptTokens = result.response.usage?.prompt || 0;
@@ -1402,7 +1402,7 @@ async function runPersona(
             type: 'llm:token',
             persona: persona.id,
             data: {
-              token: result.parsed?.decision || 'complete',
+              token: decision,
               accumulatedLength: result.response.content.length,
             },
           });
@@ -1430,7 +1430,7 @@ async function runPersona(
             type: 'persona:complete',
             persona: persona.id,
             data: {
-              decision: result.parsed.decision,
+              decision,
               findingsCount: findings.length,
               durationMs: result.durationMs,
               tokensUsed: { prompt: promptTokens, completion: completionTokens, total: totalTokens },
@@ -1444,7 +1444,7 @@ async function runPersona(
 
           span.setAttribute('ct.persona.provider', providerId);
           span.setAttribute('ct.persona.model', result.response.model);
-          span.setAttribute('ct.persona.decision', result.parsed.decision);
+          span.setAttribute('ct.persona.decision', decision);
           span.setAttribute('ct.persona.findings_count', findings.length);
           span.setAttribute('ct.persona.duration_ms', result.durationMs);
           span.setAttribute('ct.tokens.prompt', promptTokens);
@@ -1460,7 +1460,7 @@ async function runPersona(
             metrics.tokensCompletion.add(completionTokens, { persona: persona.id, provider: providerId, model: result.response.model });
             metrics.tokensTotal.add(totalTokens, { persona: persona.id, provider: providerId, model: result.response.model });
             metrics.modelCostUsd.add(costUSD, { persona: persona.id, provider: providerId, model: result.response.model });
-            metrics.personaDuration.record(result.durationMs / 1000, { persona: persona.id, provider: providerId, model: result.response.model, decision: result.parsed.decision });
+            metrics.personaDuration.record(result.durationMs / 1000, { persona: persona.id, provider: providerId, model: result.response.model, decision });
           } catch (_) {}
 
           let personaMermaidDiagram: string | undefined = undefined;
@@ -1484,7 +1484,7 @@ async function runPersona(
             required: persona.required,
             providerId,
             model: result.response.model,
-            decision: result.parsed.decision,
+            decision,
             findings,
             usage: result.response.usage,
             costUSD: result.response.costUSD,

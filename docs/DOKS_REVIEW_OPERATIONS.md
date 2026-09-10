@@ -39,21 +39,135 @@ Production runs the review-job-dispatcher's worker image at a single pinned
 digest, stored in the `ct-review-job-dispatcher` ConfigMap's
 `REVIEW_JOB_WORKER_IMAGE` key. A merge to `main` does not, by itself, reach
 production: it only makes a new commit's image available to pull. Advancing
-the live dispatcher to that commit is a separate, explicit operational step,
-run against an already-active dispatcher:
+the live dispatcher to that commit is a separate, explicit operational step.
+In the CallTelemetry production cluster, Flux owns this key from
+`calltelemetry/ct-infrastructure` on `main`, at
+`clusters/doks-nyc1/apps/ct-review-system/cm-ct-review-job-dispatcher.yaml`.
+The runtime helper discovers that ownership; it does not compete with the
+controller.
+
+First produce the read-only plan against the already-active dispatcher:
 
 ```bash
-scripts/advance-review-worker.sh <commit-sha|release-tag> [--dry-run]
+# Read-only plan; retain its identity/hash snapshot for review.
+scripts/advance-review-worker.sh \
+  --context <explicit-context> --source-sha <reviewed-full-40-hex-sha> \
+  --target-image ghcr.io/review-yeti-ai/review-yeti-worker@sha256:<index-digest> \
+  > worker-plan.json
+
+# Inspect .action and .management before doing anything else.
+jq '{action,management,targetImage}' worker-plan.json
 ```
 
-The script resolves the argument to a commit, resolves that commit to the
-GHCR multi-architecture image index digest (refusing anything that is not a
-multi-arch index covering both `amd64` and `arm64`), and -- if the dispatcher
-is already active and running in `prebaked` runner mode -- applies the new
-digest through the same rendered ConfigMap document
-`deploy-review-job-dispatcher.sh` uses (never a hand `kubectl patch`), restarts
-the dispatcher, and verifies the new value from inside the running pod before
-exiting successfully. Running it again with the same target is a no-op.
+When `.action` is `gitops-update-required`, `--apply` is deliberately
+unavailable. Update the exact digest and release annotations in the
+`ct-infrastructure` manifest, update its stage-2 provenance fixture, and land
+that change through the protected pull-request path. Wait until Flux reports
+the exact merge revision as Ready and applied:
+
+```bash
+kubectl --context <explicit-context> --namespace flux-system \
+  get kustomization flux-system -o json \
+  | jq -e --arg revision 'main@sha1:<ct-infrastructure-merge-sha>' '
+      .status.lastAppliedRevision==$revision
+      and any(.status.conditions[]?; .type=="Ready" and .status=="True")'
+```
+
+Regenerate `worker-plan.json` from live state. The only valid Flux-managed
+actions now are `restart` (the ConfigMap has converged but the pod is stale) or
+`noop` (the owned ready pod already reports the target). After separate
+approval of that fresh plan, persist the guarded restart/no-op receipt:
+
+```bash
+scripts/advance-review-worker.sh \
+  --context <same-context> --source-sha <same-reviewed-sha> \
+  --target-image ghcr.io/review-yeti-ai/review-yeti-worker@sha256:<same-index-digest> \
+  --expected-state worker-plan.json --receipt <new-private-receipt-path> --apply
+```
+
+The default is read-only, including old positional invocations. A full SHA
+may still be positional (mixed case is normalized); release tags and implicit
+apply are no longer supported. Context and target digest are mandatory.
+--dry-run is a plan alias and cannot be combined with --apply.
+
+The operator machine now requires **Node.js on PATH** for receipt publication
+(built-in fs only, no npm package). The helper checks this prerequisite before
+any cluster call. Its filesystem must support exclusive/no-follow file creation
+and file/directory fsync; unsupported persistence fails closed. The dispatcher
+image already includes Node, used for the fixed non-secret running attestation.
+
+The existing source-tag resolver verifies the exact full-SHA tag against the
+caller-supplied digest, then reads that immutable index and requires Linux
+amd64 and arm64 entries. The worker GHCR and CallTelemetry DOCR repositories
+are allowlisted; moving tags, platform digests and registry fallbacks are not.
+This proves registry source-tag matching, not a cryptographic build attestation.
+The caller supplies independently reviewed source.
+
+Every Kubernetes request selects the explicit context and fixed namespace
+ct-review-system, with a 30-second API timeout; ambient context never changes.
+The helper requires the already-active, enabled, prebaked dispatcher and named
+review-job-dispatcher container. The reviewed plan binds both object
+UIDs/resourceVersions, Deployment generation/image/replicas, current worker
+image, Flux ownership coordinates when present, and hashes of all protected
+configuration. Raw configuration and secrets are not persisted.
+
+For a Flux-owned mismatched key, apply stops before receipt/intent creation or
+any Kubernetes write. After Flux converges, apply persists a new mode-0600
+`<receipt>.intent`, then a guarded patch changes only the owned
+review-yeti.ai/worker-upgrade pod-template annotation. Unmanaged installations
+retain the key-only compare-and-swap followed by the same guarded restart. No
+forced apply, field-ownership reclamation, Flux suspension, activation,
+replica/image change, or gateway/auth/permission change occurs. A matching key
+is a no-op only when all expected owned ready dispatcher pods actually report
+the target worker image; otherwise the plan explicitly requires a restart.
+Rollout is bounded to 180 seconds; exact object/configuration and owned
+running-pod readback must pass before a success receipt is written.
+
+Every owned ready running pod must attest **prebaked mode**, using the actual
+runtime reader's trimmed REVIEW_JOB_RUNNER_MODE / RUNNER_MODE precedence and
+prebaked default. The probe emits only mode and worker image, never the whole
+environment. Admission checks this before mutation/no-op, and final readback
+checks it after rollout. A generic or unreadable running lane is refused, not
+converted or activated by a restart. Only a stale image in an already-prebaked
+lane is eligible for the guarded restart. Older owned pods can establish
+prebaked admission after a lost restart ACK, but cannot prove the current
+restart completed.
+
+There is no Kubernetes transaction spanning both objects. Individual CAS
+patches and pre/post-restart checks detect drift, but an inter-object race can
+leave a partial update. Rejected writes, lost acknowledgements, rollout failure,
+and unreadable/drifted readback stop without retry or automatic rollback.
+Retain the intent and outcome receipt; failure receipts do not claim an
+observed final state. A killed process may leave only the pre-write intent.
+Use a private local receipt directory: existing files, leaf symlinks and
+missing/symlink parents are rejected, and files are created without overwrite.
+Both intent and outcome use the same Node fs O_EXCL/O_NOFOLLOW creation primitive,
+not Bash noclobber or a pathname precheck as the publication guard. Every occupied
+destination, including late FIFO/directory symlinks, is refused. File and parent
+directory fsync plus a regular-file identity/size/mode check precede success.
+A failed write can leave a new incomplete file; it is not reused or deleted
+automatically, and a failed outcome write leaves the prior intent intact.
+Intent, no-op and outcome serialization must succeed before their file writer
+is invoked. Serialization failure publishes no receipt or success; a failed
+intent prevents all patch attempts, and a failed outcome preserves the prior
+durable intent unchanged.
+
+For a separately approved rollback, first acquire a new read-only plan:
+use the same command with `--rollback <retained-upgrade-receipt-or-intent>`,
+`--target-image <recorded-prior-worker-digest>`, and the reviewed source SHA
+that proves that prior index. Review that fresh plan, then repeat with
+`--expected-state <new-plan> --receipt <new-path> --apply`. The record must bind
+the same context, objects, protected shapes, and original or singly restarted
+generation/owned marker. The current worker key must be either the recorded
+prior or attempted target. Unrelated drift is refused, not repaired.
+Fresh resourceVersions are CAS inputs; rollback is a new restart, not a reset
+of Kubernetes history. No chained/general-purpose rollback is provided.
+
+**A worker key update or dispatcher restart invalidates older image-only
+runtime-upgrade receipts.** Restoring prior bytes cannot restore ConfigMap
+resourceVersion or Deployment generation. Never edit or weaken those receipts'
+guards; a future runtime image rollback needs a new independently validated
+plan. Local tests do not authorize or prove a runtime deployment.
 
 This is intentionally a distinct, deliberately manual action from the `v1`
 action-tag promotion described in the release workflows: promoting `v1` moves

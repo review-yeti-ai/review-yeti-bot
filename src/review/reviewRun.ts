@@ -1,4 +1,5 @@
 import type { PiStage } from './piWorkflow';
+import type { PreparedPublishingPolicy } from './preparedPublishingPolicy';
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -28,6 +29,7 @@ export interface ReviewRun {
   receivedAt?: number;
   terminalDeadline?: number;
   publicationMode?: PublicationMode;
+  authoritativeGateAppId?: number;
   status: ReviewRunStatus;
   stage: PiStage;
   attempt: number;
@@ -53,6 +55,8 @@ export interface ReviewAdmissionInput {
   identity: ReviewRunIdentity;
   effectivePolicyDigest?: string;
   indexEpoch?: number;
+  /** Service-resolved only; never decoded from an Action/worker request. */
+  authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
 }
 
 export interface ReviewAdmission {
@@ -70,6 +74,8 @@ export interface ReviewAdmission {
 export interface ReviewDispatchClaim {
   runId: string;
   deliveryId: string;
+  /** Monotonic outbox claim generation; advances even when executionAttempt does not. */
+  claimAttempt: number;
   /**
    * Monotonic execution attempt for the projected Job/Secret identity. This is
    * deliberately separate from the outbox claim count: a projection retry must
@@ -77,9 +83,12 @@ export interface ReviewDispatchClaim {
    * object after the previous one reached a terminal state.
    */
   executionAttempt: number;
+  /** Digest of the per-attempt worker bearer, if this execution was provisioned before a retry. */
+  workerTokenDigest?: string;
   repositoryId: number;
   installationId: number;
   publicationMode: PublicationMode;
+  authoritativeGateAppId?: number;
   repo: string;
   prNumber: number;
   headSha: string;
