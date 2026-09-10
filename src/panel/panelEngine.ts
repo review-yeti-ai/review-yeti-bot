@@ -713,7 +713,7 @@ export function isRetryablePanelError(error: unknown): boolean {
   return /(?:\b500\b|\b502\b|\b503\b|\b504\b|Connection error|fetch failed|ECONNRESET|ETIMEDOUT)/i.test(message);
 }
 
-export const MAX_INLINE_DIFF_CHARS = 40_000;
+export const MAX_INLINE_DIFF_CHARS = 0;
 
 export function buildCompactFileList(
   changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>,
@@ -732,37 +732,25 @@ export function buildCompactFileList(
 }
 
 export function buildDiffSection(
-  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>
+  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>,
+  options?: { baseSha?: string; headSha?: string }
 ): string {
-  const compactFileList = buildCompactFileList(changedFiles, { includeLineCounts: true });
+  const compactFileList = buildCompactFileList(changedFiles);
+  const baseSha = options?.baseSha || '';
+  const headSha = options?.headSha || '';
+  const range = baseSha && headSha ? `${baseSha}...${headSha}` : headSha || 'HEAD';
 
-  let totalDiffChars = 0;
-  for (const f of changedFiles) {
-    totalDiffChars += (f.patch || f.content || '').length;
-  }
-
-  if (totalDiffChars <= MAX_INLINE_DIFF_CHARS) {
-    const diffBlocks = changedFiles.map((f: any) => {
-      const filePath = f.path || 'unknown.ts';
-      const content = f.patch || f.content || 'File modified in PR.';
-      return `=== FILE: ${filePath} ===\n${content}`;
-    }).join('\n\n');
-    return diffBlocks || 'No file patches provided in PR scope.';
-  }
-
-  // Diff is large: emit compact index and bounded excerpts
-  const boundedBlocks = changedFiles.slice(0, 10).map((f: any) => {
-    const filePath = f.path || 'unknown.ts';
-    const raw = f.patch || f.content || '';
-    const truncated = raw.length > 2000 ? `${raw.slice(0, 2000)}\n... [diff truncated: use read_file or get_diff for full contents]` : raw;
-    return `=== FILE: ${filePath} ===\n${truncated}`;
-  }).join('\n\n');
   return [
-    `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s), ~${Math.round(totalDiffChars / 1024)} KB diff) ===`,
+    `=== GIT RANGE (no diff payload is inlined; explore this yourself) ===`,
+    `git diff ${range}`,
+    ...(baseSha ? [`Base SHA: ${baseSha}`] : []),
+    ...(headSha ? [`Head SHA: ${headSha}`] : []),
+    ``,
+    `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`,
     compactFileList,
     ``,
-    `=== BOUNDED DIFF EXCERPTS (Large PR: use read_file, get_diff, search_code, or zoekt for full details) ===`,
-    boundedBlocks,
+    `Use get_diff, read_file, view_file, search_code, miller, or zoekt on these paths.`,
+    `Do not assume file contents from this list. Fetch the commit diffs yourself.`,
   ].join('\n');
 }
 
@@ -809,7 +797,7 @@ async function invoke(
   const prNumberStr = payload.prNumber ? `#${payload.prNumber}` : '';
   const repositoryVisibility = normalizeRepositoryVisibility(payload.repositoryVisibility);
 
-  const diffSection = buildDiffSection(changedFiles);
+  const diffSection = buildDiffSection(changedFiles, { baseSha: baseShaStr, headSha: shaStr });
 
   const rulesText = rules.length > 0
     ? rules.map((r: any, idx: number) => `${idx + 1}. ${typeof r === 'string' ? r : JSON.stringify(r)}`).join('\n')
@@ -899,7 +887,7 @@ async function invoke(
   const messages: OpenRouterMessage[] = [
     {
       role: 'system',
-      content: `You are an automated fail-closed CallTelemetry PR review engine for ${repoStr}. Perform a rigorous code review for persona '${personaName}' based on the charter and diff provided.
+      content: `You are an automated fail-closed CallTelemetry PR review engine for ${repoStr}. Perform a rigorous code review for persona '${personaName}' based on the charter and git range. The user message does not contain patch payloads. Explore base...head yourself with tools.
 
 === MULTI-TURN EXPLORATION & TOOL INVOCATION PROTOCOL ===
 - Permitted Tool Categories:
@@ -908,6 +896,7 @@ async function invoke(
   3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}
      Use Context7 when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Do NOT call Context7 if the code is self-explanatory or contained in the repository.
 - IMPORTANT EVIDENCE BOUNDARY: Default code reading and symbol search tools are patch-scoped: they only inspect the patch hunks of files modified in this PR. They DO NOT search unchanged files across the repository. Never claim a function, module, or symbol is undefined, missing, or broken in the repository simply because a patch-scoped search returns no hits.
+- Do NOT try to ingest the entire PR at once. A 1M context filled with one giant diff is worse than a few targeted files. Rank the file index by risk (auth, purge, migrations, public API), then get_diff one path per turn. Never request the whole git range as a single payload.
 - You are granted up to ${maxTurns} execution turns for active codebase exploration.
 - Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.
 ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
@@ -1050,7 +1039,12 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             if (matched) {
               toolScope = 'changed-patches-only';
               isExhaustive = false;
-              toolOutput += matched.patch || matched.content || 'File present in PR scope.';
+              const raw = matched.patch || matched.content || 'File present in PR scope.';
+              const truncated = raw.length > REPO_READ_FILE_MAX_CHARS;
+              const shown = truncated ? raw.slice(0, REPO_READ_FILE_MAX_CHARS) : raw;
+              toolOutput += truncated
+                ? `Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${raw.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
+                : shown;
             } else if (options?.repoFileProvider) {
               try {
                 const content = await options.repoFileProvider.readFile(targetPath);
