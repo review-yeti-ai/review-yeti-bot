@@ -57,6 +57,8 @@ export interface OpenRouterRequest {
   /** Ordered OpenRouter model fallbacks after the primary `model`. */
   models?: string[];
   messages: OpenRouterMessage[];
+  /** Maximum time without a streamed data chunk after the first token. */
+  inactivityTimeoutMs?: number;
   timeoutMs: number;
   jobId?: string;
   persona?: string;
@@ -72,6 +74,8 @@ export interface OpenRouterRequest {
   plugins?: Array<Record<string, unknown>>;
   metadata?: Record<string, string>;
   onFirstToken?: () => void;
+  /** Caller-owned cancellation for the whole request, including streamed bodies. */
+  signal?: AbortSignal;
 }
 
 export interface TokensUsed {
@@ -127,6 +131,47 @@ export interface OpenRouterClientOptions {
   /** @deprecated Use fetchImplementation. */
   fetchImpl?: FetchImplementation;
   now?: () => number;
+}
+
+/**
+ * Reject promptly when a caller cancels even if a test double or a compatible
+ * transport fails to observe AbortSignal. The underlying request is still
+ * given the signal by OpenRouterClient, so real fetch/SDK requests are aborted
+ * rather than merely detached from the caller.
+ */
+function raceWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    void operation.catch(() => undefined);
+    return Promise.reject(new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let onAbort: () => void;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      void operation.catch(() => undefined);
+      reject(new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 /**
@@ -818,7 +863,12 @@ async function readStreamingResponse(
     lastChunkTime: Date.now(),
   };
 
-  const inactivityTimeoutMs = options?.inactivityTimeoutMs ?? 45_000;
+  const rawInactivityTimeoutMs = options?.inactivityTimeoutMs;
+  const inactivityTimeoutMs = typeof rawInactivityTimeoutMs === 'number'
+    && Number.isFinite(rawInactivityTimeoutMs)
+    && rawInactivityTimeoutMs > 0
+    ? rawInactivityTimeoutMs
+    : 45_000;
   const ttftTimeoutMs = options?.ttftTimeoutMs && options.ttftTimeoutMs > 0
     ? options.ttftTimeoutMs
     : inactivityTimeoutMs;
@@ -828,6 +878,7 @@ async function readStreamingResponse(
   // first-data event. Keep TTFT tied to an actual provider payload so a stream
   // cannot evade the first-token budget with heartbeats alone.
   let receivedFirstData = false;
+  let lastMeaningfulDataAt = Date.now();
   const totalDeadlineAt = options?.totalTimeoutMs && options.totalTimeoutMs > 0
     ? Date.now() + options.totalTimeoutMs
     : 0;
@@ -841,6 +892,15 @@ async function readStreamingResponse(
     `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
     'total',
   );
+  const inactivityTimeoutError = () => receivedFirstData
+    ? new OpenRouterTimeoutError(
+        `Streaming stalled: no meaningful data received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`,
+        'inactivity',
+      )
+    : new OpenRouterTimeoutError(
+        `Time to first streamed chunk exceeded ${Math.round(ttftTimeoutMs / 1000)}s`,
+        'ttft',
+      );
   let totalDeadlineTriggered = false;
   let cancellationPromise: Promise<void> | undefined;
   const cancel = (reason: string): Promise<void> => {
@@ -861,22 +921,18 @@ async function readStreamingResponse(
     ? setTimeout(triggerTotalDeadline, Math.max(0, totalDeadlineAt - Date.now()))
     : undefined;
 
-  const consume = (line: string) => {
+  const consume = (line: string): boolean => {
     const trimmed = line.trim();
-    if (!trimmed || trimmed === 'data: [DONE]') return;
+    if (!trimmed || trimmed === 'data: [DONE]') return false;
     // SSE comment lines are keep-alives and are not JSON events.
     if (trimmed.startsWith(':')) {
       state.lastChunkTime = Date.now();
-      return;
+      return false;
     }
     const json = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
-    if (!json || json === '[DONE]') return;
+    if (!json || json === '[DONE]') return false;
     try {
       collectChunk(JSON.parse(json), state);
-      if (!receivedFirstData) {
-        receivedFirstData = true;
-        options?.onFirstToken?.();
-      }
     } catch {
       throw new OpenRouterResponseError('OpenRouter returned malformed response: malformed streaming JSON');
     }
@@ -890,6 +946,7 @@ async function readStreamingResponse(
         logger.info(`${personaLabel}Thinking in progress (${Math.round(reasoningLen / 4)} tokens generated)...`);
       }
     }
+    return true;
   };
 
   try {
@@ -899,22 +956,20 @@ async function readStreamingResponse(
       if (remainingTotalMs <= 0) {
         throw totalDeadlineError();
       }
-      const inactivityBudgetMs = receivedFirstData ? inactivityTimeoutMs : ttftTimeoutMs;
-      const readTimeoutMs = Math.min(inactivityBudgetMs, remainingTotalMs);
+      const inactivityDeadlineAt = receivedFirstData
+        ? lastMeaningfulDataAt + inactivityTimeoutMs
+        : lastMeaningfulDataAt + ttftTimeoutMs;
+      const remainingInactivityMs = inactivityDeadlineAt - Date.now();
+      if (remainingInactivityMs <= 0) {
+        throw totalDeadlineNear() ? totalDeadlineError() : inactivityTimeoutError();
+      }
+      const readTimeoutMs = Math.min(Math.max(0, remainingInactivityMs), remainingTotalMs);
       const { done, value } = await readWithTimeout(
         readPromise,
         readTimeoutMs,
         () => totalDeadlineNear()
           ? totalDeadlineError()
-          : receivedFirstData
-            ? new OpenRouterTimeoutError(
-                `Streaming stalled: no data or heartbeat received from provider for ${Math.round(inactivityTimeoutMs / 1000)}s`,
-                'inactivity',
-              )
-            : new OpenRouterTimeoutError(
-                `Time to first streamed chunk exceeded ${Math.round(ttftTimeoutMs / 1000)}s`,
-                'ttft',
-              )
+          : inactivityTimeoutError()
       );
       if (totalDeadlineTriggered || totalDeadlineReached()) {
         throw totalDeadlineError();
@@ -923,11 +978,25 @@ async function readStreamingResponse(
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-      lines.forEach(consume);
+      for (const line of lines) {
+        if (consume(line)) {
+          lastMeaningfulDataAt = Date.now();
+          if (!receivedFirstData) {
+            receivedFirstData = true;
+            options?.onFirstToken?.();
+          }
+        }
+      }
     }
     buffer += decoder.decode();
     if (buffer.trim()) {
-      consume(buffer);
+      if (consume(buffer)) {
+        lastMeaningfulDataAt = Date.now();
+        if (!receivedFirstData) {
+          receivedFirstData = true;
+          options?.onFirstToken?.();
+        }
+      }
     }
   } catch (error) {
     // The read timer can win a same-deadline race a few milliseconds early (the classification
@@ -1053,17 +1122,34 @@ async function readSdkStreamingResponse(
     finishReason: null,
     lastChunkTime: Date.now(),
   };
-  const inactivityTimeoutMs = options?.inactivityTimeoutMs ?? 45_000;
+  const rawInactivityTimeoutMs = options?.inactivityTimeoutMs;
+  const inactivityTimeoutMs = typeof rawInactivityTimeoutMs === 'number'
+    && Number.isFinite(rawInactivityTimeoutMs)
+    && rawInactivityTimeoutMs > 0
+    ? rawInactivityTimeoutMs
+    : 45_000;
   const ttftTimeoutMs = options?.ttftTimeoutMs && options.ttftTimeoutMs > 0
     ? options.ttftTimeoutMs
     : inactivityTimeoutMs;
   const totalDeadlineAt = options?.totalTimeoutMs && options.totalTimeoutMs > 0
     ? Date.now() + options.totalTimeoutMs
     : 0;
+  let receivedFirstData = false;
+  let lastMeaningfulDataAt = Date.now();
   const totalDeadlineError = () => new OpenRouterTimeoutError(
     `OpenRouter streaming response exceeded total deadline of ${options?.totalTimeoutMs}ms`,
     'total',
   );
+  const inactivityTimeoutError = () => receivedFirstData
+    ? new OpenRouterTimeoutError(
+        `Streaming stalled: no meaningful data received from OpenRouter for ${Math.round(inactivityTimeoutMs / 1000)}s`,
+        'inactivity',
+      )
+    : new OpenRouterTimeoutError(
+        `Time to first streamed chunk from OpenRouter exceeded ${Math.round(ttftTimeoutMs / 1000)}s`,
+        'ttft',
+      );
+  const totalDeadlineNear = () => totalDeadlineAt > 0 && Date.now() + 10 >= totalDeadlineAt;
   let totalDeadlineTriggered = false;
   const totalTimer = totalDeadlineAt
     ? setTimeout(() => {
@@ -1073,36 +1159,31 @@ async function readSdkStreamingResponse(
       void cancelReader(reader, 'stream total deadline');
     }, Math.max(0, totalDeadlineAt - Date.now()))
     : undefined;
-  let receivedFirstData = false;
-
   try {
     while (true) {
       const remainingTotalMs = totalDeadlineAt ? totalDeadlineAt - Date.now() : Infinity;
       if (remainingTotalMs <= 0 || totalDeadlineTriggered) throw totalDeadlineError();
-      const readTimeoutMs = Math.min(
-        receivedFirstData ? inactivityTimeoutMs : ttftTimeoutMs,
-        remainingTotalMs,
-      );
+      const inactivityDeadlineAt = receivedFirstData
+        ? lastMeaningfulDataAt + inactivityTimeoutMs
+        : lastMeaningfulDataAt + ttftTimeoutMs;
+      const remainingInactivityMs = inactivityDeadlineAt - Date.now();
+      if (remainingInactivityMs <= 0) {
+        throw totalDeadlineNear() ? totalDeadlineError() : inactivityTimeoutError();
+      }
+      const readTimeoutMs = Math.min(Math.max(0, remainingInactivityMs), remainingTotalMs);
       const { done, value } = await readWithTimeout(
         reader.read(),
         readTimeoutMs,
-        () => {
-          if (totalDeadlineAt && Date.now() + 10 >= totalDeadlineAt) return totalDeadlineError();
-          return new OpenRouterTimeoutError(
-            receivedFirstData
-              ? `Streaming stalled: no data or heartbeat received from OpenRouter for ${Math.round(inactivityTimeoutMs / 1000)}s`
-              : `Time to first streamed chunk from OpenRouter exceeded ${Math.round(ttftTimeoutMs / 1000)}s`,
-            receivedFirstData ? 'inactivity' : 'ttft',
-          );
-        },
+        () => totalDeadlineNear() ? totalDeadlineError() : inactivityTimeoutError(),
       );
       if (done) break;
       if (value !== undefined) {
+        collectSdkChunk(value, state);
+        lastMeaningfulDataAt = Date.now();
         if (!receivedFirstData) {
           receivedFirstData = true;
           options?.onFirstToken?.();
         }
-        collectSdkChunk(value, state);
       }
     }
     // The deadline timer cancels the SDK EventStream so a pending read can settle. Cancellation
@@ -1325,11 +1406,18 @@ export class OpenRouterClient implements ReviewModelClient {
   }
 
   async complete(request: OpenRouterRequest): Promise<OpenRouterResponse> {
+    return raceWithAbort(this.completeInternal(request), request.signal);
+  }
+
+  private async completeInternal(request: OpenRouterRequest): Promise<OpenRouterResponse> {
     if (!this.apiKey.trim()) {
       throw new OpenRouterConnectionError('OPENROUTER_API_KEY is required; review execution has no offline model fallback');
     }
     if (!Number.isFinite(request.timeoutMs) || request.timeoutMs <= 0) {
       throw new TypeError(`OpenRouter request requires a positive timeoutMs; received ${String(request.timeoutMs)}`);
+    }
+    if (request.signal?.aborted) {
+      throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
     }
 
     const effectiveModel = normalizeOpenRouterModel(request.model);
@@ -1338,6 +1426,12 @@ export class OpenRouterClient implements ReviewModelClient {
     const startedAt = Date.now();
     const controller = new AbortController();
     let requestDeadlineExpired = false;
+    let callerCancelled = false;
+    const onCallerAbort = () => {
+      callerCancelled = true;
+      controller.abort();
+    };
+    request.signal?.addEventListener('abort', onCallerAbort, { once: true });
     const timeout = setTimeout(() => {
       requestDeadlineExpired = true;
       controller.abort();
@@ -1347,6 +1441,9 @@ export class OpenRouterClient implements ReviewModelClient {
       let data: any;
       const isStreaming = request.stream ?? true;
       if (isStreaming) {
+        if (callerCancelled || request.signal?.aborted) {
+          throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+        }
         const headers: Record<string, string> = {
           'authorization': `Bearer ${this.apiKey}`,
           'content-type': 'application/json',
@@ -1416,7 +1513,7 @@ export class OpenRouterClient implements ReviewModelClient {
 
         data = await readStreamingResponse(response, effectiveModel, {
           ttftTimeoutMs: request.ttftTimeoutMs,
-          inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+          inactivityTimeoutMs: request.inactivityTimeoutMs ?? Math.min(45_000, request.timeoutMs),
           totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
           onTotalTimeout: () => {
             requestDeadlineExpired = true;
@@ -1435,6 +1532,9 @@ export class OpenRouterClient implements ReviewModelClient {
           onGenerationId: (value) => { generationId = value; },
         });
         try {
+          if (callerCancelled || request.signal?.aborted) {
+            throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+          }
           const sdkResponse = await sdkClient.chat.send(
             {
               xOpenRouterMetadata: 'enabled',
@@ -1448,7 +1548,7 @@ export class OpenRouterClient implements ReviewModelClient {
           if (sdkResponse && typeof (sdkResponse as any).getReader === 'function') {
             data = await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
               ttftTimeoutMs: request.ttftTimeoutMs,
-              inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+              inactivityTimeoutMs: request.inactivityTimeoutMs ?? Math.min(45_000, request.timeoutMs),
               totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
               onTotalTimeout: () => {
                 requestDeadlineExpired = true;
@@ -1508,6 +1608,12 @@ export class OpenRouterClient implements ReviewModelClient {
         : usage ? estimateTokenCost(effectiveModel, usage.prompt, usage.completion) : null;
       const model = String(data.model || effectiveModel);
 
+      // A transport that resolves after cancellation must never be allowed to
+      // publish a successful metric or return a successful review response.
+      if (callerCancelled || request.signal?.aborted) {
+        throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+      }
+
       if (request.jobId) {
         LiveStreamBus.getInstance().publishEvent({
           jobId: request.jobId,
@@ -1532,7 +1638,9 @@ export class OpenRouterClient implements ReviewModelClient {
       return { model, content, usage, costUSD, raw: data };
     } catch (error: any) {
       let classifiedError: Error;
-      if (error instanceof OpenRouterResponseError
+      if (callerCancelled || request.signal?.aborted) {
+        classifiedError = new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+      } else if (error instanceof OpenRouterResponseError
           || error instanceof OpenRouterConnectionError
           || error instanceof UpstreamCapacityRejectionError
           || error instanceof OpenRouterTimeoutError) {
@@ -1589,6 +1697,7 @@ export class OpenRouterClient implements ReviewModelClient {
       throw classifiedError;
     } finally {
       clearTimeout(timeout);
+      request.signal?.removeEventListener('abort', onCallerAbort);
       if (!controller.signal.aborted) {
         controller.abort();
       }

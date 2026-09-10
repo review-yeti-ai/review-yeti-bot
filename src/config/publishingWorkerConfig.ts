@@ -3,6 +3,12 @@ import type { CtReviewConfigV3, ProviderId } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
 
+// Native publishing must project the same bounded turn/idle policy as the
+// panel. Idle time is separate from the overall deadline enforced at runtime.
+export const PUBLISHING_MAX_TURNS = 5;
+export const PUBLISHING_IDLE_TIMEOUT_SECONDS = 180;
+export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 900;
+
 let cachedCompiledIndex: CompiledDomainIndex | null = null;
 
 export function getCompiledDomainIndex(): CompiledDomainIndex | null {
@@ -242,7 +248,7 @@ export function resolveWorkerConfig(
 ): CtReviewConfigV3 {
   const baseConfig = createDefaultV3Config();
 
-  let maxInvestigationTurns = 2;
+  let maxInvestigationTurns = PUBLISHING_MAX_TURNS;
   let personasList: string[] = [];
 
   if (env.REVIEW_YETI_POLICY_JSON) {
@@ -313,20 +319,20 @@ export function resolveWorkerConfig(
   return {
     ...baseConfig,
     personas,
-    default_max_turns: Math.min(3, Math.max(1, maxInvestigationTurns || 2)),
+    default_max_turns: Math.min(PUBLISHING_MAX_TURNS, Math.max(1, maxInvestigationTurns || PUBLISHING_MAX_TURNS)),
     reviewer_effort: 'medium',
     reviewers: {
       execution: 'personas',
       fallback: 'ordered',
-      overall_timeout_s: 900,
+      overall_timeout_s: PUBLISHING_OVERALL_TIMEOUT_SECONDS,
       providers: [
         {
           id: 'bifrost' as ProviderId,
           enabled: true,
           model: transport.model,
           effort: 'medium',
-          review_timeout_s: 90,
-          arbiter_timeout_s: 90,
+          review_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
+          arbiter_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
         },
       ],
       arbiter: {

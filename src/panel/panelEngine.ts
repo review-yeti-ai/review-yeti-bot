@@ -72,18 +72,21 @@ export function resolveMaxFileDiffChars(): number {
 }
 
 export function filePatchChars(
-  file: { patch?: string; content?: string },
+  file: { patch?: string; content?: string; originalPatchLength?: number },
 ): number {
-  return (file.patch || file.content || '').length;
+  const retainedLength = (file.patch || file.content || '').length;
+  const originalLength = file.originalPatchLength;
+  return Number.isSafeInteger(originalLength) && (originalLength as number) > retainedLength
+    ? originalLength as number
+    : retainedLength;
 }
 
 export function isOversizedFileDiff(
-  file: { patch?: string; content?: string },
+  file: { patch?: string; content?: string; originalPatchLength?: number },
   maxChars: number = resolveMaxFileDiffChars(),
 ): boolean {
   return filePatchChars(file) > maxChars;
 }
-
 export interface RepoFileProvider {
   /** Case-insensitive substring match of `query` against every file path in the repository at the reviewed head. */
   findFiles(query: string): Promise<string[]>;
@@ -238,11 +241,135 @@ export class PanelConfigurationError extends Error {
   }
 }
 
+/** A caller or worker stopped the panel before it produced a binding result. */
+export class PanelCancellationError extends PanelConfigurationError {
+  constructor(message = 'review panel was cancelled') {
+    super(message);
+    this.name = 'PanelCancellationError';
+  }
+}
+
+/** The configured panel deadline elapsed; this is distinct from a provider request timeout. */
+export class PanelDeadlineExceededError extends PanelCancellationError {
+  constructor(timeoutMs: number) {
+    super(`review panel exceeded overall timeout of ${Math.ceil(timeoutMs / 1000)}s`);
+    this.name = 'PanelDeadlineExceededError';
+  }
+}
+
+function panelAbortError(signal?: AbortSignal): PanelCancellationError {
+  const reason = signal?.reason;
+  return reason instanceof PanelCancellationError
+    ? reason
+    : new PanelCancellationError();
+}
+
+/** Fail closed at every model-loop boundary without exposing an arbitrary abort reason. */
+export function throwIfPanelAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw panelAbortError(signal);
+}
+
+/**
+ * Link a caller cancellation signal to the configured panel deadline. Both the
+ * timer and the parent listener are removed on completion so a healthy panel
+ * leaves no live cancellation handles behind.
+ */
+export function createPanelDeadlineSignal(
+  overallTimeoutSeconds: number,
+  parentSignal?: AbortSignal,
+): { signal: AbortSignal; cleanup: () => void; timeoutMs: number } {
+  const timeoutMs = Number.isFinite(overallTimeoutSeconds) && overallTimeoutSeconds > 0
+    ? Math.max(1, Math.floor(overallTimeoutSeconds * 1_000))
+    : 900_000;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onParentAbort = () => {
+    if (!controller.signal.aborted) controller.abort(panelAbortError(parentSignal));
+  };
+
+  if (parentSignal?.aborted) {
+    onParentAbort();
+  } else {
+    parentSignal?.addEventListener('abort', onParentAbort, { once: true });
+    timer = setTimeout(() => controller.abort(new PanelDeadlineExceededError(timeoutMs)), timeoutMs);
+  }
+
+  return {
+    signal: controller.signal,
+    timeoutMs,
+    cleanup: () => {
+      if (timer !== undefined) clearTimeout(timer);
+      parentSignal?.removeEventListener('abort', onParentAbort);
+    },
+  };
+}
+
+/** Race a model/tool operation against cancellation and consume a late rejection. */
+export function raceWithPanelAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) {
+    void operation.catch(() => undefined);
+    return Promise.reject(panelAbortError(signal));
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      void operation.catch(() => undefined);
+      reject(panelAbortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function panelDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  throwIfPanelAborted(signal);
+  return new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(panelAbortError(signal));
+    };
+    timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 class PanelFindingsValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PanelFindingsValidationError';
   }
+}
+
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+function configuredProviderTimeoutMs(value: unknown, fallbackMs: number): number {
+  const seconds = typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : fallbackMs / 1_000;
+  return Math.min(MAX_TIMER_DELAY_MS, Math.max(1, Math.floor(seconds * 1_000)));
 }
 
 /**
@@ -799,11 +926,15 @@ async function invoke(
     persona?: string;
     providerId?: string;
     requestPolicy?: PanelRequestPolicy;
+    /** Maximum quiet period after the first streamed payload. The request timeout remains total. */
+    inactivityTimeoutMs?: number;
     repoFileProvider?: RepoFileProvider;
     zoektConfig?: any;
     onFirstToken?: () => void;
+    signal?: AbortSignal;
   }
 ): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number; toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> }> {
+  throwIfPanelAborted(options?.signal);
   const requestNonce = nonce();
   const nativeJsonMode = ['json_object', 'json_schema'].includes(
     String(options?.requestPolicy?.responseFormat?.type || '').toLowerCase(),
@@ -829,6 +960,11 @@ async function invoke(
   const repositoryVisibility = normalizeRepositoryVisibility(payload.repositoryVisibility);
 
   const diffSection = buildDiffSection(changedFiles, { baseSha: baseShaStr, headSha: shaStr });
+  // The compact scope above owns file context. The fenced compatibility
+  // example must not re-embed raw patches and bypass size/skip boundaries.
+  // Keep moderator/arbiter evidence and all other role-specific context.
+  const promptPayload = { ...payload };
+  delete promptPayload.changedFiles;
 
   const rulesText = rules.length > 0
     ? rules.map((r: any, idx: number) => `${idx + 1}. ${typeof r === 'string' ? r : JSON.stringify(r)}`).join('\n')
@@ -883,7 +1019,7 @@ async function invoke(
       : [
           `You MUST return your evaluation strictly inside a single valid JSON object enclosed between the exact fences:`,
           `CT_REVIEW_BEGIN:${requestNonce}`,
-          JSON.stringify({ role, ...payload }, null, 2),
+          JSON.stringify({ role, ...promptPayload }, null, 2),
           `CT_REVIEW_END:${requestNonce}`,
         ]),
   ].join('\n');
@@ -957,6 +1093,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   let structuredCorrectionAttempts = 0;
 
   for (let iter = 0; iter < maxTurns; iter++) {
+    throwIfPanelAborted(options?.signal);
     // Prompt compaction on turns 2+ (ADR 0501 / Concept B): Stop resending raw diff blocks
     if (iter >= 1 && diffSection && messages[1] && typeof messages[1].content === 'string') {
       const compactFileList = buildCompactFileList(changedFiles, { includeLineCounts: true });
@@ -973,22 +1110,30 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 
     const requestPersona = options?.persona || personaName;
     const effectiveOnFirstToken = options?.onFirstToken ?? (requestPolicy as any)?.onFirstToken;
-    const response = await client.complete({
-      ...(requestPolicy || {}),
-      model,
-      messages,
-      timeoutMs,
-      ...(options?.jobId ? { jobId: options.jobId } : {}),
-      persona: requestPersona,
-      ...(options?.providerId ? { providerId: options.providerId } : {}),
-      ...(effectiveOnFirstToken ? { onFirstToken: effectiveOnFirstToken } : {}),
-      metadata: {
-        ...(requestPolicy?.metadata || {}),
-        role,
+    const response = await raceWithPanelAbort(
+      Promise.resolve().then(() => client.complete({
+        ...(requestPolicy || {}),
+        model,
+        messages,
+        timeoutMs,
+        ...(options?.inactivityTimeoutMs && options.inactivityTimeoutMs > 0
+          ? { inactivityTimeoutMs: options.inactivityTimeoutMs }
+          : {}),
+        ...(options?.jobId ? { jobId: options.jobId } : {}),
         persona: requestPersona,
-      },
-      ...(options?.effort ? { reasoningEffort: options.effort } : {}),
-    });
+        ...(options?.providerId ? { providerId: options.providerId } : {}),
+        ...(effectiveOnFirstToken ? { onFirstToken: effectiveOnFirstToken } : {}),
+        metadata: {
+          ...(requestPolicy?.metadata || {}),
+          role,
+          persona: requestPersona,
+        },
+        ...(options?.effort ? { reasoningEffort: options.effort } : {}),
+        ...(options?.signal ? { signal: options.signal } : {}),
+      })),
+      options?.signal,
+    );
+    throwIfPanelAborted(options?.signal);
     finalResponse = response;
 
     // Check if output contains valid fenced evaluation
@@ -1031,6 +1176,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       } catch {}
 
       if (toolCall && toolCall.tool) {
+        throwIfPanelAborted(options?.signal);
         turnsCount++;
         const tName = toolCall.tool;
         const targetPath = toolCall.args?.path || toolCall.args?.filePath || '';
@@ -1056,11 +1202,11 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
           if (isMiller) {
             try {
               const patch = toolCall.args?.patch || changedFiles.find((f: any) => f.path === targetPath)?.patch;
-              const millerRes = await executeMillerTool({
+              const millerRes = await raceWithPanelAbort(executeMillerTool({
                 filePath: targetPath,
                 patch,
                 maxDepth: toolCall.args?.maxDepth,
-              });
+              }), options?.signal);
               toolOutput += millerRes.miller;
             } catch (err: any) {
               toolOutput += `Miller Tool Error: ${err.message || String(err)}`;
@@ -1083,7 +1229,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
               }
             } else if (options?.repoFileProvider) {
               try {
-                const content = await options.repoFileProvider.readFile(targetPath);
+                const content = await raceWithPanelAbort(options.repoFileProvider.readFile(targetPath), options?.signal);
                 if (content !== null) {
                   toolScope = 'full-repository';
                   isExhaustive = true;
@@ -1123,8 +1269,8 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
               toolOutput += `Files found in diff: ${hits.map((h: any) => h.path).join(', ')}`;
             } else if (options?.repoFileProvider) {
               try {
-                const repoHits = await options.repoFileProvider.findFiles(searchQ);
-                const truncated = await (options.repoFileProvider.treeTruncated?.() ?? Promise.resolve(false));
+                const repoHits = await raceWithPanelAbort(options.repoFileProvider.findFiles(searchQ), options?.signal);
+                const truncated = await raceWithPanelAbort(options.repoFileProvider.treeTruncated?.() ?? Promise.resolve(false), options?.signal);
                 toolScope = 'full-repository';
                 isExhaustive = !truncated;
                 if (repoHits.length > REPO_FIND_FILES_MAX_HITS) {
@@ -1167,7 +1313,10 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             toolScope = 'full-repository-zoekt';
             try {
               const zoektTool = require('../mcp/zoektSearchTool');
-              const zoektRes = await zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig);
+              const zoektRes: any = await raceWithPanelAbort(
+                zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig),
+                options?.signal,
+              );
               isExhaustive = zoektRes.status === 'ok';
               toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: ${isExhaustive}]\n${JSON.stringify(zoektRes, null, 2)}`;
             } catch (err: any) {
@@ -1177,13 +1326,15 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             // Only documentation/search MCPs are permitted. Review execution must never mutate
             // Linear, Productlane, GitHub, or an arbitrary custom MCP server.
             try {
-              const mcpResult = await mcpFleetManager.executeTool(tName, toolCall.args || {});
+              const mcpResult = await raceWithPanelAbort(mcpFleetManager.executeTool(tName, toolCall.args || {}), options?.signal);
               toolOutput += mcpResult.success ? JSON.stringify(mcpResult.output, null, 2) : `MCP Error: ${mcpResult.error || 'Execution failed'}`;
             } catch (err: any) {
               toolOutput += `Tool '${tName}' executed cleanly via Pi harness.`;
             }
           }
         }
+
+        throwIfPanelAborted(options?.signal);
 
         toolCalls.push({
           tool: tName,
@@ -1262,41 +1413,59 @@ export async function mapConcurrentSettled<T, R>(
 
 class Semaphore {
   private running = 0;
-  private queue: Array<() => void> = [];
+  private queue: Array<{
+    settled: boolean;
+    resolve: (release: () => void) => void;
+    reject: (reason: unknown) => void;
+    onAbort?: () => void;
+    signal?: AbortSignal;
+  }> = [];
 
   constructor(private readonly max: number) {}
 
-  async acquire(): Promise<() => void> {
+  private releaseFactory(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.running--;
+      let next: (typeof this.queue)[number] | undefined;
+      while ((next = this.queue.shift())) {
+        if (next.settled) continue;
+        next.settled = true;
+        if (next.signal && next.onAbort) next.signal.removeEventListener('abort', next.onAbort);
+        this.running++;
+        next.resolve(this.releaseFactory());
+        break;
+      }
+    };
+  }
+
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    throwIfPanelAborted(signal);
     if (this.running < this.max) {
       this.running++;
-      let released = false;
-      return () => {
-        if (!released) {
-          released = true;
-          this.running--;
-          const next = this.queue.shift();
-          if (next) {
-            this.running++;
-            next();
-          }
-        }
-      };
+      return this.releaseFactory();
     }
-    return new Promise<() => void>((resolve) => {
-      this.queue.push(() => {
-        let released = false;
-        resolve(() => {
-          if (!released) {
-            released = true;
-            this.running--;
-            const next = this.queue.shift();
-            if (next) {
-              this.running++;
-              next();
-            }
-          }
-        });
-      });
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter: (typeof this.queue)[number] = {
+        settled: false,
+        resolve,
+        reject,
+        signal,
+      };
+      const onAbort = () => {
+        if (waiter.settled) return;
+        waiter.settled = true;
+        const index = this.queue.indexOf(waiter);
+        if (index >= 0) this.queue.splice(index, 1);
+        signal?.removeEventListener('abort', onAbort);
+        reject(panelAbortError(signal));
+      };
+      waiter.onAbort = onAbort;
+      this.queue.push(waiter);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
 
@@ -1321,8 +1490,11 @@ async function runPersona(
   repoFileProvider?: RepoFileProvider,
   repositoryVisibility: RepositoryVisibility = 'UNKNOWN',
   gitContext?: { baseSha?: string; branch?: string; prNumber?: number },
+  signal?: AbortSignal,
+  remainingPanelTimeoutMs?: () => number,
 ): Promise<PersonaLaneResult> {
   return runInSpan(`ct_persona_lane`, async (span) => {
+    throwIfPanelAborted(signal);
     span.setAttribute('ct.persona.id', persona.id);
     span.setAttribute('ct.persona.required', persona.required);
 
@@ -1387,6 +1559,7 @@ async function runPersona(
     const providersToTry = [...new Set([...baseProviders, 'synthetic', 'glm'])].filter((p) => availableProviderIds.includes(p as any));
 
     for (const providerId of providersToTry) {
+      throwIfPanelAborted(signal);
       if (Date.now() - personaStartedAt >= MAX_PERSONA_BUDGET_MS) {
         errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s`);
         break;
@@ -1413,15 +1586,17 @@ async function runPersona(
       const effectiveEffort = (storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? MAX_INVESTIGATION_TURNS;
 
-      const configuredTimeoutS = typeof spec.review_timeout_s === 'number' && spec.review_timeout_s > 0
-        ? spec.review_timeout_s
-        : TURN_IDLE_MS / 1000;
-      const perCallTimeoutMs = Math.min(configuredTimeoutS * 1_000, TURN_IDLE_MS);
+      // `review_timeout_s` is the inactivity budget after a stream starts. The
+      // request's total timeout is calculated below from the remaining panel /
+      // persona budget, so an active stream may legitimately exceed this idle
+      // interval while still being bounded by the outer deadline.
+      const inactivityTimeoutMs = configuredProviderTimeoutMs(spec.review_timeout_s, TURN_IDLE_MS);
 
       let attempts = 0;
       const maxAttempts = 2;
 
       while (attempts < maxAttempts) {
+        throwIfPanelAborted(signal);
         const elapsedMs = Date.now() - personaStartedAt;
         const remainingPersonaBudgetMs = MAX_PERSONA_BUDGET_MS - elapsedMs;
         if (remainingPersonaBudgetMs <= 0) {
@@ -1429,7 +1604,11 @@ async function runPersona(
           break;
         }
         attempts++;
-        const callTimeoutMs = Math.min(perCallTimeoutMs, remainingPersonaBudgetMs);
+        const remainingPanelMs = remainingPanelTimeoutMs?.() ?? Infinity;
+        // Provider request timeout is a total wall-clock budget, not the idle
+        // interval. An active stream may run past `review_timeout_s`; the
+        // enclosing panel deadline remains the hard bound.
+        const callTimeoutMs = Math.max(1, Number.isFinite(remainingPanelMs) ? remainingPanelMs : remainingPersonaBudgetMs);
         try {
           bus.publishEvent({
             jobId: effectiveJobId,
@@ -1463,6 +1642,7 @@ async function runPersona(
           }, {
             maxTurns: effectiveMaxTurns,
             effort: effectiveEffort,
+            inactivityTimeoutMs,
             jobId: effectiveJobId,
             persona: persona.id,
             providerId,
@@ -1470,6 +1650,7 @@ async function runPersona(
             zoektConfig: (config as any)?.evidence?.zoekt,
             repoFileProvider,
             onFirstToken: (requestPolicy as any)?.onFirstToken,
+            signal,
             validateParsed: (candidate) => {
               try {
                 const findings = validateFindings((candidate as any)?.findings);
@@ -1482,6 +1663,7 @@ async function runPersona(
               }
             },
           });
+          throwIfPanelAborted(signal);
           if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
               || !Array.isArray(result.parsed.findings)) {
             if ((result.turnsCount ?? 1) >= effectiveMaxTurns || !result.parsed) {
@@ -1499,6 +1681,7 @@ async function runPersona(
           const decision: 'APPROVE' | 'FINDINGS' = findings.length > 0
             ? 'FINDINGS'
             : result.parsed.decision as 'APPROVE' | 'FINDINGS';
+          throwIfPanelAborted(signal);
           if (decision !== result.parsed.decision) {
             logger.warn(`[Persona: ${persona.id}] Normalized APPROVE with validated findings to FINDINGS.`);
           }
@@ -1611,6 +1794,7 @@ async function runPersona(
             ...(isRedTeam || dualResolved || persona.model ? { crossExaminedModel: targetModel } : {}),
           };
         } catch (error: any) {
+          throwIfPanelAborted(signal);
           if (Date.now() - personaStartedAt >= MAX_PERSONA_BUDGET_MS) {
             logger.warn(`[Persona: ${persona.id}] Total execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s exhausted; failing closed.`);
             errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s`);
@@ -1630,7 +1814,7 @@ async function runPersona(
           }
           if (attempts < maxAttempts && isRetryablePanelError(error)) {
             logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts}): ${error.message}`);
-            await new Promise((r) => setTimeout(r, 1000));
+            await panelDelay(1000, signal);
             continue;
           }
           bus.publishEvent({
@@ -1681,9 +1865,16 @@ export async function executePersonaPanel(options: {
   repoFileProvider?: RepoFileProvider;
   /** Never undetermined by throwing: an unresolved lookup upstream must pass 'UNKNOWN', not omit the field. */
   repositoryVisibility?: RepositoryVisibility;
+  /** Caller cancellation is linked to the configured overall panel deadline. */
+  signal?: AbortSignal;
 }): Promise<PanelResult> {
-  return runInSpan('ct_persona_panel', async (span) => {
+  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
+  const panelStartedAt = Date.now();
+  const remainingPanelTimeoutMs = () => deadline.timeoutMs - (Date.now() - panelStartedAt);
+  return runInSpan<PanelResult>('ct_persona_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
+    const signal = deadline.signal;
+    throwIfPanelAborted(signal);
     const repositoryVisibility = normalizeRepositoryVisibility(options.repositoryVisibility ?? 'UNKNOWN');
     const runId = Math.random().toString(36).slice(2);
     const runKey = `${repository}#${headSha}`;
@@ -1708,6 +1899,7 @@ export async function executePersonaPanel(options: {
           mode: orig?.mode,
           size: orig?.size,
           byteSize: orig?.byteSize,
+          originalPatchLength: f.originalPatchLength,
         };
       });
 
@@ -1778,6 +1970,7 @@ export async function executePersonaPanel(options: {
             client,
             jobId: effectiveJobId,
             requestPolicy,
+            signal,
           });
           if (result) {
             classSpan.setAttribute('ct.classifier.fast_ship', result.fastShip);
@@ -1787,6 +1980,7 @@ export async function executePersonaPanel(options: {
           return result;
         });
       } catch (classErr: any) {
+        throwIfPanelAborted(signal);
         logger.warn('Pre-flight classifier failed; proceeding with default persona panel', {
           repository,
           headSha,
@@ -1809,6 +2003,7 @@ export async function executePersonaPanel(options: {
         }
 
         logger.info(`Fast-ship approved by classifier for ${repository}#${headSha}: ${classifierResult.rationale}`);
+        throwIfPanelAborted(signal);
         const fastShipResult = buildFastShipPanelResult(classifierResult, headSha, config.quorum);
 
         LiveStreamBus.getInstance().publishEvent({
@@ -1849,16 +2044,21 @@ export async function executePersonaPanel(options: {
     }
 
     let memoryRules: string[] = [];
+    let memoryStore: PRMemoryStore | undefined;
     try {
-      const memoryStore = new PRMemoryStore();
-      const memContext = await memoryStore.queryLearnings(repository);
+      memoryStore = new PRMemoryStore();
+      const memContext = await raceWithPanelAbort(memoryStore.queryLearnings(repository), signal);
       const adrs = memContext.adrConstraints.map((adr) => `ADR #${adr.adrNumber} (${adr.title}): ${adr.rule}`);
       const learnings = memContext.learnings.map((l) => `[${l.category}] ${l.title}: ${l.description}`);
       memoryRules = [...adrs, ...learnings];
-      memoryStore.close();
     } catch (err: any) {
+      throwIfPanelAborted(signal);
       logger.warn('Failed to query PRMemoryStore during executePersonaPanel', { repository, error: err?.message });
+    } finally {
+      memoryStore?.close();
     }
+
+    throwIfPanelAborted(signal);
 
     const nonRedTeamPersonas = applicable.filter((p) => !isRedTeamPersona(p.id, p.charter));
     let primaryAuthoringModel: string | undefined;
@@ -1888,7 +2088,7 @@ export async function executePersonaPanel(options: {
           if (!stillCurrent || currentActiveId !== runId) {
             throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
           }
-          const release = await processPersonaLimiter.acquire();
+          const release = await processPersonaLimiter.acquire(signal);
           activeInFlightPersonas++;
           try {
             const currentHeadNow = isCurrentHead ? isCurrentHead() : true;
@@ -1914,6 +2114,8 @@ export async function executePersonaPanel(options: {
                 branch: options.branch,
                 prNumber: options.prNumber,
               },
+              signal,
+              remainingPanelTimeoutMs,
             );
             return { persona, result, error: undefined };
           } finally {
@@ -1922,6 +2124,8 @@ export async function executePersonaPanel(options: {
           }
         }
       );
+
+    throwIfPanelAborted(signal);
 
     const settled = settledResults.map((res, index) => {
       const persona = applicable[index];
@@ -1936,6 +2140,7 @@ export async function executePersonaPanel(options: {
     if (requiredFailures.length > 0) {
       throw new PanelConfigurationError(`required persona failure: ${requiredFailures.map((entry) => entry.error).join(' | ')}`);
     }
+    throwIfPanelAborted(signal);
     const personas = settled.flatMap((entry) => entry.result ? [entry.result] : []);
     const optionalFailures = settled.flatMap((entry) =>
       !entry.result ? [{ id: entry.persona.id, error: entry.error || 'unknown failure' }] : [],
@@ -1961,10 +2166,11 @@ export async function executePersonaPanel(options: {
 
     const [moderatorRun, mermaidDiagram, prSummary] = await Promise.all([
       runInSpan('ct_moderator', async (modSpan) => {
-        const modTimeoutS = typeof moderatorProvider.review_timeout_s === 'number' && moderatorProvider.review_timeout_s > 0
-          ? moderatorProvider.review_timeout_s
-          : TURN_IDLE_MS / 1000;
-        const moderatorTimeoutMs = Math.min(modTimeoutS * 1_000, TURN_IDLE_MS);
+        const moderatorInactivityTimeoutMs = configuredProviderTimeoutMs(
+          moderatorProvider.review_timeout_s,
+          TURN_IDLE_MS,
+        );
+        const moderatorTimeoutMs = Math.max(1, remainingPanelTimeoutMs());
         const run = await invoke(client, moderatorProvider.model, moderatorTimeoutMs, 'moderator', {
           repository,
           headSha,
@@ -1976,6 +2182,8 @@ export async function executePersonaPanel(options: {
           persona: 'moderator',
           providerId: moderatorId,
           requestPolicy,
+          signal,
+          inactivityTimeoutMs: moderatorInactivityTimeoutMs,
           validateParsed: (candidate) => {
             try {
               validateFindings((candidate as any)?.findings);
@@ -2053,18 +2261,22 @@ export async function executePersonaPanel(options: {
       }),
     ]);
 
+    throwIfPanelAborted(signal);
+
     const moderatedFindings = moderatorRun.modFindings;
 
     let arbiterResult: PanelResult['arbiter'] | null = null;
     const arbiterErrors: string[] = [];
     for (const providerId of config.reviewers.arbiter.order) {
+      throwIfPanelAborted(signal);
       const spec = provider(config, providerId);
       try {
         arbiterResult = await runInSpan('ct_arbiter', async (arbSpan) => {
-          const arbTimeoutS = typeof spec.arbiter_timeout_s === 'number' && spec.arbiter_timeout_s > 0
-            ? spec.arbiter_timeout_s
-            : TURN_IDLE_MS / 1000;
-          const arbiterTimeoutMs = Math.min(arbTimeoutS * 1_000, TURN_IDLE_MS);
+          const arbiterInactivityTimeoutMs = configuredProviderTimeoutMs(
+            spec.arbiter_timeout_s,
+            TURN_IDLE_MS,
+          );
+          const arbiterTimeoutMs = Math.max(1, remainingPanelTimeoutMs());
           const run = await invoke(client, spec.model, arbiterTimeoutMs, 'arbiter', {
             repository,
             headSha,
@@ -2077,6 +2289,8 @@ export async function executePersonaPanel(options: {
             persona: 'arbiter',
             providerId,
             requestPolicy,
+            signal,
+            inactivityTimeoutMs: arbiterInactivityTimeoutMs,
           });
           let verdict = run.parsed?.verdict;
           if (verdict === 'APPROVE' || verdict === 'PASSED' || verdict === 'SUCCESS') verdict = 'SHIP';
@@ -2131,11 +2345,14 @@ export async function executePersonaPanel(options: {
         });
         break;
       } catch (error: any) {
+        throwIfPanelAborted(signal);
         arbiterErrors.push(`${providerId}: ${error?.message || String(error)}`);
         if (config.reviewers.fallback === 'none') break;
       }
     }
     if (!arbiterResult) throw new PanelConfigurationError(`arbiter failed closed: ${arbiterErrors.join('; ')}`);
+
+    throwIfPanelAborted(signal);
 
     const totalDuration = personas.reduce((acc, p) => acc + p.durationMs, 0) + moderatorRun.run.durationMs + arbiterResult.durationMs;
     const totalCost = personas.reduce((acc, p) => acc + (p.costUSD || 0), 0) + (moderatorRun.run.response.costUSD || 0) + (arbiterResult.costUSD || 0);
@@ -2187,16 +2404,20 @@ export async function executePersonaPanel(options: {
     });
 
     try {
+      throwIfPanelAborted(signal);
       const graphLearningEngine = new GraphLearningEngine();
-      await graphLearningEngine.autoLearnFromReview(
-        repository,
-        options.jobId || headSha,
-        personas.flatMap((p) => p.findings),
-        effectiveFiles
-      );
+      await raceWithPanelAbort(graphLearningEngine.autoLearnFromReview(
+          repository,
+          options.jobId || headSha,
+          personas.flatMap((p) => p.findings),
+          effectiveFiles,
+        ), signal);
     } catch (err: any) {
+      throwIfPanelAborted(signal);
       logger.warn('Failed to auto-learn from review execution', { repository, error: err?.message });
     }
+
+    throwIfPanelAborted(signal);
 
     return {
         headSha,
@@ -2222,5 +2443,5 @@ export async function executePersonaPanel(options: {
         activeRuns.delete(runKey);
       }
     }
-  });
+  }).finally(deadline.cleanup);
 }

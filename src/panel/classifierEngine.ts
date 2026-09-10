@@ -40,6 +40,7 @@ export interface ClassifyScopeOptions {
   client: ReviewModelClient;
   jobId?: string;
   requestPolicy?: PanelRequestPolicy;
+  signal?: AbortSignal;
 }
 
 /**
@@ -390,6 +391,7 @@ You MUST respond strictly with a JSON object in this format:
  * Fails open (returns null) on any network error, timeout, or malformed response.
  */
 export async function classifyReviewScope(options: ClassifyScopeOptions): Promise<ClassifierResult | null> {
+  if (options.signal?.aborted) throw options.signal.reason || new Error('review panel was cancelled');
   // Bypass classifier in qualification runs to preserve strict qualification contract
   if (
     options.requestPolicy?.metadata?.qualificationMode ||
@@ -459,6 +461,7 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
       temperature: 0.1,
       responseFormat: { type: 'json_object' },
       reasoningEffort: 'low',
+      ...(options.signal ? { signal: options.signal } : {}),
       ...(options.requestPolicy?.provider ? { provider: options.requestPolicy.provider } : {}),
       ...(options.requestPolicy?.metadata ? { metadata: options.requestPolicy.metadata } : {}),
     });
@@ -516,6 +519,7 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
       providerId: providerSpec.id,
     };
   } catch (err: any) {
+    if (options.signal?.aborted) throw options.signal.reason || new Error('review panel was cancelled');
     logger.warn('Pre-flight classifier failed; failing open to full review panel', {
       repository: options.repository,
       headSha: options.headSha,

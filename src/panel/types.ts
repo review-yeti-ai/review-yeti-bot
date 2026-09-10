@@ -91,4 +91,5 @@ export type PanelRequestPolicy = Pick<
   | 'provider'
   | 'plugins'
   | 'metadata'
+  | 'signal'
 >;
