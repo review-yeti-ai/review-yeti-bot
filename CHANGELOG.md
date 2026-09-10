@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.3...v1.48.4) (2026-09-10)
+
+
+### Bug Fixes
+
+* **deploy:** guard Flux-owned worker advances ([#651](https://github.com/review-yeti-ai/review-yeti-bot/issues/651)) ([d5346d1](https://github.com/review-yeti-ai/review-yeti-bot/commit/d5346d1c4e1e8ed57236419fd31259f1678e2e4d))
+
 ## [1.48.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.2...v1.48.3) (2026-09-10)
 
 
