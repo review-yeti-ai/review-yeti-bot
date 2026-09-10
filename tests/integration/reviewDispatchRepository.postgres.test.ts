@@ -230,6 +230,26 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect((await client.query('SELECT * FROM review_gate_attempts')).rows).toEqual(gateBefore);
   });
 
+  it('claims an expired active run before an older terminal publication retry', async () => {
+    const { repository, client } = await createRepository();
+    const historicalInput = sameHeadAdmission('historical', 1_000);
+    const historical = await repository.admit(historicalInput);
+    await client.query(`UPDATE review_runs SET status = 'terminal',
+      error_text = 'publishing run reached its terminal deadline without a verdict; reaped by old-reaper'
+      WHERE run_id = $1`, [historical.run.runId]);
+    await client.query("UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1", [historical.run.runId]);
+
+    const activeIdentity = { ...sameHeadAdmission('active', 2_000).identity, prNumber: 43 };
+    const activeInput = { ...sameHeadAdmission('active', 2_000), identity: activeIdentity,
+      payloadDigest: sha256(activeIdentity) };
+    const active = await repository.admit(activeInput);
+
+    const [claimed] = await repository.claimAbandonedPublishingRuns(
+      'reaper-a', activeInput.terminalDeadline + 1, 1,
+    );
+    expect(claimed.runId).toBe(active.run.runId);
+  });
+
   describe('atomic authoritative admission', () => {
     it('commits prepared policy, run, outbox and gate together; dispatch waits for durable check binding', async () => {
       const { repository, client, gateRepository } = await createRepository();
