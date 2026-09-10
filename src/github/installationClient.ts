@@ -274,30 +274,7 @@ export class GitHubInstallationClient {
     return this.publisher.publishReview(request);
   }
 
-  async createCheck(
-    owner: string,
-    repo: string,
-    headSha: string,
-    nameOrExternalId?: string,
-    output?: { title?: string; summary?: string },
-    explicitExternalId?: string,
-  ): Promise<number> {
-    const isExternalId = Boolean(
-      nameOrExternalId && (nameOrExternalId.startsWith('run_') || nameOrExternalId.includes(':a'))
-    );
-    const name = isExternalId ? CHECK_CONTEXT_RAW_REVIEW : (nameOrExternalId || CHECK_CONTEXT_RAW_REVIEW);
-    const externalId = explicitExternalId || (isExternalId ? nameOrExternalId : undefined);
-
-    const defaultOutput = name === CHECK_CONTEXT_RAW_REVIEW
-      ? {
-          title: 'Configurable persona panel running',
-          summary: 'Loading base-SHA policy and executing enabled persona lanes.',
-        }
-      : {
-          title: `${name} in progress`,
-          summary: `Executing ${name} validation.`,
-        };
-
+  async createCheck(owner: string, repo: string, headSha: string, externalId?: string): Promise<number> {
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
@@ -307,11 +284,14 @@ export class GitHubInstallationClient {
         // `Review Yeti / Gate`) left the central check stuck in_progress forever
         // because this App's own check never completed the one the central lane
         // created. Do not rename this without updating the central publisher too.
-        name,
+        name: CHECK_CONTEXT_RAW_REVIEW,
         head_sha: headSha,
         ...(externalId ? { external_id: externalId } : {}),
         status: 'in_progress',
-        output: output || defaultOutput,
+        output: {
+          title: 'Configurable persona panel running',
+          summary: 'Loading base-SHA policy and executing enabled persona lanes.',
+        },
       }),
     });
     return Number(data.id);

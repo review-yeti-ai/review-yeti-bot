@@ -16,7 +16,7 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
     expect(CHECK_CONTEXT_CI).toBe('Review Yeti CI');
   });
 
-  it('createCheck supports custom check name and defaults to Review Yeti', async () => {
+  it('createCheck creates in_progress check with Review Yeti and propagates externalId', async () => {
     let capturedBody: any = null;
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       capturedBody = JSON.parse(String(init?.body || '{}'));
@@ -36,10 +36,12 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
     const id1 = await client.createCheck('owner', 'repo', 'a'.repeat(40));
     expect(id1).toBe(999);
     expect(capturedBody.name).toBe('Review Yeti');
+    expect(capturedBody.external_id).toBeUndefined();
 
-    // Custom call for gate
-    await client.createCheck('owner', 'repo', 'a'.repeat(40), CHECK_CONTEXT_GATE);
-    expect(capturedBody.name).toBe('Review Yeti Gate');
+    // Call with externalId
+    await client.createCheck('owner', 'repo', 'a'.repeat(40), 'run_12345:a1');
+    expect(capturedBody.name).toBe('Review Yeti');
+    expect(capturedBody.external_id).toBe('run_12345:a1');
   });
 
   it('publishGateCheck creates a completed check with Review Yeti Gate', async () => {
