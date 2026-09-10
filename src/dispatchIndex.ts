@@ -1,7 +1,9 @@
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
 import { createActionDispatchApp } from './dispatchServer';
 import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
-import { getBoundedRepositoryInstallationId, validateGitHubAppApiBaseUrl } from './github/boundedAppToken';
+import {
+  getBoundedRepositoryInstallationId, getBoundedRepositoryToken, validateGitHubAppApiBaseUrl,
+} from './github/boundedAppToken';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
 import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
@@ -9,6 +11,10 @@ import { PostgresStore } from './persistence/postgresStore';
 import { logger } from './utils/logger';
 import { authoritativeServiceConfigFromEnv } from './auth/authoritativeServiceConfig';
 import { createAuthoritativeReviewService } from './review/authoritativeReviewService';
+import { githubWebhookConfigFromEnv } from './auth/githubWebhookConfig';
+import { createGitHubWebhookAdmissionHandler } from './review/githubWebhookAdmission';
+import { PostgresMergeGroupGateRepository } from './persistence/mergeGroupGateRepository';
+import { createMergeGroupGate } from './review/mergeGroupGate';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -25,6 +31,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const privateKey = required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
   const baseUrl = validateGitHubAppApiBaseUrl(environment.GITHUB_API_BASE_URL);
   const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy);
+  const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
   const store = new PostgresStore();
   await store.initialize();
   const pool = store.getPool();
@@ -36,6 +43,22 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   }) : undefined;
   const repository = new PostgresReviewDispatchRepository(pool, undefined,
     authoritative ? { validateAuthoritativeAdmission: authoritative.validateAdmission } : undefined);
+  const githubWebhook = webhookConfig ? {
+    secret: webhookConfig.secret,
+    onEvent: createGitHubWebhookAdmissionHandler({
+      config: webhookConfig,
+      admission: repository,
+      ...(authoritative ? { authoritativePublishing: authoritative.admission } : {}),
+      mergeGroupGate: createMergeGroupGate({
+        config: webhookConfig,
+        repository: new PostgresMergeGroupGateRepository(pool),
+        baseUrl,
+        tokenFor: async (owner, repo) => (await getBoundedRepositoryToken({
+          appId, privateKey, owner, repo, baseUrl,
+        }, 'merge-group')).token,
+      }),
+    }),
+  } : undefined;
   const app = createActionDispatchApp({
     verifier: new GitHubActionsOidcVerifier({ policy }),
     admission: repository,
@@ -54,6 +77,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       repo,
       baseUrl,
     }),
+    ...(githubWebhook ? { githubWebhook } : {}),
   });
   // Admission credentials may belong to a different App. Only the worker-token
   // dispatcher reconciles legacy raw checks. The separately opted-in service
