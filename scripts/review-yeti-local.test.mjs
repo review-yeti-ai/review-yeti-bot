@@ -54,7 +54,7 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.FIREWORKS_PR_REVIEW_API_KEY, undefined);
   assert.equal(env.MAX_PERSONAS, String(policy.review_yeti.personas.split(',').length));
   assert.equal(env.MAX_DIFF_CHARS, '2000000');
-  assert.equal(env.MAX_FILE_DIFF_CHARS, '60000');
+  assert.equal(env.MAX_FILE_DIFF_CHARS, '524288');
   // Track policy rather than pinning a literal: this assertion went stale the moment
   // lane_deadline_ms changed, turning a routine policy edit into a red main.
   assert.equal(env.LANE_DEADLINE_MS, String(policy.review_yeti.budget.lane_deadline_ms));

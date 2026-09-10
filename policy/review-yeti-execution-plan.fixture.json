@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "f32ada7f448bdebe2bca89684111961e67e5e7256e4abcf8502795779cb08c00",
+  "normalized_plan_sha256": "b4665730577ae4b5f2e196a5e5fee1363d46950b1e6ed72acaecfac87ac6f60c",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -24,7 +24,7 @@
     },
     "scope": {
       "max_diff_chars": 2000000,
-      "max_file_diff_chars": 60000,
+      "max_file_diff_chars": 524288,
       "max_incremental_diff_chars": 60000
     },
     "transports": [

@@ -330,6 +330,8 @@ jobs:
           dispatch-mode: ${{ steps.policy.outputs.dispatch_mode }}
           openrouter-data-collection: ${{ steps.policy.outputs.openrouter_data_collection }}
           max-diff-chars: ${{ steps.policy.outputs.max_diff_chars }}
+          max-file-diff-chars: ${{ steps.policy.outputs.max_file_diff_chars }}
+          max-file-diff-chars: ${{ steps.policy.outputs.max_file_diff_chars }}
           incremental-review: ${{ steps.policy.outputs.incremental_enabled }}
           incremental-trusted-workflow: ${{ steps.workflow_identity.outputs.workflow_ref }}
           incremental-trusted-workflow-sha: ${{ steps.workflow_identity.outputs.workflow_sha }}

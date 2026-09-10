@@ -34,7 +34,7 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   });
   assert.deepEqual(fixture.plan.scope, {
     max_diff_chars: 2000000,
-    max_file_diff_chars: 60000,
+    max_file_diff_chars: 524288,
     max_incremental_diff_chars: 60000,
   });
   assert.equal(fixture.plan.lane.max_review_assignments, 24);
