@@ -64,15 +64,15 @@ if [[ "$REVIEW_STATUS" == "DISPATCHED" && "$GATE_DECISION" == "PENDING" ]]; then
   exit 0
 fi
 
-# Maintenance hatch: passthrough never claims SHIP. NO_REVIEW + merge-eligible
-# is how required GitHub checks can succeed while the panel is down.
-if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" && "$REVIEW_STATUS" == "NO_REVIEW" ]]; then
+# Maintenance hatch: passthrough never claims SHIP. SKIPPED means no panel ran
+# and the merge queue may proceed on a skipped required check.
+if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" && ( "$REVIEW_STATUS" == "SKIPPED" || "$REVIEW_STATUS" == "NO_REVIEW" ) ]]; then
   echo "Review Yeti PASSTHROUGH accepted for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
-  echo "Verdict is NO_REVIEW (not SHIP). Merge is allowed because passthrough is on."
+  echo "Verdict is SKIPPED (not SHIP). No panel ran."
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
-      echo "### Review Yeti: PASSTHROUGH (NO_REVIEW)"
-      echo "No panel ran. Required Gate checks may succeed so maintenance merges can proceed."
+      echo "### Review Yeti: SKIPPED (passthrough)"
+      echo "No panel ran. Gate check is skipped so the merge queue can continue."
     } >> "$GITHUB_STEP_SUMMARY"
   fi
   exit 0

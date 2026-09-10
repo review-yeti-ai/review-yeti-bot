@@ -49,8 +49,10 @@ function inspect(runs, expectedHeadSha, publisher, publisherLabel) {
     failures.push(`${publisherLabel} contains a stale head SHA`);
   }
   const latest = latestRun(runs);
-  if (latest?.status !== 'completed' || latest?.conclusion !== 'success') {
-    failures.push(`${publisherLabel} latest exact-head run is not successful`);
+  // success = real SHIP. skipped = passthrough (no panel). Both may enter the
+  // merge queue. failure/neutral/timed_out must not.
+  if (latest?.status !== 'completed' || !['success', 'skipped'].includes(latest?.conclusion)) {
+    failures.push(`${publisherLabel} latest exact-head run is not successful or skipped`);
   }
   return { failures, latest };
 }

@@ -22,13 +22,13 @@ publish_passthrough_check() {
     --arg name "$name" \
     --arg head_sha "${HEAD_SHA}" \
     --arg details_url "${CENTRAL_RUN_URL}" \
-    --arg summary "Review Yeti is in passthrough mode (REVIEW_YETI_PASSTHROUGH). No panel review was performed for this head. Conclusion is success so required GitHub checks can pass during maintenance; this is not a SHIP. See [central run](${CENTRAL_RUN_URL})." \
-    --arg title "${name}: PASSTHROUGH (no review performed)" \
+    --arg summary "Review Yeti is in passthrough mode (REVIEW_YETI_PASSTHROUGH). No panel ran. Conclusion is skipped — not a SHIP. The merge queue may proceed on a skipped required check. See [central run](${CENTRAL_RUN_URL})." \
+    --arg title "${name}: SKIPPED (passthrough — no review)" \
     '{
       name: $name,
       head_sha: $head_sha,
       status: "completed",
-      conclusion: "success",
+      conclusion: "skipped",
       details_url: $details_url,
       output: {
         title: $title,
@@ -49,7 +49,7 @@ publish_passthrough_check() {
 # not dispatched, so if we skip Checks API writes here the required App gate
 # never appears and merges stay blocked.
 if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
-  echo "Publishing passthrough Check Runs (success, not SHIP) to ${TARGET_REPO} on ${HEAD_SHA}..."
+  echo "Publishing passthrough Check Runs (skipped, not SHIP) to ${TARGET_REPO} on ${HEAD_SHA}..."
   publish_passthrough_check "Review Yeti"
   publish_passthrough_check "Review Yeti Gate"
   exit 0

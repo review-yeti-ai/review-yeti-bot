@@ -12,7 +12,7 @@ case "$COMMAND" in
   on|enable|true)
     echo "Enabling Review Yeti passthrough mode organization-wide on ${TARGET_REPO}..."
     gh variable set REVIEW_YETI_PASSTHROUGH --body "true" -R "$TARGET_REPO"
-    echo "✓ Passthrough mode is now ENABLED. All dispatched reviews across all repositories will bypass LLM and deliver immediate SHIP."
+    echo "✓ Passthrough mode is now ENABLED. All dispatched reviews bypass LLM and land SKIPPED (not SHIP). Merge queue may proceed on skipped checks."
     ;;
   off|disable|false)
     echo "Disabling Review Yeti passthrough mode organization-wide on ${TARGET_REPO}..."
@@ -23,7 +23,7 @@ case "$COMMAND" in
     val="$(gh variable get REVIEW_YETI_PASSTHROUGH -R "$TARGET_REPO" --json value -q .value 2>/dev/null || echo "not set")"
     echo "Review Yeti central passthrough variable (${TARGET_REPO}): ${val}"
     if [[ "$val" == "true" || "$val" == "1" ]]; then
-      echo "Status: PASSTHROUGH MODE IS ACTIVE (All dispatched repos bypass LLM and receive immediate SHIP)"
+      echo "Status: PASSTHROUGH MODE IS ACTIVE (bypass LLM; Gate check is SKIPPED, not SHIP)"
     else
       echo "Status: PASSTHROUGH MODE IS INACTIVE (Standard LLM review panel is active)"
     fi
@@ -32,7 +32,7 @@ case "$COMMAND" in
     echo "Usage: $0 [on|off|status]"
     echo ""
     echo "Commands:"
-    echo "  on      Enable passthrough mode org-wide (all repos bypass LLM and receive immediate SHIP)"
+    echo "  on      Enable passthrough (bypass LLM; Gate check is SKIPPED, not SHIP)"
     echo "  off     Disable passthrough mode org-wide (standard LLM evaluation resumes)"
     echo "  status  Check current central passthrough status on ${TARGET_REPO}"
     exit 1

@@ -664,7 +664,7 @@ PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$passthrough_payload" \
   GH_TOKEN=test TARGET_REPO=exampleorg/example HEAD_SHA=deadbeef \
   REVIEW_STATUS=SHIP REVIEW_YETI_PASSTHROUGH=true CENTRAL_RUN_URL=https://example/run/1 \
   "$repo_root/scripts/publish-review-check-run.sh" >/dev/null
-jq -e '.conclusion == "success" and (.output.title | test("PASSTHROUGH"))' "$passthrough_payload" >/dev/null
+jq -e '.conclusion == "skipped" and (.output.title | test("SKIPPED"))' "$passthrough_payload" >/dev/null
 
 normal_ship_payload="$publish_test_dir/normal-ship.json"
 PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$normal_ship_payload" \

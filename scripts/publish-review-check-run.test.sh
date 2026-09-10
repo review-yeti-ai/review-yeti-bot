@@ -95,7 +95,7 @@ env -i PATH="$TMP:$ORIG_PATH" \
   TARGET_REPO="exampleorg/ct-test" \
   HEAD_SHA="abc1234" \
   REVIEW_YETI_EXECUTION_BACKEND="doks" \
-  REVIEW_STATUS="NO_REVIEW" \
+  REVIEW_STATUS="SKIPPED" \
   REVIEW_YETI_PASSTHROUGH="true" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
   "$SCRIPT" >/dev/null 2>&1
@@ -103,10 +103,10 @@ env -i PATH="$TMP:$ORIG_PATH" \
 grep -cF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log" | grep -qx 2
 grep -qF '"name":"Review Yeti"' "$TMP/curl_calls.log"
 grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
-grep -qF '"conclusion":"success"' "$TMP/curl_calls.log"
-grep -qF 'PASSTHROUGH' "$TMP/curl_calls.log"
+grep -qF '"conclusion":"skipped"' "$TMP/curl_calls.log"
+grep -qF 'SKIPPED' "$TMP/curl_calls.log"
 
-# Local passthrough also POSTs success (not neutral) for both required names.
+# Local passthrough also POSTs skipped (not SHIP/success) for both required names.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
@@ -117,7 +117,7 @@ env -i PATH="$TMP:$ORIG_PATH" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
   "$SCRIPT" >/dev/null 2>&1
 
-grep -qF '"conclusion":"success"' "$TMP/curl_calls.log"
+grep -qF '"conclusion":"skipped"' "$TMP/curl_calls.log"
 grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 
 # Hosted/local SHIP without CHECK_ID still POSTs success.

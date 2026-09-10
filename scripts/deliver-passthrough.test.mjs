@@ -45,23 +45,23 @@ function run(env = {}) {
 
 test('passthrough never emits a SHIP verdict', () => {
   const { outputs, report } = run();
-  assert.equal(report.verdict, 'NO_REVIEW');
-  assert.match(outputs, /review-status=NO_REVIEW/);
+  assert.equal(report.verdict, 'SKIPPED');
+  assert.match(outputs, /review-status=SKIPPED/);
   assert.doesNotMatch(outputs, /review-status=SHIP/);
 });
 
-test('passthrough is merge-eligible without claiming SHIP', () => {
+test('passthrough is merge-eligible as SKIPPED without claiming SHIP', () => {
   const { outputs } = run();
-  assert.match(outputs, /gate-decision=PASS/);
+  assert.match(outputs, /gate-decision=SKIPPED/);
   assert.match(outputs, /merge-eligible=true/);
-  assert.match(outputs, /review-status=NO_REVIEW/);
+  assert.match(outputs, /review-status=SKIPPED/);
   assert.doesNotMatch(outputs, /review-status=SHIP/);
 });
 
 test('ON_NO_REVIEW cannot turn passthrough into SHIP', () => {
   for (const value of ['neutral', 'NEUTRAL', 'true', 'nuetral', 'fail', 'SHIP']) {
     const { outputs, report } = run({ ON_NO_REVIEW: value });
-    assert.equal(report.verdict, 'NO_REVIEW');
+    assert.equal(report.verdict, 'SKIPPED');
     assert.doesNotMatch(outputs, /review-status=SHIP/);
   }
 });
@@ -74,7 +74,7 @@ test('the run report still records that zero lanes ran', () => {
 
 test('the step summary does not describe the result as an approval', () => {
   const { summary } = run();
-  assert.match(summary, /NO_REVIEW/);
+  assert.match(summary, /SKIPPED/);
   assert.match(summary, /not a SHIP/i);
   assert.doesNotMatch(summary, /Verdict: SHIP/);
 });

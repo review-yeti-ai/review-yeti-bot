@@ -11,25 +11,23 @@ if [[ -z "$target_repo" || -z "$pr_number" || -z "$head_sha" || -z "$base_sha" ]
   exit 1
 fi
 
-# Passthrough never claims SHIP. The verdict stays NO_REVIEW so logs and the
-# run report cannot be read as a completed panel. Merge eligibility is the
-# maintenance hatch: required GitHub checks must be able to succeed while
-# Bifrost/DOKS is broken, without inventing a SHIP.
+# Passthrough never claims SHIP. The GitHub check is SKIPPED: no panel ran,
+# and the merge queue is allowed to proceed on a skipped required check.
 
 echo "====================================================="
 echo "Review Yeti: Passthrough Mode Active"
 echo "Target: ${target_repo}#${pr_number} at ${head_sha}"
 echo "No review was completed; scheduled maintenance in progress."
-echo "Verdict: NO_REVIEW (merge-eligible; not a SHIP)"
+echo "Verdict: SKIPPED (not a SHIP)"
 echo "====================================================="
 
-comment_body="### Review Yeti: PASSTHROUGH (NO_REVIEW)
+comment_body="### Review Yeti: SKIPPED (passthrough)
 
-**No automated review was performed on this head.** Review Yeti is in passthrough mode for maintenance.
+**No automated review was performed on this head.** Review Yeti is in passthrough mode.
 
-This is not a SHIP. The required Gate check is allowed to succeed so merges can proceed while the panel is down.
+This is not a SHIP. The Gate check is **skipped** so the merge queue can continue without pretending a panel ran.
 
-<!-- ct-review-bot:passthrough:NO_REVIEW -->"
+<!-- ct-review-bot:passthrough:SKIPPED -->"
 
 if command -v gh >/dev/null 2>&1 && [[ -n "${GH_TOKEN:-}" ]]; then
   echo "Publishing passthrough comment to ${target_repo}#${pr_number}..."
@@ -54,7 +52,7 @@ jq -nc \
     prNumber: $pr,
     baseSha: $base,
     headSha: $head,
-    verdict: "NO_REVIEW",
+    verdict: "SKIPPED",
     lanes: [],
     scope: {
       schemaVersion: "review-scope-v1",
@@ -72,12 +70,12 @@ jq -nc \
     }
   }' > "$report_path"
 
-echo "Emitted NO_REVIEW run report to ${report_path}"
+echo "Emitted SKIPPED run report to ${report_path}"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   echo "run-report-path=${report_path}" >> "$GITHUB_OUTPUT"
-  echo "review-status=NO_REVIEW" >> "$GITHUB_OUTPUT"
-  echo "gate-decision=PASS" >> "$GITHUB_OUTPUT"
+  echo "review-status=SKIPPED" >> "$GITHUB_OUTPUT"
+  echo "gate-decision=SKIPPED" >> "$GITHUB_OUTPUT"
   echo "merge-eligible=true" >> "$GITHUB_OUTPUT"
   echo "files-omitted=0" >> "$GITHUB_OUTPUT"
   echo "review-dispatch-reflection-status=complete" >> "$GITHUB_OUTPUT"
@@ -86,8 +84,8 @@ fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
-    echo "### Review Yeti: PASSTHROUGH (NO_REVIEW)"
-    echo "No automated review was performed. Merge-eligible during maintenance; not a SHIP."
+    echo "### Review Yeti: SKIPPED (passthrough)"
+    echo "No automated review was performed. Gate check is skipped; not a SHIP."
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 

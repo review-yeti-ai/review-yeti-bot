@@ -38,7 +38,14 @@ test('a foreign green cannot replace a failed official check', () => {
       { ...checks[0], id: 22, conclusion: 'failure' },
       { ...checks[0], id: 23, app: { id: 123, slug: 'unrelated-operator-app' }, conclusion: 'success' },
     ], head);
-    assert.match(result.failures.join(' '), /latest exact-head run is not successful/u);
+    assert.match(result.failures.join(' '), /latest exact-head run is not successful or skipped/u);
+});
+
+test('passthrough SKIPPED from the official App qualifies for the merge queue', () => {
+  const result = evaluateExactCheckRuns([
+    { ...checks[0], conclusion: 'skipped' },
+  ], head);
+  assert.deepEqual(result.failures, []);
 });
 
 test('a foreign green alone cannot supply the required check', () => {
