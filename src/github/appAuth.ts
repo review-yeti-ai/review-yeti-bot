@@ -299,6 +299,45 @@ export async function getGitHubAppRepositoryPublishToken(
   };
 }
 
+/** Mint the one-repository token needed to read a merge queue and publish its
+ * synthetic Review Yeti check. No repository contents or PR mutation is
+ * permitted. */
+export async function getGitHubAppRepositoryMergeGroupToken(
+  config: GitHubRepositoryInstallationConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<InstallationTokenResult> {
+  const installationId = await getGitHubAppInstallationIdForRepository(config, fetchFn);
+  const { appId, privateKey, repo, baseUrl = 'https://api.github.com' } = config;
+  const jwt = generateGitHubAppJwt(appId, privateKey);
+  const response = await fetchFn(`${baseUrl.replace(/\/+$/, '')}/app/installations/${installationId}/access_tokens`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json', Authorization: `Bearer ${jwt}`,
+      'Content-Type': 'application/json', 'User-Agent': 'ct-review-bot[bot]',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: JSON.stringify({
+      repositories: [repo],
+      permissions: { checks: 'write', contents: 'read', pull_requests: 'read', merge_queues: 'read' },
+    }),
+    signal: repositoryRequestSignal(config),
+  });
+  if (!response.ok) throw new Error(`GitHub App merge-group token exchange failed HTTP ${response.status}`);
+  const body = await response.json() as { token?: unknown; expires_at?: unknown; permissions?: unknown };
+  const token = typeof body.token === 'string' ? body.token : '';
+  const expiresAt = typeof body.expires_at === 'string' ? body.expires_at : '';
+  const permissions = body.permissions && typeof body.permissions === 'object' && !Array.isArray(body.permissions)
+    ? body.permissions as Record<string, unknown> : {};
+  const expected = { checks: 'write', contents: 'read', pull_requests: 'read', merge_queues: 'read' };
+  const unexpected = Object.keys(permissions).filter((key) => !(key in expected) && key !== 'metadata');
+  if (!token.startsWith('ghs_') || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()
+    || Object.entries(expected).some(([key, value]) => permissions[key] !== value) || unexpected.length > 0
+    || (permissions.metadata !== undefined && permissions.metadata !== 'read')) {
+    throw new Error('GitHub App merge-group token exchange returned an unsafe contract');
+  }
+  return { token, expiresAt, permissions: permissions as Record<string, string> };
+}
+
 /**
  * Mints a short-lived installation token constrained to one repository and
  * `contents: write` permission required for repository_dispatch completion events.
