@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.51.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.51.0...v1.51.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **API-3215:** publish one visible Review Yeti check ([bcc4f58](https://github.com/review-yeti-ai/review-yeti-bot/commit/bcc4f58e4a5a3b79e09451c9f5c2e9fb0d30a1bd))
+
 ## [1.51.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.50.1...v1.51.0) (2026-09-10)
 
 
