@@ -11,6 +11,12 @@ import {
   runPublishingReviewWorker,
 } from '../../src/cli/publishingReview';
 import { HttpWorkerCompletionAdapter } from '../../src/review/workerCompletion';
+import {
+  OpenRouterConnectionError,
+  OpenRouterResponseError,
+  OpenRouterTimeoutError,
+} from '../../src/gateway/openRouterClient';
+import { UpstreamCapacityRejectionError } from '../../src/gateway/providerCapacityManager';
 import { logger } from '../../src/utils/logger';
 
 const HEAD = 'a'.repeat(40);
@@ -510,7 +516,7 @@ describe('runPublishingReviewWorker', () => {
     expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
     expect(completion.reportTerminalFailure.mock.calls[0][0]).not.toHaveProperty('checkId');
     expect(log).toHaveBeenCalledExactlyOnceWith('Failed to persist worker terminal failure', {
-      runId: env().REVIEW_RUN_ID, failureClass: 'provider_error', reason: 'completion_callback_failed',
+      runId: env().REVIEW_RUN_ID, failureClass: 'internal_error', reason: 'completion_callback_failed',
     });
     expect(JSON.stringify(log.mock.calls)).not.toContain(callbackError.message);
   });
@@ -581,9 +587,32 @@ describe('identity and failure classification', () => {
     ['virtual key not found', 'auth'],
     ['429 rate limit', 'rate_limit'],
     ['request timed out', 'timeout'],
+    ['persona dep-lane failed closed: bifrost: OpenRouter compatibility response exceeded total deadline of 300000ms', 'timeout'],
     ['fetch failed', 'transport'],
+    ['invalid native JSON response object', 'malformed_output'],
+    ['invalid findings contract at index 0', 'malformed_output'],
+    ['APPROVE cannot contain findings', 'malformed_output'],
+    ['FINDINGS requires at least one finding', 'malformed_output'],
+    ['nonce-fenced structured output rejected', 'malformed_output'],
+    ['gateway returned an unexpected payload', 'provider_error'],
   ])('classifies %s as %s', (message, expected) => {
     expect(classifyFailure(new Error(message))).toBe(expected);
+  });
+
+  it('does not label an unknown worker exception as a provider outage', () => {
+    expect(classifyFailure(new Error('unexpected invariant violation'))).toBe('internal_error');
+  });
+
+  it.each([
+    [new OpenRouterTimeoutError('deadline'), 'timeout'],
+    [new OpenRouterConnectionError('socket closed'), 'transport'],
+    [new OpenRouterResponseError('unauthorized', 401), 'auth'],
+    [new OpenRouterResponseError('forbidden', 403), 'auth'],
+    [new OpenRouterResponseError('busy', 429), 'rate_limit'],
+    [new OpenRouterResponseError('upstream failed', 503), 'provider_error'],
+    [new UpstreamCapacityRejectionError('bifrost', 'queue full'), 'rate_limit'],
+  ])('classifies typed gateway error %s as %s', (error, expected) => {
+    expect(classifyFailure(error)).toBe(expected);
   });
 });
 

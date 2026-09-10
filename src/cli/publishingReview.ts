@@ -27,8 +27,14 @@ import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
 import { Octokit } from '@octokit/core';
-import { OpenRouterClient } from '../gateway/openRouterClient';
+import {
+  OpenRouterClient,
+  OpenRouterConnectionError,
+  OpenRouterResponseError,
+  OpenRouterTimeoutError,
+} from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
+import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManager';
 import { createDefaultV3Config } from '../config/configLoader';
 import type { ProviderId } from '../config/schema';
 import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
@@ -257,14 +263,26 @@ export function publishingConclusion(verdict: string, blockingFindingCount: numb
 }
 
 export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
+  if (error instanceof OpenRouterTimeoutError) return 'timeout';
+  if (error instanceof UpstreamCapacityRejectionError) return 'rate_limit';
+  if (error instanceof OpenRouterConnectionError) return 'transport';
+  if (error instanceof OpenRouterResponseError) {
+    if (error.status === 401 || error.status === 403) return 'auth';
+    if (error.status === 429) return 'rate_limit';
+    return 'provider_error';
+  }
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
-  if (/timeout|timed out|ETIMEDOUT/iu.test(message)) return 'timeout';
+  if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
   if (/budget exhausted|incomplete/iu.test(message)) return 'budget_exhausted';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
   if (/429|rate limit/iu.test(message)) return 'rate_limit';
   if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
-  return 'provider_error';
+  if (/invalid (?:native )?JSON|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output/iu.test(message)) {
+    return 'malformed_output';
+  }
+  if (/provider|gateway|model/iu.test(message)) return 'provider_error';
+  return 'internal_error';
 }
 
 export interface PublishingReviewDeps {
