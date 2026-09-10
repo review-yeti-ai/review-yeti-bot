@@ -99,7 +99,7 @@ describe('version 3 configurable persona panel', () => {
     const personaFiles = new Map<string, string[]>();
     const complete = vi.fn(async ({ model, messages }: any) => {
       const allContent = JSON.stringify(messages);
-      const prompt = messages.map((message: { content: unknown }) => extractMessageContentText(message.content)).join('\n');
+      const prompt: string = messages.map((message: { content: unknown }) => extractMessageContentText(message.content)).join('\n');
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       starts.push(model);
