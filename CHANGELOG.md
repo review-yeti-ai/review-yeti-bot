@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.49.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.5...v1.49.0) (2026-09-10)
+
+
+### Features
+
+* **panel:** eliminate 3s warmup delay and activate ecosystem-based persona path routing ([#637](https://github.com/review-yeti-ai/review-yeti-bot/issues/637)) ([a35ab32](https://github.com/review-yeti-ai/review-yeti-bot/commit/a35ab32821939a55190844b029519e65880a91ae))
+
 ## [1.48.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.4...v1.48.5) (2026-09-10)
 
 
