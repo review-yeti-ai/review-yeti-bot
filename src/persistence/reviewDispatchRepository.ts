@@ -519,7 +519,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           FOR UPDATE OF runs, outbox SKIP LOCKED
           LIMIT $3
        ), retired AS (
-         UPDATE review_dispatch_outbox outbox
+         UPDATE review_dispatch_outbox AS outbox
             SET status = CASE WHEN outbox.status = 'projected' OR outbox.worker_token_digest IS NOT NULL
                          THEN 'projected' ELSE 'terminal' END,
                 lease_owner = NULL, lease_expires_at = NULL,
