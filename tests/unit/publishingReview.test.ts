@@ -680,4 +680,57 @@ describe('hosted lane — repository visibility resolution', () => {
       }),
     );
   });
+
+  it('publishes Review Yeti Gate check on clean SHIP review completion', async () => {
+    const publishGateCheck = vi.fn(async () => 7777);
+    const client = {
+      ...checkClient(),
+      publishGateCheck,
+    };
+    const d = deps({
+      checkClient: client,
+      panelRunner: vi.fn(async () => ({
+        personas: [{ id: 'sec-lane', findings: [] }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('success');
+    expect(publishGateCheck).toHaveBeenCalledWith(
+      'calltelemetry',
+      'ct-meta',
+      HEAD,
+      expect.objectContaining({
+        conclusion: 'success',
+        title: 'Review Yeti Gate: Approved (SHIP)',
+        summary: expect.stringContaining('### Review Yeti Gate: Eligible'),
+      }),
+    );
+  });
+
+  it('publishes fail-closed Review Yeti Gate check when review fails closed', async () => {
+    const publishGateCheck = vi.fn(async () => 8888);
+    const client = {
+      ...checkClient(),
+      publishGateCheck,
+    };
+    const d = deps({
+      checkClient: client,
+      panelRunner: vi.fn(async () => {
+        throw new Error('LLM Provider Outage');
+      }) as never,
+    });
+    await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow('LLM Provider Outage');
+    expect(publishGateCheck).toHaveBeenCalledWith(
+      'calltelemetry',
+      'ct-meta',
+      HEAD,
+      expect.objectContaining({
+        conclusion: 'failure',
+        title: 'Review Yeti Gate: Ineligible (review failed)',
+        summary: expect.stringContaining('Policy gate closed'),
+      }),
+    );
+  });
 });

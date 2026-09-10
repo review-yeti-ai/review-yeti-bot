@@ -173,11 +173,18 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             WHERE owner = $1 AND repo = $2 AND pr_number = $3
               AND head_sha <> $4 AND status IN ('queued', 'running')
           RETURNING run_id
+         ), dispatch_outbox_update AS (
+           UPDATE review_dispatch_outbox AS outbox
+              SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($5 / 1000.0)
+            WHERE outbox.run_id IN (SELECT run_id FROM superseded)
          )
-         UPDATE review_dispatch_outbox AS outbox
+         UPDATE review_completion_outbox AS c_outbox
             SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
                 updated_at = to_timestamp($5 / 1000.0)
-          WHERE outbox.run_id IN (SELECT run_id FROM superseded)`,
+          WHERE (c_outbox.run_id IN (SELECT run_id FROM superseded)
+                 OR (c_outbox.repository = ($1 || '/' || $2) AND c_outbox.pr_number = $3 AND c_outbox.head_sha <> $4))
+            AND c_outbox.status IN ('pending', 'claimed')`,
         [input.identity.owner, input.identity.repo, input.identity.prNumber, input.identity.headSha, input.receivedAt],
       );
 
@@ -368,13 +375,21 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           ORDER BY terminal_deadline
           FOR UPDATE SKIP LOCKED
           LIMIT $3
+       ), reaped AS (
+         UPDATE review_runs AS runs
+            SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
+                error_text = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1
+           FROM candidate
+          WHERE runs.run_id = candidate.run_id
+         RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha
+       ), outbox_update AS (
+         UPDATE review_dispatch_outbox AS outbox
+            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                updated_at = to_timestamp($2 / 1000.0)
+           FROM reaped
+          WHERE outbox.run_id = reaped.run_id
        )
-       UPDATE review_runs AS runs
-          SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
-              error_text = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1
-         FROM candidate
-        WHERE runs.run_id = candidate.run_id
-       RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha`,
+       SELECT run_id, owner, repo, pr_number, head_sha FROM reaped`,
       [workerId, now, limit],
     );
     return result.rows.map((row: Record<string, unknown>) => ({

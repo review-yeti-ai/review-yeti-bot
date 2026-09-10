@@ -7,6 +7,12 @@ import {
   runReviewJobDispatcherLoop,
 } from './k8s/reviewJobDispatcherRuntime';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
+import { PostgresReviewCompletionRepository } from './persistence/reviewCompletionRepository';
+import { ReviewCompletionDeliveryEngine } from './k8s/reviewCompletionDeliveryEngine';
+import {
+  runReviewCompletionDeliveryLoop,
+  createGitHubAppCIRequestClientFactory,
+} from './k8s/reviewCompletionDeliveryRuntime';
 import { PostgresStore } from './persistence/postgresStore';
 import { logger } from './utils/logger';
 
@@ -66,6 +72,16 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     namespace: config.namespace,
     runnerMode: config.runnerMode,
   });
+
+  const completionRepository = new PostgresReviewCompletionRepository(store.getPool());
+  const completionEngine = appId && privateKey
+    ? new ReviewCompletionDeliveryEngine({
+        repository: completionRepository,
+        clientFactory: createGitHubAppCIRequestClientFactory(appId, privateKey),
+        workerId: `${config.workerId}:completion`,
+      })
+    : undefined;
+
   const controller = new AbortController();
   const stop = (signal: 'SIGTERM' | 'SIGINT') => {
     logger.info('Stopping Review Yeti review job dispatcher', { signal });
@@ -79,16 +95,30 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     namespace: config.namespace,
   });
   try {
-    await runReviewJobDispatcherLoop(engine, {
-      signal: controller.signal,
-      idleDelayMs: config.idleDelayMs,
-      activeDelayMs: config.activeDelayMs,
-      errorDelayMs: config.errorDelayMs,
-      onOutcome: (outcome) => {
-        if (outcome.status !== 'idle') logger.info('Review job dispatch cycle completed', outcome);
-      },
-      onCycleError: () => logger.warn('Review job dispatch cycle failed; applying bounded retry delay'),
-    });
+    await Promise.all([
+      runReviewJobDispatcherLoop(engine, {
+        signal: controller.signal,
+        idleDelayMs: config.idleDelayMs,
+        activeDelayMs: config.activeDelayMs,
+        errorDelayMs: config.errorDelayMs,
+        onOutcome: (outcome) => {
+          if (outcome.status !== 'idle') logger.info('Review job dispatch cycle completed', outcome);
+        },
+        onCycleError: () => logger.warn('Review job dispatch cycle failed; applying bounded retry delay'),
+      }),
+      completionEngine
+        ? runReviewCompletionDeliveryLoop(completionEngine, {
+            signal: controller.signal,
+            idleDelayMs: config.idleDelayMs,
+            activeDelayMs: config.activeDelayMs,
+            errorDelayMs: config.errorDelayMs,
+            onOutcome: (outcome) => {
+              if (outcome.status !== 'idle') logger.info('Review completion delivery cycle completed', outcome);
+            },
+            onCycleError: () => logger.warn('Review completion delivery cycle failed; applying bounded retry delay'),
+          })
+        : Promise.resolve(),
+    ]);
   } finally {
     await store.close();
   }
