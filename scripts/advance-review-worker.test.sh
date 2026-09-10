@@ -17,7 +17,19 @@ trap cleanup EXIT
 mkdir "$root/bin"
 FAKE_NODE="$(type -P node)"
 REAL_DATE="$(type -P date)"
-export FAKE_NODE REAL_DATE
+REAL_JQ="$(type -P jq)"
+export FAKE_NODE REAL_DATE REAL_JQ
+# Fail only record()'s selected jq serialization; all other jq operations,
+# including plan/provenance/patch validation, execute the installed binary.
+jq() {
+  if [[ $# -ge 4 && "$1 $2 $3" == '-n --arg status' && "$4" == "${FAIL_RECORD_STATUS:-}" ]]; then
+    printf '%s\n' "$4" >>"$CASE_DIR/serializer-failure"
+    if [[ -f "$INTENT" ]]; then cp "$INTENT" "$CASE_DIR/intent-before-failure"; fi
+    return 65
+  fi
+  "$REAL_JQ" "$@"
+}
+export -f jq
 source_sha=9999999999999999999999999999999999999999
 old="ghcr.io/review-yeti-ai/review-yeti-worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 target="ghcr.io/review-yeti-ai/review-yeti-worker@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
@@ -174,6 +186,49 @@ apply() { run --expected-state "$CASE_DIR/plan" --apply --receipt "$CASE_DIR/rec
 no_write() { [[ ! -e "$CASE_DIR/patch-configmap.json" && ! -e "$CASE_DIR/patch-deployment.json" && ! -e "$INTENT" ]] || fail 'unexpected write/intent'; }
 refuse() { if apply; then fail 'unexpected success'; fi; }
 status_is() { jq -e --arg s "$1" '.status==$s' "$CASE_DIR/receipt" >/dev/null || fail "status $1"; }
+fresh; plan
+serialization_failures=0
+for phase in intent applied noop; do
+  # Isolate each failure so RED diagnoses all three callsites, not only the
+  # first failure. Each has a matching real-serialization positive control.
+  if (
+    export FAIL_RECORD_STATUS=""
+    fresh
+    if [[ "$phase" == noop ]]; then
+      edit configmap ".data.REVIEW_JOB_WORKER_IMAGE=\"$target\""
+      cp "$CASE_DIR/configmap.json" "$CASE_DIR/pod-config.json"
+    fi
+    plan; apply || fail "$phase paired serialization control"
+    if [[ "$phase" == noop ]]; then status_is noop; else status_is applied; fi
+    [[ ! -e "$CASE_DIR/serializer-failure" ]] || fail 'positive control hit serializer fault'
+    fresh
+    if [[ "$phase" == noop ]]; then
+      edit configmap ".data.REVIEW_JOB_WORKER_IMAGE=\"$target\""
+      cp "$CASE_DIR/configmap.json" "$CASE_DIR/pod-config.json"
+    fi
+    plan
+    export FAIL_RECORD_STATUS="$phase"
+    result=0; apply || result=$?
+    [[ "$(cat "$CASE_DIR/serializer-failure")" == "$phase" ]] || fail "$phase did not fail the exact serializer once"
+    if [[ "$phase" == applied ]]; then
+      [[ "$(grep -c '^patch ' "$CASE_DIR/calls")" == 2 ]] || fail 'outcome fault did not follow both guarded patches'
+      [[ -f "$INTENT" && ! -L "$INTENT" ]] || fail 'outcome failure lost regular intent'
+      jq -e '.schema=="review-yeti-worker-receipt.v1" and .status=="intent" and .after==null' "$INTENT" >/dev/null || fail 'outcome failure lost valid intent'
+      cmp "$INTENT" "$CASE_DIR/intent-before-failure" || fail 'outcome failure changed durable intent bytes'
+    else
+      ! grep -q '^patch ' "$CASE_DIR/calls" || fail "$phase serialization failure reached PATCH"
+      no_write
+    fi
+    [[ "$result" != 0 ]] || fail "$phase serialization failure falsely succeeded"
+    [[ ! -e "$CASE_DIR/receipt" && ! -L "$CASE_DIR/receipt" ]] || fail "$phase serialization failure published an outcome"
+    ! grep -q 'worker key and owned running dispatcher verified' "$CASE_DIR/out" || fail "$phase serialization failure announced success"
+  ); then
+    ok "$phase serializer failure propagates before publication; valid control succeeds"
+  else
+    serialization_failures=$((serialization_failures+1))
+  fi
+done
+[[ "$serialization_failures" == 0 ]] || fail "$serialization_failures serializer propagation cases failed"
 fresh; plan
 mkdir "$root/no-node"
 for tool in bash dirname tr jq date cat cp mv touch ls cut awk shasum env kubectl crane; do
