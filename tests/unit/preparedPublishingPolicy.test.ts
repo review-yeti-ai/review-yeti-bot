@@ -16,8 +16,11 @@ describe('trusted prepared publishing policy', () => {
   it('preserves the shared Bifrost resolver and binds normalized config independently of source credentials', () => {
     const prepared = preparePublishingPolicy(file(), transport);
     expect(prepared.expectedPersonaIds).toEqual(['sec-lane', 'qual-lane']);
-    expect(prepared.config.default_max_turns).toBe(3);
-    expect(prepared.config.reviewers.providers).toMatchObject([{ id: 'bifrost', model: transport.model }]);
+    expect(prepared.config.default_max_turns).toBe(5);
+    expect(prepared.config.reviewers.overall_timeout_s).toBe(900);
+    expect(prepared.config.reviewers.providers).toMatchObject([{
+      id: 'bifrost', model: transport.model, review_timeout_s: 180, arbiter_timeout_s: 180,
+    }]);
     expect(JSON.stringify(prepared)).not.toContain('PRIVATE_KEY_NAME_ONLY');
     expect(verifyPreparedPublishingConfig(prepared.config, prepared.policy.effectiveConfigDigest, transport)).toEqual(prepared.config);
   });

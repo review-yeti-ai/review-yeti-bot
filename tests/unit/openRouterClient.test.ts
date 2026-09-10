@@ -480,6 +480,136 @@ describe('OpenRouterClient', () => {
     });
   });
 
+  it('propagates caller cancellation to the transport and rejects a late response', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const fetchImplementation = vi.fn().mockImplementation((_input: string, init: RequestInit) => {
+      capturedSignal = init.signal;
+      return new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      });
+    });
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const controller = new AbortController();
+    const pending = client.complete({
+      ...request,
+      stream: true,
+      signal: controller.signal,
+      timeoutMs: 5_000,
+    });
+    const rejection = expect(pending).rejects.toMatchObject({
+      name: 'OpenRouterTimeoutError',
+      kind: 'request',
+    });
+
+    await vi.waitFor(() => expect(capturedSignal).toBeDefined());
+    controller.abort();
+    await rejection;
+    expect(capturedSignal?.aborted).toBe(true);
+
+    // A transport that ignores AbortSignal may still resolve later. It must
+    // not turn the already-cancelled request into a successful completion.
+    resolveFetch?.(new Response(JSON.stringify(sdkChatResult('LATE')), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  it('does not start transport work for an already-aborted request', async () => {
+    const fetchImplementation = vi.fn();
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(client.complete({
+      ...request,
+      stream: true,
+      signal: controller.signal,
+    })).rejects.toMatchObject({
+      name: 'OpenRouterTimeoutError',
+      kind: 'request',
+    });
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it('resets inactivity only on streamed data while leaving the total deadline independent', async () => {
+    vi.useFakeTimers();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    try {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+        },
+      });
+      const fetchImplementation = vi.fn().mockResolvedValue(new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }));
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+      const pending = client.complete({
+        ...request,
+        stream: true,
+        timeoutMs: 100,
+        ttftTimeoutMs: 20,
+        inactivityTimeoutMs: 20,
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      streamController?.enqueue(encoder.encode(`data: ${sdkChunk({ content: 'first' })}\n\n`));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(15);
+      streamController?.enqueue(encoder.encode(`data: ${sdkChunk({ content: ' second' })}\n\n`));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(15);
+      streamController?.enqueue(encoder.encode('data: [DONE]\n\n'));
+      streamController?.close();
+
+      await expect(pending).resolves.toMatchObject({ content: 'first second' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails a quiet stream at the explicit inactivity deadline', async () => {
+    vi.useFakeTimers();
+    let cancelled = false;
+    try {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${sdkChunk({ content: 'first' })}\n\n`));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      const fetchImplementation = vi.fn().mockResolvedValue(new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }));
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+      const pending = client.complete({
+        ...request,
+        stream: true,
+        timeoutMs: 100,
+        ttftTimeoutMs: 20,
+        inactivityTimeoutMs: 20,
+      });
+      const rejection = expect(pending).rejects.toMatchObject({
+        name: 'OpenRouterTimeoutError',
+        kind: 'inactivity',
+      });
+
+      await vi.advanceTimersByTimeAsync(21);
+      await rejection;
+      expect(cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('cancels and aborts an active-delta stream at a deterministic total deadline', async () => {
     vi.useFakeTimers();
     let cancelled = false;
