@@ -41,4 +41,19 @@ describe('GitHub App webhook configuration', () => {
       ...override,
     }, policy)).toThrow('GitHub App webhook configuration is invalid');
   });
+
+  it('bounds the finite repository and owner enrollment lists', () => {
+    const common = {
+      GITHUB_APP_WEBHOOK_ENABLED: 'true', GITHUB_APP_WEBHOOK_ADMISSION_ENABLED: 'false',
+      GITHUB_WEBHOOK_SECRET: 'a'.repeat(64),
+    };
+    expect(() => githubWebhookConfigFromEnv({ ...common,
+      GITHUB_APP_WEBHOOK_REPOSITORY_IDS: Array.from({ length: 101 }, (_, index) => String(index + 1)).join(','),
+      GITHUB_APP_WEBHOOK_OWNER_IDS: '57884877',
+    }, policy)).toThrow('GITHUB_APP_WEBHOOK_REPOSITORY_IDS must contain unique positive integer ids');
+    expect(() => githubWebhookConfigFromEnv({ ...common,
+      GITHUB_APP_WEBHOOK_REPOSITORY_IDS: '614653796',
+      GITHUB_APP_WEBHOOK_OWNER_IDS: Array.from({ length: 11 }, (_, index) => String(index + 1)).join(','),
+    }, policy)).toThrow('GITHUB_APP_WEBHOOK_OWNER_IDS must contain unique positive integer ids');
+  });
 });

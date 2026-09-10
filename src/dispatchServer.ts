@@ -3,13 +3,14 @@ import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './
 import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
 import { createRateLimiter } from './security/rateLimiter';
 import { createWebhookRouter, type RequestWithRawBody } from './github/webhookServer';
+import type { GitHubWebhookAdmissionEvent } from './review/githubWebhookAdmission';
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
   rateLimiter?: RequestHandler;
   githubWebhook?: {
     secret: string;
-    onEvent(request: RequestWithRawBody): Promise<Record<string, unknown>>;
+    onEvent(event: GitHubWebhookAdmissionEvent): Promise<Record<string, unknown>>;
   };
 }
 
@@ -28,7 +29,12 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
     app.use(createWebhookRouter({
       path: '/api/webhooks/github',
       secret: options.githubWebhook.secret,
-      onEvent: options.githubWebhook.onEvent,
+      onEvent: (request: RequestWithRawBody) => options.githubWebhook!.onEvent({
+        eventName: String(request.headers['x-github-event'] || ''),
+        deliveryId: String(request.headers['x-github-delivery'] || ''),
+        rawBody: request.rawBody || Buffer.alloc(0),
+        body: request.body,
+      }),
       rateLimiter: limiter,
     }));
   }

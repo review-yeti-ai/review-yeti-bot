@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AUTHORITATIVE_REVIEW_APP_ID } from '../auth/authoritativeServiceConfig';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { MergeGroupGateRepository, MergeGroupGateState } from '../persistence/mergeGroupGateRepository';
+import { createBoundedGitHubJsonClient, type GitHubJsonClient } from '../github/boundedGitHubJson';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
@@ -24,7 +25,21 @@ const QUEUE_QUERY = 'query($owner:String!,$name:String!,$branch:String!){reposit
 const QUALIFYING_STATES = new Set(['QUEUED', 'AWAITING_CHECKS', 'LOCKED', 'MERGEABLE']);
 const APP_SLUG = 'ct-review-bot';
 const CHECK_NAME = 'Review Yeti';
-const MAX_GITHUB_RESPONSE_BYTES = 2 * 1024 * 1024;
+const CHECK_LOOKUP_CONCURRENCY = 5;
+
+interface QueueEntry {
+  position: number;
+  state: string;
+  pullRequest: {
+    number: number;
+    state: string;
+    baseRefName: string;
+    headRefOid: string;
+    repository: { nameWithOwner: string };
+  };
+}
+
+interface QueueEvidence { id: string; entries: QueueEntry[]; }
 
 export interface MergeGroupGateOptions {
   config: GitHubWebhookConfig;
@@ -32,47 +47,20 @@ export interface MergeGroupGateOptions {
   tokenFor(owner: string, repo: string): Promise<string>;
   fetchImplementation?: typeof fetch;
   baseUrl?: string;
+  githubClientFor?(token: string): GitHubJsonClient;
 }
 
-async function githubJson(url: string, token: string, fetchImpl: typeof fetch, init: RequestInit = {}): Promise<any> {
-  let response: Response;
-  try {
-    response = await fetchImpl(url, {
-      ...init,
-      redirect: 'error',
-      signal: AbortSignal.timeout(15_000),
-      headers: {
-        accept: 'application/vnd.github+json', authorization: `Bearer ${token}`,
-        'x-github-api-version': '2022-11-28', ...(init.headers || {}),
-      },
-    });
-  } catch { throw new Error('GitHub merge-group request failed before response'); }
-  if (!response.ok || response.redirected || !response.body) {
-    void response.body?.cancel().catch(() => undefined);
-    throw new Error(`GitHub merge-group request failed with HTTP ${response.status}`);
-  }
-  const declared = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > MAX_GITHUB_RESPONSE_BYTES) {
-    void response.body.cancel().catch(() => undefined);
-    throw new Error('GitHub merge-group response exceeded the byte limit');
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let bytes = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      bytes += chunk.value.byteLength;
-      if (bytes > MAX_GITHUB_RESPONSE_BYTES) throw new Error('GitHub merge-group response exceeded the byte limit');
-      chunks.push(chunk.value);
+async function mapConcurrent<T, U>(items: readonly T[], concurrency: number, operation: (item: T) => Promise<U>): Promise<U[]> {
+  const results = new Array<U>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await operation(items[index]);
     }
-    const joined = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(joined));
-  } catch {
-    try { await reader.cancel(); } catch { /* best-effort bounded cleanup */ }
-    throw new Error('GitHub merge-group response was unavailable');
-  }
+  }));
+  return results;
 }
 
 function branchName(ref: string): string { return ref.replace(/^refs\/heads\//u, ''); }
@@ -93,7 +81,7 @@ function validatePayload(value: unknown, config: GitHubWebhookConfig) {
   return { ...parsed, owner, repo, branch, currentNumber: Number(match[1]) };
 }
 
-function selectEntries(response: any, identity: ReturnType<typeof validatePayload>) {
+function selectEntries(response: any, identity: ReturnType<typeof validatePayload>): QueueEvidence {
   if (Array.isArray(response?.errors) && response.errors.length > 0) throw new Error('Merge queue lookup returned errors');
   const queue = response?.data?.repository?.mergeQueue;
   if (!queue || typeof queue.id !== 'string' || !Array.isArray(queue.entries?.nodes)
@@ -126,7 +114,7 @@ function selectEntries(response: any, identity: ReturnType<typeof validatePayloa
       throw new Error('Merge queue contains an ineligible constituent');
     }
   }
-  return { id: queue.id, entries };
+  return { id: queue.id, entries: entries as QueueEntry[] };
 }
 
 function exactReviewFailure(checks: any, expectedHead: string): string | undefined {
@@ -148,11 +136,6 @@ function externalId(repositoryId: number, headSha: string): string {
 }
 
 export function createMergeGroupGate(options: MergeGroupGateOptions) {
-  const fetchImpl = options.fetchImplementation || globalThis.fetch;
-  const apiRoot = (options.baseUrl || 'https://api.github.com').replace(/\/+$/u, '');
-  if (apiRoot !== 'https://api.github.com') {
-    throw new Error('Native merge-group admission currently requires the GitHub.com API');
-  }
   return async (payload: unknown): Promise<MergeGroupGateState & { constituents: number }> => {
     const identity = validatePayload(payload, options.config);
     const repositoryName = identity.repository.full_name;
@@ -160,8 +143,11 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
       if (stored) return { ...stored, constituents: 0 };
       const token = await options.tokenFor(identity.owner, identity.repo);
       if (!token.startsWith('ghs_')) throw new Error('Merge-group App token is unavailable');
-      const api = `${apiRoot}/repos/${repositoryName}`;
-      const existing = await githubJson(`${api}/commits/${identity.merge_group.head_sha}/check-runs?filter=all&per_page=100`, token, fetchImpl);
+      const client = options.githubClientFor?.(token) || createBoundedGitHubJsonClient({
+        token, baseUrl: options.baseUrl, fetchImplementation: options.fetchImplementation,
+      });
+      const api = `/repos/${repositoryName}`;
+      const existing = await client.request(`${api}/commits/${identity.merge_group.head_sha}/check-runs?filter=all&per_page=100`);
       if (!Number.isSafeInteger(existing?.total_count) || !Array.isArray(existing?.check_runs)
         || existing.total_count !== existing.check_runs.length || existing.total_count > 100) {
         throw new Error('Merge-group check reconciliation is incomplete');
@@ -175,7 +161,7 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
         return { checkId: Number(check.id), conclusion: check.conclusion, constituents: 0 };
       }
       if (!check) {
-        check = await githubJson(`${api}/check-runs`, token, fetchImpl, {
+        check = await client.request(`${api}/check-runs`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
             name: CHECK_NAME, head_sha: identity.merge_group.head_sha, external_id: stableId,
             status: 'in_progress', output: {
@@ -188,7 +174,7 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
       if (!Number.isSafeInteger(Number(check?.id)) || Number(check.id) < 1) {
         throw new Error('Review Yeti merge-group check creation returned no id');
       }
-      const queueRead = async () => selectEntries(await githubJson(`${apiRoot}/graphql`, token, fetchImpl, {
+      const queueRead = async () => selectEntries(await client.request('/graphql', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ query: QUEUE_QUERY, variables: { owner: identity.owner, name: identity.repo, branch: identity.branch } }),
       }), identity);
@@ -197,12 +183,13 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
       try {
         const queue = await queueRead();
         constituentCount = queue.entries.length;
-        for (const entry of queue.entries) {
+        const constituentFailures = await mapConcurrent(queue.entries, CHECK_LOOKUP_CONCURRENCY, async (entry) => {
           const head = entry.pullRequest.headRefOid;
-          const result = await githubJson(`${api}/commits/${head}/check-runs?filter=all&per_page=100`, token, fetchImpl);
+          const result = await client.request(`${api}/commits/${head}/check-runs?filter=all&per_page=100`);
           const failure = exactReviewFailure(result, head);
-          if (failure) failures.push(`PR #${entry.pullRequest.number}: ${failure}`);
-        }
+          return failure ? `PR #${entry.pullRequest.number}: ${failure}` : undefined;
+        });
+        failures.push(...constituentFailures.filter((failure): failure is string => Boolean(failure)));
         const fresh = await queueRead();
         const signature = (value: typeof queue) => JSON.stringify(value.entries.map((entry: any) => ({
           number: entry.pullRequest.number, head: entry.pullRequest.headRefOid, position: entry.position,
@@ -212,7 +199,7 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
         failures.push('merge-group evidence could not be verified');
       }
       const conclusion: 'success' | 'failure' = failures.length === 0 ? 'success' : 'failure';
-      await githubJson(`${api}/check-runs/${Number(check.id)}`, token, fetchImpl, {
+      await client.request(`${api}/check-runs/${Number(check.id)}`, {
         method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
           status: 'completed', conclusion, completed_at: new Date().toISOString(), output: {
             title: conclusion === 'success' ? 'Review Yeti merge group approved' : 'Review Yeti merge group rejected',

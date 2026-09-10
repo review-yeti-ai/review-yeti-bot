@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { RequestWithRawBody } from '../github/webhookServer';
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
@@ -41,29 +40,30 @@ export interface GitHubWebhookAdmissionOptions {
   mergeGroupGate?(payload: unknown): Promise<{ checkId: number; conclusion: 'success' | 'failure'; constituents: number }>;
 }
 
-function header(request: RequestWithRawBody, name: string): string {
-  const value = request.headers[name];
-  return Array.isArray(value) ? String(value[0] || '') : String(value || '');
+export interface GitHubWebhookAdmissionEvent {
+  eventName: string;
+  deliveryId: string;
+  rawBody: Buffer;
+  body: unknown;
 }
 
 /** Admit a signed, allowlisted GitHub App pull_request webhook directly. */
 export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmissionOptions) {
   const now = options.now || Date.now;
   const authoritativeIds = new Set(options.authoritativePublishing?.repositoryIds || []);
-  return async (request: RequestWithRawBody): Promise<Record<string, unknown>> => {
-    const eventName = header(request, 'x-github-event');
-    const delivery = header(request, 'x-github-delivery');
+  return async (event: GitHubWebhookAdmissionEvent): Promise<Record<string, unknown>> => {
+    const { eventName, deliveryId: delivery } = event;
     if (!options.config.admissionEnabled) return { status: 'ignored', reason: 'admission_paused' };
-    if (!request.rawBody || !delivery || delivery.length > 256) {
+    if (!Buffer.isBuffer(event.rawBody) || !delivery || delivery.length > 256) {
       throw new Error('GitHub webhook identity is unavailable');
     }
     if (eventName === 'merge_group') {
       if (!options.mergeGroupGate) throw new Error('Merge-group webhook gate is unavailable');
-      const result = await options.mergeGroupGate(request.body);
+      const result = await options.mergeGroupGate(event.body);
       return { status: result.conclusion, checkId: result.checkId, constituents: result.constituents };
     }
     if (eventName !== 'pull_request') return { status: 'ignored', reason: 'unsupported_event' };
-    const parsed = pullRequestWebhook.safeParse(request.body);
+    const parsed = pullRequestWebhook.safeParse(event.body);
     if (!parsed.success) return { status: 'ignored', reason: 'unsupported_pull_request_state' };
     const payload = parsed.data;
     const owner = payload.repository.owner.login;
@@ -95,7 +95,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       installationId: payload.installation.id,
       receivedAt,
       terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
-      payloadDigest: createHash('sha256').update(request.rawBody).digest('hex'),
+      payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
       publicationMode: 'app-gate',
       identity: resolved?.identity || buildReviewRunIdentity(requested),
       ...(resolved && authoritative ? {
