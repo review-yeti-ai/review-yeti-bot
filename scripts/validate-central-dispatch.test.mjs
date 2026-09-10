@@ -88,7 +88,6 @@ jobs:
   dispatch:
     steps:
       - run: gh api repos/exampleorg/example-review-actions/dispatches -f event_type=${DISPATCH_EVENT_TYPE}
-      - run: gh api repos/exampleorg/example-review-actions/actions/workflows/repository-dispatch.yml/runs
 `;
 
 function response(payloadValue, status = 200) {

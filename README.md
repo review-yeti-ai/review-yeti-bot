@@ -70,8 +70,8 @@ Add `.github/workflows/review-yeti.yml` to your repository:
 > start from the reviewed base-owned caller at
 > `.github/workflows/ct-review-bot.yml` (the `CALLER_WORKFLOW_PATH` contract)
 > and the read-only collector at `.github/workflows/review-readiness.yml`.
-> Keep exactly one native `Review Yeti / Review Yeti` context-producing job in
-> that caller; do not treat the placeholder `my-org`, `@v1`, secret names, or
+> Keep this caller dispatch-only: it must not wait for, adopt, or publish a
+> review check. Do not treat the placeholder `my-org`, `@v1`, secret names, or
 > `review-yeti.yml` filename below as qualification evidence.
 
 ```yaml
@@ -91,8 +91,8 @@ permissions:
   contents: read
 
 jobs:
-  review:
-    name: Review Yeti / Review Yeti
+  dispatch:
+    name: Dispatch native Review Yeti
     if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -153,7 +153,8 @@ jobs:
 ### Step 2b: Add the Dedicated Merge-Group Qualifier
 
 Add `.github/workflows/ct-review-merge-group.yml` separately. This workflow is
-only for merge-group checks and contains exactly one required verifier job:
+only for merge-group checks and publishes the official App-owned context on the
+synthetic head after qualifying every constituent:
 
 ```yaml
 # .github/workflows/ct-review-merge-group.yml
@@ -170,27 +171,34 @@ permissions:
 
 jobs:
   review:
-    name: Review Yeti / Review Yeti
+    name: Publish native Review Yeti merge-group gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Verify constituent exact-head checks
+      - name: Mint Review Yeti App token
+        id: ry_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: dashboard
+
+      - name: Verify constituents and publish native gate
         uses: exampleorg/example-review-actions/.github/actions/verify-merge-group@<full-40-hex-central-release-sha>
         with:
-          github-token: ${{ github.token }}
+          review-yeti-token: ${{ steps.ry_token.outputs.token }}
           repository: ${{ github.repository }}
           branch: ${{ github.event.merge_group.base_ref }}
 ```
 
 ### Step 3: Require the Check in GitHub Rulesets
-For governed CT merge queues, the required context is
-**`Review Yeti / Review Yeti`**, published by GitHub Actions (App `15368`).
-The reviewed PR caller produces it on each constituent head; the dedicated
-merge-group workflow produces the same context on the synthetic combined head.
-The verifier separately requires the official **`Review Yeti`** verdict from
-`ct-review-bot` on every constituent's exact head. It does not claim that the
-review App publishes that direct verdict on the combined head. Do not require
-an additional direct-review context that the merge-group workflow cannot emit.
+For governed CT merge queues, require **`Review Yeti`** from the official
+`ct-review-bot` App (integration `4385771`). The central review publishes it on
+each constituent head. The dedicated merge-group workflow uses the same App
+identity to publish it on the synthetic combined head only after every queued
+constituent has a successful exact-head native verdict. The dispatch caller
+does not produce a required context.
 The generic non-queue examples above are not this governed queue setup.
 See [GitHub's merge-queue check requirements](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#status-checks-with-github-actions-and-a-merge-queue).
 
@@ -292,9 +300,9 @@ entries carry position and pull-request identity in caller-specific shapes.
 The shared `review-check-contract` exports the qualifying state policy and
 named check-run publisher identity; it does not merge the two queue schemas.
 
-The native publisher App `15368` owns the required context on both constituent
-and combined heads. The direct review verdict is a separate `ct-review-bot`
-check on constituent heads only; the verifier reads it without re-reviewing
+The official `ct-review-bot` App `4385771` owns the required `Review Yeti`
+context on both constituent and combined heads. The verifier reads each
+constituent verdict and publishes the combined-head result without re-reviewing
 the synthetic group. These instructions do not change repository settings.
 
 No owner-produced deployment readback is wired into this read-only collector

@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { verifyMergeGroup } from '../.github/actions/verify-merge-group/verify-merge-group.mjs';
+import { runMergeGroupGate, verifyMergeGroup } from '../.github/actions/verify-merge-group/verify-merge-group.mjs';
 
 const repository = 'exampleorg/dashboard';
 const headSha = 'b'.repeat(40);
@@ -18,8 +18,7 @@ const event = {
     head_ref: `refs/heads/gh-readonly-queue/master/pr-42-${baseSha}` },
 };
 const checks = [
-  { id: 10, name: 'Review Yeti / Review Yeti', app: { id: 15368 }, status: 'completed', conclusion: 'success', head_sha: headSha },
-  { id: 11, name: 'Review Yeti', app: { slug: 'ct-review-bot' }, status: 'completed', conclusion: 'success', head_sha: headSha },
+  { id: 11, name: 'Review Yeti', app: { id: 4385771, slug: 'ct-review-bot' }, status: 'completed', conclusion: 'success', head_sha: headSha },
 ];
 const entry = (number = 42, position = 1) => ({
   position, state: 'AWAITING_CHECKS', baseCommit: { oid: baseSha }, headCommit: { oid: groupSha },
@@ -71,6 +70,70 @@ test('qualifies the exact event and latest checks, then refreshes queue identity
   assert.equal(result.entries.length, 1);
 });
 
+test('publishes and completes the native Review Yeti check on the synthetic head', async () => {
+  const writes = [];
+  let queueReads = 0;
+  const result = await runMergeGroupGate({
+    repository,
+    branch: 'master',
+    event,
+    expectedHeadSha: groupSha,
+    token: 'official-app-token',
+    fetchImpl: async (url, options) => {
+      assert.ok(options.signal instanceof AbortSignal, 'every request is bounded');
+      if (url === `https://api.github.com/repos/${repository}/check-runs` && options.method === 'POST') {
+        writes.push({ url, method: options.method, body: JSON.parse(options.body) });
+        return response({ id: 9001 });
+      }
+      if (url === `https://api.github.com/repos/${repository}/check-runs/9001` && options.method === 'PATCH') {
+        writes.push({ url, method: options.method, body: JSON.parse(options.body) });
+        return response({ id: 9001 });
+      }
+      if (url === 'https://api.github.com/graphql') {
+        queueReads += 1;
+        return response(queueResponse());
+      }
+      if (url.includes(`/commits/${headSha}/check-runs`)) {
+        return response({ check_runs: checks, total_count: checks.length });
+      }
+      assert.fail(`unexpected URL ${url}`);
+    },
+  });
+  assert.deepEqual(result.failures, []);
+  assert.equal(queueReads, 2);
+  assert.equal(writes[0].body.name, 'Review Yeti');
+  assert.equal(writes[0].body.head_sha, groupSha);
+  assert.equal(writes[0].body.status, 'in_progress');
+  assert.equal(writes[1].body.conclusion, 'success');
+});
+
+test('completes the synthetic App check as failure when a constituent is not approved', async () => {
+  const conclusions = [];
+  let queueReads = 0;
+  const result = await runMergeGroupGate({
+    repository,
+    branch: 'master',
+    event,
+    expectedHeadSha: groupSha,
+    token: 'official-app-token',
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/check-runs') && options.method === 'POST') return response({ id: 9002 });
+      if (url.endsWith('/check-runs/9002') && options.method === 'PATCH') {
+        conclusions.push(JSON.parse(options.body).conclusion);
+        return response({ id: 9002 });
+      }
+      if (url === 'https://api.github.com/graphql') {
+        queueReads += 1;
+        return response(queueResponse());
+      }
+      return response({ check_runs: [{ ...checks[0], conclusion: 'failure' }], total_count: 1 });
+    },
+  });
+  assert.match(result.failures.join(' '), /not successful/u);
+  assert.equal(queueReads, 1);
+  assert.deepEqual(conclusions, ['failure']);
+});
+
 test('real CLI rejects an event for a different repository before any fetch', (t) => {
   const scratch = mkdtempSync(path.join(tmpdir(), 'ct-merge-group-event-'));
   t.after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -89,6 +152,7 @@ test('real CLI rejects an event for a different repository before any fetch', (t
       GITHUB_EVENT_PATH: eventPath,
       GITHUB_SHA: groupSha,
       INPUT_GITHUB_TOKEN: 'test-only-placeholder',
+      INPUT_REVIEW_YETI_TOKEN: 'test-only-placeholder',
       INPUT_REPOSITORY: repository,
       INPUT_BRANCH: 'master',
     },
@@ -128,6 +192,7 @@ test('real CLI reports thrown entrypoint errors as a failed invocation', (t) => 
       GITHUB_EVENT_PATH: path.join(scratch, 'missing-event.json'),
       GITHUB_SHA: groupSha,
       INPUT_GITHUB_TOKEN: 'test-only-placeholder',
+      INPUT_REVIEW_YETI_TOKEN: 'test-only-placeholder',
       INPUT_REPOSITORY: repository,
       INPUT_BRANCH: 'master',
     },

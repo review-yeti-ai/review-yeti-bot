@@ -132,7 +132,6 @@ export function validateCallerWorkflow(content) {
   const required = [
     'repos/exampleorg/example-review-actions/dispatches',
     DISPATCH_EVENT_TYPE,
-    'repository-dispatch.yml',
   ];
   for (const marker of required) {
     if (!content.includes(marker)) throw new Error(`base-owned caller workflow is missing central marker: ${marker}`);

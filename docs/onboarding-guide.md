@@ -26,8 +26,8 @@ Review Yeti supports two consumer workflow patterns depending on your organizati
 > from the reviewed base-owned caller at
 > `.github/workflows/ct-review-bot.yml` (the `CALLER_WORKFLOW_PATH` contract)
 > and the read-only collector at `.github/workflows/review-readiness.yml`.
-> Keep exactly one native `Review Yeti / Review Yeti` context-producing job in
-> that caller. Placeholder `my-org`, `@v1`, secret names, and the generic
+> Keep that caller dispatch-only: it must not wait for, adopt, or publish a
+> review check. Placeholder `my-org`, `@v1`, secret names, and the generic
 > `review-yeti.yml` filename below are not qualification evidence.
 
 ---
@@ -84,8 +84,8 @@ permissions:
   contents: read
 
 jobs:
-  review:
-    name: Review Yeti / Review Yeti
+  dispatch:
+    name: Dispatch native Review Yeti
     if: github.event_name == 'pull_request_target' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -146,7 +146,8 @@ jobs:
 ### Dedicated Merge-Group Qualifier
 
 Add `.github/workflows/ct-review-merge-group.yml` as a separate workflow. It
-is merge-group-only and has one required verifier job with read-only access:
+is merge-group-only and uses the official App to publish the native required
+context on the synthetic head:
 
 ```yaml
 # .github/workflows/ct-review-merge-group.yml
@@ -163,14 +164,23 @@ permissions:
 
 jobs:
   review:
-    name: Review Yeti / Review Yeti
+    name: Publish native Review Yeti merge-group gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Verify constituent exact-head checks
+      - name: Mint Review Yeti App token
+        id: ry_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: dashboard
+
+      - name: Verify constituents and publish native gate
         uses: exampleorg/example-review-actions/.github/actions/verify-merge-group@<full-40-hex-central-release-sha>
         with:
-          github-token: ${{ github.token }}
+          review-yeti-token: ${{ steps.ry_token.outputs.token }}
           repository: ${{ github.repository }}
           branch: ${{ github.event.merge_group.base_ref }}
 ```
@@ -183,12 +193,10 @@ To require Review Yeti before a pull request can merge:
 
 1. In your repository on GitHub, navigate to **Settings > Rules > Rulesets** (or **Branches** for classic protection).
 2. Edit or create a ruleset targeting your default branch (`main` or `release/*`).
-3. For governed CT merge queues, require **`Review Yeti / Review Yeti`** from
-   GitHub Actions (App `15368`). The reviewed caller and dedicated merge-group
-   workflow emit the same context on constituent and combined heads respectively.
-   The verifier also requires the official **`Review Yeti`** verdict from
-   `ct-review-bot` on each constituent. Do not add that direct verdict as a
-   required combined-head context: the merge-group workflow does not emit it.
+3. For governed CT merge queues, require **`Review Yeti`** from the official
+   `ct-review-bot` App (integration `4385771`). The central review publishes it
+   on constituent heads; the dedicated merge-group workflow uses the same App
+   identity to publish it on the synthetic combined head after qualification.
 4. Save changes.
 
 ---
@@ -197,6 +205,6 @@ To require Review Yeti before a pull request can merge:
 
 Review Yeti natively supports GitHub Merge Queues:
 * The dedicated `.github/workflows/ct-review-merge-group.yml` workflow runs the centrally owned exact-head verifier at a full commit SHA, satisfying the merge-group context without an inline shell approximation.
-* For ordinary pull requests, native publisher App `15368` owns the required context on each constituent head. The verifier requires both that native context and the official `Review Yeti` verdict for every constituent before accepting the synthetic group.
-* The verifier's `Review Yeti / Review Yeti` workflow check is emitted by GitHub Actions (App `15368`) for the synthetic combined head; it does not imply that `ct-review-bot` emitted a direct review verdict on that combined head.
+* For ordinary pull requests, `ct-review-bot` App `4385771` owns the required `Review Yeti` context on each constituent head.
+* The verifier checks every constituent's latest exact-head native verdict, then publishes the same App-owned `Review Yeti` context on the synthetic combined head.
 * This prevents redundant and expensive re-reviews of code that was already thoroughly audited prior to queue admission.

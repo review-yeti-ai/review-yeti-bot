@@ -18,10 +18,9 @@ import { isEntrypoint } from './entrypoint-guard.mjs';
 export const READINESS_SCHEMA = 'exampleorg.review-yeti-readiness.v1';
 export const MERGE_GROUP_WORKFLOW_PATH = '.github/workflows/ct-review-merge-group.yml';
 export const MERGE_GROUP_VERIFIER_ACTION = 'exampleorg/example-review-actions/.github/actions/verify-merge-group';
-// The required-check integration publishes the status context.  The
-// installation being qualified is a different identity and must be checked
-// independently; conflating these IDs would allow a correctly named check
-// from the wrong installed App to qualify a runtime.
+// The required check and installed runtime are the same official App identity.
+// Keep both observations because a ruleset binding and an installation grant
+// are independent live configuration surfaces.
 export const REQUIRED_INSTALLATION_APP_ID = 4385771;
 export const DEPENDENCY_MATRIX_SCHEMA = 'exampleorg.review-yeti-dependency-matrix.v1';
 export const RUNTIME_QUALIFICATION_SCHEMA = 'exampleorg.review-yeti-runtime-qualification.v1';
@@ -325,11 +324,6 @@ function checkPermissions(workflow, required, code, failures, evidence) {
   }
 }
 
-function hasExactJobName(workflow) {
-  return typeof workflow === 'string'
-    && workflow.split(/\r?\n/u).filter((line) => /^\s+name:\s*Review Yeti \/ Review Yeti\s*$/u.test(line)).length === 1;
-}
-
 function workflowJobBlocks(workflow) {
   const lines = nonCommentLines(workflow);
   const jobsIndex = lines.findIndex((line) => /^jobs:\s*$/u.test(line));
@@ -372,10 +366,9 @@ function workflowInput(stepLines, name) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-function inspectVerifierAction(workflow, failures, evidence, centralSource) {
+function inspectVerifierAction(workflow, failures, evidence, centralSource, repository) {
   const lines = nonCommentLines(workflow);
   const jobs = workflowJobBlocks(workflow);
-  const reviewJobs = jobs.filter((job) => job.lines.some((line) => /^    name:\s*Review Yeti \/ Review Yeti\s*$/u.test(line)));
   const escapedAction = MERGE_GROUP_VERIFIER_ACTION.replace(/[/.]/gu, '\\$&');
   const actionPattern = new RegExp(`^\\s*(?:-\\s+)?uses:\\s*${escapedAction}@([0-9a-f]{40})(?:\\s+#.*)?$`, 'u');
   const actionSteps = jobs.flatMap((job) => workflowStepBlocks(job.lines)
@@ -399,19 +392,16 @@ function inspectVerifierAction(workflow, failures, evidence, centralSource) {
     actual_count: actionSteps.length,
   });
   const mentioned = lines.some((line) => line.includes(`${MERGE_GROUP_VERIFIER_ACTION}@`));
-  if (reviewJobs.length !== 1) {
-    addFailure(failures, 'merge_group_qualification', `merge-group must contain exactly one ${REQUIRED_CONTEXT} job`);
-  }
   if (jobs.length !== 1) {
-    addFailure(failures, 'merge_group_qualification', 'central merge-group verifier must be the sole job producer');
+    addFailure(failures, 'merge_group_qualification', 'native merge-group publisher must be the sole job');
   }
-  const reviewJob = reviewJobs[0];
+  const reviewJob = actionSteps.length === 1 ? actionSteps[0].job : null;
   if (reviewJob && reviewJob.lines.some((line) => /^\s+(?:if|continue-on-error):/u.test(line))) {
     addFailure(failures, 'merge_group_qualification', 'required merge-group job must not be optional or continue on error');
   }
   if (actionSteps.length > 0 || mentioned) {
     if (actionSteps.length !== 1 || actionSteps[0].job !== reviewJob) {
-      addFailure(failures, 'merge_group_qualification', 'central merge-group verifier must be the sole uses step in the required job');
+      addFailure(failures, 'merge_group_qualification', 'central merge-group verifier must appear exactly once in the sole job');
     } else {
       const step = actionSteps[0];
       const reviewJobSteps = workflowStepBlocks(reviewJob.lines);
@@ -419,16 +409,29 @@ function inspectVerifierAction(workflow, failures, evidence, centralSource) {
         new RegExp(`^(?: {${candidate.indent}}- | {${candidate.indent + 2}})${name}:`, 'u').test(line));
       const usesSteps = reviewJobSteps.filter((candidate) => hasProperty(candidate, 'uses'));
       const runSteps = reviewJobSteps.filter((candidate) => hasProperty(candidate, 'run'));
-      if (usesSteps.length !== 1 || runSteps.length !== 0 || reviewJobSteps.length !== 1) {
-        addFailure(failures, 'merge_group_qualification', 'central merge-group verifier must be the sole step in the required job');
+      const tokenSteps = usesSteps.filter((candidate) => candidate.lines.some((line) =>
+        /^\s*uses:\s*actions\/create-github-app-token@[0-9a-f]{40}(?:\s+#.*)?$/u.test(line)));
+      if (usesSteps.length !== 2 || tokenSteps.length !== 1 || runSteps.length !== 0 || reviewJobSteps.length !== 2) {
+        addFailure(failures, 'merge_group_qualification', 'merge-group job must contain only the pinned App-token step and central verifier');
       }
-      const token = workflowInput(step.lines, 'github-token');
-      const repository = workflowInput(step.lines, 'repository');
+      const tokenStep = tokenSteps[0];
+      const token = workflowInput(step.lines, 'review-yeti-token');
+      const repositoryInput = workflowInput(step.lines, 'repository');
       const branch = workflowInput(step.lines, 'branch');
-      if (token !== '${{ github.token }}') {
-        addFailure(failures, 'merge_group_qualification', 'central verifier must receive a workflow token input');
+      if (token !== '${{ steps.ry_token.outputs.token }}') {
+        addFailure(failures, 'merge_group_qualification', 'central verifier must receive the minted Review Yeti App token');
       }
-      if (repository !== '${{ github.repository }}') {
+      const tokenSource = (tokenStep?.lines || []).join('\n');
+      const targetName = repository.split('/')[1];
+      if ((tokenSource.match(/^\s*with:\s*$/gmu) || []).length !== 1
+          || !/^\s*id:\s*ry_token\s*$/mu.test(tokenSource)
+          || !/^\s*app-id:\s*\$\{\{ secrets\.CT_REVIEW_BOT_APP_ID \}\}\s*$/mu.test(tokenSource)
+          || !/^\s*private-key:\s*\$\{\{ secrets\.CT_REVIEW_BOT_APP_PRIVATE_KEY \}\}\s*$/mu.test(tokenSource)
+          || !/^\s*owner:\s*exampleorg\s*$/mu.test(tokenSource)
+          || !new RegExp(`^\\s*repositories:\\s*${targetName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\s*$`, 'mu').test(tokenSource)) {
+        addFailure(failures, 'merge_group_qualification', 'merge-group publisher must mint the scoped official Review Yeti App token');
+      }
+      if (repositoryInput !== '${{ github.repository }}') {
         addFailure(failures, 'merge_group_qualification', 'central verifier repository input must bind github.repository');
       }
       if (branch !== '${{ github.event.merge_group.base_ref }}') {
@@ -461,8 +464,11 @@ function checkCallerWorkflow(workflow, repository, failures, evidence) {
   if (!/^\s*pull_request_target:/mu.test(workflow)) {
     addFailure(failures, 'caller_producer', 'caller workflow does not produce pull_request_target runs');
   }
-  if (!hasExactJobName(workflow)) {
-    addFailure(failures, 'caller_producer', `caller must have exactly one ${REQUIRED_CONTEXT} job producer`);
+  if (workflowJobBlocks(workflow).length !== 1) {
+    addFailure(failures, 'caller_producer', 'caller must contain exactly one dispatch job');
+  }
+  if (/Review Yeti \/ Review Yeti|actions\/workflows\/repository-dispatch\.yml\/runs|commits\/[^\s"']+\/check-runs/u.test(workflow)) {
+    addFailure(failures, 'caller_producer', 'caller must dispatch and exit without producing or adopting a review check');
   }
   checkPermissions(workflow, REQUIRED_CALLER_PERMISSIONS, 'caller', failures, evidence);
   if (!/actions\/create-github-app-token@[0-9a-f]{40}/u.test(workflow)
@@ -523,7 +529,7 @@ function checkCentralReviewWorkflow(workflow, failures, evidence) {
   addEvidence(evidence, 'central_source_doks_check_id_contract', 'present');
 }
 
-function checkMergeGroupWorkflow(workflow, failures, evidence, centralSource) {
+function checkMergeGroupWorkflow(workflow, failures, evidence, centralSource, repository) {
   if (typeof workflow !== 'string' || workflow.length === 0) {
     addFailure(failures, 'merge_group_workflow', 'dedicated merge-group workflow is unavailable');
     return;
@@ -533,14 +539,9 @@ function checkMergeGroupWorkflow(workflow, failures, evidence, centralSource) {
     && /^\s+types:\s*\[checks_requested\]\s*$/u.test(lines[index + 1] || ''));
   addEvidence(evidence, 'merge_group_trigger', trigger);
   if (!trigger) addFailure(failures, 'merge_group_producer', 'merge-group workflow must trigger checks_requested events');
-  const requiredJobCount = workflowJobBlocks(workflow)
-    .filter((job) => job.lines.some((line) => /^    name:\s*Review Yeti \/ Review Yeti\s*$/u.test(line)))
-    .length;
-  if (requiredJobCount !== 1) {
-    addFailure(failures, 'merge_group_producer', `merge-group must produce exactly one ${REQUIRED_CONTEXT} job`);
-  }
+  if (workflowJobBlocks(workflow).length !== 1) addFailure(failures, 'merge_group_producer', 'merge-group must contain exactly one native publisher job');
   checkPermissions(workflow, REQUIRED_MERGE_GROUP_PERMISSIONS, 'merge_group', failures, evidence);
-  const verifierUses = inspectVerifierAction(workflow, failures, evidence, centralSource).actionPinned;
+  const verifierUses = inspectVerifierAction(workflow, failures, evidence, centralSource, repository).actionPinned;
   if (!verifierUses) {
     addFailure(
       failures,
@@ -781,7 +782,7 @@ export function qualifyReadiness(input, { now = Date.now() } = {}) {
   const runtime = input.mode === 'runtime' || input.prNumber !== undefined;
   checkCallerWorkflow(input.callerWorkflow, repository, failures, evidence);
   const centralSource = centralSourceDependency(input, now);
-  checkMergeGroupWorkflow(input.mergeGroupWorkflow, failures, evidence, centralSource);
+  checkMergeGroupWorkflow(input.mergeGroupWorkflow, failures, evidence, centralSource, input.repository);
   checkCentralReceiver(input.centralReceiverWorkflow, failures, evidence);
   checkCentralReviewWorkflow(input.centralReviewWorkflow, failures, evidence);
   if (typeof input.centralRefSha !== 'string' || !SHA_PATTERN.test(input.centralRefSha)) {

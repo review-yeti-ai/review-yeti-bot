@@ -1,8 +1,8 @@
-name: Verify Review Yeti merge group
-description: Verify every merge-group constituent has the latest exact-head Review Yeti checks
+name: Publish Review Yeti merge-group gate
+description: Verify every constituent and publish the native Review Yeti App check on the synthetic head
 inputs:
-  github-token:
-    description: Read-only token for the consumer repository checks and merge queue
+  review-yeti-token:
+    description: Review Yeti App installation token with checks write access and queue read access
     required: true
   repository:
     description: Fully qualified exampleorg consumer repository
@@ -13,10 +13,10 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Verify constituent exact-head checks
+    - name: Verify constituents and publish native gate
       shell: bash
       env:
-        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_REVIEW_YETI_TOKEN: ${{ inputs.review-yeti-token }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
         INPUT_BRANCH: ${{ inputs.branch }}
       run: node "${{ github.action_path }}/verify-merge-group.mjs"

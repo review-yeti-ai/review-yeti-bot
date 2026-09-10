@@ -14,8 +14,31 @@ function normalizeBranch(branch) {
   return String(branch || '').replace(/^refs\/heads\//u, '');
 }
 
+function mergeGroupIdentityFailure({ repository, branch, event, expectedHeadSha }) {
+  try {
+    assertAdmittedRepository(repository);
+  } catch {
+    return 'repository is outside the admitted exampleorg target shape';
+  }
+  const normalizedBranch = normalizeBranch(branch);
+  const group = event?.merge_group;
+  const prefix = `refs/heads/gh-readonly-queue/${normalizedBranch}/`;
+  const match = typeof group?.head_ref === 'string' && group.head_ref.startsWith(prefix)
+    ? /^pr-([1-9][0-9]*)-[0-9a-f]{7,40}$/u.exec(group.head_ref.slice(prefix.length)) : null;
+  if (!normalizedBranch || event?.action !== 'checks_requested'
+      || event?.repository?.full_name !== repository
+      || normalizeBranch(group?.base_ref) !== normalizedBranch
+      || !SHA_PATTERN.test(String(group?.base_sha || ''))
+      || !SHA_PATTERN.test(String(group?.head_sha || ''))
+      || group?.head_sha !== expectedHeadSha
+      || !Number.isSafeInteger(Number(match?.[1])) || Number(match?.[1]) < 1) {
+    return 'merge-group event does not bind the repository, branch, current PR, and exact workflow head';
+  }
+  return null;
+}
+
 async function githubJson(url, token, fetchImpl, options = {}) {
-  if (typeof token !== 'string' || token.length === 0) throw new Error('a read-only GitHub token is required');
+  if (typeof token !== 'string' || token.length === 0) throw new Error('a Review Yeti App token is required');
   const response = await fetchImpl(url, {
     method: options.method || 'GET',
     signal: AbortSignal.timeout(15_000),
@@ -25,7 +48,7 @@ async function githubJson(url, token, fetchImpl, options = {}) {
       'x-github-api-version': '2022-11-28',
       ...(options.headers || {}),
     },
-    ...(options.body ? { body: options.body } : {}),
+    ...(options.body ? { body: typeof options.body === 'string' ? options.body : JSON.stringify(options.body) } : {}),
   });
   if (!response?.ok) throw new Error('GitHub lookup failed');
   return response.json();
@@ -67,26 +90,13 @@ function selectConstituents(response, { repository, branch, group, currentNumber
 
 export async function verifyMergeGroup({ repository, branch, event, expectedHeadSha, token, fetchImpl = globalThis.fetch }) {
   const failures = [];
-  try {
-    assertAdmittedRepository(repository);
-  } catch {
-    return { failures: ['repository is outside the admitted exampleorg target shape'] };
-  }
+  const identityFailure = mergeGroupIdentityFailure({ repository, branch, event, expectedHeadSha });
+  if (identityFailure) return { failures: [identityFailure] };
   const normalizedBranch = normalizeBranch(branch);
   const group = event?.merge_group;
   const prefix = `refs/heads/gh-readonly-queue/${normalizedBranch}/`;
-  const match = typeof group?.head_ref === 'string' && group.head_ref.startsWith(prefix)
-    ? /^pr-([1-9][0-9]*)-[0-9a-f]{7,40}$/u.exec(group.head_ref.slice(prefix.length)) : null;
+  const match = /^pr-([1-9][0-9]*)-[0-9a-f]{7,40}$/u.exec(group.head_ref.slice(prefix.length));
   const currentNumber = Number(match?.[1]);
-  if (!normalizedBranch || event?.action !== 'checks_requested'
-      || event?.repository?.full_name !== repository
-      || normalizeBranch(group?.base_ref) !== normalizedBranch
-      || !SHA_PATTERN.test(String(group?.base_sha || ''))
-      || !SHA_PATTERN.test(String(group?.head_sha || ''))
-      || group?.head_sha !== expectedHeadSha
-      || !Number.isSafeInteger(currentNumber) || currentNumber < 1) {
-    return { failures: ['merge-group event does not bind the repository, branch, current PR, and exact workflow head'] };
-  }
   const [owner, name] = repository.split('/');
   const identity = { repository, branch: normalizedBranch, group, currentNumber };
   const readQueue = async () => selectConstituents(await githubJson('https://api.github.com/graphql', token, fetchImpl, {
@@ -131,18 +141,87 @@ export async function verifyMergeGroup({ repository, branch, event, expectedHead
   return { failures, entries: queue.entries };
 }
 
+function boundedSummary(failures) {
+  if (!Array.isArray(failures) || failures.length === 0) {
+    return 'Every merge-group constituent has a successful exact-head Review Yeti check from the official App.';
+  }
+  return failures.slice(0, 12).map((failure) => `- ${String(failure).slice(0, 500)}`).join('\n').slice(0, 6_000);
+}
+
+async function createSyntheticCheck({ repository, expectedHeadSha, token, fetchImpl }) {
+  const check = await githubJson(`https://api.github.com/repos/${repository}/check-runs`, token, fetchImpl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      name: 'Review Yeti',
+      head_sha: expectedHeadSha,
+      status: 'in_progress',
+      output: {
+        title: 'Review Yeti merge-group verification running',
+        summary: 'Validating each queued pull request against its latest exact-head native Review Yeti verdict.',
+      },
+    },
+  });
+  if (!Number.isSafeInteger(Number(check?.id)) || Number(check.id) < 1) {
+    throw new Error('Review Yeti check creation returned no immutable check id');
+  }
+  return Number(check.id);
+}
+
+async function completeSyntheticCheck({ repository, checkId, token, fetchImpl, failures, entryCount }) {
+  const success = failures.length === 0;
+  await githubJson(`https://api.github.com/repos/${repository}/check-runs/${checkId}`, token, fetchImpl, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: {
+      status: 'completed',
+      conclusion: success ? 'success' : 'failure',
+      completed_at: new Date().toISOString(),
+      output: {
+        title: success ? 'Review Yeti merge group approved' : 'Review Yeti merge group rejected',
+        summary: success
+          ? `${boundedSummary([])} Verified ${entryCount} constituent(s).`
+          : boundedSummary(failures),
+      },
+    },
+  });
+}
+
+export async function runMergeGroupGate(options) {
+  const identityFailure = mergeGroupIdentityFailure(options);
+  if (identityFailure) return { failures: [identityFailure], entries: [] };
+  const checkId = await createSyntheticCheck(options);
+  let result;
+  try {
+    result = await verifyMergeGroup(options);
+  } catch {
+    result = { failures: ['merge-group verification failed unexpectedly'], entries: [] };
+  }
+  try {
+    await completeSyntheticCheck({
+      ...options,
+      checkId,
+      failures: result.failures,
+      entryCount: result.entries?.length || 0,
+    });
+  } catch {
+    throw new Error('Review Yeti synthetic check could not be completed');
+  }
+  return { ...result, checkId };
+}
+
 async function main() {
   if (process.env.GITHUB_EVENT_NAME !== 'merge_group') {
     console.error('::error::Review Yeti merge-group verifier requires a merge_group event');
     process.exitCode = 1;
     return;
   }
-  const result = await verifyMergeGroup({
+  const result = await runMergeGroupGate({
     repository: process.env.INPUT_REPOSITORY,
     branch: process.env.INPUT_BRANCH,
     event: JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8')),
     expectedHeadSha: process.env.GITHUB_SHA,
-    token: process.env.INPUT_GITHUB_TOKEN,
+    token: process.env.INPUT_REVIEW_YETI_TOKEN,
   });
   if (result.failures.length > 0) {
     for (const failure of result.failures.slice(0, 12)) console.error(`::error::${failure}`);

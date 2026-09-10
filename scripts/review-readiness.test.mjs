@@ -45,8 +45,8 @@ permissions:
   contents: read
   pull-requests: read
 jobs:
-  review:
-    name: ${REQUIRED_CONTEXT}
+  dispatch:
+    name: Dispatch native Review Yeti
     steps:
       - uses: actions/create-github-app-token@${'c'.repeat(40)}
         with:
@@ -57,7 +57,6 @@ jobs:
       - run: gh api repos/exampleorg/example-review-actions/dispatches
       - run: echo review-yeti-request request_id repository pr_number base_sha head_sha
       - run: echo "request_id=dashboard:\${{ github.event.pull_request.number }}:\${{ github.event.pull_request.head.sha }}:\${{ github.run_id }}:\${{ github.run_attempt }}"
-      - run: gh api repos/exampleorg/example-review-actions/actions/workflows/repository-dispatch.yml/runs
 `;
 
 const mergeGroupWorkflow = `
@@ -71,12 +70,20 @@ permissions:
   pull-requests: read
 jobs:
   review:
-    name: ${REQUIRED_CONTEXT}
+    name: Publish native Review Yeti merge-group gate
     steps:
-      - name: Verify constituent exact-head checks
+      - name: Mint Review Yeti App token
+        id: ry_token
+        uses: actions/create-github-app-token@${'d'.repeat(40)}
+        with:
+          app-id: \${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: \${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: dashboard
+      - name: Verify constituents and publish native gate
         uses: ${MERGE_GROUP_VERIFIER_ACTION}@${'c'.repeat(40)}
         with:
-          github-token: \${{ github.token }}
+          review-yeti-token: \${{ steps.ry_token.outputs.token }}
           repository: \${{ github.repository }}
           branch: \${{ github.event.merge_group.base_ref }}
 `;
@@ -176,8 +183,7 @@ function readyInput(overrides = {}) {
       entries: [{ position: 1, state: 'QUEUED', pullRequest: { number: 42, headRefOid: headSha } }],
     },
     checkRuns: [
-      { id: 100, name: REQUIRED_CONTEXT, app: { id: REQUIRED_CHECK_APP_ID }, status: 'completed', conclusion: 'success', head_sha: headSha },
-      { id: 101, name: 'Review Yeti', app: { slug: REQUIRED_REVIEW_APP_SLUG }, status: 'completed', conclusion: 'success', head_sha: headSha },
+      { id: 100, name: REQUIRED_CONTEXT, app: { id: REQUIRED_CHECK_APP_ID, slug: REQUIRED_REVIEW_APP_SLUG }, status: 'completed', conclusion: 'success', head_sha: headSha },
     ],
     callerRun: {
       id: 12345,
@@ -256,7 +262,7 @@ test('main returns nonzero and emits text for a not-ready qualification', async 
 
 test('qualifies a central-dispatch consumer with an active merge queue', () => {
   const result = qualifyReadiness(readyInput());
-  assert.equal(result.status, 'ready');
+  assert.equal(result.status, 'ready', JSON.stringify(result.failures));
   assert.deepEqual(result.failures, []);
   assert.equal(result.evidence.required_check.integration_id, REQUIRED_CHECK_APP_ID);
   assert.equal(result.evidence.deployed_schema_compatibility, 'not_checked');
@@ -311,6 +317,7 @@ test('matches exact caller App repository tokens without regex interpolation', (
   const exactInput = readyInput({
     repository: dottedRepository,
     callerWorkflow: callerWorkflow.replace('example-review-actions,dashboard', 'example-review-actions,dash.board'),
+    mergeGroupWorkflow: mergeGroupWorkflow.replace('repositories: dashboard', 'repositories: dash.board'),
     pullRequest: {
       ...basePullRequest,
       base: { ...basePullRequest.base, repo: { full_name: dottedRepository } },
@@ -656,7 +663,6 @@ test('fails closed on malformed review check state and wrong installed publisher
   assert.equal(result.status, 'not_ready');
   assert.ok(result.failures.some((failure) => failure.code === 'app_publisher'));
   assert.ok(result.failures.some((failure) => failure.code === 'required_publisher'));
-  assert.ok(result.failures.some((failure) => failure.code === 'review_publisher'));
   assert.doesNotMatch(JSON.stringify(result), /qualification-secret|private-key-must-not-cross/u);
 });
 
@@ -706,7 +712,7 @@ test('documented merge-group examples are dedicated qualifier-compatible workflo
       .replaceAll('<full-40-hex-central-release-sha>', 'c'.repeat(40));
     const result = qualifyReadiness(readyInput({ mergeGroupWorkflow: workflow }));
     assert.equal(result.status, 'ready', `${document} example must pass the actual qualifier`);
-    assert.equal((workflow.match(/^\s+name:\s*Review Yeti \/ Review Yeti\s*$/gmu) || []).length, 1);
+    assert.equal((workflow.match(/^\s+name:\s*Publish native Review Yeti merge-group gate\s*$/gmu) || []).length, 1);
     assert.doesNotMatch(workflow, /^\s+if:/mu);
     assert.match(workflow, /^  merge_group:\s*$/mu);
     assert.match(workflow, /^    types:\s*\[checks_requested\]\s*$/mu);
@@ -714,7 +720,7 @@ test('documented merge-group examples are dedicated qualifier-compatible workflo
     assert.match(workflow, /^  contents:\s*read\s*$/mu);
     assert.match(workflow, /^  pull-requests:\s*read\s*$/mu);
   }
-  assert.equal((callerWorkflow.match(/^\s+name:\s*Review Yeti \/ Review Yeti\s*$/gmu) || []).length, 1);
+  assert.equal((callerWorkflow.match(/Review Yeti \/ Review Yeti/gmu) || []).length, 0);
 });
 
 test('documentation labels generic callers and distinguishes constituent checks from synthetic output', () => {
@@ -724,35 +730,15 @@ test('documentation labels generic callers and distinguishes constituent checks 
     assert.ok(source.includes('.github/workflows/ct-review-bot.yml'), `${document} must name the governed caller path`);
     assert.ok(source.includes('CALLER_WORKFLOW_PATH'), `${document} must identify the caller path contract`);
     assert.ok(source.includes('.github/workflows/review-readiness.yml'), `${document} must point to the read-only collector`);
-    assert.match(source, /exactly one native `Review Yeti \/ Review Yeti` context-producing job/u);
-    assert.ok(source.includes('publisher App `15368`'), `${document} must bind the native publisher identity`);
-    assert.match(source, /(?:required context is|require)\s+\*\*`Review Yeti \/ Review Yeti`\*\*/u);
-    assert.doesNotMatch(source, /require (?:the native\s+)?\*\*`Review Yeti`\*\* for\s+ordinary/u);
-    assert.match(source, /does not (?:claim|imply)[\s\S]{0,180}combined head/u);
+    assert.match(source, /dispatch-only/u);
+    assert.ok(source.includes('App (integration `4385771`)') || source.includes('App `4385771`'), `${document} must bind the native publisher identity`);
+    assert.match(source, /require\s+\*\*`Review Yeti`\*\*/u);
+    assert.match(source, /synthetic combined head/u);
   }
 });
 
 test('accepts a thin consumer shim only when it pins and binds the central verifier action', () => {
-  const actionWorkflow = `
-name: Dashboard Review Yeti Merge Group
-on:
-  merge_group:
-    types: [checks_requested]
-permissions:
-  checks: read
-  contents: read
-  pull-requests: read
-jobs:
-  review:
-    name: ${REQUIRED_CONTEXT}
-    steps:
-      - name: Verify constituent exact-head checks
-        uses: exampleorg/example-review-actions/.github/actions/verify-merge-group@${'c'.repeat(40)}
-        with:
-          github-token: \${{ github.token }}
-          repository: \${{ github.repository }}
-          branch: \${{ github.event.merge_group.base_ref }}
-`;
+  const actionWorkflow = mergeGroupWorkflow;
   const result = qualifyReadiness(readyInput({ mergeGroupWorkflow: actionWorkflow }));
   assert.equal(result.status, 'ready');
   assert.equal(result.evidence.merge_group_verifier, 'central_sha_pinned_action');
@@ -856,13 +842,12 @@ test('uses the latest authoritative check and rejects a newer failure or missing
   const result = qualifyReadiness(readyInput({
     checkRuns: [
       ...readyInput().checkRuns,
-      { id: 102, name: REQUIRED_CONTEXT, app: { id: REQUIRED_CHECK_APP_ID }, status: 'completed', conclusion: 'failure', head_sha: headSha },
-      { id: 103, name: 'Review Yeti', app: { slug: REQUIRED_REVIEW_APP_SLUG }, status: 'completed', conclusion: 'success', head_sha: undefined },
+      { id: 102, name: REQUIRED_CONTEXT, app: { id: REQUIRED_CHECK_APP_ID, slug: REQUIRED_REVIEW_APP_SLUG }, status: 'completed', conclusion: 'failure', head_sha: headSha },
+      { id: 103, name: REQUIRED_CONTEXT, app: { id: REQUIRED_CHECK_APP_ID, slug: REQUIRED_REVIEW_APP_SLUG }, status: 'completed', conclusion: 'success', head_sha: undefined },
     ],
   }));
   assert.equal(result.status, 'not_ready');
-  assert.ok(result.failures.some((failure) => failure.code === 'required_publisher' && /latest exact-head run is not successful/u.test(failure.message)));
-  assert.ok(result.failures.some((failure) => failure.code === 'review_publisher' && /no exact head SHA/u.test(failure.message)));
+  assert.ok(result.failures.some((failure) => failure.code === 'required_publisher' && /no exact head SHA/u.test(failure.message)));
 });
 
 test('preserves known disabled queue and fails closed on GraphQL partial errors', async () => {
@@ -919,8 +904,8 @@ test('does not require collector-only administration permission on the runtime A
 test('rejects optional or duplicate central verifier action jobs', () => {
   const optional = qualifyReadiness(readyInput({
     mergeGroupWorkflow: readyInput().mergeGroupWorkflow.replace(
-      '    name: Review Yeti / Review Yeti',
-      '    name: Review Yeti / Review Yeti\n    if: false',
+      '    name: Publish native Review Yeti merge-group gate',
+      '    name: Publish native Review Yeti merge-group gate\n    if: false',
     ),
   }));
   assert.equal(optional.status, 'not_ready');
@@ -937,42 +922,23 @@ test('rejects optional or duplicate central verifier action jobs', () => {
 });
 
 test('rejects action shims with extra steps, foreign expressions, or action suffixes', () => {
-  const actionWorkflow = `
-name: Dashboard Review Yeti Merge Group
-on:
-  merge_group:
-    types: [checks_requested]
-permissions:
-  checks: read
-  contents: read
-  pull-requests: read
-jobs:
-  review:
-    name: ${REQUIRED_CONTEXT}
-    steps:
-      - name: Verify constituent exact-head checks
-        uses: exampleorg/example-review-actions/.github/actions/verify-merge-group@${'c'.repeat(40)}
-        with:
-          github-token: \${{ github.token }}
-          repository: \${{ github.repository }}
-          branch: \${{ github.event.merge_group.base_ref }}
-`;
+  const actionWorkflow = mergeGroupWorkflow;
   const mutations = [
-    actionWorkflow.replace('${{ github.token }}', '${{ secrets.GITHUB_TOKEN }}'),
+    actionWorkflow.replace('${{ steps.ry_token.outputs.token }}', '${{ secrets.GITHUB_TOKEN }}'),
     actionWorkflow.replace('${{ github.repository }}', '${{ github.repository }}-suffix'),
     actionWorkflow.replace('${{ github.event.merge_group.base_ref }}', '${{ github.event.merge_group.base_ref || github.ref_name }}'),
     actionWorkflow.replace('          branch:', '      - run: echo fake\n          branch:'),
     actionWorkflow.replace('      - name: Verify', `      - uses: actions/checkout@${'f'.repeat(40)}\n      - name: Verify`),
     actionWorkflow.replace(`@${'c'.repeat(40)}`, `@${'c'.repeat(40)}-suffix`),
     actionWorkflow.replace('        with:', '        env:'),
-    actionWorkflow.replace('          repository:', '          github-token: ${{ github.token }}\n          repository:'),
+    actionWorkflow.replace('          repository:', '          review-yeti-token: ${{ github.token }}\n          repository:'),
   ];
-  for (const workflow of mutations) {
+  for (const [index, workflow] of mutations.entries()) {
     const result = qualifyReadiness(readyInput({ mergeGroupWorkflow: workflow }));
-    assert.equal(result.status, 'not_ready');
+    assert.equal(result.status, 'not_ready', `mutation ${index}`);
     assert.ok(result.failures.some((failure) => failure.code === 'merge_group_qualification'));
   }
-  const directUses = actionWorkflow.replace('      - name: Verify constituent exact-head checks\n        uses:', '      - uses:');
+  const directUses = actionWorkflow.replace('      - name: Verify constituents and publish native gate\n        uses:', '      - uses:');
   assert.equal(qualifyReadiness(readyInput({ mergeGroupWorkflow: directUses })).status, 'ready');
 });
 

@@ -1,6 +1,6 @@
-export const REQUIRED_REVIEW_CONTEXT = 'Review Yeti / Review Yeti';
-export const REQUIRED_REVIEW_APP_ID = 15368;
-export const REQUIRED_REVIEW_VERDICT = 'Review Yeti';
+export const REQUIRED_REVIEW_CONTEXT = 'Review Yeti';
+export const REQUIRED_REVIEW_APP_ID = 4385771;
+export const REQUIRED_REVIEW_VERDICT = REQUIRED_REVIEW_CONTEXT;
 export const REQUIRED_REVIEW_SLUG = 'ct-review-bot';
 // Queue entry shapes remain owned by each caller, but the set of states that
 // can be examined is one shared policy. Keeping it here prevents readiness and
@@ -57,23 +57,19 @@ function inspect(runs, expectedHeadSha, publisher, publisherLabel) {
 
 export function evaluateExactCheckRuns(checkRuns, expectedHeadSha) {
   if (!Array.isArray(checkRuns)) return { failures: ['head check-run evidence is malformed or unavailable'] };
-  const context = inspect(
+  const native = inspect(
     checkRuns.filter((run) => run?.name === REQUIRED_REVIEW_CONTEXT),
     expectedHeadSha,
-    (run) => Number(run?.app?.id) === REQUIRED_REVIEW_APP_ID,
+    (run) => Number(run?.app?.id) === REQUIRED_REVIEW_APP_ID
+      && run?.app?.slug === REQUIRED_REVIEW_SLUG,
     REQUIRED_REVIEW_CONTEXT,
   );
-  const verdict = inspect(
-    checkRuns.filter((run) => run?.name === REQUIRED_REVIEW_VERDICT),
-    expectedHeadSha,
-    (run) => run?.app?.slug === REQUIRED_REVIEW_SLUG,
-    REQUIRED_REVIEW_VERDICT,
-  );
+  const count = checkRuns.filter((run) => run?.name === REQUIRED_REVIEW_CONTEXT).length;
   return {
-    failures: [...context.failures, ...verdict.failures],
-    context: context.latest,
-    verdict: verdict.latest,
-    context_count: checkRuns.filter((run) => run?.name === REQUIRED_REVIEW_CONTEXT).length,
-    verdict_count: checkRuns.filter((run) => run?.name === REQUIRED_REVIEW_VERDICT).length,
+    failures: native.failures,
+    context: native.latest,
+    verdict: native.latest,
+    context_count: count,
+    verdict_count: count,
   };
 }
