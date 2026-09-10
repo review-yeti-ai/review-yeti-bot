@@ -517,6 +517,157 @@ describe('OpenRouterClient', () => {
     await Promise.resolve();
   });
 
+  it('cancels and releases an active direct SSE reader when the caller aborts', async () => {
+    let readerStarted = false;
+    let readerCancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        readerStarted = true;
+        // Leave the read pending so caller cancellation must detach the reader.
+      },
+      cancel() {
+        readerCancelled = true;
+      },
+    });
+    const response = new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+    const fetchImplementation = vi.fn().mockResolvedValue(response);
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const controller = new AbortController();
+    const pending = client.complete({
+      ...request,
+      stream: true,
+      signal: controller.signal,
+      timeoutMs: 5_000,
+      ttftTimeoutMs: 5_000,
+    });
+
+    await vi.waitFor(() => {
+      expect(readerStarted).toBe(true);
+      expect(body.locked).toBe(true);
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({
+      name: 'OpenRouterTimeoutError',
+      kind: 'request',
+    });
+    await vi.waitFor(() => expect(readerCancelled).toBe(true));
+    expect(body.locked).toBe(false);
+  });
+
+  it('cancels the SDK EventStream and its upstream reader when the caller aborts', async () => {
+    let readerStarted = false;
+    let readerCancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        readerStarted = true;
+        // Leave the read pending so cancellation cannot rely on transport cooperation.
+      },
+      cancel() {
+        readerCancelled = true;
+      },
+    });
+    const response = new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    });
+    const fetchImplementation = vi.fn().mockResolvedValue(response);
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const controller = new AbortController();
+    const pending = client.complete({
+      ...request,
+      stream: false,
+      signal: controller.signal,
+      timeoutMs: 5_000,
+      ttftTimeoutMs: 5_000,
+    });
+
+    await vi.waitFor(() => {
+      expect(readerStarted).toBe(true);
+      expect(body.locked).toBe(true);
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({
+      name: 'OpenRouterTimeoutError',
+      kind: 'request',
+    });
+    await vi.waitFor(() => expect(readerCancelled).toBe(true));
+  });
+
+  it('does not treat direct role, empty, or usage frames as first output', async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let firstTokenCalls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const encoder = new TextEncoder();
+    const enqueueFrame = (frame: string) => streamController?.enqueue(encoder.encode(frame));
+    const pending = client.complete({
+      ...request,
+      stream: true,
+      timeoutMs: 1_000,
+      ttftTimeoutMs: 250,
+      onFirstToken: () => { firstTokenCalls += 1; },
+    });
+
+    enqueueFrame(`data: ${sdkChunk({ role: 'assistant' })}\n\n`);
+    enqueueFrame(`data: ${sdkChunk({ content: '' })}\n\n`);
+    enqueueFrame(`data: ${sdkChunk({}, { usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 } })}\n\n`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(firstTokenCalls).toBe(0);
+
+    enqueueFrame(`data: ${sdkChunk({ content: 'meaningful' })}\n\n`);
+    enqueueFrame('data: [DONE]\n\n');
+    streamController?.close();
+    await expect(pending).resolves.toMatchObject({ content: 'meaningful' });
+    expect(firstTokenCalls).toBe(1);
+  });
+
+  it('does not treat SDK role, empty, or usage frames as first output', async () => {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let firstTokenCalls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const encoder = new TextEncoder();
+    const enqueueFrame = (frame: string) => streamController?.enqueue(encoder.encode(frame));
+    const pending = client.complete({
+      ...request,
+      stream: false,
+      timeoutMs: 1_000,
+      ttftTimeoutMs: 250,
+      onFirstToken: () => { firstTokenCalls += 1; },
+    });
+
+    enqueueFrame(`data: ${sdkChunk({ role: 'assistant' })}\n\n`);
+    enqueueFrame(`data: ${sdkChunk({ content: '' })}\n\n`);
+    enqueueFrame(`data: ${sdkChunk({}, { usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 } })}\n\n`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(firstTokenCalls).toBe(0);
+
+    enqueueFrame(`data: ${sdkChunk({ content: 'meaningful' })}\n\n`);
+    enqueueFrame('data: [DONE]\n\n');
+    streamController?.close();
+    await expect(pending).resolves.toMatchObject({ content: 'meaningful' });
+    expect(firstTokenCalls).toBe(1);
+  });
+
   it('does not start transport work for an already-aborted request', async () => {
     const fetchImplementation = vi.fn();
     const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });

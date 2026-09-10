@@ -30,6 +30,13 @@ export class OpenRouterTimeoutError extends OpenRouterConnectionError {
   }
 }
 
+function timeoutErrorForSignal(signal: AbortSignal): OpenRouterTimeoutError {
+  const reason = signal.reason;
+  return reason instanceof OpenRouterTimeoutError
+    ? reason
+    : new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+}
+
 export type FetchImplementation = (
   input: string | URL | Request,
   init?: RequestInit,
@@ -139,10 +146,21 @@ export interface OpenRouterClientOptions {
  * given the signal by OpenRouterClient, so real fetch/SDK requests are aborted
  * rather than merely detached from the caller.
  */
-function raceWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+function raceWithAbort<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+  onLateValue?: (value: T) => void,
+): Promise<T> {
+  const consumeLateValue = (value: T) => {
+    try {
+      onLateValue?.(value);
+    } catch (_) {
+      // Late cleanup must never replace the already-classified cancellation.
+    }
+  };
   if (!signal) return operation;
   if (signal.aborted) {
-    void operation.catch(() => undefined);
+    void operation.then(consumeLateValue, () => undefined);
     return Promise.reject(new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request'));
   }
   return new Promise<T>((resolve, reject) => {
@@ -153,7 +171,7 @@ function raceWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<
       if (settled) return;
       settled = true;
       cleanup();
-      void operation.catch(() => undefined);
+      void operation.then(consumeLateValue, () => undefined);
       reject(new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request'));
     };
     signal.addEventListener('abort', onAbort, { once: true });
@@ -745,7 +763,62 @@ function reasoningText(value: unknown): string {
   }).join('');
 }
 
-function collectChunk(data: any, state: StreamState): void {
+function hasNonEmptyText(value: unknown): boolean {
+  if (typeof value === 'string') return value.length > 0;
+  if (!Array.isArray(value)) return false;
+  return value.some((part) => {
+    if (typeof part === 'string') return part.length > 0;
+    if (!part || typeof part !== 'object') return false;
+    const candidate = part as Record<string, unknown>;
+    return ['text', 'content', 'reasoning', 'arguments', 'input'].some((key) => hasNonEmptyText(candidate[key]));
+  });
+}
+
+function hasReasoningProgress(value: unknown): boolean {
+  if (typeof value === 'string') return value.length > 0;
+  // Reasoning details may contain encrypted/provider-specific objects without a text field. A
+  // non-empty detail still proves that the provider has begun producing reasoning output.
+  if (Array.isArray(value)) return value.length > 0;
+  return Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
+}
+
+function hasToolProgress(value: unknown): boolean {
+  if (typeof value === 'string') return value.length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
+}
+
+/**
+ * Return true only for provider output that advances the generated answer. Role-only, empty
+ * deltas, usage/metadata, and finish frames must not satisfy TTFT or reset inactivity.
+ */
+function hasMeaningfulChunk(data: any): boolean {
+  const choices = Array.isArray(data?.choices) ? data.choices : [];
+  return choices.some((choice: any) => {
+    const delta = choice?.delta || {};
+    const message = choice?.message || {};
+    const content = delta.content ?? message.content;
+    const reasoning = delta.reasoning_details
+      ?? delta.reasoningDetails
+      ?? delta.reasoning
+      ?? delta.reasoning_content
+      ?? message.reasoning_details
+      ?? message.reasoningDetails
+      ?? message.reasoning;
+    const toolCalls = delta.tool_calls
+      ?? delta.toolCalls
+      ?? message.tool_calls
+      ?? message.toolCalls;
+    const refusal = delta.refusal ?? message.refusal;
+    return hasNonEmptyText(content)
+      || hasReasoningProgress(reasoning)
+      || hasToolProgress(toolCalls)
+      || hasNonEmptyText(refusal);
+  });
+}
+
+function collectChunk(data: any, state: StreamState): boolean {
+  const meaningful = hasMeaningfulChunk(data);
   if (typeof data?.model === 'string' && data.model) state.model = data.model;
   const choice = data?.choices?.[0];
   const content = choice?.delta?.content ?? choice?.message?.content;
@@ -777,6 +850,7 @@ function collectChunk(data: any, state: StreamState): void {
     ?? data?.usage?.cost_details?.upstream_inference_cost;
   if (Number.isFinite(Number(reportedCost))) state.cost = Number(reportedCost);
   state.lastChunkTime = Date.now();
+  return meaningful;
 }
 
 export { isExplicitUpstreamRejection, UpstreamCapacityRejectionError } from './providerCapacityManager';
@@ -785,7 +859,8 @@ import { isExplicitUpstreamRejection, UpstreamCapacityRejectionError } from './p
 async function readWithTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
-  onTimeoutError: () => Error
+  onTimeoutError: () => Error,
+  abortPromise?: Promise<never>,
 ): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -795,7 +870,9 @@ async function readWithTimeout<T>(
   });
 
   try {
-    return await Promise.race([promise, timeoutPromise]);
+    const racers: Array<Promise<T> | Promise<never>> = [promise, timeoutPromise];
+    if (abortPromise) racers.push(abortPromise);
+    return await Promise.race(racers);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -806,26 +883,54 @@ async function readWithTimeout<T>(
 const STREAM_CANCEL_WAIT_MS = 100;
 
 async function cancelReader<T>(reader: ReadableStreamDefaultReader<T>, reason: string): Promise<void> {
-  if (typeof reader.cancel !== 'function') return;
   let timer: NodeJS.Timeout | undefined;
   try {
     // Invoke cancellation synchronously so an active provider stream is detached immediately;
     // only the potentially unbounded completion of the provider's promise is raced below.
-    let cancellation: Promise<void>;
-    try {
-      cancellation = Promise.resolve(reader.cancel(reason)).then(() => undefined, () => undefined);
-    } catch (_) {
-      cancellation = Promise.resolve();
+    if (typeof reader.cancel === 'function') {
+      let cancellation: Promise<void>;
+      try {
+        cancellation = Promise.resolve(reader.cancel(reason)).then(() => undefined, () => undefined);
+      } catch (_) {
+        cancellation = Promise.resolve();
+      }
+      await Promise.race([
+        cancellation,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, STREAM_CANCEL_WAIT_MS);
+        }),
+      ]);
     }
-    await Promise.race([
-      cancellation,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, STREAM_CANCEL_WAIT_MS);
-      }),
-    ]);
   } finally {
     if (timer) clearTimeout(timer);
+    try {
+      // Releasing our lock prevents a cancelled direct reader from retaining the response body.
+      // A provider that leaves a read permanently pending may reject this operation; cancellation
+      // itself has already been issued and the failure is intentionally ignored.
+      reader.releaseLock?.();
+    } catch (_) {}
   }
+}
+
+function cancelLateBody(value: unknown, reason: string): void {
+  const body = value && typeof value === 'object' && 'body' in value
+    ? (value as { body?: unknown }).body
+    : value;
+  if (!body || typeof body !== 'object') return;
+  try {
+    const getReader = (body as { getReader?: () => ReadableStreamDefaultReader<unknown> }).getReader;
+    if (typeof getReader === 'function') {
+      const reader = getReader.call(body);
+      void cancelReader(reader, reason).catch(() => undefined);
+      return;
+    }
+  } catch (_) {}
+  try {
+    const cancel = (body as { cancel?: (reason?: unknown) => unknown }).cancel;
+    if (typeof cancel === 'function') {
+      void Promise.resolve(cancel.call(body, reason)).catch(() => undefined);
+    }
+  } catch (_) {}
 }
 
 async function readStreamingResponse(
@@ -835,6 +940,7 @@ async function readStreamingResponse(
     inactivityTimeoutMs?: number;
     ttftTimeoutMs?: number;
     totalTimeoutMs?: number;
+    signal?: AbortSignal;
     onTotalTimeout?: () => void;
     onCancel?: (reason: string) => void;
     persona?: string;
@@ -844,11 +950,21 @@ async function readStreamingResponse(
 ): Promise<any> {
   const contentType = response.headers?.get('content-type') || '';
   if (!contentType.includes('text/event-stream')) {
-    return response.json();
+    return raceWithAbort(
+      response.json(),
+      options?.signal,
+      () => cancelLateBody(response, 'request cancellation'),
+    );
   }
 
   const reader = response.body?.getReader();
-  if (!reader) return response.json();
+  if (!reader) {
+    return raceWithAbort(
+      response.json(),
+      options?.signal,
+      () => cancelLateBody(response, 'request cancellation'),
+    );
+  }
 
   const decoder = new TextDecoder();
   let buffer = '';
@@ -907,6 +1023,26 @@ async function readStreamingResponse(
     cancellationPromise ??= cancelReader(reader, reason);
     return cancellationPromise;
   };
+  const streamSignal = options?.signal;
+  let signalAborted = false;
+  let signalAbortError: OpenRouterTimeoutError | undefined;
+  let onSignalAbort: (() => void) | undefined;
+  const signalAbortPromise = streamSignal
+    ? new Promise<never>((_, reject) => {
+        onSignalAbort = () => {
+          if (signalAborted) return;
+          signalAborted = true;
+          signalAbortError = timeoutErrorForSignal(streamSignal);
+          void cancel('request cancellation');
+          reject(signalAbortError);
+        };
+        streamSignal.addEventListener('abort', onSignalAbort, { once: true });
+        if (streamSignal.aborted) onSignalAbort();
+      })
+    : undefined;
+  // If the signal was already aborted, the loop below may throw before it races this promise.
+  // Attach a sink so that pre-aborted cleanup never creates an unhandled rejection.
+  void signalAbortPromise?.catch(() => undefined);
   const triggerTotalDeadline = () => {
     if (totalDeadlineTriggered) return;
     totalDeadlineTriggered = true;
@@ -931,8 +1067,9 @@ async function readStreamingResponse(
     }
     const json = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
     if (!json || json === '[DONE]') return false;
+    let meaningful = false;
     try {
-      collectChunk(JSON.parse(json), state);
+      meaningful = collectChunk(JSON.parse(json), state);
     } catch {
       throw new OpenRouterResponseError('OpenRouter returned malformed response: malformed streaming JSON');
     }
@@ -946,11 +1083,12 @@ async function readStreamingResponse(
         logger.info(`${personaLabel}Thinking in progress (${Math.round(reasoningLen / 4)} tokens generated)...`);
       }
     }
-    return true;
+    return meaningful;
   };
 
   try {
     while (true) {
+      if (signalAborted) throw signalAbortError || new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
       const readPromise = reader.read();
       const remainingTotalMs = totalDeadlineAt ? totalDeadlineAt - Date.now() : Infinity;
       if (remainingTotalMs <= 0) {
@@ -969,7 +1107,8 @@ async function readStreamingResponse(
         readTimeoutMs,
         () => totalDeadlineNear()
           ? totalDeadlineError()
-          : inactivityTimeoutError()
+          : inactivityTimeoutError(),
+        signalAbortPromise,
       );
       if (totalDeadlineTriggered || totalDeadlineReached()) {
         throw totalDeadlineError();
@@ -1002,15 +1141,29 @@ async function readStreamingResponse(
     // The read timer can win a same-deadline race a few milliseconds early (the classification
     // grace above still marks it as total). Trigger the abort/cancel path for that case too.
     const totalDeadlineExpired = totalDeadlineTriggered
-      || totalDeadlineReached()
-      || (error instanceof OpenRouterTimeoutError && error.kind === 'total');
-    if (totalDeadlineExpired) triggerTotalDeadline();
-    if (!totalDeadlineExpired) options?.onCancel?.('stream timeout');
-    await cancel(totalDeadlineExpired ? 'stream total deadline' : 'stream timeout');
-    if (totalDeadlineExpired) throw totalDeadlineError();
+      || (error instanceof OpenRouterTimeoutError && error.kind === 'total')
+      || (signalAborted && signalAbortError?.kind === 'total');
+    if (signalAborted) {
+      if (totalDeadlineExpired) {
+        triggerTotalDeadline();
+        await cancel('stream total deadline');
+        throw totalDeadlineError();
+      }
+      await cancel('request cancellation');
+      throw signalAbortError || new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+    }
+    if (totalDeadlineExpired) {
+      triggerTotalDeadline();
+      await cancel('stream total deadline');
+      throw totalDeadlineError();
+    }
+    if (error instanceof OpenRouterTimeoutError) options?.onCancel?.('stream timeout');
+    else options?.onCancel?.('stream error');
+    await cancel(error instanceof OpenRouterTimeoutError ? 'stream timeout' : 'stream error');
     throw error;
   } finally {
     if (totalDeadlineTimer) clearTimeout(totalDeadlineTimer);
+    if (streamSignal && onSignalAbort) streamSignal.removeEventListener('abort', onSignalAbort);
   }
 
   const finalContent = state.content || state.reasoning || '';
@@ -1055,12 +1208,13 @@ function sdkUsageToWire(usage: any, rawUsage?: any): Record<string, unknown> | n
   };
 }
 
-function collectSdkChunk(data: any, state: StreamState): void {
+function collectSdkChunk(data: any, state: StreamState): boolean {
   if (data?.error) {
     const message = data.error.message || data.error.code || 'OpenRouter emitted a streaming error';
     const status = Number.isInteger(Number(data.error.code)) ? Number(data.error.code) : undefined;
     throw new OpenRouterResponseError(`OpenRouter streaming error: ${String(message).slice(0, 2_000)}`, status);
   }
+  const meaningful = hasMeaningfulChunk(data);
   if (typeof data?.model === 'string' && data.model) state.model = data.model;
   const choice = data?.choices?.[0];
   const content = choice?.delta?.content ?? choice?.message?.content;
@@ -1097,6 +1251,7 @@ function collectSdkChunk(data: any, state: StreamState): void {
     state.routerMetadata = data.openrouter_metadata;
   }
   state.lastChunkTime = Date.now();
+  return meaningful;
 }
 
 async function readSdkStreamingResponse(
@@ -1106,6 +1261,7 @@ async function readSdkStreamingResponse(
     inactivityTimeoutMs?: number;
     ttftTimeoutMs?: number;
     totalTimeoutMs?: number;
+    signal?: AbortSignal;
     onTotalTimeout?: () => void;
     onCancel?: (reason: string) => void;
     onFirstToken?: () => void;
@@ -1151,16 +1307,42 @@ async function readSdkStreamingResponse(
       );
   const totalDeadlineNear = () => totalDeadlineAt > 0 && Date.now() + 10 >= totalDeadlineAt;
   let totalDeadlineTriggered = false;
+  let cancellationPromise: Promise<void> | undefined;
+  const cancel = (reason: string): Promise<void> => {
+    cancellationPromise ??= cancelReader(reader, reason);
+    return cancellationPromise;
+  };
+  const streamSignal = options?.signal;
+  let signalAborted = false;
+  let signalAbortError: OpenRouterTimeoutError | undefined;
+  let onSignalAbort: (() => void) | undefined;
+  const signalAbortPromise = streamSignal
+    ? new Promise<never>((_, reject) => {
+        onSignalAbort = () => {
+          if (signalAborted) return;
+          signalAborted = true;
+          signalAbortError = timeoutErrorForSignal(streamSignal);
+          void cancel('request cancellation');
+          reject(signalAbortError);
+        };
+        streamSignal.addEventListener('abort', onSignalAbort, { once: true });
+        if (streamSignal.aborted) onSignalAbort();
+      })
+    : undefined;
+  void signalAbortPromise?.catch(() => undefined);
+  const triggerTotalDeadline = () => {
+    if (totalDeadlineTriggered) return;
+    totalDeadlineTriggered = true;
+    options?.onTotalTimeout?.();
+    options?.onCancel?.('stream total deadline');
+    void cancel('stream total deadline');
+  };
   const totalTimer = totalDeadlineAt
-    ? setTimeout(() => {
-      totalDeadlineTriggered = true;
-      options?.onTotalTimeout?.();
-      options?.onCancel?.('stream total deadline');
-      void cancelReader(reader, 'stream total deadline');
-    }, Math.max(0, totalDeadlineAt - Date.now()))
+    ? setTimeout(triggerTotalDeadline, Math.max(0, totalDeadlineAt - Date.now()))
     : undefined;
   try {
     while (true) {
+      if (signalAborted) throw signalAbortError || new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
       const remainingTotalMs = totalDeadlineAt ? totalDeadlineAt - Date.now() : Infinity;
       if (remainingTotalMs <= 0 || totalDeadlineTriggered) throw totalDeadlineError();
       const inactivityDeadlineAt = receivedFirstData
@@ -1175,14 +1357,16 @@ async function readSdkStreamingResponse(
         reader.read(),
         readTimeoutMs,
         () => totalDeadlineNear() ? totalDeadlineError() : inactivityTimeoutError(),
+        signalAbortPromise,
       );
       if (done) break;
       if (value !== undefined) {
-        collectSdkChunk(value, state);
-        lastMeaningfulDataAt = Date.now();
-        if (!receivedFirstData) {
-          receivedFirstData = true;
-          options?.onFirstToken?.();
+        if (collectSdkChunk(value, state)) {
+          lastMeaningfulDataAt = Date.now();
+          if (!receivedFirstData) {
+            receivedFirstData = true;
+            options?.onFirstToken?.();
+          }
         }
       }
     }
@@ -1195,29 +1379,28 @@ async function readSdkStreamingResponse(
   } catch (error) {
     const totalExpired = totalDeadlineTriggered
       || (error instanceof OpenRouterTimeoutError && error.kind === 'total')
-      || (totalDeadlineAt > 0 && Date.now() + 10 >= totalDeadlineAt);
-    if (totalExpired && !totalDeadlineTriggered) {
-      totalDeadlineTriggered = true;
-      options?.onTotalTimeout?.();
+      || (signalAborted && signalAbortError?.kind === 'total');
+    if (signalAborted) {
+      if (totalExpired) {
+        triggerTotalDeadline();
+        await cancel('stream total deadline');
+        throw totalDeadlineError();
+      }
+      await cancel('request cancellation');
+      throw signalAbortError || new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
     }
-    // Cancellation is best-effort cleanup. Do not make the caller wait for a provider's
-    // cancellation promise after the deadline has already classified the request; a provider
-    // that ignores cancellation must not hold the review lane open.
-    const cancelReason = totalExpired ? 'stream total deadline' : 'stream timeout';
-    // Preserve the background compatibility capture for SDK schema failures; the caller may
-    // still need it to parse a broader OpenAI-compatible envelope. Only hard timeouts should
-    // discard that capture.
-    if (totalExpired || error instanceof OpenRouterTimeoutError) options?.onCancel?.(cancelReason);
-    // cancelReader invokes reader.cancel synchronously and only bounds its completion wait. Give
-    // the stream tee one microtask to propagate cancellation before this classified rejection is
-    // observed by callers; never await a provider-controlled cancellation promise here.
-    void cancelReader(reader, cancelReason);
-    await Promise.resolve();
-    if (totalExpired) throw totalDeadlineError();
+    if (totalExpired) {
+      triggerTotalDeadline();
+      await cancel('stream total deadline');
+      throw totalDeadlineError();
+    }
+    if (error instanceof OpenRouterTimeoutError) options?.onCancel?.('stream timeout');
+    else options?.onCancel?.('stream error');
+    await cancel(error instanceof OpenRouterTimeoutError ? 'stream timeout' : 'stream error');
     throw error;
   } finally {
     if (totalTimer) clearTimeout(totalTimer);
-    reader.releaseLock?.();
+    if (streamSignal && onSignalAbort) streamSignal.removeEventListener('abort', onSignalAbort);
   }
 
   const finalContent = state.content || state.reasoning || '';
@@ -1293,13 +1476,22 @@ async function createOpenRouterSdkClient(options: {
         let compatibilityBody = compatibilityResponse?.body || '';
         if (!compatibilityBody && typeof compatibilityResponse?.json === 'function') {
           try {
-            compatibilityBody = JSON.stringify(await compatibilityResponse.json());
-          } catch (_) {
+            compatibilityBody = JSON.stringify(await raceWithAbort(
+              Promise.resolve(compatibilityResponse.json()),
+              sdkRequest.signal,
+              () => cancelLateBody(compatibilityResponse, 'request deadline'),
+            ));
+          } catch (error) {
+            if (error instanceof OpenRouterTimeoutError) throw error;
             // Fall through to text for malformed/non-JSON doubles.
           }
         }
         if (!compatibilityBody && typeof compatibilityResponse?.text === 'function') {
-          compatibilityBody = await compatibilityResponse.text();
+          compatibilityBody = await raceWithAbort(
+            Promise.resolve(compatibilityResponse.text()),
+            sdkRequest.signal,
+            () => cancelLateBody(compatibilityResponse, 'request deadline'),
+          );
         }
         response = new Response(compatibilityBody, {
           status: Number(compatibilityResponse?.status) || 200,
@@ -1311,7 +1503,11 @@ async function createOpenRouterSdkClient(options: {
       const isSse = contentType.includes('text/event-stream');
       if (!isSse) {
         try {
-          const text = await response.text();
+          const text = await raceWithAbort(
+            response.text(),
+            sdkRequest.signal,
+            () => cancelLateBody(response, 'request deadline'),
+          );
           let json: any = null;
           try {
             json = JSON.parse(text);
@@ -1332,7 +1528,8 @@ async function createOpenRouterSdkClient(options: {
             statusText: response.statusText,
             headers: response.headers,
           });
-        } catch (_) {
+        } catch (error) {
+          if (error instanceof OpenRouterTimeoutError) throw error;
           rawJsonCapture = null;
         }
       }
@@ -1425,16 +1622,34 @@ export class OpenRouterClient implements ReviewModelClient {
     const started = this.now();
     const startedAt = Date.now();
     const controller = new AbortController();
+    // Keep transport cancellation separate from the signals used to race startup and active
+    // readers. Stream inactivity is a transport cleanup event, not a request-deadline event.
+    const requestAbortController = new AbortController();
+    const streamAbortController = new AbortController();
     let requestDeadlineExpired = false;
     let callerCancelled = false;
+    let streamTransportFailure = false;
     const onCallerAbort = () => {
       callerCancelled = true;
-      controller.abort();
+      const cancellation = new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+      controller.abort(cancellation);
+      requestAbortController.abort(cancellation);
+      streamAbortController.abort(cancellation);
     };
     request.signal?.addEventListener('abort', onCallerAbort, { once: true });
     const timeout = setTimeout(() => {
       requestDeadlineExpired = true;
-      controller.abort();
+      const requestTimeout = new OpenRouterTimeoutError(
+        `OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`,
+        'request',
+      );
+      const totalTimeout = new OpenRouterTimeoutError(
+        `OpenRouter streaming response exceeded total deadline of ${request.timeoutMs}ms`,
+        'total',
+      );
+      controller.abort(requestTimeout);
+      requestAbortController.abort(requestTimeout);
+      streamAbortController.abort(totalTimeout);
     }, request.timeoutMs);
 
     try {
@@ -1457,12 +1672,16 @@ export class OpenRouterClient implements ReviewModelClient {
           }
         }
         const body = JSON.stringify(buildOpenRouterChatRequest({ ...request, stream: true }));
-        let response = await this.fetchImplementation(`${this.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers,
-          body,
-          signal: controller.signal,
-        });
+        let response = await raceWithAbort(
+          this.fetchImplementation(`${this.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers,
+            body,
+            signal: controller.signal,
+          }),
+          requestAbortController.signal,
+          (lateResponse) => cancelLateBody(lateResponse, 'request deadline'),
+        );
 
         if (!(response instanceof Response)) {
           const compatibilityResponse: any = response as any;
@@ -1470,12 +1689,22 @@ export class OpenRouterClient implements ReviewModelClient {
           let isJsonBody = false;
           if (!compatibilityBody && typeof compatibilityResponse?.json === 'function') {
             try {
-              compatibilityBody = JSON.stringify(await compatibilityResponse.json());
+              compatibilityBody = JSON.stringify(await raceWithAbort(
+                Promise.resolve(compatibilityResponse.json()),
+                requestAbortController.signal,
+                () => cancelLateBody(compatibilityResponse, 'request deadline'),
+              ));
               isJsonBody = true;
-            } catch (_) {}
+            } catch (error) {
+              if (error instanceof OpenRouterTimeoutError) throw error;
+            }
           }
           if (!compatibilityBody && typeof compatibilityResponse?.text === 'function') {
-            compatibilityBody = await compatibilityResponse.text();
+            compatibilityBody = await raceWithAbort(
+              Promise.resolve(compatibilityResponse.text()),
+              requestAbortController.signal,
+              () => cancelLateBody(compatibilityResponse, 'request deadline'),
+            );
           }
           if (!isJsonBody && typeof compatibilityBody === 'string' && /^\s*[\{\[]/.test(compatibilityBody)) {
             isJsonBody = true;
@@ -1500,8 +1729,14 @@ export class OpenRouterClient implements ReviewModelClient {
         if (!response.ok) {
           let errorBody = '';
           try {
-            errorBody = await response.text();
-          } catch (_) {}
+            errorBody = await raceWithAbort(
+              response.text(),
+              requestAbortController.signal,
+              () => cancelLateBody(response, 'request deadline'),
+            );
+          } catch (error) {
+            if (error instanceof OpenRouterTimeoutError) throw error;
+          }
           const status = response.status;
           let parsedMsg = errorBody;
           try {
@@ -1515,46 +1750,69 @@ export class OpenRouterClient implements ReviewModelClient {
           ttftTimeoutMs: request.ttftTimeoutMs,
           inactivityTimeoutMs: request.inactivityTimeoutMs ?? Math.min(45_000, request.timeoutMs),
           totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+          signal: streamAbortController.signal,
           onTotalTimeout: () => {
             requestDeadlineExpired = true;
-            controller.abort();
+            const totalTimeout = new OpenRouterTimeoutError(
+              `OpenRouter streaming response exceeded total deadline of ${request.timeoutMs}ms`,
+              'total',
+            );
+            controller.abort(totalTimeout);
+            requestAbortController.abort(totalTimeout);
+            streamAbortController.abort(totalTimeout);
           },
-          onCancel: () => {
+          onCancel: (reason) => {
+            if (reason === 'stream error') streamTransportFailure = true;
             controller.abort();
           },
           onFirstToken: request.onFirstToken,
         });
       } else {
-        const sdkClient = await createOpenRouterSdkClient({
-          baseUrl: this.baseUrl,
-          apiKey: this.apiKey,
-          fetchImplementation: this.fetchImplementation,
-          onGenerationId: (value) => { generationId = value; },
-        });
+        const sdkClient = await raceWithAbort(
+          createOpenRouterSdkClient({
+            baseUrl: this.baseUrl,
+            apiKey: this.apiKey,
+            fetchImplementation: this.fetchImplementation,
+            onGenerationId: (value) => { generationId = value; },
+          }),
+          requestAbortController.signal,
+        );
         try {
           if (callerCancelled || request.signal?.aborted) {
             throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
           }
-          const sdkResponse = await sdkClient.chat.send(
-            {
-              xOpenRouterMetadata: 'enabled',
-              chatRequest: buildOpenRouterSdkChatRequest(request),
-            },
-            {
-              signal: controller.signal,
-              retries: { strategy: 'none' },
-            },
+          const sdkResponse = await raceWithAbort(
+            sdkClient.chat.send(
+              {
+                xOpenRouterMetadata: 'enabled',
+                chatRequest: buildOpenRouterSdkChatRequest(request),
+              },
+              {
+                signal: controller.signal,
+                retries: { strategy: 'none' },
+              },
+            ),
+            requestAbortController.signal,
+            (lateResponse) => cancelLateBody(lateResponse, 'request deadline'),
           );
           if (sdkResponse && typeof (sdkResponse as any).getReader === 'function') {
             data = await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
               ttftTimeoutMs: request.ttftTimeoutMs,
               inactivityTimeoutMs: request.inactivityTimeoutMs ?? Math.min(45_000, request.timeoutMs),
               totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+              signal: streamAbortController.signal,
               onTotalTimeout: () => {
                 requestDeadlineExpired = true;
-                controller.abort();
+                const totalTimeout = new OpenRouterTimeoutError(
+                  `OpenRouter streaming response exceeded total deadline of ${request.timeoutMs}ms`,
+                  'total',
+                );
+                controller.abort(totalTimeout);
+                requestAbortController.abort(totalTimeout);
+                streamAbortController.abort(totalTimeout);
               },
-              onCancel: () => {
+              onCancel: (reason) => {
+                if (reason === 'stream error') streamTransportFailure = true;
                 controller.abort();
               },
               onFirstToken: request.onFirstToken,
@@ -1654,7 +1912,9 @@ export class OpenRouterClient implements ReviewModelClient {
           classifiedError = new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
         } else if (error?.name === 'ResponseValidationError') {
           classifiedError = new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
-        } else if (requestDeadlineExpired || error?.name === 'AbortError' || controller.signal.aborted) {
+        } else if (requestDeadlineExpired
+          || requestAbortController.signal.aborted
+          || streamAbortController.signal.aborted) {
           classifiedError = new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`, 'request');
         } else {
           logger.error('OpenRouter SDK network failure or timeout', { error: sdkMessage, model: request.model });
@@ -1701,6 +1961,8 @@ export class OpenRouterClient implements ReviewModelClient {
       if (!controller.signal.aborted) {
         controller.abort();
       }
+      if (!requestAbortController.signal.aborted) requestAbortController.abort();
+      if (!streamAbortController.signal.aborted) streamAbortController.abort();
     }
   }
 }
