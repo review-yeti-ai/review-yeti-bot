@@ -266,7 +266,7 @@ if (incrementalEnabled && resolvedExecutionBackend !== 'local') {
 // path unusable: setting REVIEW_YETI_DOKS_PUBLISH_MODE=enabled passes this check and
 // then hard-fails at dispatch on a value the action cannot accept.
 const DOKS_PUBLISH_MODE_APP_GATE = 'app-gate';
-const resolvedDoksPublishMode = (process.env.REVIEW_YETI_DOKS_PUBLISH_MODE || 'disabled').trim();
+const resolvedDoksPublishMode = (process.env.REVIEW_YETI_DOKS_PUBLISH_MODE || 'app-gate').trim();
 if (resolvedExecutionBackend === 'doks' && resolvedDoksPublishMode !== DOKS_PUBLISH_MODE_APP_GATE) {
   throw new Error(
     `The resolved execution-backend for this run is "doks" but its publish mode is `

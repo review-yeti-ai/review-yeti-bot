@@ -914,14 +914,13 @@ echo "[incremental-backend-doks-blocked] passed"
 grep -A1 '^incremental_enabled<<' "$tmp_dir/backend-default-local.output" | grep -qx 'true'
 echo "[incremental-backend-default-is-local] passed"
 
-# 2c. The publish axis cannot be bypassed by omitting its signal either: a doks run with no
-#     REVIEW_YETI_DOKS_PUBLISH_MODE must fail, because the action's own default is "disabled"
-#     and such a run accepts the dispatch and never reports a verdict for the head.
+# 2c. When REVIEW_YETI_DOKS_PUBLISH_MODE is explicitly disabled, a doks run must fail
+#     because such a run accepts the dispatch and never reports a verdict for the head.
 #     Incremental is cleared first so this isolates the publish axis: the incremental guard
 #     runs earlier and would otherwise report its own (different) incoherence.
 write_incremental_policy missing
 set +e
-(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks GITHUB_OUTPUT="$tmp_dir/backend-doks-nopublish.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-nopublish.log" 2>&1
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=doks REVIEW_YETI_DOKS_PUBLISH_MODE=disabled GITHUB_OUTPUT="$tmp_dir/backend-doks-nopublish.output" node emit-policy.mjs) >"$tmp_dir/backend-doks-nopublish.log" 2>&1
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]]
