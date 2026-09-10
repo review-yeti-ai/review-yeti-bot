@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.49.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.49.0...v1.49.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **action:** retry transient DOKS dispatch failures ([#657](https://github.com/review-yeti-ai/review-yeti-bot/issues/657)) ([efcdf84](https://github.com/review-yeti-ai/review-yeti-bot/commit/efcdf841b85755bf1fe73ec5a4d955349bf21249))
+
 ## [1.49.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.5...v1.49.0) (2026-09-10)
 
 
