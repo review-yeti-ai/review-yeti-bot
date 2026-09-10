@@ -28,6 +28,7 @@ describe('GitHub App webhook configuration', () => {
 
   it.each([
     { GITHUB_WEBHOOK_SECRET: 'short' },
+    { GITHUB_WEBHOOK_SECRET: 'é'.repeat(513) },
     { GITHUB_APP_WEBHOOK_REPOSITORY_IDS: '1234' },
     { GITHUB_APP_WEBHOOK_OWNER_IDS: '77' },
     { GITHUB_APP_WEBHOOK_ADMISSION_ENABLED: 'yes' },

@@ -218,6 +218,51 @@ describe('native merge-group Review Yeti gate', () => {
       String(url).endsWith('/check-runs') && init?.method === 'POST')).toBe(false);
   });
 
+  it('propagates a terminal PATCH failure and resumes the same in-progress check on retry', async () => {
+    const stableId = `review-yeti-merge-group:614653796:${GROUP_HEAD}`;
+    let invocation = 0;
+    let completionAttempts = 0;
+    let created = false;
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response(created ? {
+        total_count: 1, check_runs: [{ id: 9012, name: 'Review Yeti', head_sha: GROUP_HEAD,
+          external_id: stableId, status: 'in_progress', conclusion: null,
+          app: { id: AUTHORITATIVE_REVIEW_APP_ID, slug: 'ct-review-bot' } }],
+      } : { total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') {
+        created = true;
+        return response({ id: 9012, status: 'in_progress' });
+      }
+      if (url === 'https://api.github.com/graphql') return response(queue());
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({ total_count: 1, check_runs: [{
+        id: 8012, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success',
+        app: { id: AUTHORITATIVE_REVIEW_APP_ID, slug: 'ct-review-bot' },
+      }] });
+      if (url.endsWith('/check-runs/9012') && init?.method === 'PATCH') {
+        completionAttempts += 1;
+        return completionAttempts === 1 ? response({ error: 'unavailable' }, 503) : response({ id: 9012 });
+      }
+      return response({}, 500);
+    }) as typeof fetch;
+    const store = {
+      runExclusive: vi.fn(async (_repositoryId: number, _headSha: string, operation: Function) => {
+        invocation += 1;
+        return operation(undefined);
+      }),
+    };
+    const gate = createMergeGroupGate({
+      config, repository: store as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
+    });
+
+    await expect(gate(payload())).rejects.toThrow('GitHub JSON request failed with HTTP 503');
+    await expect(gate(payload())).resolves.toEqual({ checkId: 9012, conclusion: 'success', constituents: 1 });
+    expect(invocation).toBe(2);
+    expect(completionAttempts).toBe(2);
+    expect((fetchImplementation as any).mock.calls.filter(([url, init]: [unknown, RequestInit]) =>
+      String(url).endsWith('/check-runs') && init?.method === 'POST')).toHaveLength(1);
+  });
+
   it('rejects an unenrolled or malformed merge-group identity before any side effect', async () => {
     const store = repository();
     const tokenFor = vi.fn(async () => 'ghs_test');
