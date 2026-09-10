@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.47.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.47.0...v1.47.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **review:** recover abandoned attempts without replaying workers ([#638](https://github.com/review-yeti-ai/review-yeti-bot/issues/638)) ([ecd789d](https://github.com/review-yeti-ai/review-yeti-bot/commit/ecd789d5836968b1903a81a6333d7d39b947f982))
+
 ## [1.47.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.46.0...v1.47.0) (2026-09-09)
 
 
