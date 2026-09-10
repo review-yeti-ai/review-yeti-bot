@@ -202,6 +202,11 @@ already-admitted policy. Upgrade the reviewed API and worker together when
 changing publishing defaults, and include the operator for admission fixes.
 Never edit a queued envelope or its digest to retrofit a new policy.
 
+The native publishing client implements the progress-aware idle policy above.
+The legacy OmniRoute adapter retains its existing hard provider-timeout cap
+and now links caller cancellation; it does not advertise progress-reset idle
+support. Passing a longer panel budget must not silently widen that legacy cap.
+
 Qualify changes with synthetic active-stream, stalled-stream, caller-abort and
 late-result tests, plus reservation/FIFO controller tests. Then verify one
 current-head review on the exact deployed images. Record the queue and worker

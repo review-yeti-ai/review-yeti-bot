@@ -30,6 +30,9 @@ export interface OmniRouteRequest {
   model: string;
   messages: OmniMessage[];
   timeoutMs: number;
+  /** Legacy compatibility cap; this adapter does not implement progress-reset idle timers. */
+  inactivityTimeoutMs?: number;
+  signal?: AbortSignal;
   jobId?: string;
   persona?: string;
   stream?: boolean;
@@ -142,6 +145,15 @@ export class OmniRouteClient {
   }
 
   public async complete(request: OmniRouteRequest): Promise<OmniRouteResponse> {
+    // The shared panel now supplies a total budget separately from the provider timeout.
+    // Preserve this legacy adapter's existing hard provider cap until it supports native
+    // progress-aware streaming, rather than silently turning a 1s request into a 900s one.
+    const providerCap = request.inactivityTimeoutMs;
+    const timeoutMs = typeof providerCap === 'number' && Number.isFinite(providerCap) && providerCap > 0
+      ? Math.min(request.timeoutMs, providerCap)
+      : request.timeoutMs;
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = request.signal ? AbortSignal.any([timeoutSignal, request.signal]) : timeoutSignal;
     const startTime = Date.now();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.accessToken) headers.Authorization = `Bearer ${this.accessToken}`;
@@ -159,7 +171,7 @@ export class OmniRouteClient {
           stream: request.stream ?? true,
           ...(request.reasoningEffort ? { reasoning_effort: request.reasoningEffort } : {}),
         }),
-        signal: AbortSignal.timeout(request.timeoutMs),
+        signal,
       });
       if (!response.ok) {
         data = await response.json().catch(() => ({})) as any;
