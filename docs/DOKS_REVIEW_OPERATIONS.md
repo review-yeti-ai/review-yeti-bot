@@ -61,6 +61,12 @@ may still be positional (mixed case is normalized); release tags and implicit
 apply are no longer supported. Context and target digest are mandatory.
 --dry-run is a plan alias and cannot be combined with --apply.
 
+The operator machine now requires **Node.js on PATH** for receipt publication
+(built-in fs only, no npm package). The helper checks this prerequisite before
+any cluster call. Its filesystem must support exclusive/no-follow file creation
+and file/directory fsync; unsupported persistence fails closed. The dispatcher
+image already includes Node, used for the fixed non-secret running attestation.
+
 The existing source-tag resolver verifies the exact full-SHA tag against the
 caller-supplied digest, then reads that immutable index and requires Linux
 amd64 and arm64 entries. The worker GHCR and CallTelemetry DOCR repositories
@@ -87,6 +93,16 @@ image; otherwise the plan explicitly requires a restart. Rollout is bounded
 to 180 seconds; exact object/configuration and owned running-pod readback must
 pass before a success receipt is written.
 
+Every owned ready running pod must attest **prebaked mode**, using the actual
+runtime reader's trimmed REVIEW_JOB_RUNNER_MODE / RUNNER_MODE precedence and
+prebaked default. The probe emits only mode and worker image, never the whole
+environment. Admission checks this before mutation/no-op, and final readback
+checks it after rollout. A generic or unreadable running lane is refused, not
+converted or activated by a restart. Only a stale image in an already-prebaked
+lane is eligible for the guarded restart. Older owned pods can establish
+prebaked admission after a lost restart ACK, but cannot prove the current
+restart completed.
+
 There is no Kubernetes transaction spanning both objects. Individual CAS
 patches and pre/post-restart checks detect drift, but an inter-object race can
 leave a partial update. Rejected writes, lost acknowledgements, rollout failure,
@@ -95,6 +111,12 @@ Retain the intent and outcome receipt; failure receipts do not claim an
 observed final state. A killed process may leave only the pre-write intent.
 Use a private local receipt directory: existing files, leaf symlinks and
 missing/symlink parents are rejected, and files are created without overwrite.
+Both intent and outcome use the same Node fs O_EXCL/O_NOFOLLOW creation primitive,
+not Bash noclobber or a pathname precheck as the publication guard. Every occupied
+destination, including late FIFO/directory symlinks, is refused. File and parent
+directory fsync plus a regular-file identity/size/mode check precede success.
+A failed write can leave a new incomplete file; it is not reused or deleted
+automatically, and a failed outcome write leaves the prior intent intact.
 
 For a separately approved rollback, first acquire a new read-only plan:
 use the same command with `--rollback <retained-upgrade-receipt-or-intent>`,

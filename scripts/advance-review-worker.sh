@@ -50,7 +50,7 @@ done
 [[ "$source_sha" =~ ^[0-9a-fA-F]{40}$ ]] || die 'reviewed full source SHA required; release tags are no longer resolved'
 source_sha="$(lower "$source_sha")"
 trusted_worker "$target" || die 'exact trusted worker index image required'
-for command in kubectl jq crane date; do command -v "$command" >/dev/null || die "missing command: $command"; done
+for command in kubectl jq crane date node; do command -v "$command" >/dev/null || die "missing command: $command"; done
 command -v shasum >/dev/null || command -v sha256sum >/dev/null || die 'missing SHA256 utility'
 
 # Full objects remain in memory only. Hash every declared field except owned
@@ -102,15 +102,17 @@ read_state() {
 same() { jq -en --argjson a "$1" --argjson b "$2" '$a==$b' >/dev/null; }
 stable_dep() { jq -cS 'del(.resourceVersion)' <<<"$1"; }
 running_matches() {
-  local sets pods owners candidates pod value
+  local sets pods owners current_owners candidates pod value images_match=0
   sets="$(k get replicasets -l app.kubernetes.io/name=ct-review-job-dispatcher -o json | json)" || die 'cannot read ReplicaSet ownership'
   pods="$(k get pods -l app.kubernetes.io/name=ct-review-job-dispatcher -o json | json)" || die 'cannot read running pods'
   jq -e '(.items|type)=="array"' <<<"$sets" >/dev/null || die 'malformed ReplicaSet response'
   jq -e '(.items|type)=="array"' <<<"$pods" >/dev/null || die 'malformed pod response'
-  owners="$(jq -c --argjson d "$dep" --arg marker "$marker_key" --arg container "$container" '
+  owners="$(jq -c --argjson d "$dep" --arg container "$container" '
     [.items[] | select(any(.metadata.ownerReferences[]?; .uid==$d.uid and .kind=="Deployment" and .controller==true))
-     | select((.spec.template.metadata.annotations[$marker] // null)==$d.marker)
      | select(any(.spec.template.spec.containers[]?; .name==$container and .image==$d.image)) | .metadata.uid]' <<<"$sets")"
+  current_owners="$(jq -c --argjson owners "$owners" --argjson d "$dep" --arg marker "$marker_key" '
+    [.items[] | select(.metadata.uid as $uid|$owners|index($uid)!=null)
+     | select((.spec.template.metadata.annotations[$marker] // null)==$d.marker) | .metadata.uid]' <<<"$sets")"
   candidates="$(jq -c '[.items[]|select(.metadata.deletionTimestamp==null)]' <<<"$pods")"
   jq -e --argjson d "$dep" --argjson owners "$owners" --arg container "$container" '
     length==$d.replicas and all(.[];
@@ -119,12 +121,28 @@ running_matches() {
       and any(.metadata.ownerReferences[]?; .kind=="ReplicaSet" and .controller==true and (.uid as $uid|$owners|index($uid)!=null))
       and any(.spec.containers[]?; .name==$container and .image==$d.image)
       and (.metadata.name|test("^[a-z0-9][a-z0-9.-]*$")))
-  ' <<<"$candidates" >/dev/null || return 1
+  ' <<<"$candidates" >/dev/null || die 'cannot attest the active owned ready prebaked lane'
+  # A lost restart ACK can leave old owned pods running. Attest their mode
+  # before recovery, but never count them as a completed current rollout.
+  jq -e --argjson owners "$current_owners" '
+    all(.[]; any(.metadata.ownerReferences[]?; .uid as $uid|$owners|index($uid)!=null))
+  ' <<<"$candidates" >/dev/null || images_match=1
   while IFS= read -r pod; do
-    # shellcheck disable=SC2016 # Expanded only inside the selected pod.
-    value="$(k exec "$pod" --container "$container" -- sh -c 'printf "%s" "$REVIEW_JOB_WORKER_IMAGE"')" || die 'running worker configuration unreadable'
-    [[ "$value" == "$target" ]] || return 1
+    # Same precedence/trim/default as reviewJobDispatcherConfigFromEnv. Print
+    # only these two non-secret coordinates; do not import the live entrypoint.
+    value="$(k exec "$pod" --container "$container" -- node -e '
+      const e = process.env;
+      process.stdout.write(JSON.stringify({
+        runnerMode: e.REVIEW_JOB_RUNNER_MODE?.trim() || e.RUNNER_MODE?.trim() || "prebaked",
+        workerImage: e.REVIEW_JOB_WORKER_IMAGE?.trim() || ""
+      }));
+    ' | json)" || die 'running worker configuration unreadable'
+    jq -e '.runnerMode=="prebaked" and (.workerImage|type)=="string"' <<<"$value" >/dev/null ||
+      die 'running dispatcher is not already prebaked; refusing lane activation'
+    # A stale image may request a guarded restart, but still attest every pod.
+    [[ "$(jq -r '.workerImage' <<<"$value")" == "$target" ]] || images_match=1
   done < <(jq -r '.[].metadata.name' <<<"$candidates")
+  return "$images_match"
 }
 new_path() {
   local path="$1" parent
@@ -133,7 +151,40 @@ new_path() {
   [[ -d "$parent" && ! -L "$parent" ]] || die 'receipt parent missing or symlink'
 }
 private_write() {
-  (umask 077; set -o noclobber; printf '%s\n' "$2" >"$1")
+  # O_EXCL is the publication guard, not new_path: every occupied leaf
+  # (including symlinks/FIFOs/directories) must fail without opening it.
+  # Node is an explicit operator prerequisite; only built-in fs is used.
+  node -e '
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const c = fs.constants;
+    const destination = process.argv[1];
+    let fd, directory;
+    try {
+      if (!Number.isInteger(c.O_NOFOLLOW) || !Number.isInteger(c.O_DIRECTORY)) throw new Error();
+      const bytes = fs.readFileSync(0);
+      fd = fs.openSync(destination, c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+      fs.fchmodSync(fd, 0o600);
+      if (!fs.fstatSync(fd).isFile()) throw new Error();
+      fs.writeFileSync(fd, bytes);
+      fs.fsyncSync(fd);
+      directory = fs.openSync(path.dirname(destination), c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW);
+      fs.fsyncSync(directory);
+      const opened = fs.fstatSync(fd);
+      const named = fs.lstatSync(destination);
+      if (!named.isFile() || named.dev !== opened.dev || named.ino !== opened.ino
+          || named.size !== bytes.length || (named.mode & 0o777) !== 0o600) throw new Error();
+    } catch {
+      process.stderr.write("advance-review-worker: exclusive regular receipt persistence failed\n");
+      process.exitCode = 1;
+    } finally {
+      for (const handle of [fd, directory]) {
+        if (handle !== undefined) {
+          try { fs.closeSync(handle); } catch { process.exitCode = 1; }
+        }
+      }
+    }
+  ' "$1" <<<"$2"
 }
 record() {
   jq -n --arg status "$status" --arg op "$operation" --arg context "$context" \
@@ -206,10 +257,12 @@ if [[ -n "$rollback" ]]; then
   ' <<<"$rollback_record" >/dev/null || die 'recovery identity/configuration drift; needs a new independently validated plan'
   operation=rollback
 fi
+running_image_matches=0
+if running_matches; then running_image_matches=1; fi
 action=update-and-restart
 if [[ "$(jq -r '.workerImage' <<<"$cm")" == "$target" ]]; then
   action=restart
-  if running_matches; then action=noop; fi
+  if [[ "$running_image_matches" == 1 ]]; then action=noop; fi
 fi
 plan="$(jq -n --arg context "$context" --arg source "$source_sha" --arg target "$target" \
   --arg op "$operation" --arg action "$action" --argjson before "$before" --argjson recovery "$rollback_record" '
