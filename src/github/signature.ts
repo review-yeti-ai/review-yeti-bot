@@ -64,7 +64,16 @@ export function verifyGitHubSignatureDetailed(
   options: VerifySignatureOptions
 ): SignatureVerificationResult {
   const { signatureHeader, rawBody, secret } = options;
-  const isBypass = process.env.BYPASS_WEBHOOK_SIGNATURE === 'true';
+  const isProduction = process.env.NODE_ENV === 'production';
+  const isBypass = !isProduction && process.env.BYPASS_WEBHOOK_SIGNATURE === 'true';
+
+  if (isProduction && process.env.BYPASS_WEBHOOK_SIGNATURE === 'true') {
+    return {
+      isValid: false,
+      reason: 'internal_error',
+      error: 'BYPASS_WEBHOOK_SIGNATURE is strictly prohibited in production mode',
+    };
+  }
 
   if (!secret || secret.trim() === '') {
     if (isBypass) {

@@ -89,10 +89,52 @@ describe('Milestone 4: Webhook Signature & Webhook Server Unit Tests', () => {
       expect(res2.isValid).toBe(false);
       expect(res2.reason).toBe('mismatch');
     });
+
+    it('strictly forbids BYPASS_WEBHOOK_SIGNATURE when NODE_ENV is production', () => {
+      try {
+        (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
+        process.env.BYPASS_WEBHOOK_SIGNATURE = 'true';
+
+        const res = verifyGitHubSignatureDetailed({
+          signatureHeader: 'sha256=invalid',
+          rawBody: 'test',
+          secret,
+        });
+        expect(res.isValid).toBe(false);
+        expect(res.reason).toBe('internal_error');
+        expect(res.error).toContain('strictly prohibited in production mode');
+      } finally {
+        (process.env as Record<string, string | undefined>).NODE_ENV = 'test';
+        delete process.env.BYPASS_WEBHOOK_SIGNATURE;
+      }
+    });
   });
 
   describe('webhookServer.ts — Express GitHub Webhook Server & Router', () => {
     const app = createWebhookServer({ secret });
+
+    it('rate limits excessive webhook calls when threshold is reached', async () => {
+      const rateLimitedApp = createWebhookServer({
+        secret,
+        rateLimiter: (await import('../../src/security/rateLimiter')).createRateLimiter({
+          windowMs: 60_000,
+          max: 2,
+        }),
+      });
+
+      const payload = { zen: 'Speed is good, security is better' };
+      const sig = sign(payload);
+
+      const r1 = await request(rateLimitedApp).post('/webhook').set('X-GitHub-Event', 'ping').set('X-Hub-Signature-256', sig).send(payload);
+      expect(r1.status).toBe(200);
+
+      const r2 = await request(rateLimitedApp).post('/webhook').set('X-GitHub-Event', 'ping').set('X-Hub-Signature-256', sig).send(payload);
+      expect(r2.status).toBe(200);
+
+      const r3 = await request(rateLimitedApp).post('/webhook').set('X-GitHub-Event', 'ping').set('X-Hub-Signature-256', sig).send(payload);
+      expect(r3.status).toBe(429);
+      expect(r3.body.error).toContain('Too many requests');
+    });
 
     it('returns HTTP 401 Unauthorized when signature is missing', async () => {
       const res = await request(app)
