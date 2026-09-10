@@ -478,6 +478,59 @@ func TestPRReviewJobV1Alpha2ReconcilerFailsClosedOnPVCIdentityMismatch(t *testin
 	}
 }
 
+func TestPRReviewJobV1Alpha2ReconcilerQueuesWhilePriorWorkspacePVCTerminates(t *testing.T) {
+	now := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	pvc, err := workspace.BuildPVC(review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("build PVC: %v", err)
+	}
+	deletingAt := metav1.NewTime(now.Add(-time.Second))
+	pvc.DeletionTimestamp = &deletingAt
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review, pvc).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile terminating workspace: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatal("terminating workspace must requeue within the existing review deadline")
+	}
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get queued review: %v", err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseQueued || updated.Status.Message != workspace.ErrWorkspaceTerminating.Error() {
+		t.Fatalf("status = %#v, want queued terminating-workspace state", updated.Status)
+	}
+	var worker batchv1.Job
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); !apierrors.IsNotFound(err) {
+		t.Fatalf("terminating workspace must not create a worker Job: %v", err)
+	}
+
+	// Simulate Kubernetes finishing the prior PVC deletion. The next two
+	// reconciles provision the replacement PVC and then admit this attempt.
+	pvc.Finalizers = nil
+	if err := kube.Update(context.Background(), pvc); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("release terminating PVC finalizer: %v", err)
+	}
+	if err := kube.Delete(context.Background(), pvc); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("finish terminating PVC deletion: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("provision replacement workspace: %v", err)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("admit review after workspace deletion: %v", err)
+	}
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
+		t.Fatalf("get worker after workspace deletion: %v", err)
+	}
+}
+
 func TestPRReviewJobV1Alpha2ReconcilerReleasesLeaseWhenWorkerContractIsRejected(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
