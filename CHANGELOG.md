@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.50.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.50.0...v1.50.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **release:** make quality gate deterministic [REL-705] ([#661](https://github.com/review-yeti-ai/review-yeti-bot/issues/661)) ([b26fe62](https://github.com/review-yeti-ai/review-yeti-bot/commit/b26fe6248ce866b6e611878f50420663cfaa7d8b))
+
 ## [1.50.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.49.1...v1.50.0) (2026-09-10)
 
 
