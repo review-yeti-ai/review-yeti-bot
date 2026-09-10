@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.4...v1.48.5) (2026-09-10)
+
+
+### Bug Fixes
+
+* **operator:** queue while prior workspace terminates ([#653](https://github.com/review-yeti-ai/review-yeti-bot/issues/653)) ([b81b039](https://github.com/review-yeti-ai/review-yeti-bot/commit/b81b03973b6e17f0f55d15837d4df04eb2f12fe2))
+
 ## [1.48.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.3...v1.48.4) (2026-09-10)
 
 
