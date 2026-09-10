@@ -148,7 +148,10 @@ export class CommunityPersonaLoader {
     this.baseDir = options.baseDir || process.cwd();
     this.bundledDir = options.bundledDir || path.join(this.baseDir, 'domains/personas');
     this.examplesDir = options.examplesDir || path.join(this.baseDir, 'examples/personas');
-    this.cacheDir = options.cacheDir || path.join(this.baseDir, '.ct-memory/cache/personas');
+    this.cacheDir = options.cacheDir
+      || (process.env.CT_REVIEW_DATA_DIR
+        ? path.join(process.env.CT_REVIEW_DATA_DIR, 'cache/personas')
+        : path.join(this.baseDir, '.ct-memory/cache/personas'));
     this.fetcher = options.fetcher;
     this.bypassCache = options.bypassCache ?? false;
   }

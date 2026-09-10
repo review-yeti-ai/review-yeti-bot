@@ -104,33 +104,24 @@ describe('Panel Engine Parallel Execution', () => {
     expect(duration).toBeLessThan(timeBudgetMs(350));
   });
 
-  it('verifies warm-then-fan-out: Persona 1 warms cache first, remaining personas wait for first token', async () => {
-    const callLog: Array<{ persona: string; timestamp: number; event: string }> = [];
-    let releaseFirstToken: () => void;
-    const holdFirstToken = new Promise<void>((resolve) => {
-      releaseFirstToken = resolve;
-    });
+  it('fans out all applicable personas concurrently without warmup delay', async () => {
+    let activeConcurrentCalls = 0;
+    let maxObservedConcurrency = 0;
+    const startedPersonas: string[] = [];
 
     const mockClient: ReviewModelClient = {
       complete: vi.fn(async (request): Promise<OpenRouterResponse> => {
         const persona = (request as any).persona || 'unknown';
-        callLog.push({ persona, timestamp: Date.now(), event: 'start' });
+        startedPersonas.push(persona);
+        activeConcurrentCalls++;
+        maxObservedConcurrency = Math.max(maxObservedConcurrency, activeConcurrentCalls);
 
-        if (persona === 'security') {
-          // Persona 1 waits until explicitly released before emitting first token
-          await holdFirstToken;
-          if (typeof (request as any).onFirstToken === 'function') {
-            (request as any).onFirstToken();
-          }
-        }
-
-        // Small generation delay
         await new Promise((r) => setTimeout(r, 20));
-        callLog.push({ persona, timestamp: Date.now(), event: 'finish' });
+        activeConcurrentCalls--;
 
         const match = request.messages[0].content.match(/CT_REVIEW_BEGIN:([^\s\n]+)/);
         const nonce = match ? match[1] : 'nonce123';
-        const isArbiter = persona === 'arbiter' || request.messages[0].content.includes('Role: ARBITER');
+        const isArbiter = request.messages[0].content.includes('Role: ARBITER') || request.messages[1]?.content?.includes('Role: ARBITER');
         const jsonBody = isArbiter
           ? '{"verdict":"SHIP","rationale":"clean"}'
           : '{"decision":"APPROVE","findings":[],"rationale":"clean"}';
@@ -145,7 +136,7 @@ describe('Panel Engine Parallel Execution', () => {
       }),
     };
 
-    const executionPromise = executePersonaPanel({
+    const result = await executePersonaPanel({
       config: mockConfig,
       changedFiles: [{ path: 'src/service.ts', patch: '+ const x = 1;' }],
       repository: 'calltelemetry/ct-meta',
@@ -153,25 +144,12 @@ describe('Panel Engine Parallel Execution', () => {
       client: mockClient,
     });
 
-    // Check after 30ms before release: ONLY Persona 1 (security) should have started!
-    await new Promise((r) => setTimeout(r, 30));
-    const startedBeforeRelease = callLog.filter((e) => e.event === 'start').map((e) => e.persona);
-    expect(startedBeforeRelease).toEqual(['security']);
-
-    // Now release first token from Persona 1
-    releaseFirstToken!();
-
-    const result = await executionPromise;
     expect(result.personas).toHaveLength(3);
-
-    // After release, remaining personas (performance, architecture) started
-    const allStarts = callLog.filter((e) => e.event === 'start').map((e) => e.persona);
-    expect(allStarts).toContain('security');
-    expect(allStarts).toContain('performance');
-    expect(allStarts).toContain('architecture');
-
-    // Security was strictly the first persona dispatched
-    expect(allStarts[0]).toBe('security');
+    // Verified all 3 personas ran concurrently at once without serial warmup wait
+    expect(maxObservedConcurrency).toBe(3);
+    expect(startedPersonas).toContain('security');
+    expect(startedPersonas).toContain('performance');
+    expect(startedPersonas).toContain('architecture');
   });
 
   it('handles non-streaming client gracefully by fanning out after Persona 1 completes', async () => {

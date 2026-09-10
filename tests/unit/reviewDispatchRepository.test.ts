@@ -827,6 +827,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(query).toHaveBeenCalledOnce();
     expect(sql).toMatch(/FOR UPDATE OF runs, outbox SKIP LOCKED/u);
     expect(sql).toMatch(/SET status = 'terminal'/u);
+    expect(sql).toMatch(/UPDATE review_dispatch_outbox AS outbox/u);
     expect(sql).toMatch(/RETURNING/u);
   });
 

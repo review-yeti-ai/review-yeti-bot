@@ -42,13 +42,14 @@ import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { validateWorkerCompletionEndpoint, type WorkerCompletionAdapter, type WorkerTerminalFailure } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
+import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '../pipeline/domainIndex';
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
 import { parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
 
 import { parseChangedFiles } from '../review/changedFiles';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
-export { resolveWorkerConfig };
+export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
 
@@ -97,6 +98,17 @@ export interface PublishingCheckClient {
     text?: string;
     annotations?: CheckAnnotation[];
   }): Promise<void>;
+  publishGateCheck?(
+    owner: string,
+    repo: string,
+    headSha: string,
+    options: {
+      conclusion: 'success' | 'failure';
+      title: string;
+      summary: string;
+      text?: string;
+    },
+  ): Promise<number>;
 }
 
 export interface PublishingReviewPersonaMetrics {
@@ -242,8 +254,8 @@ export function createBifrostPublishingConfig(model: string): ReturnType<typeof 
         enabled: true,
         model,
         effort: 'medium',
-        review_timeout_s: 300,
-        arbiter_timeout_s: 300,
+        review_timeout_s: 90,
+        arbiter_timeout_s: 90,
       }],
       arbiter: { order: [providerId] },
     },
@@ -413,6 +425,20 @@ export async function runPublishingReviewWorker(
           runId: identity.runId,
           failureClass,
           reason: 'check_publication_failed',
+        });
+      }
+    }
+    if (!authoritative && deps.checkClient.publishGateCheck) {
+      try {
+        await deps.checkClient.publishGateCheck(identity.owner, identity.repoName, identity.headSha, {
+          conclusion: 'failure',
+          title: 'Review Yeti Gate: Ineligible (review failed)',
+          summary: `Review failed closed with class \`${failureClass}\` at \`${identity.headSha}\`. Policy gate closed.`,
+        });
+      } catch (gatePublishError) {
+        logger.warn('Failed to publish fail-closed Review Yeti Gate', {
+          runId: identity.runId,
+          error: gatePublishError instanceof Error ? gatePublishError.message : String(gatePublishError),
         });
       }
     }
@@ -644,6 +670,34 @@ export async function runPublishingReviewWorker(
           };
         }),
     });
+
+    if (!authoritative && deps.checkClient.publishGateCheck) {
+      const gateTitle = conclusion === 'success'
+        ? `Review Yeti Gate: Approved (${verdict})`
+        : `Review Yeti Gate: Blocked (${verdict})`;
+      const gateSummary = [
+        `### Review Yeti Gate: ${conclusion === 'success' ? 'Eligible' : 'Ineligible'}`,
+        `- **Verdict**: \`${verdict}\``,
+        `- **Conclusion**: \`${conclusion}\``,
+        `- **Head SHA**: \`${identity.headSha}\``,
+        `- **Attempt ID**: \`${identity.runId}\``,
+        `- **Blocking Findings**: ${blocking.length}`,
+        `Attributed to GitHub App \`ct-review-bot\` (App ID 4385771).`,
+      ].join('\n\n');
+
+      try {
+        await deps.checkClient.publishGateCheck(identity.owner, identity.repoName, identity.headSha, {
+          conclusion,
+          title: gateTitle,
+          summary: gateSummary,
+        });
+      } catch (gateErr) {
+        logger.warn('Failed to publish Review Yeti Gate check', {
+          runId: identity.runId,
+          error: gateErr instanceof Error ? gateErr.message : String(gateErr),
+        });
+      }
+    }
 
     const completedAt = new Date(now()).toISOString();
     if (authoritative) {

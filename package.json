@@ -30,6 +30,7 @@
     "dev": "ts-node src/index.ts",
     "pretest": "npm run test:artifacts",
     "test": "vitest run",
+    "test:run": "vitest run",
     "test:changed": "vitest run --changed=main",
     "test:frontend": "vitest run tests/unit/appStaticServ.test.ts tests/unit/dashboard*.test.ts tests/integration/dashboard*.test.ts",
     "test:backend": "vitest run tests/unit/panel*.test.ts tests/unit/summary*.test.ts tests/unit/provider*.test.ts tests/unit/graph*.test.ts tests/unit/indexer*.test.ts",

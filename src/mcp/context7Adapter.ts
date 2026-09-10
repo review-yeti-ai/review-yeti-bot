@@ -62,7 +62,10 @@ export class Context7Adapter {
     this.cacheTtlMs = config.cacheTtlMs ?? 86_400_000; // 24 hours
     this.timeoutMs = config.timeoutMs ?? 5_000;
     this.maxSnippets = config.maxSnippets ?? 5;
-    this.cacheDir = config.cacheDir || path.join(process.cwd(), '.ct-memory', 'cache', 'context7');
+    this.cacheDir = config.cacheDir
+      || (process.env.CT_REVIEW_DATA_DIR
+        ? path.join(process.env.CT_REVIEW_DATA_DIR, 'cache', 'context7')
+        : path.join(process.cwd(), '.ct-memory', 'cache', 'context7'));
     this.memoryCache = new Map();
   }
 

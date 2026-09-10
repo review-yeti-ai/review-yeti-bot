@@ -23,6 +23,13 @@ describe('redTeamPersona unit tests', () => {
       expect(isRedTeamPersona('correctness', 'builtin:correctness')).toBe(false);
       expect(isRedTeamPersona('security', 'builtin:security')).toBe(false);
     });
+
+    it('safely returns false for undefined or non-string inputs without throwing', () => {
+      expect(isRedTeamPersona(undefined)).toBe(false);
+      expect(isRedTeamPersona(null as any)).toBe(false);
+      expect(isRedTeamPersona(123 as any)).toBe(false);
+      expect(isRedTeamPersona('')).toBe(false);
+    });
   });
 
   describe('getModelFamily', () => {
