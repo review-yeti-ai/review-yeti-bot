@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.52.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.2...v1.52.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* **dispatch:** prioritize active expiry recovery ([73c7a79](https://github.com/review-yeti-ai/review-yeti-bot/commit/73c7a7935000cd56667730547801be6d1dce06ca))
+* **dispatch:** prioritize active expiry recovery ([8799385](https://github.com/review-yeti-ai/review-yeti-bot/commit/8799385e7622876ce589f3667c46b6375480dbf9))
+
 ## [1.52.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.1...v1.52.2) (2026-09-10)
 
 
