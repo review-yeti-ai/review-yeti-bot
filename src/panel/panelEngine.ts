@@ -312,6 +312,25 @@ const BUILTIN_CHARTERS: Record<string, string> = {
 - Do NOT flag minor API documentation phrasing if payload schemas and field descriptions are accurate.
 - Suppress cosmetic json field ordering suggestions unless strict key ordering is required by specification.`,
 
+  'builtin:dependency-health': `Audit package dependencies, lockfile synchronization, version pinning, CVE vulnerabilities, and license compliance.
+
+## Domain Charter & Core Scope
+- Verify dependency manifest files (package.json, mix.exs, go.mod, Cargo.toml, requirements.txt, etc.) and lockfiles are synchronized.
+- Detect deprecated, unmaintained, abandoned, or vulnerable third-party packages and security advisories.
+- Enforce exact or semantic version pinning standards, preventing loose wildcards or floating major versions.
+- Check licenses of added dependencies against permitted open-source licenses (MIT, Apache-2.0, BSD, ISC) to prevent viral copyleft (GPL) contamination.
+- Detect unintended supply chain risks, typo-squatting, or anomalous registry dependencies.
+
+## Deep Reasoning Protocol
+1. Verify that any manifest modification (package.json, mix.exs, etc.) is accompanied by its corresponding lockfile update (package-lock.json, mix.lock, etc.).
+2. Audit added or bumped package versions for known security vulnerabilities, deprecation notices, or supply-chain anomalies.
+3. Check package license declarations to ensure compliance with organization licensing policy.
+4. Ensure dependencies are cleanly categorized (runtime vs dev/test dependencies).
+
+## Nit Suppression Rules
+- Do NOT flag minor patch version bumps unless a specific CVE, breaking change, or license change is identified.
+- Do NOT flag formatting or key sorting in package manifests unless required by linter.`,
+
   'builtin:consistency': `Find internal consistency, maintainability, repository-convention, and generated-source defects.
 
 ## Domain Charter & Core Scope
@@ -732,27 +751,71 @@ async function invoke(
   const charterStr = (payload.charter as string) || 'Analyze PR diff for code quality, security, and architecture defects.';
   const repoStr = (payload.repository as string) || '';
   const shaStr = (payload.headSha as string) || 'main';
+  const baseShaStr = (payload.baseSha as string) || '';
+  const branchStr = (payload.branch as string) || '';
+  const prNumberStr = payload.prNumber ? `#${payload.prNumber}` : '';
   const repositoryVisibility = normalizeRepositoryVisibility(payload.repositoryVisibility);
 
-  const diffBlocks = changedFiles.map((f: any) => {
-    const filePath = f.path || 'unknown.ts';
-    const content = f.patch || f.content || 'File modified in PR.';
-    return `=== FILE: ${filePath} ===\n${content}`;
-  }).join('\n\n');
+  const fileListEntries = changedFiles.map((f: any) => {
+    const filePath = f.path || f.filePath || 'unknown';
+    const lines = (f.patch || '').split('\n').filter(Boolean).length;
+    return `- ${filePath} (${lines} diff line${lines === 1 ? '' : 's'})`;
+  });
+  const compactFileList = fileListEntries.join('\n') || 'None';
+
+  // Token budget for inline diffs in Turn 1 (avoid injecting 100k+ tokens into prompt)
+  const MAX_INLINE_DIFF_CHARS = 40_000;
+  let totalDiffChars = 0;
+  for (const f of changedFiles) {
+    totalDiffChars += (f.patch || f.content || '').length;
+  }
+
+  let diffSection: string;
+  if (totalDiffChars <= MAX_INLINE_DIFF_CHARS) {
+    const diffBlocks = changedFiles.map((f: any) => {
+      const filePath = f.path || 'unknown.ts';
+      const content = f.patch || f.content || 'File modified in PR.';
+      return `=== FILE: ${filePath} ===\n${content}`;
+    }).join('\n\n');
+    diffSection = diffBlocks || 'No file patches provided in PR scope.';
+  } else {
+    // Diff is large: emit compact index and bounded excerpts
+    const boundedBlocks = changedFiles.slice(0, 10).map((f: any) => {
+      const filePath = f.path || 'unknown.ts';
+      const raw = f.patch || f.content || '';
+      const truncated = raw.length > 2000 ? `${raw.slice(0, 2000)}\n... [diff truncated: use read_file or get_diff for full contents]` : raw;
+      return `=== FILE: ${filePath} ===\n${truncated}`;
+    }).join('\n\n');
+    diffSection = [
+      `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s), ~${Math.round(totalDiffChars / 1024)} KB diff) ===`,
+      compactFileList,
+      ``,
+      `=== BOUNDED DIFF EXCERPTS (Large PR: use read_file, get_diff, search_code, or zoekt for full details) ===`,
+      boundedBlocks,
+    ].join('\n');
+  }
 
   const rulesText = rules.length > 0
     ? rules.map((r: any, idx: number) => `${idx + 1}. ${typeof r === 'string' ? r : JSON.stringify(r)}`).join('\n')
     : 'None specified.';
 
+  const metadataLines = [
+    `Repository: ${repoStr}`,
+    `Commit (Head SHA): ${shaStr}`,
+    ...(baseShaStr ? [`Base SHA: ${baseShaStr}`] : []),
+    ...(branchStr ? [`Branch / Ref: ${branchStr}`] : []),
+    ...(prNumberStr ? [`Pull Request: ${prNumberStr}`] : []),
+  ];
+
   const staticPrefix = [
     `=== CALLTELEMETRY AUTOMATED CODE REVIEW TASK ===`,
-    `Repository: ${repoStr} (Commit: ${shaStr})`,
+    ...metadataLines,
     ``,
     `=== REPOSITORY ARCHITECTURE & MEMORY RULES ===`,
     rulesText,
     ``,
-    `=== PR CHANGED FILES & DIFF PATCHES ===`,
-    diffBlocks || 'No file patches provided in PR scope.',
+    `=== PR CHANGED FILES & DIFF SCOPE ===`,
+    diffSection,
     ``,
     `=== SEVERITY CALIBRATION (binding) ===`,
     ...SEVERITY_CALIBRATION_LINES,
@@ -859,14 +922,13 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 
   for (let iter = 0; iter < maxTurns; iter++) {
     // Prompt compaction on turns 2+ (ADR 0501 / Concept B): Stop resending raw diff blocks
-    if (iter >= 1 && diffBlocks && messages[1] && typeof messages[1].content === 'string') {
-      const compactFileList = changedFiles.map((f: any) => `- ${f.path || f.filePath || 'unknown'}`).join('\n') || 'None';
+    if (iter >= 1 && diffSection && messages[1] && typeof messages[1].content === 'string') {
       const compactDiffIndex = [
         `=== PR CHANGED FILES (COMPACT INDEX) ===`,
         compactFileList,
         `(Full diff omitted on subsequent turns. Use read_file, get_diff, or code_search_zoekt.)`,
       ].join('\n');
-      const targetBlock = `=== PR CHANGED FILES & DIFF PATCHES ===\n${diffBlocks}`;
+      const targetBlock = `=== PR CHANGED FILES & DIFF SCOPE ===\n${diffSection}`;
       if (messages[1].content.includes(targetBlock)) {
         messages[1].content = messages[1].content.replace(targetBlock, compactDiffIndex);
       }
@@ -1211,6 +1273,7 @@ async function runPersona(
   requestPolicy?: PanelRequestPolicy,
   repoFileProvider?: RepoFileProvider,
   repositoryVisibility: RepositoryVisibility = 'UNKNOWN',
+  gitContext?: { baseSha?: string; branch?: string; prNumber?: number },
 ): Promise<PersonaLaneResult> {
   return runInSpan(`ct_persona_lane`, async (span) => {
     span.setAttribute('ct.persona.id', persona.id);
@@ -1339,6 +1402,9 @@ async function runPersona(
             charter: effectiveCharter,
             repository,
             headSha,
+            baseSha: gitContext?.baseSha,
+            branch: gitContext?.branch,
+            prNumber: gitContext?.prNumber,
             repositoryVisibility,
             changedFiles: scopedFiles,
             pathInstructions: config.path_instructions,
@@ -1558,6 +1624,9 @@ export async function executePersonaPanel(options: {
   changedFiles: Array<{ path: string; patch?: string; content?: string }>;
   repository: string;
   headSha: string;
+  baseSha?: string;
+  branch?: string;
+  prNumber?: number;
   client: ReviewModelClient;
   jobId?: string;
   requestPolicy?: PanelRequestPolicy;
@@ -1793,7 +1862,12 @@ export async function executePersonaPanel(options: {
               primaryAuthoringModel,
               requestPolicy,
               repoFileProvider,
-              repositoryVisibility
+              repositoryVisibility,
+              {
+                baseSha: options.baseSha,
+                branch: options.branch,
+                prNumber: options.prNumber,
+              },
             );
             return { persona, result, error: undefined };
           } finally {
