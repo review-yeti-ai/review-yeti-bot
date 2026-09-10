@@ -208,6 +208,42 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     expect(result.arbiter.verdict).toBe('FIX_FIRST');
   });
 
+  it('preserves APPROVE when the persona returns no findings', async () => {
+    const config = buildMinimalConfig();
+    config.personas = [config.personas[0]];
+    const changedFiles = [{ path: 'src/main.ts' }];
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : '';
+      const body = prompt.includes('Role: ARBITER')
+        ? { verdict: 'SHIP', rationale: 'No findings require remediation.' }
+        : prompt.includes('Role: MODERATOR')
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+
+      return {
+        model: opts.model,
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(body)}\nCT_REVIEW_END:${nonce}`,
+        usage: null,
+        costUSD: null,
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'owner/repo',
+      headSha: 'sha-clean-approval',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    expect(result.personas).toHaveLength(1);
+    expect(result.personas[0]).toMatchObject({ decision: 'APPROVE', findings: [] });
+    expect(result.arbiter.verdict).toBe('SHIP');
+  });
+
   it('throws PanelConfigurationError when persona returns FINDINGS with empty findings array', async () => {
     const config = buildMinimalConfig();
     config.personas = [config.personas[0]];
