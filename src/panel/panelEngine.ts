@@ -729,13 +729,21 @@ export function validateFindings(value: unknown, changedFiles?: Array<{ path: st
   return findings;
 }
 
-/** Retry only provider conditions that are plausibly transient; auth and contract errors fail over. */
+/**
+ * Retry transient transport failures and one exhausted structured-output
+ * correction. Provider formatting is nondeterministic, so a fresh bounded
+ * request may recover; authentication and configuration errors still fail
+ * over immediately.
+ */
 export function isRetryablePanelError(error: unknown): boolean {
   if (error instanceof OpenRouterTimeoutError) return true;
   if (error instanceof OpenRouterResponseError) {
     return error.status === 429 || (error.status !== undefined && error.status >= 500 && error.status <= 599);
   }
   const message = error instanceof Error ? error.message : String(error || '');
+  if (/^(?:invalid or missing nonce-fenced structured output|invalid JSON inside nonce fence|invalid native JSON response object|native JSON response must be an object|invalid or missing native JSON nonce)$/u.test(message)) {
+    return true;
+  }
   return /(?:\b500\b|\b502\b|\b503\b|\b504\b|Connection error|fetch failed|ECONNRESET|ETIMEDOUT)/i.test(message);
 }
 

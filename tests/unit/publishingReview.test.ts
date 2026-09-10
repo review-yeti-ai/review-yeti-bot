@@ -84,6 +84,20 @@ describe('qualification source arguments', () => {
     expect(arg).not.toHaveProperty('owner');
     expect(arg.prNumber).toBe(2795);
   });
+
+  it('runs production Bifrost reviews with the strict native JSON contract', async () => {
+    const panelRunner = vi.fn(async () => ({
+      personas: [{ findings: [] }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      arbiter: { verdict: 'SHIP' },
+    }));
+    const d = deps({ panelRunner: panelRunner as never });
+    await runPublishingReviewWorker(env(), d);
+
+    expect(panelRunner).toHaveBeenCalledTimes(1);
+    const arg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
+    expect(arg.requestPolicy).toEqual({ responseFormat: { type: 'json_object' } });
+  });
 });
 
 describe('check run ownership', () => {
