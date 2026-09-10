@@ -225,6 +225,41 @@ describe('native merge-group Review Yeti gate', () => {
       .toContain('merge queue changed during exact-head qualification');
   });
 
+  it.each([
+    ['mismatched current head', () => {
+      const value: any = queue(); value.data.repository.mergeQueue.entries.nodes[0].headCommit.oid = 'd'.repeat(40); return value;
+    }, undefined],
+    ['mismatched current base', () => {
+      const value: any = queue(); value.data.repository.mergeQueue.entries.nodes[0].baseCommit.oid = 'd'.repeat(40); return value;
+    }, undefined],
+    ['ineligible constituent', () => {
+      const value: any = queue(); value.data.repository.mergeQueue.entries.nodes[0].pullRequest.state = 'CLOSED'; return value;
+    }, undefined],
+    ['paginated queue evidence', () => {
+      const value: any = queue(); value.data.repository.mergeQueue.entries.pageInfo.hasNextPage = true; return value;
+    }, undefined],
+    ['incomplete check-run evidence', () => queue(), { total_count: 2, check_runs: [{
+      id: 8015, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success', app: officialApp,
+    }] }],
+  ])('fails closed for %s', async (_label, queueResponse, checkResponse) => {
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return response({ id: 9015 });
+      if (url === 'https://api.github.com/graphql') return response(queueResponse());
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response(checkResponse || { total_count: 1, check_runs: [{
+        id: 8015, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success', app: officialApp,
+      }] });
+      if (url.endsWith('/check-runs/9015') && init?.method === 'PATCH') return response({ id: 9015 });
+      return response({}, 500);
+    }) as typeof fetch;
+    const gate = createMergeGroupGate({
+      config, repository: repository() as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
+    });
+    await expect(gate(payload())).resolves.toEqual({ checkId: 9015, conclusion: 'failure',
+      constituents: checkResponse ? 1 : 0 });
+  });
+
   it('reuses a transactionally stored result without minting a token or touching GitHub', async () => {
     const tokenFor = vi.fn(async () => 'ghs_test');
     const fetchImplementation = vi.fn() as unknown as typeof fetch;

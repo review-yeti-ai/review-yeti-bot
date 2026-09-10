@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   AUTHORITATIVE_REVIEW_APP_ID, AUTHORITATIVE_REVIEW_APP_SLUG, AUTHORITATIVE_REVIEW_CHECK_NAME,
-} from '../auth/authoritativeServiceConfig';
+} from '../auth/authoritativeServiceIdentity';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { MergeGroupGateRepository, MergeGroupGateState } from '../persistence/mergeGroupGateRepository';
 import { createBoundedGitHubJsonClient, type GitHubJsonClient } from '../github/boundedGitHubJson';
