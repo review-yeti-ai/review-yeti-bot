@@ -177,6 +177,10 @@ describe('workerTerminalFailureSchema', () => {
     expect(workerTerminalFailureSchema.parse(withoutCheck)).toEqual(withoutCheck);
   });
 
+  it.each(['malformed_output', 'internal_error'] as const)('accepts diagnostic failure class %s', (failureClass) => {
+    expect(workerTerminalFailureSchema.parse({ ...event, failureClass }).failureClass).toBe(failureClass);
+  });
+
   it.each([
     ['version', 'WorkerTerminalFailure.v2'],
     ['runId', `run_${'a'.repeat(31)}`],
