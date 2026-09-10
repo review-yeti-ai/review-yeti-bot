@@ -714,7 +714,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(result.arbiter.verdict).toBe('SHIP');
   });
 
-  it('enforces MAX_PERSONA_BUDGET_MS (150s) cumulative cap per persona lane', async () => {
+  it('enforces MAX_PERSONA_BUDGET_MS (5 turns × 3 min) cumulative cap per persona lane', async () => {
     const config = ctReviewConfigV3Schema.parse({
       version: 3,
       profile: 'assertive',
@@ -740,7 +740,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const baseTime = realNow();
     vi.spyOn(Date, 'now').mockImplementation(() => {
       if (callCount > 0) {
-        return baseTime + 151_000;
+        return baseTime + 901_000;
       }
       return baseTime;
     });
@@ -757,7 +757,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
         repository: 'calltelemetry/repo',
         headSha: 'head-sha-timeout-cap-test',
         client: mockClient as unknown as OmniRouteClient,
-      })).rejects.toThrow(/exceeded total retry\/execution budget of 150s/);
+      })).rejects.toThrow(/exceeded total retry\/execution budget of 900s/);
     } finally {
       vi.spyOn(Date, 'now').mockRestore();
     }
@@ -816,7 +816,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(recordedTimeouts.length).toBeGreaterThanOrEqual(3);
     for (const timeout of recordedTimeouts) {
       expect(Number.isFinite(timeout)).toBe(true);
-      expect(timeout).toBe(90_000);
+      expect(timeout).toBe(180_000);
       expect(Number.isNaN(timeout)).toBe(false);
     }
   });
