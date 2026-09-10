@@ -23,7 +23,7 @@ describe('panel original diff-size boundary', () => {
       paths: ['src/security/**'], providers: ['bifrost'],
     }];
     config.reviewers.providers = [{
-      id: 'bifrost', enabled: true, model: 'fixture-model',
+      id: 'bifrost', enabled: true, model: 'fixture-model', effort: 'high',
       review_timeout_s: 180, arbiter_timeout_s: 180,
     }];
     config.reviewers.arbiter.order = ['bifrost'];
@@ -35,7 +35,7 @@ describe('panel original diff-size boundary', () => {
       const nonce = prompt.match(/CT_REVIEW_NONCE:\s*([^\n]+)/)?.[1]?.trim();
       expect(nonce).toBeTruthy();
       if (request.persona === 'sec-lane' && personaCalls++ === 0) {
-        return { model: request.model, content: '```json\n{"tool":"get_diff","args":{"path":"src/security/large.ts"}}\n```', usage: null, costUSD: null };
+        return { model: request.model, content: '```json\n{"tool":"get_diff","args":{"path":"src/security/large.ts"}}\n```', usage: null, costUSD: null, raw: {} };
       }
       const result = request.persona === 'arbiter'
         ? { verdict: 'SHIP', rationale: 'Synthetic protocol fixture only.' }
@@ -45,7 +45,7 @@ describe('panel original diff-size boundary', () => {
       return {
         model: request.model,
         content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(result)}\nCT_REVIEW_END:${nonce}`,
-        usage: null, costUSD: null,
+        usage: null, costUSD: null, raw: {},
       };
     });
 

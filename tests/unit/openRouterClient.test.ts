@@ -484,7 +484,7 @@ describe('OpenRouterClient', () => {
     let capturedSignal: AbortSignal | undefined;
     let resolveFetch: ((response: Response) => void) | undefined;
     const fetchImplementation = vi.fn().mockImplementation((_input: string, init: RequestInit) => {
-      capturedSignal = init.signal;
+      capturedSignal = init.signal ?? undefined;
       return new Promise<Response>((resolve) => {
         resolveFetch = resolve;
       });
