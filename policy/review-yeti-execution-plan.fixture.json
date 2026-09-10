@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "85c896dfb782dee014144398c889ab7c64961661a0a9a6a715fb657b30b9517e",
+  "normalized_plan_sha256": "f32ada7f448bdebe2bca89684111961e67e5e7256e4abcf8502795779cb08c00",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -17,9 +17,9 @@
       }
     },
     "lane": {
-      "deadline_ms": 1200000,
+      "deadline_ms": 1080000,
       "overhead_ms": 120000,
-      "max_investigation_turns": 20,
+      "max_investigation_turns": 6,
       "max_review_assignments": 24
     },
     "scope": {
