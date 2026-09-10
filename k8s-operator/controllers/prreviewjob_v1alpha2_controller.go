@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,7 +43,7 @@ import (
 )
 
 const (
-	DefaultV1Alpha2MaxConcurrentJobs = 4
+	DefaultV1Alpha2MaxConcurrentJobs = 1
 	v1Alpha2RequeueAfter             = 5 * time.Second
 	v1Alpha2PVCCreateRequeue         = 1 * time.Second
 	workerCreationReserved           = "WorkerCreationReserved"
@@ -443,7 +444,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) recordDispatchTiming(review *reviewv1alp
 
 func (r *PRReviewJobV1Alpha2Reconciler) activeWorkerJobs(ctx context.Context, namespace string) (int, error) {
 	var jobs batchv1.JobList
-	selector := labels.SelectorFromSet(labels.Set{"review-yeti.ai/component": job.ReceiptOnlyWorkerComponent})
+	component, err := labels.NewRequirement("review-yeti.ai/component", selection.In, []string{
+		job.ReceiptOnlyWorkerComponent,
+		job.PublishingWorkerComponent,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("build Review Yeti worker selector: %w", err)
+	}
+	selector := labels.NewSelector().Add(*component)
 	if err := r.List(ctx, &jobs, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return 0, err
 	}
@@ -765,8 +773,8 @@ func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error
 		For(&reviewv1alpha2.PRReviewJob{}).
 		Owns(&batchv1.Job{}).
 		// Serializing admission makes the API-backed active-job count an
-		// effective four-slot gate. Leader election in main.go ensures only one
-		// operator instance performs this admission at a time.
+		// effective account-wide worker gate. Leader election in main.go ensures
+		// only one operator instance performs this admission at a time.
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Complete(r)
 }

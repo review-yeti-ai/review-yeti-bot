@@ -19,6 +19,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,6 +64,10 @@ func operatorEnabled(getenv func(string) string) bool {
 }
 
 func runOperator() error {
+	maxConcurrentJobs, err := operatorMaxConcurrentJobsFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                        scheme,
 		Cache:                         cache.Options{DefaultNamespaces: map[string]cache.Config{job.Namespace: {}}},
@@ -83,7 +88,7 @@ func runOperator() error {
 	v1alpha2 := &controllers.PRReviewJobV1Alpha2Reconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
-		MaxConcurrentJobs: 4,
+		MaxConcurrentJobs: maxConcurrentJobs,
 		Publishing:        publishingConfigFromEnv(),
 	}
 	if err := v1alpha2.SetupWithManager(mgr); err != nil {
@@ -96,6 +101,19 @@ func runOperator() error {
 		return fmt.Errorf("register readiness check: %w", err)
 	}
 	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+func operatorMaxConcurrentJobsFromEnv(getenv func(string) string) (int, error) {
+	const key = "REVIEW_YETI_OPERATOR_MAX_CONCURRENT_JOBS"
+	value := strings.TrimSpace(getenv(key))
+	if value == "" {
+		return controllers.DefaultV1Alpha2MaxConcurrentJobs, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return limit, nil
 }
 
 // publishingConfigFromEnv reads the app-gate transport settings. Every value is

@@ -194,7 +194,10 @@ operator:
   config:
     metricsAddr: ":8080"
     healthAddr: ":8081"
-    maxConcurrentJobs: 10
+    # One six-persona panel can consume six requests from the shared ten-request
+    # provider account. Keep admission account-wide and leave four slots for
+    # other gateway consumers; operators with isolated capacity may raise this.
+    maxConcurrentJobs: 1
 
   nodeSelector: {}
   tolerations: []
