@@ -713,6 +713,59 @@ export function isRetryablePanelError(error: unknown): boolean {
   return /(?:\b500\b|\b502\b|\b503\b|\b504\b|Connection error|fetch failed|ECONNRESET|ETIMEDOUT)/i.test(message);
 }
 
+export const MAX_INLINE_DIFF_CHARS = 40_000;
+
+export function buildCompactFileList(
+  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>,
+  options?: { includeLineCounts?: boolean }
+): string {
+  const includeLineCounts = Boolean(options?.includeLineCounts);
+  const entries = changedFiles.map((f: any) => {
+    const filePath = f.path || f.filePath || 'unknown';
+    if (!includeLineCounts) {
+      return `- ${filePath}`;
+    }
+    const lines = (f.patch || '').split('\n').filter(Boolean).length;
+    return `- ${filePath} (${lines} diff line${lines === 1 ? '' : 's'})`;
+  });
+  return entries.join('\n') || 'None';
+}
+
+export function buildDiffSection(
+  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>
+): string {
+  const compactFileList = buildCompactFileList(changedFiles, { includeLineCounts: true });
+
+  let totalDiffChars = 0;
+  for (const f of changedFiles) {
+    totalDiffChars += (f.patch || f.content || '').length;
+  }
+
+  if (totalDiffChars <= MAX_INLINE_DIFF_CHARS) {
+    const diffBlocks = changedFiles.map((f: any) => {
+      const filePath = f.path || 'unknown.ts';
+      const content = f.patch || f.content || 'File modified in PR.';
+      return `=== FILE: ${filePath} ===\n${content}`;
+    }).join('\n\n');
+    return diffBlocks || 'No file patches provided in PR scope.';
+  }
+
+  // Diff is large: emit compact index and bounded excerpts
+  const boundedBlocks = changedFiles.slice(0, 10).map((f: any) => {
+    const filePath = f.path || 'unknown.ts';
+    const raw = f.patch || f.content || '';
+    const truncated = raw.length > 2000 ? `${raw.slice(0, 2000)}\n... [diff truncated: use read_file or get_diff for full contents]` : raw;
+    return `=== FILE: ${filePath} ===\n${truncated}`;
+  }).join('\n\n');
+  return [
+    `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s), ~${Math.round(totalDiffChars / 1024)} KB diff) ===`,
+    compactFileList,
+    ``,
+    `=== BOUNDED DIFF EXCERPTS (Large PR: use read_file, get_diff, search_code, or zoekt for full details) ===`,
+    boundedBlocks,
+  ].join('\n');
+}
+
 async function invoke(
   client: ReviewModelClient,
   model: string,
@@ -756,44 +809,7 @@ async function invoke(
   const prNumberStr = payload.prNumber ? `#${payload.prNumber}` : '';
   const repositoryVisibility = normalizeRepositoryVisibility(payload.repositoryVisibility);
 
-  const fileListEntries = changedFiles.map((f: any) => {
-    const filePath = f.path || f.filePath || 'unknown';
-    const lines = (f.patch || '').split('\n').filter(Boolean).length;
-    return `- ${filePath} (${lines} diff line${lines === 1 ? '' : 's'})`;
-  });
-  const compactFileList = fileListEntries.join('\n') || 'None';
-
-  // Token budget for inline diffs in Turn 1 (avoid injecting 100k+ tokens into prompt)
-  const MAX_INLINE_DIFF_CHARS = 40_000;
-  let totalDiffChars = 0;
-  for (const f of changedFiles) {
-    totalDiffChars += (f.patch || f.content || '').length;
-  }
-
-  let diffSection: string;
-  if (totalDiffChars <= MAX_INLINE_DIFF_CHARS) {
-    const diffBlocks = changedFiles.map((f: any) => {
-      const filePath = f.path || 'unknown.ts';
-      const content = f.patch || f.content || 'File modified in PR.';
-      return `=== FILE: ${filePath} ===\n${content}`;
-    }).join('\n\n');
-    diffSection = diffBlocks || 'No file patches provided in PR scope.';
-  } else {
-    // Diff is large: emit compact index and bounded excerpts
-    const boundedBlocks = changedFiles.slice(0, 10).map((f: any) => {
-      const filePath = f.path || 'unknown.ts';
-      const raw = f.patch || f.content || '';
-      const truncated = raw.length > 2000 ? `${raw.slice(0, 2000)}\n... [diff truncated: use read_file or get_diff for full contents]` : raw;
-      return `=== FILE: ${filePath} ===\n${truncated}`;
-    }).join('\n\n');
-    diffSection = [
-      `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s), ~${Math.round(totalDiffChars / 1024)} KB diff) ===`,
-      compactFileList,
-      ``,
-      `=== BOUNDED DIFF EXCERPTS (Large PR: use read_file, get_diff, search_code, or zoekt for full details) ===`,
-      boundedBlocks,
-    ].join('\n');
-  }
+  const diffSection = buildDiffSection(changedFiles);
 
   const rulesText = rules.length > 0
     ? rules.map((r: any, idx: number) => `${idx + 1}. ${typeof r === 'string' ? r : JSON.stringify(r)}`).join('\n')
@@ -923,6 +939,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   for (let iter = 0; iter < maxTurns; iter++) {
     // Prompt compaction on turns 2+ (ADR 0501 / Concept B): Stop resending raw diff blocks
     if (iter >= 1 && diffSection && messages[1] && typeof messages[1].content === 'string') {
+      const compactFileList = buildCompactFileList(changedFiles, { includeLineCounts: true });
       const compactDiffIndex = [
         `=== PR CHANGED FILES (COMPACT INDEX) ===`,
         compactFileList,
