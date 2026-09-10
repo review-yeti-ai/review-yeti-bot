@@ -1,9 +1,11 @@
-import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response, type RequestHandler } from 'express';
 import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './api/actionDispatchApi';
 import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
+import { createRateLimiter } from './security/rateLimiter';
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
+  rateLimiter?: RequestHandler;
 }
 
 export function createActionDispatchApp(options: ActionDispatchAppOptions): Express {
@@ -32,7 +34,11 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
     }
   });
 
-  app.use('/api/dispatch', createActionDispatchRouter(options));
+  const limiter = options.rateLimiter !== undefined
+    ? options.rateLimiter
+    : createRateLimiter({ windowMs: 60_000, max: 60 });
+
+  app.use('/api/dispatch', limiter, createActionDispatchRouter(options));
   app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
     if (error && typeof error === 'object' && 'status' in error && error.status === 413) {
       return response.status(413).json({ error: 'Request body exceeds its permitted size' });
