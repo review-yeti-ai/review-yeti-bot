@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.0...v1.48.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* guard worker upgrades with exact-state receipts ([#645](https://github.com/review-yeti-ai/review-yeti-bot/issues/645)) ([8a01f4c](https://github.com/review-yeti-ai/review-yeti-bot/commit/8a01f4c653eb61fb7f3e77d00158e9b11eadf2ba))
+
 ## [1.48.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.47.1...v1.48.0) (2026-09-10)
 
 
