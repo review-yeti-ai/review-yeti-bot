@@ -12,6 +12,8 @@ const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const RUN_ID_PATTERN = /^run_[a-f0-9]{16,64}$/u;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const SUPPORTED_EVENTS = new Set(['pull_request', 'pull_request_target', 'workflow_dispatch', 'repository_dispatch']);
+const DISPATCH_RETRY_DELAYS_MS = Object.freeze([1_000, 2_000]);
+const RETRYABLE_DISPATCH_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function required(environment, name, hint = '') {
   const value = String(environment[name] || '').trim();
@@ -186,24 +188,63 @@ function validateReceipt(body) {
   return { version: body.version, status: body.status, runId: body.runId };
 }
 
-export async function dispatchAction(environment = process.env, fetchImpl = fetch) {
+function sleep(milliseconds) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
+}
+
+function compactError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/gu, ' ').trim().slice(0, 256) || 'unknown transport error';
+}
+
+function retryWarning(attempt, delayMs, reason) {
+  process.stderr.write(`::warning::DOKS dispatch attempt ${attempt} failed (${reason}); retrying the same delivery in ${delayMs}ms\n`);
+}
+
+export async function dispatchAction(environment = process.env, fetchImpl = fetch, options = {}) {
   const endpoint = validateDispatchEndpoint(required(environment, 'DOKS_DISPATCH_URL'));
   const request = buildDispatchRequest(environment);
   const oidcToken = await requestOidcToken(environment, fetchImpl);
-  const response = await fetchImpl(endpoint.href, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${oidcToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(request),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (response.status !== 202) {
-    throw new Error(`DOKS dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
+  const sleepImpl = options.sleep || sleep;
+  const requestBody = JSON.stringify(request);
+  const attempts = DISPATCH_RETRY_DELAYS_MS.length + 1;
+
+  // Every retry reuses the exact deliveryId and body. The admission API treats a repeated
+  // delivery as a duplicate, so a lost response cannot create a second review run.
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let response;
+    try {
+      response = await fetchImpl(endpoint.href, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${oidcToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: requestBody,
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      const reason = compactError(error);
+      if (attempt === attempts) {
+        throw new Error(`DOKS dispatch transport failed after ${attempts} attempts: ${reason}`, { cause: error });
+      }
+      const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
+      retryWarning(attempt, delayMs, reason);
+      await sleepImpl(delayMs);
+      continue;
+    }
+
+    if (response.status === 202) return validateReceipt(await json(response, 'DOKS dispatch'));
+    if (attempt === attempts || !RETRYABLE_DISPATCH_STATUSES.has(response.status)) {
+      throw new Error(`DOKS dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
+    }
+    const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
+    retryWarning(attempt, delayMs, `HTTP ${response.status}`);
+    await sleepImpl(delayMs);
   }
-  return validateReceipt(await json(response, 'DOKS dispatch'));
+
+  throw new Error('DOKS dispatch retry loop exhausted without a terminal result');
 }
 
 export function writeDispatchOutputs(outputPath, receipt) {
