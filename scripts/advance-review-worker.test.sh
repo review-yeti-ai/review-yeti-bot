@@ -195,14 +195,14 @@ flux_labels() {
     "kustomize.toolkit.fluxcd.io/namespace":"flux-system"
   } | del(.metadata.managedFields)'
 }
-flux_manager() {
+worker_key_manager() {
   jq --arg manager "$1" '.metadata.managedFields = [{
     manager:$manager,operation:"Apply",fieldsType:"FieldsV1",
     fieldsV1:{"f:data":{"f:REVIEW_JOB_WORKER_IMAGE":{}}}
   }]' "$CASE_DIR/configmap.json" >"$CASE_DIR/change"
   mv "$CASE_DIR/change" "$CASE_DIR/configmap.json"
 }
-flux_owned() { flux_labels; flux_manager kustomize-controller; }
+flux_owned() { flux_labels; worker_key_manager kustomize-controller; }
 run() { bash "$helper" --context fixture-context --source-sha "$source_sha" --target-image "$FAKE_TARGET" "$@" >"$CASE_DIR/out" 2>"$CASE_DIR/err"; }
 plan() { run "$@" || fail plan; cp "$CASE_DIR/out" "$CASE_DIR/plan"; }
 apply() { run --expected-state "$CASE_DIR/plan" --apply --receipt "$CASE_DIR/receipt"; }
@@ -377,7 +377,7 @@ no_write
 ok 'Flux-owned mismatched worker key routes to GitOps before intent or write'
 for variant in label-only helm-manager; do
   fresh
-  if [[ "$variant" == label-only ]]; then flux_labels; else flux_manager helm-controller; fi
+  if [[ "$variant" == label-only ]]; then flux_labels; else worker_key_manager helm-controller; fi
   plan
   jq -e '.schema=="review-yeti-worker-plan.v2" and .action=="gitops-update-required" and .management.mode=="flux"' "$CASE_DIR/plan" >/dev/null || fail "$variant Flux route missing"
   refuse
@@ -386,6 +386,12 @@ for variant in label-only helm-manager; do
   ! grep -q '^patch ' "$CASE_DIR/calls" || fail "$variant attempted a Kubernetes write"
   ok "$variant Flux ownership refuses apply before intent or write"
 done
+fresh; worker_key_manager kubectl-client-side-apply; plan
+jq -e '.action=="update-and-restart" and .management.mode=="direct"' "$CASE_DIR/plan" >/dev/null || fail 'non-Flux worker-key manager misclassified'
+apply || fail 'non-Flux manager direct apply'
+status_is applied
+[[ -e "$CASE_DIR/patch-configmap.json" && -e "$CASE_DIR/patch-deployment.json" ]] || fail 'non-Flux manager did not retain guarded direct path'
+ok 'non-Flux worker-key manager retains guarded direct ConfigMap CAS'
 fresh; flux_owned; edit configmap ".data.REVIEW_JOB_WORKER_IMAGE=\"$target\""
 plan
 jq -e '.action=="restart" and .management.mode=="flux"' "$CASE_DIR/plan" >/dev/null || fail 'converged Flux pin did not produce restart-only plan'
