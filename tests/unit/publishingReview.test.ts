@@ -593,6 +593,8 @@ describe('identity and failure classification', () => {
     ['invalid findings contract at index 0', 'malformed_output'],
     ['APPROVE cannot contain findings', 'malformed_output'],
     ['FINDINGS requires at least one finding', 'malformed_output'],
+    ['nonce-fenced structured output rejected', 'malformed_output'],
+    ['gateway returned an unexpected payload', 'provider_error'],
   ])('classifies %s as %s', (message, expected) => {
     expect(classifyFailure(new Error(message))).toBe(expected);
   });
@@ -605,6 +607,7 @@ describe('identity and failure classification', () => {
     [new OpenRouterTimeoutError('deadline'), 'timeout'],
     [new OpenRouterConnectionError('socket closed'), 'transport'],
     [new OpenRouterResponseError('unauthorized', 401), 'auth'],
+    [new OpenRouterResponseError('forbidden', 403), 'auth'],
     [new OpenRouterResponseError('busy', 429), 'rate_limit'],
     [new OpenRouterResponseError('upstream failed', 503), 'provider_error'],
     [new UpstreamCapacityRejectionError('bifrost', 'queue full'), 'rate_limit'],
