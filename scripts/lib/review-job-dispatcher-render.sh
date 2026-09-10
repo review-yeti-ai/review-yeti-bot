@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # Single source of truth for rendering k8s/review-job-dispatcher.yaml.tpl.
 #
-# Both deploy-review-job-dispatcher.sh and advance-review-worker.sh render the
-# same template. If the variable list lived in each script separately, a fourth
-# template variable added to one would leave the other applying a literal
-# "${VAR}" into the live ConfigMap -- server-side apply accepts it, and the bad
-# value only surfaces when a worker fails to start. Keep the list here; source
-# this file; never restate it.
+# Used by the installation boundary in deploy-review-job-dispatcher.sh.
+# Active worker upgrades use key-only CAS, not template application.
+# Keep the install substitution list here to reject literal placeholders.
 #
 # shellcheck disable=SC2016
 REVIEW_JOB_DISPATCHER_ENVSUBST_VARS='${CT_REVIEW_JOB_DISPATCHER_IMAGE} ${CT_REVIEW_WORKER_IMAGE} ${CT_REVIEW_RUNNER_MODE}'
