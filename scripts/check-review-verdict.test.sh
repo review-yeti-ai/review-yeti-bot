@@ -412,6 +412,28 @@ if grep -Eq "Review Yeti: SHIP" <<<"$output"; then
 fi
 echo "[passthrough-mode] passed (zero-lane SHIP under passthrough is rejected, never announced as SHIP)"
 
+# 3c-2b. Honest passthrough: NO_REVIEW is merge-eligible without claiming SHIP.
+REVIEW_YETI_PASSTHROUGH="true" REVIEW_STATUS="NO_REVIEW" GATE_DECISION="PASS" MERGE_ELIGIBLE="true" \
+  DISPATCH_REFLECTION_STATUS="" PROVIDER_RECEIPT_DIGEST="" \
+  run_script "$(pr_json "$base_sha" "$head_sha")" '' "$zero_lane_report"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[passthrough-no-review] expected exit 0 for NO_REVIEW passthrough" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "PASSTHROUGH accepted" <<<"$output" || {
+  echo "[passthrough-no-review] expected PASSTHROUGH accepted" >&2
+  echo "$output" >&2
+  exit 1
+}
+if grep -Eq "Review Yeti: SHIP" <<<"$output"; then
+  echo "[passthrough-no-review] must not announce SHIP" >&2
+  echo "$output" >&2
+  exit 1
+fi
+echo "[passthrough-no-review] passed (NO_REVIEW passthrough is merge-eligible, not SHIP)"
+unset REVIEW_YETI_PASSTHROUGH REVIEW_STATUS GATE_DECISION MERGE_ELIGIBLE
+
 # 3c-3. Direct execution of deliver-passthrough.sh:
 #       Ensures required coordinate enforcement, zero-lane SHIP report generation,
 #       and correct GITHUB_OUTPUT entries.
@@ -439,8 +461,8 @@ fi
 # These assertions previously required review-status=SHIP / gate-decision=PASS /
 # merge-eligible=true -- the exact combination a pull request once merged on.
 grep -Fxq "review-status=NO_REVIEW" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing review-status output" >&2; exit 1; }
-grep -Fxq "gate-decision=BLOCK" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing gate-decision output" >&2; exit 1; }
-grep -Fxq "merge-eligible=false" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing merge-eligible output" >&2; exit 1; }
+grep -Fxq "gate-decision=PASS" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing gate-decision output" >&2; exit 1; }
+grep -Fxq "merge-eligible=true" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing merge-eligible output" >&2; exit 1; }
 grep -Fq "review-status=SHIP" "$passthrough_test_dir/gh_output" && { echo "[deliver-passthrough-script] passthrough must never emit SHIP" >&2; exit 1; }
 grep -Fxq "files-omitted=0" "$passthrough_test_dir/gh_output" || { echo "[deliver-passthrough-script] missing files-omitted output" >&2; exit 1; }
 generated_report="$(grep '^run-report-path=' "$passthrough_test_dir/gh_output" | cut -d= -f2-)"

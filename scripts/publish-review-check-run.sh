@@ -15,6 +15,46 @@ if [[ -z "${TARGET_REPO:-}" || -z "${HEAD_SHA:-}" ]]; then
   exit 0
 fi
 
+publish_passthrough_check() {
+  local name="$1"
+  local payload
+  payload="$(jq -nc \
+    --arg name "$name" \
+    --arg head_sha "${HEAD_SHA}" \
+    --arg details_url "${CENTRAL_RUN_URL}" \
+    --arg summary "Review Yeti is in passthrough mode (REVIEW_YETI_PASSTHROUGH). No panel review was performed for this head. Conclusion is success so required GitHub checks can pass during maintenance; this is not a SHIP. See [central run](${CENTRAL_RUN_URL})." \
+    --arg title "${name}: PASSTHROUGH (no review performed)" \
+    '{
+      name: $name,
+      head_sha: $head_sha,
+      status: "completed",
+      conclusion: "success",
+      details_url: $details_url,
+      output: {
+        title: $title,
+        summary: $summary
+      }
+    }')"
+  curl -sS -X POST \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
+    -d "$payload" || {
+    echo "::warning::Failed to publish passthrough check-run '${name}' to ${TARGET_REPO}."
+  }
+}
+
+# Passthrough must publish even when the fleet backend is DOKS: the worker is
+# not dispatched, so if we skip Checks API writes here the required App gate
+# never appears and merges stay blocked.
+if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
+  echo "Publishing passthrough Check Runs (success, not SHIP) to ${TARGET_REPO} on ${HEAD_SHA}..."
+  publish_passthrough_check "Review Yeti"
+  publish_passthrough_check "Review Yeti Gate"
+  exit 0
+fi
+
 # DOKS is an asynchronous handoff. The worker owns the only raw `Review Yeti`
 # check-run publication for this backend; the central action must not create a
 # placeholder or try to reuse a check ID that does not exist in this workflow.
@@ -32,58 +72,6 @@ if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]]; then
         echo "- Central run: ${CENTRAL_RUN_URL}"
       fi
     } >>"$GITHUB_STEP_SUMMARY"
-  fi
-  exit 0
-fi
-
-if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
-  echo "Publishing Check Run 'Review Yeti' (neutral, passthrough) to ${TARGET_REPO} on ${HEAD_SHA}..."
-  if [[ -n "${CHECK_ID:-}" ]]; then
-    curl -sS -X PATCH \
-      -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer ${GH_TOKEN}" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "https://api.github.com/repos/${TARGET_REPO}/check-runs/${CHECK_ID}" \
-      -d "$(jq -nc \
-        --arg name "Review Yeti" \
-        --arg details_url "${CENTRAL_RUN_URL}" \
-        --arg summary "Review Yeti is in passthrough mode (REVIEW_YETI_PASSTHROUGH). No panel review was performed for this head; this is a maintenance escape hatch, not an approval. See [central run](${CENTRAL_RUN_URL})." \
-        '{
-          name: $name,
-          status: "completed",
-          conclusion: "neutral",
-          details_url: $details_url,
-          output: {
-            title: "Review Yeti: PASSTHROUGH (no review performed)",
-            summary: $summary
-          }
-        }')" || {
-      echo "::warning::Failed to update passthrough check-run ${CHECK_ID} in ${TARGET_REPO}."
-    }
-  else
-    curl -sS -X POST \
-      -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer ${GH_TOKEN}" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
-      -d "$(jq -nc \
-        --arg name "Review Yeti" \
-        --arg head_sha "${HEAD_SHA}" \
-        --arg details_url "${CENTRAL_RUN_URL}" \
-        --arg summary "Review Yeti is in passthrough mode (REVIEW_YETI_PASSTHROUGH). No panel review was performed for this head; this is a maintenance escape hatch, not an approval. See [central run](${CENTRAL_RUN_URL})." \
-        '{
-          name: $name,
-          head_sha: $head_sha,
-          status: "completed",
-          conclusion: "neutral",
-          details_url: $details_url,
-          output: {
-            title: "Review Yeti: PASSTHROUGH (no review performed)",
-            summary: $summary
-          }
-        }')" || {
-      echo "::warning::Failed to publish passthrough check-run to ${TARGET_REPO}."
-    }
   fi
   exit 0
 fi

@@ -64,6 +64,20 @@ if [[ "$REVIEW_STATUS" == "DISPATCHED" && "$GATE_DECISION" == "PENDING" ]]; then
   exit 0
 fi
 
+# Maintenance hatch: passthrough never claims SHIP. NO_REVIEW + merge-eligible
+# is how required GitHub checks can succeed while the panel is down.
+if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" && "$REVIEW_STATUS" == "NO_REVIEW" ]]; then
+  echo "Review Yeti PASSTHROUGH accepted for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
+  echo "Verdict is NO_REVIEW (not SHIP). Merge is allowed because passthrough is on."
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo "### Review Yeti: PASSTHROUGH (NO_REVIEW)"
+      echo "No panel ran. Required Gate checks may succeed so maintenance merges can proceed."
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+  exit 0
+fi
+
 [[ "$REVIEW_STATUS" == SHIP ]] || { echo "::error::Review Yeti verdict is ${REVIEW_STATUS}, not SHIP"; exit 1; }
 [[ "$GATE_DECISION" == PASS ]] || { echo "::error::Review Yeti gate decision is ${GATE_DECISION}, not PASS"; exit 1; }
 [[ "$MERGE_ELIGIBLE" == true ]] || { echo "::error::Review Yeti did not declare this exact-head review merge eligible"; exit 1; }

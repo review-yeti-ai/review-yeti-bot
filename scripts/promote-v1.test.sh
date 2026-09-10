@@ -624,28 +624,24 @@ if grep -Fq 'Publishing Check Run' "$repo_root/.github/workflows/review-yeti.yml
   exit 1
 fi
 
-# DOKS is asynchronous: the worker is the only raw `Review Yeti` publisher. The central
-# publisher records a receipt and returns before its first curl, regardless of whether the
-# action reports a dispatch, error, missing verdict, success, or passthrough state. Hosted/local
-# publication remains below that boundary and retains the existing POST/PATCH path.
+# Passthrough publishes required App checks even on DOKS (the worker is not
+# dispatched). Non-passthrough DOKS still records a receipt and does not write.
 python3 - "$repo_root/scripts/publish-review-check-run.sh" <<'PY_PUBLISH_CONTRACT_EOF'
 import sys
 script = open(sys.argv[1]).read()
+passthrough_start = script.index('if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]')
 doks_start = script.index('if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]]')
-doks_end = script.index('if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]')
-doks_block = script[doks_start:doks_end]
-first_curl = script.index('curl -sS')
-assert doks_start < doks_end < first_curl, 'DOKS ownership guard must precede every Checks API call'
+assert passthrough_start < doks_start, 'passthrough must publish before the DOKS skip'
+doks_block = script[doks_start:script.index('conclusion="success"')]
 assert 'Central Checks API writes: 0' in doks_block, 'DOKS receipt must state zero central check writes'
 assert 'worker is the only raw' in doks_block, 'DOKS receipt must name the worker as sole publisher'
-assert 'CHECK_ID' not in doks_block, 'DOKS path must not inspect or claim a central check ID'
 assert 'PATCH' not in doks_block, 'DOKS path must not claim PATCH reuse'
 assert 'exit 0' in doks_block, 'DOKS path must not fall through to hosted publication'
 assert 'Worker will complete check-run via PATCH' not in script, 'publisher must not claim PATCH reuse for DOKS'
 hosted_block = script[script.index('conclusion="success"'):]
 assert 'if [[ -n "${CHECK_ID:-}" ]]' in hosted_block, 'hosted CHECK_ID PATCH path must remain'
 assert 'conclusion="failure"' in hosted_block, 'hosted non-SHIP publication must remain fail-closed'
-print('  DOKS sole-publisher and hosted publication contract ok')
+print('  passthrough-before-doks and hosted publication contract ok')
 PY_PUBLISH_CONTRACT_EOF
 
 # Behavioral proof: invoke the real script (not a grep of its text) with a fake curl that
@@ -668,7 +664,7 @@ PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$passthrough_payload" \
   GH_TOKEN=test TARGET_REPO=exampleorg/example HEAD_SHA=deadbeef \
   REVIEW_STATUS=SHIP REVIEW_YETI_PASSTHROUGH=true CENTRAL_RUN_URL=https://example/run/1 \
   "$repo_root/scripts/publish-review-check-run.sh" >/dev/null
-jq -e '.conclusion == "neutral" and (.output.title | test("PASSTHROUGH"))' "$passthrough_payload" >/dev/null
+jq -e '.conclusion == "success" and (.output.title | test("PASSTHROUGH"))' "$passthrough_payload" >/dev/null
 
 normal_ship_payload="$publish_test_dir/normal-ship.json"
 PATH="$publish_test_dir/bin:$PATH" FAKE_CURL_PAYLOAD="$normal_ship_payload" \
