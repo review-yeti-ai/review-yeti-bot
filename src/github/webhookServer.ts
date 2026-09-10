@@ -128,9 +128,7 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
         logger.warn('Webhook request signature authentication failed', {
           reason: verification.reason,
           error: verification.error,
-          resolvedSecretLength: activeSecret.length,
-          resolvedSecretMasked: activeSecret.substring(0, 4) + '...' + activeSecret.substring(activeSecret.length - 4),
-          sigHeader: sigHeader ? String(sigHeader).substring(0, 15) + '...' : 'missing',
+          signaturePresent: Boolean(sigHeader),
         });
         return res.status(401).json({ error: 'Invalid or missing signature' });
       }

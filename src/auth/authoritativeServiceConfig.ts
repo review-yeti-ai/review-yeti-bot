@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import type { GitHubActionsOidcPolicy } from './githubActionsOidc';
 import { reviewPolicySourceSchema } from '../review/authoritativeReviewIdentity';
-
-export const AUTHORITATIVE_REVIEW_APP_ID = 4385771;
+import { AUTHORITATIVE_REVIEW_APP_ID } from './authoritativeServiceIdentity';
+export { AUTHORITATIVE_REVIEW_APP_ID } from './authoritativeServiceIdentity';
 
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
   .refine((value) => value !== '.' && value !== '..');
