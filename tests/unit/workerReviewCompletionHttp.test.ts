@@ -6,7 +6,7 @@ import {
 } from '../../src/review/workerReviewCompletionHttp';
 import { MAX_COMPLETION_BYTES, parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 
-const token = 'ghs_SyntheticWorkerToken123';
+const token = 'ghs_Synthetic-Worker.header_segment.signature-with-dash';
 const endpoint = 'https://dispatch.example.invalid/api/dispatch/completion';
 const diagnostic = 'SYNTHETIC_PRIVATE_PROVIDER_TRANSCRIPT';
 const reportError = 'Worker review completion could not be acknowledged';
@@ -115,7 +115,8 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
   });
 
   it.each(['', 'ghs_', 'ghp_personal', 'github_pat_personal', 'Bearer ghs_test', ' ghs_test', 'ghs_test ',
-    'ghs_test\n', 'ghs_test\r\nAuthorization: other', 'ghs_test?key', 'ghs_test/other', 'ghs_test-abc', 'ghs_tést'])
+    'ghs_test\n', 'ghs_test\r\nAuthorization: other', 'ghs_test?key', 'ghs_test/other', 'ghs_test-abc',
+    'ghs_one.two', 'ghs_one.two.three.four', 'ghs_one.two.bad/slash', 'ghs_tést'])
   ('rejects non-exact installation credential %j before I/O', (credential) => {
     const fetchImplementation = vi.fn();
     expect(() => new HttpWorkerReviewCompletionAdapter({ token: credential, endpoint, fetchImplementation })).toThrow(configError);
