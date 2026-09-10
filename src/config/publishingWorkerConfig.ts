@@ -156,6 +156,28 @@ export const STATIC_FALLBACK_ECOSYSTEM_PATHS: Record<string, string[]> = {
     '**/*.adoc',
     '**/docs/**',
   ],
+  accessibility: [
+    '**/*.html',
+    '**/*.htm',
+    '**/*.css',
+    '**/*.scss',
+    '**/*.sass',
+    '**/*.less',
+    '**/*.tsx',
+    '**/*.jsx',
+    '**/*.vue',
+    '**/*.svelte',
+  ],
+  i18n: [
+    '**/*.po',
+    '**/*.pot',
+    '**/i18n/**',
+    '**/locales/**',
+    '**/locale/**',
+    '**/*.properties',
+    '**/strings.xml',
+    '**/messages.json',
+  ],
 };
 
 export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDomainIndex | null): string[] {
