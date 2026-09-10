@@ -125,6 +125,42 @@ test('reports only method and status when synthetic check creation is rejected',
   );
 });
 
+test('reports a safe stage when synthetic check transport fails before a response', async () => {
+  await assert.rejects(
+    runMergeGroupGate({
+      repository,
+      branch: 'master',
+      event,
+      expectedHeadSha: groupSha,
+      token: 'official-app-token',
+      fetchImpl: async () => { throw new Error('request included secret-token'); },
+    }),
+    (error) => {
+      assert.equal(error.message, 'GitHub POST request failed before response');
+      assert.doesNotMatch(error.message, /secret|token|github\.com/u);
+      return true;
+    },
+  );
+});
+
+test('reports a safe stage when synthetic check response is not JSON', async () => {
+  await assert.rejects(
+    runMergeGroupGate({
+      repository,
+      branch: 'master',
+      event,
+      expectedHeadSha: groupSha,
+      token: 'official-app-token',
+      fetchImpl: async () => ({ ok: true, json: async () => { throw new SyntaxError('secret response'); } }),
+    }),
+    (error) => {
+      assert.equal(error.message, 'GitHub POST response was not valid JSON');
+      assert.doesNotMatch(error.message, /secret|token|github\.com/u);
+      return true;
+    },
+  );
+});
+
 test('completes the synthetic App check as failure when a constituent is not approved', async () => {
   const conclusions = [];
   let queueReads = 0;

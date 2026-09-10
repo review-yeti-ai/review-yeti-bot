@@ -40,22 +40,31 @@ function mergeGroupIdentityFailure({ repository, branch, event, expectedHeadSha 
 async function githubJson(url, token, fetchImpl, options = {}) {
   if (typeof token !== 'string' || token.length === 0) throw new Error('a Review Yeti App token is required');
   const method = options.method || 'GET';
-  const response = await fetchImpl(url, {
-    method,
-    signal: AbortSignal.timeout(15_000),
-    headers: {
-      accept: 'application/vnd.github+json',
-      authorization: `Bearer ${token}`,
-      'x-github-api-version': '2022-11-28',
-      ...(options.headers || {}),
-    },
-    ...(options.body ? { body: typeof options.body === 'string' ? options.body : JSON.stringify(options.body) } : {}),
-  });
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method,
+      signal: AbortSignal.timeout(15_000),
+      headers: {
+        accept: 'application/vnd.github+json',
+        authorization: `Bearer ${token}`,
+        'x-github-api-version': '2022-11-28',
+        ...(options.headers || {}),
+      },
+      ...(options.body ? { body: typeof options.body === 'string' ? options.body : JSON.stringify(options.body) } : {}),
+    });
+  } catch {
+    throw new Error(`GitHub ${method} request failed before response`);
+  }
   if (!response?.ok) {
     const status = Number.isSafeInteger(Number(response?.status)) ? Number(response.status) : 'unknown';
     throw new Error(`GitHub ${method} request failed with HTTP ${status}`);
   }
-  return response.json();
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(`GitHub ${method} response was not valid JSON`);
+  }
 }
 
 class QueueValidationError extends Error {}
@@ -236,7 +245,8 @@ async function main() {
 }
 
 if (isEntrypoint(import.meta.url)) main().catch((error) => {
-  const message = error instanceof Error && /^GitHub (?:GET|POST|PATCH) request failed with HTTP (?:[1-5][0-9]{2}|unknown)$/u.test(error.message)
+  const safeDiagnostic = /^(?:GitHub (?:GET|POST|PATCH) (?:request failed (?:before response|with HTTP (?:[1-5][0-9]{2}|unknown))|response was not valid JSON)|Review Yeti check creation returned no immutable check id)$/u;
+  const message = error instanceof Error && safeDiagnostic.test(error.message)
     ? error.message
     : 'Review Yeti merge-group verification failed';
   console.error(`::error::${message}`);
