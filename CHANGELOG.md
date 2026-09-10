@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.51.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.50.1...v1.51.0) (2026-09-10)
+
+
+### Features
+
+* **api:** admit native GitHub App review events [API-3210] ([#663](https://github.com/review-yeti-ai/review-yeti-bot/issues/663)) ([28969f7](https://github.com/review-yeti-ai/review-yeti-bot/commit/28969f71c0064b082b8178c40fd34dd8e34b3399))
+
 ## [1.50.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.50.0...v1.50.1) (2026-09-10)
 
 
