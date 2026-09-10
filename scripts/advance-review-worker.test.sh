@@ -4,13 +4,32 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 helper="${WORKER_HELPER_UNDER_TEST:-$script_dir/advance-review-worker.sh}"
 root="$(mktemp -d)"
-trap 'rm -rf -- "$root"' EXIT
+reader_pid="" reader_stop=""
+stop_reader() {
+  if [[ -n "$reader_pid" ]]; then
+    printf stop >"$reader_stop"
+    wait "$reader_pid"
+    reader_pid=""
+  fi
+}
+cleanup() { stop_reader; rm -rf -- "$root"; }
+trap cleanup EXIT
 mkdir "$root/bin"
+FAKE_NODE="$(type -P node)"
+REAL_DATE="$(type -P date)"
+export FAKE_NODE REAL_DATE
 source_sha=9999999999999999999999999999999999999999
 old="ghcr.io/review-yeti-ai/review-yeti-worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 target="ghcr.io/review-yeti-ai/review-yeti-worker@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 dispatcher="ghcr.io/review-yeti-ai/review-yeti-bot@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 export FAKE_SOURCE="$source_sha" FAKE_TARGET="$target" FAKE_OLD="$old"
+cat >"$root/bin/date" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == '-u +%Y%m%dT%H%M%SZ' ]] || exit 90
+if [[ "$FAULT" == intent-fifo ]]; then ln -s "$CASE_DIR/owned-sink.fifo" "$INTENT"; fi
+"$REAL_DATE" "$@"
+FAKE
 cat >"$root/bin/crane" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -93,22 +112,44 @@ case "$1 $2" in
     [[ "$FAULT" != rollout ]] || exit 1
     cp "$CASE_DIR/configmap.json" "$CASE_DIR/pod-config.json"
     cp "$CASE_DIR/deployment.json" "$CASE_DIR/pod-deployment.json"
+    if [[ "$FAULT" == post-generic ]]; then change pod-config '.data.REVIEW_JOB_RUNNER_MODE="generic"'; fi
     if [[ "$FAULT" == post-drift ]]; then change configmap '.data.GATEWAY="post-rollout" | .metadata.resourceVersion="99"'; fi
     if [[ "$FAULT" == receipt-race ]]; then printf occupied >"$CASE_DIR/receipt"; fi
+    case "$FAULT" in
+      receipt-fifo) ln -s "$CASE_DIR/owned-sink.fifo" "$CASE_DIR/receipt" ;;
+      receipt-direct-fifo) ln "$CASE_DIR/owned-sink.fifo" "$CASE_DIR/receipt" ;;
+      receipt-directory) mkdir "$CASE_DIR/receipt" ;;
+      receipt-symlink-directory) ln -s "$CASE_DIR" "$CASE_DIR/receipt" ;;
+    esac
     ;;
   'get replicasets')
     [[ "$3 $4 $5 $6" == '-l app.kubernetes.io/name=ct-review-job-dispatcher -o json' ]] || exit 97
-    jq --arg fault "$FAULT" '{items:[{metadata:{uid:"rs-uid",ownerReferences:[{uid:(if $fault=="foreign-owner" then "foreign-deployment" else .metadata.uid end),kind:"Deployment",controller:true}]},spec:{template:.spec.template}}]}' "$CASE_DIR/pod-deployment.json"
+    fault=""
+    if [[ -e "$CASE_DIR/patched-deployment" ]]; then fault="$FAULT"; fi
+    jq --arg fault "$fault" '{items:[{metadata:{uid:"rs-uid",ownerReferences:[{uid:(if $fault=="foreign-owner" then "foreign-deployment" else .metadata.uid end),kind:"Deployment",controller:true}]},spec:{template:.spec.template}}]}' "$CASE_DIR/pod-deployment.json"
     ;;
   'get pods')
     [[ "$3 $4 $5 $6" == '-l app.kubernetes.io/name=ct-review-job-dispatcher -o json' ]] || exit 97
     jq '{items:[{metadata:{name:"dispatcher-pod",uid:"pod-uid",annotations:.spec.template.metadata.annotations,ownerReferences:[{uid:"rs-uid",kind:"ReplicaSet",controller:true}]},spec:.spec.template.spec,status:{phase:"Running",conditions:[{type:"Ready",status:"True"}],containerStatuses:[{name:"review-job-dispatcher",ready:true}]}}]}' "$CASE_DIR/pod-deployment.json"
     ;;
   'exec dispatcher-pod')
-    [[ "$3 $4 $5 $6 $7 $8" == '--container review-job-dispatcher -- sh -c printf "%s" "$REVIEW_JOB_WORKER_IMAGE"' ]] || exit 98
-    [[ "$FAULT" != exec-failure ]] || exit 1
-    if [[ "$FAULT" == verify-drift ]]; then change deployment '.spec.template.spec.serviceAccountName="drift" | .metadata.resourceVersion="99"'; fi
-    if [[ "$FAULT" == stale ]]; then printf '%s' "$FAKE_OLD"; else jq -jr '.data.REVIEW_JOB_WORKER_IMAGE' "$CASE_DIR/pod-config.json"; fi
+    [[ "$FAULT" != pre-exec-failure ]] || exit 1
+    if [[ -e "$CASE_DIR/patched-deployment" ]]; then
+      [[ "$FAULT" != exec-failure ]] || exit 1
+      if [[ "$FAULT" == verify-drift ]]; then change deployment '.spec.template.spec.serviceAccountName="drift" | .metadata.resourceVersion="99"'; fi
+    fi
+    worker="$(jq -r '.data.REVIEW_JOB_WORKER_IMAGE' "$CASE_DIR/pod-config.json")"
+    if [[ "$FAULT" == stale ]]; then worker="$FAKE_OLD"; fi
+    if [[ "$3 $4 $5 $6 $7 $8" == '--container review-job-dispatcher -- sh -c printf "%s" "$REVIEW_JOB_WORKER_IMAGE"' ]]; then
+      printf '%s' "$worker" # Old entrypoint control for retained RED/mutants.
+    else
+      [[ "$3 $4 $5 $6 $7" == '--container review-job-dispatcher -- node -e' ]] || exit 98
+      # Execute the shipped fixed attestation program against fixture env, not
+      # a mock of its mode normalization/fallback logic.
+      env -i PATH="$PATH" REVIEW_JOB_WORKER_IMAGE="$worker" \
+        REVIEW_JOB_RUNNER_MODE="$(jq -r '.data.REVIEW_JOB_RUNNER_MODE // ""' "$CASE_DIR/pod-config.json")" \
+        RUNNER_MODE="$(jq -r '.data.RUNNER_MODE // ""' "$CASE_DIR/pod-config.json")" "$FAKE_NODE" -e "$8"
+    fi
     ;;
   *) exit 99 ;;
 esac
@@ -133,6 +174,92 @@ apply() { run --expected-state "$CASE_DIR/plan" --apply --receipt "$CASE_DIR/rec
 no_write() { [[ ! -e "$CASE_DIR/patch-configmap.json" && ! -e "$CASE_DIR/patch-deployment.json" && ! -e "$INTENT" ]] || fail 'unexpected write/intent'; }
 refuse() { if apply; then fail 'unexpected success'; fi; }
 status_is() { jq -e --arg s "$1" '.status==$s' "$CASE_DIR/receipt" >/dev/null || fail "status $1"; }
+fresh; plan
+mkdir "$root/no-node"
+for tool in bash dirname tr jq date cat cp mv touch ls cut awk shasum env kubectl crane; do
+  ln -s "$(type -P "$tool")" "$root/no-node/$tool"
+done
+: >"$CASE_DIR/calls"
+if PATH="$root/no-node" /bin/bash "$helper" --context fixture-context --source-sha "$source_sha" --target-image "$target" \
+  --expected-state "$CASE_DIR/plan" --receipt "$CASE_DIR/receipt" --apply >"$CASE_DIR/out" 2>"$CASE_DIR/err"; then
+  fail 'operator without Node was allowed to mutate'
+fi
+grep -q 'missing command: node' "$CASE_DIR/err" || fail 'Node absence was not an explicit prerequisite refusal'
+[[ ! -s "$CASE_DIR/calls" ]] || fail 'missing Node reached cluster operations'
+no_write; ok 'missing operator Node fails explicitly before any cluster call'
+for fault in receipt-fifo receipt-direct-fifo intent-fifo; do
+  fresh; plan
+  mkfifo -m 600 "$CASE_DIR/owned-sink.fifo"
+  reader_stop="$CASE_DIR/reader-stop"
+  # Owned nonblocking FIFO reader: no libuv thread can remain in a blocked open
+  # when the exclusive writer correctly refuses to connect.
+  "$FAKE_NODE" -e '
+    const fs = require("node:fs");
+    const [fifo, output, stop] = process.argv.slice(1);
+    const fd = fs.openSync(fifo, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const chunks = [];
+    function finish(code) {
+      fs.closeSync(fd);
+      fs.writeFileSync(output, Buffer.concat(chunks), {mode: 0o600});
+      process.exit(code);
+    }
+    setTimeout(() => finish(2), 15000);
+    setInterval(() => {
+      const bytes = Buffer.alloc(8192);
+      try {
+        let count;
+        while ((count = fs.readSync(fd, bytes, 0, bytes.length, null)) > 0) chunks.push(Buffer.from(bytes.subarray(0, count)));
+      } catch (error) { if (error.code !== "EAGAIN") finish(3); }
+      if (fs.existsSync(stop)) finish(0);
+    }, 10);
+  ' "$CASE_DIR/owned-sink.fifo" "$CASE_DIR/fifo-received" "$reader_stop" &
+  reader_pid=$!
+  export FAULT="$fault"
+  apply_status=0
+  apply || apply_status=$?
+  stop_reader
+  [[ "$apply_status" != 0 ]] || fail "$fault falsely succeeded without a regular receipt"
+  [[ ! -s "$CASE_DIR/fifo-received" ]] || fail "$fault followed an occupied FIFO destination"
+  ! grep -q verified "$CASE_DIR/out" || fail "$fault announced success"
+  if [[ "$fault" == intent-fifo ]]; then
+    ! grep -q '^patch ' "$CASE_DIR/calls" || fail 'attempted mutation without durable regular intent'
+    [[ -L "$INTENT" ]] || fail 'intent race destination replaced'
+  else
+    [[ -f "$INTENT" && ! -L "$INTENT" ]] || fail 'lost durable intent'
+    [[ ! -f "$CASE_DIR/receipt" ]] || fail 'occupied outcome path replaced'
+    [[ "$(grep -c '^patch ' "$CASE_DIR/calls")" == 2 ]] || fail 'outcome race did not follow guarded rollout'
+  fi
+  ok "$fault rejects occupied special file without following it; reader terminal"
+done
+for fault in receipt-directory receipt-symlink-directory; do
+  fresh; plan; export FAULT="$fault"; refuse
+  [[ -d "$CASE_DIR/receipt" && -f "$INTENT" ]] || fail 'directory race destination/intent changed'
+  ! grep -q verified "$CASE_DIR/out" || fail 'directory destination announced success'
+  ok "$fault cannot substitute a directory for a regular outcome"
+done
+for current in "$target" "$old"; do
+  fresh; edit configmap ".data.REVIEW_JOB_WORKER_IMAGE=\"$current\""
+  cp "$CASE_DIR/configmap.json" "$CASE_DIR/pod-config.json"
+  plan # Paired already-prebaked control supplies the exact expected plan.
+  edit pod-config '.data.REVIEW_JOB_RUNNER_MODE="generic"'
+  refuse; no_write
+  [[ ! -e "$CASE_DIR/receipt" ]] || fail 'generic running lane received success receipt'
+  if run; then fail 'generic running lane produced a plan'; fi
+  ok "running generic lane refused without restart/activation (current image $current)"
+done
+fresh
+edit pod-config '.data.REVIEW_JOB_RUNNER_MODE=" " | .data.RUNNER_MODE=" generic "'
+if run; then fail 'runtime RUNNER_MODE fallback generic admitted'; fi
+no_write; ok 'runtime mode fallback cannot hide a generic lane'
+fresh
+edit pod-config 'del(.data.REVIEW_JOB_RUNNER_MODE) | .data.RUNNER_MODE=" prebaked "'
+plan; apply || fail 'prebaked fallback control'
+status_is applied; ok 'source-defined trimmed prebaked fallback remains supported'
+fresh; plan; export FAULT=post-generic; refuse
+[[ "$(grep -c '^patch ' "$CASE_DIR/calls")" == 2 ]] || fail 'post-generic did not reach rollout boundary'
+status_is readback_failed
+! grep -q verified "$CASE_DIR/out" || fail 'post-rollout generic lane announced success'
+ok 'mode attestation is also required after rollout'
 fresh; plan
 jq -e '.schema=="review-yeti-worker-plan.v1" and .before.configmap.uid=="cm-uid" and .before.deployment.resourceVersion=="17" and .action=="update-and-restart"' "$CASE_DIR/plan" >/dev/null
 no_write
@@ -182,7 +309,7 @@ for fault in reject lost-ack cas-race uid-race image-race restart-reject restart
     restart-race) [[ ! -e "$CASE_DIR/patched-deployment" ]] || fail 'rejected restart CAS changed bytes' ;;
     lost-ack) [[ -e "$CASE_DIR/patched-configmap" && "$calls" == 1 ]] || fail 'lost ack retried' ;;
     restart-lost-ack) [[ -e "$CASE_DIR/patched-deployment" ]] || fail 'restart lost ack had no effect' ;;
-    foreign-owner) ! grep -q '^exec ' "$CASE_DIR/calls" || fail 'executed against foreign dispatcher' ;;
+    foreign-owner) [[ "$(grep -c '^exec ' "$CASE_DIR/calls")" == 2 ]] || fail 'executed against foreign dispatcher after initial plan/apply admission' ;;
   esac
   ok "$fault retains truthful failure/intent without retry/rollback"
 done
