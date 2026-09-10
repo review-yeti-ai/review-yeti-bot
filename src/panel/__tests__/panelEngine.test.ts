@@ -117,6 +117,24 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       expect(diffSection).toContain('Fetch the commit diffs yourself');
     });
 
+    it('marks files over max-file-diff-chars as SKIPPED and omits their payload', () => {
+      const previous = process.env.MAX_FILE_DIFF_CHARS;
+      process.env.MAX_FILE_DIFF_CHARS = '100';
+      try {
+        const files = [
+          { path: 'src/small.ts', patch: 'ok' },
+          { path: 'src/huge.ts', patch: 'x'.repeat(200) },
+        ];
+        const diffSection = buildDiffSection(files);
+        expect(diffSection).toContain('- src/small.ts');
+        expect(diffSection).toContain('SKIPPED: 200 chars > max-file-diff-chars 100');
+        expect(diffSection).not.toContain('x'.repeat(20));
+      } finally {
+        if (previous === undefined) delete process.env.MAX_FILE_DIFF_CHARS;
+        else process.env.MAX_FILE_DIFF_CHARS = previous;
+      }
+    });
+
     it('does not inline excerpts when the combined patch is huge', () => {
       const files = Array.from({ length: 15 }, (_, i) => ({
         path: `src/file_${i}.ts`,
