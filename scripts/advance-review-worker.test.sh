@@ -142,9 +142,14 @@ case "$1 $2" in
     ;;
   'get pods')
     [[ "$3 $4 $5 $6" == '-l app.kubernetes.io/name=ct-review-job-dispatcher -o json' ]] || exit 97
-    jq '{items:[{metadata:{name:"dispatcher-pod",uid:"pod-uid",annotations:.spec.template.metadata.annotations,ownerReferences:[{uid:"rs-uid",kind:"ReplicaSet",controller:true}]},spec:.spec.template.spec,status:{phase:"Running",conditions:[{type:"Ready",status:"True"}],containerStatuses:[{name:"review-job-dispatcher",ready:true}]}}]}' "$CASE_DIR/pod-deployment.json"
+    jq --arg fault "$FAULT" '{items:[{metadata:{name:"dispatcher-pod",uid:"pod-uid",annotations:.spec.template.metadata.annotations,ownerReferences:[{uid:"rs-uid",kind:"ReplicaSet",controller:true}]},spec:.spec.template.spec,status:{phase:"Running",conditions:[{type:"Ready",status:"True"}],containerStatuses:[{name:"review-job-dispatcher",ready:true}]}}]}
+      | if $fault=="pods-zero" then .items=[]
+        elif $fault=="pods-two" or $fault=="pods-terminating-extra" then
+          .items += [(.items[0] | .metadata.name="dispatcher-pod-extra" | .metadata.uid="pod-extra-uid"
+            | if $fault=="pods-terminating-extra" then .metadata.deletionTimestamp="2026-09-10T00:00:00Z" else . end)]
+        else . end' "$CASE_DIR/pod-deployment.json"
     ;;
-  'exec dispatcher-pod')
+  'exec dispatcher-pod'|'exec dispatcher-pod-extra')
     [[ "$FAULT" != pre-exec-failure ]] || exit 1
     if [[ -e "$CASE_DIR/patched-deployment" ]]; then
       [[ "$FAULT" != exec-failure ]] || exit 1
@@ -186,6 +191,26 @@ apply() { run --expected-state "$CASE_DIR/plan" --apply --receipt "$CASE_DIR/rec
 no_write() { [[ ! -e "$CASE_DIR/patch-configmap.json" && ! -e "$CASE_DIR/patch-deployment.json" && ! -e "$INTENT" ]] || fail 'unexpected write/intent'; }
 refuse() { if apply; then fail 'unexpected success'; fi; }
 status_is() { jq -e --arg s "$1" '.status==$s' "$CASE_DIR/receipt" >/dev/null || fail "status $1"; }
+fresh; plan
+pod_count_failures=0
+for fault in pods-zero pods-two; do
+  if (
+    fresh; plan # Valid one-pod plan; only the pod-list response changes.
+    FAULT="$fault" refuse
+    grep -qx 'advance-review-worker: cannot attest the active owned ready prebaked lane' "$CASE_DIR/err" || fail "$fault did not refuse at active-lane admission"
+    ! grep -q '^patch ' "$CASE_DIR/calls" || fail "$fault attempted a patch"
+    no_write
+    [[ ! -e "$CASE_DIR/receipt" ]] || fail "$fault published a receipt"
+  ); then ok "$fault refuses replicas=1 mismatch before intent or patch"
+  else pod_count_failures=$((pod_count_failures+1)); fi
+done
+[[ "$pod_count_failures" == 0 ]] || fail "$pod_count_failures pod-count admission cases failed"
+fresh; export FAULT=pods-terminating-extra
+plan; apply || fail 'terminating extra pod blocked the valid active pod'
+status_is applied
+[[ "$(grep -c '^patch ' "$CASE_DIR/calls")" == 2 ]] || fail 'terminating extra control did not apply guarded rollout'
+! grep -q '^exec dispatcher-pod-extra ' "$CASE_DIR/calls" || fail 'executed attestation on terminating pod'
+ok 'terminating extra pod is filtered; one active owned ready pod succeeds'
 fresh; plan
 serialization_failures=0
 for phase in intent applied noop; do
