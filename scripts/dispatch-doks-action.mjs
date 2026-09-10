@@ -12,6 +12,8 @@ const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const RUN_ID_PATTERN = /^run_[a-f0-9]{16,64}$/u;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const SUPPORTED_EVENTS = new Set(['pull_request', 'pull_request_target', 'workflow_dispatch', 'repository_dispatch']);
+const DISPATCH_RETRY_DELAYS_MS = Object.freeze([1_000, 2_000]);
+const RETRYABLE_DISPATCH_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function required(environment, name, hint = '') {
   const value = String(environment[name] || '').trim();
@@ -152,7 +154,7 @@ async function failureDetail(response) {
   }
 }
 
-async function requestOidcToken(environment, fetchImpl) {
+async function requestOidcToken(environment, fetchImpl, sleepImpl) {
   const audience = required(environment, 'DOKS_OIDC_AUDIENCE');
   if (audience !== DOKS_OIDC_AUDIENCE) throw new Error(`DOKS OIDC audience must be ${DOKS_OIDC_AUDIENCE}`);
   const requestToken = required(
@@ -166,11 +168,31 @@ async function requestOidcToken(environment, fetchImpl) {
     'grant the caller workflow permissions: id-token: write',
   ));
   requestUrl.searchParams.set('audience', DOKS_OIDC_AUDIENCE);
-  const response = await fetchImpl(requestUrl, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${requestToken}` },
-    signal: AbortSignal.timeout(10_000),
-  });
+  const attempts = DISPATCH_RETRY_DELAYS_MS.length + 1;
+  let response;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      response = await fetchImpl(requestUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${requestToken}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (error) {
+      const reason = compactError(error);
+      if (attempt === attempts) {
+        throw new Error(`GitHub Actions OIDC token request transport failed after ${attempts} attempts: ${reason}`, { cause: error });
+      }
+      const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
+      retryWarning('GitHub Actions OIDC token request', attempt, delayMs, reason);
+      await sleepImpl(delayMs);
+      continue;
+    }
+
+    if (response.ok || attempt === attempts || !RETRYABLE_DISPATCH_STATUSES.has(response.status)) break;
+    const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
+    retryWarning('GitHub Actions OIDC token request', attempt, delayMs, `HTTP ${response.status}`);
+    await sleepImpl(delayMs);
+  }
   if (!response.ok) throw new Error(`GitHub Actions OIDC token request failed with HTTP ${response.status}; verify permissions: id-token: write`);
   const body = await json(response, 'GitHub Actions OIDC token request');
   if (typeof body?.value !== 'string' || body.value.length < 32) throw new Error('GitHub Actions OIDC token response did not contain a signed token');
@@ -186,24 +208,63 @@ function validateReceipt(body) {
   return { version: body.version, status: body.status, runId: body.runId };
 }
 
-export async function dispatchAction(environment = process.env, fetchImpl = fetch) {
+function sleep(milliseconds) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
+}
+
+function compactError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/gu, ' ').trim().slice(0, 256) || 'unknown transport error';
+}
+
+function retryWarning(operation, attempt, delayMs, reason) {
+  process.stderr.write(`::warning::${operation} attempt ${attempt} failed (${reason}); retrying in ${delayMs}ms\n`);
+}
+
+export async function dispatchAction(environment = process.env, fetchImpl = fetch, options = {}) {
   const endpoint = validateDispatchEndpoint(required(environment, 'DOKS_DISPATCH_URL'));
   const request = buildDispatchRequest(environment);
-  const oidcToken = await requestOidcToken(environment, fetchImpl);
-  const response = await fetchImpl(endpoint.href, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${oidcToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(request),
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (response.status !== 202) {
-    throw new Error(`DOKS dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
+  const sleepImpl = options.sleep || sleep;
+  const oidcToken = await requestOidcToken(environment, fetchImpl, sleepImpl);
+  const requestBody = JSON.stringify(request);
+  const attempts = DISPATCH_RETRY_DELAYS_MS.length + 1;
+
+  // Every retry reuses the exact deliveryId and body. The admission API treats a repeated
+  // delivery as a duplicate, so a lost response cannot create a second review run.
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let response;
+    try {
+      response = await fetchImpl(endpoint.href, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${oidcToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: requestBody,
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      const reason = compactError(error);
+      if (attempt === attempts) {
+        throw new Error(`DOKS dispatch transport failed after ${attempts} attempts: ${reason}`, { cause: error });
+      }
+      const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
+      retryWarning('DOKS dispatch', attempt, delayMs, reason);
+      await sleepImpl(delayMs);
+      continue;
+    }
+
+    if (response.status === 202) return validateReceipt(await json(response, 'DOKS dispatch'));
+    if (attempt === attempts || !RETRYABLE_DISPATCH_STATUSES.has(response.status)) {
+      throw new Error(`DOKS dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
+    }
+    const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
+    retryWarning('DOKS dispatch', attempt, delayMs, `HTTP ${response.status}`);
+    await sleepImpl(delayMs);
   }
-  return validateReceipt(await json(response, 'DOKS dispatch'));
+
+  throw new Error('DOKS dispatch retry loop exhausted without a terminal result');
 }
 
 export function writeDispatchOutputs(outputPath, receipt) {
