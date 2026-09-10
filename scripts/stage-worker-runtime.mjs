@@ -121,6 +121,24 @@ async function main() {
     files.add(relativeSafe(path.join(directory, 'package.json')));
   }
 
+  const domainsSource = path.join(packageRoot, 'domains');
+  try {
+    async function collectDomainsFiles(dir) {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await collectDomainsFiles(full);
+        } else if (entry.isFile()) {
+          files.add(relativeSafe(full));
+        }
+      }
+    }
+    await collectDomainsFiles(domainsSource);
+  } catch {
+    // domains directory may not exist in minimal test setups
+  }
+
   for (const relative of files) await copyFile(relative);
 
   const manifestFiles = [];

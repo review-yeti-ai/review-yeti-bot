@@ -8,6 +8,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
 COPY tsconfig*.json ./
 COPY src ./src
 COPY scripts ./scripts
+COPY domains ./domains
 RUN npm run build:backend \
  && node scripts/stage-worker-runtime.mjs /out
 
