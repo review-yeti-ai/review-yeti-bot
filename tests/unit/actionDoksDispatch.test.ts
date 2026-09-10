@@ -148,6 +148,28 @@ describe('DOKS Action dispatch client', () => {
     ]);
   });
 
+  it('retries transient GitHub OIDC token transport failures before dispatch', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const sleep = vi.fn(async () => {});
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        version: 'ActionDispatchAccepted.v1',
+        status: 'accepted',
+        runId: `run_${'3'.repeat(32)}`,
+      }), { status: 202 }));
+
+    const result = await dispatchAction(environment(), fetchMock, { sleep });
+
+    expect(result.status).toBe('accepted');
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledWith(1_000);
+    expect(new URL(String(fetchMock.mock.calls[0][0])).hostname).toBe('pipelines.actions.githubusercontent.com');
+    expect(fetchMock.mock.calls[1][0]).toEqual(fetchMock.mock.calls[0][0]);
+    expect(fetchMock.mock.calls[2][0]).toBe('https://review-bot.calltelemetry.com/api/dispatch/action');
+  });
+
   it('bounds dispatch retries and does not retry an actionable client rejection', async () => {
     const { dispatchAction } = await import(modulePath);
     const sleep = vi.fn(async () => {});
