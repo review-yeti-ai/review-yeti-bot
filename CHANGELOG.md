@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.47.1...v1.48.0) (2026-09-10)
+
+
+### Features
+
+* **security:** add rate limiting and harden hmac signature verification ([#642](https://github.com/review-yeti-ai/review-yeti-bot/issues/642)) ([0ca45f6](https://github.com/review-yeti-ai/review-yeti-bot/commit/0ca45f6b6c6cecb9804066c9f42cea6fcfe24f8c))
+
 ## [1.47.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.47.0...v1.47.1) (2026-09-09)
 
 
