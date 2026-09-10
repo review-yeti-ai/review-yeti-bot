@@ -56,7 +56,7 @@ import type {
  * the lane past its context window and fail it outright.
  */
 export const REPO_FIND_FILES_MAX_HITS = 50;
-export const REPO_READ_FILE_MAX_CHARS = 48 * 1024;
+export const REPO_READ_FILE_MAX_CHARS = 512 * 1024;
 
 export interface RepoFileProvider {
   /** Case-insensitive substring match of `query` against every file path in the repository at the reviewed head. */
