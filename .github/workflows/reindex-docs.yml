@@ -1,0 +1,115 @@
+name: Reindex Grounded Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "*.md"
+  schedule:
+    # Sanity fallback: weekly reindex at 04:00 UTC on Sunday
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grounded-docs-reindex-review-yeti-bot
+  cancel-in-progress: true
+
+jobs:
+  reindex:
+    name: Trigger Grounded Docs In-Cluster Reindex
+    runs-on: arc-docs-runner
+    timeout-minutes: 15
+    steps:
+      - name: Mint ct-readonly-reader App token
+        id: ct_read_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned
+        with:
+          app-id: ${{ secrets.CT_READONLY_APP_ID }}
+          private-key: ${{ secrets.CT_READONLY_APP_PRIVATE_KEY }}
+          owner: calltelemetry
+          repositories: review-yeti-bot
+
+      - name: Trigger Scrape/Refresh via Internal ClusterIP
+        id: trigger
+        env:
+          DOCS_MCP_URL: "http://docs-mcp.docs-mcp.svc.cluster.local:6280/mcp"
+          GITHUB_TOKEN: ${{ steps.ct_read_token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          REPO_URL="https://github.com/${{ github.repository }}"
+          echo "Attempting incremental refresh_version for review-yeti-bot on ${DOCS_MCP_URL}..."
+
+          REFRESH_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"refresh_version","arguments":{"library":"review-yeti-bot"}}}'
+          RAW_RESP=$(curl -fsS -X POST "${DOCS_MCP_URL}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d "${REFRESH_PAYLOAD}") || true
+
+          echo "Response: ${RAW_RESP}"
+
+          # Extract Job ID from response text e.g. "Refresh job started with ID: <uuid>"
+          JOB_ID=$(echo "${RAW_RESP}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1 || true)
+
+          # If refresh_version did not start a job (e.g. library unindexed), fallback to scrape_docs
+          if [ -z "${JOB_ID}" ]; then
+            echo "refresh_version did not return a job ID; falling back to scrape_docs..."
+            SCRAPE_PAYLOAD="{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"scrape_docs\",\"arguments\":{\"library\":\"review-yeti-bot\",\"url\":\"${REPO_URL}\",\"maxPages\":1000,\"maxDepth\":6,\"excludePatterns\":[\"/(test|archive|backups|work|node_modules|\\\\.artifacts|fixtures)/\"]}}}"
+            RAW_RESP=$(curl -fsS -X POST "${DOCS_MCP_URL}" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json, text/event-stream" \
+              -d "${SCRAPE_PAYLOAD}")
+            echo "Fallback scrape response: ${RAW_RESP}"
+            JOB_ID=$(echo "${RAW_RESP}" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n 1)
+          fi
+
+          if [ -z "${JOB_ID}" ]; then
+            echo "::error::Could not extract Job ID from response"
+            exit 1
+          fi
+
+          echo "Job ID: ${JOB_ID}"
+          echo "job_id=${JOB_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Indexing Job Completion
+        id: poll
+        env:
+          DOCS_MCP_URL: "http://docs-mcp.docs-mcp.svc.cluster.local:6280/mcp"
+          JOB_ID: ${{ steps.trigger.outputs.job_id }}
+        run: |
+          set -euo pipefail
+
+          echo "Polling job ${JOB_ID} status..."
+          MAX_WAIT_SECONDS=600
+          ELAPSED=0
+          POLL_INTERVAL=5
+
+          while [ "${ELAPSED}" -lt "${MAX_WAIT_SECONDS}" ]; do
+            POLL_PAYLOAD="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_job_info\",\"arguments\":{\"jobId\":\"${JOB_ID}\"}}}"
+            RESP=$(curl -fsS -X POST "${DOCS_MCP_URL}" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json, text/event-stream" \
+              -d "${POLL_PAYLOAD}")
+
+            STATUS=$(echo "${RESP}" | grep -oE 'Status:\s*[a-zA-Z_-]+' | head -n 1 | awk '{print $2}' || true)
+            echo "[${ELAPSED}s] Job status: ${STATUS:-unknown}"
+
+            if [ "${STATUS}" = "completed" ]; then
+              echo "review-yeti-bot documentation successfully reindexed in Grounded Docs."
+              exit 0
+            elif [ "${STATUS}" = "failed" ]; then
+              echo "::error::Documentation indexing job failed!"
+              echo "${RESP}"
+              exit 1
+            fi
+
+            sleep "${POLL_INTERVAL}"
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          done
+
+          echo "::error::Timed out after ${MAX_WAIT_SECONDS}s waiting for indexing job to complete"
+          exit 1
