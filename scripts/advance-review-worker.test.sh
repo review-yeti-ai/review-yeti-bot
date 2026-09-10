@@ -77,7 +77,11 @@ change() {
 }
 case "$1 $2" in
   'get configmap'|'get deployment')
-    [[ "$3 $4 $5" == 'ct-review-job-dispatcher -o json' ]] || exit 91
+    if [[ "$2" == configmap ]]; then
+      [[ "$3 $4 $5 $6" == 'ct-review-job-dispatcher -o json --show-managed-fields=true' ]] || exit 91
+    else
+      [[ "$3 $4 $5" == 'ct-review-job-dispatcher -o json' ]] || exit 91
+    fi
     if [[ -e "$CASE_DIR/patched-configmap" ]]; then
       case "$FAULT" in
         readback) exit 1 ;;
@@ -185,6 +189,20 @@ fresh() {
   cp "$CASE_DIR/deployment.json" "$CASE_DIR/pod-deployment.json"
 }
 edit() { jq "$2" "$CASE_DIR/$1.json" >"$CASE_DIR/change"; mv "$CASE_DIR/change" "$CASE_DIR/$1.json"; }
+flux_labels() {
+  edit configmap '.metadata.labels += {
+    "kustomize.toolkit.fluxcd.io/name":"apps",
+    "kustomize.toolkit.fluxcd.io/namespace":"flux-system"
+  } | del(.metadata.managedFields)'
+}
+worker_key_manager() {
+  jq --arg manager "$1" '.metadata.managedFields = [{
+    manager:$manager,operation:"Apply",fieldsType:"FieldsV1",
+    fieldsV1:{"f:data":{"f:REVIEW_JOB_WORKER_IMAGE":{}}}
+  }]' "$CASE_DIR/configmap.json" >"$CASE_DIR/change"
+  mv "$CASE_DIR/change" "$CASE_DIR/configmap.json"
+}
+flux_owned() { flux_labels; worker_key_manager kustomize-controller; }
 run() { bash "$helper" --context fixture-context --source-sha "$source_sha" --target-image "$FAKE_TARGET" "$@" >"$CASE_DIR/out" 2>"$CASE_DIR/err"; }
 plan() { run "$@" || fail plan; cp "$CASE_DIR/out" "$CASE_DIR/plan"; }
 apply() { run --expected-state "$CASE_DIR/plan" --apply --receipt "$CASE_DIR/receipt"; }
@@ -341,10 +359,46 @@ status_is readback_failed
 ! grep -q verified "$CASE_DIR/out" || fail 'post-rollout generic lane announced success'
 ok 'mode attestation is also required after rollout'
 fresh; plan
-jq -e '.schema=="review-yeti-worker-plan.v1" and .before.configmap.uid=="cm-uid" and .before.deployment.resourceVersion=="17" and .action=="update-and-restart"' "$CASE_DIR/plan" >/dev/null
+jq -e '.schema=="review-yeti-worker-plan.v2" and .before.configmap.uid=="cm-uid" and .before.deployment.resourceVersion=="17" and .action=="update-and-restart" and .management.mode=="direct"' "$CASE_DIR/plan" >/dev/null
 no_write
 ! grep -q SECRET_SENTINEL "$CASE_DIR/out" || fail 'plan leaked configuration'
 ok 'default plan binds exact objects and protected hashes without writes'
+fresh; flux_owned; plan
+jq -e '.action=="gitops-update-required"
+  and .management.mode=="flux"
+  and .management.controller=="kustomize-controller"
+  and .management.name=="apps"
+  and .management.namespace=="flux-system"' "$CASE_DIR/plan" >/dev/null || fail 'Flux route missing from plan'
+refuse
+grep -qx 'advance-review-worker: Flux owns the worker image; update GitOps source and wait for reconciliation before applying a restart-only plan' "$CASE_DIR/err" || fail 'Flux-owned apply did not explain the GitOps route'
+no_write
+[[ ! -e "$CASE_DIR/receipt" ]] || fail 'Flux-owned mismatch published a receipt'
+! grep -q '^patch ' "$CASE_DIR/calls" || fail 'Flux-owned mismatch attempted a Kubernetes write'
+ok 'Flux-owned mismatched worker key routes to GitOps before intent or write'
+for variant in label-only helm-manager; do
+  fresh
+  if [[ "$variant" == label-only ]]; then flux_labels; else worker_key_manager helm-controller; fi
+  plan
+  jq -e '.schema=="review-yeti-worker-plan.v2" and .action=="gitops-update-required" and .management.mode=="flux"' "$CASE_DIR/plan" >/dev/null || fail "$variant Flux route missing"
+  refuse
+  no_write
+  [[ ! -e "$CASE_DIR/receipt" ]] || fail "$variant published a receipt"
+  ! grep -q '^patch ' "$CASE_DIR/calls" || fail "$variant attempted a Kubernetes write"
+  ok "$variant Flux ownership refuses apply before intent or write"
+done
+fresh; worker_key_manager kubectl-client-side-apply; plan
+jq -e '.action=="update-and-restart" and .management.mode=="direct"' "$CASE_DIR/plan" >/dev/null || fail 'non-Flux worker-key manager misclassified'
+apply || fail 'non-Flux manager direct apply'
+status_is applied
+[[ -e "$CASE_DIR/patch-configmap.json" && -e "$CASE_DIR/patch-deployment.json" ]] || fail 'non-Flux manager did not retain guarded direct path'
+ok 'non-Flux worker-key manager retains guarded direct ConfigMap CAS'
+fresh; flux_owned; edit configmap ".data.REVIEW_JOB_WORKER_IMAGE=\"$target\""
+plan
+jq -e '.action=="restart" and .management.mode=="flux"' "$CASE_DIR/plan" >/dev/null || fail 'converged Flux pin did not produce restart-only plan'
+apply || fail 'Flux-converged stale pod restart'
+status_is applied
+[[ ! -e "$CASE_DIR/patch-configmap.json" && -e "$CASE_DIR/patch-deployment.json" ]] || fail 'Flux-converged restart reclaimed ConfigMap ownership'
+ok 'Flux-converged worker key permits guarded restart only'
 fresh
 if bash "$helper" "$source_sha" >"$CASE_DIR/out" 2>"$CASE_DIR/err"; then fail 'missing context/target accepted'; fi
 no_write; ok 'legacy positional invocation never implicitly applies'
@@ -358,6 +412,10 @@ fresh; edit deployment '.spec.template.spec.containers[0].envFrom += [{secretRef
 if run; then fail 'additional potentially shadowing envFrom accepted'; fi
 no_write; ok 'unknown envFrom override cannot falsify prebaked admission'
 fresh; plan; apply || fail apply; status_is applied
+jq -e '.schema=="review-yeti-worker-plan.v2" and (.before.configmap|has("management")|not)' "$CASE_DIR/plan" >/dev/null
+jq -e '.schema=="review-yeti-worker-receipt.v1"
+  and (.before.configmap|has("management")|not)
+  and (.after.configmap|has("management")|not)' "$CASE_DIR/receipt" >/dev/null || fail 'receipt v1 snapshot shape changed'
 jq -e --arg image "$target" '.data.REVIEW_JOB_WORKER_IMAGE==$image and .data.GATEWAY=="SECRET_SENTINEL" and .data.AUTH=="SECRET_SENTINEL" and .data.ENABLED=="true" and .metadata.resourceVersion=="24"' "$CASE_DIR/configmap.json" >/dev/null
 jq -e --arg image "$dispatcher" '.spec.replicas==1 and .spec.template.spec.containers[0].image==$image and .spec.template.spec.serviceAccountName=="keep" and .metadata.generation==5 and .spec.template.metadata.annotations.keep=="yes"' "$CASE_DIR/deployment.json" >/dev/null
 jq -e '[.[]|select(.op!="test")]|length==1 and .[0].op=="replace" and .[0].path=="/data/REVIEW_JOB_WORKER_IMAGE"' "$CASE_DIR/patch-configmap.json" >/dev/null
