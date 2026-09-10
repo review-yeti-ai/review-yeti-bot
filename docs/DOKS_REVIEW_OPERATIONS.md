@@ -39,8 +39,14 @@ Production runs the review-job-dispatcher's worker image at a single pinned
 digest, stored in the `ct-review-job-dispatcher` ConfigMap's
 `REVIEW_JOB_WORKER_IMAGE` key. A merge to `main` does not, by itself, reach
 production: it only makes a new commit's image available to pull. Advancing
-the live dispatcher to that commit is a separate, explicit operational step,
-run against an already-active dispatcher:
+the live dispatcher to that commit is a separate, explicit operational step.
+In the CallTelemetry production cluster, Flux owns this key from
+`calltelemetry/ct-infrastructure` on `main`, at
+`clusters/doks-nyc1/apps/ct-review-system/cm-ct-review-job-dispatcher.yaml`.
+The runtime helper discovers that ownership; it does not compete with the
+controller.
+
+First produce the read-only plan against the already-active dispatcher:
 
 ```bash
 # Read-only plan; retain its identity/hash snapshot for review.
@@ -49,7 +55,30 @@ scripts/advance-review-worker.sh \
   --target-image ghcr.io/review-yeti-ai/review-yeti-worker@sha256:<index-digest> \
   > worker-plan.json
 
-# ONLY after separate approval of that plan and its current coordinates:
+# Inspect .action and .management before doing anything else.
+jq '{action,management,targetImage}' worker-plan.json
+```
+
+When `.action` is `gitops-update-required`, `--apply` is deliberately
+unavailable. Update the exact digest and release annotations in the
+`ct-infrastructure` manifest, update its stage-2 provenance fixture, and land
+that change through the protected pull-request path. Wait until Flux reports
+the exact merge revision as Ready and applied:
+
+```bash
+kubectl --context <explicit-context> --namespace flux-system \
+  get kustomization flux-system -o json \
+  | jq -e --arg revision 'main@sha1:<ct-infrastructure-merge-sha>' '
+      .status.lastAppliedRevision==$revision
+      and any(.status.conditions[]?; .type=="Ready" and .status=="True")'
+```
+
+Regenerate `worker-plan.json` from live state. The only valid Flux-managed
+actions now are `restart` (the ConfigMap has converged but the pod is stale) or
+`noop` (the owned ready pod already reports the target). After separate
+approval of that fresh plan, persist the guarded restart/no-op receipt:
+
+```bash
 scripts/advance-review-worker.sh \
   --context <same-context> --source-sha <same-reviewed-sha> \
   --target-image ghcr.io/review-yeti-ai/review-yeti-worker@sha256:<same-index-digest> \
@@ -79,19 +108,20 @@ ct-review-system, with a 30-second API timeout; ambient context never changes.
 The helper requires the already-active, enabled, prebaked dispatcher and named
 review-job-dispatcher container. The reviewed plan binds both object
 UIDs/resourceVersions, Deployment generation/image/replicas, current worker
-image, and hashes of all protected configuration. Raw configuration and
-secrets are not persisted.
+image, Flux ownership coordinates when present, and hashes of all protected
+configuration. Raw configuration and secrets are not persisted.
 
-Apply persists a new mode-0600 `<receipt>.intent` before writing. A JSON Patch
-compare-and-swap changes only data.REVIEW_JOB_WORKER_IMAGE. After an exact
-readback and drift check, another guarded patch changes only the owned
-review-yeti.ai/worker-upgrade pod-template annotation to restart the dispatcher.
-No forced apply, field-ownership reclamation, activation, replica/image change,
-or gateway/auth/permission change occurs. A matching key is a no-op only when
-all expected owned ready dispatcher pods actually report the target worker
-image; otherwise the plan explicitly requires a restart. Rollout is bounded
-to 180 seconds; exact object/configuration and owned running-pod readback must
-pass before a success receipt is written.
+For a Flux-owned mismatched key, apply stops before receipt/intent creation or
+any Kubernetes write. After Flux converges, apply persists a new mode-0600
+`<receipt>.intent`, then a guarded patch changes only the owned
+review-yeti.ai/worker-upgrade pod-template annotation. Unmanaged installations
+retain the key-only compare-and-swap followed by the same guarded restart. No
+forced apply, field-ownership reclamation, Flux suspension, activation,
+replica/image change, or gateway/auth/permission change occurs. A matching key
+is a no-op only when all expected owned ready dispatcher pods actually report
+the target worker image; otherwise the plan explicitly requires a restart.
+Rollout is bounded to 180 seconds; exact object/configuration and owned
+running-pod readback must pass before a success receipt is written.
 
 Every owned ready running pod must attest **prebaked mode**, using the actual
 runtime reader's trimmed REVIEW_JOB_RUNNER_MODE / RUNNER_MODE precedence and

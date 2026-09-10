@@ -87,3 +87,16 @@ source from another component's tag, a checkout, or an old version annotation.
 The invoking identity must already have scoped Deployment get/patch and
 ConfigMap/rollout read access. This helper grants no RBAC, changes no identity,
 and does not weaken dormant installer guards.
+
+### Flux-owned worker image
+
+The production `REVIEW_JOB_WORKER_IMAGE` key is a separate GitOps-owned input,
+not a component Deployment image. Use `scripts/advance-review-worker.sh` to
+verify source-tag provenance and inspect its read-only plan. When the plan says
+`gitops-update-required`, change
+`clusters/doks-nyc1/apps/ct-review-system/cm-ct-review-job-dispatcher.yaml` in
+`calltelemetry/ct-infrastructure`, land the protected PR, and prove the exact
+merge SHA is Flux's Ready `lastAppliedRevision`. Then generate a fresh plan;
+the helper may perform only restart/no-op attestation after the key converges.
+It exits before intent/receipt creation or Kubernetes mutation while the
+Flux-owned key differs. Keep Flux active and its field ownership intact.
