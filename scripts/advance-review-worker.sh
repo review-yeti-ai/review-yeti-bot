@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bounded worker-key CAS and dispatcher restart. No installation or activation.
+# Flux-aware worker-key guard and dispatcher restart. No installation or activation.
 set +x
 set -euo pipefail
 shopt -u nocasematch
@@ -53,10 +53,25 @@ trusted_worker "$target" || die 'exact trusted worker index image required'
 for command in kubectl jq crane date node; do command -v "$command" >/dev/null || die "missing command: $command"; done
 command -v shasum >/dev/null || command -v sha256sum >/dev/null || die 'missing SHA256 utility'
 
+worker_management() {
+  jq -ceS '
+    ([.metadata.managedFields[]?
+      | select((.fieldsV1."f:data"."f:REVIEW_JOB_WORKER_IMAGE" // null) != null)
+      | select((.manager // "") == "kustomize-controller" or (.manager // "") == "helm-controller")
+      | {manager:.manager,operation:(.operation // null)}] | sort_by(.manager)) as $owners
+    | (.metadata.labels["kustomize.toolkit.fluxcd.io/name"] // null) as $name
+    | (.metadata.labels["kustomize.toolkit.fluxcd.io/namespace"] // null) as $namespace
+    | if (($owners|length)>0 or ($name!=null and $namespace!=null)) then
+        {mode:"flux",controller:(if ($owners|length)>0 then $owners[0].manager else "kustomize-controller" end),
+         name:$name,namespace:$namespace}
+      else {mode:"direct"} end
+  ' <<<"$1"
+}
+
 # Full objects remain in memory only. Hash every declared field except owned
 # worker key / restart marker and Kubernetes-managed volatile metadata.
 summarize() {
-  local kind="$1" raw="$2" protected
+  local kind="$1" raw="$2" protected management
   jq -e --arg kind "$kind" --arg name "$name" --arg ns "$namespace" '
     .kind==$kind and .metadata.name==$name and .metadata.namespace==$ns
     and (.metadata.uid|type)=="string" and (.metadata.uid|length)>0
@@ -72,10 +87,12 @@ summarize() {
         | .spec.template.metadata.annotations=((.spec.template.metadata.annotations // {})|del(.[$marker]))
       end' <<<"$raw" | hash)" || return 1
   if [[ "$kind" == ConfigMap ]]; then
-    jq -ceS --arg hash "$protected" '
+    management="$(worker_management "$raw")" || return 1
+    jq -ceS --arg hash "$protected" --argjson management "$management" '
       if .data.REVIEW_JOB_RUNNER_MODE!="prebaked" or .data.REVIEW_JOB_DISPATCH_ENABLED!="true"
       then error("inactive mode") else
-      {uid:.metadata.uid,resourceVersion:.metadata.resourceVersion,workerImage:.data.REVIEW_JOB_WORKER_IMAGE,protectedHash:$hash} end' <<<"$raw"
+      {uid:.metadata.uid,resourceVersion:.metadata.resourceVersion,workerImage:.data.REVIEW_JOB_WORKER_IMAGE,
+       protectedHash:$hash,management:$management} end' <<<"$raw"
   else
     jq -ceS --arg hash "$protected" --arg container "$container" --arg marker "$marker_key" --arg name "$name" '
       [.spec.template.spec.containers[]?|select(.name==$container)] as $c |
@@ -91,7 +108,7 @@ summarize() {
   fi
 }
 read_state() {
-  cm_raw="$(k get configmap "$name" -o json | json)" || return 1
+  cm_raw="$(k get configmap "$name" -o json --show-managed-fields=true | json)" || return 1
   dep_raw="$(k get deployment "$name" -o json | json)" || return 1
   cm="$(summarize ConfigMap "$cm_raw" 2>/dev/null)" || return 1
   dep="$(summarize Deployment "$dep_raw" 2>/dev/null)" || return 1
@@ -267,12 +284,19 @@ action=update-and-restart
 if [[ "$(jq -r '.workerImage' <<<"$cm")" == "$target" ]]; then
   action=restart
   if [[ "$running_image_matches" == 1 ]]; then action=noop; fi
+elif [[ "$(jq -r '.management.mode' <<<"$cm")" == flux ]]; then
+  action=gitops-update-required
 fi
+management="$(jq -cS '.management' <<<"$cm")"
 plan="$(jq -n --arg context "$context" --arg source "$source_sha" --arg target "$target" \
-  --arg op "$operation" --arg action "$action" --argjson before "$before" --argjson recovery "$rollback_record" '
+  --arg op "$operation" --arg action "$action" --argjson before "$before" --argjson recovery "$rollback_record" \
+  --argjson management "$management" '
   {schema:"review-yeti-worker-plan.v1",context:$context,namespace:"ct-review-system",
-   reviewedSourceSha:$source,targetImage:$target,operation:$op,action:$action,before:$before,recovery:$recovery}')"
+   reviewedSourceSha:$source,targetImage:$target,operation:$op,action:$action,management:$management,
+   before:$before,recovery:$recovery}')"
 if [[ "$apply" != 1 ]]; then printf '%s\n' "$plan"; exit 0; fi
+[[ "$action" != gitops-update-required ]] ||
+  die 'Flux owns the worker image; update GitOps source and wait for reconciliation before applying a restart-only plan'
 [[ -f "$expected" && ! -L "$expected" ]] || die '--expected-state reviewed plan required'
 expected_plan="$(json <"$expected")" || die 'expected state malformed'
 same "$plan" "$expected_plan" || die 'stale or mismatched expected state; no writes'

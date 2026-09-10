@@ -77,7 +77,11 @@ change() {
 }
 case "$1 $2" in
   'get configmap'|'get deployment')
-    [[ "$3 $4 $5" == 'ct-review-job-dispatcher -o json' ]] || exit 91
+    if [[ "$2" == configmap ]]; then
+      [[ "$3 $4 $5 $6" == 'ct-review-job-dispatcher -o json --show-managed-fields=true' ]] || exit 91
+    else
+      [[ "$3 $4 $5" == 'ct-review-job-dispatcher -o json' ]] || exit 91
+    fi
     if [[ -e "$CASE_DIR/patched-configmap" ]]; then
       case "$FAULT" in
         readback) exit 1 ;;
@@ -185,6 +189,15 @@ fresh() {
   cp "$CASE_DIR/deployment.json" "$CASE_DIR/pod-deployment.json"
 }
 edit() { jq "$2" "$CASE_DIR/$1.json" >"$CASE_DIR/change"; mv "$CASE_DIR/change" "$CASE_DIR/$1.json"; }
+flux_owned() {
+  edit configmap '.metadata.labels += {
+    "kustomize.toolkit.fluxcd.io/name":"apps",
+    "kustomize.toolkit.fluxcd.io/namespace":"flux-system"
+  } | .metadata.managedFields = [{
+    manager:"kustomize-controller",operation:"Apply",fieldsType:"FieldsV1",
+    fieldsV1:{"f:data":{"f:REVIEW_JOB_WORKER_IMAGE":{}}}
+  }]'
+}
 run() { bash "$helper" --context fixture-context --source-sha "$source_sha" --target-image "$FAKE_TARGET" "$@" >"$CASE_DIR/out" 2>"$CASE_DIR/err"; }
 plan() { run "$@" || fail plan; cp "$CASE_DIR/out" "$CASE_DIR/plan"; }
 apply() { run --expected-state "$CASE_DIR/plan" --apply --receipt "$CASE_DIR/receipt"; }
@@ -341,10 +354,29 @@ status_is readback_failed
 ! grep -q verified "$CASE_DIR/out" || fail 'post-rollout generic lane announced success'
 ok 'mode attestation is also required after rollout'
 fresh; plan
-jq -e '.schema=="review-yeti-worker-plan.v1" and .before.configmap.uid=="cm-uid" and .before.deployment.resourceVersion=="17" and .action=="update-and-restart"' "$CASE_DIR/plan" >/dev/null
+jq -e '.schema=="review-yeti-worker-plan.v1" and .before.configmap.uid=="cm-uid" and .before.deployment.resourceVersion=="17" and .action=="update-and-restart" and .management.mode=="direct"' "$CASE_DIR/plan" >/dev/null
 no_write
 ! grep -q SECRET_SENTINEL "$CASE_DIR/out" || fail 'plan leaked configuration'
 ok 'default plan binds exact objects and protected hashes without writes'
+fresh; flux_owned; plan
+jq -e '.action=="gitops-update-required"
+  and .management.mode=="flux"
+  and .management.controller=="kustomize-controller"
+  and .management.name=="apps"
+  and .management.namespace=="flux-system"' "$CASE_DIR/plan" >/dev/null || fail 'Flux route missing from plan'
+refuse
+grep -qx 'advance-review-worker: Flux owns the worker image; update GitOps source and wait for reconciliation before applying a restart-only plan' "$CASE_DIR/err" || fail 'Flux-owned apply did not explain the GitOps route'
+no_write
+[[ ! -e "$CASE_DIR/receipt" ]] || fail 'Flux-owned mismatch published a receipt'
+! grep -q '^patch ' "$CASE_DIR/calls" || fail 'Flux-owned mismatch attempted a Kubernetes write'
+ok 'Flux-owned mismatched worker key routes to GitOps before intent or write'
+fresh; flux_owned; edit configmap ".data.REVIEW_JOB_WORKER_IMAGE=\"$target\""
+plan
+jq -e '.action=="restart" and .management.mode=="flux"' "$CASE_DIR/plan" >/dev/null || fail 'converged Flux pin did not produce restart-only plan'
+apply || fail 'Flux-converged stale pod restart'
+status_is applied
+[[ ! -e "$CASE_DIR/patch-configmap.json" && -e "$CASE_DIR/patch-deployment.json" ]] || fail 'Flux-converged restart reclaimed ConfigMap ownership'
+ok 'Flux-converged worker key permits guarded restart only'
 fresh
 if bash "$helper" "$source_sha" >"$CASE_DIR/out" 2>"$CASE_DIR/err"; then fail 'missing context/target accepted'; fi
 no_write; ok 'legacy positional invocation never implicitly applies'
