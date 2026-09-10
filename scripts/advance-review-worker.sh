@@ -197,10 +197,14 @@ record() {
      rollbackOf: (if $parent==null then null else {source:$parent.reviewedSourceSha,marker:$parent.marker} end)}'
 }
 finish() {
-  local code="$?"
+  local code="$?" outcome_record
   trap - EXIT
   if [[ "$intent_written" == 1 ]]; then
-    if ! private_write "$receipt" "$(record)"; then
+    if ! outcome_record="$(record)"; then
+      echo 'advance-review-worker: outcome serialization failed; retain immutable intent; no success claimed' >&2
+      exit 1
+    fi
+    if ! private_write "$receipt" "$outcome_record"; then
       echo 'advance-review-worker: outcome receipt unavailable; retain immutable intent; no success claimed' >&2
       exit 1
     fi
@@ -279,10 +283,12 @@ if [[ "$action" == noop ]]; then
   # Verify object binding again after the read-only pod checks.
   if ! read_state || ! same "$snapshot" "$before"; then die 'noop state drift'; fi
   after="$snapshot" status=noop
-  private_write "$receipt" "$(record)" || die 'cannot persist noop receipt'
+  receipt_record="$(record)" || die 'cannot serialize noop receipt'
+  private_write "$receipt" "$receipt_record" || die 'cannot persist noop receipt'
   exit 0
 fi
-private_write "$receipt.intent" "$(record)" || die 'cannot persist intent; no write attempted'
+receipt_record="$(record)" || die 'cannot serialize intent; no write attempted'
+private_write "$receipt.intent" "$receipt_record" || die 'cannot persist intent; no write attempted'
 intent_written=1
 trap finish EXIT
 expected_cm="$cm" expected_dep="$dep"

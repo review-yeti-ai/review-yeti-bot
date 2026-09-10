@@ -117,6 +117,10 @@ destination, including late FIFO/directory symlinks, is refused. File and parent
 directory fsync plus a regular-file identity/size/mode check precede success.
 A failed write can leave a new incomplete file; it is not reused or deleted
 automatically, and a failed outcome write leaves the prior intent intact.
+Intent, no-op and outcome serialization must succeed before their file writer
+is invoked. Serialization failure publishes no receipt or success; a failed
+intent prevents all patch attempts, and a failed outcome preserves the prior
+durable intent unchanged.
 
 For a separately approved rollback, first acquire a new read-only plan:
 use the same command with `--rollback <retained-upgrade-receipt-or-intent>`,
