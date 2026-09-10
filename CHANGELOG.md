@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.2...v1.48.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* **review:** preserve findings from malformed approvals ([#649](https://github.com/review-yeti-ai/review-yeti-bot/issues/649)) ([b7c5d33](https://github.com/review-yeti-ai/review-yeti-bot/commit/b7c5d33e4659e0934a8bea68ad984e34fe2fa436))
+
 ## [1.48.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.1...v1.48.2) (2026-09-10)
 
 
