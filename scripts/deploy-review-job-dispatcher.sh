@@ -78,8 +78,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The variable list lives in scripts/lib/review-job-dispatcher-render.sh and is
-# shared with advance-review-worker.sh so the two renderers cannot drift.
+# Installation renders the template. Active worker upgrades instead use the
+# identity-guarded key-only CAS in advance-review-worker.sh, never this apply.
 # shellcheck source=scripts/lib/review-job-dispatcher-render.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/review-job-dispatcher-render.sh"
 render_review_job_dispatcher_template k8s/review-job-dispatcher.yaml.tpl "$render_dir/review-job-dispatcher.yaml"
