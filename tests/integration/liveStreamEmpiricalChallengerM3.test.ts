@@ -75,13 +75,14 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
     }
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   // =========================================================================
   // 1. Stream Event Ingestion and State Double-Buffering (< 50ms Flush Delay)
   // =========================================================================
   describe('1. Stream Event Ingestion & State Double-Buffering (< 50ms Flush Delay)', () => {
-    it('ingests high-throughput burst of 100 events with sub-50ms flush delay', async () => {
+    it('coalesces a high-throughput burst of 100 events into one animation-frame flush', async () => {
       const { result } = renderHook(() => useSSE({ jobId: 'burst-job-1' }));
 
       await vi.waitFor(() => {
@@ -110,9 +111,8 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
         }
       });
 
-      // All events in the burst must share one scheduled frame. Driving that
-      // frame directly proves the batching deadline without comparing wall-clock
-      // time on a contended CI runner.
+      // All events in the burst must share one scheduled frame. Drive the frame
+      // directly so this assertion measures coalescing, not runner contention.
       expect(requestFrame).toHaveBeenCalledTimes(1);
       expect(scheduledFrames).toHaveLength(1);
       await act(async () => {
@@ -122,6 +122,42 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
       expect(result.current.events).toHaveLength(100);
       expect(result.current.tokenMetrics.completionTokens).toBe(100);
       expect(result.current.personaProgress.security.status).toBe('IN PROGRESS');
+      expect(result.current.personaProgress.security.chunkCount).toBe(100);
+    });
+
+    it('flushes the full burst at the 16ms fallback deadline when animation frames are unavailable', async () => {
+      const { result } = renderHook(() => useSSE({ jobId: 'fallback-burst-job' }));
+
+      await vi.waitFor(() => {
+        expect(result.current.connectionStatus).toBe('connected');
+      }, { timeout: 2000 });
+
+      const mockEs = MockEventSource.instances[MockEventSource.instances.length - 1];
+      expect(mockEs).toBeDefined();
+      vi.stubGlobal('requestAnimationFrame', undefined);
+      vi.useFakeTimers();
+
+      await act(async () => {
+        for (let i = 1; i <= 100; i++) {
+          mockEs.emitMessage({
+            jobId: 'fallback-burst-job',
+            timestamp: new Date().toISOString(),
+            type: 'persona:chunk',
+            persona: 'security',
+            data: { chunk: `Fallback token #${i}` },
+          });
+        }
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15);
+      });
+      expect(result.current.events).toHaveLength(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(result.current.events).toHaveLength(100);
       expect(result.current.personaProgress.security.chunkCount).toBe(100);
     });
 
