@@ -90,11 +90,14 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     });
   });
 
-  it('retries only typed transient OpenRouter failures', () => {
+  it('retries transient provider failures and bounded structured-output exhaustion', () => {
     expect(isRetryablePanelError(new OpenRouterResponseError('unauthorized', 401))).toBe(false);
     expect(isRetryablePanelError(new OpenRouterResponseError('rate limited', 429))).toBe(true);
     expect(isRetryablePanelError(new OpenRouterResponseError('unavailable', 503))).toBe(true);
     expect(isRetryablePanelError(new OpenRouterTimeoutError('deadline', 'total'))).toBe(true);
+    expect(isRetryablePanelError(new Error('invalid or missing nonce-fenced structured output'))).toBe(true);
+    expect(isRetryablePanelError(new Error('invalid native JSON response object'))).toBe(true);
+    expect(isRetryablePanelError(new Error('publishing review worker contract is invalid'))).toBe(false);
   });
 
   describe('buildDiffSection never inlines patch payloads', () => {
