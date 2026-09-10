@@ -1,345 +1,268 @@
 #!/usr/bin/env bash
+# Bounded worker-key CAS and dispatcher restart. No installation or activation.
+set +x
 set -euo pipefail
+shopt -u nocasematch
+export LC_ALL=C
+namespace=ct-review-system
+name=ct-review-job-dispatcher
+container=review-job-dispatcher
+marker_key=review-yeti.ai/worker-upgrade
+# shellcheck source=scripts/lib/review-runtime-image-provenance.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/review-runtime-image-provenance.sh"
 
-# Advance the production review-job-dispatcher worker digest through the
-# rendered manifest, not a hand kubectl patch.
-#
-# Context: deploy-review-job-dispatcher.sh only ever installs at replicas: 0
-# and refuses to activate a deployment (by design -- it is an install/upgrade
-# boundary, not an activation switch). install-doks-review-runtime.sh refuses
-# to touch a deployment that already has non-zero replicas. Neither script has
-# a sanctioned path to move the worker image forward once a dispatcher is
-# live. Doing that by hand with `kubectl patch` leaves the field-manager
-# "kubectl-patch" owning data.REVIEW_JOB_WORKER_IMAGE, which then makes the
-# next server-side apply from either script conflict (see the header comment
-# in deploy-review-job-dispatcher.sh). This script is the sanctioned path: it
-# only ever runs against an already-active dispatcher, and it always writes
-# through the same rendered ConfigMap document the deploy script uses, so
-# manifest ownership of that field is restored rather than repeatedly fought
-# over.
-#
-# Usage: advance-review-worker.sh <commit-sha|release-tag> [--dry-run]
-
-usage() {
-  echo "usage: advance-review-worker.sh <commit-sha|release-tag> [--dry-run]" >&2
-}
-
-need() {
-  command -v "$1" >/dev/null 2>&1 || {
-    echo "advance-review-worker: missing required command: $1" >&2
-    exit 2
-  }
-}
-
-need kubectl
-need curl
-need jq
-need envsubst
-need git
-
-namespace="ct-review-system"
-deployment_name="ct-review-job-dispatcher"
-configmap_name="ct-review-job-dispatcher"
-worker_repo="review-yeti-ai/review-yeti-worker"
-worker_image_repo="ghcr.io/${worker_repo}"
-gh_repo="${ADVANCE_REVIEW_WORKER_GH_REPO:-review-yeti-ai/review-yeti-bot}"
-rollout_timeout="${ADVANCE_REVIEW_WORKER_ROLLOUT_TIMEOUT:-3m}"
-
-ref=""
-dry_run=""
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run)
-      dry_run="1"
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    -*)
-      echo "advance-review-worker: unknown flag: $arg" >&2
-      usage
-      exit 2
-      ;;
-    *)
-      if [[ -n "$ref" ]]; then
-        echo "advance-review-worker: unexpected extra argument: $arg" >&2
-        usage
-        exit 2
-      fi
-      ref="$arg"
-      ;;
-  esac
-done
-
-if [[ -z "$ref" ]]; then
-  usage
-  exit 2
-fi
-
-# --- Step 1: resolve the argument to a 40-hex commit SHA ---------------------
-
-is_full_sha() {
-  [[ "$1" =~ ^[0-9a-fA-F]{40}$ ]]
-}
-
-# macOS ships bash 3.2 as /bin/bash, and `#!/usr/bin/env bash` finds it whenever
-# /usr/bin precedes a newer bash on PATH -- which is the default. ${var,,} is a
-# bash 4 feature, so using it here made this script exit 1 during argument
-# parsing on the one platform an operator actually runs it from.
+die() { echo "advance-review-worker: $*" >&2; exit 1; }
 lower() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
+usage() {
+  echo 'usage: advance-review-worker.sh --context CONTEXT --source-sha SHA --target-image REPO@sha256:DIGEST [--rollback RECORD] [--expected-state PLAN --receipt NEW_PATH --apply]'
+  echo 'Default: read-only JSON plan. Apply binds both objects to PLAN.before. See docs/DOKS_REVIEW_OPERATIONS.md.'
+}
+k() { kubectl --context "$context" --namespace "$namespace" --request-timeout=30s "$@" 2>/dev/null; }
+json() { jq -cse 'if length==1 and (.[0]|type)=="object" then .[0] else error("expected one object") end'; }
+hash() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | awk '{print $1}'
+}
+trusted_worker() {
+  [[ "$1" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]
+}
+context="" source_sha="" target="" expected="" receipt="" rollback="" apply=0 dry_run=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --apply) apply=1; shift ;;
+    --dry-run) dry_run=1; shift ;;
+    --help|-h) usage; exit 0 ;;
+    --context|--source-sha|--target-image|--expected-state|--receipt|--rollback)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die 'missing argument'
+      case "$1" in
+        --context) context="$2" ;; --source-sha) source_sha="$2" ;;
+        --target-image) target="$2" ;; --expected-state) expected="$2" ;;
+        --receipt) receipt="$2" ;; --rollback) rollback="$2" ;;
+      esac
+      shift 2 ;;
+    --*) die 'unknown argument' ;;
+    *) [[ -z "$source_sha" ]] || die 'duplicate positional source'; source_sha="$1"; shift ;;
+  esac
+done
+[[ "$apply:$dry_run" != 1:1 ]] || die '--dry-run cannot be combined with --apply'
+[[ "$context" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die 'explicit context required'
+[[ "$source_sha" =~ ^[0-9a-fA-F]{40}$ ]] || die 'reviewed full source SHA required; release tags are no longer resolved'
+source_sha="$(lower "$source_sha")"
+trusted_worker "$target" || die 'exact trusted worker index image required'
+for command in kubectl jq crane date; do command -v "$command" >/dev/null || die "missing command: $command"; done
+command -v shasum >/dev/null || command -v sha256sum >/dev/null || die 'missing SHA256 utility'
 
-resolve_commit() {
-  local input="$1"
-
-  if is_full_sha "$input"; then
-    printf '%s\n' "$(lower "$input")"
-    return 0
+# Full objects remain in memory only. Hash every declared field except owned
+# worker key / restart marker and Kubernetes-managed volatile metadata.
+summarize() {
+  local kind="$1" raw="$2" protected
+  jq -e --arg kind "$kind" --arg name "$name" --arg ns "$namespace" '
+    .kind==$kind and .metadata.name==$name and .metadata.namespace==$ns
+    and (.metadata.uid|type)=="string" and (.metadata.uid|length)>0
+    and (.metadata.resourceVersion|type)=="string" and (.metadata.resourceVersion|length)>0
+    and (.metadata.deletionTimestamp // null)==null
+  ' <<<"$raw" >/dev/null || return 1
+  protected="$(jq -cS --arg kind "$kind" --arg marker "$marker_key" '
+    del(.status,.metadata.uid,.metadata.resourceVersion,.metadata.generation,
+        .metadata.creationTimestamp,.metadata.managedFields)
+    | if $kind=="ConfigMap" then del(.data.REVIEW_JOB_WORKER_IMAGE)
+      else
+        .metadata.annotations=((.metadata.annotations // {})|del(.["deployment.kubernetes.io/revision"]))
+        | .spec.template.metadata.annotations=((.spec.template.metadata.annotations // {})|del(.[$marker]))
+      end' <<<"$raw" | hash)" || return 1
+  if [[ "$kind" == ConfigMap ]]; then
+    jq -ceS --arg hash "$protected" '
+      if .data.REVIEW_JOB_RUNNER_MODE!="prebaked" or .data.REVIEW_JOB_DISPATCH_ENABLED!="true"
+      then error("inactive mode") else
+      {uid:.metadata.uid,resourceVersion:.metadata.resourceVersion,workerImage:.data.REVIEW_JOB_WORKER_IMAGE,protectedHash:$hash} end' <<<"$raw"
+  else
+    jq -ceS --arg hash "$protected" --arg container "$container" --arg marker "$marker_key" --arg name "$name" '
+      [.spec.template.spec.containers[]?|select(.name==$container)] as $c |
+      if ($c|length)!=1 or (.spec.replicas|type)!="number" or .spec.replicas<1
+         or (.metadata.generation|type)!="number" or .metadata.generation<1
+         or ($c[0].envFrom|length)!=1
+         or ([ $c[0].envFrom[]? | select(.configMapRef.name==$name and (.prefix // "")=="") ]|length)!=1
+         or any($c[0].env[]?; .name=="REVIEW_JOB_WORKER_IMAGE" or .name=="REVIEW_JOB_RUNNER_MODE" or .name=="REVIEW_JOB_DISPATCH_ENABLED")
+      then error("inactive or malformed dispatcher") else
+      {uid:.metadata.uid,resourceVersion:.metadata.resourceVersion,generation:.metadata.generation,
+       replicas:.spec.replicas,image:$c[0].image,protectedHash:$hash,
+       marker:(.spec.template.metadata.annotations[$marker] // null)} end' <<<"$raw"
   fi
-
-  # Try a local git resolution first (works when run from a checkout that has
-  # the tag, and dereferences an annotated tag to the commit it points at).
-  local local_sha=""
-  if local_sha="$(git rev-parse --verify -q "refs/tags/${input}^{commit}" 2>/dev/null)"; then
-    if is_full_sha "$local_sha"; then
-      printf '%s\n' "$(lower "$local_sha")"
-      return 0
+}
+read_state() {
+  cm_raw="$(k get configmap "$name" -o json | json)" || return 1
+  dep_raw="$(k get deployment "$name" -o json | json)" || return 1
+  cm="$(summarize ConfigMap "$cm_raw" 2>/dev/null)" || return 1
+  dep="$(summarize Deployment "$dep_raw" 2>/dev/null)" || return 1
+  trusted_worker "$(jq -r '.workerImage' <<<"$cm")" || return 1
+  [[ "$(jq -r '.image' <<<"$dep")" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot|registry\.digitalocean\.com/calltelemetry/ct-review-bot)@sha256:[0-9a-f]{64}$ ]] || return 1
+  snapshot="$(jq -cSn --argjson cm "$cm" --argjson dep "$dep" '{configmap:$cm,deployment:$dep}')"
+}
+same() { jq -en --argjson a "$1" --argjson b "$2" '$a==$b' >/dev/null; }
+stable_dep() { jq -cS 'del(.resourceVersion)' <<<"$1"; }
+running_matches() {
+  local sets pods owners candidates pod value
+  sets="$(k get replicasets -l app.kubernetes.io/name=ct-review-job-dispatcher -o json | json)" || die 'cannot read ReplicaSet ownership'
+  pods="$(k get pods -l app.kubernetes.io/name=ct-review-job-dispatcher -o json | json)" || die 'cannot read running pods'
+  jq -e '(.items|type)=="array"' <<<"$sets" >/dev/null || die 'malformed ReplicaSet response'
+  jq -e '(.items|type)=="array"' <<<"$pods" >/dev/null || die 'malformed pod response'
+  owners="$(jq -c --argjson d "$dep" --arg marker "$marker_key" --arg container "$container" '
+    [.items[] | select(any(.metadata.ownerReferences[]?; .uid==$d.uid and .kind=="Deployment" and .controller==true))
+     | select((.spec.template.metadata.annotations[$marker] // null)==$d.marker)
+     | select(any(.spec.template.spec.containers[]?; .name==$container and .image==$d.image)) | .metadata.uid]' <<<"$sets")"
+  candidates="$(jq -c '[.items[]|select(.metadata.deletionTimestamp==null)]' <<<"$pods")"
+  jq -e --argjson d "$dep" --argjson owners "$owners" --arg container "$container" '
+    length==$d.replicas and all(.[];
+      .status.phase=="Running" and any(.status.conditions[]?; .type=="Ready" and .status=="True")
+      and any(.status.containerStatuses[]?; .name==$container and .ready==true)
+      and any(.metadata.ownerReferences[]?; .kind=="ReplicaSet" and .controller==true and (.uid as $uid|$owners|index($uid)!=null))
+      and any(.spec.containers[]?; .name==$container and .image==$d.image)
+      and (.metadata.name|test("^[a-z0-9][a-z0-9.-]*$")))
+  ' <<<"$candidates" >/dev/null || return 1
+  while IFS= read -r pod; do
+    # shellcheck disable=SC2016 # Expanded only inside the selected pod.
+    value="$(k exec "$pod" --container "$container" -- sh -c 'printf "%s" "$REVIEW_JOB_WORKER_IMAGE"')" || die 'running worker configuration unreadable'
+    [[ "$value" == "$target" ]] || return 1
+  done < <(jq -r '.[].metadata.name' <<<"$candidates")
+}
+new_path() {
+  local path="$1" parent
+  [[ -n "$path" && ! -e "$path" && ! -L "$path" ]] || die 'receipt/intent must be a new regular file'
+  parent="$(dirname "$path")"
+  [[ -d "$parent" && ! -L "$parent" ]] || die 'receipt parent missing or symlink'
+}
+private_write() {
+  (umask 077; set -o noclobber; printf '%s\n' "$2" >"$1")
+}
+record() {
+  jq -n --arg status "$status" --arg op "$operation" --arg context "$context" \
+    --arg source "$source_sha" --arg target "$target" --arg marker "$marker" \
+    --argjson before "$before" --argjson after "$after" --argjson parent "$rollback_record" '
+    {schema:"review-yeti-worker-receipt.v1",context:$context,namespace:"ct-review-system",
+     deployment:"ct-review-job-dispatcher",container:"review-job-dispatcher",
+     operation:$op,status:$status,reviewedSourceSha:$source,targetImage:$target,marker:$marker,
+     before:$before,after:$after,afterObserved:($after!=null),
+     rollbackOf: (if $parent==null then null else {source:$parent.reviewedSourceSha,marker:$parent.marker} end)}'
+}
+finish() {
+  local code="$?"
+  trap - EXIT
+  if [[ "$intent_written" == 1 ]]; then
+    if ! private_write "$receipt" "$(record)"; then
+      echo 'advance-review-worker: outcome receipt unavailable; retain immutable intent; no success claimed' >&2
+      exit 1
+    fi
+    [[ "$code" == 0 ]] || echo "advance-review-worker: $status; retain receipt and intent for separately planned recovery" >&2
+    if [[ "$code" == 0 && "$status" == applied ]]; then
+      echo 'advance-review-worker: worker key and owned running dispatcher verified; prior runtime receipts are invalidated'
     fi
   fi
-
-  # Fall back to the GitHub API: resolve the tag ref, then dereference an
-  # annotated tag object to the commit it targets.
-  need gh
-  local ref_json object_type object_sha
-  if ! ref_json="$(gh api "repos/${gh_repo}/git/ref/tags/${input}" 2>/dev/null)"; then
-    echo "advance-review-worker: could not resolve '${input}' to a commit via git or the GitHub API (repo ${gh_repo})" >&2
-    return 1
-  fi
-  object_type="$(jq -r '.object.type // empty' <<<"$ref_json")"
-  object_sha="$(jq -r '.object.sha // empty' <<<"$ref_json")"
-  if [[ -z "$object_type" || -z "$object_sha" ]]; then
-    echo "advance-review-worker: malformed tag ref response for '${input}'" >&2
-    return 1
-  fi
-  if [[ "$object_type" == "tag" ]]; then
-    # Annotated tag object: dereference to the commit it targets.
-    if ! object_sha="$(gh api "repos/${gh_repo}/git/tags/${object_sha}" --jq '.object.sha' 2>/dev/null)"; then
-      echo "advance-review-worker: could not dereference annotated tag '${input}'" >&2
-      return 1
-    fi
-  fi
-  if ! is_full_sha "$object_sha"; then
-    echo "advance-review-worker: resolved '${input}' to a non-commit-shaped value: ${object_sha}" >&2
-    return 1
-  fi
-  printf '%s\n' "$(lower "$object_sha")"
+  exit "$code"
 }
 
-# The ref is interpolated into a GitHub API path. Refuse anything outside the
-# characters a tag or commit can contain, and any path-traversal segment, before
-# it is used anywhere; gh api does not percent-encode path components.
-if [[ ! "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || "$ref" == *..* ]]; then
-  echo "advance-review-worker: refusing ref '${ref}': only [A-Za-z0-9._/-] are allowed and '..' is not" >&2
-  exit 1
+verify_review_runtime_image_provenance "$target" "$source_sha" || die 'target/source provenance not verified'
+crane_path="$(type -P crane)" || die 'installed crane required'
+manifest="$("$crane_path" manifest "$target" 2>/dev/null | json)" || die 'index unreadable'
+jq -e '
+  (.mediaType=="application/vnd.oci.image.index.v1+json" or .mediaType=="application/vnd.docker.distribution.manifest.list.v2+json")
+  and any(.manifests[]?; .platform.os=="linux" and .platform.architecture=="amd64")
+  and any(.manifests[]?; .platform.os=="linux" and .platform.architecture=="arm64")
+' <<<"$manifest" >/dev/null || die 'multi-arch index covering Linux amd64 and arm64 required'
+read_state || die 'active prebaked dispatcher/worker identity unreadable or invalid; installation is separate'
+before="$snapshot"
+operation=upgrade rollback_record=null
+if [[ -n "$rollback" ]]; then
+  [[ -f "$rollback" && ! -L "$rollback" ]] || die 'rollback requires a retained regular receipt or intent'
+  rollback_record="$(json <"$rollback")" || die 'malformed recovery record'
+  trusted_worker "$(jq -r '.targetImage' <<<"$rollback_record")" || die 'untrusted recovery target'
+  jq -e --arg context "$context" --arg target "$target" --argjson now "$before" '
+    .schema=="review-yeti-worker-receipt.v1" and .context==$context and .namespace=="ct-review-system"
+    and .deployment=="ct-review-job-dispatcher" and .container=="review-job-dispatcher" and .operation=="upgrade"
+    and (.reviewedSourceSha|test("^[0-9a-f]{40}$"))
+    and (.marker|test("^[0-9]{8}T[0-9]{6}Z-[0-9]+$"))
+    and (.before.configmap.resourceVersion|type)=="string" and (.before.configmap.resourceVersion|length)>0
+    and (.before.deployment.resourceVersion|type)=="string" and (.before.deployment.resourceVersion|length)>0
+    and (.status as $s | ["intent","noop","applied","configmap_patch_uncertain","restart_guard_failed",
+                         "restart_patch_uncertain","rollout_failed","readback_failed"] | index($s)!=null)
+    and (if .status=="noop" then .afterObserved==true and .after==.before
+         elif .status=="applied" then
+           .afterObserved==true and .after.configmap.uid==.before.configmap.uid
+           and .after.configmap.workerImage==.targetImage
+           and .after.configmap.protectedHash==.before.configmap.protectedHash
+           and .after.deployment.uid==.before.deployment.uid
+           and .after.deployment.image==.before.deployment.image
+           and .after.deployment.protectedHash==.before.deployment.protectedHash
+           and .after.deployment.generation==(.before.deployment.generation+1)
+           and .after.deployment.marker==.marker
+         else .afterObserved==false and .after==null end)
+    and .before.configmap.workerImage==$target
+    and .before.configmap.uid==$now.configmap.uid and .before.configmap.protectedHash==$now.configmap.protectedHash
+    and ($now.configmap.workerImage==.before.configmap.workerImage or $now.configmap.workerImage==.targetImage)
+    and .before.deployment.uid==$now.deployment.uid and .before.deployment.protectedHash==$now.deployment.protectedHash
+    and .before.deployment.image==$now.deployment.image and .before.deployment.replicas==$now.deployment.replicas
+    and (($now.deployment.generation==.before.deployment.generation and $now.deployment.marker==.before.deployment.marker)
+         or (.status!="noop" and $now.deployment.generation==(.before.deployment.generation+1) and $now.deployment.marker==.marker))
+  ' <<<"$rollback_record" >/dev/null || die 'recovery identity/configuration drift; needs a new independently validated plan'
+  operation=rollback
 fi
-commit_sha="$(resolve_commit "$ref")" || exit 1
-echo "advance-review-worker: resolved ${ref} -> commit ${commit_sha}"
-
-# --- Step 2: resolve the commit to the GHCR multi-arch index digest --------
-
-ghcr_token="$(curl -fsS "https://ghcr.io/token?scope=repository:${worker_repo}:pull" | jq -r '.token // empty')"
-if [[ -z "$ghcr_token" ]]; then
-  echo "advance-review-worker: could not obtain an anonymous GHCR pull token for ${worker_repo}" >&2
-  exit 1
+action=update-and-restart
+if [[ "$(jq -r '.workerImage' <<<"$cm")" == "$target" ]]; then
+  action=restart
+  if running_matches; then action=noop; fi
 fi
-
-accept_header="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json"
-manifest_url="https://ghcr.io/v2/${worker_repo}/manifests/${commit_sha}"
-
-head_response="$(curl -fsSI \
-  -H "Authorization: Bearer ${ghcr_token}" \
-  -H "Accept: ${accept_header}" \
-  "$manifest_url")"
-
-target_digest="$(printf '%s' "$head_response" | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}' | tail -n1)"
-if [[ -z "$target_digest" ]]; then
-  echo "advance-review-worker: GHCR HEAD response for commit ${commit_sha} carried no Docker-Content-Digest header" >&2
-  exit 1
-fi
-if [[ ! "$target_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo "advance-review-worker: GHCR digest is not a lowercase sha256 digest: ${target_digest}" >&2
-  exit 1
-fi
-
-manifest_body="$(curl -fsS \
-  -H "Authorization: Bearer ${ghcr_token}" \
-  -H "Accept: ${accept_header}" \
-  "$manifest_url")"
-
-media_type="$(jq -r '.mediaType // empty' <<<"$manifest_body")"
-case "$media_type" in
-  application/vnd.oci.image.index.v1+json|application/vnd.docker.distribution.manifest.list.v2+json)
-    ;;
-  *)
-    echo "advance-review-worker: refusing single-manifest image for commit ${commit_sha} (mediaType: ${media_type:-<none>}); a multi-arch index is required" >&2
-    exit 1
-    ;;
-esac
-
-architectures="$(jq -r '[.manifests[]?.platform.architecture] | unique | join(",")' <<<"$manifest_body")"
-if [[ "$architectures" != *"amd64"* || "$architectures" != *"arm64"* ]]; then
-  echo "advance-review-worker: refusing image index for commit ${commit_sha} that does not cover both amd64 and arm64 (found: ${architectures:-<none>})" >&2
-  exit 1
-fi
-
-target_image="${worker_image_repo}@${target_digest}"
-echo "advance-review-worker: resolved commit ${commit_sha} -> ${target_image} (architectures: ${architectures})"
-
-# --- Step 3: require the dispatcher to already be an active, prebaked lane -
-
-if ! replicas="$(kubectl -n "$namespace" get deployment "$deployment_name" -o jsonpath='{.spec.replicas}' 2>&1)"; then
-  echo "advance-review-worker: could not read deployment ${deployment_name} in namespace ${namespace} (${replicas}); this script advances a live dispatcher, it does not create one. Use install-doks-review-runtime.sh / deploy-review-job-dispatcher.sh first." >&2
-  exit 1
-fi
-if ! [[ "$replicas" =~ ^[0-9]+$ ]] || [[ "$replicas" -le 0 ]]; then
-  echo "advance-review-worker: deployment ${deployment_name} has replicas=${replicas}; this script advances a live dispatcher, it does not activate one. Run install-doks-review-runtime.sh / deploy-review-job-dispatcher.sh to install, then scale it up deliberately, before running this script." >&2
-  exit 1
-fi
-
-if ! runner_mode="$(kubectl -n "$namespace" get configmap "$configmap_name" -o jsonpath='{.data.REVIEW_JOB_RUNNER_MODE}' 2>&1)"; then
-  echo "advance-review-worker: could not read configmap ${configmap_name} in namespace ${namespace} (${runner_mode})" >&2
-  exit 1
-fi
-if [[ "$runner_mode" != "prebaked" ]]; then
-  echo "advance-review-worker: expected REVIEW_JOB_RUNNER_MODE=prebaked on configmap ${configmap_name}, found '${runner_mode}'. This script only advances the digest-pinned prebaked-worker lane; a generic-runner lane is not this script's concern." >&2
-  exit 1
-fi
-
-if ! current_image="$(kubectl -n "$namespace" get configmap "$configmap_name" -o jsonpath='{.data.REVIEW_JOB_WORKER_IMAGE}' 2>&1)"; then
-  echo "advance-review-worker: could not read REVIEW_JOB_WORKER_IMAGE from configmap ${configmap_name} (${current_image})" >&2
-  exit 1
-fi
-if [[ -z "$current_image" ]]; then
-  echo "advance-review-worker: configmap ${configmap_name} has no REVIEW_JOB_WORKER_IMAGE key" >&2
-  exit 1
-fi
-
-if ! dispatcher_image="$(kubectl -n "$namespace" get deployment "$deployment_name" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>&1)"; then
-  echo "advance-review-worker: could not read the live dispatcher container image from deployment ${deployment_name} (${dispatcher_image})" >&2
-  exit 1
-fi
-if [[ -z "$dispatcher_image" ]]; then
-  echo "advance-review-worker: deployment ${deployment_name} reported an empty container image" >&2
-  exit 1
-fi
-
-echo "advance-review-worker: old worker image -> ${current_image}"
-echo "advance-review-worker: new worker image -> ${target_image}"
-
-already_pinned=""
-if [[ "$current_image" == "$target_image" ]]; then
-  # Still apply the ConfigMap through the manifest: a matching value may have
-  # been set by a hand patch, which leaves field-manager "kubectl-patch" owning
-  # the key and makes the next server-side apply conflict. Reclaiming ownership
-  # is part of what this script is for; only the restart is skipped.
-  already_pinned="1"
-  echo "advance-review-worker: dispatcher already pinned to ${target_image}; re-applying the ConfigMap to reclaim manifest ownership, no restart unless the running pod disagrees"
-fi
-
-if [[ -n "$dry_run" ]]; then
-  echo "advance-review-worker: --dry-run given; stopping before any apply"
+plan="$(jq -n --arg context "$context" --arg source "$source_sha" --arg target "$target" \
+  --arg op "$operation" --arg action "$action" --argjson before "$before" --argjson recovery "$rollback_record" '
+  {schema:"review-yeti-worker-plan.v1",context:$context,namespace:"ct-review-system",
+   reviewedSourceSha:$source,targetImage:$target,operation:$op,action:$action,before:$before,recovery:$recovery}')"
+if [[ "$apply" != 1 ]]; then printf '%s\n' "$plan"; exit 0; fi
+[[ -f "$expected" && ! -L "$expected" ]] || die '--expected-state reviewed plan required'
+expected_plan="$(json <"$expected")" || die 'expected state malformed'
+same "$plan" "$expected_plan" || die 'stale or mismatched expected state; no writes'
+new_path "$receipt"; new_path "$receipt.intent"
+marker="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+after=null status=intent intent_written=0
+if [[ "$action" == noop ]]; then
+  # Verify object binding again after the read-only pod checks.
+  if ! read_state || ! same "$snapshot" "$before"; then die 'noop state drift'; fi
+  after="$snapshot" status=noop
+  private_write "$receipt" "$(record)" || die 'cannot persist noop receipt'
   exit 0
 fi
-
-# --- Step 4: apply the change through the manifest, not a patch ------------
-#
-# Render the full template through the shared renderer (one variable list for
-# this script and the deploy script), then keep only the first YAML document -- the
-# ConfigMap -- so nothing else in the manifest (Deployment, RBAC, NetworkPolicy)
-# is re-applied or re-evaluated by this script. CT_REVIEW_JOB_DISPATCHER_IMAGE
-# is read from the live deployment purely so envsubst has every variable the
-# template references; the ConfigMap document does not use it and no other
-# field changes.
-work_dir="$(mktemp -d)"
-cleanup() {
-  rm -rf -- "$work_dir"
-}
-trap cleanup EXIT
-
-export CT_REVIEW_JOB_DISPATCHER_IMAGE="$dispatcher_image"
-export CT_REVIEW_WORKER_IMAGE="$target_image"
-export CT_REVIEW_RUNNER_MODE="$runner_mode"
-
-# shellcheck source=scripts/lib/review-job-dispatcher-render.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib/review-job-dispatcher-render.sh"
-render_review_job_dispatcher_template k8s/review-job-dispatcher.yaml.tpl "$work_dir/rendered-full.yaml"
-
-awk '/^---[[:space:]]*$/{exit} {print}' "$work_dir/rendered-full.yaml" > "$work_dir/configmap-only.yaml"
-
-if ! grep -q '^kind: ConfigMap$' "$work_dir/configmap-only.yaml"; then
-  echo "advance-review-worker: internal error: extracted document is not a ConfigMap" >&2
-  exit 1
+private_write "$receipt.intent" "$(record)" || die 'cannot persist intent; no write attempted'
+intent_written=1
+trap finish EXIT
+expected_cm="$cm" expected_dep="$dep"
+if [[ "$action" == update-and-restart ]]; then
+  status=configmap_patch_uncertain
+  patch="$(jq -n --argjson cm "$cm" --arg target "$target" '
+    [{op:"test",path:"/metadata/uid",value:$cm.uid},
+     {op:"test",path:"/metadata/resourceVersion",value:$cm.resourceVersion},
+     {op:"test",path:"/data/REVIEW_JOB_WORKER_IMAGE",value:$cm.workerImage},
+     {op:"replace",path:"/data/REVIEW_JOB_WORKER_IMAGE",value:$target}]')"
+  ack="$(k patch configmap "$name" --type=json --field-manager=review-yeti-worker-upgrade --patch "$patch" -o json | json)" || die 'worker patch rejected or acknowledgement lost; no retry'
+  expected_cm="$(summarize ConfigMap "$ack" 2>/dev/null)" || die 'worker patch acknowledgement invalid'
+  same "$(jq -cS --arg target "$target" '.workerImage=$target|del(.resourceVersion)' <<<"$cm")" "$(jq -cS 'del(.resourceVersion)' <<<"$expected_cm")" || die 'worker acknowledgement drift'
+  [[ "$(jq -r '.resourceVersion' <<<"$cm")" != "$(jq -r '.resourceVersion' <<<"$expected_cm")" ]] || die 'worker acknowledgement version unchanged'
 fi
-
-# --force-conflicts is correct HERE and only here: this script is the single
-# writer that ever moves REVIEW_JOB_WORKER_IMAGE on a live dispatcher, and its
-# whole purpose is to reclaim ownership of that field from a prior hand patch
-# (field-manager "kubectl-patch") back to a manifest-driven apply. The deploy
-# script keeps --force-conflicts opt-in because it is a general install path
-# that must not silently clobber a deliberate manual pin nobody asked it to
-# touch; this script IS that deliberate, reviewed change.
-kubectl apply --server-side --force-conflicts -f "$work_dir/configmap-only.yaml"
-
-# --- Step 5: restart (when the value changed) and verify -------------------
-
-if [[ -z "$already_pinned" ]]; then
-  kubectl -n "$namespace" rollout restart "deployment/${deployment_name}"
-  kubectl -n "$namespace" rollout status "deployment/${deployment_name}" --timeout="$rollout_timeout"
-fi
-
-if ! pod_name="$(kubectl -n "$namespace" get pods \
-  -l "app.kubernetes.io/name=${deployment_name}" \
-  --field-selector=status.phase=Running \
-  -o jsonpath='{.items[-1:].metadata.name}' 2>&1)"; then
-  echo "advance-review-worker: could not list running pods for deployment ${deployment_name} (${pod_name})" >&2
-  exit 1
-fi
-if [[ -z "$pod_name" ]]; then
-  echo "advance-review-worker: rollout reported ready but no running pod was found for deployment ${deployment_name}; cannot verify" >&2
-  exit 1
-fi
-
-# Deliberately single-quoted: this expands inside the pod's shell via `exec`,
-# not in this script's shell.
-# shellcheck disable=SC2016
-if ! observed_image="$(kubectl -n "$namespace" exec "$pod_name" -- sh -c 'printf "%s" "$REVIEW_JOB_WORKER_IMAGE"' 2>&1)"; then
-  echo "advance-review-worker: could not exec into pod ${pod_name} to verify REVIEW_JOB_WORKER_IMAGE (${observed_image})" >&2
-  exit 1
-fi
-if [[ "$observed_image" != "$target_image" && -n "$already_pinned" ]]; then
-  # The ConfigMap already carried the target but the running pod does not: a
-  # hand edit without a restart. Restart once and verify again.
-  echo "advance-review-worker: ConfigMap is pinned but pod ${pod_name} reports '${observed_image}'; restarting so the running dispatcher matches the manifest"
-  kubectl -n "$namespace" rollout restart "deployment/${deployment_name}"
-  kubectl -n "$namespace" rollout status "deployment/${deployment_name}" --timeout="$rollout_timeout"
-  if ! pod_name="$(kubectl -n "$namespace" get pods \
-    -l "app.kubernetes.io/name=${deployment_name}" \
-    --field-selector=status.phase=Running \
-    -o jsonpath='{.items[-1:].metadata.name}' 2>&1)" || [[ -z "$pod_name" ]]; then
-    echo "advance-review-worker: no running pod found after restart of ${deployment_name}; cannot verify" >&2
-    exit 1
-  fi
-  # shellcheck disable=SC2016
-  if ! observed_image="$(kubectl -n "$namespace" exec "$pod_name" -- sh -c 'printf "%s" "$REVIEW_JOB_WORKER_IMAGE"' 2>&1)"; then
-    echo "advance-review-worker: could not exec into pod ${pod_name} after restart (${observed_image})" >&2
-    exit 1
-  fi
-fi
-if [[ "$observed_image" != "$target_image" ]]; then
-  echo "advance-review-worker: verification failed: pod ${pod_name} reports REVIEW_JOB_WORKER_IMAGE='${observed_image}', expected '${target_image}'" >&2
-  exit 1
-fi
-
-echo "advance-review-worker: verified pod ${pod_name} is running with REVIEW_JOB_WORKER_IMAGE=${target_image}"
+status=restart_guard_failed
+if ! read_state || ! same "$cm" "$expected_cm" || ! same "$dep" "$expected_dep"; then die 'object/configuration changed before restart'; fi
+# A JSON Patch RV test binds the full protected template; merge only our marker
+# into its existing annotations. No rollout restart command can bypass this CAS.
+patch="$(jq -n --argjson dep "$dep" --argjson raw "$dep_raw" --arg marker "$marker" --arg key "$marker_key" '
+  [{op:"test",path:"/metadata/uid",value:$dep.uid},
+   {op:"test",path:"/metadata/resourceVersion",value:$dep.resourceVersion},
+   {op:"test",path:"/metadata/generation",value:$dep.generation},
+   {op:"add",path:"/spec/template/metadata/annotations",value:(($raw.spec.template.metadata.annotations // {})+{($key):$marker})}]')"
+status=restart_patch_uncertain
+ack="$(k patch deployment "$name" --type=json --field-manager=review-yeti-worker-upgrade --patch "$patch" -o json | json)" || die 'restart rejected or acknowledgement lost; no retry'
+expected_dep="$(summarize Deployment "$ack" 2>/dev/null)" || die 'restart acknowledgement invalid'
+same "$(jq -cS --arg marker "$marker" '.generation+=1|.marker=$marker|del(.resourceVersion)' <<<"$dep")" "$(stable_dep "$expected_dep")" || die 'restart acknowledgement drift'
+[[ "$(jq -r '.resourceVersion' <<<"$dep")" != "$(jq -r '.resourceVersion' <<<"$expected_dep")" ]] || die 'restart acknowledgement version unchanged'
+status=rollout_failed
+k rollout status "deployment/$name" --timeout=180s >/dev/null || die 'bounded rollout failed'
+status=readback_failed
+if ! read_state || ! same "$cm" "$expected_cm" || ! same "$(stable_dep "$dep")" "$(stable_dep "$expected_dep")"; then die 'post-write identity/configuration drift'; fi
+running_matches || die 'active owned ready dispatcher configuration does not match'
+if ! read_state || ! same "$cm" "$expected_cm" || ! same "$(stable_dep "$dep")" "$(stable_dep "$expected_dep")"; then die 'state changed during pod verification'; fi
+after="$snapshot" status=applied
