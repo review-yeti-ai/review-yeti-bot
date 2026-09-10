@@ -2,6 +2,11 @@ import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishRes
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
 import { ConfigResolver } from '../config/configResolver';
+import {
+  EVENT_TYPE_CI_REQUEST,
+  ReviewCIRequestPayload,
+  validateReviewCIRequestPayload,
+} from './reviewCIRequest';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -86,6 +91,26 @@ function parseGitmodules(content: string, owner: string, repo: string): Record<s
 }
 
 export const BASE_POLICY_CANDIDATE_FILES = ConfigResolver.CONFIG_FILES;
+
+export const CHECK_CONTEXT_RAW_REVIEW = 'Review Yeti';
+export const CHECK_CONTEXT_GATE = 'Review Yeti Gate';
+export const CHECK_CONTEXT_CI = 'Review Yeti CI';
+
+export interface GateCheckOptions {
+  conclusion: 'success' | 'failure';
+  title: string;
+  summary: string;
+  text?: string;
+  detailsUrl?: string;
+}
+
+export interface ValidationCheckOptions {
+  conclusion: 'success' | 'failure';
+  title: string;
+  summary: string;
+  text?: string;
+  detailsUrl?: string;
+}
 
 export class GitHubInstallationClient {
   private readonly baseUrl: string;
@@ -247,7 +272,22 @@ export class GitHubInstallationClient {
     return this.publisher.publishReview(request);
   }
 
-  async createCheck(owner: string, repo: string, headSha: string): Promise<number> {
+  async createCheck(
+    owner: string,
+    repo: string,
+    headSha: string,
+    name: string = CHECK_CONTEXT_RAW_REVIEW,
+    output?: { title?: string; summary?: string },
+  ): Promise<number> {
+    const defaultOutput = name === CHECK_CONTEXT_RAW_REVIEW
+      ? {
+          title: 'Configurable persona panel running',
+          summary: 'Loading base-SHA policy and executing enabled persona lanes.',
+        }
+      : {
+          title: `${name} in progress`,
+          summary: `Executing ${name} validation.`,
+        };
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
@@ -257,16 +297,98 @@ export class GitHubInstallationClient {
         // `Review Yeti / Gate`) left the central check stuck in_progress forever
         // because this App's own check never completed the one the central lane
         // created. Do not rename this without updating the central publisher too.
-        name: 'Review Yeti',
+        name,
         head_sha: headSha,
         status: 'in_progress',
-        output: {
-          title: 'Configurable persona panel running',
-          summary: 'Loading base-SHA policy and executing enabled persona lanes.',
-        },
+        output: output || defaultOutput,
       }),
     });
     return Number(data.id);
+  }
+
+  async publishGateCheck(
+    owner: string,
+    repo: string,
+    headSha: string,
+    options: GateCheckOptions,
+  ): Promise<number> {
+    const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: CHECK_CONTEXT_GATE,
+        head_sha: headSha,
+        status: 'completed',
+        conclusion: options.conclusion,
+        completed_at: new Date(this.now()).toISOString(),
+        output: {
+          title: options.title,
+          summary: options.summary.slice(0, 65_000),
+          ...(options.text ? { text: options.text.slice(0, 65_000) } : {}),
+        },
+        ...(options.detailsUrl ? { details_url: options.detailsUrl } : {}),
+      }),
+    });
+    return Number(data.id);
+  }
+
+  async publishValidationCheck(
+    owner: string,
+    repo: string,
+    headSha: string,
+    options: ValidationCheckOptions,
+  ): Promise<number> {
+    const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: CHECK_CONTEXT_CI,
+        head_sha: headSha,
+        status: 'completed',
+        conclusion: options.conclusion,
+        completed_at: new Date(this.now()).toISOString(),
+        output: {
+          title: options.title,
+          summary: options.summary.slice(0, 65_000),
+          ...(options.text ? { text: options.text.slice(0, 65_000) } : {}),
+        },
+        ...(options.detailsUrl ? { details_url: options.detailsUrl } : {}),
+      }),
+    });
+    return Number(data.id);
+  }
+
+  /**
+   * Emits an authenticated repository_dispatch event to a target repository.
+   * Requires `contents: write` permission on the target repository.
+   */
+  async emitRepositoryDispatch(
+    owner: string,
+    repo: string,
+    eventType: string,
+    clientPayload: Record<string, unknown>,
+  ): Promise<void> {
+    await this.request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/dispatches`, {
+      method: 'POST',
+      body: JSON.stringify({
+        event_type: eventType,
+        client_payload: clientPayload,
+      }),
+    });
+  }
+
+  /**
+   * Emits the authoritative `review-yeti-ci-request` completion event.
+   * Validates the payload against `review-yeti-ci-request.v1` before network transmission.
+   */
+  async emitCIRequest(
+    owner: string,
+    repo: string,
+    payload: ReviewCIRequestPayload,
+  ): Promise<void> {
+    const validation = validateReviewCIRequestPayload(payload);
+    if (!validation.valid) {
+      throw new Error(`Invalid review-yeti-ci-request payload: ${validation.error}`);
+    }
+    await this.emitRepositoryDispatch(owner, repo, EVENT_TYPE_CI_REQUEST, validation.value as unknown as Record<string, unknown>);
   }
 
   /**

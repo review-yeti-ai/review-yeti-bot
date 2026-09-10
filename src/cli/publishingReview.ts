@@ -82,6 +82,17 @@ export interface PublishingCheckClient {
     text?: string;
     annotations?: CheckAnnotation[];
   }): Promise<void>;
+  publishGateCheck?(
+    owner: string,
+    repo: string,
+    headSha: string,
+    options: {
+      conclusion: 'success' | 'failure';
+      title: string;
+      summary: string;
+      text?: string;
+    },
+  ): Promise<number>;
 }
 
 export interface PublishingReviewPersonaMetrics {
@@ -210,8 +221,8 @@ export function createBifrostPublishingConfig(model: string): ReturnType<typeof 
         enabled: true,
         model,
         effort: 'medium',
-        review_timeout_s: 300,
-        arbiter_timeout_s: 300,
+        review_timeout_s: 90,
+        arbiter_timeout_s: 90,
       }],
       arbiter: { order: [providerId] },
     },
@@ -492,8 +503,8 @@ export function resolveWorkerConfig(
           enabled: true,
           model: transport.model,
           effort: 'medium',
-          review_timeout_s: 300,
-          arbiter_timeout_s: 300,
+          review_timeout_s: 90,
+          arbiter_timeout_s: 90,
         },
       ],
       arbiter: {
@@ -766,6 +777,34 @@ export async function runPublishingReviewWorker(
         }),
     });
 
+    if (deps.checkClient.publishGateCheck) {
+      const gateTitle = conclusion === 'success'
+        ? `Review Yeti Gate: Approved (${verdict})`
+        : `Review Yeti Gate: Blocked (${verdict})`;
+      const gateSummary = [
+        `### Review Yeti Gate: ${conclusion === 'success' ? 'Eligible' : 'Ineligible'}`,
+        `- **Verdict**: \`${verdict}\``,
+        `- **Conclusion**: \`${conclusion}\``,
+        `- **Head SHA**: \`${identity.headSha}\``,
+        `- **Attempt ID**: \`${identity.runId}\``,
+        `- **Blocking Findings**: ${blocking.length}`,
+        `Attributed to GitHub App \`ct-review-bot\` (App ID 4385771).`,
+      ].join('\n\n');
+
+      try {
+        await deps.checkClient.publishGateCheck(identity.owner, identity.repoName, identity.headSha, {
+          conclusion,
+          title: gateTitle,
+          summary: gateSummary,
+        });
+      } catch (gateErr) {
+        logger.warn('Failed to publish Review Yeti Gate check', {
+          runId: identity.runId,
+          error: gateErr instanceof Error ? gateErr.message : String(gateErr),
+        });
+      }
+    }
+
     const completedAt = new Date(now()).toISOString();
     return {
       version: 'ReviewYetiPublishingReview.v1',
@@ -816,6 +855,22 @@ export async function runPublishingReviewWorker(
         error: publishError instanceof Error ? publishError.message : String(publishError),
       });
     }
+
+    if (deps.checkClient.publishGateCheck) {
+      try {
+        await deps.checkClient.publishGateCheck(identity.owner, identity.repoName, identity.headSha, {
+          conclusion: 'failure',
+          title: 'Review Yeti Gate: Ineligible (review failed)',
+          summary: `Review failed closed with class \`${failureClass}\` at \`${identity.headSha}\`. Policy gate closed.`,
+        });
+      } catch (gatePublishError) {
+        logger.warn('Failed to publish fail-closed Review Yeti Gate', {
+          runId: identity.runId,
+          error: gatePublishError instanceof Error ? gatePublishError.message : String(gatePublishError),
+        });
+      }
+    }
+
     throw error;
   }
 }

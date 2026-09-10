@@ -271,6 +271,59 @@ export async function getGitHubAppRepositoryPublishToken(
 }
 
 /**
+ * Mints a short-lived installation token constrained to one repository and
+ * `contents: write` permission required for repository_dispatch completion events.
+ */
+export async function getGitHubAppRepositoryDispatchToken(
+  config: GitHubRepositoryInstallationConfig,
+  fetchFn: typeof fetch = globalThis.fetch,
+): Promise<InstallationTokenResult> {
+  const installationId = await getGitHubAppInstallationIdForRepository(config, fetchFn);
+  const { appId, privateKey, repo, baseUrl = 'https://api.github.com' } = config;
+  const jwt = generateGitHubAppJwt(appId, privateKey);
+  const url = `${baseUrl.replace(/\/+$/, '')}/app/installations/${installationId}/access_tokens`;
+  const response = await fetchFn(url, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${jwt}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'ct-review-bot[bot]',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    body: JSON.stringify({
+      repositories: [repo],
+      permissions: { contents: 'write' },
+    }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub App repository dispatch token exchange failed HTTP ${response.status}`);
+  }
+  const body = await response.json() as {
+    token?: unknown;
+    expires_at?: unknown;
+    permissions?: unknown;
+  };
+  const token = typeof body.token === 'string' ? body.token : '';
+  const expiresAt = typeof body.expires_at === 'string' ? body.expires_at : '';
+  const permissions = body.permissions && typeof body.permissions === 'object' && !Array.isArray(body.permissions)
+    ? body.permissions as Record<string, unknown>
+    : {};
+  const unexpected = Object.keys(permissions).filter((key) => key !== 'contents' && key !== 'metadata');
+  if (!token.startsWith('ghs_') || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now() ||
+      permissions.contents !== 'write' || unexpected.length > 0 ||
+      (permissions.metadata !== undefined && permissions.metadata !== 'read')) {
+    throw new Error('GitHub App repository dispatch token exchange returned an unsafe contract');
+  }
+  return {
+    token,
+    expiresAt,
+    permissions: permissions as Record<string, string>,
+  };
+}
+
+/**
  * Mints an ephemeral GitHub App installation token for chat actions without storing long-lived personal access tokens.
  */
 export async function mintEphemeralChatToken(

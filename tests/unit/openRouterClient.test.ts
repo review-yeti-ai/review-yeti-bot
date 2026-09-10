@@ -221,6 +221,62 @@ describe('OpenRouterClient', () => {
     expect(new Headers(init.headers).get('accept')).toBe('text/event-stream');
   });
 
+  it('defaults to direct SSE streaming when stream parameter is undefined, parsing standard SSE chunks directly', async () => {
+    const stream = [
+      ': keep-alive\n\n',
+      'data: {"id":"chatcmpl-default","choices":[{"delta":{"content":"DEFAULT_STREAM_OK"}}]}\n\n',
+      'data: {"id":"chatcmpl-default","choices":[{"delta":{}}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}\n\n',
+      'data: [DONE]\n\n',
+    ].join('');
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(stream, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    // Note: stream property is intentionally omitted to verify default behavior
+    const result = await client.complete({
+      model: 'openai/gpt-4o-mini',
+      messages: [{ role: 'user', content: 'test' }],
+      timeoutMs: 5000,
+    });
+
+    expect(result.content).toBe('DEFAULT_STREAM_OK');
+    expect(result.usage).toEqual({ prompt: 12, completion: 4, total: 16 });
+    const init = fetchImplementation.mock.calls[0][1] as RequestInit;
+    expect(new Headers(init.headers).get('accept')).toBe('text/event-stream');
+  });
+
+  it('performs zero-clone body capture for non-streaming requests, recovering from Speakeasy schema validation failures', async () => {
+    // Non-streaming response missing SDK created/object fields
+    const rawResponseBody = JSON.stringify({
+      id: 'chatcmpl-non-sdk',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'RECOVERED_FROM_RAW_JSON' },
+        finish_reason: 'stop',
+      }],
+      usage: { prompt_tokens: 15, completion_tokens: 5, total_tokens: 20 },
+    });
+    const mockResponse = new Response(rawResponseBody, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+    const cloneSpy = vi.spyOn(mockResponse, 'clone');
+    const fetchImplementation = vi.fn().mockResolvedValue(mockResponse);
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    const result = await client.complete({
+      ...request,
+      stream: false,
+    });
+
+    expect(result.content).toBe('RECOVERED_FROM_RAW_JSON');
+    expect(result.usage?.total).toBe(20);
+    // Verify response.clone() was NOT called (zero-clone guarantee)
+    expect(cloneSpy).not.toHaveBeenCalled();
+  });
+
   it('replays fragmented SSE frames and keepalives without losing usage or cost metadata', async () => {
     const encoded = [
       ': keep-alive\n\n',
@@ -656,6 +712,39 @@ describe('OpenRouterClient', () => {
 
     expect(firstTokenCalled).toBe(true);
     expect(res.content).toBe('{"verdict":"SHIP"}');
+  });
+
+  it('unhandled stream errors cleanly cancel the underlying HTTP connection without blocking on compatibility deadline', async () => {
+    let capturedSignal: AbortSignal | null | undefined;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${sdkChunk({ content: '{"verdict"' })}\n\n`));
+        // Simulate sudden stream network error
+        controller.error(new Error('connection reset by peer'));
+      },
+    });
+
+    const fetchImplementation = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      capturedSignal = init?.signal;
+      return Promise.resolve(new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }));
+    });
+
+    const client = new OpenRouterClient({
+      baseUrl: 'https://openrouter.test/api/v1',
+      apiKey: 'test-openrouter-key',
+      fetchImplementation,
+    });
+
+    await expect(client.complete({
+      ...request,
+      stream: true,
+      timeoutMs: 5000,
+    })).rejects.toThrow();
+
+    expect(capturedSignal?.aborted).toBe(true);
   });
 
   it('replays a credential-free OpenRouter cassette and rejects an unmatched request', async () => {

@@ -82,24 +82,24 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
           enabled: true,
           model: V3_PROVIDER_MODELS.synthetic,
           effort: 'low',
-          review_timeout_s: 120,
-          arbiter_timeout_s: 120,
+          review_timeout_s: 90,
+          arbiter_timeout_s: 90,
         },
         {
           id: 'claude',
           enabled: true,
           model: 'claude-opus-4-8',
           effort: 'low',
-          review_timeout_s: 300,
-          arbiter_timeout_s: 300,
+          review_timeout_s: 90,
+          arbiter_timeout_s: 90,
         },
         {
           id: 'codex',
           enabled: false,
           model: 'codex-gateway/gpt-5.6-sol-high',
           effort: 'low',
-          review_timeout_s: 300,
-          arbiter_timeout_s: 300,
+          review_timeout_s: 90,
+          arbiter_timeout_s: 90,
         },
       ],
       arbiter: {
@@ -495,6 +495,12 @@ export function sanitizeV3Config(raw: Record<string, unknown>): Record<string, u
         if (!isSupported) {
           throw new ConfigValidationError(`Provider '${p.id}' model '${p.model}' is not an exact allowlisted model for provider '${p.id}'`);
         }
+      }
+      if (typeof p.review_timeout_s === 'number') {
+        p.review_timeout_s = Math.min(Math.max(1, p.review_timeout_s), 90);
+      }
+      if (typeof p.arbiter_timeout_s === 'number') {
+        p.arbiter_timeout_s = Math.min(Math.max(1, p.arbiter_timeout_s), 90);
       }
       definedProviderIds.add(p.id);
       sanitizedProviders.push(p);

@@ -223,6 +223,46 @@ export class PostgresStore {
           ADD COLUMN IF NOT EXISTS execution_attempt INTEGER NOT NULL DEFAULT 0;
         CREATE INDEX IF NOT EXISTS review_runs_delivery_idx ON review_runs (delivery_id);
 
+        CREATE TABLE IF NOT EXISTS review_completion_outbox (
+          completion_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
+          delivery_id TEXT REFERENCES github_deliveries(delivery_id) ON DELETE SET NULL,
+          repository_id BIGINT NOT NULL,
+          repository TEXT NOT NULL,
+          pr_number INTEGER NOT NULL,
+          base_sha TEXT NOT NULL,
+          head_sha TEXT NOT NULL,
+          attempt_id TEXT NOT NULL,
+          policy_digest TEXT NOT NULL,
+          validation_request_id TEXT UNIQUE NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'claimed', 'dispatched', 'completed', 'error', 'superseded', 'terminal')),
+          draft_deferred BOOLEAN NOT NULL DEFAULT FALSE,
+          verdict TEXT,
+          conclusion TEXT,
+          lease_owner TEXT,
+          lease_expires_at TIMESTAMP WITH TIME ZONE,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          error_text TEXT
+        );
+        CREATE INDEX IF NOT EXISTS review_completion_claim_idx
+          ON review_completion_outbox (status, available_at, lease_expires_at, draft_deferred);
+        CREATE INDEX IF NOT EXISTS review_completion_run_idx
+          ON review_completion_outbox (run_id);
+        CREATE INDEX IF NOT EXISTS review_completion_pr_idx
+          ON review_completion_outbox (repository_id, pr_number, head_sha);
+        CREATE UNIQUE INDEX IF NOT EXISTS review_completion_val_req_idx
+          ON review_completion_outbox (validation_request_id);
+        DO $$
+        BEGIN
+          ALTER TABLE review_completion_outbox DROP CONSTRAINT IF EXISTS review_completion_outbox_status_check;
+          ALTER TABLE review_completion_outbox ADD CONSTRAINT review_completion_outbox_status_check CHECK (status IN ('pending', 'claimed', 'dispatched', 'completed', 'error', 'superseded', 'terminal'));
+        EXCEPTION
+          WHEN OTHERS THEN NULL;
+        END $$;
+
         CREATE TABLE IF NOT EXISTS review_run_artifacts (
           run_id VARCHAR(255) NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
           stage VARCHAR(32) NOT NULL,

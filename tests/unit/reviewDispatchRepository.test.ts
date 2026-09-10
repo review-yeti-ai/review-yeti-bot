@@ -70,6 +70,7 @@ describe('PostgresReviewDispatchRepository', () => {
       'BEGIN', 'SELECT', 'INSERT', 'WITH', 'INSERT', 'UPDATE', 'INSERT', 'COMMIT',
     ]);
     expect(client.query.mock.calls[6][0]).toMatch(/review_dispatch_outbox/u);
+    expect(client.query.mock.calls[3][0]).toMatch(/review_completion_outbox/u);
     expect(client.query.mock.calls[3][0]).not.toContain('$6');
     expect(client.query.mock.calls[3][1]).toHaveLength(5);
     expect(client.query.mock.calls[4][0]).toMatch(/publication_mode/u);
@@ -458,6 +459,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(query).toHaveBeenCalledOnce();
     expect(sql).toMatch(/FOR UPDATE SKIP LOCKED/u);
     expect(sql).toMatch(/SET status = 'terminal'/u);
+    expect(sql).toMatch(/UPDATE review_dispatch_outbox AS outbox/u);
     expect(sql).toMatch(/RETURNING/u);
   });
 

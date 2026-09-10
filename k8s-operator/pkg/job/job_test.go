@@ -223,6 +223,9 @@ func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
 	if envValue(container, "REVIEW_PUBLICATION_MODE") != "app-gate" {
 		t.Fatalf("app-gate publication env = %q", envValue(container, "REVIEW_PUBLICATION_MODE"))
 	}
+	if envValue(container, "CT_REVIEW_DATA_DIR") != "/tmp/.ct-memory" {
+		t.Fatalf("CT_REVIEW_DATA_DIR env = %q, want /tmp/.ct-memory", envValue(container, "CT_REVIEW_DATA_DIR"))
+	}
 	if result.Labels["review-yeti.ai/publication-mode"] != "app-gate" {
 		t.Fatalf("app-gate job label = %q", result.Labels["review-yeti.ai/publication-mode"])
 	}

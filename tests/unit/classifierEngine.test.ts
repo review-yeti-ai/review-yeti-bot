@@ -241,9 +241,42 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
       });
 
       expect(result).not.toBeNull();
+      expect(mockClient.complete).toHaveBeenCalledWith(
+        expect.objectContaining({ reasoningEffort: 'low' })
+      );
       expect(result?.fastShip).toBe(true);
       expect(result?.rationale).toContain('Docs only');
       expect(result?.effortTier).toBe('low');
+    });
+
+    it('sets reasoningEffort to low and clamps timeout to 30s for provider review_timeout_s >= 30s', async () => {
+      const config = buildTestConfig();
+      config.reviewers.providers[0].review_timeout_s = 60;
+      (mockClient.complete as any).mockResolvedValueOnce({
+        model: 'claude-5-sonnet',
+        content: JSON.stringify({
+          fastShip: true,
+          selectedPersonas: [],
+          effortTier: 'low',
+          rationale: 'Docs only update.',
+        }),
+      });
+
+      await classifyReviewScope({
+        config,
+        changedFiles: [{ path: 'docs/guide.md', patch: '+ updated instructions' }],
+        candidatePersonas: config.personas,
+        repository: 'calltelemetry/ai-workspace',
+        headSha: 'abc1234',
+        client: mockClient,
+      });
+
+      expect(mockClient.complete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reasoningEffort: 'low',
+          timeoutMs: 30_000,
+        })
+      );
     });
 
     it('guardrail overrides fastShip to false if diff contains executable files', async () => {
@@ -838,6 +871,31 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
           expect(classifierCalled).toBe(false);
           expect(panelResult.personas.length).toBeGreaterThanOrEqual(1);
           expect(panelResult.arbiter.verdict).toBe('SHIP');
+        });
+
+        it('safely defaults timeoutMs to 30s when providerSpec.review_timeout_s is undefined or non-positive', async () => {
+          const mockClient = { complete: vi.fn().mockResolvedValue({ content: JSON.stringify({ fastShip: true }) }) };
+          const configWithoutTimeout: any = {
+            reviewers: {
+              providers: [{ id: 'synthetic', enabled: true, model: 'synthetic/glm-5.2' }],
+            },
+          };
+
+          await classifyReviewScope({
+            changedFiles: [{ path: 'README.md', patch: '+ docs' }],
+            repository: 'calltelemetry/ai-workspace',
+            headSha: 'sha-timeout-fallback',
+            candidatePersonas: [],
+            config: configWithoutTimeout,
+            client: mockClient as any,
+          });
+
+          expect(mockClient.complete).toHaveBeenCalledWith(
+            expect.objectContaining({
+              timeoutMs: 30_000,
+              reasoningEffort: 'low',
+            })
+          );
         });
       });
     });
