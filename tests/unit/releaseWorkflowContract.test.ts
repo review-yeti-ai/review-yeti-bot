@@ -36,6 +36,21 @@ describe('release workflow contract', () => {
     expect(workflow).not.toMatch(/\b(?:DOKS|DigitalOcean|doctl|kubectl)\b/u);
   });
 
+  it('provides the integration suite with the same PostgreSQL fixture as protected CI', () => {
+    const workflow = fs.readFileSync(canonicalPath, 'utf8');
+    const releaseJob = workflow.slice(
+      workflow.indexOf('\n  validate-and-release:'),
+      workflow.indexOf('\n  promote-rolling-v1:'),
+    );
+
+    expect(releaseJob).toMatch(/services:\s*\n\s+postgres:/u);
+    expect(releaseJob).toContain('image: postgres:17-alpine');
+    expect(releaseJob).toContain(
+      'REVIEW_YETI_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres',
+    );
+    expect(releaseJob).toContain('pg_isready -U postgres -d postgres');
+  });
+
   it('promotes rolling v1 only downstream of the canonical validated release job', () => {
     const workflow = fs.readFileSync(canonicalPath, 'utf8');
     const rollingWorkflow = fs.readFileSync(rollingPath, 'utf8');
