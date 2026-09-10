@@ -170,6 +170,32 @@ describe('DOKS Action dispatch client', () => {
     expect(fetchMock.mock.calls[2][0]).toBe('https://review-bot.calltelemetry.com/api/dispatch/action');
   });
 
+  it('retries transient OIDC HTTP failures and rejects permanent OIDC failures immediately', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const sleep = vi.fn(async () => {});
+    const transient = vi.fn()
+      .mockResolvedValueOnce(new Response('temporarily unavailable', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        version: 'ActionDispatchAccepted.v1',
+        status: 'accepted',
+        runId: `run_${'5'.repeat(32)}`,
+      }), { status: 202 }));
+
+    const result = await dispatchAction(environment(), transient, { sleep });
+
+    expect(result.status).toBe('accepted');
+    expect(sleep).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledWith(1_000);
+    expect(transient.mock.calls[1][0]).toEqual(transient.mock.calls[0][0]);
+
+    const permanentSleep = vi.fn(async () => {});
+    const permanent = vi.fn().mockResolvedValueOnce(new Response('forbidden', { status: 403 }));
+    await expect(dispatchAction(environment(), permanent, { sleep: permanentSleep })).rejects.toThrow(/OIDC token request failed with HTTP 403/u);
+    expect(permanent).toHaveBeenCalledOnce();
+    expect(permanentSleep).not.toHaveBeenCalled();
+  });
+
   it('bounds dispatch retries and does not retry an actionable client rejection', async () => {
     const { dispatchAction } = await import(modulePath);
     const sleep = vi.fn(async () => {});
@@ -189,6 +215,16 @@ describe('DOKS Action dispatch client', () => {
     await expect(dispatchAction(environment(), rejected, { sleep })).rejects.toThrow(/unknown repository_id 42/u);
     expect(rejected).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledTimes(2);
+
+    const oidcSleep = vi.fn(async () => {});
+    const oidcUnavailable = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'));
+    await expect(dispatchAction(environment(), oidcUnavailable, { sleep: oidcSleep }))
+      .rejects.toThrow(/OIDC token request transport failed after 3 attempts.*fetch failed/iu);
+    expect(oidcUnavailable).toHaveBeenCalledTimes(3);
+    expect(oidcSleep).toHaveBeenCalledTimes(2);
   });
 
   it('fails closed on missing OIDC capability, non-202 responses, and malformed receipts', async () => {
