@@ -11,6 +11,7 @@ export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
 export function createActionDispatchApp(options: ActionDispatchAppOptions): Express {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', 1);
   // Only the typed completion endpoint accepts bounded full persona evidence.
   // Action admission retains its smaller limit and strict request schema.
   app.use('/api/dispatch/completion', express.json({ limit: MAX_COMPLETION_BYTES, strict: true }));
@@ -36,7 +37,7 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
 
   const limiter = options.rateLimiter !== undefined
     ? options.rateLimiter
-    : createRateLimiter({ windowMs: 60_000, max: 60 });
+    : createRateLimiter({ windowMs: 60_000, max: 60, trustProxy: true });
 
   app.use('/api/dispatch', limiter, createActionDispatchRouter(options));
   app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {

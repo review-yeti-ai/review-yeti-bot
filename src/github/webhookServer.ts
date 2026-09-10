@@ -66,7 +66,7 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
 
   const limiter = options.rateLimiter !== undefined
     ? options.rateLimiter
-    : createRateLimiter({ windowMs: 60_000, max: 120 });
+    : createRateLimiter({ windowMs: 60_000, max: 120, trustProxy: true });
   router.use(limiter);
 
   // Middleware 1: Parse JSON and retain raw body buffer
