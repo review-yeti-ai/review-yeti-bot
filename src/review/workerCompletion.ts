@@ -13,6 +13,8 @@ export const workerFailureClasses = [
   'rate_limit',
   'transport',
   'provider_error',
+  'malformed_output',
+  'internal_error',
 ] as const;
 
 export const workerTerminalFailureSchema = z.object({
