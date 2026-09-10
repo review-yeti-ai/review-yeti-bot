@@ -4,8 +4,9 @@ Status: additive implementation in progress for API-3210, not deployed acceptanc
 PostgresStore installs additive schema; the dedicated dispatch service can run
 the new controller only under explicit configuration. Controller and new-review
 admission both default off. No required checks, author readiness, provider policy
-or CI triggers are changed. The worker still owns the separate raw `Review Yeti`
-findings check; only the service owns `Review Yeti Gate`.
+or CI triggers are changed. In the deployed non-authoritative lane, the worker
+publishes exactly one `Review Yeti` check containing both the verdict and findings;
+it does not publish the additive service-owned `Review Yeti Gate` check.
 
 ## Ownership and identity
 
