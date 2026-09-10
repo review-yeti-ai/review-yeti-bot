@@ -95,11 +95,11 @@ if (!fireworksTransport || fireworksTransport.enabled !== false) {
 }
 const bifrostTransport = review.transports.find((transport) => transport.name === 'bifrost');
 if (!bifrostTransport
-    || bifrostTransport.max_in_flight !== 6
+    || bifrostTransport.max_in_flight !== 10
     || bifrostTransport.concurrency_scope !== 'provider'
     || bifrostTransport.capacity_wait_timeout_ms !== 30000
     || bifrostTransport.connect_timeout_ms !== 90000) {
-  throw new Error('Bifrost must use a six-lane ceiling and a 90s connect deadline so concurrent persona streams can establish');
+  throw new Error('Bifrost must use a 10-lane ceiling and a 90s connect deadline so concurrent persona streams can establish');
 }
 if (bifrostTransport.max_wall_clock_ms !== 900000) {
   throw new Error('Bifrost must allow a 15-minute live thinking stream (max_wall_clock_ms=900000)');

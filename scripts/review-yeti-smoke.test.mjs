@@ -50,7 +50,7 @@ function policyFixture() {
       stall_ms: '20000',
       budget: { lane_deadline_ms: '960000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
-        { name: 'bifrost', enabled: true, base_url: 'https://llm-gateway.example.com/v1', api_key_env: 'BIFROST_PR_REVIEW_API_KEY', model: 'ollama/glm-5.3-flash', compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 90000, stream: true, reasoning_effort: 'medium', max_tokens: 65536 },
+        { name: 'bifrost', enabled: true, base_url: 'https://llm-gateway.example.com/v1', api_key_env: 'BIFROST_PR_REVIEW_API_KEY', model: 'ollama/glm-5.3-flash', compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 90000, stream: true, reasoning_effort: 'medium', max_tokens: 32768 },
         {
           name: 'openrouter-primary',
           enabled: true,
@@ -83,7 +83,7 @@ function policyFixture() {
       : transport.name === 'synthetic'
         ? 5
         : (transport.name === 'ollama' || transport.name === 'bifrost')
-          ? 6
+          ? 10
           : 1;
     transport.concurrency_scope = transport.name === 'synthetic' ? 'model' : 'provider';
     transport.capacity_wait_timeout_ms = transport.name === 'openrouter-primary'
@@ -152,7 +152,7 @@ test('Example API resolves Bifrost primary plus OpenRouter fleet fallback and a 
   assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER);
   assert.equal(resolved.review_yeti.dispatch_mode, 'ordered');
   assert.equal(transports[0].name, 'bifrost');
-  assert.equal(transports[0].max_in_flight, 6);
+  assert.equal(transports[0].max_in_flight, 10);
   assert.equal(transports[0].concurrency_scope, 'provider');
   assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
   assert.equal(transports[0].connect_timeout_ms, 90000);
@@ -227,7 +227,7 @@ test('the Ollama repository set is retired — every repository inherits the sam
     const transports = validatePolicy(resolved, repository);
     assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER, repository);
     assert.equal(resolved.review_yeti.dispatch_mode, 'ordered', repository);
-    assert.equal(transports[0].max_in_flight, 6, repository);
+    assert.equal(transports[0].max_in_flight, 10, repository);
     assert.equal(transports[0].connect_timeout_ms, 90000, repository);
   }
 });
@@ -814,7 +814,7 @@ test('bifrost smoke first-byte budget uses max_wall_clock_ms instead of OpenRout
   });
 
   assert.deepEqual(healthy, ['bifrost']);
-  assert.equal(calls[0].max_tokens, 65536);
+  assert.equal(calls[0].max_tokens, 32768);
   assert.equal(calls[0].reasoning_effort, 'medium');
 });
 

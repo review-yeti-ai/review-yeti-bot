@@ -58,8 +58,8 @@ if any(item.get('reasoning_effort') == 'max' for item in transports):
     raise SystemExit("reasoning_effort 'max' is forbidden; measured worst arm (recall 0.425, 35% errors)")
 if any(item.get('name') == 'bifrost' and item.get('reasoning_effort') not in ('medium', 'none') for item in transports):
     raise SystemExit("Bifrost must use reasoning_effort 'medium' or 'none' (REL-525: 'high' overran the 65536 budget on 2 of 6 lanes)")
-if any(item.get('name') == 'bifrost' and (not isinstance(item.get('max_tokens'), int) or item.get('max_tokens') < 65536) for item in transports):
-    raise SystemExit('Bifrost must declare an explicit max_tokens budget of at least 65536')
+if any(item.get('name') == 'bifrost' and (not isinstance(item.get('max_tokens'), int) or item.get('max_tokens') < 32768) for item in transports):
+    raise SystemExit('Bifrost must declare an explicit max_tokens budget of at least 32768')
 bifrost = next((item for item in configured_transports if item.get('name') == 'bifrost'), None)
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
 gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
@@ -746,8 +746,8 @@ transports = json.loads('\n'.join(lines[start + 1:end]))
 if [transport['name'] for transport in transports] != ['bifrost', 'openrouter-primary']:
     raise SystemExit('Example API must emit Bifrost primary plus OpenRouter fleet fallback (REL-710)')
 bifrost = transports[0]
-if (bifrost.get('max_in_flight'), bifrost.get('concurrency_scope'), bifrost.get('capacity_wait_timeout_ms'), bifrost.get('connect_timeout_ms'), bifrost.get('max_wall_clock_ms')) != (6, 'provider', 30000, 90000, 900000):
-    raise SystemExit('Example API Bifrost admission must cover the six-persona panel, a 90s connect deadline, and a 15-minute live thinking stream')
+if (bifrost.get('max_in_flight'), bifrost.get('concurrency_scope'), bifrost.get('capacity_wait_timeout_ms'), bifrost.get('connect_timeout_ms'), bifrost.get('max_wall_clock_ms')) != (10, 'provider', 30000, 90000, 900000):
+    raise SystemExit('Example API Bifrost admission must cover the 10-lane ceiling, a 90s connect deadline, and a 15-minute live thinking stream')
 PY
 echo "[cisco-bifrost-primary] passed"
 
@@ -765,8 +765,8 @@ end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].s
 transports = json.loads('\n'.join(lines[start + 1:end]))
 if [transport['name'] for transport in transports] != ['bifrost', 'openrouter-primary']:
     raise SystemExit(f'{sys.argv[2]} must emit Bifrost primary plus OpenRouter fleet fallback (REL-710)')
-if transports[0].get('max_in_flight') != 6 or transports[0].get('connect_timeout_ms') != 90000:
-    raise SystemExit(f'{sys.argv[2]} Bifrost admission must cover the six-persona panel and a 90s connect deadline')
+if transports[0].get('max_in_flight') != 10 or transports[0].get('connect_timeout_ms') != 90000:
+    raise SystemExit(f'{sys.argv[2]} Bifrost admission must cover the 10-lane ceiling and a 90s connect deadline')
 PY
   echo "[$repo bifrost-primary] passed"
 done

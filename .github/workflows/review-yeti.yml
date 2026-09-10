@@ -426,20 +426,6 @@ jobs:
         working-directory: .exampleorg-review-actions
         run: node scripts/annotate-transport-failover.mjs "${{ steps.review.outputs.provider-telemetry-path }}"
 
-      - name: Enforce exact-head Review Yeti verdict
-        if: always()
-        env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
-          REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
-          GATE_DECISION: ${{ steps.passthrough.outputs.gate-decision || steps.review.outputs.gate-decision }}
-          MERGE_ELIGIBLE: ${{ steps.passthrough.outputs.merge-eligible || steps.review.outputs.merge-eligible }}
-          FILES_OMITTED: ${{ steps.passthrough.outputs.files-omitted || steps.review.outputs.files-omitted }}
-          DISPATCH_REFLECTION_STATUS: ${{ steps.passthrough.outputs.review-dispatch-reflection-status || steps.review.outputs.review-dispatch-reflection-status }}
-          PROVIDER_RECEIPT_DIGEST: ${{ steps.passthrough.outputs.review-dispatch-provider-receipt-digest || steps.review.outputs.review-dispatch-provider-receipt-digest }}
-          RUN_REPORT_PATH: ${{ steps.passthrough.outputs.run-report-path || steps.review.outputs.run-report-path }}
-          REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}
-        run: .exampleorg-review-actions/scripts/check-review-verdict.sh
-
       - name: Report Review Yeti Check Run to target repository
         if: always() && inputs.central_execution && steps.ry_token.outputs.token != ''
         env:
@@ -470,3 +456,17 @@ jobs:
               echo "::notice::Direct workflow run dispatch was skipped or not supported on target repo."
             }
           fi
+
+      - name: Enforce exact-head Review Yeti verdict
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
+          REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
+          GATE_DECISION: ${{ steps.passthrough.outputs.gate-decision || steps.review.outputs.gate-decision }}
+          MERGE_ELIGIBLE: ${{ steps.passthrough.outputs.merge-eligible || steps.review.outputs.merge-eligible }}
+          FILES_OMITTED: ${{ steps.passthrough.outputs.files-omitted || steps.review.outputs.files-omitted }}
+          DISPATCH_REFLECTION_STATUS: ${{ steps.passthrough.outputs.review-dispatch-reflection-status || steps.review.outputs.review-dispatch-reflection-status }}
+          PROVIDER_RECEIPT_DIGEST: ${{ steps.passthrough.outputs.review-dispatch-provider-receipt-digest || steps.review.outputs.review-dispatch-provider-receipt-digest }}
+          RUN_REPORT_PATH: ${{ steps.passthrough.outputs.run-report-path || steps.review.outputs.run-report-path }}
+          REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}
+        run: .exampleorg-review-actions/scripts/check-review-verdict.sh
