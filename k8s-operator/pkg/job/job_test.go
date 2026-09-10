@@ -19,6 +19,7 @@ package job_test
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,138 @@ import (
 )
 
 const jobNamespace = "ct-review-system"
+
+// Go checks the envelope only; complete config/digest verification belongs to
+// the shared TypeScript parser. Formatting must survive the CR and env roundtrip.
+const preparedEnvelope = " {\n \"version\":\"PreparedReviewExecution.v1\",\n \"config\":{\"version\":3},\n \"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"ollama/glm-5.3-flash\"}\n} "
+
+func TestPreparedReviewAddsOnlyExplicitAuthoritativeEnvironment(t *testing.T) {
+	for _, completionURL := range []string{"", "https://dispatch.example.invalid/api/dispatch/completion"} {
+		t.Run(completionURL, func(t *testing.T) {
+			now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+			review := reviewFixture(now)
+			review.Spec.PublicationMode = "app-gate"
+			input := buildInput(review, now)
+			input.Publishing = publishingFixture()
+			input.Publishing.CompletionURL = completionURL
+			legacy, err := job.BuildWorkerJob(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hasEnv(legacy.Spec.Template.Spec.Containers[0], job.AuthoritativeGateEnv) || hasEnv(legacy.Spec.Template.Spec.Containers[0], job.PreparedConfigEnv) {
+				t.Fatal("legacy app-gate must not implicitly activate prepared mode")
+			}
+			raw := preparedEnvelope
+			review.Spec.PreparedReview = &raw
+			encoded, err := json.Marshal(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded v1alpha2.PRReviewJob
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			input.Review = &decoded
+			built, err := job.BuildWorkerJob(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			container := &built.Spec.Template.Spec.Containers[0]
+			if envValue(*container, job.AuthoritativeGateEnv) != "true" || envValue(*container, job.PreparedConfigEnv) != raw {
+				t.Fatal("prepared envelope was changed or opt-in flag is missing")
+			}
+			var legacyEnv []corev1.EnvVar
+			for _, env := range container.Env {
+				if env.Name != job.AuthoritativeGateEnv && env.Name != job.PreparedConfigEnv {
+					legacyEnv = append(legacyEnv, env)
+				}
+			}
+			container.Env = legacyEnv
+			if !reflect.DeepEqual(built, legacy) {
+				t.Fatal("prepared mode changed existing commands, provider/Secret references, callback settings or other Job fields")
+			}
+		})
+	}
+}
+
+func TestPreparedReviewAbsentLeavesReceiptOnlyJobUnchanged(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	built, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	container := built.Spec.Template.Spec.Containers[0]
+	if hasEnv(container, job.AuthoritativeGateEnv) || hasEnv(container, job.PreparedConfigEnv) {
+		t.Fatal("receipt-only job enabled prepared mode")
+	}
+}
+
+func TestPreparedReviewRejectsMalformedOrUnsafeEnvelope(t *testing.T) {
+	cases := map[string]string{
+		"empty": "", "whitespace": " ", "malformed": "{", "null": "null", "array": "[]", "scalar": `"text"`,
+		"wrong version":       strings.Replace(preparedEnvelope, "PreparedReviewExecution.v1", "PreparedReviewExecution.v2", 1),
+		"null config":         strings.Replace(preparedEnvelope, `{"version":3}`, "null", 1),
+		"array config":        strings.Replace(preparedEnvelope, `{"version":3}`, "[]", 1),
+		"missing config":      `{"version":"PreparedReviewExecution.v1","transport":{"baseUrl":"https://gateway.example.invalid/v1","model":"model"}}`,
+		"extra check":         strings.Replace(preparedEnvelope, `"config":`, `"checkId":4242,"config":`, 1),
+		"extra secret":        strings.Replace(preparedEnvelope, `"config":`, `"token":"synthetic-private-marker","config":`, 1),
+		"transport secret":    strings.Replace(preparedEnvelope, `"model":`, `"apiKey":"synthetic-private-marker","model":`, 1),
+		"userinfo":            strings.Replace(preparedEnvelope, "https://gateway.", "https://synthetic-private-marker@gateway.", 1),
+		"empty model":         strings.Replace(preparedEnvelope, "ollama/glm-5.3-flash", "", 1),
+		"utf8":                preparedEnvelope + string([]byte{0xff}),
+		"oversized":           preparedEnvelope + strings.Repeat(" ", job.MaxPreparedReviewBytes),
+		"multibyte oversized": strings.Replace(preparedEnvelope, `{"version":3}`, `{"note":"`+strings.Repeat("é", job.MaxPreparedReviewBytes/2)+`"}`, 1),
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+			review := reviewFixture(now)
+			review.Spec.PublicationMode = "app-gate"
+			review.Spec.PreparedReview = &raw
+			input := buildInput(review, now)
+			input.Publishing = publishingFixture()
+			built, err := job.BuildWorkerJob(input)
+			if built != nil || !errors.Is(err, job.ErrJobConfiguration) {
+				t.Fatalf("expected configuration rejection, got %v", err)
+			}
+			if strings.Contains(err.Error(), "synthetic-private-marker") {
+				t.Fatal("error exposed envelope content")
+			}
+		})
+	}
+}
+
+func TestPreparedReviewByteBoundaryAndLaneRestrictions(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	raw := preparedEnvelope + strings.Repeat(" ", job.MaxPreparedReviewBytes-len(preparedEnvelope))
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	review.Spec.PreparedReview = &raw
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	built, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envValue(built.Spec.Template.Spec.Containers[0], job.PreparedConfigEnv) != raw {
+		t.Fatal("boundary envelope was truncated")
+	}
+	raw += " "
+	if _, err := job.BuildWorkerJob(input); !errors.Is(err, job.ErrJobConfiguration) {
+		t.Fatal("accepted one byte over bound")
+	}
+	raw = preparedEnvelope
+	review.Spec.PublicationMode = "disabled"
+	if _, err := job.BuildWorkerJob(input); !errors.Is(err, job.ErrJobConfiguration) {
+		t.Fatal("accepted nonpublishing prepared review")
+	}
+	review.Spec.PublicationMode = "app-gate"
+	review.Spec.RunnerMode = "generic"
+	review.Spec.WorkerImage = "node:24-bookworm-slim"
+	if _, err := job.BuildWorkerJob(input); !errors.Is(err, job.ErrJobConfiguration) {
+		t.Fatal("accepted generic prepared review")
+	}
+}
 
 func reviewFixture(now time.Time) *v1alpha2.PRReviewJob {
 	receivedAt := metav1.NewTime(now)
@@ -87,9 +220,83 @@ func TestBuildWorkerJobAcceptsExecutionAttemptScopedSecret(t *testing.T) {
 	review := reviewFixture(now)
 	review.Name = review.Name + "-a2"
 	review.Spec.RunSecretName = review.Spec.RunSecretName + "-a2"
+	attempt := int32(2)
+	review.Spec.ExecutionAttempt = &attempt
 
-	if _, err := job.BuildWorkerJob(buildInput(review, now)); err != nil {
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
 		t.Fatalf("execution-attempt-scoped review was rejected: %v", err)
+	}
+	if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != "2" {
+		t.Fatalf("explicit execution attempt env = %q, want 2", got)
+	}
+}
+
+func TestBuildWorkerJobDefaultsLegacyUnsuffixedSecretToAttemptOne(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+
+	built, err := job.BuildWorkerJob(buildInput(review, now))
+	if err != nil {
+		t.Fatalf("legacy unsuffixed review was rejected: %v", err)
+	}
+	if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != "1" {
+		t.Fatalf("legacy unsuffixed execution attempt env = %q, want 1", got)
+	}
+}
+
+func TestBuildWorkerJobDecodesLegacySuffixedSecretWhenFieldIsAbsent(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, attempt := range []string{"1", "2", "2147483647"} {
+		t.Run(attempt, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Name += "-a" + attempt
+			review.Spec.RunSecretName += "-a" + attempt
+			built, err := job.BuildWorkerJob(buildInput(review, now))
+			if err != nil {
+				t.Fatalf("legacy suffixed review was rejected: %v", err)
+			}
+			if got := envValue(built.Spec.Template.Spec.Containers[0], job.ExecutionAttemptEnv); got != attempt {
+				t.Fatalf("legacy execution attempt env = %q, want %q", got, attempt)
+			}
+		})
+	}
+}
+
+func TestBuildWorkerJobRejectsLegacySecretSuffixBoundaries(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	// Exercise the public builder, including validateInput's canonical-digit
+	// guard before ParseInt. Mirrored in the TypeScript run Secret contract tests.
+	for _, suffix := range []string{"-a0", "-a-1", "-anonsense", "-a2147483648", "-a+2", "-a01"} {
+		t.Run(suffix, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.RunSecretName += suffix
+			built, err := job.BuildWorkerJob(buildInput(review, now))
+			if built != nil || !errors.Is(err, job.ErrJobConfiguration) {
+				t.Fatalf("invalid legacy Secret built a Job or returned wrong error: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildWorkerJobRejectsExplicitExecutionAttemptSecretMismatch(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name        string
+		attempt     int32
+		secretDelta string
+	}{
+		{name: "explicit retry with unsuffixed Secret", attempt: 2},
+		{name: "explicit first attempt with retry Secret", attempt: 1, secretDelta: "-a2"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.RunSecretName += test.secretDelta
+			review.Spec.ExecutionAttempt = &test.attempt
+			if _, err := job.BuildWorkerJob(buildInput(review, now)); err == nil {
+				t.Fatal("mismatched execution attempt and Secret unexpectedly built a Job")
+			}
+		})
 	}
 }
 
@@ -130,8 +337,8 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if result.Spec.Completions == nil || *result.Spec.Completions != 1 || result.Spec.Parallelism == nil || *result.Spec.Parallelism != 1 {
 		t.Fatalf("job cardinality = completions %v parallelism %v, want one", result.Spec.Completions, result.Spec.Parallelism)
 	}
-	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 300 {
-		t.Fatalf("job TTL = %v, want 300", result.Spec.TTLSecondsAfterFinished)
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("job TTL = %v, want 0", result.Spec.TTLSecondsAfterFinished)
 	}
 	if len(result.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("containers = %d, want one", len(result.Spec.Template.Spec.Containers))
@@ -142,8 +349,8 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	}
 	requestCPU := container.Resources.Requests[corev1.ResourceCPU]
 	requestMemory := container.Resources.Requests[corev1.ResourceMemory]
-	if got := requestCPU.String(); got != "500m" || requestMemory.String() != "768Mi" {
-		t.Fatalf("resource requests = %v, want 500m/768Mi", container.Resources.Requests)
+	if got := requestCPU.String(); got != "250m" || requestMemory.String() != "512Mi" {
+		t.Fatalf("resource requests = %v, want 250m/512Mi", container.Resources.Requests)
 	}
 	limitCPU := container.Resources.Limits[corev1.ResourceCPU]
 	limitMemory := container.Resources.Limits[corev1.ResourceMemory]
@@ -226,6 +433,10 @@ func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
 	if envValue(container, "CT_REVIEW_DATA_DIR") != "/tmp/.ct-memory" {
 		t.Fatalf("CT_REVIEW_DATA_DIR env = %q, want /tmp/.ct-memory", envValue(container, "CT_REVIEW_DATA_DIR"))
 	}
+	if envValue(container, "REVIEW_COMPLETION_URL") != "https://dispatch.example.invalid/api/dispatch/completion" ||
+		envValue(container, "REVIEW_EXECUTION_ATTEMPT") != "1" {
+		t.Fatalf("app-gate callback identity env missing: %#v", container.Env)
+	}
 	if result.Labels["review-yeti.ai/publication-mode"] != "app-gate" {
 		t.Fatalf("app-gate job label = %q", result.Labels["review-yeti.ai/publication-mode"])
 	}
@@ -233,6 +444,23 @@ func TestBuildWorkerJobAcceptsAppGatePublicationMode(t *testing.T) {
 		if hasEnv(container, forbidden) {
 			t.Fatalf("app-gate worker exposes forbidden credential %s", forbidden)
 		}
+	}
+}
+
+func TestBuildWorkerJobKeepsLegacyPublishingWhenCompletionURLIsUnset(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.CompletionURL = ""
+	result, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build legacy app-gate job: %v", err)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if hasEnv(container, "REVIEW_COMPLETION_URL") {
+		t.Fatalf("legacy publishing job unexpectedly enables completion callback: %#v", container.Env)
 	}
 }
 
@@ -347,6 +575,48 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 		if hasEnv(container, forbidden) {
 			t.Fatalf("same-head worker exposes forbidden credential %s", forbidden)
 		}
+	}
+}
+
+// REL-733: the CRD's CEL rule (and validateInput) accept any admitted window in
+// [900s, 3600s], not just the original fixed 15 minutes. The worker's active
+// deadline must scale with whichever window this run was actually admitted
+// with, capped at that window minus the publication/failure-conclusion reserve.
+func TestBuildWorkerJobScalesActiveDeadlineWithAdmittedWindow(t *testing.T) {
+	received := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name     string
+		window   time.Duration
+		now      time.Time
+		wantSecs int64
+	}{
+		{name: "thirty minute window at admission", window: 30 * time.Minute, now: received, wantSecs: 1740},
+		{name: "sixty minute window at admission", window: 60 * time.Minute, now: received, wantSecs: 3540},
+		{name: "thirty minute window mid-run", window: 30 * time.Minute, now: received.Add(10 * time.Minute), wantSecs: 1140},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			review := reviewFixture(received)
+			review.Spec.TerminalDeadline = metav1.NewTime(received.Add(test.window))
+			result, err := job.BuildWorkerJob(buildInput(review, test.now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Spec.ActiveDeadlineSeconds == nil || *result.Spec.ActiveDeadlineSeconds != test.wantSecs {
+				t.Fatalf("active deadline = %v, want %d", result.Spec.ActiveDeadlineSeconds, test.wantSecs)
+			}
+		})
+	}
+	// Beyond the CRD's 3600s ceiling, the run was never admissible.
+	tooLong := reviewFixture(received)
+	tooLong.Spec.TerminalDeadline = metav1.NewTime(received.Add(61 * time.Minute))
+	if _, err := job.BuildWorkerJob(buildInput(tooLong, received)); !errors.Is(err, job.ErrJobDeadline) {
+		t.Fatalf("over-ceiling window error = %v, want ErrJobDeadline", err)
+	}
+	// Below the CRD's 900s floor, the run was never admissible either.
+	tooShort := reviewFixture(received)
+	tooShort.Spec.TerminalDeadline = metav1.NewTime(received.Add(14 * time.Minute))
+	if _, err := job.BuildWorkerJob(buildInput(tooShort, received)); !errors.Is(err, job.ErrJobDeadline) {
+		t.Fatalf("under-floor window error = %v, want ErrJobDeadline", err)
 	}
 }
 
@@ -494,6 +764,7 @@ func publishingFixture() job.PublishingConfig {
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
 		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 	}
 }
 
@@ -548,11 +819,17 @@ func TestBuildWorkerJobDisabledStaysReceiptOnly(t *testing.T) {
 func TestBuildWorkerJobRefusesIncompletePublishingConfig(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	for name, mutate := range map[string]func(*job.PublishingConfig){
-		"no gateway url":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "" },
-		"no model":        func(c *job.PublishingConfig) { c.Model = "" },
-		"no secret name":  func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
-		"no secret key":   func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
-		"plaintext http":  func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://gateway.example.invalid/v1" },
+		"no gateway url": func(c *job.PublishingConfig) { c.GatewayBaseURL = "" },
+		"no model":       func(c *job.PublishingConfig) { c.Model = "" },
+		"no secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
+		"no secret key":  func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
+		"plaintext http": func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://gateway.example.invalid/v1" },
+		"completion userinfo": func(c *job.PublishingConfig) {
+			c.CompletionURL = "https://user:password@dispatch.example.invalid/completion"
+		},
+		"completion fragment": func(c *job.PublishingConfig) {
+			c.CompletionURL = "https://dispatch.example.invalid/completion#redirect"
+		},
 		"whitespace":      func(c *job.PublishingConfig) { c.Model = "ollama/glm 5.3" },
 		"bad secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "Not_A_Subdomain" },
 	} {
@@ -658,5 +935,54 @@ func TestBuildWorkerJobStampsTheSharedComponent(t *testing.T) {
 				t.Fatalf("%s component = %q, want %q", mode, labels["review-yeti.ai/component"], want)
 			}
 		}
+	}
+}
+
+func TestBuildWorkerJobHonorsLifecycleEnv(t *testing.T) {
+	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "300")
+	t.Setenv("REVIEW_YETI_WORKER_CPU_REQUEST", "500m")
+	t.Setenv("REVIEW_YETI_WORKER_MEMORY_REQUEST", "768Mi")
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	result, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 300 {
+		t.Fatalf("job TTL = %v, want 300 from env", result.Spec.TTLSecondsAfterFinished)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	cpu := container.Resources.Requests[corev1.ResourceCPU]
+	mem := container.Resources.Requests[corev1.ResourceMemory]
+	if cpu.String() != "500m" {
+		t.Fatalf("cpu request = %s, want 500m from env", cpu.String())
+	}
+	if mem.String() != "768Mi" {
+		t.Fatalf("memory request = %s, want 768Mi from env", mem.String())
+	}
+}
+
+func TestBuildWorkerJobFallsBackOnInvalidLifecycleEnv(t *testing.T) {
+	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "-5")
+	t.Setenv("REVIEW_YETI_WORKER_CPU_LIMIT", "banana")
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	result, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("job TTL = %v, want 0 fallback from negative env", result.Spec.TTLSecondsAfterFinished)
+	}
+	limitCPU := result.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU]
+	if limitCPU.String() != "1" {
+		t.Fatalf("cpu limit = %s, want 1 fallback from unparseable env", limitCPU.String())
+	}
+
+	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "nope")
+	result, err = job.BuildWorkerJob(buildInput(reviewFixture(now), now))
+	if err != nil {
+		t.Fatalf("build invalid ttl: %v", err)
+	}
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("job TTL = %v, want 0 fallback from unparseable env", result.Spec.TTLSecondsAfterFinished)
 	}
 }

@@ -214,9 +214,8 @@ describe('zero-replica review job dispatcher deployment', () => {
     const role = docs.find((document) => document.kind === 'Role');
     expect(role).toBeDefined();
     expect(role!.metadata.namespace).toBe('ct-review-system');
-    // Exact. The secrets rule is create-only by design: Kubernetes cannot scope a
-    // verb to one Secret name, so delete or patch would reach the App private key
-    // this pod holds, the gateway credential, and the ingress TLS key.
+    // Exact. Dynamic run-Secret recovery needs namespace-level get/create.
+    // This does not grant list, patch or delete over credentials in this namespace.
     expect(role!.rules).toEqual([
       {
         apiGroups: ['review-yeti.ai'],
@@ -226,7 +225,7 @@ describe('zero-replica review job dispatcher deployment', () => {
       {
         apiGroups: [''],
         resources: ['secrets'],
-        verbs: ['create'],
+        verbs: ['get', 'create'],
       },
     ]);
     const binding = docs.find((document) => document.kind === 'RoleBinding');
@@ -307,11 +306,15 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(result.calls).not.toContain('apply');
   });
 
-  it('uses only in-cluster Kubernetes identity and excludes GitHub/provider clients', () => {
+  it('uses only in-cluster Kubernetes identity and excludes model-provider clients', () => {
     const source = fs.readFileSync(path.join(root, 'src/reviewJobDispatcherIndex.ts'), 'utf8');
     expect(source).toContain('loadFromCluster()');
     expect(source).not.toContain('loadFromDefault');
-    for (const forbidden of ['github/appAuth', 'openRouter', 'fireworks', 'omniRoute', 'synthetic']) {
+    // This service already owns the worker-token App key (credential posture
+    // below). It now also reconciles orphan checks using that same authenticated
+    // App, verified behaviorally in reaperPublishingOwnership.test.ts. Model
+    // execution and provider credentials remain outside the dispatcher.
+    for (const forbidden of ['openRouter', 'fireworks', 'omniRoute', 'synthetic']) {
       expect(source).not.toContain(forbidden);
     }
   });
@@ -337,14 +340,12 @@ describe('publishing credential posture (REL-586, ADR 0539)', () => {
     for (const entry of env) expect(entry.value).toBeUndefined();
   });
 
-  it('can create secrets but never delete, patch, get or list them', () => {
-    // Kubernetes cannot scope a verb to one Secret name. `delete` or `patch` here
-    // would reach the App private key this pod is given, the gateway credential and
-    // the ingress TLS key. A 409 is treated as success instead, which is only sound
-    // because a run-secret name is written inside a single fifteen-minute window.
+  it('can recover exact run secrets but never delete, patch or list them', () => {
+    // Static RBAC resourceNames cannot enumerate future identity-derived names;
+    // the read is namespace-wide and narrowed by the identity-checking code.
     const role = documents().find((doc) => doc.kind === 'Role');
     const secretRule = (role?.rules || []).find((rule: any) => (rule.resources || []).includes('secrets'));
-    expect(secretRule?.verbs).toEqual(['create']);
+    expect(secretRule?.verbs).toEqual(['get', 'create']);
   });
 
   it('still grants no cluster-scoped access', () => {

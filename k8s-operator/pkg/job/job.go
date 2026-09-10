@@ -21,14 +21,17 @@ limitations under the License.
 package job
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -49,6 +52,11 @@ const (
 	QualificationModelEnv         = "REVIEW_QUALIFICATION_MODEL"
 	QualificationTimeoutEnv       = "REVIEW_QUALIFICATION_TIMEOUT_MS"
 	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
+	CompletionURLEnv              = "REVIEW_COMPLETION_URL"
+	ExecutionAttemptEnv           = "REVIEW_EXECUTION_ATTEMPT"
+	AuthoritativeGateEnv          = "REVIEW_AUTHORITATIVE_GATE"
+	PreparedConfigEnv             = "REVIEW_PREPARED_CONFIG_JSON"
+	MaxPreparedReviewBytes        = 256 * 1024
 	ReceiptPathEnv                = "REVIEW_RECEIPT_PATH"
 	ReceiptPath                   = "/workspace/.review-yeti/receipt.json"
 	PublicationModeAppGate        = "app-gate"
@@ -57,14 +65,25 @@ const (
 	FullPanelQualificationProfile = "full-panel"
 	SameHeadQualificationProfile  = "same-head"
 	ReceiptOnlyWorkerComponent    = "receipt-only-worker"
-	// Jobs are disposable execution records. The reusable PR workspace has a
+	// Jobs are disposable execution records. TTL 0 makes kube delete the Job
+	// as soon as it reaches Complete/Failed. The reusable PR workspace has a
 	// separate, exact 1,800-second idle reclamation policy.
-	JobTTLSeconds = int32(300)
+	JobTTLSeconds       = int32(0)
+	WorkerCPURequest    = "250m"
+	WorkerMemoryRequest = "512Mi"
+	WorkerCPULimit      = "1"
+	WorkerMemoryLimit   = "1536Mi"
+	// The CRD's CEL rule bounds terminalDeadline - receivedAt to [900s, 3600s]
+	// (see charts/review-yeti/templates/crd.yaml and
+	// k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml). Keep
+	// these two in lockstep with that rule and with the TypeScript dispatch
+	// side's src/config/terminalDeadline.ts MIN/MAX.
+	MinTerminalDeadlineSeconds = int64(900)
+	MaxTerminalDeadlineSeconds = int64(3600)
 	// Keep a one-minute publication/failure-conclusion reserve inside the
-	// original 15-minute run deadline. The worker itself may never consume the
-	// full admission window.
-	MaxActiveDeadlineSeconds = int64(840)
-	DeadlineReserveSeconds   = int64(60)
+	// admitted run deadline. The worker itself may never consume the full
+	// admission window.
+	DeadlineReserveSeconds = int64(60)
 	// The panel deadline stays inside the Kubernetes Job deadline so a failed
 	// qualification still has time to persist its bounded diagnostic receipt.
 	WorkerReceiptReserveSeconds = int64(60)
@@ -105,6 +124,7 @@ type PublishingConfig struct {
 	Model             string
 	GatewaySecretName string
 	GatewaySecretKey  string
+	CompletionURL     string
 }
 
 // WorkerComponentFor returns the component label for a review's lane. The builder
@@ -128,7 +148,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	}
 	review := input.Review
 	spec := review.Spec
-	activeDeadlineSeconds, err := remainingDeadlineSeconds(spec.TerminalDeadline.Time, input.Now)
+	activeDeadlineSeconds, err := remainingDeadlineSeconds(spec.ReceivedAt.Time, spec.TerminalDeadline.Time, input.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +162,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	templateAnnotations := copyStringMap(annotations)
 	one := int32(1)
 	zero := int32(0)
-	ttl := JobTTLSeconds
+	ttl := int32FromEnv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", JobTTLSeconds)
 	active := activeDeadlineSeconds
 	automountToken := false
 	allowPrivilegeEscalation := false
@@ -152,6 +172,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	runAsGroup := int64(1000)
 	fsGroup := int64(1000)
 	fsGroupChangePolicy := corev1.FSGroupChangeOnRootMismatch
+	executionAttempt, err := executionAttemptForSpec(spec)
+	if err != nil {
+		return nil, err
+	}
 	env := []corev1.EnvVar{
 		{Name: "REVIEW_RUN_ID", Value: spec.RunID},
 		{Name: "REVIEW_DELIVERY_ID", Value: spec.DeliveryID},
@@ -162,6 +186,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: "REVIEW_BASE_SHA", Value: spec.BaseSHA},
 		{Name: "REVIEW_POLICY_DIGEST", Value: spec.PolicyDigest},
 		{Name: "REVIEW_CONFIG_DIGEST", Value: spec.ConfigDigest},
+		{Name: ExecutionAttemptEnv, Value: strconv.FormatInt(int64(executionAttempt), 10)},
 		{Name: PublicationModeEnv, Value: spec.PublicationMode},
 		{Name: ReceiptPathEnv, Value: ReceiptPath},
 		{Name: "CT_REVIEW_DATA_DIR", Value: "/tmp/.ct-memory"},
@@ -254,6 +279,15 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				}},
 			},
 		)
+		if input.Publishing.CompletionURL != "" {
+			env = append(env, corev1.EnvVar{Name: CompletionURLEnv, Value: input.Publishing.CompletionURL})
+		}
+		if spec.PreparedReview != nil {
+			env = append(env,
+				corev1.EnvVar{Name: AuthoritativeGateEnv, Value: "true"},
+				corev1.EnvVar{Name: PreparedConfigEnv, Value: *spec.PreparedReview},
+			)
+		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
 	}
@@ -263,12 +297,12 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("500m"),
-				corev1.ResourceMemory: resource.MustParse("768Mi"),
+				corev1.ResourceCPU:    quantityFromEnv("REVIEW_YETI_WORKER_CPU_REQUEST", WorkerCPURequest),
+				corev1.ResourceMemory: quantityFromEnv("REVIEW_YETI_WORKER_MEMORY_REQUEST", WorkerMemoryRequest),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("1"),
-				corev1.ResourceMemory: resource.MustParse("1536Mi"),
+				corev1.ResourceCPU:    quantityFromEnv("REVIEW_YETI_WORKER_CPU_LIMIT", WorkerCPULimit),
+				corev1.ResourceMemory: quantityFromEnv("REVIEW_YETI_WORKER_MEMORY_LIMIT", WorkerMemoryLimit),
 			},
 		},
 		SecurityContext: &corev1.SecurityContext{
@@ -376,6 +410,17 @@ func validateInput(input Input) error {
 		!workerImagePattern.MatchString(spec.WorkerImage) || !secretNamePattern.MatchString(spec.RunSecretName) {
 		return configErr("PRReviewJob spec failed identity validation (run/delivery/repo/PR/sha/digest/publication-mode/image/run-secret)")
 	}
+	if _, err := executionAttemptForSpec(spec); err != nil {
+		return err
+	}
+	if spec.PreparedReview != nil {
+		if spec.PublicationMode != PublicationModeAppGate || (spec.RunnerMode != "" && spec.RunnerMode != "prebaked") {
+			return configErr("prepared review requires the prebaked app-gate lane")
+		}
+		if err := validatePreparedReview(*spec.PreparedReview); err != nil {
+			return err
+		}
+	}
 	if err := validateQualification(spec.QualificationProfile, spec.QualificationModel); err != nil {
 		return err
 	}
@@ -386,7 +431,9 @@ func validateInput(input Input) error {
 	if spec.QualificationProfile != "" && spec.PublicationMode != PublicationModeDisabled {
 		return configErr("a qualification profile cannot be combined with publication mode " + spec.PublicationMode)
 	}
-	if spec.TerminalDeadline.Sub(spec.ReceivedAt.Time) != 15*time.Minute || input.Now.Before(spec.ReceivedAt.Time) {
+	window := spec.TerminalDeadline.Sub(spec.ReceivedAt.Time)
+	if window < time.Duration(MinTerminalDeadlineSeconds)*time.Second || window > time.Duration(MaxTerminalDeadlineSeconds)*time.Second ||
+		input.Now.Before(spec.ReceivedAt.Time) {
 		return ErrJobDeadline
 	}
 	if input.WorkspacePVCName != workspace.PVCName(spec.RepositoryID, spec.PRNumber) {
@@ -399,8 +446,104 @@ func validateInput(input Input) error {
 	return workspace.ValidateLeaseForUse(lease.Lease, review.Namespace, spec.RepositoryID, spec.PRNumber, spec.RunID, input.Now)
 }
 
-// validatePublishing refuses an app-gate Job whose transport is not fully and
-// safely specified. https is required because the gateway carries the diff.
+// validatePreparedReview bounds the opaque transport and checks its envelope.
+// Config semantics/digest and agreement with the actual injected provider
+// transport remain with the shared TypeScript verifier, not this Go builder.
+// Both languages exercise testdata/prepared-review-execution.json.
+func validatePreparedReview(raw string) error {
+	rejected := configErr("prepared review envelope is invalid")
+	if len(raw) == 0 || len(raw) > MaxPreparedReviewBytes || !utf8.ValidString(raw) {
+		return rejected
+	}
+	var envelope map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &envelope) != nil || len(envelope) != 3 {
+		return rejected
+	}
+	var version string
+	var config map[string]json.RawMessage
+	var transport map[string]json.RawMessage
+	if json.Unmarshal(envelope["version"], &version) != nil || version != "PreparedReviewExecution.v1" ||
+		json.Unmarshal(envelope["config"], &config) != nil || config == nil ||
+		json.Unmarshal(envelope["transport"], &transport) != nil || len(transport) != 2 {
+		return rejected
+	}
+	var baseURL, model string
+	if json.Unmarshal(transport["baseUrl"], &baseURL) != nil || utf16CodeUnits(baseURL) > 2000 ||
+		json.Unmarshal(transport["model"], &model) != nil || len(model) == 0 || utf16CodeUnits(model) > 256 ||
+		strings.ContainsFunc(model, func(r rune) bool { return r < 32 || r == 127 }) {
+		return rejected
+	}
+	// Reject raw spelling that URL parsers normalize differently, including
+	// empty query/fragment delimiters. Escaped path characters remain valid.
+	if strings.ContainsAny(baseURL, "\\?#") || strings.ContainsFunc(baseURL, func(r rune) bool { return r <= 32 || r == 127 }) {
+		return rejected
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return rejected
+	}
+	if port := parsed.Port(); port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return rejected
+		}
+	}
+	return nil
+}
+
+// Match TypeScript/Zod string limits, which count UTF-16 units rather than
+// Unicode code points. Astral characters consume two units in both validators.
+func utf16CodeUnits(value string) int {
+	units := 0
+	for _, r := range value {
+		units++
+		if r > 0xffff {
+			units++
+		}
+	}
+	return units
+}
+
+// executionAttemptForSpec uses the explicit CRD field whenever present. The
+// suffix path is retained only for CRs persisted before executionAttempt was
+// added; it is deliberately bounded and tied back to the run ID instead of
+// treating an arbitrary Secret suffix as trusted identity.
+func executionAttemptForSpec(spec v1alpha2.PRReviewJobSpec) (int32, error) {
+	baseSecretName := "ct-review-run-" + strings.TrimPrefix(spec.RunID, "run_")
+	if spec.ExecutionAttempt != nil {
+		attempt := *spec.ExecutionAttempt
+		if attempt <= 0 {
+			return 0, configErr("executionAttempt must be a positive int32")
+		}
+		expected := baseSecretName
+		if attempt > 1 {
+			expected = fmt.Sprintf("%s-a%d", baseSecretName, attempt)
+		}
+		if spec.RunSecretName != expected {
+			return 0, configErr("executionAttempt does not match the expected run Secret name")
+		}
+		return attempt, nil
+	}
+
+	// Legacy CRs may omit executionAttempt. Keep the historical -aN form
+	// readable, including an explicitly suffixed -a1, but require the Secret
+	// prefix to belong to this run and parse the suffix as a bounded int32.
+	if spec.RunSecretName == baseSecretName {
+		return 1, nil
+	}
+	index := strings.LastIndex(spec.RunSecretName, "-a")
+	if index < 0 || spec.RunSecretName[:index] != baseSecretName {
+		return 0, configErr("legacy run Secret name does not match the run ID")
+	}
+	parsed, err := strconv.ParseInt(spec.RunSecretName[index+2:], 10, 32)
+	if err != nil || parsed <= 0 {
+		return 0, configErr("legacy run Secret execution suffix is not a positive int32")
+	}
+	return int32(parsed), nil
+}
+
+// validatePublishing refuses an app-gate Job whose required transport is not
+// safely specified. Completion reporting is additive: an empty URL preserves
+// the legacy check-only worker until the operator enables the callback lane.
 func validatePublishing(config PublishingConfig) error {
 	var missing []string
 	if config.GatewayBaseURL == "" {
@@ -418,12 +561,18 @@ func validatePublishing(config PublishingConfig) error {
 	if len(missing) > 0 {
 		return configErr("app-gate publishing transport is not configured on the operator; unset: " + strings.Join(missing, ", "))
 	}
-	if strings.ContainsAny(config.GatewayBaseURL+config.Model, "\r\n\t ") {
+	if strings.ContainsAny(config.GatewayBaseURL+config.Model+config.CompletionURL, "\r\n\t ") {
 		return configErr("publishing gateway URL or model contains whitespace")
 	}
 	parsed, err := url.Parse(config.GatewayBaseURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return configErr("publishing gateway URL must be an absolute https URL")
+	}
+	if config.CompletionURL != "" {
+		completion, err := url.Parse(config.CompletionURL)
+		if err != nil || completion.Scheme != "https" || completion.Host == "" || completion.User != nil || completion.Fragment != "" {
+			return configErr("worker completion URL must be an absolute https URL without userinfo or fragments")
+		}
 	}
 	if len(validation.IsDNS1123Subdomain(config.GatewaySecretName)) != 0 {
 		return configErr("publishing gateway secret name is not a valid Kubernetes object name")
@@ -445,21 +594,25 @@ func validateQualification(profile, model string) error {
 	return nil
 }
 
-func remainingDeadlineSeconds(deadline, now time.Time) (int64, error) {
+func remainingDeadlineSeconds(receivedAt, deadline, now time.Time) (int64, error) {
 	remaining := deadline.Sub(now)
 	if remaining < time.Duration(MinRemainingSeconds)*time.Second {
 		return 0, workspace.ErrInsufficientDeadline
 	}
+	// The worker's own budget must never exceed this run's admitted window
+	// (validateInput already bounds that window to [900s, 3600s]) minus the
+	// publication/failure-conclusion reserve, even when more of the terminal
+	// deadline happens to remain.
+	windowCapSeconds := int64(math.Round(deadline.Sub(receivedAt).Seconds())) - DeadlineReserveSeconds
 	// Floor rather than ceil: an integer Kubernetes deadline must not extend
 	// past the authenticated terminal deadline when `now` includes fractions
 	// of a second.
 	seconds := int64(math.Floor(remaining.Seconds())) - DeadlineReserveSeconds
-	if seconds <= 0 || seconds > MaxActiveDeadlineSeconds {
-		if seconds > MaxActiveDeadlineSeconds {
-			seconds = MaxActiveDeadlineSeconds
-		} else {
-			return 0, ErrJobDeadline
-		}
+	if seconds <= 0 || windowCapSeconds <= 0 {
+		return 0, ErrJobDeadline
+	}
+	if seconds > windowCapSeconds {
+		seconds = windowCapSeconds
 	}
 	return seconds, nil
 }
@@ -470,4 +623,28 @@ func copyStringMap(input map[string]string) map[string]string {
 		output[key] = value
 	}
 	return output
+}
+
+func int32FromEnv(name string, fallback int32) int32 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return int32(parsed)
+}
+
+func quantityFromEnv(name, fallback string) resource.Quantity {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		raw = fallback
+	}
+	quantity, err := resource.ParseQuantity(raw)
+	if err != nil {
+		return resource.MustParse(fallback)
+	}
+	return quantity
 }

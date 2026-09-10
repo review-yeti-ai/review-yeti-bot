@@ -9,6 +9,7 @@ import { parseAndValidateConfig } from '../../src/config/configLoader';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { ReviewModelClient, OpenRouterResponse } from '../../src/gateway/openRouterClient';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 describe('Adversarial Challenge 1 (Final Milestone) Empirical Stress Harness', () => {
   describe('Challenge 1: Prompt Containment & Malformed/Nested </untrusted_diff_data> Escapes', () => {
@@ -306,7 +307,7 @@ personas:
                 installation_id: '456',
                 delivery_id: values[14],
                 received_at: new Date(),
-                terminal_deadline: new Date(Date.now() + 900_000),
+                terminal_deadline: new Date(Date.now() + TERMINAL_DEADLINE_MS),
                 created_at: new Date(),
                 updated_at: new Date(),
               }],
@@ -362,7 +363,7 @@ personas:
         },
         payloadDigest: 'a'.repeat(64),
         receivedAt: Date.now(),
-        terminalDeadline: Date.now() + 900_000,
+        terminalDeadline: Date.now() + TERMINAL_DEADLINE_MS,
       });
 
       expect(admissionResult.status).toBe('accepted');

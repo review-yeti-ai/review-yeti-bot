@@ -3,6 +3,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 import { buildReviewJobProjection } from '../../src/k8s/reviewJobProjection';
+import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const projection = buildReviewJobProjection({
@@ -14,7 +15,7 @@ const projection = buildReviewJobProjection({
   headSha: 'a'.repeat(40),
   baseSha: 'b'.repeat(40),
   receivedAt,
-  terminalDeadline: receivedAt + 900_000,
+  terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
   policyDigest: 'c'.repeat(64),
   configDigest: 'd'.repeat(64),
   publicationMode: 'disabled',
@@ -42,6 +43,8 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(Object.keys(projection.spec).sort()).toEqual([...spec.required, 'runnerMode'].sort());
     expect(Object.keys(spec.properties).sort()).toEqual([
       ...spec.required,
+      'executionAttempt',
+      'preparedReview',
       'qualificationModel',
       'qualificationProfile',
       'runnerMode',
@@ -51,6 +54,19 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(JSON.stringify(projection.spec)).not.toMatch(/privateKey|providerApiKey|installationToken|callbackToken/u);
   });
 
+  it('keeps preparedReview optional, bounded, immutable, and restricted to prebaked app-gate', () => {
+    const spec = crdSchema().properties.spec;
+    expect(spec.required).not.toContain('preparedReview');
+    expect(spec.properties.preparedReview).toEqual(expect.objectContaining({
+      type: 'string', minLength: 1, maxLength: 256 * 1024,
+    }));
+    expect(spec.properties.preparedReview).not.toHaveProperty('default');
+    const rules = spec['x-kubernetes-validations'].map((validation: { rule: string }) => validation.rule);
+    expect(rules).toContain('self == oldSelf');
+    expect(rules).toContain("!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))");
+    expect(projection.spec).not.toHaveProperty('preparedReview');
+  });
+
   it('accepts the projected identities under every declared string pattern', () => {
     const properties = crdSchema().properties.spec.properties;
     for (const [field, schema] of Object.entries(properties) as Array<[keyof typeof projection.spec, any]>) {
@@ -58,7 +74,25 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     }
     expect(properties.publicationMode.enum).toEqual(['disabled', 'app-gate']);
     expect(properties.runnerMode.enum).toEqual(['prebaked', 'generic']);
-    expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(900_000);
+    expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(TERMINAL_DEADLINE_MS);
+  });
+
+  // REL-733 follow-up: MIN/MAX here and the CRD's CEL rule are a manually
+  // maintained lockstep invariant (see terminalDeadline.ts's header comment).
+  // The Go side pins this via crd_contract_test.go and job_test.go; this is
+  // the TS-side pin, so a drift between the two -- e.g. widening
+  // MAX_TERMINAL_DEADLINE_MS without updating the CRD -- fails here instead
+  // of admitting a run whose window the CRD's CEL rule (or the Go operator's
+  // validateInput) rejects at apply/projection time.
+  it('pins the terminalDeadline CEL rule bounds to MIN_TERMINAL_DEADLINE_MS/MAX_TERMINAL_DEADLINE_MS', () => {
+    const spec = crdSchema().properties.spec;
+    const validations = spec['x-kubernetes-validations'] as Array<{ rule: string; message: string }>;
+    const deadlineRule = validations.find(
+      (validation) => validation.rule.includes('terminalDeadline') && validation.rule.includes('duration('),
+    );
+    expect(deadlineRule).toBeDefined();
+    const boundsInSeconds = [...deadlineRule!.rule.matchAll(/duration\('(\d+)s'\)/gu)].map((match) => Number(match[1]));
+    expect(boundsInSeconds).toEqual([MIN_TERMINAL_DEADLINE_MS / 1_000, MAX_TERMINAL_DEADLINE_MS / 1_000]);
   });
 
   it('validates public ghcr.io worker image under the CRD pattern', () => {

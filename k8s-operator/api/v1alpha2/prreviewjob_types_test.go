@@ -88,14 +88,37 @@ func TestPRReviewJobV1Alpha2SchemeAndDeepCopy(t *testing.T) {
 	}
 
 	original := contractFixture()
+	attempt := int32(2)
+	original.Spec.ExecutionAttempt = &attempt
 	copy := original.DeepCopy()
 	copy.Labels["review-yeti.ai/publication-mode"] = "changed"
 	copy.Status.Conditions[0].Reason = "Changed"
+	*copy.Spec.ExecutionAttempt = 3
 	if original.Labels["review-yeti.ai/publication-mode"] != "disabled" {
 		t.Fatal("metadata labels were not deep copied")
 	}
 	if original.Status.Conditions[0].Reason != "Authenticated" {
 		t.Fatal("status conditions were not deep copied")
+	}
+	if *original.Spec.ExecutionAttempt != 2 {
+		t.Fatal("execution attempt was not deep copied")
+	}
+}
+
+func TestPRReviewJobV1Alpha2PreparedReviewDeepCopy(t *testing.T) {
+	original := contractFixture()
+	envelope := `{"version":"PreparedReviewExecution.v1","config":{},"transport":{"baseUrl":"https://gateway.example.invalid/v1","model":"review-model"}}`
+	original.Spec.PreparedReview = &envelope
+	copy := original.DeepCopy()
+	if copy.Spec.PreparedReview == nil || *copy.Spec.PreparedReview != envelope {
+		t.Fatal("prepared review envelope was not preserved")
+	}
+	*copy.Spec.PreparedReview = "changed"
+	if *original.Spec.PreparedReview != envelope || original.Spec.PreparedReview == copy.Spec.PreparedReview {
+		t.Fatal("prepared review pointer was not deep copied")
+	}
+	if contractFixture().DeepCopy().Spec.PreparedReview != nil {
+		t.Fatal("legacy deepcopy must leave prepared review absent")
 	}
 }
 
