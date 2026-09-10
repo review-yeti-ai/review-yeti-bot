@@ -662,6 +662,50 @@ func TestPRReviewJobV1Alpha2ReconcilerQueuesAboveActiveJobLimit(t *testing.T) {
 	}
 }
 
+func TestPRReviewJobV1Alpha2ReconcilerCountsPublishingWorkersAgainstGlobalLimit(t *testing.T) {
+	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	activePublishingJob := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name:      "active-publishing-review",
+		Namespace: review.Namespace,
+		Labels:    map[string]string{"review-yeti.ai/component": job.PublishingWorkerComponent},
+	}, Status: batchv1.JobStatus{Active: 1}}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review, activePublishingJob).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name},
+	})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatal("an active publishing review must consume the global worker slot")
+	}
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name}, &updated); err != nil {
+		t.Fatalf("get review: %v", err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseQueued {
+		t.Fatalf("phase = %s, want Queued", updated.Status.Phase)
+	}
+	ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "CapacityExceeded" {
+		t.Fatalf("ready condition = %#v, want CapacityExceeded", ready)
+	}
+	var pvc corev1.PersistentVolumeClaim
+	if err := kube.Get(context.Background(), types.NamespacedName{
+		Namespace: review.Namespace,
+		Name:      workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber),
+	}, &pvc); err == nil {
+		t.Fatal("capacity-queued review must not allocate a workspace PVC")
+	}
+}
+
 // REL-586: no controller test exercised the app-gate lane, so the Job builder and
 // the reconciler's contract matcher drifted apart unnoticed. The matcher required
 // the publication-mode label to be "disabled" and rejected any env carrying
