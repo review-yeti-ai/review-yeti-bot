@@ -974,7 +974,7 @@ describe('hosted lane — repository visibility resolution', () => {
     );
   });
 
-  it('publishes Review Yeti Gate check on clean SHIP review completion', async () => {
+  it('publishes only the Review Yeti check on clean SHIP review completion', async () => {
     const publishGateCheck = vi.fn(async () => 7777);
     const client = {
       ...checkClient(),
@@ -990,19 +990,10 @@ describe('hosted lane — repository visibility resolution', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
-      expect.objectContaining({
-        conclusion: 'success',
-        title: 'Review Yeti Gate: Approved (SHIP)',
-        summary: expect.stringContaining('### Review Yeti Gate: Eligible'),
-      }),
-    );
+    expect(publishGateCheck).not.toHaveBeenCalled();
   });
 
-  it('publishes fail-closed Review Yeti Gate check when review fails closed', async () => {
+  it('does not create a second gate check when Review Yeti fails closed', async () => {
     const publishGateCheck = vi.fn(async () => 8888);
     const client = {
       ...checkClient(),
@@ -1015,15 +1006,6 @@ describe('hosted lane — repository visibility resolution', () => {
       }) as never,
     });
     await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow('LLM Provider Outage');
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
-      expect.objectContaining({
-        conclusion: 'failure',
-        title: 'Review Yeti Gate: Ineligible (review failed)',
-        summary: expect.stringContaining('Policy gate closed'),
-      }),
-    );
+    expect(publishGateCheck).not.toHaveBeenCalled();
   });
 });
