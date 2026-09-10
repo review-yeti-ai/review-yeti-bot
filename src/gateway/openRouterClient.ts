@@ -809,11 +809,9 @@ function hasMeaningfulChunk(data: any): boolean {
       ?? delta.toolCalls
       ?? message.tool_calls
       ?? message.toolCalls;
-    const refusal = delta.refusal ?? message.refusal;
     return hasNonEmptyText(content)
       || hasReasoningProgress(reasoning)
-      || hasToolProgress(toolCalls)
-      || hasNonEmptyText(refusal);
+      || hasToolProgress(toolCalls);
   });
 }
 
