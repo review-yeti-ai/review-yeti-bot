@@ -4,15 +4,68 @@ import {
   resolveWorkerConfig,
   STATIC_FALLBACK_ECOSYSTEM_PATHS,
 } from '../../src/config/publishingWorkerConfig';
-import { loadCompiledIndex } from '../../src/pipeline/domainIndex';
+import { CompiledDomainIndex, loadCompiledIndex } from '../../src/pipeline/domainIndex';
 
 describe('publishingWorkerConfig', () => {
   it('resolves specific ecosystem paths for dep-lane from compiled index', () => {
     const index = loadCompiledIndex();
+    expect(index).toBeDefined();
     const paths = getPersonaEcosystemPaths('dep-lane', index);
     expect(paths.length).toBeGreaterThan(10);
     expect(paths).not.toContain('**');
     expect(paths.some((p) => p.includes('package.json') || p.includes('lock') || p.includes('gemspec'))).toBe(true);
+  });
+
+  it('unions classes across ecosystems deterministically from synthetic compiled index', () => {
+    const syntheticIndex: CompiledDomainIndex = {
+      schemaVersion: 'domain-index-v1',
+      classVocabulary: ['auth_rules', 'api_routes'],
+      personaVocabulary: ['security'],
+      indexDigest: 'test-digest',
+      classes: {
+        auth_rules: ['security'],
+        api_routes: ['security'],
+      },
+      ecosystems: {
+        backend: {
+          description: 'Backend',
+          classes: {
+            auth_rules: ['src/auth/**', 'policies/**'],
+          },
+        },
+        frontend: {
+          description: 'Frontend',
+          classes: {
+            api_routes: ['src/api/**'],
+          },
+        },
+      },
+    };
+    const paths = getPersonaEcosystemPaths('security', syntheticIndex);
+    expect(paths).toEqual(['policies/**', 'src/api/**', 'src/auth/**']);
+  });
+
+  it('falls back to static paths when compiled index has classes for persona but ecosystems define zero globs', () => {
+    const syntheticIndex: CompiledDomainIndex = {
+      schemaVersion: 'domain-index-v1',
+      classVocabulary: ['auth_rules'],
+      personaVocabulary: ['security'],
+      indexDigest: 'test-digest',
+      classes: {
+        auth_rules: ['security'],
+      },
+      ecosystems: {
+        backend: {
+          description: 'Empty globs ecosystem',
+          classes: {
+            auth_rules: [],
+          },
+        },
+      },
+    };
+    const paths = getPersonaEcosystemPaths('security', syntheticIndex);
+    expect(paths).toEqual(STATIC_FALLBACK_ECOSYSTEM_PATHS.security);
+    expect(paths.length).toBeGreaterThan(0);
   });
 
   it('falls back to STATIC_FALLBACK_ECOSYSTEM_PATHS when index is null', () => {
@@ -23,6 +76,28 @@ describe('publishingWorkerConfig', () => {
     expect(paths).toContain('**/mix.lock');
     expect(paths).toContain('**/go.mod');
     expect(paths).toContain('**/Cargo.toml');
+  });
+
+  it('pins static fallback patterns for accessibility and i18n ecosystems', () => {
+    const a11yPaths = STATIC_FALLBACK_ECOSYSTEM_PATHS.accessibility;
+    expect(a11yPaths).toContain('**/*.tsx');
+    expect(a11yPaths).toContain('**/*.html');
+    expect(a11yPaths).toContain('**/*.vue');
+
+    const i18nPaths = STATIC_FALLBACK_ECOSYSTEM_PATHS.i18n;
+    expect(i18nPaths).toContain('**/locales/**');
+    expect(i18nPaths).toContain('**/*.po');
+    expect(i18nPaths).toContain('**/messages.json');
+  });
+
+  it('ensures every persona in compiled domain index has a matching non-empty static fallback to prevent drift', () => {
+    const index = loadCompiledIndex();
+    expect(index).toBeDefined();
+    for (const persona of index!.personaVocabulary) {
+      const fallbackPaths = getPersonaEcosystemPaths(persona, null);
+      expect(fallbackPaths.length, `Persona ${persona} must have non-empty static fallback`).toBeGreaterThan(0);
+      expect(fallbackPaths, `Persona ${persona} must not fall back to **`).not.toEqual(['**']);
+    }
   });
 
   it('never returns open ** glob for any standard persona in fallback mode', () => {
@@ -61,32 +136,14 @@ describe('publishingWorkerConfig', () => {
     expect(depPersona?.paths.length).toBeGreaterThan(0);
   });
 
-  it('correctly filters PR #2977 file changes to only relevant personas', () => {
-    const changedFiles = [
-      { path: '.gitignore' },
-      { path: 'AGENTS.md' },
-      { path: 'knowledge/instructions/10-mcp-servers.instructions.md' },
-      { path: 'package.json' },
-      { path: 'plugins/ct-context/skills/brave-search/SKILL.md' },
-      { path: 'tools/sync-skills-to-bifrost.mjs' },
-      { path: 'tools/skills-mcp-server.mjs' },
-      { path: 'test/skills-mcp-server.test.mjs' },
-    ];
-
-    const depPaths = getPersonaEcosystemPaths('dep-lane');
-    const matchesPattern = (pattern: string, file: string) => {
-      if (pattern.startsWith('**/')) {
-        const suffix = pattern.slice(3);
-        return file === suffix || file.endsWith('/' + suffix);
-      }
-      return file === pattern;
-    };
-
-    const depMatchedFiles = changedFiles.filter((f) =>
-      depPaths.some((p) => matchesPattern(p, f.path) || f.path === 'package.json')
-    );
-
-    // Only package.json should match dep-lane
-    expect(depMatchedFiles.map((f) => f.path)).toEqual(['package.json']);
+  it('asserts dep-lane includes expected package manifests and excludes code/markdown files', () => {
+    const depPaths = getPersonaEcosystemPaths('dep-lane', null);
+    expect(depPaths).toContain('**/package.json');
+    expect(depPaths).toContain('**/mix.lock');
+    expect(depPaths).toContain('**/go.mod');
+    expect(depPaths).toContain('**/Cargo.toml');
+    expect(depPaths).not.toContain('**/*.md');
+    expect(depPaths).not.toContain('**/*.ts');
+    expect(depPaths).not.toContain('**');
   });
 });
