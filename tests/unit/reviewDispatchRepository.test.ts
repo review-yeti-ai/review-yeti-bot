@@ -831,6 +831,15 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(sql).toMatch(/RETURNING/u);
   });
 
+  it('prioritizes newly expired active runs over the historical terminal publication backlog', async () => {
+    const { repository, query } = repositoryWith([swept]);
+    await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 1);
+    const sql = String(query.mock.calls[0][0]);
+    expect(sql).toMatch(
+      /ORDER BY CASE WHEN runs\.status IN \('queued', 'running'\) THEN 0 ELSE 1 END,\s*runs\.terminal_deadline/u,
+    );
+  });
+
   // This assertion previously read `last_error`, a column that does not exist.
   // The test passed while every sweep threw
   // `column "last_error" of relation "review_runs" does not exist`, so the reaper
