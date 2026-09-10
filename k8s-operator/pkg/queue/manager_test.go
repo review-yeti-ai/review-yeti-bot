@@ -177,6 +177,46 @@ func TestQueueManager_RemoveJob(t *testing.T) {
 	}
 }
 
+func TestQueueManager_RemoveActiveJobPromotesNextQueuedJob(t *testing.T) {
+	qm := queue.NewQueueManager(1)
+
+	job1 := types.NamespacedName{Namespace: "default", Name: "job-1"}
+	job2 := types.NamespacedName{Namespace: "default", Name: "job-2"}
+	job3 := types.NamespacedName{Namespace: "default", Name: "job-3"}
+
+	qm.AcquireSlot(job1)
+	qm.AcquireSlot(job2)
+	qm.AcquireSlot(job3)
+
+	// An active reservation can disappear before its promotion event is
+	// reconciled, for example when a superseded PRReviewJob is deleted. Removing
+	// it must hand the slot to the existing FIFO queue instead of letting a newly
+	// reconciled request jump ahead.
+	qm.RemoveJob(job1)
+
+	if !qm.IsActive(job2) {
+		t.Fatalf("expected job2 to be promoted after active job1 was removed")
+	}
+	if qm.IsQueued(job2) {
+		t.Fatalf("expected promoted job2 to leave the queue")
+	}
+	if !qm.IsQueued(job3) {
+		t.Fatalf("expected job3 to remain queued")
+	}
+	if qm.GetActiveCount() != 1 || qm.GetQueuedCount() != 1 {
+		t.Fatalf("expected active=1 queued=1, got active=%d queued=%d", qm.GetActiveCount(), qm.GetQueuedCount())
+	}
+
+	select {
+	case evt := <-qm.EventChannel():
+		if evt.Object == nil || evt.Object.GetName() != job2.Name {
+			t.Fatalf("expected promotion event for job2, got %v", evt.Object)
+		}
+	default:
+		t.Fatalf("expected promotion event after removing active job1")
+	}
+}
+
 func TestQueueManager_EnvVarFallback(t *testing.T) {
 	t.Run("Env var MAX_CONCURRENT_REVIEW_JOBS configured", func(t *testing.T) {
 		_ = os.Setenv("MAX_CONCURRENT_REVIEW_JOBS", "5")
