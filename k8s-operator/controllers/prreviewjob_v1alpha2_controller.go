@@ -156,6 +156,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{RequeueAfter: v1Alpha2PVCCreateRequeue}, nil
 	}
 	if err := workspace.ValidatePVC(&pvc, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber); err != nil {
+		if errors.Is(err, workspace.ErrWorkspaceTerminating) {
+			if statusErr := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "WorkspaceTerminating", err.Error()); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+		}
 		return ctrl.Result{}, r.fail(ctx, &review, "WorkspaceIdentityMismatch", err.Error())
 	}
 
