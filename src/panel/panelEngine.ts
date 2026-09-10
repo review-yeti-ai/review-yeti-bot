@@ -58,6 +58,26 @@ import type {
 export const REPO_FIND_FILES_MAX_HITS = 50;
 export const REPO_READ_FILE_MAX_CHARS = 512 * 1024;
 
+/** Skip PR file patches larger than this. Plumbed from policy `max_file_diff_chars`. */
+export function resolveMaxFileDiffChars(): number {
+  const raw = Number(process.env.MAX_FILE_DIFF_CHARS);
+  if (Number.isSafeInteger(raw) && raw > 0) return raw;
+  return REPO_READ_FILE_MAX_CHARS;
+}
+
+export function filePatchChars(
+  file: { patch?: string; content?: string },
+): number {
+  return (file.patch || file.content || '').length;
+}
+
+export function isOversizedFileDiff(
+  file: { patch?: string; content?: string },
+  maxChars: number = resolveMaxFileDiffChars(),
+): boolean {
+  return filePatchChars(file) > maxChars;
+}
+
 export interface RepoFileProvider {
   /** Case-insensitive substring match of `query` against every file path in the repository at the reviewed head. */
   findFiles(query: string): Promise<string[]>;
@@ -720,8 +740,12 @@ export function buildCompactFileList(
   options?: { includeLineCounts?: boolean }
 ): string {
   const includeLineCounts = Boolean(options?.includeLineCounts);
+  const maxChars = resolveMaxFileDiffChars();
   const entries = changedFiles.map((f: any) => {
     const filePath = f.path || f.filePath || 'unknown';
+    if (isOversizedFileDiff(f, maxChars)) {
+      return `- ${filePath} (SKIPPED: ${filePatchChars(f)} chars > max-file-diff-chars ${maxChars})`;
+    }
     if (!includeLineCounts) {
       return `- ${filePath}`;
     }
@@ -751,6 +775,7 @@ export function buildDiffSection(
     ``,
     `Use get_diff, read_file, view_file, search_code, miller, or zoekt on these paths.`,
     `Do not assume file contents from this list. Fetch the commit diffs yourself.`,
+    `SKIPPED paths are larger than max-file-diff-chars; do not request their payloads.`,
   ].join('\n');
 }
 
@@ -1039,12 +1064,17 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
             if (matched) {
               toolScope = 'changed-patches-only';
               isExhaustive = false;
-              const raw = matched.patch || matched.content || 'File present in PR scope.';
-              const truncated = raw.length > REPO_READ_FILE_MAX_CHARS;
-              const shown = truncated ? raw.slice(0, REPO_READ_FILE_MAX_CHARS) : raw;
-              toolOutput += truncated
-                ? `Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${raw.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
-                : shown;
+              const maxChars = resolveMaxFileDiffChars();
+              if (isOversizedFileDiff(matched, maxChars)) {
+                toolOutput += `SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`;
+              } else {
+                const raw = matched.patch || matched.content || 'File present in PR scope.';
+                const truncated = raw.length > REPO_READ_FILE_MAX_CHARS;
+                const shown = truncated ? raw.slice(0, REPO_READ_FILE_MAX_CHARS) : raw;
+                toolOutput += truncated
+                  ? `Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${raw.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
+                  : shown;
+              }
             } else if (options?.repoFileProvider) {
               try {
                 const content = await options.repoFileProvider.readFile(targetPath);

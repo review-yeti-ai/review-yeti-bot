@@ -280,9 +280,9 @@ inputs:
     required: false
     default: ''
   max-file-diff-chars:
-    description: 'Deprecated compatibility input; use max-diff-chars.'
+    description: 'Skip a changed-file patch larger than this many characters. Default 524288 (512KiB). Plumbed from caller policy max_file_diff_chars.'
     required: false
-    default: ''
+    default: '524288'
   max-passes:
     description: 'Deprecated compatibility input; pass limits are enforced by the caller policy.'
     required: false
@@ -594,6 +594,7 @@ runs:
         OPENROUTER_DATA_COLLECTION: ${{ inputs.openrouter-data-collection }}
         ACTIVE_PERSONAS: ${{ inputs.personas }}
         MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
+        MAX_FILE_DIFF_CHARS: ${{ inputs.max-file-diff-chars }}
         MAX_PERSONAS: ${{ inputs.max-personas }}
         MAX_REVIEW_ASSIGNMENTS: ${{ inputs.max-review-assignments }}
         REVIEW_YETI_INCREMENTAL_REVIEW: ${{ inputs.incremental-review }}
