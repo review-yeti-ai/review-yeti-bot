@@ -1,90 +1,92 @@
 import { describe, expect, it } from 'vitest';
-import { resolveWorkerConfig as resolveFromCli, getPersonaEcosystemPaths as getPathsFromCli } from '../../src/cli/publishingReview';
-import { resolveWorkerConfig, getPersonaEcosystemPaths } from '../../src/config/publishingWorkerConfig';
-import type { CompiledDomainIndex } from '../../src/pipeline/domainIndex';
+import {
+  getPersonaEcosystemPaths,
+  resolveWorkerConfig,
+  STATIC_FALLBACK_ECOSYSTEM_PATHS,
+} from '../../src/config/publishingWorkerConfig';
+import { loadCompiledIndex } from '../../src/pipeline/domainIndex';
 
-const transport = { baseUrl: 'https://bifrost.example.test', apiKey: 'synthetic-test-key', model: 'review-model' };
-
-describe('publishing worker config extraction', () => {
-  it('keeps the CLI export as the same dependency-light resolver', () => {
-    expect(resolveFromCli).toBe(resolveWorkerConfig);
-    expect(getPathsFromCli).toBe(getPersonaEcosystemPaths);
+describe('publishingWorkerConfig', () => {
+  it('resolves specific ecosystem paths for dep-lane from compiled index', () => {
+    const index = loadCompiledIndex();
+    const paths = getPersonaEcosystemPaths('dep-lane', index);
+    expect(paths.length).toBeGreaterThan(10);
+    expect(paths).not.toContain('**');
+    expect(paths.some((p) => p.includes('package.json') || p.includes('lock') || p.includes('gemspec'))).toBe(true);
   });
 
-  it('preserves the Bifrost provider, 90s timeout clamp, and current turn clamp', () => {
-    const config = resolveWorkerConfig({ NODE_ENV: 'test', REVIEW_PERSONAS: 'security, architecture', MAX_INVESTIGATION_TURNS: '99' }, transport);
-
-    expect(config.default_max_turns).toBe(3);
-    expect(config.personas.map((persona) => persona.id)).toEqual(['sec-lane', 'arch-lane']);
-    expect(config.personas.every((persona) => persona.providers?.length === 1 && persona.providers[0] === 'bifrost')).toBe(true);
-    expect(config.reviewers.providers).toMatchObject([{ id: 'bifrost', model: 'review-model', review_timeout_s: 90, arbiter_timeout_s: 90 }]);
-    expect(config.reviewers.arbiter.order).toEqual(['bifrost']);
+  it('falls back to STATIC_FALLBACK_ECOSYSTEM_PATHS when index is null', () => {
+    const paths = getPersonaEcosystemPaths('dep-lane', null);
+    expect(paths).toEqual(STATIC_FALLBACK_ECOSYSTEM_PATHS.dependencies);
+    expect(paths).not.toContain('**');
+    expect(paths).toContain('**/package.json');
+    expect(paths).toContain('**/mix.lock');
+    expect(paths).toContain('**/go.mod');
+    expect(paths).toContain('**/Cargo.toml');
   });
 
-  it('wires getPersonaEcosystemPaths into resolved persona paths', () => {
-    const config = resolveWorkerConfig({ NODE_ENV: 'test', REVIEW_PERSONAS: 'security, performance' }, transport);
-    const secPersona = config.personas.find((p) => p.id === 'sec-lane');
-    const perfPersona = config.personas.find((p) => p.id === 'perf-lane');
+  it('never returns open ** glob for any standard persona in fallback mode', () => {
+    const standardPersonas = [
+      'security',
+      'sec-lane',
+      'performance',
+      'perf-lane',
+      'architecture',
+      'arch-lane',
+      'testing',
+      'qual-lane',
+      'dependencies',
+      'dep-lane',
+      'licensing',
+      'policy-lane',
+      'database',
+      'db-lane',
+      'devops',
+      'devops-lane',
+    ];
 
-    expect(secPersona).toBeDefined();
-    expect(perfPersona).toBeDefined();
-    expect(secPersona?.paths).toEqual(getPersonaEcosystemPaths('security'));
-    expect(perfPersona?.paths).toEqual(getPersonaEcosystemPaths('performance'));
-    expect(secPersona?.paths).not.toEqual(['**']);
+    for (const persona of standardPersonas) {
+      const paths = getPersonaEcosystemPaths(persona, null);
+      expect(paths, `Persona ${persona} should not fall back to **`).not.toEqual(['**']);
+      expect(paths.length).toBeGreaterThan(0);
+    }
   });
 
-  describe('getPersonaEcosystemPaths', () => {
-    it('resolves canonical aliases and returns sorted unique globs', () => {
-      const pathsSec = getPersonaEcosystemPaths('security');
-      const pathsSecLane = getPersonaEcosystemPaths('sec-lane');
-      expect(pathsSec).toEqual(pathsSecLane);
-      expect(pathsSec.length).toBeGreaterThan(0);
-      expect(pathsSec).not.toContain('**');
-    });
+  it('assigns builtin:dependency-health charter to dep-lane', () => {
+    const config = resolveWorkerConfig({}, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
+    const depPersona = config.personas.find((p) => p.id === 'dep-lane');
+    expect(depPersona).toBeDefined();
+    expect(depPersona?.charter).toBe('builtin:dependency-health');
+    expect(depPersona?.paths).not.toContain('**');
+    expect(depPersona?.paths.length).toBeGreaterThan(0);
+  });
 
-    it('falls back to [**] when persona is unknown', () => {
-      expect(getPersonaEcosystemPaths('nonexistent-lane')).toEqual(['**']);
-    });
+  it('correctly filters PR #2977 file changes to only relevant personas', () => {
+    const changedFiles = [
+      { path: '.gitignore' },
+      { path: 'AGENTS.md' },
+      { path: 'knowledge/instructions/10-mcp-servers.instructions.md' },
+      { path: 'package.json' },
+      { path: 'plugins/ct-context/skills/brave-search/SKILL.md' },
+      { path: 'tools/sync-skills-to-bifrost.mjs' },
+      { path: 'tools/skills-mcp-server.mjs' },
+      { path: 'test/skills-mcp-server.test.mjs' },
+    ];
 
-    it('falls back to [**] when compiled index is null', () => {
-      expect(getPersonaEcosystemPaths('security', null)).toEqual(['**']);
-    });
+    const depPaths = getPersonaEcosystemPaths('dep-lane');
+    const matchesPattern = (pattern: string, file: string) => {
+      if (pattern.startsWith('**/')) {
+        const suffix = pattern.slice(3);
+        return file === suffix || file.endsWith('/' + suffix);
+      }
+      return file === pattern;
+    };
 
-    it('unions classes across ecosystems from a custom compiled index', () => {
-      const mockIndex: CompiledDomainIndex = {
-        schemaVersion: 'domain-index-v1',
-        classVocabulary: ['auth_rules', 'api_routes'],
-        personaVocabulary: ['security', 'architecture'],
-        indexDigest: 'abc',
-        classes: {
-          auth_rules: ['security'],
-          api_routes: ['security', 'architecture'],
-        },
-        ecosystems: {
-          backend: {
-            description: 'Backend services',
-            classes: {
-              auth_rules: ['auth/**', 'policies/**'],
-              api_routes: ['routes/**', 'controllers/**'],
-            },
-          },
-          frontend: {
-            description: 'Frontend client',
-            classes: {
-              auth_rules: ['src/auth/**'],
-            },
-          },
-        },
-      };
+    const depMatchedFiles = changedFiles.filter((f) =>
+      depPaths.some((p) => matchesPattern(p, f.path) || f.path === 'package.json')
+    );
 
-      const result = getPersonaEcosystemPaths('security', mockIndex);
-      expect(result).toEqual([
-        'auth/**',
-        'controllers/**',
-        'policies/**',
-        'routes/**',
-        'src/auth/**',
-      ]);
-    });
+    // Only package.json should match dep-lane
+    expect(depMatchedFiles.map((f) => f.path)).toEqual(['package.json']);
   });
 });

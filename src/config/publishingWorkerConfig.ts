@@ -16,12 +16,149 @@ export function getCompiledDomainIndex(): CompiledDomainIndex | null {
   }
 }
 
-export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDomainIndex | null): string[] {
-  const loadedIndex = index !== undefined ? index : getCompiledDomainIndex();
-  if (!loadedIndex) {
-    return ['**'];
-  }
+export const STATIC_FALLBACK_ECOSYSTEM_PATHS: Record<string, string[]> = {
+  dependencies: [
+    '**/package.json',
+    '**/package-lock.json',
+    '**/pnpm-lock.yaml',
+    '**/yarn.lock',
+    '**/bun.lockb',
+    '**/mix.exs',
+    '**/mix.lock',
+    '**/go.mod',
+    '**/go.sum',
+    '**/Cargo.toml',
+    '**/Cargo.lock',
+    '**/requirements*.txt',
+    '**/pyproject.toml',
+    '**/Pipfile*',
+    '**/poetry.lock',
+    '**/pom.xml',
+    '**/build.gradle*',
+    '**/*.gemspec',
+    '**/Gemfile*',
+    '**/*.lock',
+    '**/*.csproj',
+    '**/*.fsproj',
+    '**/*.vbproj',
+    '**/*.podspec',
+  ],
+  licensing: [
+    '**/LICENSE*',
+    '**/LICENCE*',
+    '**/COPYING*',
+    '**/NOTICE*',
+    '**/package.json',
+    '**/mix.exs',
+    '**/pyproject.toml',
+    '**/Cargo.toml',
+    '**/go.mod',
+    '**/*.md',
+    '**/*.mdx',
+    '**/*.rst',
+    '**/*.adoc',
+  ],
+  testing: [
+    '**/test/**',
+    '**/tests/**',
+    '**/spec/**',
+    '**/specs/**',
+    '**/*test*/**',
+    '**/*spec*/**',
+    '**/*.test.*',
+    '**/*.spec.*',
+    '**/*_test.*',
+    '**/*_spec.*',
+  ],
+  performance: [
+    '**/*.go',
+    '**/*.ex',
+    '**/*.exs',
+    '**/*.ts',
+    '**/*.tsx',
+    '**/*.js',
+    '**/*.jsx',
+    '**/*.py',
+    '**/*.rs',
+    '**/*.java',
+    '**/*.sql',
+    '**/*.c',
+    '**/*.cpp',
+  ],
+  security: [
+    '**/*.go',
+    '**/*.ex',
+    '**/*.exs',
+    '**/*.ts',
+    '**/*.tsx',
+    '**/*.js',
+    '**/*.jsx',
+    '**/*.py',
+    '**/*.rs',
+    '**/*.java',
+    '**/*.sh',
+    '**/*.bash',
+    '**/*.zsh',
+    '**/.github/workflows/**',
+    '**/k8s/**',
+    '**/helm/**',
+    '**/Dockerfile*',
+    '**/docker-compose*.yml',
+  ],
+  architecture: [
+    '**/*.go',
+    '**/*.ex',
+    '**/*.exs',
+    '**/*.ts',
+    '**/*.tsx',
+    '**/*.js',
+    '**/*.jsx',
+    '**/*.py',
+    '**/*.rs',
+    '**/*.java',
+    '**/docs/adr/**',
+    '**/architecture/**',
+  ],
+  database: [
+    '**/*.sql',
+    '**/migrations/**',
+    '**/priv/repo/migrations/**',
+    '**/prisma/**',
+    '**/schema.prisma',
+  ],
+  devops: [
+    '**/.github/**',
+    '**/k8s/**',
+    '**/helm/**',
+    '**/Dockerfile*',
+    '**/docker-compose*.yml',
+    '**/*.tf',
+    '**/*.sh',
+    '**/*.bash',
+  ],
+  style: [
+    '**/*.ts',
+    '**/*.tsx',
+    '**/*.js',
+    '**/*.jsx',
+    '**/*.go',
+    '**/*.py',
+    '**/*.rs',
+    '**/*.ex',
+    '**/*.exs',
+    '**/*.css',
+    '**/*.scss',
+  ],
+  documentation: [
+    '**/*.md',
+    '**/*.mdx',
+    '**/*.rst',
+    '**/*.adoc',
+    '**/docs/**',
+  ],
+};
 
+export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDomainIndex | null): string[] {
   const canonicalMap: Record<string, string> = {
     'security': 'security',
     'sec-lane': 'security',
@@ -46,6 +183,11 @@ export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDo
   };
   const target = canonicalMap[personaName.toLowerCase().trim()] || personaName.toLowerCase().trim();
 
+  const loadedIndex = index !== undefined ? index : getCompiledDomainIndex();
+  if (!loadedIndex) {
+    return STATIC_FALLBACK_ECOSYSTEM_PATHS[target] || ['**'];
+  }
+
   const classes = new Set<string>();
   for (const [cls, personas] of Object.entries(loadedIndex.classes)) {
     if (personas.includes(target)) {
@@ -54,7 +196,7 @@ export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDo
   }
 
   if (classes.size === 0) {
-    return ['**'];
+    return STATIC_FALLBACK_ECOSYSTEM_PATHS[target] || ['**'];
   }
 
   const globs = new Set<string>();
@@ -68,7 +210,8 @@ export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDo
     }
   }
 
-  return Array.from(globs).sort();
+  const result = Array.from(globs).sort();
+  return result.length > 0 ? result : (STATIC_FALLBACK_ECOSYSTEM_PATHS[target] || ['**']);
 }
 
 export function resolveWorkerConfig(
@@ -120,8 +263,10 @@ export function resolveWorkerConfig(
     'arch-lane': { id: 'arch-lane', required: false, charter: 'builtin:constitutional-goals' },
     'testing': { id: 'qual-lane', required: false, charter: 'builtin:consistency' },
     'qual-lane': { id: 'qual-lane', required: false, charter: 'builtin:consistency' },
-    'dependencies': { id: 'dep-lane', required: false, charter: 'builtin:contract' },
-    'dep-lane': { id: 'dep-lane', required: false, charter: 'builtin:contract' },
+    'dependencies': { id: 'dep-lane', required: false, charter: 'builtin:dependency-health' },
+    'dep-lane': { id: 'dep-lane', required: false, charter: 'builtin:dependency-health' },
+    'contract': { id: 'contract-lane', required: false, charter: 'builtin:contract' },
+    'contract-lane': { id: 'contract-lane', required: false, charter: 'builtin:contract' },
     'licensing': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
     'policy-lane': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
   };
