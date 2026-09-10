@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.48.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.1...v1.48.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **review:** classify wrapped provider failures ([#647](https://github.com/review-yeti-ai/review-yeti-bot/issues/647)) ([95bbab1](https://github.com/review-yeti-ai/review-yeti-bot/commit/95bbab1ac9eebd2f35aefcfbf61846fbe34167ab))
+
 ## [1.48.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.48.0...v1.48.1) (2026-09-10)
 
 
