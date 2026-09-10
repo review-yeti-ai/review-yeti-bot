@@ -71,7 +71,7 @@ worker_management() {
 # Full objects remain in memory only. Hash every declared field except owned
 # worker key / restart marker and Kubernetes-managed volatile metadata.
 summarize() {
-  local kind="$1" raw="$2" protected management
+  local kind="$1" raw="$2" protected
   jq -e --arg kind "$kind" --arg name "$name" --arg ns "$namespace" '
     .kind==$kind and .metadata.name==$name and .metadata.namespace==$ns
     and (.metadata.uid|type)=="string" and (.metadata.uid|length)>0
@@ -87,12 +87,11 @@ summarize() {
         | .spec.template.metadata.annotations=((.spec.template.metadata.annotations // {})|del(.[$marker]))
       end' <<<"$raw" | hash)" || return 1
   if [[ "$kind" == ConfigMap ]]; then
-    management="$(worker_management "$raw")" || return 1
-    jq -ceS --arg hash "$protected" --argjson management "$management" '
+    jq -ceS --arg hash "$protected" '
       if .data.REVIEW_JOB_RUNNER_MODE!="prebaked" or .data.REVIEW_JOB_DISPATCH_ENABLED!="true"
       then error("inactive mode") else
       {uid:.metadata.uid,resourceVersion:.metadata.resourceVersion,workerImage:.data.REVIEW_JOB_WORKER_IMAGE,
-       protectedHash:$hash,management:$management} end' <<<"$raw"
+       protectedHash:$hash} end' <<<"$raw"
   else
     jq -ceS --arg hash "$protected" --arg container "$container" --arg marker "$marker_key" --arg name "$name" '
       [.spec.template.spec.containers[]?|select(.name==$container)] as $c |
@@ -110,6 +109,7 @@ summarize() {
 read_state() {
   cm_raw="$(k get configmap "$name" -o json --show-managed-fields=true | json)" || return 1
   dep_raw="$(k get deployment "$name" -o json | json)" || return 1
+  cm_management="$(worker_management "$cm_raw")" || return 1
   cm="$(summarize ConfigMap "$cm_raw" 2>/dev/null)" || return 1
   dep="$(summarize Deployment "$dep_raw" 2>/dev/null)" || return 1
   trusted_worker "$(jq -r '.workerImage' <<<"$cm")" || return 1
@@ -284,14 +284,14 @@ action=update-and-restart
 if [[ "$(jq -r '.workerImage' <<<"$cm")" == "$target" ]]; then
   action=restart
   if [[ "$running_image_matches" == 1 ]]; then action=noop; fi
-elif [[ "$(jq -r '.management.mode' <<<"$cm")" == flux ]]; then
+elif [[ "$(jq -r '.mode' <<<"$cm_management")" == flux ]]; then
   action=gitops-update-required
 fi
-management="$(jq -cS '.management' <<<"$cm")"
+management="$cm_management"
 plan="$(jq -n --arg context "$context" --arg source "$source_sha" --arg target "$target" \
   --arg op "$operation" --arg action "$action" --argjson before "$before" --argjson recovery "$rollback_record" \
   --argjson management "$management" '
-  {schema:"review-yeti-worker-plan.v1",context:$context,namespace:"ct-review-system",
+  {schema:"review-yeti-worker-plan.v2",context:$context,namespace:"ct-review-system",
    reviewedSourceSha:$source,targetImage:$target,operation:$op,action:$action,management:$management,
    before:$before,recovery:$recovery}')"
 if [[ "$apply" != 1 ]]; then printf '%s\n' "$plan"; exit 0; fi
@@ -300,12 +300,13 @@ if [[ "$apply" != 1 ]]; then printf '%s\n' "$plan"; exit 0; fi
 [[ -f "$expected" && ! -L "$expected" ]] || die '--expected-state reviewed plan required'
 expected_plan="$(json <"$expected")" || die 'expected state malformed'
 same "$plan" "$expected_plan" || die 'stale or mismatched expected state; no writes'
+expected_management="$management"
 new_path "$receipt"; new_path "$receipt.intent"
 marker="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 after=null status=intent intent_written=0
 if [[ "$action" == noop ]]; then
   # Verify object binding again after the read-only pod checks.
-  if ! read_state || ! same "$snapshot" "$before"; then die 'noop state drift'; fi
+  if ! read_state || ! same "$snapshot" "$before" || ! same "$cm_management" "$expected_management"; then die 'noop state drift'; fi
   after="$snapshot" status=noop
   receipt_record="$(record)" || die 'cannot serialize noop receipt'
   private_write "$receipt" "$receipt_record" || die 'cannot persist noop receipt'
@@ -324,12 +325,14 @@ if [[ "$action" == update-and-restart ]]; then
      {op:"test",path:"/data/REVIEW_JOB_WORKER_IMAGE",value:$cm.workerImage},
      {op:"replace",path:"/data/REVIEW_JOB_WORKER_IMAGE",value:$target}]')"
   ack="$(k patch configmap "$name" --type=json --field-manager=review-yeti-worker-upgrade --patch "$patch" -o json | json)" || die 'worker patch rejected or acknowledgement lost; no retry'
+  ack_management="$(worker_management "$ack")" || die 'worker patch acknowledgement ownership invalid'
   expected_cm="$(summarize ConfigMap "$ack" 2>/dev/null)" || die 'worker patch acknowledgement invalid'
+  same "$ack_management" "$expected_management" || die 'worker patch acknowledgement ownership drift'
   same "$(jq -cS --arg target "$target" '.workerImage=$target|del(.resourceVersion)' <<<"$cm")" "$(jq -cS 'del(.resourceVersion)' <<<"$expected_cm")" || die 'worker acknowledgement drift'
   [[ "$(jq -r '.resourceVersion' <<<"$cm")" != "$(jq -r '.resourceVersion' <<<"$expected_cm")" ]] || die 'worker acknowledgement version unchanged'
 fi
 status=restart_guard_failed
-if ! read_state || ! same "$cm" "$expected_cm" || ! same "$dep" "$expected_dep"; then die 'object/configuration changed before restart'; fi
+if ! read_state || ! same "$cm" "$expected_cm" || ! same "$dep" "$expected_dep" || ! same "$cm_management" "$expected_management"; then die 'object/configuration changed before restart'; fi
 # A JSON Patch RV test binds the full protected template; merge only our marker
 # into its existing annotations. No rollout restart command can bypass this CAS.
 patch="$(jq -n --argjson dep "$dep" --argjson raw "$dep_raw" --arg marker "$marker" --arg key "$marker_key" '
@@ -345,7 +348,7 @@ same "$(jq -cS --arg marker "$marker" '.generation+=1|.marker=$marker|del(.resou
 status=rollout_failed
 k rollout status "deployment/$name" --timeout=180s >/dev/null || die 'bounded rollout failed'
 status=readback_failed
-if ! read_state || ! same "$cm" "$expected_cm" || ! same "$(stable_dep "$dep")" "$(stable_dep "$expected_dep")"; then die 'post-write identity/configuration drift'; fi
+if ! read_state || ! same "$cm" "$expected_cm" || ! same "$(stable_dep "$dep")" "$(stable_dep "$expected_dep")" || ! same "$cm_management" "$expected_management"; then die 'post-write identity/configuration drift'; fi
 running_matches || die 'active owned ready dispatcher configuration does not match'
-if ! read_state || ! same "$cm" "$expected_cm" || ! same "$(stable_dep "$dep")" "$(stable_dep "$expected_dep")"; then die 'state changed during pod verification'; fi
+if ! read_state || ! same "$cm" "$expected_cm" || ! same "$(stable_dep "$dep")" "$(stable_dep "$expected_dep")" || ! same "$cm_management" "$expected_management"; then die 'state changed during pod verification'; fi
 after="$snapshot" status=applied
