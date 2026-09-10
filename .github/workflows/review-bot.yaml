@@ -73,7 +73,10 @@ jobs:
           honcho-api-key: ${{ secrets.HONCHO_API_KEY }}
           honcho-base-url: ${{ vars.HONCHO_BASE_URL || 'https://honcho.do.calltelemetry.com' }}
           honcho-workspace: ${{ vars.HONCHO_WORKSPACE || 'calltelemetry' }}
+          honcho-peer: 'review-yeti'
+          honcho-observed: 'jason'
           honcho-recall-peers: ${{ vars.HONCHO_RECALL_PEERS || 'review-yeti,codex' }}
+          honcho-recall-distance: '0.35'
           memory-provider: 'composite'
           doks-publish-mode: 'app-gate'
 

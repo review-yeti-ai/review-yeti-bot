@@ -210,11 +210,11 @@ inputs:
   honcho-base-url:
     description: 'Base URL for Honcho memory API.'
     required: false
-    default: 'https://honcho.do.calltelemetry.com'
+    default: ''
   honcho-workspace:
     description: 'Honcho workspace namespace for team memory.'
     required: false
-    default: 'calltelemetry'
+    default: ''
   honcho-peer:
     description: 'Honcho writer peer ID for Review Yeti.'
     required: false
@@ -222,11 +222,11 @@ inputs:
   honcho-observed:
     description: 'Honcho observed peer ID for repository contributors.'
     required: false
-    default: 'jason'
+    default: ''
   honcho-recall-peers:
     description: 'Comma-separated list of Honcho writer peers to recall decisions from.'
     required: false
-    default: 'review-yeti,codex'
+    default: ''
   honcho-recall-distance:
     description: 'Maximum distance bound for Honcho semantic search (default 0.35).'
     required: false
@@ -234,7 +234,7 @@ inputs:
   memory-provider:
     description: 'Memory backend provider: sqlite, honcho, composite, postgres, auto.'
     required: false
-    default: 'composite'
+    default: 'auto'
   mcp-config-json:
     description: 'JSON string containing MCP server fleet configuration (transports, stdio scripts, and permissions).'
     required: false

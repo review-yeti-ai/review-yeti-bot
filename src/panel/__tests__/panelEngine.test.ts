@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
+  buildCompactFileList,
   buildDiffSection,
   executePersonaPanel,
   isRetryablePanelError,
@@ -139,5 +140,30 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       expect(diffSection).toBe(`=== FILE: src/boundary.ts ===\n${boundaryPatch}`);
       expect(diffSection).not.toContain('=== PR CHANGED FILES INDEX');
       expect(diffSection).not.toContain('[diff truncated');
+    });
+  });
+
+  describe('buildCompactFileList helper', () => {
+    it('formats file paths without line counts by default', () => {
+      const files = [
+        { path: 'src/a.ts', patch: '+ line1\n+ line2' },
+        { path: 'src/b.ts' },
+      ];
+      expect(buildCompactFileList(files)).toBe('- src/a.ts\n- src/b.ts');
+    });
+
+    it('annotates line counts when includeLineCounts is enabled', () => {
+      const files = [
+        { path: 'src/a.ts', patch: '+ line1\n+ line2' },
+        { path: 'src/single.ts', patch: '+ line1' },
+        { path: 'src/empty.ts' },
+      ];
+      expect(buildCompactFileList(files, { includeLineCounts: true })).toBe(
+        '- src/a.ts (2 diff lines)\n- src/single.ts (1 diff line)\n- src/empty.ts (0 diff lines)'
+      );
+    });
+
+    it('returns None when changed files list is empty', () => {
+      expect(buildCompactFileList([])).toBe('None');
     });
   });

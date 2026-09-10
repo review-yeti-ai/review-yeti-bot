@@ -70,7 +70,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(raw).toContain('REVIEW_YETI_INCREMENTAL_TRUSTED_EVENTS: ${{ inputs.incremental-trusted-events }}');
   });
 
-  it('keeps local execution as the default and makes DOKS an explicit OIDC dispatch', () => {
+  it('keeps local execution as the default and defaults DOKS publication to app-gate', () => {
     expect(action.inputs['execution-backend'].default).toBe('local');
     expect(action.inputs['doks-publish-mode'].default).toBe('app-gate');
     expect(action.inputs['doks-dispatch-url'].default).toBe('https://review-bot.calltelemetry.com/api/dispatch/action');

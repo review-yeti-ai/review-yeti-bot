@@ -939,7 +939,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   for (let iter = 0; iter < maxTurns; iter++) {
     // Prompt compaction on turns 2+ (ADR 0501 / Concept B): Stop resending raw diff blocks
     if (iter >= 1 && diffSection && messages[1] && typeof messages[1].content === 'string') {
-      const compactFileList = buildCompactFileList(changedFiles);
+      const compactFileList = buildCompactFileList(changedFiles, { includeLineCounts: true });
       const compactDiffIndex = [
         `=== PR CHANGED FILES (COMPACT INDEX) ===`,
         compactFileList,
