@@ -82,7 +82,7 @@ inputs:
       DOKS publication policy: disabled admits a nonpublishing qualification run; app-gate is
       reserved for an allowlisted trusted workflow after the App gate is separately activated.
     required: false
-    default: 'disabled'
+    default: 'app-gate'
   openrouter-allowed-models:
     description: >-
       Trusted workflow/base-config OpenRouter model allowlist, as comma-separated model IDs.
@@ -210,31 +210,31 @@ inputs:
   honcho-base-url:
     description: 'Base URL for Honcho memory API.'
     required: false
-    default: ''
+    default: 'https://honcho.do.calltelemetry.com'
   honcho-workspace:
     description: 'Honcho workspace namespace for team memory.'
     required: false
-    default: ''
+    default: 'calltelemetry'
   honcho-peer:
     description: 'Honcho writer peer ID for Review Yeti.'
     required: false
-    default: ''
+    default: 'review-yeti'
   honcho-observed:
     description: 'Honcho observed peer ID for repository contributors.'
     required: false
-    default: ''
+    default: 'jason'
   honcho-recall-peers:
     description: 'Comma-separated list of Honcho writer peers to recall decisions from.'
     required: false
-    default: ''
+    default: 'review-yeti,codex'
   honcho-recall-distance:
     description: 'Maximum distance bound for Honcho semantic search (default 0.35).'
     required: false
-    default: ''
+    default: '0.35'
   memory-provider:
     description: 'Memory backend provider: sqlite, honcho, composite, postgres, auto.'
     required: false
-    default: ''
+    default: 'composite'
   mcp-config-json:
     description: 'JSON string containing MCP server fleet configuration (transports, stdio scripts, and permissions).'
     required: false

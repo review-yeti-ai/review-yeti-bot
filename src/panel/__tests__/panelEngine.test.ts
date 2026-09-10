@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { executePersonaPanel, isRetryablePanelError, PanelConfigurationError, validateFindings } from '../panelEngine';
+import {
+  buildDiffSection,
+  executePersonaPanel,
+  isRetryablePanelError,
+  MAX_INLINE_DIFF_CHARS,
+  PanelConfigurationError,
+  validateFindings,
+} from '../panelEngine';
 import { OpenRouterResponseError, OpenRouterTimeoutError } from '../../gateway/openRouterClient';
 import { OmniRouteClient } from '../../gateway/omniRouteClient';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -87,4 +94,50 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     expect(isRetryablePanelError(new OpenRouterResponseError('rate limited', 429))).toBe(true);
     expect(isRetryablePanelError(new OpenRouterResponseError('unavailable', 503))).toBe(true);
     expect(isRetryablePanelError(new OpenRouterTimeoutError('deadline', 'total'))).toBe(true);
+  });
+
+  describe('buildDiffSection and prompt diff budget compaction', () => {
+    it('inlines full patches when diff is within the 40,000 character budget', () => {
+      const files = [
+        { path: 'src/a.ts', patch: 'diff a content line 1\nline 2' },
+        { path: 'src/b.ts', patch: 'diff b content line 1\nline 2' },
+      ];
+      const diffSection = buildDiffSection(files);
+      expect(diffSection).toContain('=== FILE: src/a.ts ===\ndiff a content line 1\nline 2');
+      expect(diffSection).toContain('=== FILE: src/b.ts ===\ndiff b content line 1\nline 2');
+      expect(diffSection).not.toContain('=== PR CHANGED FILES INDEX');
+      expect(diffSection).not.toContain('[diff truncated');
+    });
+
+    it('switches to compact index and bounded truncated excerpts when total diff exceeds 40,000 characters', () => {
+      // Create 15 files with 3,000 chars each (total 45,000 chars > MAX_INLINE_DIFF_CHARS)
+      const files = Array.from({ length: 15 }, (_, i) => ({
+        path: `src/file_${i}.ts`,
+        patch: `// Header for file ${i}\n` + 'x'.repeat(3000),
+      }));
+
+      const diffSection = buildDiffSection(files);
+
+      // Must contain index header with file count
+      expect(diffSection).toContain('=== PR CHANGED FILES INDEX (15 file(s)');
+      expect(diffSection).toContain('=== BOUNDED DIFF EXCERPTS (Large PR: use read_file, get_diff, search_code, or zoekt for full details) ===');
+
+      // Must contain at most 10 file excerpt blocks
+      const fileBlocks = diffSection.match(/=== FILE: src\/file_\d+\.ts ===/g);
+      expect(fileBlocks?.length).toBe(10);
+      expect(diffSection).not.toContain('=== FILE: src/file_10.ts ===');
+
+      // Excerpts over 2000 chars must carry the truncation marker
+      expect(diffSection).toContain('... [diff truncated: use read_file or get_diff for full contents]');
+    });
+
+    it('preserves full patches at the exact 40,000 character boundary without truncation', () => {
+      const boundaryPatch = 'a'.repeat(MAX_INLINE_DIFF_CHARS);
+      const files = [{ path: 'src/boundary.ts', patch: boundaryPatch }];
+
+      const diffSection = buildDiffSection(files);
+      expect(diffSection).toBe(`=== FILE: src/boundary.ts ===\n${boundaryPatch}`);
+      expect(diffSection).not.toContain('=== PR CHANGED FILES INDEX');
+      expect(diffSection).not.toContain('[diff truncated');
+    });
   });

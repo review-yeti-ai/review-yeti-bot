@@ -70,6 +70,12 @@ jobs:
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
           github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          honcho-api-key: ${{ secrets.HONCHO_API_KEY }}
+          honcho-base-url: ${{ vars.HONCHO_BASE_URL || 'https://honcho.do.calltelemetry.com' }}
+          honcho-workspace: ${{ vars.HONCHO_WORKSPACE || 'calltelemetry' }}
+          honcho-recall-peers: ${{ vars.HONCHO_RECALL_PEERS || 'review-yeti,codex' }}
+          memory-provider: 'composite'
+          doks-publish-mode: 'app-gate'
 
       - name: Report Verdict
         if: always()
