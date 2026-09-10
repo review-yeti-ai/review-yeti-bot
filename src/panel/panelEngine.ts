@@ -84,26 +84,6 @@ export function isOversizedFileDiff(
   return filePatchChars(file) > maxChars;
 }
 
-/** Skip PR file patches larger than this. Plumbed from policy `max_file_diff_chars`. */
-export function resolveMaxFileDiffChars(): number {
-  const raw = Number(process.env.MAX_FILE_DIFF_CHARS);
-  if (Number.isSafeInteger(raw) && raw > 0) return raw;
-  return REPO_READ_FILE_MAX_CHARS;
-}
-
-export function filePatchChars(
-  file: { patch?: string; content?: string },
-): number {
-  return (file.patch || file.content || '').length;
-}
-
-export function isOversizedFileDiff(
-  file: { patch?: string; content?: string },
-  maxChars: number = resolveMaxFileDiffChars(),
-): boolean {
-  return filePatchChars(file) > maxChars;
-}
-
 export interface RepoFileProvider {
   /** Case-insensitive substring match of `query` against every file path in the repository at the reviewed head. */
   findFiles(query: string): Promise<string[]>;
