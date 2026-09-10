@@ -428,7 +428,7 @@ export async function runPublishingReviewWorker(
         });
       }
     }
-    if (deps.checkClient.publishGateCheck) {
+    if (!authoritative && deps.checkClient.publishGateCheck) {
       try {
         await deps.checkClient.publishGateCheck(identity.owner, identity.repoName, identity.headSha, {
           conclusion: 'failure',
@@ -671,7 +671,7 @@ export async function runPublishingReviewWorker(
         }),
     });
 
-    if (deps.checkClient.publishGateCheck) {
+    if (!authoritative && deps.checkClient.publishGateCheck) {
       const gateTitle = conclusion === 'success'
         ? `Review Yeti Gate: Approved (${verdict})`
         : `Review Yeti Gate: Blocked (${verdict})`;

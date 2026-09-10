@@ -10,7 +10,6 @@ import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRe
 import { PostgresReviewCompletionRepository } from './persistence/reviewCompletionRepository';
 import { ReviewCompletionDeliveryEngine } from './k8s/reviewCompletionDeliveryEngine';
 import {
-  runReviewCompletionDeliveryLoop,
   createGitHubAppCIRequestClientFactory,
 } from './k8s/reviewCompletionDeliveryRuntime';
 import { PostgresStore } from './persistence/postgresStore';
@@ -131,34 +130,34 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   try {
     // Serial with dispatch and awaited through shutdown: no detached sweep may
     // publish after the DB pool closes. Failed publications retain a 60s lease.
-    await Promise.all([
-      runReviewJobDispatcherLoop({ runOnce: async () => {
-        await reaper?.runOnce(controller.signal);
-        if (controller.signal.aborted) return { status: 'idle' };
-        return engine.runOnce();
-      } }, {
-        signal: controller.signal,
-        idleDelayMs: config.idleDelayMs,
-        activeDelayMs: config.activeDelayMs,
-        errorDelayMs: config.errorDelayMs,
-        onOutcome: (outcome) => {
-          if (outcome.status !== 'idle') logger.info('Review job dispatch cycle completed', outcome);
-        },
-        onCycleError: () => logger.warn('Review job dispatch cycle failed; applying bounded retry delay'),
-      }),
-      completionEngine
-        ? runReviewCompletionDeliveryLoop(completionEngine, {
-            signal: controller.signal,
-            idleDelayMs: config.idleDelayMs,
-            activeDelayMs: config.activeDelayMs,
-            errorDelayMs: config.errorDelayMs,
-            onOutcome: (outcome) => {
-              if (outcome.status !== 'idle') logger.info('Review completion delivery cycle completed', outcome);
-            },
-            onCycleError: () => logger.warn('Review completion delivery cycle failed; applying bounded retry delay'),
-          })
-        : Promise.resolve(),
-    ]);
+    await runReviewJobDispatcherLoop({ runOnce: async () => {
+      await reaper?.runOnce(controller.signal);
+      if (controller.signal.aborted) return { status: 'idle' };
+      const dispatchOutcome = await engine.runOnce();
+      if (controller.signal.aborted) return dispatchOutcome;
+      if (completionEngine) {
+        try {
+          const completionOutcome = await completionEngine.runOnce();
+          if (completionOutcome.status !== 'idle') {
+            logger.info('Review completion delivery cycle completed', completionOutcome);
+          }
+        } catch (completionErr) {
+          logger.warn('Review completion delivery cycle failed; applying bounded retry delay', {
+            error: completionErr instanceof Error ? completionErr.message : String(completionErr),
+          });
+        }
+      }
+      return dispatchOutcome;
+    } }, {
+      signal: controller.signal,
+      idleDelayMs: config.idleDelayMs,
+      activeDelayMs: config.activeDelayMs,
+      errorDelayMs: config.errorDelayMs,
+      onOutcome: (outcome) => {
+        if (outcome.status !== 'idle') logger.info('Review job dispatch cycle completed', outcome);
+      },
+      onCycleError: () => logger.warn('Review job dispatch cycle failed; applying bounded retry delay'),
+    });
   } finally {
     await store.close();
   }
