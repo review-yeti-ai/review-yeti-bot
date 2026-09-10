@@ -715,15 +715,26 @@ export function isRetryablePanelError(error: unknown): boolean {
 
 export const MAX_INLINE_DIFF_CHARS = 40_000;
 
-export function buildDiffSection(
-  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>
+export function buildCompactFileList(
+  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>,
+  options?: { includeLineCounts?: boolean }
 ): string {
-  const fileListEntries = changedFiles.map((f: any) => {
+  const includeLineCounts = Boolean(options?.includeLineCounts);
+  const entries = changedFiles.map((f: any) => {
     const filePath = f.path || f.filePath || 'unknown';
+    if (!includeLineCounts) {
+      return `- ${filePath}`;
+    }
     const lines = (f.patch || '').split('\n').filter(Boolean).length;
     return `- ${filePath} (${lines} diff line${lines === 1 ? '' : 's'})`;
   });
-  const compactFileList = fileListEntries.join('\n') || 'None';
+  return entries.join('\n') || 'None';
+}
+
+export function buildDiffSection(
+  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>
+): string {
+  const compactFileList = buildCompactFileList(changedFiles, { includeLineCounts: true });
 
   let totalDiffChars = 0;
   for (const f of changedFiles) {
@@ -928,7 +939,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   for (let iter = 0; iter < maxTurns; iter++) {
     // Prompt compaction on turns 2+ (ADR 0501 / Concept B): Stop resending raw diff blocks
     if (iter >= 1 && diffSection && messages[1] && typeof messages[1].content === 'string') {
-      const compactFileList = changedFiles.map((f: any) => `- ${f.path || f.filePath || 'unknown'}`).join('\n') || 'None';
+      const compactFileList = buildCompactFileList(changedFiles);
       const compactDiffIndex = [
         `=== PR CHANGED FILES (COMPACT INDEX) ===`,
         compactFileList,

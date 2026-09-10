@@ -79,8 +79,8 @@ inputs:
     default: 'https://review-bot.calltelemetry.com/api/dispatch/action'
   doks-publish-mode:
     description: >-
-      DOKS publication policy: disabled admits a nonpublishing qualification run; app-gate is
-      reserved for an allowlisted trusted workflow after the App gate is separately activated.
+      DOKS publication policy: app-gate is the standard gate-checked publication mode for
+      allowlisted workflows; disabled admits a nonpublishing qualification run.
     required: false
     default: 'app-gate'
   openrouter-allowed-models:
