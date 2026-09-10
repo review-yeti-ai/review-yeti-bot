@@ -161,7 +161,7 @@ function boundedSummary(failures) {
   return failures.slice(0, 12).map((failure) => `- ${String(failure).slice(0, 500)}`).join('\n').slice(0, 6_000);
 }
 
-async function createSyntheticCheck({ repository, expectedHeadSha, token, fetchImpl }) {
+async function createSyntheticCheck({ repository, expectedHeadSha, token, fetchImpl = globalThis.fetch }) {
   const check = await githubJson(`https://api.github.com/repos/${repository}/check-runs`, token, fetchImpl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -181,7 +181,7 @@ async function createSyntheticCheck({ repository, expectedHeadSha, token, fetchI
   return Number(check.id);
 }
 
-async function completeSyntheticCheck({ repository, checkId, token, fetchImpl, failures, entryCount }) {
+async function completeSyntheticCheck({ repository, checkId, token, fetchImpl = globalThis.fetch, failures, entryCount }) {
   const success = failures.length === 0;
   await githubJson(`https://api.github.com/repos/${repository}/check-runs/${checkId}`, token, fetchImpl, {
     method: 'PATCH',
@@ -200,19 +200,21 @@ async function completeSyntheticCheck({ repository, checkId, token, fetchImpl, f
   });
 }
 
-export async function runMergeGroupGate(options) {
+export async function runMergeGroupGate(options, runtimeFetch = globalThis.fetch) {
   const identityFailure = mergeGroupIdentityFailure(options);
   if (identityFailure) return { failures: [identityFailure], entries: [] };
-  const checkId = await createSyntheticCheck(options);
+  const resolvedOptions = { ...options, fetchImpl: options.fetchImpl || runtimeFetch };
+  const checkId = await createSyntheticCheck(resolvedOptions);
   let result;
   try {
-    result = await verifyMergeGroup(options);
+    result = await verifyMergeGroup(resolvedOptions);
   } catch {
     result = { failures: ['merge-group verification failed unexpectedly'], entries: [] };
   }
   try {
     await completeSyntheticCheck({
       ...options,
+      fetchImpl: resolvedOptions.fetchImpl,
       checkId,
       failures: result.failures,
       entryCount: result.entries?.length || 0,

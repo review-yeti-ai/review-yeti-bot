@@ -107,6 +107,40 @@ test('publishes and completes the native Review Yeti check on the synthetic head
   assert.equal(writes[1].body.conclusion, 'success');
 });
 
+test('uses the runtime fetch implementation when the action does not inject one', async () => {
+  let queueReads = 0;
+  let syntheticWrites = 0;
+  const runtimeFetch = async (url, options) => {
+    assert.ok(options.signal instanceof AbortSignal, 'the resolved runtime fetch remains bounded');
+    if (url === `https://api.github.com/repos/${repository}/check-runs` && options.method === 'POST') {
+      syntheticWrites += 1;
+      return response({ id: 9003 });
+    }
+    if (url === `https://api.github.com/repos/${repository}/check-runs/9003` && options.method === 'PATCH') {
+      syntheticWrites += 1;
+      return response({ id: 9003 });
+    }
+    if (url === 'https://api.github.com/graphql') {
+      queueReads += 1;
+      return response(queueResponse());
+    }
+    if (url.includes(`/commits/${headSha}/check-runs`)) {
+      return response({ check_runs: checks, total_count: checks.length });
+    }
+    assert.fail(`unexpected URL ${url}`);
+  };
+  const result = await runMergeGroupGate({
+    repository,
+    branch: 'master',
+    event,
+    expectedHeadSha: groupSha,
+    token: 'official-app-token',
+  }, runtimeFetch);
+  assert.deepEqual(result.failures, []);
+  assert.equal(queueReads, 2);
+  assert.equal(syntheticWrites, 2);
+});
+
 test('reports only method and status when synthetic check creation is rejected', async () => {
   await assert.rejects(
     runMergeGroupGate({
