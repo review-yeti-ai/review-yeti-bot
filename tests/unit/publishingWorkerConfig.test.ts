@@ -78,6 +78,18 @@ describe('publishingWorkerConfig', () => {
     expect(paths).toContain('**/Cargo.toml');
   });
 
+  it('pins static fallback patterns for accessibility and i18n ecosystems', () => {
+    const a11yPaths = STATIC_FALLBACK_ECOSYSTEM_PATHS.accessibility;
+    expect(a11yPaths).toContain('**/*.tsx');
+    expect(a11yPaths).toContain('**/*.html');
+    expect(a11yPaths).toContain('**/*.vue');
+
+    const i18nPaths = STATIC_FALLBACK_ECOSYSTEM_PATHS.i18n;
+    expect(i18nPaths).toContain('**/locales/**');
+    expect(i18nPaths).toContain('**/*.po');
+    expect(i18nPaths).toContain('**/messages.json');
+  });
+
   it('ensures every persona in compiled domain index has a matching non-empty static fallback to prevent drift', () => {
     const index = loadCompiledIndex();
     expect(index).toBeDefined();
