@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
+import {
+  executePersonaPanel, extractMessageContentText, MAX_INVESTIGATION_TURNS, TURN_IDLE_MS,
+} from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, personaSchema } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -53,7 +55,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
     };
   });
 
-  describe('1. Multi-turn Tool Calling Iteration Bounds (maxTurns = 1, 5, 15, 20)', () => {
+  describe('1. Multi-turn Tool Calling Iteration Bounds (runtime cap = 5)', () => {
     it('executes exactly 1 turn when maxTurns = 1 and model outputs tool call without fence', async () => {
       const config = createMockConfig({ maxTurns: 1 });
       const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log("test");' }];
@@ -193,7 +195,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       expect(result.personas[0].decision).toBe('APPROVE');
     });
 
-    it('loops up to maxTurns = 15 when model makes 14 tool calls and finishes on 15th turn', async () => {
+    it('caps configured maxTurns = 15 at the five-turn runtime limit', async () => {
       const config = createMockConfig({ maxTurns: 15 });
       const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log("test");' }];
       let turnCounter = 0;
@@ -243,19 +245,18 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         };
       });
 
-      const result = await executePersonaPanel({
+      await expect(executePersonaPanel({
         config,
         changedFiles,
         repository: 'calltelemetry/cisco-cdr',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
-      });
+      })).rejects.toThrow(/turn budget exhausted/u);
 
-      expect(turnCounter).toBe(15);
-      expect(result.personas[0].decision).toBe('APPROVE');
+      expect(turnCounter).toBe(MAX_INVESTIGATION_TURNS);
     });
 
-    it('loops up to maxTurns = 20 when model makes 19 tool calls and finishes on 20th turn', async () => {
+    it('caps configured maxTurns = 20 at the five-turn runtime limit', async () => {
       const config = createMockConfig({ maxTurns: 20 });
       const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log("test");' }];
       let turnCounter = 0;
@@ -305,16 +306,15 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         };
       });
 
-      const result = await executePersonaPanel({
+      await expect(executePersonaPanel({
         config,
         changedFiles,
         repository: 'calltelemetry/cisco-cdr',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
-      });
+      })).rejects.toThrow(/turn budget exhausted/u);
 
-      expect(turnCounter).toBe(20);
-      expect(result.personas[0].decision).toBe('APPROVE');
+      expect(turnCounter).toBe(MAX_INVESTIGATION_TURNS);
     });
 
     it('enforces turn limit cutoff when model attempts to loop continuously beyond maxTurns', async () => {
@@ -382,7 +382,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       expect(() => store.updatePersonaSetting('security', { maxTurns: 'invalid' as any })).toThrow(/maxTurns for 'security' must be an integer between 1 and 20/);
     });
 
-    it('clamps out-of-bound maxTurns in panel engine execution (0 -> 1, -1 -> 1, 25 -> 20, 100 -> 20)', async () => {
+    it('clamps out-of-bound maxTurns in panel engine execution (0 -> 1, -1 -> 1, 25 -> 5)', async () => {
       const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log("test");' }];
 
       // Test maxTurns = 0 clamped to 1
@@ -431,7 +431,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         expect(turns).toBe(1); // Clamped -1 -> 1
       }
 
-      // Test maxTurns = 25 clamped to 20
+      // Test maxTurns = 25 clamped to the runtime limit
       {
         let turns = 0;
         mockClient.complete.mockImplementation(async (opts: any) => {
@@ -451,7 +451,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
           client: mockClient as unknown as OmniRouteClient,
         })).rejects.toThrow();
 
-        expect(turns).toBe(20); // Clamped 25 -> 20
+        expect(turns).toBe(MAX_INVESTIGATION_TURNS);
       }
     });
   });
@@ -543,7 +543,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
   });
 
   describe('4. System Prompt Turn Bounds and Active Exploration Guidelines Inclusion', () => {
-    it('includes turn bounds in system prompt for maxTurns = 1, 5, 15, 20', async () => {
+    it('includes clamped turn and idle bounds in the system prompt', async () => {
       const turnsToTest = [1, 5, 15, 20];
 
       for (const turns of turnsToTest) {
@@ -587,7 +587,10 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         });
 
         const systemMsg = mockClient.complete.mock.calls[0][0].messages.find((m: any) => m.role === 'system');
-        expect(systemMsg.content).toContain(`- You are granted up to ${turns} execution turns for active codebase exploration.`);
+        const effectiveTurns = Math.min(MAX_INVESTIGATION_TURNS, turns);
+        expect(systemMsg.content).toContain(
+          `- You are granted up to ${effectiveTurns} execution turns. After each turn you have ${Math.round(TURN_IDLE_MS / 60_000)} minutes`,
+        );
       }
     });
 
