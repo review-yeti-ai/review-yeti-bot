@@ -515,7 +515,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             AND authoritative_gate_app_id IS NULL
             AND terminal_deadline <= to_timestamp($2 / 1000.0)
             AND (runs.lease_expires_at IS NULL OR runs.lease_expires_at <= to_timestamp($2 / 1000.0))
-          ORDER BY terminal_deadline
+          -- A historical failure-publication backlog must not delay recovery of
+          -- a run that is still active in durable dispatch state. Sweep newly
+          -- expired queued/running work first, then retain FIFO within each class.
+          ORDER BY CASE WHEN runs.status IN ('queued', 'running') THEN 0 ELSE 1 END,
+                   runs.terminal_deadline
           FOR UPDATE OF runs, outbox SKIP LOCKED
           LIMIT $3
        ), retired AS (
