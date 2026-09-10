@@ -81,27 +81,23 @@ function mockDeps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
-  it('Scenario 1: Clean SHIP review publishes gate check with conclusion: success', async () => {
-    const { deps, publishGateCheck } = mockDeps();
+  it('Scenario 1: Clean SHIP review completes the single check with conclusion: success', async () => {
+    const { deps, publishGateCheck, completeCheck } = mockDeps();
     const result = await runPublishingReviewWorker(testEnv(), deps as any);
 
     expect(result.conclusion).toBe('success');
     expect(result.verdict).toBe('SHIP');
-    expect(publishGateCheck).toHaveBeenCalledTimes(1);
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'success',
-        title: 'Review Yeti Gate: Approved (SHIP)',
-        summary: expect.stringContaining('### Review Yeti Gate: Eligible'),
+        title: 'Review Yeti: SHIP',
       }),
     );
   });
 
-  it('Scenario 2: Review panel throws unhandled exception -> publishGateCheck called with failure', async () => {
-    const { deps, publishGateCheck } = mockDeps({
+  it('Scenario 2: Review panel throws unhandled exception -> single check fails closed', async () => {
+    const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => {
         throw new Error('Adversarial Panic: Internal LLM Crash');
       }),
@@ -111,21 +107,17 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
       'Adversarial Panic: Internal LLM Crash',
     );
 
-    expect(publishGateCheck).toHaveBeenCalledTimes(1);
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: 'Review Yeti Gate: Ineligible (review failed)',
-        summary: expect.stringContaining('Policy gate closed'),
+        title: 'Review Yeti: review did not complete',
       }),
     );
   });
 
-  it('Scenario 3: Source loader network failure -> publishGateCheck called with failure', async () => {
-    const { deps, publishGateCheck } = mockDeps({
+  it('Scenario 3: Source loader network failure -> single check fails closed', async () => {
+    const { deps, publishGateCheck, completeCheck } = mockDeps({
       sourceLoader: vi.fn(async () => {
         throw new Error('GitHub API 503 Service Unavailable fetching diff');
       }),
@@ -135,21 +127,17 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
       'GitHub API 503 Service Unavailable fetching diff',
     );
 
-    expect(publishGateCheck).toHaveBeenCalledTimes(1);
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: 'Review Yeti Gate: Ineligible (review failed)',
-        summary: expect.stringContaining('Policy gate closed'),
+        title: 'Review Yeti: review did not complete',
       }),
     );
   });
 
-  it('Scenario 4: Empty diff produces no reviewable files -> publishGateCheck called with failure', async () => {
-    const { deps, publishGateCheck } = mockDeps({
+  it('Scenario 4: Empty diff produces no reviewable files -> single check fails closed', async () => {
+    const { deps, publishGateCheck, completeCheck } = mockDeps({
       sourceLoader: vi.fn(async () => ({ diff: '', githubReads: 1 })),
     });
 
@@ -157,20 +145,17 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
       'admitted head produced no reviewable diff',
     );
 
-    expect(publishGateCheck).toHaveBeenCalledTimes(1);
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: 'Review Yeti Gate: Ineligible (review failed)',
+        title: 'Review Yeti: review did not complete',
       }),
     );
   });
 
-  it('Scenario 5: Blocking findings (P0) present -> publishGateCheck called with failure', async () => {
-    const { deps, publishGateCheck } = mockDeps({
+  it('Scenario 5: Blocking findings (P0) fail the single check', async () => {
+    const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         personas: [
           {
@@ -196,21 +181,17 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
     expect(result.conclusion).toBe('failure');
     expect(result.blockingFindingCount).toBe(1);
-    expect(publishGateCheck).toHaveBeenCalledTimes(1);
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: 'Review Yeti Gate: Blocked (BLOCK)',
-        summary: expect.stringContaining('### Review Yeti Gate: Ineligible'),
+        title: 'Review Yeti: BLOCK',
       }),
     );
   });
 
-  it('Scenario 6: Blocking findings (P1) present with model claiming SHIP -> recomputed canonical gate fails closed', async () => {
-    const { deps, publishGateCheck } = mockDeps({
+  it('Scenario 6: Blocking findings (P1) present with model claiming SHIP -> single check fails closed', async () => {
+    const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         personas: [
           {
@@ -236,21 +217,17 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
     expect(result.conclusion).toBe('failure');
     expect(result.blockingFindingCount).toBe(1);
-    expect(publishGateCheck).toHaveBeenCalledTimes(1);
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: expect.stringContaining('Review Yeti Gate: Blocked'),
-        summary: expect.stringContaining('### Review Yeti Gate: Ineligible'),
+        title: 'Review Yeti: FIX_FIRST',
       }),
     );
   });
 
   it('Scenario 7: Only P2 (advisory) findings present -> conclusion remains success', async () => {
-    const { deps, publishGateCheck } = mockDeps({
+    const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         personas: [
           {
@@ -277,20 +254,17 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     expect(result.conclusion).toBe('success');
     expect(result.blockingFindingCount).toBe(0);
     expect(result.findingCount).toBe(1);
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'success',
-        title: 'Review Yeti Gate: Approved (SHIP)',
-        summary: expect.stringContaining('### Review Yeti Gate: Eligible'),
+        title: 'Review Yeti: SHIP',
       }),
     );
   });
 
   it('Scenario 8: Quorum unsatisfied forces BLOCK verdict and fails closed', async () => {
-    const { deps, publishGateCheck } = mockDeps({
+    const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         personas: [{ id: 'block-lane', findings: [] }],
         quorum: { required: 2, distinctProviders: ['bifrost'], satisfied: false },
@@ -302,38 +276,33 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
     expect(result.conclusion).toBe('failure');
     expect(result.verdict).toBe('BLOCK');
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: 'Review Yeti Gate: Blocked (BLOCK)',
-        summary: expect.stringContaining('### Review Yeti Gate: Ineligible'),
+        title: 'Review Yeti: BLOCK',
       }),
     );
   });
 
   it('Scenario 9: Unreadable diff headers fail closed with failure conclusion', async () => {
-    const { deps, publishGateCheck } = mockDeps({
+    const { deps, publishGateCheck, completeCheck } = mockDeps({
       sourceLoader: vi.fn(async () => ({ diff: DIFF_WITH_UNREADABLE, githubReads: 1 })),
     });
 
     const result = await runPublishingReviewWorker(testEnv(), deps as any);
 
     expect(result.conclusion).toBe('failure');
-    expect(publishGateCheck).toHaveBeenCalledWith(
-      'calltelemetry',
-      'ct-meta',
-      HEAD,
+    expect(publishGateCheck).not.toHaveBeenCalled();
+    expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: expect.stringContaining('Review Yeti Gate: Blocked'),
+        title: 'Review Yeti: SHIP',
       }),
     );
   });
 
-  it('Scenario 10: Exception inside publishGateCheck does not swallow original error', async () => {
+  it('Scenario 10: an unused legacy gate publisher cannot replace the original error', async () => {
     const { deps, publishGateCheck } = mockDeps({
       panelRunner: vi.fn(async () => {
         throw new Error('Initial Panel Error');
@@ -346,6 +315,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     await expect(runPublishingReviewWorker(testEnv(), deps as any)).rejects.toThrow(
       'Initial Panel Error',
     );
+    expect(publishGateCheck).not.toHaveBeenCalled();
   });
 });
 
