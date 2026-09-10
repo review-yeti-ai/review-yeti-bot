@@ -10,7 +10,7 @@ const config = { appId: '4385771', privateKey, owner: 'calltelemetry', repo: 'ct
 const lookupUrl = `${config.baseUrl}/repos/calltelemetry/ct-meta/installation`;
 const tokenUrl = `${config.baseUrl}/app/installations/987/access_tokens`;
 const marker = 'SYNTHETIC_PRIVATE_TOKEN_DIAGNOSTIC';
-const token = 'ghs_test';
+const token = 'ghs_modern-header.payload_segment.signature-with-dash';
 const expiresAt = '2099-01-01T00:00:00.000Z';
 const failureMessage = 'Repository App token is unavailable';
 

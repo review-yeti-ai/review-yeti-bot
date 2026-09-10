@@ -31,6 +31,16 @@ describe('PlatformMemoryStore & Cross-Repo Collective Intelligence', () => {
     expect(pattern.confidenceScore).toBe(80);
   });
 
+  it('redacts the complete current GitHub installation token format', async () => {
+    const token = 'ghs_header-segment.payload_segment.signature-with-dash';
+    const pattern = await platformStore.recordPlatformPattern(
+      'security', 'current-installation-token', `Never persist ${token} in memory`, 'calltelemetry/ct-meta'
+    );
+
+    expect(pattern.sanitizedDescription).toBe('Never persist [SECRET_TOKEN] in memory');
+    expect(pattern.sanitizedDescription).not.toContain('signature-with-dash');
+  });
+
   it('elevates pattern confidence when observed across multiple repositories', async () => {
     await platformStore.recordPlatformPattern(
       'architecture',

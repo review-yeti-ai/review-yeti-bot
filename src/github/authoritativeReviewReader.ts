@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { reviewPolicySourceSchema, type CurrentReviewCandidate, type ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
+import { isGitHubInstallationToken } from './githubTransportPolicy';
 export type { ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
 
 const positive = z.number().int().positive().safe();
@@ -46,7 +47,7 @@ export class AuthoritativeReviewReader {
     timeoutMs?: number;
     fetchImplementation?: typeof fetch;
   }) {
-    if (!/^ghs_[A-Za-z0-9_]+$/u.test(options.token)) throw new Error('Review reader requires an installation credential');
+    if (!isGitHubInstallationToken(options.token)) throw new Error('Review reader requires an installation credential');
     let url: URL;
     try { url = new URL(options.baseUrl || 'https://api.github.com'); }
     catch { throw new Error('Review reader requires a credential-free HTTPS API base'); }

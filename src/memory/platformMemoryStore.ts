@@ -11,6 +11,7 @@ const DatabaseSync: any = DatabaseSyncImpl;
 type DatabaseSync = DatabaseSyncType;
 import fs from 'node:fs';
 import path from 'node:path';
+import { GITHUB_INSTALLATION_TOKEN_PATTERN_SOURCE } from '../github/githubTransportPolicy';
 import { logger } from '../utils/logger';
 import { postgresStore } from '../persistence/postgresStore';
 
@@ -248,6 +249,7 @@ export class PlatformMemoryStore {
       .replace(/(\/|\w+:)[\\/][\w\d_.-]+[\\/][\w\d_.-]+/g, '[FILE_PATH]')
       .replace(/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/g, '[IP_ADDRESS]')
       .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '[EMAIL]')
+      .replace(new RegExp(GITHUB_INSTALLATION_TOKEN_PATTERN_SOURCE, 'gu'), '[SECRET_TOKEN]')
       .replace(/(ghp_|ghs_|sk-)[A-Za-z0-9_]{16,}/g, '[SECRET_TOKEN]')
       .trim();
   }
