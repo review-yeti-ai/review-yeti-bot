@@ -111,36 +111,18 @@ func (q *memoryQueueManager) ReleaseSlot(jobKey types.NamespacedName) *types.Nam
 	delete(q.active, jobKey)
 	q.removeFromQueueLocked(jobKey)
 
-	if len(q.queue) == 0 {
-		return nil
-	}
-
-	// Pop next FIFO job
-	nextJob := q.queue[0]
-	q.queue = q.queue[1:]
-	q.active[nextJob] = struct{}{}
-
-	// Trigger event channel for controller workqueue
-	obj := &reviewv1alpha1.PRReviewJob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      nextJob.Name,
-			Namespace: nextJob.Namespace,
-		},
-	}
-	select {
-	case q.events <- event.GenericEvent{Object: obj}:
-	default:
-		// Non-blocking channel push
-	}
-
-	return &nextJob
+	return q.promoteNextLocked()
 }
 
 func (q *memoryQueueManager) RemoveJob(jobKey types.NamespacedName) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	_, wasActive := q.active[jobKey]
 	delete(q.active, jobKey)
 	q.removeFromQueueLocked(jobKey)
+	if wasActive {
+		q.promoteNextLocked()
+	}
 }
 
 func (q *memoryQueueManager) GetActiveCount() int {
@@ -210,4 +192,30 @@ func (q *memoryQueueManager) removeFromQueueLocked(jobKey types.NamespacedName) 
 			return
 		}
 	}
+}
+
+func (q *memoryQueueManager) promoteNextLocked() *types.NamespacedName {
+	if len(q.queue) == 0 {
+		return nil
+	}
+
+	// Pop next FIFO job before publishing its reconcile event. The active
+	// reservation prevents a newly reconciled request from jumping the queue.
+	nextJob := q.queue[0]
+	q.queue = q.queue[1:]
+	q.active[nextJob] = struct{}{}
+
+	obj := &reviewv1alpha1.PRReviewJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      nextJob.Name,
+			Namespace: nextJob.Namespace,
+		},
+	}
+	select {
+	case q.events <- event.GenericEvent{Object: obj}:
+	default:
+		// Non-blocking channel push
+	}
+
+	return &nextJob
 }
