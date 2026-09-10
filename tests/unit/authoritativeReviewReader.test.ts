@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthoritativeReviewReader, MAX_AUTHORITATIVE_DIFF_BYTES } from '../../src/github/authoritativeReviewReader';
 
-const TOKEN = 'ghs_authoritative_reader_test';
+const TOKEN = 'ghs_authoritative-reader.header_segment.signature-with-dash';
 const PRIVATE_BODY = 'private-server-response-marker';
 const API = 'https://github.example.invalid/api/v3';
 const TARGET = { repositoryId: 3210, owner: 'calltelemetry', repo: 'central-policy' };
@@ -85,7 +85,8 @@ describe('AuthoritativeReviewReader', () => {
   });
 
   describe('configuration and local input guards', () => {
-    it.each(['', 'ghs_', 'ghp_personal', 'ghs_bad token', 'ghs_bad\n', 'ghs_bad-token', 'ghs_é'])(
+    it.each(['', 'ghs_', 'ghp_personal', 'ghs_bad token', 'ghs_bad\n', 'ghs_bad-token',
+      'ghs_one.two', 'ghs_one.two.three.four', 'ghs_one.two.bad/slash', 'ghs_é'])(
       'rejects invalid installation token %j before fetch', (token) => {
         const fetcher = vi.fn<typeof fetch>();
         expect(() => new AuthoritativeReviewReader({ token, baseUrl: API, timeoutMs: 250, fetchImplementation: fetcher }))

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
 import { validateWorkerCompletionEndpoint } from './workerCompletion';
 import { MAX_COMPLETION_BYTES, parseWorkerReviewCompletion, type WorkerReviewCompletion } from './workerReviewCompletion';
 
@@ -37,7 +38,7 @@ export class HttpWorkerReviewCompletionAdapter implements WorkerReviewCompletion
     fetchImplementation?: typeof fetch;
   }) {
     try {
-      if (typeof options.token !== 'string' || !/^ghs_[A-Za-z0-9_]+$/u.test(options.token)) throw unavailable();
+      if (!isGitHubInstallationToken(options.token)) throw unavailable();
       const endpoint = validateWorkerCompletionEndpoint(options.endpoint);
       // Reject even an empty query delimiter; the bearer belongs only in headers.
       if (endpoint.includes('?')) throw unavailable();
