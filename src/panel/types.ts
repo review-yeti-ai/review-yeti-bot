@@ -73,6 +73,8 @@ export interface PanelResult {
     durationMs: number;
   };
   mermaidDiagram?: string;
+  prSummary?: string;
+  summary?: string;
 }
 
 /**

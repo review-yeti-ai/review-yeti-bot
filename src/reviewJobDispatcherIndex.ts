@@ -7,6 +7,11 @@ import {
   runReviewJobDispatcherLoop,
 } from './k8s/reviewJobDispatcherRuntime';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
+import { PostgresReviewCompletionRepository } from './persistence/reviewCompletionRepository';
+import { ReviewCompletionDeliveryEngine } from './k8s/reviewCompletionDeliveryEngine';
+import {
+  createGitHubAppCIRequestClientFactory,
+} from './k8s/reviewCompletionDeliveryRuntime';
 import { PostgresStore } from './persistence/postgresStore';
 import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
 import { parsePreparedReviewExecution } from './review/preparedPublishingPolicy';
@@ -87,6 +92,16 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       return json;
     },
   });
+
+  const completionRepository = new PostgresReviewCompletionRepository(store.getPool());
+  const completionEngine = appId && privateKey
+    ? new ReviewCompletionDeliveryEngine({
+        repository: completionRepository,
+        clientFactory: createGitHubAppCIRequestClientFactory(appId, privateKey),
+        workerId: `${config.workerId}:completion`,
+      })
+    : undefined;
+
   const controller = new AbortController();
   const reaper = publisher ? new AbandonedRunReaper({
     repository,
@@ -118,7 +133,21 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     await runReviewJobDispatcherLoop({ runOnce: async () => {
       await reaper?.runOnce(controller.signal);
       if (controller.signal.aborted) return { status: 'idle' };
-      return engine.runOnce();
+      const dispatchOutcome = await engine.runOnce();
+      if (controller.signal.aborted) return dispatchOutcome;
+      if (completionEngine) {
+        try {
+          const completionOutcome = await completionEngine.runOnce();
+          if (completionOutcome.status !== 'idle') {
+            logger.info('Review completion delivery cycle completed', completionOutcome);
+          }
+        } catch (completionErr) {
+          logger.warn('Review completion delivery cycle failed; applying bounded retry delay', {
+            error: completionErr instanceof Error ? completionErr.message : String(completionErr),
+          });
+        }
+      }
+      return dispatchOutcome;
     } }, {
       signal: controller.signal,
       idleDelayMs: config.idleDelayMs,

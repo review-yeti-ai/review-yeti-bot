@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelConfigurationError, extractMessageContentText } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelConfigurationError, extractMessageContentText, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
+import { OpenRouterResponseError } from '../../src/gateway/openRouterClient';
 
 // Parsed through the real schema (rather than hand-typed as CtReviewConfigV3) so
 // all the `.default(...)`-backed top-level sections (reviews, chat, etc.) are
@@ -540,5 +541,416 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
 
     expect(panelResult.arbiter.verdict).toBe('BLOCK');
     expect(panelResult.arbiter.rationale).toContain('Critical security violation');
+  });
+
+  it('bounds active persona concurrency to MAX_CONCURRENT_PERSONAS (<= 4)', async () => {
+    let activeCalls = 0;
+    let maxConcurrentObserved = 0;
+
+    const config = ctReviewConfigV3Schema.parse({
+      version: 3,
+      profile: 'assertive',
+      quorum: 1,
+      personas: [
+        { id: 'p1', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['claude'] },
+        { id: 'p2', enabled: true, required: true, charter: 'builtin:correctness', paths: ['**'], providers: ['claude'] },
+        { id: 'p3', enabled: true, required: true, charter: 'builtin:performance', paths: ['**'], providers: ['claude'] },
+        { id: 'p4', enabled: true, required: true, charter: 'builtin:contract', paths: ['**'], providers: ['claude'] },
+        { id: 'p5', enabled: true, required: true, charter: 'builtin:consistency', paths: ['**'], providers: ['claude'] },
+        { id: 'p6', enabled: true, required: true, charter: 'builtin:database', paths: ['**'], providers: ['claude'] },
+      ],
+      reviewers: {
+        execution: 'personas',
+        fallback: 'none',
+        overall_timeout_s: 120,
+        providers: [
+          { id: 'claude', enabled: true, model: 'claude-5-sonnet', effort: 'low', review_timeout_s: 30, arbiter_timeout_s: 30 },
+        ],
+        arbiter: { order: ['claude'] },
+      },
+      path_instructions: [],
+      rules: [],
+    });
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+
+      if (prompt.includes('Role: ARBITER')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All good' })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+      if (prompt.includes('Role: MODERATOR')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+
+      // Persona lane
+      activeCalls++;
+      if (activeCalls > maxConcurrentObserved) {
+        maxConcurrentObserved = activeCalls;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      activeCalls--;
+
+      return {
+        model: opts.model,
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+        usage: null,
+        costUSD: null,
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-concurrency-test',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    expect(result.personas).toHaveLength(6);
+    expect(maxConcurrentObserved).toBeLessThanOrEqual(4);
+    expect(maxConcurrentObserved).toBeGreaterThan(1);
+  });
+
+  it('handles 6-persona panel with transient 503 errors and retries under concurrency bounds without starving lanes', async () => {
+    let activeCalls = 0;
+    let maxConcurrentObserved = 0;
+    const personaAttempts: Record<string, number> = {};
+
+    const config = ctReviewConfigV3Schema.parse({
+      version: 3,
+      profile: 'assertive',
+      quorum: 1,
+      personas: [
+        { id: 'p1', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['claude'] },
+        { id: 'p2', enabled: true, required: true, charter: 'builtin:correctness', paths: ['**'], providers: ['claude'] },
+        { id: 'p3', enabled: true, required: true, charter: 'builtin:performance', paths: ['**'], providers: ['claude'] },
+        { id: 'p4', enabled: true, required: true, charter: 'builtin:contract', paths: ['**'], providers: ['claude'] },
+        { id: 'p5', enabled: true, required: true, charter: 'builtin:consistency', paths: ['**'], providers: ['claude'] },
+        { id: 'p6', enabled: true, required: true, charter: 'builtin:database', paths: ['**'], providers: ['claude'] },
+      ],
+      reviewers: {
+        execution: 'personas',
+        fallback: 'none',
+        overall_timeout_s: 120,
+        providers: [
+          { id: 'claude', enabled: true, model: 'claude-5-sonnet', effort: 'low', review_timeout_s: 30, arbiter_timeout_s: 30 },
+        ],
+        arbiter: { order: ['claude'] },
+      },
+      path_instructions: [],
+      rules: [],
+    });
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+
+      if (prompt.includes('Role: ARBITER')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All good' })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+      if (prompt.includes('Role: MODERATOR')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+
+      // Persona lane
+      const personaId = opts.persona || 'unknown';
+      personaAttempts[personaId] = (personaAttempts[personaId] || 0) + 1;
+
+      activeCalls++;
+      if (activeCalls > maxConcurrentObserved) {
+        maxConcurrentObserved = activeCalls;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      activeCalls--;
+
+      // Simulate transient network error on first attempt for p1 and p2
+      if ((personaId === 'p1' || personaId === 'p2') && personaAttempts[personaId] === 1) {
+        throw new Error('fetch failed: ECONNRESET');
+      }
+
+      return {
+        model: opts.model,
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+        usage: null,
+        costUSD: null,
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-concurrency-retry-test',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    expect(result.personas).toHaveLength(6);
+    expect(personaAttempts['p1']).toBe(2);
+    expect(personaAttempts['p2']).toBe(2);
+    expect(maxConcurrentObserved).toBeLessThanOrEqual(4);
+    expect(result.arbiter.verdict).toBe('SHIP');
+  });
+
+  it('enforces MAX_PERSONA_BUDGET_MS (150s) cumulative cap per persona lane', async () => {
+    const config = ctReviewConfigV3Schema.parse({
+      version: 3,
+      profile: 'assertive',
+      quorum: 1,
+      personas: [
+        { id: 'sec-lane', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['claude'] },
+      ],
+      reviewers: {
+        execution: 'personas',
+        fallback: 'none',
+        overall_timeout_s: 120,
+        providers: [
+          { id: 'claude', enabled: true, model: 'claude-5-sonnet', effort: 'low', review_timeout_s: 30, arbiter_timeout_s: 30 },
+        ],
+        arbiter: { order: ['claude'] },
+      },
+      path_instructions: [],
+      rules: [],
+    });
+
+    let callCount = 0;
+    const realNow = Date.now;
+    const baseTime = realNow();
+    vi.spyOn(Date, 'now').mockImplementation(() => {
+      if (callCount > 0) {
+        return baseTime + 151_000;
+      }
+      return baseTime;
+    });
+
+    mockClient.complete.mockImplementation(async () => {
+      callCount++;
+      throw new Error('fetch failed: ECONNRESET');
+    });
+
+    try {
+      await expect(executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
+        repository: 'calltelemetry/repo',
+        headSha: 'head-sha-timeout-cap-test',
+        client: mockClient as unknown as OmniRouteClient,
+      })).rejects.toThrow(/exceeded total retry\/execution budget of 150s/);
+    } finally {
+      vi.spyOn(Date, 'now').mockRestore();
+    }
+  });
+
+  it('safely defaults per-call, moderator, and arbiter timeouts to 90s when review_timeout_s is missing', async () => {
+    const recordedTimeouts: number[] = [];
+    const baseConfig = buildDeepConfig();
+    const configWithoutTimeouts: CtReviewConfigV3 = {
+      ...baseConfig,
+      reviewers: {
+        ...baseConfig.reviewers,
+        providers: baseConfig.reviewers.providers.map((p) => {
+          const { review_timeout_s, arbiter_timeout_s, ...rest } = p as any;
+          return rest;
+        }),
+      },
+    };
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      recordedTimeouts.push(opts.timeoutMs);
+      const prompt = extractMessageContentText(opts.messages?.[1]?.content || opts.messages?.[0]?.content);
+      const nonceMatch = typeof prompt === 'string' ? prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) : null;
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+
+      if (opts.persona === 'arbiter') {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'Approved' })}\nCT_REVIEW_END:${nonce}`,
+          usage: { prompt: 10, completion: 10, total: 20 },
+        };
+      }
+      if (opts.persona === 'moderator') {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+          usage: { prompt: 10, completion: 10, total: 20 },
+        };
+      }
+      return {
+        model: opts.model,
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+        usage: { prompt: 10, completion: 10, total: 20 },
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config: configWithoutTimeouts,
+      changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const safe = true;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-nan-timeout-test',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    expect(result.arbiter.verdict).toBe('SHIP');
+    expect(recordedTimeouts.length).toBeGreaterThanOrEqual(3);
+    for (const timeout of recordedTimeouts) {
+      expect(Number.isFinite(timeout)).toBe(true);
+      expect(timeout).toBe(90_000);
+      expect(Number.isNaN(timeout)).toBe(false);
+    }
+  });
+
+  describe('mapConcurrentSettled', () => {
+    it('strictly bounds concurrent execution to limit and preserves item ordering', async () => {
+      let active = 0;
+      let maxActive = 0;
+      const items = [1, 2, 3, 4, 5, 6];
+
+      const results = await mapConcurrentSettled(items, 2, async (item) => {
+        active++;
+        if (active > maxActive) maxActive = active;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        active--;
+        if (item === 3) throw new Error('item 3 failure');
+        return item * 10;
+      });
+
+      expect(maxActive).toBeLessThanOrEqual(2);
+      expect(results).toHaveLength(6);
+      expect(results[0]).toEqual({ status: 'fulfilled', value: 10 });
+      expect(results[1]).toEqual({ status: 'fulfilled', value: 20 });
+      expect(results[2]).toEqual({ status: 'rejected', reason: expect.any(Error) });
+      expect(results[3]).toEqual({ status: 'fulfilled', value: 40 });
+      expect(results[4]).toEqual({ status: 'fulfilled', value: 50 });
+      expect(results[5]).toEqual({ status: 'fulfilled', value: 60 });
+    });
+
+    it('handles empty items array and non-positive limit safely', async () => {
+      const emptyResults = await mapConcurrentSettled([], 4, async (x) => x);
+      expect(emptyResults).toEqual([]);
+
+      const singleResult = await mapConcurrentSettled(['a'], 0, async (x) => x.toUpperCase());
+      expect(singleResult).toEqual([{ status: 'fulfilled', value: 'A' }]);
+    });
+  });
+
+  it('aborts queued personas immediately without invoking LLM model when head becomes stale while queued', async () => {
+    let headIsCurrent = true;
+    const invokedPersonas: string[] = [];
+
+    const config = ctReviewConfigV3Schema.parse({
+      version: 3,
+      profile: 'assertive',
+      quorum: 1,
+      personas: [
+        { id: 'p1', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['claude'] },
+        { id: 'p2', enabled: true, required: false, charter: 'builtin:correctness', paths: ['**'], providers: ['claude'] },
+        { id: 'p3', enabled: true, required: false, charter: 'builtin:performance', paths: ['**'], providers: ['claude'] },
+        { id: 'p4', enabled: true, required: false, charter: 'builtin:contract', paths: ['**'], providers: ['claude'] },
+        { id: 'p5', enabled: true, required: false, charter: 'builtin:consistency', paths: ['**'], providers: ['claude'] },
+        { id: 'p6', enabled: true, required: false, charter: 'builtin:database', paths: ['**'], providers: ['claude'] },
+      ],
+      reviewers: {
+        execution: 'personas',
+        fallback: 'none',
+        overall_timeout_s: 120,
+        providers: [
+          { id: 'claude', enabled: true, model: 'claude-5-sonnet', effort: 'low', review_timeout_s: 30, arbiter_timeout_s: 30 },
+        ],
+        arbiter: { order: ['claude'] },
+      },
+      path_instructions: [],
+      rules: [],
+    });
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+
+      if (opts.persona === 'classifier') {
+        return {
+          model: opts.model,
+          content: JSON.stringify({
+            fastShip: false,
+            selectedPersonas: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'],
+            effortTier: 'low',
+            rationale: 'Full panel required',
+          }),
+          usage: null,
+          costUSD: null,
+        };
+      }
+
+      if (prompt.includes('Role: ARBITER') || opts.persona === 'arbiter') {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All good' })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+      if (prompt.includes('Role: MODERATOR') || opts.persona === 'moderator') {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
+
+      // Record which persona was actually invoked
+      invokedPersonas.push(opts.persona);
+
+      // Personas 1-4 take 30ms, during which head becomes stale
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      headIsCurrent = false;
+
+      return {
+        model: opts.model,
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+        usage: null,
+        costUSD: null,
+      };
+    });
+
+    const panelPromise = executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-queue-stale-test',
+      client: mockClient as unknown as OmniRouteClient,
+      isCurrentHead: () => headIsCurrent,
+    });
+
+    const result = await panelPromise;
+    // The first 4 personas (p1..p4) ran concurrently and completed
+    // While p5 and p6 were queued, headIsCurrent became false
+    // When p5 and p6 acquired the semaphore slot, the post-acquire check detected stale head and aborted
+    // Therefore, p5 and p6 were NEVER invoked against the model client
+    expect(invokedPersonas).not.toContain('p5');
+    expect(invokedPersonas).not.toContain('p6');
+    expect(result.optionalFailures.some((f) => f.error?.includes('stale run aborted'))).toBe(true);
   });
 });

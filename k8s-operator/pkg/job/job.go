@@ -189,6 +189,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: ExecutionAttemptEnv, Value: strconv.FormatInt(int64(executionAttempt), 10)},
 		{Name: PublicationModeEnv, Value: spec.PublicationMode},
 		{Name: ReceiptPathEnv, Value: ReceiptPath},
+		{Name: "CT_REVIEW_DATA_DIR", Value: "/tmp/.ct-memory"},
 	}
 	if spec.QualificationProfile == FullPanelQualificationProfile || spec.QualificationProfile == SameHeadQualificationProfile {
 		qualificationTimeoutMillis := max(int64(1_000),

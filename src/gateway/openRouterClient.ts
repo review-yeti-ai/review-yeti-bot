@@ -155,6 +155,8 @@ type OpenRouterSdkClient = {
   chat: {
     send(request: Record<string, unknown>, options?: Record<string, unknown>): Promise<unknown>;
   };
+  getRawUsage?: () => any;
+  getRawJson?: () => Promise<any>;
   /** A one-shot buffered response used only for explicitly supported compatible envelopes. */
   getRawResponse?: () => Promise<Response | null>;
   /** Cancel the unused compatibility clone so SDK stream cancellation reaches the upstream body. */
@@ -876,7 +878,7 @@ async function readStreamingResponse(
         options?.onFirstToken?.();
       }
     } catch {
-      throw new OpenRouterResponseError('OpenRouter returned malformed streaming JSON');
+      throw new OpenRouterResponseError('OpenRouter returned malformed response: malformed streaming JSON');
     }
 
     // Periodic heartbeat log in CI if active reasoning or streaming
@@ -924,6 +926,9 @@ async function readStreamingResponse(
       lines.forEach(consume);
     }
     buffer += decoder.decode();
+    if (buffer.trim()) {
+      consume(buffer);
+    }
   } catch (error) {
     // The read timer can win a same-deadline race a few milliseconds early (the classification
     // grace above still marks it as total). Trigger the abort/cancel path for that case too.
@@ -1190,14 +1195,6 @@ async function createOpenRouterSdkClient(options: {
   onGenerationId?: (value: string) => void;
 }): Promise<OpenRouterSdkClient> {
   const { OpenRouter, HTTPClient } = await loadOpenRouterSdk();
-  type RawCompatibilityCapture = {
-    body: Promise<string>;
-    status: number;
-    statusText: string;
-    headers: Headers;
-    cancel: (reason: string) => void;
-  };
-  let rawResponseForCompatibility: RawCompatibilityCapture | null = null;
   const httpClient = new HTTPClient({
     fetcher: async (sdkRequest: Request) => {
       const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
@@ -1210,7 +1207,7 @@ async function createOpenRouterSdkClient(options: {
       if (!(response instanceof Response)) {
         // Keep injected OpenAI-compatible test/replay transports usable while production fetch
         // remains a native WHATWG Response. The official SDK receives the adapted response;
-        // response validation and compatibility parsing still happen through the same path.
+        // response validation and parsing still happen through the same path.
         const compatibilityResponse: any = response as any;
         let compatibilityBody = compatibilityResponse?.body || '';
         if (!compatibilityBody && typeof compatibilityResponse?.json === 'function') {
@@ -1229,68 +1226,40 @@ async function createOpenRouterSdkClient(options: {
           headers: compatibilityResponse?.headers || { 'content-type': 'application/json' },
         });
       }
-      // Buffer one clone so a legacy OpenAI-compatible response can be parsed after the official
-      // SDK rejects a missing optional envelope field. Reading the clone concurrently is
-      // important: an unused Response.clone() tee keeps SDK EventStream cancellation pending at
-      // [DONE], which can otherwise look like a provider timeout. The SDK remains the primary
-      // parser; this bounded adapter exists for existing callers and fixtures that intentionally
-      // exercise the broader OpenAI-compatible contract.
-      try {
-        const rawClone = response.clone();
-        const rawReader = rawClone.body?.getReader();
-        const body = rawReader
-          ? (async () => {
-              const decoder = new TextDecoder();
-              let text = '';
-              try {
-                while (true) {
-                  const { done, value } = await rawReader.read();
-                  if (done) break;
-                  if (value) text += decoder.decode(value, { stream: true });
-                }
-                return text + decoder.decode();
-              } finally {
-                rawReader.releaseLock?.();
-              }
-            })()
-          : rawClone.text();
-        let cancelled = false;
-        rawResponseForCompatibility = {
-          body,
-          status: response.status,
-          statusText: response.statusText,
-          headers: new Headers(response.headers),
-          cancel: (reason: string) => {
-            if (cancelled) return;
-            cancelled = true;
-            try {
-              void rawReader?.cancel(reason).catch(() => undefined);
-            } catch (_) {
-              // Cleanup is best effort; the request has already been classified by the caller.
+      const contentType = response.headers?.get?.('content-type') || '';
+      const isSse = contentType.includes('text/event-stream');
+      if (!isSse) {
+        try {
+          const text = await response.text();
+          let json: any = null;
+          try {
+            json = JSON.parse(text);
+            if (json && json.usage) {
+              capturedJsonUsage = json.usage;
             }
-          },
-        };
-      } catch (_) {
-        // A custom test transport may not implement the native Response clone contract. The SDK
-        // call remains authoritative; compatibility parsing is simply unavailable for that body.
-        rawResponseForCompatibility = null;
+          } catch (_) {
+            json = null;
+          }
+          rawJsonCapture = {
+            getJson: async () => json,
+            status: response.status,
+            statusText: response.statusText,
+            headers: new Headers(response.headers),
+          };
+          response = new Response(text, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          });
+        } catch (_) {
+          rawJsonCapture = null;
+        }
       }
       return response;
     },
   });
-  const cancelRawResponse = (reason: string): void => {
-    const response = rawResponseForCompatibility;
-    rawResponseForCompatibility = null;
-    if (!response) return;
-    try {
-      // Cancel the background compatibility capture whenever the SDK
-      // stream is classified as timed out, otherwise the original upstream branch cannot see
-      // cancellation and a fake or non-cooperative provider can keep the review alive.
-      response.cancel(reason);
-    } catch (_) {
-      // Cleanup is best effort; the request has already been classified by the caller.
-    }
-  };
+  let rawJsonCapture: { getJson: () => Promise<any>; status: number; statusText: string; headers: Headers } | null = null;
+  let capturedJsonUsage: any = null;
   httpClient.addHook('response', (response: Response) => {
     const generationId = response?.headers?.get?.('x-generation-id');
     if (generationId) options.onGenerationId?.(generationId);
@@ -1304,21 +1273,18 @@ async function createOpenRouterSdkClient(options: {
     retryConfig: { strategy: 'none' },
   });
   client.getRawResponse = async () => {
-    const capture = rawResponseForCompatibility;
-    rawResponseForCompatibility = null;
-    if (!capture) return null;
-    try {
-      const body = await capture.body;
-      return new Response(body, {
-        status: capture.status,
-        statusText: capture.statusText,
-        headers: capture.headers,
-      });
-    } catch (_) {
-      return null;
-    }
+    if (!rawJsonCapture) return null;
+    const json = await rawJsonCapture.getJson();
+    if (!json) return null;
+    return new Response(JSON.stringify(json), {
+      status: rawJsonCapture.status,
+      statusText: rawJsonCapture.statusText,
+      headers: rawJsonCapture.headers,
+    });
   };
-  client.cancelRawResponse = cancelRawResponse;
+  client.getRawJson = async () => (rawJsonCapture ? rawJsonCapture.getJson() : null);
+  client.getRawUsage = () => capturedJsonUsage;
+  client.cancelRawResponse = (_reason: string) => {};
   return client;
 }
 
@@ -1368,14 +1334,6 @@ export class OpenRouterClient implements ReviewModelClient {
 
     const effectiveModel = normalizeOpenRouterModel(request.model);
     let generationId: string | null = null;
-    // Loading the local SDK is not provider latency and must not consume a caller's request
-    // deadline. This is especially important for the first invocation in a fresh action process.
-    const sdkClient = await createOpenRouterSdkClient({
-      baseUrl: this.baseUrl,
-      apiKey: this.apiKey,
-      fetchImplementation: this.fetchImplementation,
-      onGenerationId: (value) => { generationId = value; },
-    });
     const started = this.now();
     const startedAt = Date.now();
     const controller = new AbortController();
@@ -1387,89 +1345,134 @@ export class OpenRouterClient implements ReviewModelClient {
 
     try {
       let data: any;
-      let compatibilityFallbackUsed = false;
-      try {
-        const sdkResponse = await sdkClient.chat.send(
-          {
-            xOpenRouterMetadata: 'enabled',
-            chatRequest: buildOpenRouterSdkChatRequest(request),
-          },
-          {
-            signal: controller.signal,
-            retries: { strategy: 'none' },
-          },
-        );
-        if (sdkResponse && typeof (sdkResponse as any).getReader === 'function') {
-          data = await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
-            ttftTimeoutMs: request.ttftTimeoutMs,
-            inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
-            totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
-            onTotalTimeout: () => {
-              requestDeadlineExpired = true;
-              controller.abort();
-            },
-            onCancel: (reason) => sdkClient.cancelRawResponse?.(reason),
-            onFirstToken: request.onFirstToken,
-          });
-        } else {
-          let rawUsage: any = null;
-          if (sdkClient.getRawResponse) {
+      const isStreaming = request.stream ?? true;
+      if (isStreaming) {
+        const headers: Record<string, string> = {
+          'authorization': `Bearer ${this.apiKey}`,
+          'content-type': 'application/json',
+          'accept': 'text/event-stream',
+          'user-agent': 'speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk',
+          'x-openrouter-metadata': 'enabled',
+        };
+        if (request.metadata && typeof request.metadata === 'object') {
+          for (const [k, v] of Object.entries(request.metadata)) {
+            if (typeof v === 'string') headers[k] = v;
+          }
+        }
+        const body = JSON.stringify(buildOpenRouterChatRequest({ ...request, stream: true }));
+        let response = await this.fetchImplementation(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers,
+          body,
+          signal: controller.signal,
+        });
+
+        if (!(response instanceof Response)) {
+          const compatibilityResponse: any = response as any;
+          let compatibilityBody = compatibilityResponse?.body || '';
+          let isJsonBody = false;
+          if (!compatibilityBody && typeof compatibilityResponse?.json === 'function') {
             try {
-              const rawRes = await sdkClient.getRawResponse();
-              if (rawRes) {
-                const rawJson = (await rawRes.json()) as any;
-                rawUsage = rawJson?.usage;
-              }
+              compatibilityBody = JSON.stringify(await compatibilityResponse.json());
+              isJsonBody = true;
             } catch (_) {}
           }
-          data = normalizeSdkResponse(sdkResponse, rawUsage);
-        }
-        sdkClient.cancelRawResponse?.('sdk response parsed');
-      } catch (sdkError: any) {
-        let compatibilityResponse: Response | null = null;
-        if (sdkClient.getRawResponse) {
-          try {
-            compatibilityResponse = await readWithTimeout(
-              sdkClient.getRawResponse(),
-              Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
-              () => new OpenRouterTimeoutError(
-                `OpenRouter compatibility response exceeded total deadline of ${request.timeoutMs}ms`,
-                'total',
-              ),
-            );
-          } catch (compatibilityReadError) {
-            sdkClient.cancelRawResponse?.('compatibility response deadline');
-            throw compatibilityReadError;
+          if (!compatibilityBody && typeof compatibilityResponse?.text === 'function') {
+            compatibilityBody = await compatibilityResponse.text();
           }
-        }
-        if (!compatibilityResponse || !compatibilityResponse.ok || !isSdkResponseValidationFailure(sdkError)) {
-          throw sdkError;
+          if (!isJsonBody && typeof compatibilityBody === 'string' && /^\s*[\{\[]/.test(compatibilityBody)) {
+            isJsonBody = true;
+          }
+          const defaultContentType = isJsonBody ? 'application/json' : 'text/event-stream';
+          const headers = compatibilityResponse?.headers
+            ? new Headers(compatibilityResponse.headers)
+            : new Headers({ 'content-type': defaultContentType });
+          if (!headers.has('content-type')) {
+            headers.set('content-type', defaultContentType);
+          }
+          response = new Response(compatibilityBody, {
+            status: Number(compatibilityResponse?.status) || 200,
+            statusText: compatibilityResponse?.statusText,
+            headers,
+          });
         }
 
-        // The SDK's schema is intentionally strict, but OpenRouter also serves the broader
-        // OpenAI-compatible envelope used by older app callers. Retry parsing from the one-shot
-        // response clone only after SDK validation fails; malformed/empty content still fails
-        // closed below and no second network request is made.
-        compatibilityFallbackUsed = true;
+        const genId = response?.headers?.get?.('x-generation-id');
+        if (genId) generationId = genId;
+
+        if (!response.ok) {
+          let errorBody = '';
+          try {
+            errorBody = await response.text();
+          } catch (_) {}
+          const status = response.status;
+          let parsedMsg = errorBody;
+          try {
+            const parsed = JSON.parse(errorBody);
+            parsedMsg = parsed?.error?.message || parsed?.message || errorBody;
+          } catch (_) {}
+          throw new OpenRouterResponseError(`OpenRouter HTTP ${status}: ${parsedMsg}`, status);
+        }
+
+        data = await readStreamingResponse(response, effectiveModel, {
+          ttftTimeoutMs: request.ttftTimeoutMs,
+          inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+          totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+          onTotalTimeout: () => {
+            requestDeadlineExpired = true;
+            controller.abort();
+          },
+          onCancel: () => {
+            controller.abort();
+          },
+          onFirstToken: request.onFirstToken,
+        });
+      } else {
+        const sdkClient = await createOpenRouterSdkClient({
+          baseUrl: this.baseUrl,
+          apiKey: this.apiKey,
+          fetchImplementation: this.fetchImplementation,
+          onGenerationId: (value) => { generationId = value; },
+        });
         try {
-          data = request.stream === false
-            ? await compatibilityResponse.json()
-            : await readStreamingResponse(compatibilityResponse, effectiveModel, {
-                ttftTimeoutMs: request.ttftTimeoutMs,
-                inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
-                totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
-                onTotalTimeout: () => {
-                  requestDeadlineExpired = true;
-                  controller.abort();
-                },
-                onFirstToken: request.onFirstToken,
-              });
-        } catch (compatibilityError: any) {
-          if (compatibilityError instanceof OpenRouterResponseError
-            && /malformed streaming JSON/i.test(compatibilityError.message)) {
-            throw new OpenRouterResponseError(`OpenRouter returned malformed response: ${compatibilityError.message}`);
+          const sdkResponse = await sdkClient.chat.send(
+            {
+              xOpenRouterMetadata: 'enabled',
+              chatRequest: buildOpenRouterSdkChatRequest(request),
+            },
+            {
+              signal: controller.signal,
+              retries: { strategy: 'none' },
+            },
+          );
+          if (sdkResponse && typeof (sdkResponse as any).getReader === 'function') {
+            data = await readSdkStreamingResponse(sdkResponse as ReadableStream<unknown>, effectiveModel, {
+              ttftTimeoutMs: request.ttftTimeoutMs,
+              inactivityTimeoutMs: Math.min(45_000, request.timeoutMs),
+              totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+              onTotalTimeout: () => {
+                requestDeadlineExpired = true;
+                controller.abort();
+              },
+              onCancel: () => {
+                controller.abort();
+              },
+              onFirstToken: request.onFirstToken,
+            });
+          } else {
+            data = normalizeSdkResponse(sdkResponse, sdkClient.getRawUsage?.());
           }
-          throw compatibilityError;
+        } catch (sdkError: any) {
+          if (isSdkResponseValidationFailure(sdkError)) {
+            const rawJson = await sdkClient.getRawJson?.();
+            if (rawJson && typeof rawJson === 'object' && Array.isArray(rawJson.choices) && rawJson.choices.length > 0) {
+              data = rawJson;
+            } else {
+              throw sdkError;
+            }
+          } else {
+            throw sdkError;
+          }
         }
       }
       const rawMsg = data?.choices?.[0]?.message;
@@ -1477,11 +1480,7 @@ export class OpenRouterClient implements ReviewModelClient {
         ? rawMsg.content
         : (typeof rawMsg?.reasoning === 'string' && rawMsg.reasoning.trim() !== '' ? rawMsg.reasoning : '');
       if (typeof content !== 'string' || content.trim() === '') {
-        throw new OpenRouterResponseError(
-          compatibilityFallbackUsed
-            ? 'OpenRouter returned malformed response: empty completion content'
-            : 'OpenRouter returned empty completion content',
-        );
+        throw new OpenRouterResponseError('OpenRouter returned empty completion content');
       }
 
       const rawUsage = data.usage;
@@ -1590,6 +1589,9 @@ export class OpenRouterClient implements ReviewModelClient {
       throw classifiedError;
     } finally {
       clearTimeout(timeout);
+      if (!controller.signal.aborted) {
+        controller.abort();
+      }
     }
   }
 }

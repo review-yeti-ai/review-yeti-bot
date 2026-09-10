@@ -12,11 +12,13 @@ import { LiveStreamBus } from '../live/liveStreamBus';
 import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT, getModelFamily } from '../personas/redTeamPersona';
 import { dashboardStore } from '../persistence/dashboardStore';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
+import { generatePRSummary } from '../review/summaryEngine';
 import { validateReviewFindings } from '../review/reviewCore';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { executeMillerTool } from '../services/millerTool';
 import { ASTParser } from '../indexer/astParser';
+import { matchOne } from '../pipeline/domainIndex';
 import { classifyReviewScope, ClassifierResult, containsExecutableOrSensitiveCode } from './classifierEngine';
 import { buildFastShipPanelResult } from './fastShipResult';
 export type {
@@ -496,7 +498,7 @@ function globRegex(pattern: string): RegExp {
 
 function pathMatches(pattern: string, path: string): boolean {
   if (pattern === '**') return true;
-  return globRegex(pattern).test(path);
+  return matchOne(pattern, path);
 }
 
 function isDocumentationOrAssetPath(filePath: string): boolean {
@@ -1116,6 +1118,86 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   };
 }
 
+export const MAX_CONCURRENT_PERSONAS = 4;
+let activeInFlightPersonas = 0;
+
+export function getActivePersonaCallCount(): number {
+  return activeInFlightPersonas;
+}
+
+export async function mapConcurrentSettled<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const idx = nextIndex++;
+      try {
+        const val = await fn(items[idx], idx);
+        results[idx] = { status: 'fulfilled', value: val };
+      } catch (reason) {
+        results[idx] = { status: 'rejected', reason };
+      }
+    }
+  }
+
+  const workerCount = Math.max(0, Math.min(Math.max(1, Math.floor(limit)), items.length));
+  const workers = Array.from({ length: workerCount }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+class Semaphore {
+  private running = 0;
+  private queue: Array<() => void> = [];
+
+  constructor(private readonly max: number) {}
+
+  async acquire(): Promise<() => void> {
+    if (this.running < this.max) {
+      this.running++;
+      let released = false;
+      return () => {
+        if (!released) {
+          released = true;
+          this.running--;
+          const next = this.queue.shift();
+          if (next) {
+            this.running++;
+            next();
+          }
+        }
+      };
+    }
+    return new Promise<() => void>((resolve) => {
+      this.queue.push(() => {
+        let released = false;
+        resolve(() => {
+          if (!released) {
+            released = true;
+            this.running--;
+            const next = this.queue.shift();
+            if (next) {
+              this.running++;
+              next();
+            }
+          }
+        });
+      });
+    });
+  }
+
+  get active(): number {
+    return this.running;
+  }
+}
+
+export const processPersonaLimiter = new Semaphore(MAX_CONCURRENT_PERSONAS);
+
 async function runPersona(
   config: CtReviewConfigV3,
   client: ReviewModelClient,
@@ -1133,6 +1215,9 @@ async function runPersona(
   return runInSpan(`ct_persona_lane`, async (span) => {
     span.setAttribute('ct.persona.id', persona.id);
     span.setAttribute('ct.persona.required', persona.required);
+
+    const personaStartedAt = Date.now();
+    const MAX_PERSONA_BUDGET_MS = 150_000;
 
     const isRedTeam = isRedTeamPersona(persona.id, persona.charter);
 
@@ -1193,6 +1278,10 @@ async function runPersona(
     const providersToTry = [...new Set([...baseProviders, 'synthetic', 'glm'])].filter((p) => availableProviderIds.includes(p as any));
 
     for (const providerId of providersToTry) {
+      if (Date.now() - personaStartedAt >= MAX_PERSONA_BUDGET_MS) {
+        errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of 150s`);
+        break;
+      }
       const spec = provider(config, providerId);
       // The dashboard's openrouter/auto value is the default sentinel, not an
       // explicit model override. Also keep a persona-specific override bound
@@ -1215,10 +1304,23 @@ async function runPersona(
       const effectiveEffort = (storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? 3;
 
+      const configuredTimeoutS = typeof spec.review_timeout_s === 'number' && spec.review_timeout_s > 0
+        ? spec.review_timeout_s
+        : 90;
+      const perCallTimeoutMs = Math.min(configuredTimeoutS * 1_000, 90_000);
+
       let attempts = 0;
       const maxAttempts = 2;
+
       while (attempts < maxAttempts) {
+        const elapsedMs = Date.now() - personaStartedAt;
+        const remainingPersonaBudgetMs = MAX_PERSONA_BUDGET_MS - elapsedMs;
+        if (remainingPersonaBudgetMs <= 0) {
+          errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of 150s`);
+          break;
+        }
         attempts++;
+        const callTimeoutMs = Math.min(perCallTimeoutMs, remainingPersonaBudgetMs);
         try {
           bus.publishEvent({
             jobId: effectiveJobId,
@@ -1232,7 +1334,7 @@ async function runPersona(
             },
           });
 
-          const result = await invoke(client, targetModel, spec.review_timeout_s * 1_000, 'persona', {
+          const result = await invoke(client, targetModel, callTimeoutMs, 'persona', {
             persona: persona.id,
             charter: effectiveCharter,
             repository,
@@ -1397,6 +1499,11 @@ async function runPersona(
             ...(isRedTeam || dualResolved || persona.model ? { crossExaminedModel: targetModel } : {}),
           };
         } catch (error: any) {
+          if (Date.now() - personaStartedAt >= MAX_PERSONA_BUDGET_MS) {
+            logger.warn(`[Persona: ${persona.id}] Total execution budget of 150s exhausted; failing closed.`);
+            errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of 150s`);
+            break;
+          }
           if (error instanceof PanelFindingsValidationError) {
             errors.push(`${providerId}: ${error.message}`);
             logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' returned malformed findings; retrying once before failover.`);
@@ -1656,124 +1763,45 @@ export async function executePersonaPanel(options: {
       throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
     }
 
-    let settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[];
-
-    if (applicable.length <= 1) {
-      settledResults = await Promise.allSettled(
-        applicable.map(async (persona) => {
+    const settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[] =
+      await mapConcurrentSettled(
+        applicable,
+        MAX_CONCURRENT_PERSONAS,
+        async (persona) => {
           const stillCurrent = isCurrentHead ? isCurrentHead() : true;
           const currentActiveId = activeRuns.get(runKey);
           if (!stillCurrent || currentActiveId !== runId) {
             throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
           }
-          const result = await runPersona(
-            config,
-            client,
-            persona,
-            effectiveFiles,
-            repository,
-            headSha,
-            memoryRules,
-            effectiveJobId,
-            primaryAuthoringModel,
-            requestPolicy,
-            repoFileProvider,
-            repositoryVisibility
-          );
-          return { persona, result, error: undefined };
-        })
-      );
-    } else {
-      const [firstPersona, ...restPersonas] = applicable;
-
-      let onFirstTokenTriggered = false;
-      let resolveFirstToken: () => void;
-      const firstTokenPromise = new Promise<void>((resolve) => {
-        resolveFirstToken = resolve;
-      });
-
-      const notifyFirstToken = () => {
-        if (!onFirstTokenTriggered) {
-          onFirstTokenTriggered = true;
-          resolveFirstToken();
-        }
-      };
-
-      const firstPolicy = {
-        ...(requestPolicy || {}),
-        onFirstToken: notifyFirstToken,
-      } as any;
-
-      const firstPersonaPromise = (async () => {
-        const stillCurrent = isCurrentHead ? isCurrentHead() : true;
-        const currentActiveId = activeRuns.get(runKey);
-        if (!stillCurrent || currentActiveId !== runId) {
-          throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
-        }
-        const result = await runPersona(
-          config,
-          client,
-          firstPersona,
-          effectiveFiles,
-          repository,
-          headSha,
-          memoryRules,
-          effectiveJobId,
-          primaryAuthoringModel,
-          firstPolicy,
-          repoFileProvider,
-          repositoryVisibility
-        );
-        return { persona: firstPersona, result, error: undefined };
-      })().then(
-        (val) => {
-          notifyFirstToken();
-          return val;
-        },
-        (err) => {
-          notifyFirstToken();
-          throw err;
+          const release = await processPersonaLimiter.acquire();
+          activeInFlightPersonas++;
+          try {
+            const currentHeadNow = isCurrentHead ? isCurrentHead() : true;
+            const currentActiveIdNow = activeRuns.get(runKey);
+            if (!currentHeadNow || currentActiveIdNow !== runId) {
+              throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
+            }
+            const result = await runPersona(
+              config,
+              client,
+              persona,
+              effectiveFiles,
+              repository,
+              headSha,
+              memoryRules,
+              effectiveJobId,
+              primaryAuthoringModel,
+              requestPolicy,
+              repoFileProvider,
+              repositoryVisibility
+            );
+            return { persona, result, error: undefined };
+          } finally {
+            activeInFlightPersonas--;
+            release();
+          }
         }
       );
-
-      // Await first token from Persona 1 OR its completion OR bounded warmup timeout (handles non-streaming clients)
-      let timer: NodeJS.Timeout | undefined;
-      const warmupTimeout = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, 3_000);
-      });
-      await Promise.race([
-        firstTokenPromise,
-        firstPersonaPromise.catch(() => {}),
-        warmupTimeout,
-      ]);
-      if (timer) clearTimeout(timer);
-
-      // Fan out remaining personas concurrently while Persona 1 is still generating
-      const restPromises = restPersonas.map(async (persona) => {
-        const stillCurrent = isCurrentHead ? isCurrentHead() : true;
-        const currentActiveId = activeRuns.get(runKey);
-        if (!stillCurrent || currentActiveId !== runId) {
-          throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
-        }
-        const result = await runPersona(
-          config,
-          client,
-          persona,
-          effectiveFiles,
-          repository,
-          headSha,
-          memoryRules,
-          effectiveJobId,
-          primaryAuthoringModel,
-          requestPolicy,
-          repoFileProvider,
-          repositoryVisibility
-        );
-        return { persona, result, error: undefined };
-      });
-
-      settledResults = await Promise.allSettled([firstPersonaPromise, ...restPromises]);
-    }
 
     const settled = settledResults.map((res, index) => {
       const persona = applicable[index];
@@ -1781,7 +1809,7 @@ export async function executePersonaPanel(options: {
         return res.value;
       }
       const errorMsg = res.reason?.message || String(res.reason);
-      console.error('SETTLED_ERROR:', persona.id, res.reason?.stack || errorMsg);
+      logger.warn('Persona execution failed', { persona: persona.id, error: errorMsg });
       return { persona, result: undefined, error: errorMsg };
     });
     const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
@@ -1804,60 +1832,106 @@ export async function executePersonaPanel(options: {
     if (!moderatorId) throw new PanelConfigurationError('no enabled moderator provider');
     const moderatorProvider = provider(config, moderatorId);
 
-    const moderatorRun = await runInSpan('ct_moderator', async (modSpan) => {
-      const run = await invoke(client, moderatorProvider.model, moderatorProvider.review_timeout_s * 1_000, 'moderator', {
-        repository,
-        headSha,
-        repositoryVisibility,
-        personaEvidence: personas,
-        outputSchema: { decision: 'RECONCILED', findings: [] },
-      }, {
-        jobId: effectiveJobId,
-        persona: 'moderator',
-        providerId: moderatorId,
-        requestPolicy,
-        validateParsed: (candidate) => {
-          try {
-            validateFindings((candidate as any)?.findings);
-            return null;
-          } catch (error: any) {
-            return error instanceof Error ? error.message : String(error);
+    const owner = repository.includes('/') ? repository.split('/')[0] : '';
+    const repoName = repository.includes('/') ? repository.split('/')[1] : repository;
+    const storeRepo = owner && repoName ? dashboardStore.getRepository(owner, repoName) : undefined;
+    const isFlowchartEnabled = generateArchitecturalFlowchart ?? storeRepo?.generateArchitecturalFlowchart ?? false;
+    const isFlowchartPersonaActive = applicable.some((p) => p.id === 'review_flowchart');
+    const combinedDiff = effectiveFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
+
+    const [moderatorRun, mermaidDiagram, prSummary] = await Promise.all([
+      runInSpan('ct_moderator', async (modSpan) => {
+        const modTimeoutS = typeof moderatorProvider.review_timeout_s === 'number' && moderatorProvider.review_timeout_s > 0
+          ? moderatorProvider.review_timeout_s
+          : 90;
+        const moderatorTimeoutMs = Math.min(modTimeoutS * 1_000, 90_000);
+        const run = await invoke(client, moderatorProvider.model, moderatorTimeoutMs, 'moderator', {
+          repository,
+          headSha,
+          repositoryVisibility,
+          personaEvidence: personas,
+          outputSchema: { decision: 'RECONCILED', findings: [] },
+        }, {
+          jobId: effectiveJobId,
+          persona: 'moderator',
+          providerId: moderatorId,
+          requestPolicy,
+          validateParsed: (candidate) => {
+            try {
+              validateFindings((candidate as any)?.findings);
+              return null;
+            } catch (error: any) {
+              return error instanceof Error ? error.message : String(error);
+            }
+          },
+        });
+        if (!run.parsed || !Array.isArray(run.parsed.findings)) {
+          throw new PanelConfigurationError('moderator returned invalid decision structure');
+        }
+        run.parsed.decision = 'RECONCILED';
+        const modFindings = validateFindings(run.parsed.findings);
+
+        const modPrompt = run.response.usage?.prompt || (run.response.usage as any)?.prompt_tokens || 0;
+        const modComp = run.response.usage?.completion || (run.response.usage as any)?.completion_tokens || 0;
+        const modTotal = run.response.usage?.total || (run.response.usage as any)?.total_tokens || (modPrompt + modComp);
+        const modCost = run.response.costUSD || 0;
+        const modCached = resolveCachedTokens(run.response.usage);
+        const modHitPercentage = modPrompt > 0 ? Math.round((modCached / modPrompt) * 100) : 0;
+
+        modSpan.setAttribute('ct.moderator.provider', moderatorId);
+        modSpan.setAttribute('ct.moderator.model', run.response.model);
+        modSpan.setAttribute('ct.moderator.findings_count', modFindings.length);
+        modSpan.setAttribute('ct.tokens.prompt', modPrompt);
+        modSpan.setAttribute('ct.tokens.completion', modComp);
+        modSpan.setAttribute('ct.tokens.total', modTotal);
+        modSpan.setAttribute('ct.tokens.cached', modCached);
+        modSpan.setAttribute('ct.tokens.cache_hit_percentage', modHitPercentage);
+        modSpan.setAttribute('ct.cost_usd', modCost);
+
+        try {
+          const metrics = getMetrics();
+          metrics.tokensPrompt.add(modPrompt, { persona: 'moderator', provider: moderatorId, model: run.response.model });
+          metrics.tokensCompletion.add(modComp, { persona: 'moderator', provider: moderatorId, model: run.response.model });
+          metrics.tokensTotal.add(modTotal, { persona: 'moderator', provider: moderatorId, model: run.response.model });
+          metrics.modelCostUsd.add(modCost, { persona: 'moderator', provider: moderatorId, model: run.response.model });
+        } catch (_) {}
+
+        return { run, modFindings };
+      }),
+
+      Promise.resolve().then(() => {
+        try {
+          if (isFlowchartEnabled || isFlowchartPersonaActive) {
+            const flowchartLane = personas.find((lane) => lane.id === 'review_flowchart' && lane.mermaidDiagram);
+            if (flowchartLane?.mermaidDiagram) {
+              return flowchartLane.mermaidDiagram;
+            }
+            return generateMermaidDiagram(combinedDiff);
           }
-        },
-      });
-      if (!run.parsed || !Array.isArray(run.parsed.findings)) {
-        throw new PanelConfigurationError('moderator returned invalid decision structure');
-      }
-      run.parsed.decision = 'RECONCILED';
-      const modFindings = validateFindings(run.parsed.findings);
+          return undefined;
+        } catch (err: any) {
+          logger.warn('Failed to generate Mermaid diagram during post-processing', { repository, error: err?.message });
+          return undefined;
+        }
+      }),
 
-      const modPrompt = run.response.usage?.prompt || (run.response.usage as any)?.prompt_tokens || 0;
-      const modComp = run.response.usage?.completion || (run.response.usage as any)?.completion_tokens || 0;
-      const modTotal = run.response.usage?.total || (run.response.usage as any)?.total_tokens || (modPrompt + modComp);
-      const modCost = run.response.costUSD || 0;
-      const modCached = resolveCachedTokens(run.response.usage);
-      const modHitPercentage = modPrompt > 0 ? Math.round((modCached / modPrompt) * 100) : 0;
-
-      modSpan.setAttribute('ct.moderator.provider', moderatorId);
-      modSpan.setAttribute('ct.moderator.model', run.response.model);
-      modSpan.setAttribute('ct.moderator.findings_count', modFindings.length);
-      modSpan.setAttribute('ct.tokens.prompt', modPrompt);
-      modSpan.setAttribute('ct.tokens.completion', modComp);
-      modSpan.setAttribute('ct.tokens.total', modTotal);
-      modSpan.setAttribute('ct.tokens.cached', modCached);
-      modSpan.setAttribute('ct.tokens.cache_hit_percentage', modHitPercentage);
-      modSpan.setAttribute('ct.cost_usd', modCost);
-
-      try {
-        const metrics = getMetrics();
-        metrics.tokensPrompt.add(modPrompt, { persona: 'moderator', provider: moderatorId, model: run.response.model });
-        metrics.tokensCompletion.add(modComp, { persona: 'moderator', provider: moderatorId, model: run.response.model });
-        metrics.tokensTotal.add(modTotal, { persona: 'moderator', provider: moderatorId, model: run.response.model });
-        metrics.modelCostUsd.add(modCost, { persona: 'moderator', provider: moderatorId, model: run.response.model });
-      } catch (_) {}
-
-      return { run, modFindings };
-    });
+      Promise.resolve().then(() => {
+        try {
+          const rawFindings = personas.flatMap((p) =>
+            (p.findings || []).map((f: any) => ({
+              ...f,
+              persona: f.persona || p.id,
+              isRedTeam: p.isRedTeam,
+              crossExaminedModel: p.crossExaminedModel,
+            }))
+          );
+          return generatePRSummary(combinedDiff, rawFindings as any, { ...config, personas, headSha });
+        } catch (err: any) {
+          logger.warn('Failed to generate PR summary during post-processing', { repository, error: err?.message });
+          return undefined;
+        }
+      }),
+    ]);
 
     const moderatedFindings = moderatorRun.modFindings;
 
@@ -1867,7 +1941,11 @@ export async function executePersonaPanel(options: {
       const spec = provider(config, providerId);
       try {
         arbiterResult = await runInSpan('ct_arbiter', async (arbSpan) => {
-          const run = await invoke(client, spec.model, spec.arbiter_timeout_s * 1_000, 'arbiter', {
+          const arbTimeoutS = typeof spec.arbiter_timeout_s === 'number' && spec.arbiter_timeout_s > 0
+            ? spec.arbiter_timeout_s
+            : 90;
+          const arbiterTimeoutMs = Math.min(arbTimeoutS * 1_000, 90_000);
+          const run = await invoke(client, spec.model, arbiterTimeoutMs, 'arbiter', {
             repository,
             headSha,
             repositoryVisibility,
@@ -1988,23 +2066,6 @@ export async function executePersonaPanel(options: {
       },
     });
 
-    const owner = repository.includes('/') ? repository.split('/')[0] : '';
-    const repoName = repository.includes('/') ? repository.split('/')[1] : repository;
-    const storeRepo = owner && repoName ? dashboardStore.getRepository(owner, repoName) : undefined;
-    const isFlowchartEnabled = generateArchitecturalFlowchart ?? storeRepo?.generateArchitecturalFlowchart ?? false;
-    const isFlowchartPersonaActive = applicable.some((p) => p.id === 'review_flowchart');
-
-    let mermaidDiagram: string | undefined = undefined;
-    if (isFlowchartEnabled || isFlowchartPersonaActive) {
-      const flowchartLane = personas.find((lane) => lane.id === 'review_flowchart' && lane.mermaidDiagram);
-      if (flowchartLane?.mermaidDiagram) {
-        mermaidDiagram = flowchartLane.mermaidDiagram;
-      } else {
-        const combinedDiff = effectiveFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
-        mermaidDiagram = generateMermaidDiagram(combinedDiff);
-      }
-    }
-
     try {
       const graphLearningEngine = new GraphLearningEngine();
       await graphLearningEngine.autoLearnFromReview(
@@ -2034,6 +2095,7 @@ export async function executePersonaPanel(options: {
         },
         arbiter: arbiterResult,
         ...(mermaidDiagram ? { mermaidDiagram } : {}),
+        ...(prSummary ? { prSummary, summary: prSummary } : {}),
       };
     } finally {
       if (activeRuns.get(runKey) === runId) {
