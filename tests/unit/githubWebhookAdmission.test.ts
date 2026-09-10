@@ -128,7 +128,7 @@ describe('native GitHub App webhook admission', () => {
   it.each([
     payload({ repository: { id: 999, name: 'dashboard', full_name: 'calltelemetry/dashboard', owner: { id: 57884877, login: 'calltelemetry' } } }),
     payload({ pull_request: { number: 42, state: 'open', draft: false, head: { sha: HEAD }, base: { sha: BASE, repo: { full_name: 'other/dashboard' } } } }),
-  ])('fails closed for a mismatched repository identity', async (body) => {
+  ])('quietly ignores a mismatched repository identity', async (body) => {
     const f = fixture();
     const auth = signed(body);
     const response = await request(f.instance).post('/api/webhooks/github')
@@ -137,8 +137,8 @@ describe('native GitHub App webhook admission', () => {
       .set('X-GitHub-Delivery', auth.delivery)
       .set('X-Hub-Signature-256', auth.signature)
       .send(auth.raw);
-    expect(response.status).toBe(500);
-    expect(response.body).toEqual({ error: 'Internal Server Error', message: 'Webhook processing failed' });
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ignored', reason: 'not_enrolled' });
     expect(f.admit).not.toHaveBeenCalled();
   });
 
@@ -156,5 +156,69 @@ describe('native GitHub App webhook admission', () => {
       .send(auth.raw);
     expect(response.body).toEqual({ status: 'ignored', reason: 'unsupported_pull_request_state' });
     expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('keeps authoritative enrollment paused without admitting or resolving policy', async () => {
+    const admit = vi.fn();
+    const resolve = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: false, repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+    });
+    const event = { eventName: 'pull_request', deliveryId: 'paused',
+      rawBody: Buffer.from(JSON.stringify(payload())), body: payload() };
+    await expect(onEvent(event)).resolves.toEqual({ status: 'ignored', reason: 'authoritative_admission_paused' });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('binds an enrolled authoritative resolution and prepared policy into admission', async () => {
+    const effectivePolicyDigest = 'd'.repeat(64);
+    const prepared = { policy: { effectivePolicyDigest }, marker: 'prepared' };
+    const identity = { owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      headSha: HEAD, baseSha: BASE, snapshotDigest: 'e'.repeat(64), configDigest: 'f'.repeat(64) };
+    const resolve = vi.fn(async () => ({ identity, prepared }));
+    const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: `run_${'1'.repeat(32)}` } }));
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true, repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+    });
+    const event = { eventName: 'pull_request', deliveryId: 'authoritative',
+      rawBody: Buffer.from(JSON.stringify(payload())), body: payload() };
+    await expect(onEvent(event)).resolves.toEqual({ status: 'accepted', deliveryId: 'authoritative', prNumber: 42, headSha: HEAD });
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({
+      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE,
+    });
+    expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      identity, effectivePolicyDigest, authoritativeGate: { expectedAppId: 4385771, prepared },
+    }));
+  });
+
+  it('uses legacy identity when authoritative publishing does not enroll the repository', async () => {
+    const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: `run_${'1'.repeat(32)}` } }));
+    const resolve = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true, repositoryIds: [999], resolver: { resolve },
+      } as any,
+    });
+    const event = { eventName: 'pull_request', deliveryId: 'legacy',
+      rawBody: Buffer.from(JSON.stringify(payload())), body: payload() };
+    await onEvent(event);
+    expect(resolve).not.toHaveBeenCalled();
+    const admitted = (admit as any).mock.calls[0][0];
+    expect(admitted).not.toHaveProperty('authoritativeGate');
+    expect(admitted).not.toHaveProperty('effectivePolicyDigest');
   });
 });

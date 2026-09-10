@@ -3,18 +3,16 @@ import { AUTHORITATIVE_REVIEW_APP_ID } from '../auth/authoritativeServiceConfig'
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { MergeGroupGateRepository, MergeGroupGateState } from '../persistence/mergeGroupGateRepository';
 import { createBoundedGitHubJsonClient, type GitHubJsonClient } from '../github/boundedGitHubJson';
+import {
+  githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
+} from '../auth/githubWebhookIdentity';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
 const mergeGroupWebhook = z.object({
   action: z.literal('checks_requested'),
   installation: z.object({ id: positiveInteger }).passthrough(),
-  repository: z.object({
-    id: positiveInteger,
-    name: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u),
-    full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u),
-    owner: z.object({ id: positiveInteger, login: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u) }).passthrough(),
-  }).passthrough(),
+  repository: githubWebhookRepositorySchema,
   merge_group: z.object({
     head_sha: sha, head_ref: z.string().min(1).max(512),
     base_sha: sha, base_ref: z.string().min(1).max(512),
@@ -67,16 +65,13 @@ function branchName(ref: string): string { return ref.replace(/^refs\/heads\//u,
 
 function validatePayload(value: unknown, config: GitHubWebhookConfig) {
   const parsed = mergeGroupWebhook.parse(value);
-  const owner = parsed.repository.owner.login;
-  const repo = parsed.repository.name;
+  const { owner, repo } = requireEnrolledGitHubWebhookRepository(parsed.repository, config);
   const branch = branchName(parsed.merge_group.base_ref);
   const prefix = `refs/heads/gh-readonly-queue/${branch}/`;
   const match = parsed.merge_group.head_ref.startsWith(prefix)
     ? /^pr-([1-9][0-9]*)-[0-9a-f]{7,40}$/u.exec(parsed.merge_group.head_ref.slice(prefix.length)) : null;
-  if (parsed.repository.full_name !== `${owner}/${repo}` || !branch
-    || !config.repositoryIds.has(String(parsed.repository.id))
-    || !config.ownerIds.has(String(parsed.repository.owner.id)) || !match) {
-    throw new Error('Merge-group webhook identity is not enrolled');
+  if (!branch || !match) {
+    throw new UnenrolledGitHubWebhookIdentityError();
   }
   return { ...parsed, owner, repo, branch, currentNumber: Number(match[1]) };
 }

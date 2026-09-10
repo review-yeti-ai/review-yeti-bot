@@ -5,30 +5,23 @@ import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { AuthoritativeReviewAdmission } from './authoritativeServiceContracts';
 import { buildReviewRunIdentity } from './reviewAdmission';
+import {
+  githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
+} from '../auth/githubWebhookIdentity';
 
 const positiveInteger = z.number().int().positive().safe();
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
-const repositoryName = z.string().min(3).max(201).regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u);
-const repository = z.object({
-  id: positiveInteger,
-  name: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u),
-  full_name: repositoryName,
-  owner: z.object({
-    id: positiveInteger,
-    login: z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u),
-  }).passthrough(),
-}).passthrough();
 const pullRequestWebhook = z.object({
   action: z.enum(['opened', 'synchronize', 'reopened', 'ready_for_review']),
   number: positiveInteger,
   installation: z.object({ id: positiveInteger }).passthrough(),
-  repository,
+  repository: githubWebhookRepositorySchema,
   pull_request: z.object({
     number: positiveInteger,
     state: z.literal('open'),
     draft: z.literal(false),
     head: z.object({ sha }).passthrough(),
-    base: z.object({ sha, repo: z.object({ full_name: repositoryName }).passthrough() }).passthrough(),
+    base: z.object({ sha, repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough() }).passthrough(),
   }).passthrough(),
 }).passthrough();
 
@@ -59,23 +52,29 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
     }
     if (eventName === 'merge_group') {
       if (!options.mergeGroupGate) throw new Error('Merge-group webhook gate is unavailable');
-      const result = await options.mergeGroupGate(event.body);
+      let result;
+      try { result = await options.mergeGroupGate(event.body); }
+      catch (error) {
+        if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+        throw error;
+      }
       return { status: result.conclusion, checkId: result.checkId, constituents: result.constituents };
     }
     if (eventName !== 'pull_request') return { status: 'ignored', reason: 'unsupported_event' };
     const parsed = pullRequestWebhook.safeParse(event.body);
     if (!parsed.success) return { status: 'ignored', reason: 'unsupported_pull_request_state' };
     const payload = parsed.data;
-    const owner = payload.repository.owner.login;
-    const repo = payload.repository.name;
+    let enrolled;
+    try { enrolled = requireEnrolledGitHubWebhookRepository(payload.repository, options.config); }
+    catch (error) {
+      if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+      throw error;
+    }
+    const { owner, repo } = enrolled;
     const repositoryId = payload.repository.id;
-    const ownerId = payload.repository.owner.id;
     const pr = payload.pull_request;
-    if (payload.number !== pr.number || payload.repository.full_name !== `${owner}/${repo}`
-      || pr.base.repo.full_name !== payload.repository.full_name
-      || !options.config.repositoryIds.has(String(repositoryId))
-      || !options.config.ownerIds.has(String(ownerId))) {
-      throw new Error('GitHub webhook repository identity is not enrolled');
+    if (payload.number !== pr.number || pr.base.repo.full_name !== payload.repository.full_name) {
+      return { status: 'ignored', reason: 'not_enrolled' };
     }
     const requested = {
       repositoryId, owner, repo, prNumber: pr.number,
@@ -83,7 +82,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
     };
     const authoritative = options.authoritativePublishing;
     if (authoritative?.acceptNewRequests === false && authoritativeIds.has(repositoryId)) {
-      throw new Error('Authoritative review admission is paused');
+      return { status: 'ignored', reason: 'authoritative_admission_paused' };
     }
     const resolved = authoritative && authoritativeIds.has(repositoryId)
       ? await authoritative.resolver.resolve(requested) : undefined;

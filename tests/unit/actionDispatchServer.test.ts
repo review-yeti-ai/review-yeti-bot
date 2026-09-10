@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createActionDispatchApp } from '../../src/dispatchServer';
@@ -46,6 +47,25 @@ describe('admission-only Action dispatch server', () => {
   it('mounts only the authenticated Action admission route under /api/dispatch', async () => {
     expect((await request(app()).post('/api/dispatch/action').send({})).status).toBe(401);
     expect((await request(app()).post('/api/dispatch/other').send({})).status).toBe(404);
+  });
+
+  it('keeps dispatch and unrelated route boundaries intact when the signed webhook is mounted', async () => {
+    const secret = 'signed-webhook-secret-with-thirty-two-bytes';
+    const raw = '{}';
+    const instance = createActionDispatchApp({
+      verifier: { verify: vi.fn() } as any, admission: { admit: vi.fn() } as any,
+      resolveInstallationId: vi.fn(), databaseReady: vi.fn(async () => true), allowAppGate: true,
+      githubWebhook: { secret, onEvent: vi.fn() },
+    });
+    const webhook = await request(instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json').set('X-GitHub-Event', 'ping')
+      .set('X-Hub-Signature-256', `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`).send(raw);
+    expect(webhook.status).toBe(200);
+    expect(webhook.body).toEqual({ status: 'pong' });
+    expect((await request(instance).post('/api/dispatch/action').send({})).status).toBe(401);
+    for (const route of ['/metrics', '/api/dashboard', '/api/router/providers']) {
+      expect((await request(instance).post(route).send({})).status, route).toBe(404);
+    }
   });
 });
 

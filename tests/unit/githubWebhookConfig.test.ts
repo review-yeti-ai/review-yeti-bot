@@ -56,4 +56,21 @@ describe('GitHub App webhook configuration', () => {
       GITHUB_APP_WEBHOOK_OWNER_IDS: Array.from({ length: 11 }, (_, index) => String(index + 1)).join(','),
     }, policy)).toThrow('GITHUB_APP_WEBHOOK_OWNER_IDS must contain unique positive integer ids');
   });
+
+  it('refuses webhook admission when the existing app-gate policy is disabled', () => {
+    expect(() => githubWebhookConfigFromEnv({
+      GITHUB_APP_WEBHOOK_ENABLED: 'true', GITHUB_APP_WEBHOOK_ADMISSION_ENABLED: 'false',
+      GITHUB_APP_WEBHOOK_REPOSITORY_IDS: '614653796', GITHUB_APP_WEBHOOK_OWNER_IDS: '57884877',
+      GITHUB_WEBHOOK_SECRET: 'a'.repeat(64),
+    }, { ...policy, allowAppGate: false })).toThrow('GitHub App webhook configuration is invalid');
+  });
+
+  it.each(['', '0', '0614653796', 'abc', '614653796,614653796'])
+  ('refuses a malformed or duplicate repository id list %j', (repositoryIds) => {
+    expect(() => githubWebhookConfigFromEnv({
+      GITHUB_APP_WEBHOOK_ENABLED: 'true', GITHUB_APP_WEBHOOK_ADMISSION_ENABLED: 'false',
+      GITHUB_APP_WEBHOOK_REPOSITORY_IDS: repositoryIds, GITHUB_APP_WEBHOOK_OWNER_IDS: '57884877',
+      GITHUB_WEBHOOK_SECRET: 'a'.repeat(64),
+    }, policy)).toThrow('GITHUB_APP_WEBHOOK_REPOSITORY_IDS must contain unique positive integer ids');
+  });
 });

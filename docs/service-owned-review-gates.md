@@ -158,7 +158,9 @@ finite Actions/OIDC repository and owner allowlists:
   current queue entry has a latest exact-head successful `Review Yeti` check
   from the configured App and a second queue read is unchanged. Unavailable,
   partial, changed, or malformed evidence completes the synthetic check as
-  failure instead of leaving it pending.
+  failure instead of leaving it pending. The initial transport accepts at most
+  100 queue entries and performs check lookups with concurrency five, keeping
+  request and rate-limit pressure explicit and bounded.
 
 The GitHub App registration must have an active webhook, subscribe to both
 `pull_request` and `merge_group`, and grant read access to merge queues. The

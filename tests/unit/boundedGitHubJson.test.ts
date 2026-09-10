@@ -38,4 +38,23 @@ describe('bounded GitHub JSON transport', () => {
     const client = createBoundedGitHubJsonClient({ token: 'ghs_test', fetchImplementation });
     await expect(client.request('/graphql')).rejects.toThrow('exceeded the byte limit');
   });
+
+  it('cancels a chunked response as soon as the streaming byte cap is crossed', async () => {
+    const cancel = vi.fn();
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent < 3) {
+          sent += 1;
+          controller.enqueue(new Uint8Array(Math.floor(MAX_GITHUB_JSON_RESPONSE_BYTES / 2) + 1));
+        } else controller.close();
+      },
+      cancel,
+    });
+    const fetchImplementation = vi.fn(async () => new Response(body, { status: 200 })) as typeof fetch;
+    const client = createBoundedGitHubJsonClient({ token: 'ghs_test', fetchImplementation });
+    await expect(client.request('/graphql')).rejects.toThrow('response was unavailable');
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(sent).toBeLessThanOrEqual(3);
+  });
 });
