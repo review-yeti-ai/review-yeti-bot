@@ -117,6 +117,58 @@ describe('DOKS Action dispatch client', () => {
     expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(`Bearer signed-github-oidc-${'x'.repeat(32)}`);
   });
 
+  it('retries transient dispatch transport failures with the identical idempotent delivery', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const sleep = vi.fn(async () => {});
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(new Response('temporarily unavailable', { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        version: 'ActionDispatchAccepted.v1',
+        status: 'duplicate',
+        runId: `run_${'2'.repeat(32)}`,
+      }), { status: 202 }));
+
+    const result = await dispatchAction(environment(), fetchMock, { sleep });
+
+    expect(result).toEqual({
+      version: 'ActionDispatchAccepted.v1',
+      status: 'duplicate',
+      runId: `run_${'2'.repeat(32)}`,
+    });
+    expect(sleep).toHaveBeenNthCalledWith(1, 1_000);
+    expect(sleep).toHaveBeenNthCalledWith(2, 2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const dispatchCalls = fetchMock.mock.calls.slice(1);
+    expect(dispatchCalls.map(([, init]) => init?.body)).toEqual([
+      dispatchCalls[0][1]?.body,
+      dispatchCalls[0][1]?.body,
+      dispatchCalls[0][1]?.body,
+    ]);
+  });
+
+  it('bounds dispatch retries and does not retry an actionable client rejection', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const sleep = vi.fn(async () => {});
+    const unavailable = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(new TypeError('fetch failed'));
+
+    await expect(dispatchAction(environment(), unavailable, { sleep })).rejects.toThrow(/after 3 attempts.*fetch failed/iu);
+    expect(unavailable).toHaveBeenCalledTimes(4);
+    expect(sleep).toHaveBeenCalledTimes(2);
+
+    const rejected = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'unknown repository_id 42' }), { status: 400 }));
+    await expect(dispatchAction(environment(), rejected, { sleep })).rejects.toThrow(/unknown repository_id 42/u);
+    expect(rejected).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
   it('fails closed on missing OIDC capability, non-202 responses, and malformed receipts', async () => {
     const { dispatchAction } = await import(modulePath);
     await expect(dispatchAction(environment({ ACTIONS_ID_TOKEN_REQUEST_TOKEN: '' }), vi.fn())).rejects.toThrow(/id-token: write/i);
@@ -135,8 +187,10 @@ describe('DOKS Action dispatch client', () => {
 
     const rejected = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('no', { status: 503 }))
+      .mockResolvedValueOnce(new Response('no', { status: 503 }))
       .mockResolvedValueOnce(new Response('no', { status: 503 }));
-    await expect(dispatchAction(environment(), rejected)).rejects.toThrow(/503/u);
+    await expect(dispatchAction(environment(), rejected, { sleep: async () => {} })).rejects.toThrow(/503/u);
 
     // The operator's reason must survive into the error. Without it a dispatch failure is a bare
     // status code, and the one line that explains it is the one line discarded.
@@ -211,4 +265,3 @@ describe('DOKS Action dispatch client', () => {
     expect(JSON.stringify(request)).not.toContain('12345678');
   });
 });
-
