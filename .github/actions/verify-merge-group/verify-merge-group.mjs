@@ -39,8 +39,9 @@ function mergeGroupIdentityFailure({ repository, branch, event, expectedHeadSha 
 
 async function githubJson(url, token, fetchImpl, options = {}) {
   if (typeof token !== 'string' || token.length === 0) throw new Error('a Review Yeti App token is required');
+  const method = options.method || 'GET';
   const response = await fetchImpl(url, {
-    method: options.method || 'GET',
+    method,
     signal: AbortSignal.timeout(15_000),
     headers: {
       accept: 'application/vnd.github+json',
@@ -50,7 +51,10 @@ async function githubJson(url, token, fetchImpl, options = {}) {
     },
     ...(options.body ? { body: typeof options.body === 'string' ? options.body : JSON.stringify(options.body) } : {}),
   });
-  if (!response?.ok) throw new Error('GitHub lookup failed');
+  if (!response?.ok) {
+    const status = Number.isSafeInteger(Number(response?.status)) ? Number(response.status) : 'unknown';
+    throw new Error(`GitHub ${method} request failed with HTTP ${status}`);
+  }
   return response.json();
 }
 
@@ -231,7 +235,10 @@ async function main() {
   console.log(`Verified exact-head Review Yeti checks for ${result.entries.length} merge-group constituent(s).`);
 }
 
-if (isEntrypoint(import.meta.url)) main().catch(() => {
-  console.error('::error::Review Yeti merge-group verification failed');
+if (isEntrypoint(import.meta.url)) main().catch((error) => {
+  const message = error instanceof Error && /^GitHub (?:GET|POST|PATCH) request failed with HTTP (?:[1-5][0-9]{2}|unknown)$/u.test(error.message)
+    ? error.message
+    : 'Review Yeti merge-group verification failed';
+  console.error(`::error::${message}`);
   process.exitCode = 1;
 });

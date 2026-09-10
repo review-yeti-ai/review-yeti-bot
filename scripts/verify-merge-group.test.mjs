@@ -107,6 +107,24 @@ test('publishes and completes the native Review Yeti check on the synthetic head
   assert.equal(writes[1].body.conclusion, 'success');
 });
 
+test('reports only method and status when synthetic check creation is rejected', async () => {
+  await assert.rejects(
+    runMergeGroupGate({
+      repository,
+      branch: 'master',
+      event,
+      expectedHeadSha: groupSha,
+      token: 'official-app-token',
+      fetchImpl: async () => ({ ok: false, status: 403, json: async () => ({ secret: 'must-not-leak' }) }),
+    }),
+    (error) => {
+      assert.equal(error.message, 'GitHub POST request failed with HTTP 403');
+      assert.doesNotMatch(error.message, /secret|token|github\.com/u);
+      return true;
+    },
+  );
+});
+
 test('completes the synthetic App check as failure when a constituent is not approved', async () => {
   const conclusions = [];
   let queueReads = 0;
