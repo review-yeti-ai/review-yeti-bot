@@ -3,6 +3,8 @@ import type { GitHubActionsOidcPolicy } from './githubActionsOidc';
 import { reviewPolicySourceSchema } from '../review/authoritativeReviewIdentity';
 
 export const AUTHORITATIVE_REVIEW_APP_ID = 4385771;
+export const AUTHORITATIVE_REVIEW_APP_SLUG = 'ct-review-bot';
+export const AUTHORITATIVE_REVIEW_CHECK_NAME = 'Review Yeti';
 
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
   .refine((value) => value !== '.' && value !== '..');

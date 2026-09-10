@@ -3,6 +3,7 @@ import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createActionDispatchApp } from '../../src/dispatchServer';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
+import { createMergeGroupGate, MergeGroupGateInProgressError } from '../../src/review/mergeGroupGate';
 
 const SECRET = 'webhook-secret-with-at-least-thirty-two-bytes';
 const NOW = Date.parse('2026-09-10T12:00:00.000Z');
@@ -123,6 +124,44 @@ describe('native GitHub App webhook admission', () => {
     expect(response.body).toEqual({ status: 'success', checkId: 9001, constituents: 2 });
     expect(mergeGroupGate).toHaveBeenCalledExactlyOnceWith(body);
     expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed signed merge_group payload instead of treating it as unenrolled', async () => {
+    const repository = {
+      claim: vi.fn(), complete: vi.fn(), release: vi.fn(),
+    };
+    const config = { secret: SECRET, admissionEnabled: true,
+      repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) };
+    const mergeGroupGate = createMergeGroupGate({
+      config, repository: repository as any, tokenFor: vi.fn(async () => 'ghs_test'),
+    });
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config, admission: { admit: vi.fn() } as any, mergeGroupGate,
+    });
+    const body = {
+      action: 'checks_requested', installation: { id: 123 }, repository: payload().repository,
+      merge_group: {
+        head_sha: 'not-a-sha', base_sha: BASE,
+        head_ref: 'refs/heads/gh-readonly-queue/main/pr-42-abcdef0', base_ref: 'refs/heads/main',
+      },
+    };
+    await expect(onEvent({
+      eventName: 'merge_group', deliveryId: 'malformed',
+      rawBody: Buffer.from(JSON.stringify(body)), body,
+    })).rejects.toThrow();
+    expect(repository.claim).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges a duplicate merge_group delivery while its durable lease is active', async () => {
+    const config = { secret: SECRET, admissionEnabled: true,
+      repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) };
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config, admission: { admit: vi.fn() } as any,
+      mergeGroupGate: vi.fn(async () => { throw new MergeGroupGateInProgressError(); }),
+    });
+    await expect(onEvent({
+      eventName: 'merge_group', deliveryId: 'duplicate', rawBody: Buffer.from('{}'), body: {},
+    })).resolves.toEqual({ status: 'accepted', reason: 'merge_group_in_progress' });
   });
 
   it.each([

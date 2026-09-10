@@ -209,12 +209,18 @@ export class PostgresStore {
         CREATE TABLE IF NOT EXISTS merge_group_gates (
           repository_id BIGINT NOT NULL,
           head_sha CHAR(40) NOT NULL,
-          check_id BIGINT NOT NULL,
-          conclusion TEXT NOT NULL CHECK (conclusion IN ('success', 'failure')),
+          check_id BIGINT,
+          conclusion TEXT CHECK (conclusion IN ('success', 'failure')),
+          claim_token UUID,
+          lease_expires_at TIMESTAMP WITH TIME ZONE,
           created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           PRIMARY KEY (repository_id, head_sha)
         );
+        ALTER TABLE merge_group_gates ALTER COLUMN check_id DROP NOT NULL;
+        ALTER TABLE merge_group_gates ALTER COLUMN conclusion DROP NOT NULL;
+        ALTER TABLE merge_group_gates ADD COLUMN IF NOT EXISTS claim_token UUID;
+        ALTER TABLE merge_group_gates ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP WITH TIME ZONE;
 
         CREATE TABLE IF NOT EXISTS review_dispatch_outbox (
           run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,

@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { AUTHORITATIVE_REVIEW_APP_ID } from '../auth/authoritativeServiceConfig';
+import {
+  AUTHORITATIVE_REVIEW_APP_ID, AUTHORITATIVE_REVIEW_APP_SLUG, AUTHORITATIVE_REVIEW_CHECK_NAME,
+} from '../auth/authoritativeServiceConfig';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { MergeGroupGateRepository, MergeGroupGateState } from '../persistence/mergeGroupGateRepository';
 import { createBoundedGitHubJsonClient, type GitHubJsonClient } from '../github/boundedGitHubJson';
@@ -21,8 +24,6 @@ const mergeGroupWebhook = z.object({
 
 const QUEUE_QUERY = 'query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id entries(first:100){totalCount nodes{position state baseCommit{oid} headCommit{oid} pullRequest{number state baseRefName headRefOid repository{nameWithOwner}}} pageInfo{hasNextPage}}}}}';
 const QUALIFYING_STATES = new Set(['QUEUED', 'AWAITING_CHECKS', 'LOCKED', 'MERGEABLE']);
-const APP_SLUG = 'ct-review-bot';
-const CHECK_NAME = 'Review Yeti';
 const CHECK_LOOKUP_CONCURRENCY = 5;
 
 interface QueueEntry {
@@ -112,11 +113,16 @@ function selectEntries(response: any, identity: ReturnType<typeof validatePayloa
   return { id: queue.id, entries: entries as QueueEntry[] };
 }
 
+function isOfficialReviewCheck(run: any): boolean {
+  return run?.name === AUTHORITATIVE_REVIEW_CHECK_NAME
+    && Number(run?.app?.id) === AUTHORITATIVE_REVIEW_APP_ID
+    && run?.app?.slug === AUTHORITATIVE_REVIEW_APP_SLUG;
+}
+
 function exactReviewFailure(checks: any, expectedHead: string): string | undefined {
   if (!Number.isSafeInteger(checks?.total_count) || !Array.isArray(checks?.check_runs)
     || checks.total_count !== checks.check_runs.length || checks.total_count > 100) return 'check-run evidence is incomplete';
-  const runs = checks.check_runs.filter((run: any) => run?.name === CHECK_NAME
-    && Number(run?.app?.id) === AUTHORITATIVE_REVIEW_APP_ID && run?.app?.slug === APP_SLUG);
+  const runs = checks.check_runs.filter(isOfficialReviewCheck);
   if (runs.length === 0) return 'has no Review Yeti check from the official App';
   if (runs.some((run: any) => run.head_sha !== expectedHead || !Number.isSafeInteger(Number(run.id)) || Number(run.id) < 1)) {
     return 'contains malformed or stale Review Yeti evidence';
@@ -130,12 +136,21 @@ function externalId(repositoryId: number, headSha: string): string {
   return `review-yeti-merge-group:${repositoryId}:${headSha}`;
 }
 
+export class MergeGroupGateInProgressError extends Error {
+  constructor() { super('Merge-group gate verification is already in progress'); }
+}
+
 export function createMergeGroupGate(options: MergeGroupGateOptions) {
   return async (payload: unknown): Promise<MergeGroupGateState & { constituents: number }> => {
     const identity = validatePayload(payload, options.config);
     const repositoryName = identity.repository.full_name;
-    return options.repository.runExclusive(identity.repository.id, identity.merge_group.head_sha, async (stored) => {
-      if (stored) return { ...stored, constituents: 0 };
+    const repositoryId = identity.repository.id;
+    const headSha = identity.merge_group.head_sha;
+    const claimToken = randomUUID();
+    const claim = await options.repository.claim(repositoryId, headSha, claimToken);
+    if (claim.status === 'terminal') return { ...claim.result, constituents: 0 };
+    if (claim.status === 'busy') throw new MergeGroupGateInProgressError();
+    try {
       const token = await options.tokenFor(identity.owner, identity.repo);
       if (!token.startsWith('ghs_')) throw new Error('Merge-group App token is unavailable');
       const client = options.githubClientFor?.(token) || createBoundedGitHubJsonClient({
@@ -148,17 +163,18 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
         throw new Error('Merge-group check reconciliation is incomplete');
       }
       const stableId = externalId(identity.repository.id, identity.merge_group.head_sha);
-      const candidates = existing.check_runs.filter((run: any) => run?.name === CHECK_NAME
-        && run?.head_sha === identity.merge_group.head_sha && run?.external_id === stableId
-        && Number(run?.app?.id) === AUTHORITATIVE_REVIEW_APP_ID && run?.app?.slug === APP_SLUG);
+      const candidates = existing.check_runs.filter((run: any) => isOfficialReviewCheck(run)
+        && run?.head_sha === identity.merge_group.head_sha && run?.external_id === stableId);
       let check = [...candidates].sort((left, right) => Number(left.id) - Number(right.id)).at(-1);
       if (check?.status === 'completed' && (check.conclusion === 'success' || check.conclusion === 'failure')) {
-        return { checkId: Number(check.id), conclusion: check.conclusion, constituents: 0 };
+        const result = { checkId: Number(check.id), conclusion: check.conclusion } as MergeGroupGateState;
+        await options.repository.complete(repositoryId, headSha, claimToken, result);
+        return { ...result, constituents: 0 };
       }
       if (!check) {
         check = await client.request(`${api}/check-runs`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-            name: CHECK_NAME, head_sha: identity.merge_group.head_sha, external_id: stableId,
+            name: AUTHORITATIVE_REVIEW_CHECK_NAME, head_sha: identity.merge_group.head_sha, external_id: stableId,
             status: 'in_progress', output: {
               title: 'Review Yeti merge-group verification running',
               summary: 'Validating every queued pull request against its latest exact-head Review Yeti verdict.',
@@ -204,7 +220,12 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
           },
         }),
       });
-      return { checkId: Number(check.id), conclusion, constituents: constituentCount };
-    });
+      const result = { checkId: Number(check.id), conclusion };
+      await options.repository.complete(repositoryId, headSha, claimToken, result);
+      return { ...result, constituents: constituentCount };
+    } catch (error) {
+      try { await options.repository.release(repositoryId, headSha, claimToken); } catch { /* retry can reclaim the lease */ }
+      throw error;
+    }
   };
 }

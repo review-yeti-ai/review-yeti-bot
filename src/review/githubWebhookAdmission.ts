@@ -8,6 +8,7 @@ import { buildReviewRunIdentity } from './reviewAdmission';
 import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
 } from '../auth/githubWebhookIdentity';
+import { MergeGroupGateInProgressError } from './mergeGroupGate';
 
 const positiveInteger = z.number().int().positive().safe();
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -56,6 +57,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       try { result = await options.mergeGroupGate(event.body); }
       catch (error) {
         if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+        if (error instanceof MergeGroupGateInProgressError) return { status: 'accepted', reason: 'merge_group_in_progress' };
         throw error;
       }
       return { status: result.conclusion, checkId: result.checkId, constituents: result.constituents };

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceConfig';
-import { createMergeGroupGate } from '../../src/review/mergeGroupGate';
+import { createMergeGroupGate, MergeGroupGateInProgressError } from '../../src/review/mergeGroupGate';
 
 const GROUP_HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -9,6 +9,7 @@ const config = {
   secret: 'x'.repeat(64), admissionEnabled: true,
   repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
 };
+const officialApp = { id: AUTHORITATIVE_REVIEW_APP_ID, slug: 'ct-review-bot' };
 
 function payload() {
   return {
@@ -43,7 +44,11 @@ function response(body: unknown, status = 200) {
 
 function repository(stored?: { checkId: number; conclusion: 'success' | 'failure' }) {
   return {
-    runExclusive: vi.fn(async (_repositoryId: number, _headSha: string, operation: Function) => operation(stored)),
+    claim: vi.fn(async () => stored
+      ? { status: 'terminal' as const, result: stored }
+      : { status: 'acquired' as const }),
+    complete: vi.fn(async () => undefined),
+    release: vi.fn(async () => undefined),
   };
 }
 
@@ -109,10 +114,13 @@ describe('native merge-group Review Yeti gate', () => {
   });
 
   it.each([
-    ['pending', PR_HEAD, 'in_progress', null, 'latest exact-head Review Yeti check is not successful'],
-    ['failed', PR_HEAD, 'completed', 'failure', 'latest exact-head Review Yeti check is not successful'],
-    ['stale', 'd'.repeat(40), 'completed', 'success', 'contains malformed or stale Review Yeti evidence'],
-  ])('fails the synthetic check for %s constituent evidence', async (_label, observedHead, status, conclusion, reason) => {
+    ['pending', PR_HEAD, 'in_progress', null, 'latest exact-head Review Yeti check is not successful', officialApp],
+    ['failed', PR_HEAD, 'completed', 'failure', 'latest exact-head Review Yeti check is not successful', officialApp],
+    ['stale', 'd'.repeat(40), 'completed', 'success', 'contains malformed or stale Review Yeti evidence', officialApp],
+    ['foreign App', PR_HEAD, 'completed', 'success', 'has no Review Yeti check from the official App',
+      { id: AUTHORITATIVE_REVIEW_APP_ID + 1, slug: 'ct-review-bot' }],
+  ])('fails the synthetic check for %s constituent evidence',
+    async (_label, observedHead, status, conclusion, reason, app) => {
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
@@ -120,7 +128,7 @@ describe('native merge-group Review Yeti gate', () => {
       if (url === 'https://api.github.com/graphql') return response(queue());
       if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({ total_count: 1, check_runs: [{
         id: 8002, name: 'Review Yeti', head_sha: observedHead, status, conclusion,
-        app: { id: AUTHORITATIVE_REVIEW_APP_ID, slug: 'ct-review-bot' },
+        app,
       }] });
       if (url.endsWith('/check-runs/9004') && init?.method === 'PATCH') return response({ id: 9004 });
       return response({}, 500);
@@ -132,7 +140,7 @@ describe('native merge-group Review Yeti gate', () => {
     const completion = (fetchImplementation as any).mock.calls.find(([url, init]: [unknown, RequestInit]) =>
       String(url).endsWith('/check-runs/9004') && init?.method === 'PATCH');
     expect(JSON.parse(String(completion[1].body)).output.summary).toContain(`PR #42: ${reason}`);
-  });
+    });
 
   it('fails when the merge queue changes between qualification reads', async () => {
     let graphqlReads = 0;
@@ -172,6 +180,18 @@ describe('native merge-group Review Yeti gate', () => {
     await expect(gate(payload())).resolves.toEqual({ checkId: 9003, conclusion: 'success', constituents: 0 });
     expect(tokenFor).not.toHaveBeenCalled();
     expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it('rejects a duplicate delivery without holding a connection or touching GitHub', async () => {
+    const tokenFor = vi.fn(async () => 'ghs_test');
+    const store = {
+      claim: vi.fn(async () => ({ status: 'busy' as const })), complete: vi.fn(), release: vi.fn(),
+    };
+    const gate = createMergeGroupGate({ config, repository: store, tokenFor });
+    await expect(gate(payload())).rejects.toBeInstanceOf(MergeGroupGateInProgressError);
+    expect(tokenFor).not.toHaveBeenCalled();
+    expect(store.complete).not.toHaveBeenCalled();
+    expect(store.release).not.toHaveBeenCalled();
   });
 
   it('reconciles a matching terminal GitHub check without creating or re-verifying it', async () => {
@@ -220,7 +240,6 @@ describe('native merge-group Review Yeti gate', () => {
 
   it('propagates a terminal PATCH failure and resumes the same in-progress check on retry', async () => {
     const stableId = `review-yeti-merge-group:614653796:${GROUP_HEAD}`;
-    let invocation = 0;
     let completionAttempts = 0;
     let created = false;
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -245,19 +264,14 @@ describe('native merge-group Review Yeti gate', () => {
       }
       return response({}, 500);
     }) as typeof fetch;
-    const store = {
-      runExclusive: vi.fn(async (_repositoryId: number, _headSha: string, operation: Function) => {
-        invocation += 1;
-        return operation(undefined);
-      }),
-    };
+    const store = repository();
     const gate = createMergeGroupGate({
       config, repository: store as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
     });
 
     await expect(gate(payload())).rejects.toThrow('GitHub JSON request failed with HTTP 503');
     await expect(gate(payload())).resolves.toEqual({ checkId: 9012, conclusion: 'success', constituents: 1 });
-    expect(invocation).toBe(2);
+    expect(store.claim).toHaveBeenCalledTimes(2);
     expect(completionAttempts).toBe(2);
     expect((fetchImplementation as any).mock.calls.filter(([url, init]: [unknown, RequestInit]) =>
       String(url).endsWith('/check-runs') && init?.method === 'POST')).toHaveLength(1);
@@ -269,7 +283,7 @@ describe('native merge-group Review Yeti gate', () => {
     const gate = createMergeGroupGate({ config, repository: store as any, tokenFor });
     await expect(gate({ ...payload(), merge_group: { ...payload().merge_group, head_ref: 'refs/heads/main' } }))
       .rejects.toThrow('GitHub webhook repository identity is not enrolled');
-    expect(store.runExclusive).not.toHaveBeenCalled();
+    expect(store.claim).not.toHaveBeenCalled();
     expect(tokenFor).not.toHaveBeenCalled();
   });
 });
