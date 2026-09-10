@@ -767,7 +767,10 @@ func TestPRReviewJobV1Alpha2ReconcilerAdmitsOldestWaitingReviewFirst(t *testing.
 func TestPRReviewJobV1Alpha2ReconcilerUsesAPIReaderForReservationAdmissionSnapshot(t *testing.T) {
 	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
-	cachedCandidate := v1alpha2Review(now.Add(-time.Minute))
+	// The reservation is later than the current request. A cached-only
+	// implementation would see an unreserved, newer sibling and admit the
+	// current review, so FIFO alone cannot make this regression pass.
+	cachedCandidate := v1alpha2Review(now.Add(time.Minute))
 	cachedCandidate.Name = "ct-review-77777777777777777777777777777777"
 	cachedCandidate.Spec.RunID = "run_77777777777777777777777777777777"
 	cachedCandidate.Spec.DeliveryID = "delivery-7"
@@ -780,42 +783,42 @@ func TestPRReviewJobV1Alpha2ReconcilerUsesAPIReaderForReservationAdmissionSnapsh
 		LastTransitionTime: metav1.NewTime(now),
 	})
 
-	cachedNewer := v1alpha2Review(now)
-	cachedNewer.Name = "ct-review-88888888888888888888888888888888"
-	cachedNewer.Spec.RunID = "run_88888888888888888888888888888888"
-	cachedNewer.Spec.DeliveryID = "delivery-8"
-	cachedNewer.Spec.PRNumber = 48
-	cachedNewer.Spec.RunSecretName = "ct-review-run-88888888888888888888888888888888"
-	authoritativeNewer := cachedNewer.DeepCopy()
+	cachedCurrent := v1alpha2Review(now)
+	cachedCurrent.Name = "ct-review-88888888888888888888888888888888"
+	cachedCurrent.Spec.RunID = "run_88888888888888888888888888888888"
+	cachedCurrent.Spec.DeliveryID = "delivery-8"
+	cachedCurrent.Spec.PRNumber = 48
+	cachedCurrent.Spec.RunSecretName = "ct-review-run-88888888888888888888888888888888"
+	authoritativeCurrent := cachedCurrent.DeepCopy()
 
-	cached := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cachedCandidate, cachedNewer).
+	cached := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cachedCandidate, cachedCurrent).
 		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
-	authoritative := fake.NewClientBuilder().WithScheme(scheme).WithObjects(authoritativeCandidate, authoritativeNewer).
+	authoritative := fake.NewClientBuilder().WithScheme(scheme).WithObjects(authoritativeCandidate, authoritativeCurrent).
 		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
 	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
 		Client: cached, APIReader: authoritative, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
 	}
-	newerReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cachedNewer.Namespace, Name: cachedNewer.Name}}
-	result, err := reconciler.Reconcile(context.Background(), newerReq)
+	currentReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: cachedCurrent.Namespace, Name: cachedCurrent.Name}}
+	result, err := reconciler.Reconcile(context.Background(), currentReq)
 	if err != nil {
 		t.Fatalf("reconcile newer review: %v", err)
 	}
 	if result.RequeueAfter <= 0 {
-		t.Fatal("authoritative reservation must keep the newer review queued")
+		t.Fatal("authoritative reservation must keep the current review queued")
 	}
 	var queued reviewv1alpha2.PRReviewJob
-	if err := cached.Get(context.Background(), newerReq.NamespacedName, &queued); err != nil {
-		t.Fatalf("get queued newer review: %v", err)
+	if err := cached.Get(context.Background(), currentReq.NamespacedName, &queued); err != nil {
+		t.Fatalf("get queued current review: %v", err)
 	}
 	ready := meta.FindStatusCondition(queued.Status.Conditions, "Ready")
-	if queued.Status.Phase != reviewv1alpha2.PhaseQueued || ready == nil || ready.Reason != "CapacityExceeded" {
-		t.Fatalf("newer status = %#v, want CapacityExceeded queue", queued.Status)
+	if queued.Status.Phase != reviewv1alpha2.PhaseQueued || ready == nil || ready.Reason != "CapacityExceeded" || queued.Status.Message != "waiting for one of 1 worker slots" {
+		t.Fatalf("current status = %#v, want CapacityExceeded queue", queued.Status)
 	}
 	if err := cached.Get(context.Background(), types.NamespacedName{
-		Namespace: cachedNewer.Namespace,
-		Name:      workspace.PVCName(cachedNewer.Spec.RepositoryID, cachedNewer.Spec.PRNumber),
+		Namespace: cachedCurrent.Namespace,
+		Name:      workspace.PVCName(cachedCurrent.Spec.RepositoryID, cachedCurrent.Spec.PRNumber),
 	}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("newer review must not allocate against a stale cache: %v", err)
+		t.Fatalf("current review must not allocate against a stale cache: %v", err)
 	}
 	var cachedCandidateAfter reviewv1alpha2.PRReviewJob
 	if err := cached.Get(context.Background(), types.NamespacedName{Namespace: cachedCandidate.Namespace, Name: cachedCandidate.Name}, &cachedCandidateAfter); err != nil {
