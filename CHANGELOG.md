@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.50.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.49.1...v1.50.0) (2026-09-10)
+
+
+### Features
+
+* **engine:** scope persona paths to ecosystems, stage domains runtime, and compact prompt diffs ([#659](https://github.com/review-yeti-ai/review-yeti-bot/issues/659)) ([83efeff](https://github.com/review-yeti-ai/review-yeti-bot/commit/83efeff3c77eaa5c37b1769a9b456382b8f6d9e1))
+
 ## [1.49.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.49.0...v1.49.1) (2026-09-10)
 
 
