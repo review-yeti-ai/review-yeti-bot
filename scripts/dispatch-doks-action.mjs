@@ -154,7 +154,7 @@ async function failureDetail(response) {
   }
 }
 
-async function requestOidcToken(environment, fetchImpl) {
+async function requestOidcToken(environment, fetchImpl, sleepImpl) {
   const audience = required(environment, 'DOKS_OIDC_AUDIENCE');
   if (audience !== DOKS_OIDC_AUDIENCE) throw new Error(`DOKS OIDC audience must be ${DOKS_OIDC_AUDIENCE}`);
   const requestToken = required(
@@ -168,11 +168,31 @@ async function requestOidcToken(environment, fetchImpl) {
     'grant the caller workflow permissions: id-token: write',
   ));
   requestUrl.searchParams.set('audience', DOKS_OIDC_AUDIENCE);
-  const response = await fetchImpl(requestUrl, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${requestToken}` },
-    signal: AbortSignal.timeout(10_000),
-  });
+  const attempts = DISPATCH_RETRY_DELAYS_MS.length + 1;
+  let response;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      response = await fetchImpl(requestUrl, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${requestToken}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (error) {
+      const reason = compactError(error);
+      if (attempt === attempts) {
+        throw new Error(`GitHub Actions OIDC token request transport failed after ${attempts} attempts: ${reason}`, { cause: error });
+      }
+      const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
+      retryWarning('GitHub Actions OIDC token request', attempt, delayMs, reason);
+      await sleepImpl(delayMs);
+      continue;
+    }
+
+    if (response.ok || attempt === attempts || !RETRYABLE_DISPATCH_STATUSES.has(response.status)) break;
+    const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
+    retryWarning('GitHub Actions OIDC token request', attempt, delayMs, `HTTP ${response.status}`);
+    await sleepImpl(delayMs);
+  }
   if (!response.ok) throw new Error(`GitHub Actions OIDC token request failed with HTTP ${response.status}; verify permissions: id-token: write`);
   const body = await json(response, 'GitHub Actions OIDC token request');
   if (typeof body?.value !== 'string' || body.value.length < 32) throw new Error('GitHub Actions OIDC token response did not contain a signed token');
@@ -197,15 +217,15 @@ function compactError(error) {
   return message.replace(/\s+/gu, ' ').trim().slice(0, 256) || 'unknown transport error';
 }
 
-function retryWarning(attempt, delayMs, reason) {
-  process.stderr.write(`::warning::DOKS dispatch attempt ${attempt} failed (${reason}); retrying the same delivery in ${delayMs}ms\n`);
+function retryWarning(operation, attempt, delayMs, reason) {
+  process.stderr.write(`::warning::${operation} attempt ${attempt} failed (${reason}); retrying in ${delayMs}ms\n`);
 }
 
 export async function dispatchAction(environment = process.env, fetchImpl = fetch, options = {}) {
   const endpoint = validateDispatchEndpoint(required(environment, 'DOKS_DISPATCH_URL'));
   const request = buildDispatchRequest(environment);
-  const oidcToken = await requestOidcToken(environment, fetchImpl);
   const sleepImpl = options.sleep || sleep;
+  const oidcToken = await requestOidcToken(environment, fetchImpl, sleepImpl);
   const requestBody = JSON.stringify(request);
   const attempts = DISPATCH_RETRY_DELAYS_MS.length + 1;
 
@@ -230,7 +250,7 @@ export async function dispatchAction(environment = process.env, fetchImpl = fetc
         throw new Error(`DOKS dispatch transport failed after ${attempts} attempts: ${reason}`, { cause: error });
       }
       const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
-      retryWarning(attempt, delayMs, reason);
+      retryWarning('DOKS dispatch', attempt, delayMs, reason);
       await sleepImpl(delayMs);
       continue;
     }
@@ -240,7 +260,7 @@ export async function dispatchAction(environment = process.env, fetchImpl = fetc
       throw new Error(`DOKS dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
     }
     const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
-    retryWarning(attempt, delayMs, `HTTP ${response.status}`);
+    retryWarning('DOKS dispatch', attempt, delayMs, `HTTP ${response.status}`);
     await sleepImpl(delayMs);
   }
 
