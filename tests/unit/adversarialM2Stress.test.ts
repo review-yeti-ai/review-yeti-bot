@@ -67,6 +67,7 @@ function mockDeps(overrides: Record<string, unknown> = {}) {
         completeCheck,
         publishGateCheck,
       },
+      visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       sourceLoader: vi.fn(async () => ({ diff: VALID_DIFF, githubReads: 1 })),
       panelRunner: vi.fn(async () => ({
         personas: [{ id: 'arch', findings: [] }],
