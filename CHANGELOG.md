@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.51.2...v1.52.0) (2026-09-10)
+
+
+### Features
+
+* **panel:** skip file diffs larger than max-file-diff-chars (512KiB) ([#671](https://github.com/review-yeti-ai/review-yeti-bot/issues/671)) ([268da6f](https://github.com/review-yeti-ai/review-yeti-bot/commit/268da6f1c9fa1c4e97462598dc6223a88b91cf50))
+
 ## [1.51.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.51.1...v1.51.2) (2026-09-10)
 
 
