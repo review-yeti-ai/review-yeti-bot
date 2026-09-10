@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Behavioral contract test for promotion. The fake APIs deliberately put `validate` only on
-# the merged source commit and `review / Review Yeti` only on the PR head. This catches regressions
+# the merged source commit and the App-owned `Review Yeti Gate` only on the exact PR head. This catches regressions
 # that accidentally validate all required checks against the wrong GitHub coordinate.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
@@ -27,22 +27,22 @@ case "$request" in
   *"repos/exampleorg/example-review-actions/commits/2222222222222222222222222222222222222222/pulls?per_page=100"*)
     printf '[[{"number":42,"base":{"ref":"main"},"head":{"sha":"head123"},"merge_commit_sha":"2222222222222222222222222222222222222222","merged_at":"2026-08-19T15:00:00Z"}]]\n'
     ;;
-  *"repos/exampleorg/example-review-actions/commits/2222222222222222222222222222222222222222/check-runs?per_page=100"*)
+  *"repos/exampleorg/example-review-actions/commits/2222222222222222222222222222222222222222/check-runs?filter=all&per_page=100"*)
     printf '{"check_runs":[{"id":11,"name":"validate","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:01:00Z"}]}\n'
     ;;
   *"repos/exampleorg/example-review-actions/pulls/42/commits?per_page=100"*)
     printf '[[{"sha":"oldhead1"},{"sha":"head123"}]]\n'
     ;;
-  *"repos/exampleorg/example-review-actions/commits/oldhead1/check-runs?per_page=100"*)
+  *"repos/exampleorg/example-review-actions/commits/oldhead1/check-runs?filter=all&per_page=100"*)
     if [[ "${FAKE_EARLIER_GREEN:-}" == true ]]; then
-      printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"completed","conclusion":"success","completed_at":"2026-08-19T14:58:00Z"}]}\n'
+      printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T14:58:00Z"}]}\n'
     else
-      printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"completed","conclusion":"failure","completed_at":"2026-08-19T14:58:00Z"}]}\n'
+      printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T14:58:00Z"}]}\n'
     fi
     ;;
-  *"repos/exampleorg/example-review-actions/commits/head123/check-runs?per_page=100"*)
+  *"repos/exampleorg/example-review-actions/commits/head123/check-runs?filter=all&per_page=100"*)
     if [[ "${FAKE_HEAD_RED:-}" == true ]]; then
-      printf '{"check_runs":[{"id":3,"name":"review / Review Yeti","status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:04:00Z"}]}\n'
+      printf '{"check_runs":[{"id":3,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:04:00Z"}]}\n'
     elif [[ "${FAKE_STALE_THEN_FRESH:-}" == true ]]; then
       # A prior attempt on this exact head SHA (e.g. a transient failure that was rerun)
       # completed and left a check-run behind; a fresh rerun (higher id, no completed_at yet)
@@ -52,15 +52,19 @@ case "$request" in
       # superseded, but the picker never looks past it.
       if [[ ! -e "${FAKE_STALE_MARKER:?}" ]]; then
         touch "$FAKE_STALE_MARKER"
-        printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:00:00Z"},{"id":2,"name":"review / Review Yeti","status":"in_progress","conclusion":null,"completed_at":null}]}\n'
+        printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:00:00Z"},{"id":2,"name":"Review Yeti Gate","app":{"id":4385771},"status":"in_progress","conclusion":null,"completed_at":null}]}\n'
       else
-        printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:00:00Z"},{"id":2,"name":"review / Review Yeti","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:03:00Z"}]}\n'
+        printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:00:00Z"},{"id":2,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:03:00Z"}]}\n'
       fi
     elif [[ "${FAKE_PENDING_ONCE:-}" == true && ! -e "${FAKE_PENDING_MARKER:?}" ]]; then
       touch "$FAKE_PENDING_MARKER"
-      printf '{"check_runs":[{"id":1,"name":"review / Review Yeti","status":"in_progress","conclusion":null,"completed_at":null}]}\n'
+      printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"in_progress","conclusion":null,"completed_at":null}]}\n'
     else
-      printf '{"check_runs":[{"id":21,"name":"review / Review Yeti","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
+      if [[ "${FAKE_SPOOF_APP:-}" == true ]]; then
+        printf '{"check_runs":[{"id":21,"name":"Review Yeti Gate","app":{"id":15368},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
+      else
+        printf '{"check_runs":[{"id":21,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
+      fi
     fi
     ;;
   *)
@@ -158,6 +162,7 @@ jq -e '
   .release.pr_number == 42 and
   .validation.validate_check_run_id == 11 and
   .validation.review_check_run_id == 21 and
+  .validation.review_app_id == 4385771 and
   (.validation.digest | test("^[0-9a-f]{64}$")) and
   .refs.expected_old_v1_sha == "1111111111111111111111111111111111111111" and
   .refs.new_v1_sha == "2222222222222222222222222222222222222222" and
@@ -338,7 +343,7 @@ pending_output="$({
     FAKE_PENDING_ONCE=true FAKE_PENDING_MARKER="$pending_marker" \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"
-grep -Fq 'Waiting for PR #42 head head123: review / Review Yeti' <<<"$pending_output"
+grep -Fq 'Waiting for PR #42 head head123: Review Yeti Gate' <<<"$pending_output"
 
 # A stale, already-completed FAILURE check-run must never permanently shadow a fresher rerun
 # (higher id) on the same head SHA that is still in flight (or has since succeeded). Deadlock
@@ -362,18 +367,22 @@ if [[ "$stale_rc" -ne 0 ]]; then
 fi
 grep -Fq 'Promoted Review Yeti v1' <<<"$stale_output"
 
-# Stranded-head rescue: the merged head has NO green review (an update-branch or
-# in-flight-merge push left it red), but an earlier commit of the SAME pull
-# request was reviewed green. The fallback walk must accept that earlier green
-# review with a loud warning instead of stranding the promotion.
+# Exact-head integrity: an earlier green review must never qualify a moved head.
+set +e
 stranded_output="$({
   PATH="$tmp_dir/bin:$PATH" \
     GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    PROMOTION_WAIT_SECONDS=0 PROMOTION_POLL_SECONDS=0 \
     FAKE_HEAD_RED=true FAKE_EARLIER_GREEN=true \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"
-grep -Fq 'accepting the green review on earlier PR commit oldhead1' <<<"$stranded_output"
-grep -Fq 'Promoted Review Yeti v1' <<<"$stranded_output"
+stranded_rc=$?
+set -e
+if [[ "$stranded_rc" -eq 0 ]]; then
+  echo "expected an earlier green review to be rejected for a moved exact head" >&2
+  exit 1
+fi
+grep -Fq 'Required central check did not pass' <<<"$stranded_output"
 
 # No green review anywhere on the pull request: the fallback walk finds nothing
 # and the promotion must still refuse — a deliberately unreviewed merge stays
@@ -394,6 +403,23 @@ if [[ "$unreviewed_rc" -eq 0 ]]; then
   exit 1
 fi
 grep -Fq 'Required central check did not pass' <<<"$unreviewed_output"
+
+# A same-name Actions check is not App evidence.
+set +e
+spoof_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    PROMOTION_WAIT_SECONDS=0 PROMOTION_POLL_SECONDS=0 \
+    FAKE_SPOOF_APP=true \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"
+spoof_rc=$?
+set -e
+if [[ "$spoof_rc" -eq 0 ]]; then
+  echo "expected same-name non-App check to be rejected" >&2
+  exit 1
+fi
+grep -Fq 'Required central check did not pass' <<<"$spoof_output"
 
 # The dry-run audit uses exact, caller-supplied old/new SHAs and local refs only.
 # It must model fast-forward, idempotent rerun, divergence, stale expected-old,
@@ -566,7 +592,11 @@ grep -Fq "if: always() && steps.review.outputs.provider-telemetry-path != ''" "$
 grep -Fq 'name: review-yeti-provider-telemetry-${{ github.run_id }}-${{ github.run_attempt }}' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'path: ${{ steps.review.outputs.provider-telemetry-path }}' "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq 'actions: read' "$repo_root/.github/workflows/self-review.yml"
+grep -Fq 'contents: read' "$repo_root/.github/workflows/ct-review-bot.yml"
+if grep -Eq '^  (actions|checks|issues|pull-requests): write$' "$repo_root/.github/workflows/ct-review-bot.yml"; then
+  echo "self-review caller ambient permissions must remain read-only" >&2
+  exit 1
+fi
 grep -Fq 'actions: read' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'incremental-review: ${{ steps.policy.outputs.incremental_enabled }}' "$repo_root/.github/workflows/review-yeti.yml"
@@ -711,8 +741,9 @@ grep -Fq "'^[[:space:]]+execution_backend:'" "$repo_root/scripts/validate-caller
 grep -Fq 'must not set passthrough; only the platform-owned repository variable may enable it.' "$repo_root/scripts/validate-caller-workflow.sh"
 grep -Fq 'must not override execution_backend; the central policy is the only authority for backend selection.' "$repo_root/scripts/validate-caller-workflow.sh"
 
-# Behavioral proof: run the real validator against a crafted caller that smuggles
-# `with: passthrough: true`, and against the real compliant central self-review caller.
+# Behavioral proof: run the legacy direct-caller validator against a crafted
+# passthrough smuggle and a compliant v1 consumer. Central self-review now uses
+# repository_dispatch and is covered by validate-central-dispatch.test.mjs.
 caller_test_dir="$tmp_dir/validate-caller"
 mkdir -p "$caller_test_dir/bin"
 malicious_caller_b64="$(base64 <<'MALICIOUS_CALLER_FIXTURE' | tr -d '\n'
@@ -728,7 +759,17 @@ jobs:
     secrets: inherit
 MALICIOUS_CALLER_FIXTURE
 )"
-compliant_caller_b64="$(base64 <"$repo_root/.github/workflows/self-review.yml" | tr -d '\n')"
+compliant_caller_b64="$(base64 <<'COMPLIANT_CALLER_FIXTURE' | tr -d '\n'
+name: Review Yeti
+on:
+  pull_request_target:
+    branches: [main]
+jobs:
+  review:
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1
+    secrets: inherit
+COMPLIANT_CALLER_FIXTURE
+)"
 
 cat >"$caller_test_dir/bin/gh" <<FAKE_CALLER_GH
 #!/usr/bin/env bash
@@ -738,7 +779,7 @@ case "\$request" in
   *"repos/exampleorg/example/contents/.github/workflows/ct-review-bot.yml"*)
     printf '{"content":"%s"}\\n' "$malicious_caller_b64"
     ;;
-  *"repos/exampleorg/example-review-actions/contents/.github/workflows/self-review.yml"*)
+  *"repos/exampleorg/compliant/contents/.github/workflows/ct-review-bot.yml"*)
     printf '{"content":"%s"}\\n' "$compliant_caller_b64"
     ;;
   *)
@@ -759,8 +800,8 @@ if malicious_caller_output="$({
 fi
 grep -Fq 'must not set passthrough' <<<"$malicious_caller_output"
 
-PATH="$caller_test_dir/bin:$PATH" GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example-review-actions \
-  EXPECTED_BASE_SHA=1111111111111111111111111111111111111111 CENTRAL_REF=main \
+PATH="$caller_test_dir/bin:$PATH" GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/compliant \
+  EXPECTED_BASE_SHA=1111111111111111111111111111111111111111 CENTRAL_REF=v1 \
   "$repo_root/scripts/validate-caller-workflow.sh" >/dev/null
 
 echo "promote-v1 behavioral contract passed"

@@ -143,21 +143,23 @@ if output="$({
 fi
 grep -Fq "base-sha is invalid" <<<"$output"
 
-central_workflow=$'jobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@main\n    secrets: inherit\n'
+# The central repository now uses the same promoted-v1 caller contract and path
+# as every consumer; accepting @main here would recreate the self-review bypass.
+central_workflow=$'jobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1\n    secrets: inherit\n'
 PATH="$tmp_dir/bin:$PATH" \
-  GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example-review-actions CENTRAL_REF=main EXPECTED_BASE_SHA="$base_sha" \
+  GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example-review-actions CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
   FAKE_WORKFLOW_CONTENT="$central_workflow" \
   "$repo_root/scripts/validate-caller-workflow.sh"
 
 if output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example-review-actions CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
-    FAKE_WORKFLOW_CONTENT="${central_workflow/@main/@v1}" \
+    GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example-review-actions CENTRAL_REF=main EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="${central_workflow/@v1/@main}" \
     "$repo_root/scripts/validate-caller-workflow.sh"
 } 2>&1)"; then
-  echo "expected central self-review on v1 to fail" >&2
+  echo "expected central self-review on main to fail" >&2
   exit 1
 fi
-grep -Fq "central self-review must use the development ref main" <<<"$output"
+grep -Fq "central-ref must be a platform-owned major release ref such as v1" <<<"$output"
 
 echo "validate-caller-workflow contract passed"

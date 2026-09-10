@@ -16,6 +16,7 @@ fi
 
 repository="${GITHUB_REPOSITORY:-exampleorg/example-review-actions}"
 actor="${GITHUB_ACTOR:-unknown}"
+review_yeti_app_id="4385771"
 default_branch="$(gh api "repos/${repository}" --jq '.default_branch // empty')"
 [[ "$default_branch" == main ]] || {
   echo "::error::Review Yeti v1 promotion requires main as the default branch."
@@ -60,14 +61,15 @@ pr_merge_commit="$(jq -r '.merge_commit_sha // empty' <<<"$merged_pr")"
 # The merge commit owns the central validation check. The pull-request head owns the
 # pull_request_target Review Yeti check, because GitHub does not copy that check onto the
 # post-merge commit. Keep both coordinates explicit instead of silently checking only the PR head.
-source_check_runs="$(gh api "repos/${repository}/commits/${SOURCE_SHA}/check-runs?per_page=100")"
-pr_check_runs="$(gh api "repos/${repository}/commits/${pr_head}/check-runs?per_page=100")"
+source_check_runs="$(gh api "repos/${repository}/commits/${SOURCE_SHA}/check-runs?filter=all&per_page=100")"
+pr_check_runs="$(gh api "repos/${repository}/commits/${pr_head}/check-runs?filter=all&per_page=100")"
 
 require_success() {
   local check_runs="$1"
   local name="$2"
   local coordinate="$3"
   local endpoint="${4:-}"
+  local required_app_id="${5:-}"
   local latest
   local status
   local conclusion
@@ -79,8 +81,10 @@ require_success() {
     # completed_at treats "no completed_at yet" (an in-flight rerun) as earliest, so a stale
     # completed FAILURE from a superseded attempt would permanently shadow the live rerun and
     # fail closed forever -- the exact "check was red once, can never promote" deadlock.
-    latest="$(jq -c --arg name "$name" '
-      [.check_runs[] | select(.name == $name)] |
+    latest="$(jq -c --arg name "$name" --arg app_id "$required_app_id" '
+      [.check_runs[]
+       | select(.name == $name)
+       | select($app_id == "" or ((.app.id | tostring) == $app_id))] |
       sort_by(.id) | last // {}
     ' <<<"$check_runs")"
     status="$(jq -r '.status // empty' <<<"$latest")"
@@ -108,45 +112,16 @@ require_success() {
 }
 
 require_success "$source_check_runs" validate "source ${SOURCE_SHA}" \
-  "repos/${repository}/commits/${SOURCE_SHA}/check-runs?per_page=100"
+  "repos/${repository}/commits/${SOURCE_SHA}/check-runs?filter=all&per_page=100"
 validate_check_id="$required_check_id"
 
-# The Review Yeti check lives on a PR head, and heads move: an update-branch
-# right before merge (or a merge landing while the re-review is in flight)
-# leaves the final head without its own green check even though an earlier
-# head of the SAME pull request was reviewed green. That stranded promotion
-# three times in one day. Accept a green review on the exact head first;
-# otherwise walk the PR's recent commits (newest first) and accept the first
-# green review with a loud warning. A pull request with NO green review on
-# any commit still refuses — a deliberately unreviewed merge stays stranded.
-green_review_sha=""
-green_review_check_id=""
-if jq -e '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last // {} | select(.status == "completed" and .conclusion == "success")' >/dev/null <<<"$pr_check_runs"; then
-  green_review_sha="$pr_head"
-  green_review_check_id="$(jq -r '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last | .id' <<<"$pr_check_runs")"
-else
-  # Fail-soft walk: any API/parse hiccup here simply falls through to the
-  # original exact-head requirement below — the fallback can only rescue,
-  # never produce a new failure mode.
-  pr_commits="$(gh api --paginate --slurp "repos/${repository}/pulls/${pr_number}/commits?per_page=100" 2>/dev/null | jq -r '.[][].sha' 2>/dev/null | tail -10 || true)"
-  for candidate in $(printf '%s\n' "$pr_commits" | tail -r 2>/dev/null || printf '%s\n' "$pr_commits" | tac 2>/dev/null || true); do
-    [[ "$candidate" == "$pr_head" ]] && continue
-    candidate_runs="$(gh api "repos/${repository}/commits/${candidate}/check-runs?per_page=100" 2>/dev/null || true)"
-    [[ -n "$candidate_runs" ]] || continue
-    if jq -e '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last // {} | select(.status == "completed" and .conclusion == "success")' >/dev/null 2>&1 <<<"$candidate_runs"; then
-      green_review_sha="$candidate"
-      green_review_check_id="$(jq -r '[.check_runs[] | select(.name == "review / Review Yeti")] | sort_by(.id) | last | .id' <<<"$candidate_runs")"
-      echo "::warning::PR #${pr_number} head ${pr_head} has no green Review Yeti check; accepting the green review on earlier PR commit ${candidate} (head moved before its re-review completed)."
-      break
-    fi
-  done
-fi
-if [[ -z "$green_review_sha" ]]; then
-  require_success "$pr_check_runs" 'review / Review Yeti' "PR #${pr_number} head ${pr_head}" \
-    "repos/${repository}/commits/${pr_head}/check-runs?per_page=100"
-  green_review_sha="$pr_head"
-  green_review_check_id="$required_check_id"
-fi
+# Promotion is release-channel authority, so review evidence is exact-head and
+# exact-App only. An earlier PR commit or same-name Actions check cannot qualify.
+require_success "$pr_check_runs" 'Review Yeti Gate' "PR #${pr_number} head ${pr_head}" \
+  "repos/${repository}/commits/${pr_head}/check-runs?filter=all&per_page=100" \
+  "$review_yeti_app_id"
+green_review_sha="$pr_head"
+green_review_check_id="$required_check_id"
 
 [[ "$green_review_check_id" =~ ^[0-9]+$ ]] || {
   echo "::error::Review Yeti evidence has no immutable check-run id."
@@ -198,9 +173,10 @@ validation_payload="$(jq -cn \
   --argjson pr_number "$pr_number" \
   --arg pr_head_sha "$pr_head" \
   --arg review_sha "$green_review_sha" \
+  --argjson review_app_id "$review_yeti_app_id" \
   --argjson validate_check_run_id "$validate_check_id" \
   --argjson review_check_run_id "$green_review_check_id" \
-  '{repository:$repository,source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha,review_sha:$review_sha,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id}')"
+  '{repository:$repository,source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha,review_sha:$review_sha,review_app_id:$review_app_id,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id}')"
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -229,6 +205,7 @@ prepare_receipt() {
     --argjson pr_number "$pr_number" \
     --arg pr_head_sha "$pr_head" \
     --arg review_sha "$green_review_sha" \
+    --argjson review_app_id "$review_yeti_app_id" \
     --argjson validate_check_run_id "$validate_check_id" \
     --argjson review_check_run_id "$green_review_check_id" \
     --arg validation_digest "$validation_digest" \
@@ -237,7 +214,7 @@ prepare_receipt() {
     --arg new_v1_sha "$SOURCE_SHA" \
     --arg result "$result" \
     --argjson write_performed "$write_performed" \
-    '{schema:"exampleorg.review-yeti-v1-promotion-receipt.v1",actor:$actor,promoted_at:$promoted_at,repository:$repository,release:{source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha},validation:{review_sha:$review_sha,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id,digest:$validation_digest},refs:{expected_old_v1_sha:$expected_old_v1_sha,observed_old_v1_sha:$observed_old_v1_sha,new_v1_sha:$new_v1_sha},rollback:{strategy:"create-reviewed-revert-on-main-then-promote",baseline_sha:$observed_old_v1_sha,direct_ref_rewind_allowed:false},result:$result,write_performed:$write_performed}' \
+    '{schema:"exampleorg.review-yeti-v1-promotion-receipt.v1",actor:$actor,promoted_at:$promoted_at,repository:$repository,release:{source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha},validation:{review_sha:$review_sha,review_app_id:$review_app_id,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id,digest:$validation_digest},refs:{expected_old_v1_sha:$expected_old_v1_sha,observed_old_v1_sha:$observed_old_v1_sha,new_v1_sha:$new_v1_sha},rollback:{strategy:"create-reviewed-revert-on-main-then-promote",baseline_sha:$observed_old_v1_sha,direct_ref_rewind_allowed:false},result:$result,write_performed:$write_performed}' \
     >"$prepared_receipt_tmp"
 }
 

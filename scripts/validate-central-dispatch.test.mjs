@@ -40,9 +40,10 @@ const WIDED_REPOSITORIES = [
   { repository: TARGET_REPOSITORY, name: 'example-api', pr: 4527 },
   { repository: 'exampleorg/example-release', name: 'example-release', pr: 771 },
   { repository: 'exampleorg/example-meta', name: 'example-meta', pr: 2704 },
+  { repository: CENTRAL_REPOSITORY, name: 'example-review-actions', pr: 293 },
 ];
 
-function buildFixture({ repository, name, pr }) {
+function buildFixture({ repository, name, pr, callerPath = '.github/workflows/ct-review-bot.yml' }) {
   const request = {
     request_id: `${name}:${pr}:${headSha}:${callerRunId}:${callerRunAttempt}`,
     repository,
@@ -62,7 +63,7 @@ function buildFixture({ repository, name, pr }) {
       return response({
         repository: { full_name: repository },
         event: 'pull_request_target',
-        path: '.github/workflows/ct-review-bot.yml',
+        path: callerPath,
         head_sha: headSha,
         head_branch: `fix/${name}-shim`,
         run_attempt: callerRunAttempt,
@@ -74,7 +75,7 @@ function buildFixture({ repository, name, pr }) {
       // not the degraded fallback.
       return response({ workflow_runs: [] });
     }
-    if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=')) {
+    if (url.includes(`/contents/${callerPath}?ref=`)) {
       return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
     }
     throw new Error(`unexpected URL ${url}`);
@@ -285,6 +286,7 @@ test('immutable caller contract rejects inherited or provider credentials and di
 test('workflow contract delegates promoted v1 bytes and keeps provider secrets in the central job', () => {
   const receiver = readFileSync(new URL('../.github/workflows/repository-dispatch.yml', import.meta.url), 'utf8');
   const reusable = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
+  const selfReview = readFileSync(new URL('../.github/workflows/ct-review-bot.yml', import.meta.url), 'utf8');
 
   assert.match(receiver, /types:\s*\[review-yeti-request\]/u);
   assert.match(receiver, /run-name:\s*Review Yeti central \/ \$\{\{ github\.event\.client_payload\.request_id \}\}/u);
@@ -301,6 +303,12 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(reusable, /GH_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \|\| github\.token \}\}/u);
   assert.doesNotMatch(reusable, /secrets\.CROSS_REPO_TOKEN/u);
   assert.doesNotMatch(reusable, /workflow_call:[\s\S]{0,1200}OLLAMA_PR_REVIEW_API_KEY/u);
+  assert.match(selfReview, /repos\/exampleorg\/example-review-actions\/dispatches/u);
+  assert.match(selfReview, /CENTRAL_EVENT_TYPE:\s*review-yeti-request/u);
+  assert.match(selfReview, /create-github-app-token@[0-9a-f]{40}/u);
+  assert.match(selfReview, /types:\s*\[opened, synchronize, reopened, ready_for_review, labeled, unlabeled\]/u);
+  assert.doesNotMatch(selfReview, /review-yeti\.yml@|secrets\s*:\s*inherit|OPENROUTER|FIREWORKS|GEMINI|OLLAMA_PR_REVIEW/u);
+  assert.equal((reusable.match(/^\s+max-file-diff-chars:/gmu) || []).length, 1);
 });
 
 

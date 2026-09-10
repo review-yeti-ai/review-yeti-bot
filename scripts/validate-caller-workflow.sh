@@ -11,15 +11,9 @@ sha_re='^[0-9a-fA-F]{40,64}$'
 [[ "$REVIEW_REPOSITORY" =~ $repo_re ]] || { echo "::error::repository is invalid"; exit 1; }
 [[ "$EXPECTED_BASE_SHA" =~ $sha_re ]] || { echo "::error::base-sha is invalid"; exit 1; }
 
-if [[ "$REVIEW_REPOSITORY" == 'exampleorg/example-review-actions' ]]; then
-  caller_workflow='.github/workflows/self-review.yml'
-  central_ref="${CENTRAL_REF:-main}"
-  [[ "$central_ref" == main ]] || { echo "::error::central self-review must use the development ref main"; exit 1; }
-else
-  caller_workflow='.github/workflows/ct-review-bot.yml'
-  central_ref="${CENTRAL_REF:-v1}"
-  [[ "$central_ref" =~ ^v[0-9]+$ ]] || { echo "::error::central-ref must be a platform-owned major release ref such as v1"; exit 1; }
-fi
+caller_workflow='.github/workflows/ct-review-bot.yml'
+central_ref="${CENTRAL_REF:-v1}"
+[[ "$central_ref" =~ ^v[0-9]+$ ]] || { echo "::error::central-ref must be a platform-owned major release ref such as v1"; exit 1; }
 
 # pull_request_target always executes the copy of the caller workflow that lives at the PR's base
 # branch/commit (EXPECTED_BASE_SHA), never the repository's default branch. Validating any other
