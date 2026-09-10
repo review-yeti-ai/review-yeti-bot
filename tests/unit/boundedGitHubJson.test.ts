@@ -39,6 +39,14 @@ describe('bounded GitHub JSON transport', () => {
     await expect(client.request('/graphql')).rejects.toThrow('exceeded the byte limit');
   });
 
+  it('rejects a non-conforming redirected response even when its status is 200', async () => {
+    const redirected = new Response('{}', { status: 200 });
+    Object.defineProperty(redirected, 'redirected', { value: true });
+    const fetchImplementation = vi.fn(async () => redirected) as typeof fetch;
+    const client = createBoundedGitHubJsonClient({ token: 'ghs_test', fetchImplementation });
+    await expect(client.request('/graphql')).rejects.toThrow('GitHub JSON request failed with HTTP 200');
+  });
+
   it('cancels a chunked response as soon as the streaming byte cap is crossed', async () => {
     const cancel = vi.fn();
     let sent = 0;
