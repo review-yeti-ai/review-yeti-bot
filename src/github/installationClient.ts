@@ -480,7 +480,6 @@ export class GitHubInstallationClient {
       throw new Error('Abandoned check failure publication refused or unavailable');
     }
   }
-  }
 
   /**
    * `text` and `annotations` are part of the check-run output and need only
