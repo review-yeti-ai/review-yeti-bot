@@ -74,6 +74,7 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
       server = null;
     }
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   // =========================================================================
@@ -90,7 +91,12 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
       const mockEs = MockEventSource.instances[MockEventSource.instances.length - 1];
       expect(mockEs).toBeDefined();
 
-      const startTime = performance.now();
+      const scheduledFrames: FrameRequestCallback[] = [];
+      const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+        scheduledFrames.push(callback);
+        return scheduledFrames.length;
+      });
+      vi.stubGlobal('requestAnimationFrame', requestFrame);
 
       await act(async () => {
         for (let i = 1; i <= 100; i++) {
@@ -102,12 +108,17 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
             data: { chunk: `Token chunk #${i} for vulnerability scanning`, promptTokens: 1, completionTokens: 1 },
           });
         }
-        await new Promise((resolve) => setTimeout(resolve, 40));
       });
 
-      const flushDuration = performance.now() - startTime;
+      // All events in the burst must share one scheduled frame. Driving that
+      // frame directly proves the batching deadline without comparing wall-clock
+      // time on a contended CI runner.
+      expect(requestFrame).toHaveBeenCalledTimes(1);
+      expect(scheduledFrames).toHaveLength(1);
+      await act(async () => {
+        scheduledFrames[0](performance.now());
+      });
 
-      expect(flushDuration).toBeLessThan(100);
       expect(result.current.events).toHaveLength(100);
       expect(result.current.tokenMetrics.completionTokens).toBe(100);
       expect(result.current.personaProgress.security.status).toBe('IN PROGRESS');
