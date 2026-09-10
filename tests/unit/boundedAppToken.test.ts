@@ -14,13 +14,14 @@ const token = 'ghs_test';
 const expiresAt = '2099-01-01T00:00:00.000Z';
 const failureMessage = 'Repository App token is unavailable';
 
-function tokenBody(mode: 'read' | 'publish' = 'read') {
+function tokenBody(mode: 'read' | 'publish' | 'merge-group' = 'read') {
   return { token, expires_at: expiresAt, permissions: mode === 'read'
     ? { contents: 'read', pull_requests: 'read', metadata: 'read' }
-    : { checks: 'write', metadata: 'read' } };
+    : mode === 'publish' ? { checks: 'write', metadata: 'read' }
+      : { checks: 'write', contents: 'read', pull_requests: 'read', merge_queues: 'read', metadata: 'read' } };
 }
 
-function fetchStub(mode: 'read' | 'publish' = 'read') {
+function fetchStub(mode: 'read' | 'publish' | 'merge-group' = 'read') {
   return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
     new Response(JSON.stringify(String(input).endsWith('/installation') ? { id: 987 } : tokenBody(mode)), { status: 200 }));
 }
@@ -53,7 +54,7 @@ describe('getBoundedRepositoryToken', () => {
     try { expect(vi.getTimerCount()).toBe(0); } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
   });
 
-  it.each(['read', 'publish'] as const)('reuses actual %s minter with exact repo grants and bounded HTTPS requests', async (mode) => {
+  it.each(['read', 'publish', 'merge-group'] as const)('reuses actual %s minter with exact repo grants and bounded HTTPS requests', async (mode) => {
     const fetchImplementation = fetchStub(mode);
     const before = { ...config };
     const result = await getBoundedRepositoryToken(Object.freeze({ ...config }), mode, { fetchImplementation });
@@ -73,7 +74,9 @@ describe('getBoundedRepositoryToken', () => {
     expect(fetchImplementation.mock.calls[0][1]?.method).toBe('GET');
     expect(fetchImplementation.mock.calls[1][1]?.method).toBe('POST');
     expect(JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body))).toEqual({ repositories: [config.repo],
-      permissions: mode === 'read' ? { contents: 'read', pull_requests: 'read' } : { checks: 'write' } });
+      permissions: mode === 'read' ? { contents: 'read', pull_requests: 'read' }
+        : mode === 'publish' ? { checks: 'write' }
+          : { checks: 'write', contents: 'read', pull_requests: 'read', merge_queues: 'read' } });
   });
 
   it('retains the explicit standard GitHub default without caching across calls', async () => {

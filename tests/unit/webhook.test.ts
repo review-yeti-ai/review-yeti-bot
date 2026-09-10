@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import crypto from 'crypto';
 import express from 'express';
@@ -9,6 +9,7 @@ import {
 } from '../../src/github/signature';
 import { createWebhookServer, createWebhookRouter } from '../../src/github/webhookServer';
 import { GitHubEventHandler } from '../../src/github/eventHandler';
+import { logger } from '../../src/utils/logger';
 
 describe('Milestone 4: Webhook Signature & Webhook Server Unit Tests', () => {
   const secret = 'test-secret-key-12345';
@@ -147,14 +148,23 @@ describe('Milestone 4: Webhook Signature & Webhook Server Unit Tests', () => {
     });
 
     it('returns HTTP 401 Unauthorized when signature is invalid', async () => {
-      const res = await request(app)
-        .post('/webhook')
-        .set('X-GitHub-Event', 'pull_request')
-        .set('X-Hub-Signature-256', 'sha256=invalid123')
-        .send({ action: 'opened' });
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as any);
+      try {
+        const res = await request(app)
+          .post('/webhook')
+          .set('X-GitHub-Event', 'pull_request')
+          .set('X-Hub-Signature-256', 'sha256=invalid123')
+          .send({ action: 'opened' });
 
-      expect(res.status).toBe(401);
-      expect(res.body).toEqual({ error: 'Invalid or missing signature' });
+        expect(res.status).toBe(401);
+        expect(res.body).toEqual({ error: 'Invalid or missing signature' });
+        const logged = JSON.stringify(warn.mock.calls);
+        expect(logged).toContain('signaturePresent');
+        expect(logged).not.toContain(secret.slice(0, 4));
+        expect(logged).not.toContain(secret.slice(-4));
+        expect(warn.mock.calls.at(-1)?.[1]).not.toHaveProperty('resolvedSecretLength');
+        expect(warn.mock.calls.at(-1)?.[1]).not.toHaveProperty('resolvedSecretMasked');
+      } finally { warn.mockRestore(); }
     });
 
     it('returns HTTP 200 OK with status pong for ping event', async () => {
