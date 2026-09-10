@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "da93c8550e5f3d40ace4d5362e199544be2e4f4256e0781e79d59f8a859f89dd",
+  "normalized_plan_sha256": "85c896dfb782dee014144398c889ab7c64961661a0a9a6a715fb657b30b9517e",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -59,7 +59,7 @@
           "data_collection": "not-declared"
         },
         "capacity": {
-          "max_in_flight": 10,
+          "max_in_flight": 4,
           "concurrency_scope": "provider",
           "wait_timeout_ms": 30000
         },

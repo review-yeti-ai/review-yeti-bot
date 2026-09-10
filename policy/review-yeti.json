@@ -34,7 +34,7 @@
         "max_wall_clock_ms": 900000,
         "stream": true,
         "dispatch_weight": 1,
-        "max_in_flight": 10,
+        "max_in_flight": 4,
         "concurrency_scope": "provider",
         "capacity_wait_timeout_ms": 30000,
         "rate_limit": {

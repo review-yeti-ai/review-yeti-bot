@@ -54,6 +54,13 @@ fi
 
 if [[ "$REVIEW_STATUS" == "DISPATCHED" && "$GATE_DECISION" == "PENDING" ]]; then
   echo "::notice::Review Yeti dispatched asynchronously to DOKS queue. Verdict enforcement will be reported via Review Yeti GitHub App gate."
+  if [[ -f "$(dirname "${BASH_SOURCE[0]}")/otel-metrics.mjs" ]]; then
+    node "$(dirname "${BASH_SOURCE[0]}")/otel-metrics.mjs" emit-dispatch \
+      --repo "$REVIEW_REPOSITORY" \
+      --pr "$REVIEW_PR_NUMBER" \
+      --status "success" \
+      --backend "kubernetes" >/dev/null 2>&1 || true
+  fi
   exit 0
 fi
 
@@ -231,4 +238,14 @@ if [[ "$lane_count" -eq 0 ]]; then
   fi
 else
   echo "Review Yeti SHIP/PASS accepted for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
+fi
+
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/otel-metrics.mjs" ]]; then
+  node "$(dirname "${BASH_SOURCE[0]}")/otel-metrics.mjs" emit-verdict \
+    --repo "$REVIEW_REPOSITORY" \
+    --pr "$REVIEW_PR_NUMBER" \
+    --verdict "$REVIEW_STATUS" \
+    --p0 "${p0_count:-0}" \
+    --p1 "${p1_count:-0}" \
+    --p2 "${p2_count:-0}" >/dev/null 2>&1 || true
 fi

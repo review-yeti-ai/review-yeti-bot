@@ -746,8 +746,8 @@ transports = json.loads('\n'.join(lines[start + 1:end]))
 if [transport['name'] for transport in transports] != ['bifrost', 'openrouter-primary']:
     raise SystemExit('Example API must emit Bifrost primary plus OpenRouter fleet fallback (REL-710)')
 bifrost = transports[0]
-if (bifrost.get('max_in_flight'), bifrost.get('concurrency_scope'), bifrost.get('capacity_wait_timeout_ms'), bifrost.get('connect_timeout_ms'), bifrost.get('max_wall_clock_ms')) != (10, 'provider', 30000, 90000, 900000):
-    raise SystemExit('Example API Bifrost admission must cover the 10-lane ceiling, a 90s connect deadline, and a 15-minute live thinking stream')
+if (bifrost.get('max_in_flight'), bifrost.get('concurrency_scope'), bifrost.get('capacity_wait_timeout_ms'), bifrost.get('connect_timeout_ms'), bifrost.get('max_wall_clock_ms')) != (4, 'provider', 30000, 90000, 900000):
+    raise SystemExit('Example API Bifrost admission must cover the 4-lane ceiling, a 90s connect deadline, and a 15-minute live thinking stream')
 PY
 echo "[cisco-bifrost-primary] passed"
 
@@ -765,8 +765,8 @@ end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].s
 transports = json.loads('\n'.join(lines[start + 1:end]))
 if [transport['name'] for transport in transports] != ['bifrost', 'openrouter-primary']:
     raise SystemExit(f'{sys.argv[2]} must emit Bifrost primary plus OpenRouter fleet fallback (REL-710)')
-if transports[0].get('max_in_flight') != 10 or transports[0].get('connect_timeout_ms') != 90000:
-    raise SystemExit(f'{sys.argv[2]} Bifrost admission must cover the 10-lane ceiling and a 90s connect deadline')
+if transports[0].get('max_in_flight') != 4 or transports[0].get('connect_timeout_ms') != 90000:
+    raise SystemExit(f'{sys.argv[2]} Bifrost admission must cover the 4-lane ceiling and a 90s connect deadline')
 PY
   echo "[$repo bifrost-primary] passed"
 done

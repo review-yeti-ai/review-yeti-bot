@@ -200,11 +200,11 @@ export function validatePolicy(policy, repository = '') {
   if (!Number.isSafeInteger(bifrost.max_tokens) || bifrost.max_tokens < 32768) {
     throw new Error('Bifrost must declare an explicit completion budget of at least 32768 tokens');
   }
-  if (bifrost.max_in_flight !== 10
+  if (bifrost.max_in_flight !== 4
       || bifrost.concurrency_scope !== 'provider'
       || bifrost.capacity_wait_timeout_ms !== 30000
       || bifrost.dispatch_weight !== 1) {
-    throw new Error('Bifrost must use a 10-lane provider-scoped ceiling and a bounded 30-second capacity wait');
+    throw new Error('Bifrost must use a 4-lane provider-scoped ceiling and a bounded 30-second capacity wait');
   }
   if (bifrost.max_wall_clock_ms !== 900000) {
     throw new Error('Bifrost must allow a 15-minute live thinking stream');

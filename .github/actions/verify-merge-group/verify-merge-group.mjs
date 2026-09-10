@@ -6,6 +6,7 @@ import {
   QUALIFYING_MERGE_QUEUE_STATES,
 } from '../../../scripts/review-check-contract.mjs';
 import { assertAdmittedRepository } from '../../../scripts/validate-central-dispatch.mjs';
+import { emitMergeGroupMetric } from '../../../scripts/otel-metrics.mjs';
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const QUEUE_QUERY = 'query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id entries(first:100){nodes{position state baseCommit{oid} headCommit{oid} pullRequest{number state baseRefName headRefOid repository{nameWithOwner}}} pageInfo{hasNextPage}}}}}';
@@ -201,6 +202,7 @@ async function completeSyntheticCheck({ repository, checkId, token, fetchImpl = 
 }
 
 export async function runMergeGroupGate(options, runtimeFetch = globalThis.fetch) {
+  const startTime = Date.now();
   const identityFailure = mergeGroupIdentityFailure(options);
   if (identityFailure) return { failures: [identityFailure], entries: [] };
   const resolvedOptions = { ...options, fetchImpl: options.fetchImpl || runtimeFetch };
@@ -221,6 +223,15 @@ export async function runMergeGroupGate(options, runtimeFetch = globalThis.fetch
     });
   } catch {
     throw new Error('Review Yeti synthetic check could not be completed');
+  }
+  try {
+    await emitMergeGroupMetric({
+      repository: options.repository,
+      result: (result.failures?.length || 0) === 0 ? 'approved' : 'rejected',
+      durationMs: Date.now() - startTime,
+    });
+  } catch {
+    // Fail open
   }
   return { ...result, checkId };
 }

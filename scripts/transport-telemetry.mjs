@@ -19,6 +19,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import { loadPolicy, probeTransport } from './review-yeti-smoke.mjs';
+import { emitProviderMetric } from './otel-metrics.mjs';
 
 import { isEntrypoint } from './entrypoint-guard.mjs';
 export const TELEMETRY_SCHEMA = 'exampleorg.review-yeti.transport-telemetry.v1';
@@ -107,6 +108,22 @@ async function main() {
     || resolve(process.env.RUNNER_TEMP || '.', 'transport-telemetry', `${runId}.jsonl`);
   writeLedger(records, outputPath);
   console.log(`[transport-telemetry] wrote ${records.length} record(s) to ${outputPath}`);
+
+  try {
+    for (const record of records) {
+      if (record.outcome === 'skipped') continue;
+      await emitProviderMetric({
+        provider: record.transport,
+        model: record.model,
+        ttftMs: record.ttft_ms,
+        totalMs: record.total_ms,
+        errorType: record.failure_class,
+        status: record.outcome === 'healthy' ? 'success' : 'error',
+      });
+    }
+  } catch {
+    // Fail open
+  }
 
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, `ledger-path=${outputPath}\n`);

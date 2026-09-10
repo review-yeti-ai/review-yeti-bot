@@ -82,9 +82,11 @@ function policyFixture() {
       ? 2
       : transport.name === 'synthetic'
         ? 5
-        : (transport.name === 'ollama' || transport.name === 'bifrost')
-          ? 10
-          : 1;
+        : transport.name === 'bifrost'
+          ? 4
+          : transport.name === 'ollama'
+            ? 10
+            : 1;
     transport.concurrency_scope = transport.name === 'synthetic' ? 'model' : 'provider';
     transport.capacity_wait_timeout_ms = transport.name === 'openrouter-primary'
       ? 180000
@@ -152,7 +154,7 @@ test('Example API resolves Bifrost primary plus OpenRouter fleet fallback and a 
   assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER);
   assert.equal(resolved.review_yeti.dispatch_mode, 'ordered');
   assert.equal(transports[0].name, 'bifrost');
-  assert.equal(transports[0].max_in_flight, 10);
+  assert.equal(transports[0].max_in_flight, 4);
   assert.equal(transports[0].concurrency_scope, 'provider');
   assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
   assert.equal(transports[0].connect_timeout_ms, 90000);
@@ -227,7 +229,7 @@ test('the Ollama repository set is retired — every repository inherits the sam
     const transports = validatePolicy(resolved, repository);
     assert.deepEqual(transports.map((transport) => transport.name), EXAMPLE_API_TRANSPORT_ORDER, repository);
     assert.equal(resolved.review_yeti.dispatch_mode, 'ordered', repository);
-    assert.equal(transports[0].max_in_flight, 10, repository);
+    assert.equal(transports[0].max_in_flight, 4, repository);
     assert.equal(transports[0].connect_timeout_ms, 90000, repository);
   }
 });

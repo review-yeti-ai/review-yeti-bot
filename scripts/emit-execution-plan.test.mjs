@@ -46,7 +46,7 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.equal(bifrost.reasoning.wire_shape, 'reasoning_effort');
   assert.equal(bifrost.model, 'ollama/glm-5.3-flash');
   assert.deepEqual(bifrost.capacity, {
-    max_in_flight: 10,
+    max_in_flight: 4,
     concurrency_scope: 'provider',
     wait_timeout_ms: 30000,
   });
@@ -98,7 +98,7 @@ test('Every repository emits Bifrost primary plus OpenRouter fleet fallback', ()
   assert.deepEqual(ciscoPlan.transport_order, ['bifrost', 'openrouter-primary']);
   assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { bifrost: 1, 'openrouter-primary': 2 } });
   assert.deepEqual(ciscoPlan.transports[0].capacity, {
-    max_in_flight: 10,
+    max_in_flight: 4,
     concurrency_scope: 'provider',
     wait_timeout_ms: 30000,
   });

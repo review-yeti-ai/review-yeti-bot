@@ -55,6 +55,8 @@ jobs:
           node --check scripts/annotate-transport-failover.test.mjs
           node --check scripts/align-panel-seed-key.mjs
           node --check scripts/align-panel-seed-key.test.mjs
+          node --check scripts/otel-metrics.mjs
+          node --check scripts/otel-metrics.test.mjs
           GITHUB_OUTPUT="$RUNNER_TEMP/policy-output" node scripts/emit-policy.mjs
           node scripts/emit-execution-plan.mjs --check
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output" || { echo "::error::emit-policy.mjs did not emit action_ref"; exit 1; }
@@ -114,6 +116,7 @@ jobs:
           node --test scripts/transport-telemetry.test.mjs
           node --test scripts/transport-telemetry-report.test.mjs
           node --test scripts/annotate-transport-failover.test.mjs
+          node --test scripts/otel-metrics.test.mjs
           test -s policy/review-yeti.json
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "gemini"' policy/review-yeti.json
