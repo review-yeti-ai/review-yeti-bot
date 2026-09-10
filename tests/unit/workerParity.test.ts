@@ -48,7 +48,7 @@ describe('GHA and DOKS Worker Configuration Policy Parity', () => {
     expect(config.reviewers.providers[0].model).toBe('ollama/glm-5.3-flash');
   });
 
-  it('strictly caps max investigation turns at 3', () => {
+  it('strictly caps max investigation turns at 5', () => {
     const highTurnPolicy = JSON.stringify({
       review_yeti: {
         personas: 'security,performance',
@@ -59,6 +59,6 @@ describe('GHA and DOKS Worker Configuration Policy Parity', () => {
       { NODE_ENV: 'test', REVIEW_YETI_POLICY_JSON: highTurnPolicy },
       transport,
     );
-    expect(config.default_max_turns).toBe(3);
+    expect(config.default_max_turns).toBe(5);
   });
 });
