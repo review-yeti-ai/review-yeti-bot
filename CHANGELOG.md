@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.51.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.51.1...v1.51.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **panel:** do not inline PR diffs; agents explore by SHA ([#669](https://github.com/review-yeti-ai/review-yeti-bot/issues/669)) ([cdcdb2d](https://github.com/review-yeti-ai/review-yeti-bot/commit/cdcdb2df647718ae388d8aaf0013325a1e7b46c8))
+
 ## [1.51.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.51.0...v1.51.1) (2026-09-10)
 
 
