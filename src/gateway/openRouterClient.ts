@@ -222,8 +222,6 @@ type OpenRouterSdkClient = {
   getRawJson?: () => Promise<any>;
   /** A one-shot buffered response used only for explicitly supported compatible envelopes. */
   getRawResponse?: () => Promise<Response | null>;
-  /** Cancel the unused compatibility clone so SDK stream cancellation reaches the upstream body. */
-  cancelRawResponse?: (reason: string) => void;
 };
 
 type OpenRouterSdkModule = {
@@ -931,6 +929,38 @@ function cancelLateBody(value: unknown, reason: string): void {
   } catch (_) {}
 }
 
+/** Own the body reader so abort cancels an active read, not just its waiting caller. */
+async function readResponseText(response: Response, signal?: AbortSignal): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return raceWithAbort(response.text(), signal);
+  const decoder = new TextDecoder();
+  let text = '';
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    cancellation ??= cancelReader(reader, 'response body cancellation');
+    return cancellation;
+  };
+  const onAbort = () => { void cancel(); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    while (true) {
+      if (signal?.aborted) throw timeoutErrorForSignal(signal);
+      const { done, value } = await raceWithAbort(reader.read(), signal);
+      // Cancelling a reader can resolve its pending read with done:true. Never turn that
+      // into a successful truncated body when cancellation and completion coincide.
+      if (signal?.aborted) throw timeoutErrorForSignal(signal);
+      if (done) return text + decoder.decode();
+      text += decoder.decode(value, { stream: true });
+    }
+  } catch (error) {
+    await cancel();
+    throw signal?.aborted ? timeoutErrorForSignal(signal) : error;
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    try { reader.releaseLock(); } catch (_) {}
+  }
+}
+
 async function readStreamingResponse(
   response: Response,
   requestedModel: string,
@@ -948,11 +978,7 @@ async function readStreamingResponse(
 ): Promise<any> {
   const contentType = response.headers?.get('content-type') || '';
   if (!contentType.includes('text/event-stream')) {
-    return raceWithAbort(
-      response.json(),
-      options?.signal,
-      () => cancelLateBody(response, 'request cancellation'),
-    );
+    return JSON.parse(await readResponseText(response, options?.signal));
   }
 
   const reader = response.body?.getReader();
@@ -1162,6 +1188,7 @@ async function readStreamingResponse(
   } finally {
     if (totalDeadlineTimer) clearTimeout(totalDeadlineTimer);
     if (streamSignal && onSignalAbort) streamSignal.removeEventListener('abort', onSignalAbort);
+    try { reader.releaseLock(); } catch (_) {}
   }
 
   const finalContent = state.content || state.reasoning || '';
@@ -1399,6 +1426,7 @@ async function readSdkStreamingResponse(
   } finally {
     if (totalTimer) clearTimeout(totalTimer);
     if (streamSignal && onSignalAbort) streamSignal.removeEventListener('abort', onSignalAbort);
+    try { reader.releaseLock(); } catch (_) {}
   }
 
   const finalContent = state.content || state.reasoning || '';
@@ -1501,11 +1529,7 @@ async function createOpenRouterSdkClient(options: {
       const isSse = contentType.includes('text/event-stream');
       if (!isSse) {
         try {
-          const text = await raceWithAbort(
-            response.text(),
-            sdkRequest.signal,
-            () => cancelLateBody(response, 'request deadline'),
-          );
+          const text = await readResponseText(response, sdkRequest.signal);
           let json: any = null;
           try {
             json = JSON.parse(text);
@@ -1560,7 +1584,6 @@ async function createOpenRouterSdkClient(options: {
   };
   client.getRawJson = async () => (rawJsonCapture ? rawJsonCapture.getJson() : null);
   client.getRawUsage = () => capturedJsonUsage;
-  client.cancelRawResponse = (_reason: string) => {};
   return client;
 }
 
@@ -1727,11 +1750,7 @@ export class OpenRouterClient implements ReviewModelClient {
         if (!response.ok) {
           let errorBody = '';
           try {
-            errorBody = await raceWithAbort(
-              response.text(),
-              requestAbortController.signal,
-              () => cancelLateBody(response, 'request deadline'),
-            );
+            errorBody = await readResponseText(response, requestAbortController.signal);
           } catch (error) {
             if (error instanceof OpenRouterTimeoutError) throw error;
           }
