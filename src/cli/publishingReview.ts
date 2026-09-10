@@ -535,6 +535,8 @@ export async function runPublishingReviewWorker(
       changedFiles,
       repository: identity.repo,
       headSha: identity.headSha,
+      baseSha: identity.baseSha,
+      prNumber: identity.prNumber,
       repositoryVisibility,
       client,
       jobId: identity.runId,
