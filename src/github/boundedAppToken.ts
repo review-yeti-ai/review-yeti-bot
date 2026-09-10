@@ -4,13 +4,16 @@ import {
   getGitHubAppInstallationIdForRepository,
   type GitHubRepositoryInstallationConfig, type InstallationTokenResult,
 } from './appAuth';
+import {
+  APP_TOKEN_TIMEOUT_LIMITS, isGitHubInstallationToken, PUBLIC_GITHUB_API_BASE_URL,
+} from './githubTransportPolicy';
 
 export const MAX_APP_TOKEN_RESPONSE_BYTES = 64 * 1024;
 
 function unavailable(): Error { return new Error('Repository App token is unavailable'); }
 
 /** Validate before startup accepts traffic, as well as before signing requests. */
-export function validateGitHubAppApiBaseUrl(value: string = 'https://api.github.com'): string {
+export function validateGitHubAppApiBaseUrl(value: string = PUBLIC_GITHUB_API_BASE_URL): string {
   try {
     if (typeof value !== 'string' || value.length > 2_000
       || /[\u0000-\u0020\u007f\\?#]/u.test(value)) throw unavailable();
@@ -44,7 +47,7 @@ export async function getBoundedRepositoryToken(
     const minter = mode === 'read' ? getGitHubAppRepositoryReadToken
       : mode === 'publish' ? getGitHubAppRepositoryPublishToken : getGitHubAppRepositoryMergeGroupToken;
     const result = await minter(selected, boundedFetch);
-    if (!/^ghs_[A-Za-z0-9_]+$/u.test(result.token)) throw unavailable();
+    if (!isGitHubInstallationToken(result.token)) throw unavailable();
     return result;
   });
 }
@@ -72,14 +75,15 @@ async function withBoundedRepositoryTransport<T>(
   const signal = options.signal;
   try {
     const timeoutMs = options.timeoutMs ?? 10_000;
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10_000
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < APP_TOKEN_TIMEOUT_LIMITS.minimumMs
+      || timeoutMs > APP_TOKEN_TIMEOUT_LIMITS.maximumMs
       || signal?.aborted) throw unavailable();
     const deadline = performance.now() + timeoutMs;
     const checkDeadline = () => {
       if (controller.signal.aborted || signal?.aborted || performance.now() >= deadline) throw unavailable();
     };
     const selected = { appId: config.appId, privateKey: config.privateKey, owner: config.owner, repo: config.repo,
-      baseUrl: config.baseUrl ?? 'https://api.github.com' };
+      baseUrl: config.baseUrl ?? PUBLIC_GITHUB_API_BASE_URL };
     if (typeof selected.appId !== 'string' || !/^[1-9][0-9]*$/u.test(selected.appId)
       || !Number.isSafeInteger(Number(selected.appId)) || typeof selected.privateKey !== 'string' || !selected.privateKey
       || [selected.owner, selected.repo].some((value) => typeof value !== 'string'

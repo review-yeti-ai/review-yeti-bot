@@ -249,7 +249,7 @@ describe('native GitHub App webhook admission', () => {
         repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
       admission: { admit } as any,
       authoritativePublishing: {
-        expectedAppId: 4385771, acceptNewRequests: true, repositoryIds: [999], resolver: { resolve },
+        expectedAppId: 4385771, acceptNewRequests: false, repositoryIds: [999], resolver: { resolve },
       } as any,
     });
     const event = { eventName: 'pull_request', deliveryId: 'legacy',

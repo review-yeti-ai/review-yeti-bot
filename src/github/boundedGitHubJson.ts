@@ -1,3 +1,7 @@
+import {
+  GITHUB_JSON_TIMEOUT_LIMITS, isGitHubInstallationToken, PUBLIC_GITHUB_API_BASE_URL,
+} from './githubTransportPolicy';
+
 export const MAX_GITHUB_JSON_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 export interface GitHubJsonClient {
@@ -16,11 +20,12 @@ export function createBoundedGitHubJsonClient(options: {
   timeoutMs?: number;
 }): GitHubJsonClient {
   const fetchImpl = options.fetchImplementation || globalThis.fetch;
-  const baseUrl = (options.baseUrl || 'https://api.github.com').replace(/\/+$/u, '');
+  const baseUrl = (options.baseUrl || PUBLIC_GITHUB_API_BASE_URL).replace(/\/+$/u, '');
   const timeoutMs = options.timeoutMs ?? 15_000;
-  if (!/^ghs_[A-Za-z0-9_]+$/u.test(options.token)
-    || baseUrl !== 'https://api.github.com'
-    || !Number.isSafeInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > 30_000) {
+  if (!isGitHubInstallationToken(options.token)
+    || baseUrl !== PUBLIC_GITHUB_API_BASE_URL
+    || !Number.isSafeInteger(timeoutMs) || timeoutMs < GITHUB_JSON_TIMEOUT_LIMITS.minimumMs
+    || timeoutMs > GITHUB_JSON_TIMEOUT_LIMITS.maximumMs) {
     throw new Error('Bounded GitHub JSON transport configuration is invalid');
   }
   return { async request(path: string, init: RequestInit = {}): Promise<any> {

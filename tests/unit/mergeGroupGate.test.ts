@@ -26,15 +26,16 @@ function payload() {
   };
 }
 
-function queue(head = PR_HEAD) {
+function queue(head = PR_HEAD, trailingEntries: any[] = []) {
+  const nodes = [{
+    position: 1, state: 'AWAITING_CHECKS', baseCommit: { oid: BASE }, headCommit: { oid: GROUP_HEAD },
+    pullRequest: {
+      number: 42, state: 'OPEN', baseRefName: 'main', headRefOid: head,
+      repository: { nameWithOwner: 'calltelemetry/dashboard' },
+    },
+  }, ...trailingEntries];
   return { data: { repository: { mergeQueue: {
-    id: 'MQ_1', entries: { totalCount: 1, nodes: [{
-      position: 1, state: 'AWAITING_CHECKS', baseCommit: { oid: BASE }, headCommit: { oid: GROUP_HEAD },
-      pullRequest: {
-        number: 42, state: 'OPEN', baseRefName: 'main', headRefOid: head,
-        repository: { nameWithOwner: 'calltelemetry/dashboard' },
-      },
-    }], pageInfo: { hasNextPage: false } },
+    id: 'MQ_1', entries: { totalCount: nodes.length, nodes, pageInfo: { hasNextPage: false } },
   } } } };
 }
 
@@ -91,6 +92,31 @@ describe('native merge-group Review Yeti gate', () => {
     expect(JSON.parse(String(completion[1].body))).toEqual(expect.objectContaining({ status: 'completed', conclusion: 'success' }));
   });
 
+  it('qualifies only constituents at or ahead of the current queue entry', async () => {
+    const behindHead = 'd'.repeat(40);
+    const trailing = [{
+      position: 2, state: 'AWAITING_CHECKS', baseCommit: { oid: BASE }, headCommit: { oid: 'e'.repeat(40) },
+      pullRequest: { number: 43, state: 'OPEN', baseRefName: 'main', headRefOid: behindHead,
+        repository: { nameWithOwner: 'calltelemetry/dashboard' } },
+    }];
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return response({ id: 9013 });
+      if (url === 'https://api.github.com/graphql') return response(queue(PR_HEAD, trailing));
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({ total_count: 1, check_runs: [{
+        id: 8013, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success', app: officialApp,
+      }] });
+      if (url.endsWith('/check-runs/9013') && init?.method === 'PATCH') return response({ id: 9013 });
+      return response({}, 500);
+    }) as typeof fetch;
+    const gate = createMergeGroupGate({
+      config, repository: repository() as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
+    });
+    await expect(gate(payload())).resolves.toEqual({ checkId: 9013, conclusion: 'success', constituents: 1 });
+    expect((fetchImplementation as any).mock.calls.some(([url]: [unknown]) => String(url).includes(behindHead))).toBe(false);
+  });
+
   it('completes the created check as failure when queue evidence becomes unavailable', async () => {
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -136,11 +162,40 @@ describe('native merge-group Review Yeti gate', () => {
     const gate = createMergeGroupGate({
       config, repository: repository() as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
     });
+
     await expect(gate(payload())).resolves.toEqual({ checkId: 9004, conclusion: 'failure', constituents: 1 });
     const completion = (fetchImplementation as any).mock.calls.find(([url, init]: [unknown, RequestInit]) =>
       String(url).endsWith('/check-runs/9004') && init?.method === 'PATCH');
     expect(JSON.parse(String(completion[1].body)).output.summary).toContain(`PR #42: ${reason}`);
     });
+
+  it.each([
+    ['later success', [
+      { id: 10, status: 'completed', conclusion: 'failure' },
+      { id: 11, status: 'completed', conclusion: 'success' },
+    ], 'success'],
+    ['later failure', [
+      { id: 20, status: 'completed', conclusion: 'success' },
+      { id: 21, status: 'completed', conclusion: 'failure' },
+    ], 'failure'],
+  ])('uses the %s official check when multiple exact-head runs exist', async (_label, runs, expected) => {
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return response({ id: 9014 });
+      if (url === 'https://api.github.com/graphql') return response(queue());
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({
+        total_count: runs.length,
+        check_runs: runs.map((run) => ({ ...run, name: 'Review Yeti', head_sha: PR_HEAD, app: officialApp })),
+      });
+      if (url.endsWith('/check-runs/9014') && init?.method === 'PATCH') return response({ id: 9014 });
+      return response({}, 500);
+    }) as typeof fetch;
+    const gate = createMergeGroupGate({
+      config, repository: repository() as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
+    });
+    await expect(gate(payload())).resolves.toEqual({ checkId: 9014, conclusion: expected, constituents: 1 });
+  });
 
   it('fails when the merge queue changes between qualification reads', async () => {
     let graphqlReads = 0;
