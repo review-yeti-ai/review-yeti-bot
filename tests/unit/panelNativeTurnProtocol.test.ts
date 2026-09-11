@@ -270,6 +270,45 @@ describe('native panel turn protocol', () => {
     })).rejects.toThrow();
 
     expect(mockClient.complete.mock.calls.some(([request]: [any]) => request.metadata?.role === 'arbiter')).toBe(false);
+    expect(personaCalls(mockClient)).toHaveLength(4);
+  });
+
+  it('retries one fresh persona request after the bounded native JSON correction is still malformed', async () => {
+    let personaTurn = 0;
+    mockClient.complete.mockImplementation(async (request: any) => {
+      if (request.metadata?.role !== 'persona') return nonPersonaResponse(request);
+
+      personaTurn += 1;
+      if (personaTurn <= 2) {
+        return {
+          model: request.model,
+          content: personaTurn === 1
+            ? '{"nonce":"unterminated"'
+            : JSON.stringify({ nonce: 'wrong-after-correction', decision: 'APPROVE', findings: [] }),
+          usage: { prompt: 5, completion: 5, total: 10 },
+          costUSD: 0,
+          raw: {},
+        };
+      }
+      return response(request, { decision: 'APPROVE', findings: [] });
+    });
+
+    const result = await executePersonaPanel({
+      config: buildConfig(),
+      changedFiles: CHANGED_FILES,
+      repository: 'calltelemetry/review-yeti-bot',
+      headSha: 'native-fresh-request-retry',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_object' } },
+    });
+
+    expect(result.personas[0].decision).toBe('APPROVE');
+    const requests = personaCalls(mockClient);
+    expect(requests).toHaveLength(3);
+    expect(requests[1].messages.at(-1)?.content).toContain('STRUCTURED_OUTPUT_CORRECTION');
+    expect(requestNonce(requests[1])).toBe(requestNonce(requests[0]));
+    expect(requestNonce(requests[2])).not.toBe(requestNonce(requests[0]));
+    expect(requestText(requests[2])).not.toContain('STRUCTURED_OUTPUT_CORRECTION');
   });
 
   it('propagates caller abort and releases the active persona slot after a pending native request', async () => {

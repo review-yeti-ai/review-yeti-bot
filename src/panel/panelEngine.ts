@@ -245,6 +245,14 @@ export class PanelConfigurationError extends Error {
   }
 }
 
+/** The provider exhausted the in-conversation correction without a valid result object. */
+class PanelStructuredOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PanelStructuredOutputError';
+  }
+}
+
 /** A caller or worker stopped the panel before it produced a binding result. */
 export class PanelCancellationError extends PanelConfigurationError {
   constructor(message = 'review panel was cancelled') {
@@ -734,13 +742,13 @@ function parseFenced<T>(content: string, expectedNonce: string): T {
   const beginAt = content.indexOf(begin);
   const endAt = content.indexOf(end);
   if (beginAt < 0 || endAt < 0 || endAt <= beginAt || content.indexOf(begin, beginAt + begin.length) >= 0) {
-    throw new Error('invalid or missing nonce-fenced structured output');
+    throw new PanelStructuredOutputError('invalid or missing nonce-fenced structured output');
   }
   const json = content.slice(beginAt + begin.length, endAt).trim();
   try {
     return extractAndParseJson(json) as T;
   } catch {
-    throw new Error('invalid JSON inside nonce fence');
+    throw new PanelStructuredOutputError('invalid JSON inside nonce fence');
   }
 }
 
@@ -805,17 +813,17 @@ function parseNativeJsonObject<T>(content: string, expectedNonce: string): T {
   try {
     parsed = JSON.parse(nativeJsonContent(content));
   } catch {
-    throw new Error('invalid native JSON response object');
+    throw new PanelStructuredOutputError('invalid native JSON response object');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('native JSON response must be an object');
+    throw new PanelStructuredOutputError('native JSON response must be an object');
   }
   const candidate = parsed as Record<string, unknown>;
   if (candidate.nonce !== expectedNonce) {
-    throw new Error('invalid or missing native JSON nonce');
+    throw new PanelStructuredOutputError('invalid or missing native JSON nonce');
   }
   if (Object.prototype.hasOwnProperty.call(candidate, 'tool') || Object.prototype.hasOwnProperty.call(candidate, 'args')) {
-    throw new Error('native final response cannot contain tool envelope fields');
+    throw new PanelStructuredOutputError('native final response cannot contain tool envelope fields');
   }
   const { nonce: _nonce, ...result } = candidate;
   return result as T;
@@ -1920,6 +1928,15 @@ async function runPersona(
           if (Date.now() - personaStartedAt >= MAX_PERSONA_BUDGET_MS) {
             logger.warn(`[Persona: ${persona.id}] Total execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s exhausted; failing closed.`);
             errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s`);
+            break;
+          }
+          if (error instanceof PanelStructuredOutputError) {
+            errors.push(`${providerId}: ${error.message}`);
+            if (attempts < maxAttempts) {
+              logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' exhausted its structured-output correction; retrying one fresh request before failover.`);
+              continue;
+            }
+            logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' returned invalid structured output after the bounded fresh-request retry; failing over.`);
             break;
           }
           if (error instanceof PanelFindingsValidationError) {
