@@ -105,6 +105,24 @@ describe('progress event redaction boundary', () => {
     expect(result).not.toHaveProperty('data.completion_tokens');
   });
 
+  it('rejects an incomplete object tokensUsed shape', () => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({
+      tokensUsed: { prompt: 100 },
+    }, 'llm:token'), identity));
+
+    expect(rejection.code).toBe('invalid_field');
+    expect(rejection.field).toBe('tokensUsed');
+  });
+
+  it('rejects a string tokensUsed value', () => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({
+      tokensUsed: '130',
+    }, 'llm:token'), identity));
+
+    expect(rejection.code).toBe('invalid_field');
+    expect(rejection.field).toBe('tokensUsed');
+  });
+
   it('maps aggregate duration, finding, and cost fields to total fields', () => {
     const result = sanitizeProgressEvent(liveEvent({
       totalDurationMs: 2_400,
@@ -205,6 +223,17 @@ describe('progress event redaction boundary', () => {
     const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ unknownField: 'not allowed' }), identity));
     expect(rejection.code).toBe('unknown_field');
     expect(rejection.field).toBe('unknownField');
+  });
+
+  it('rejects an unknown top-level live event field and names it', () => {
+    const event = {
+      ...liveEvent({}),
+      tenantSecret: 'must not cross',
+    };
+
+    const rejection = rejectionOf(sanitizeProgressEvent(event, identity));
+    expect(rejection.code).toBe('unknown_field');
+    expect(rejection.field).toBe('tenantSecret');
   });
 
   it.each([
