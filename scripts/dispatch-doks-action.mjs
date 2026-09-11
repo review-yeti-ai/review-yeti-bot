@@ -28,14 +28,9 @@ function positiveInteger(environment, name) {
   return value;
 }
 
-function parseExpectedGeneration(environment, requiredForCentralAppGate) {
+function parseExpectedGeneration(environment) {
   const raw = String(environment.EXPECTED_GENERATION || '').trim();
-  if (!raw) {
-    if (requiredForCentralAppGate) {
-      throw new Error('Expected generation is required for central app-gate dispatch');
-    }
-    return undefined;
-  }
+  if (!raw) return undefined;
   const value = Number(raw);
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error('Expected generation must be a positive integer');
@@ -91,10 +86,7 @@ export function buildDispatchRequest(environment) {
   }
   const eventName = required(environment, 'GITHUB_EVENT_NAME');
   if (!SUPPORTED_EVENTS.has(eventName)) throw new Error(`GitHub event ${eventName} is not supported for DOKS dispatch`);
-  const expectedGeneration = parseExpectedGeneration(
-    environment,
-    publishMode === 'app-gate' && eventName === 'repository_dispatch',
-  );
+  const expectedGeneration = parseExpectedGeneration(environment);
 
   const repositoryId = positiveInteger(environment, 'REPOSITORY_ID');
   const prNumber = positiveInteger(environment, 'PR_NUMBER');

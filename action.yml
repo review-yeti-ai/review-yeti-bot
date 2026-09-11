@@ -85,8 +85,9 @@ inputs:
     default: 'app-gate'
   expected-generation:
     description: >-
-      One-based review generation admitted by the central Review Yeti App gate. Required for
-      repository_dispatch app-gate execution and transactionally matched to durable service state.
+      One-based review generation admitted by the central Review Yeti App gate. Required for trusted
+      central repository_dispatch app-gate execution and transactionally matched to durable service
+      state; verified direct repository dispatches remain compatible without it.
     required: false
     default: ''
   openrouter-allowed-models:

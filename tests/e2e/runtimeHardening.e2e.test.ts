@@ -215,6 +215,7 @@ function sampleAdmissionInput(): ReviewAdmissionInput {
     terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
     payloadDigest: 'f'.repeat(64),
     publicationMode: 'disabled' as const,
+    centralActionDispatch: false,
     identity: sampleIdentity,
   };
 }
