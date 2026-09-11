@@ -56,8 +56,32 @@ describe('DOKS Action dispatch client', () => {
     const { buildDispatchRequest } = await import(modulePath);
     const request = buildDispatchRequest(environment({
       GITHUB_EVENT_NAME: 'repository_dispatch',
+      DOKS_PUBLISH_MODE: 'app-gate',
+      EXPECTED_GENERATION: '3',
     }));
     expect(request.caller.eventName).toBe('repository_dispatch');
+    expect(request.expectedGeneration).toBe(3);
+  });
+
+  it.each(['', '0', '-1', '1.5', 'three'])(
+    'rejects missing or invalid expected generation %j for central app-gate dispatch',
+    async (expectedGeneration) => {
+      const { buildDispatchRequest } = await import(modulePath);
+      expect(() => buildDispatchRequest(environment({
+        GITHUB_EVENT_NAME: 'repository_dispatch',
+        DOKS_PUBLISH_MODE: 'app-gate',
+        EXPECTED_GENERATION: expectedGeneration,
+      }))).toThrow(/expected generation/i);
+    },
+  );
+
+  it('does not require an expected generation outside central app-gate admission', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    expect(buildDispatchRequest(environment()).expectedGeneration).toBeUndefined();
+    expect(buildDispatchRequest(environment({
+      GITHUB_EVENT_NAME: 'repository_dispatch',
+      DOKS_PUBLISH_MODE: 'disabled',
+    })).expectedGeneration).toBeUndefined();
   });
 
   it('accepts only the fixed HTTPS dispatch origin and exact path', async () => {
@@ -215,6 +239,26 @@ describe('DOKS Action dispatch client', () => {
     await expect(dispatchAction(environment(), rejected, { sleep })).rejects.toThrow(/unknown repository_id 42/u);
     expect(rejected).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledTimes(2);
+
+    const invalidGeneration = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: 'Invalid Action dispatch request', invalidFields: ['expectedGeneration'],
+      }), { status: 400 }));
+    await expect(dispatchAction(environment(), invalidGeneration, { sleep }))
+      .rejects.toThrow(/expectedGeneration/u);
+    expect(invalidGeneration).toHaveBeenCalledTimes(2);
+
+    const conflict = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: 'Expected review generation does not match durable service state',
+        expectedGeneration: 3,
+        durableGeneration: 1,
+      }), { status: 409 }));
+    await expect(dispatchAction(environment(), conflict, { sleep }))
+      .rejects.toThrow(/expected review generation.*durable service state/i);
+    expect(conflict).toHaveBeenCalledTimes(2);
 
     const oidcSleep = vi.fn(async () => {});
     const oidcUnavailable = vi.fn()

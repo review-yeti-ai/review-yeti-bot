@@ -13,6 +13,7 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { actionDispatchDigestInput, type ActionDispatchRequest } from '../../src/review/actionDispatch';
 import { sha256 } from '../../src/review/reviewCore';
+import { ReviewGenerationConflictError } from '../../src/review/reviewRun';
 
 const body = {
   version: 'ActionDispatch.v1',
@@ -58,6 +59,7 @@ function app(overrides: Record<string, any> = {}) {
   instance.use('/api/dispatch', createActionDispatchRouter({
     verifier, admission, resolveInstallationId,
     allowAppGate: overrides.allowAppGate,
+    requireExpectedGeneration: overrides.requireExpectedGeneration,
     authoritativePublishing: overrides.authoritativePublishing,
     now: overrides.now,
   }));
@@ -192,6 +194,121 @@ describe('POST /api/dispatch/action', () => {
     });
   });
 
+  it('temporarily accepts a missing central app-gate generation while enforcement is disabled', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
+      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({ allowAppGate: true, verifier: { verify: vi.fn(async () => centralVerified) } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+      });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.not.objectContaining({ expectedGeneration: expect.anything() }));
+  });
+
+  it('rejects a missing central app-gate generation before admission when enforcement is enabled', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
+      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      allowAppGate: true,
+      requireExpectedGeneration: true,
+      verifier: { verify: vi.fn(async () => centralVerified) },
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: 'Invalid Action dispatch request',
+      invalidFields: ['expectedGeneration'],
+    });
+    expect(fixture.verifier.verify).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, 1.5, '3'])(
+    'rejects an invalid supplied expected generation %j before durable admission in compatibility mode',
+    async (expectedGeneration) => {
+      const centralVerified = {
+        repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+        run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
+        job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+        job_workflow_sha: 'd'.repeat(40),
+      };
+      const fixture = app({
+        allowAppGate: true,
+        requireExpectedGeneration: false,
+        verifier: { verify: vi.fn(async () => centralVerified) },
+      });
+      const response = await request(fixture.instance)
+        .post('/api/dispatch/action')
+        .set('Authorization', 'Bearer signed-oidc-token')
+        .send({
+          ...body,
+          publishMode: 'app-gate',
+          ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
+          caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({
+        error: 'Invalid Action dispatch request',
+        invalidFields: ['expectedGeneration'],
+      });
+      expect(fixture.admission.admit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'forwards an exact expected generation to the durable allocator with enforcement %s',
+    async (requireExpectedGeneration) => {
+      const centralVerified = {
+        repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+        run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
+        job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+        job_workflow_sha: 'd'.repeat(40),
+      };
+      const fixture = app({
+        allowAppGate: true,
+        requireExpectedGeneration,
+        verifier: { verify: vi.fn(async () => centralVerified) },
+      });
+      const response = await request(fixture.instance)
+        .post('/api/dispatch/action')
+        .set('Authorization', 'Bearer signed-oidc-token')
+        .send({
+          ...body,
+          publishMode: 'app-gate',
+          expectedGeneration: 3,
+          caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+        });
+
+      expect(response.status).toBe(202);
+      expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+        eventName: 'repository_dispatch', publicationMode: 'app-gate', expectedGeneration: 3,
+      }));
+    },
+  );
+
   it('keeps app-gate disabled unless the verifier explicitly authorizes it', async () => {
     const fixture = app();
     const response = await request(fixture.instance)
@@ -223,6 +340,20 @@ describe('POST /api/dispatch/action', () => {
     expect((await request(admissionFailure.instance).post('/api/dispatch/action').set('Authorization', 'Bearer token').send(body)).status).toBe(503);
   });
 
+  it('returns an actionable conflict when durable generation differs from central admission', async () => {
+    const fixture = app({ admission: {
+      admit: vi.fn(async () => { throw new ReviewGenerationConflictError(3, 1); }),
+    } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action').set('Authorization', 'Bearer token').send(body);
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      error: 'Expected review generation does not match durable service state',
+      expectedGeneration: 3,
+      durableGeneration: 1,
+    });
+  });
+
   it('accepts the real Action client request through real JWT verification without sending a provider key', async () => {
     const pair = await generateKeyPair('RS256');
     const jwk = await exportJWK(pair.publicKey);
@@ -244,7 +375,7 @@ describe('POST /api/dispatch/action', () => {
         allowAppGate: false,
       },
     });
-    const fixture = app({ verifier });
+    const fixture = app({ verifier: { verify: verifier.verify.bind(verifier) } });
     const fetchBridge = vi.fn(async (url: string | URL, init?: RequestInit) => {
       if (new URL(String(url)).hostname === 'token.actions.githubusercontent.com') {
         return new Response(JSON.stringify({ value: signed }), { status: 200 });
@@ -283,6 +414,63 @@ describe('POST /api/dispatch/action', () => {
     const admittedPayload = fixture.admission.admit.mock.calls[0][0];
     expect((admittedPayload as any).OPENROUTER_API_KEY).toBeUndefined();
     expect(JSON.stringify(admittedPayload)).not.toContain('must-not-cross-the-boundary');
+  });
+
+  it('carries the exact generation end to end from the Action through verified central app-gate admission', async () => {
+    const centralWorkflowRef = 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main';
+    const centralClaims = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: body.caller.runId, run_attempt: String(body.caller.runAttempt), event_name: 'repository_dispatch',
+      job_workflow_ref: centralWorkflowRef, job_workflow_sha: body.caller.workflowSha,
+    };
+    const pair = await generateKeyPair('RS256');
+    const jwk = await exportJWK(pair.publicKey);
+    const signed = await new SignJWT(centralClaims)
+      .setProtectedHeader({ alg: 'RS256', kid: 'central-integration-key' })
+      .setIssuer('https://token.actions.githubusercontent.com')
+      .setAudience('review-yeti-doks-dispatch')
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(pair.privateKey);
+    const verifier = new GitHubActionsOidcVerifier({
+      keySet: createLocalJWKSet({ keys: [{ ...jwk, kid: 'central-integration-key', alg: 'RS256', use: 'sig' }] }),
+      policy: {
+        repositoryIds: new Set(['99999']), ownerIds: new Set(['99']),
+        workflowRefs: new Set([centralWorkflowRef]), workflowShas: new Set([body.caller.workflowSha]),
+        allowedEvents: new Set(['repository_dispatch']), allowAppGate: true,
+      },
+    });
+    expect(await verifier.verify(signed)).toMatchObject(centralClaims);
+    const fixture = app({ verifier: { verify: verifier.verify.bind(verifier) }, allowAppGate: true });
+    const fetchBridge = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (new URL(String(url)).hostname === 'token.actions.githubusercontent.com') {
+        return new Response(JSON.stringify({ value: signed }), { status: 200 });
+      }
+      const serverResponse = await request(fixture.instance)
+        .post('/api/dispatch/action')
+        .set('Authorization', new Headers(init?.headers).get('authorization') || '')
+        .send(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(serverResponse.body), { status: serverResponse.status });
+    });
+    const { dispatchAction } = await import(path.resolve(__dirname, '../../scripts/dispatch-doks-action.mjs'));
+
+    const result = await dispatchAction({
+      DOKS_DISPATCH_URL: 'https://review-bot.calltelemetry.com/api/dispatch/action',
+      DOKS_OIDC_AUDIENCE: 'review-yeti-doks-dispatch', DOKS_PUBLISH_MODE: 'app-gate',
+      EXPECTED_GENERATION: '3', ACTION_SHA: body.actionSha,
+      REPOSITORY_ID: String(body.repositoryId), REPOSITORY: `${body.owner}/${body.repo}`,
+      PR_NUMBER: String(body.prNumber), HEAD_SHA: body.headSha, BASE_SHA: body.baseSha,
+      GITHUB_RUN_ID: body.caller.runId, GITHUB_RUN_ATTEMPT: String(body.caller.runAttempt),
+      GITHUB_EVENT_NAME: 'repository_dispatch', GITHUB_WORKFLOW_REF: centralWorkflowRef,
+      GITHUB_WORKFLOW_SHA: body.caller.workflowSha,
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://token.actions.githubusercontent.com/token',
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'actions-runtime-token',
+    }, fetchBridge);
+
+    expect(result.status).toBe('accepted');
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+      eventName: 'repository_dispatch', publicationMode: 'app-gate', expectedGeneration: 3,
+    }));
   });
 
   it('re-arms a previously failed run and returns status accepted with run.status queued', async () => {

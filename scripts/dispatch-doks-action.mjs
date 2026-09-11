@@ -28,6 +28,21 @@ function positiveInteger(environment, name) {
   return value;
 }
 
+function parseExpectedGeneration(environment, requiredForCentralAppGate) {
+  const raw = String(environment.EXPECTED_GENERATION || '').trim();
+  if (!raw) {
+    if (requiredForCentralAppGate) {
+      throw new Error('Expected generation is required for central app-gate dispatch');
+    }
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('Expected generation must be a positive integer');
+  }
+  return value;
+}
+
 function sha(environment, name) {
   const value = required(environment, name).toLowerCase();
   if (!SHA_PATTERN.test(value)) throw new Error(`${name.replaceAll('_', ' ').toLowerCase()} must be an exact 40-hex commit SHA`);
@@ -76,6 +91,10 @@ export function buildDispatchRequest(environment) {
   }
   const eventName = required(environment, 'GITHUB_EVENT_NAME');
   if (!SUPPORTED_EVENTS.has(eventName)) throw new Error(`GitHub event ${eventName} is not supported for DOKS dispatch`);
+  const expectedGeneration = parseExpectedGeneration(
+    environment,
+    publishMode === 'app-gate' && eventName === 'repository_dispatch',
+  );
 
   const repositoryId = positiveInteger(environment, 'REPOSITORY_ID');
   const prNumber = positiveInteger(environment, 'PR_NUMBER');
@@ -110,6 +129,7 @@ export function buildDispatchRequest(environment) {
     baseSha,
     actionSha,
     publishMode,
+    ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
     requestedAt: new Date().toISOString(),
     caller: {
       runId,
