@@ -327,6 +327,33 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       ]);
     });
 
+    it('atomically binds central admission to the exact one-based durable generation', async () => {
+      const { repository, client, gateRepository } = await createRepository();
+      const firstInput = {
+        ...authoritativeAdmission('central-a1'), eventName: 'repository_dispatch', expectedGeneration: 1,
+      };
+      const first = await repository.admit(firstInput);
+      await bindPendingGate(gateRepository);
+      await client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [first.run.runId]);
+      await client.query("UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1", [first.run.runId]);
+
+      const before = await dispatchState(client, first.run.runId);
+      const mismatched = {
+        ...authoritativeAdmission('central-a3', 2_000), eventName: 'repository_dispatch', expectedGeneration: 3,
+      };
+      await expect(repository.admit(mismatched))
+        .rejects.toThrow(/expected generation 3.*next durable generation is 2/i);
+      expect(await dispatchState(client, first.run.runId)).toEqual(before);
+      expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries WHERE delivery_id = $1', [mismatched.deliveryId])).rows[0].count).toBe(0);
+
+      const exact = {
+        ...authoritativeAdmission('central-a2', 2_000), eventName: 'repository_dispatch', expectedGeneration: 2,
+      };
+      const retried = await repository.admit(exact);
+      expect(retried.run.attempt).toBe(1);
+      expect((await dispatchState(client, retried.run.runId)).outbox.execution_attempt).toBe(1);
+    });
+
     it('does not let the legacy abandoned-run check creator own authoritative runs', async () => {
       const { repository } = await createRepository();
       await repository.admit(authoritativeAdmission());

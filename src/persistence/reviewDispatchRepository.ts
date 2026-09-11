@@ -6,6 +6,7 @@ import {
   ReviewAdmissionInput,
   ReviewDispatchClaim,
   PublicationMode,
+  ReviewGenerationConflictError,
   ReviewRun,
 } from '../review/reviewRun';
 import type { WorkerCompletionProof, WorkerTerminalFailure } from '../review/workerCompletion';
@@ -92,6 +93,15 @@ function validateAdmission(input: ReviewAdmissionInput): void {
   if (input.publicationMode !== 'disabled' && input.publicationMode !== 'app-gate') {
     throw new Error('publication mode must be disabled or app-gate');
   }
+  if (input.expectedGeneration !== undefined
+    && (!Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration <= 0)) {
+    throw new Error('expected generation must be a positive integer');
+  }
+  if (input.publicationMode === 'app-gate'
+    && input.eventName === 'repository_dispatch'
+    && input.expectedGeneration === undefined) {
+    throw new Error('expected generation is required for central app-gate admission');
+  }
   assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
   if (input.authoritativeGate) {
     const { expectedAppId, prepared } = input.authoritativeGate;
@@ -107,6 +117,18 @@ function validateAdmission(input: ReviewAdmissionInput): void {
       || input.effectivePolicyDigest !== prepared.policy.effectivePolicyDigest) {
       throw new Error('Authoritative admission does not match its prepared identity');
     }
+  }
+}
+
+function assertExpectedGeneration(input: ReviewAdmissionInput, row: Record<string, unknown>): void {
+  if (input.expectedGeneration === undefined) return;
+  const persistedAttempt = Number(row.attempt);
+  if (!Number.isSafeInteger(persistedAttempt) || persistedAttempt < 0) {
+    throw new Error('persisted review generation is invalid');
+  }
+  const durableGeneration = persistedAttempt + 1;
+  if (input.expectedGeneration !== durableGeneration) {
+    throw new ReviewGenerationConflictError(input.expectedGeneration, durableGeneration);
   }
 }
 
@@ -241,6 +263,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           || row.identity_digest !== sha256(input.identity))) {
           throw new Error('Duplicate delivery no longer matches current authoritative identity');
         }
+        assertExpectedGeneration(input, row);
         await client.query('COMMIT');
         return {
           status: 'duplicate',
@@ -332,6 +355,13 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       if (!runRow) {
         throw new Error('review run identity conflict: identity is no longer current or publication mode differs');
       }
+      // The central App ledger speaks in one-based generations (a1/a2/a3),
+      // while review_runs.attempt is the durable zero-based generation. This
+      // comparison runs under the candidate PR advisory lock and in the same
+      // transaction as delivery, run, outbox, and gate allocation. Any mismatch
+      // rolls the entire attempted admission back, so an identity drift cannot
+      // silently allocate a fresh a1 after the central gate admitted a2 or a3.
+      assertExpectedGeneration(input, runRow);
 
       // Resolve the incoming identity before retiring anything. A historical
       // completed duplicate must not supersede current work. For enrolled runs,

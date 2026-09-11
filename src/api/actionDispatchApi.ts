@@ -17,6 +17,7 @@ import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
 import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, AuthoritativeReviewCompletion } from '../review/authoritativeServiceContracts';
+import { ReviewGenerationConflictError } from '../review/reviewRun';
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 
 export interface ActionOidcVerifier {
@@ -105,6 +106,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
         payloadDigest: sha256(actionDispatchDigestInput(dispatch)),
         publicationMode: dispatch.publishMode,
+        ...(dispatch.expectedGeneration === undefined ? {} : { expectedGeneration: dispatch.expectedGeneration }),
         identity: resolved?.identity || buildReviewRunIdentity({
           owner: dispatch.owner,
           repo: dispatch.repo,
@@ -123,6 +125,19 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         runId: admission.run.runId,
       });
     } catch (error) {
+      if (error instanceof ReviewGenerationConflictError) {
+        logger.warn('Rejected mismatched review generation', {
+          reason: 'review_generation_conflict',
+          repositoryId: dispatch.repositoryId,
+          expectedGeneration: error.expectedGeneration,
+          durableGeneration: error.durableGeneration,
+        });
+        return response.status(409).json({
+          error: 'Expected review generation does not match durable service state',
+          expectedGeneration: error.expectedGeneration,
+          durableGeneration: error.durableGeneration,
+        });
+      }
       logger.error('Failed to durably admit GitHub Actions dispatch', {
         reason: 'admission_unavailable',
         repositoryId: dispatch.repositoryId,

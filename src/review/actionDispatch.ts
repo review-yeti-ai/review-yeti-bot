@@ -15,6 +15,7 @@ export const actionDispatchRequestSchema = z.object({
   baseSha: sha,
   actionSha: sha,
   publishMode: z.enum(['disabled', 'app-gate']),
+  expectedGeneration: positiveInteger.optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
   caller: z.object({
@@ -29,7 +30,17 @@ export const actionDispatchRequestSchema = z.object({
     maxInvestigationTurns: z.number().int().positive().optional(),
     laneCallBudget: z.number().int().positive().optional(),
   }).strict().optional(),
-}).strict();
+}).strict().superRefine((request, context) => {
+  if (request.publishMode === 'app-gate'
+    && request.caller.eventName === 'repository_dispatch'
+    && request.expectedGeneration === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['expectedGeneration'],
+      message: 'Expected generation is required for central app-gate dispatch',
+    });
+  }
+});
 
 export type ActionDispatchRequest = z.infer<typeof actionDispatchRequestSchema>;
 

@@ -32,6 +32,17 @@ lock and an additive `review_gate_attempts` table. Review generation is distinct
 from execution attempt: a failure before worker projection can advance the
 review generation without advancing the execution counter.
 
+Central `repository_dispatch` app-gate callers must pass the one-based
+`expected-generation` admitted by their App ledger. The Action sends it as
+`expectedGeneration`; the API rejects missing or invalid values before
+admission. Under the same PR advisory lock used for identity allocation, the
+repository compares it with the exact identity's zero-based persisted
+`review_runs.attempt + 1`. A new or identity-drifted row can therefore satisfy
+only `a1`; an admitted `a2` or `a3` must match that exact identity's durable
+next generation. Mismatch rolls back the delivery, run, outbox, prepared policy,
+and gate reservation together and returns HTTP 409. Existing tables already
+carry the required counter, so this contract needs no schema migration.
+
 1. Reserve an immutable attempt and supersede the older gate atomically.
 2. Commit a unique publication claim before external work. A separate UUID
    lease token prevents an expired claim from becoming valid when the same
