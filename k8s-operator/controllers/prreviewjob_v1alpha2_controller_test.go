@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
@@ -65,6 +66,18 @@ func v1alpha2Review(now time.Time) *reviewv1alpha2.PRReviewJob {
 			RunSecretName:    "ct-review-run-11111111111111111111111111111111",
 		},
 	}
+}
+
+type countingAdmissionReader struct {
+	client.Reader
+	reviewListCalls int
+}
+
+func (r *countingAdmissionReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*reviewv1alpha2.PRReviewJobList); ok {
+		r.reviewListCalls++
+	}
+	return r.Reader.List(ctx, list, opts...)
 }
 
 func TestPRReviewJobV1Alpha2ReconcilerCreatesPVCThenHardenedWorkerJob(t *testing.T) {
@@ -762,6 +775,85 @@ func TestPRReviewJobV1Alpha2ReconcilerAdmitsOldestWaitingReviewFirst(t *testing.
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: newer.Namespace, Name: newer.Name + "-worker"}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("newer review must remain unadmitted: %v", err)
 	}
+}
+
+func TestPRReviewJobV1Alpha2ReconcilerUsesOneAuthoritativeReviewSnapshotPerAdmission(t *testing.T) {
+	now := time.Date(2026, 9, 10, 18, 0, 0, 0, time.UTC)
+
+	t.Run("free capacity reuses one snapshot for FIFO", func(t *testing.T) {
+		scheme := v1alpha2Scheme(t)
+		oldest := v1alpha2Review(now.Add(-time.Minute))
+		oldest.Name = "ct-review-99999999999999999999999999999999"
+		oldest.Spec.RunID = "run_99999999999999999999999999999999"
+		oldest.Spec.DeliveryID = "delivery-count-oldest"
+		oldest.Spec.PRNumber = 49
+		oldest.Spec.RunSecretName = "ct-review-run-99999999999999999999999999999999"
+
+		current := v1alpha2Review(now)
+		current.Name = "ct-review-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		current.Spec.RunID = "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		current.Spec.DeliveryID = "delivery-count-current"
+		current.Spec.PRNumber = 50
+		current.Spec.RunSecretName = "ct-review-run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+		kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oldest, current).
+			WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+		reader := &countingAdmissionReader{Reader: kube}
+		reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+			Client: kube, APIReader: reader, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+		}
+
+		result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: current.Namespace, Name: current.Name},
+		})
+		if err != nil {
+			t.Fatalf("reconcile current review: %v", err)
+		}
+		if result.RequeueAfter <= 0 {
+			t.Fatal("current review must remain behind the older waiting review")
+		}
+		if reader.reviewListCalls != 1 {
+			t.Fatalf("authoritative PRReviewJobList calls = %d, want 1", reader.reviewListCalls)
+		}
+		var queued reviewv1alpha2.PRReviewJob
+		if err := kube.Get(context.Background(), types.NamespacedName{Namespace: current.Namespace, Name: current.Name}, &queued); err != nil {
+			t.Fatalf("get queued review: %v", err)
+		}
+		if queued.Status.Message != "waiting for an older worker admission candidate" {
+			t.Fatalf("queue message = %q, want FIFO blocking", queued.Status.Message)
+		}
+	})
+
+	t.Run("occupied capacity skips the review snapshot", func(t *testing.T) {
+		scheme := v1alpha2Scheme(t)
+		current := v1alpha2Review(now)
+		activeWorker := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+			Name:      "other-review-worker",
+			Namespace: current.Namespace,
+			Labels: map[string]string{
+				"review-yeti.ai/component": job.ReceiptOnlyWorkerComponent,
+			},
+		}}
+		kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(current, activeWorker).
+			WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+		reader := &countingAdmissionReader{Reader: kube}
+		reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+			Client: kube, APIReader: reader, Scheme: scheme, Now: func() time.Time { return now }, MaxConcurrentJobs: 1,
+		}
+
+		result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: current.Namespace, Name: current.Name},
+		})
+		if err != nil {
+			t.Fatalf("reconcile current review: %v", err)
+		}
+		if result.RequeueAfter <= 0 {
+			t.Fatal("current review must remain queued behind the active worker")
+		}
+		if reader.reviewListCalls != 0 {
+			t.Fatalf("authoritative PRReviewJobList calls = %d, want 0 when Job capacity is full", reader.reviewListCalls)
+		}
+	})
 }
 
 func TestPRReviewJobV1Alpha2ReconcilerUsesAPIReaderForReservationAdmissionSnapshot(t *testing.T) {
