@@ -282,8 +282,10 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       published += 1;
     })).resolves.toBe(true);
     expect(published).toBe(1);
-    const reconciled = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
-    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: provider_error' });
+    const reconciled = await client.query(`SELECT runs.status, runs.error_text,
+      outbox.status AS outbox_status FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: provider_error', outbox_status: 'terminal' });
     await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
   });
 
@@ -365,8 +367,10 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const pending = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
     expect(pending.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: budget_exhausted' });
     await expect(repository.reconcileAbandonedPublishingRun(retry, 'reaper-b', 62_003, async () => {})).resolves.toBe(true);
-    const reconciled = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
-    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: budget_exhausted' });
+    const reconciled = await client.query(`SELECT runs.status, runs.error_text,
+      outbox.status AS outbox_status FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: budget_exhausted', outbox_status: 'terminal' });
     await expect(repository.claimAbandonedPublishingRuns('reaper-c', 62_004, 1)).resolves.toEqual([]);
   });
 

@@ -622,7 +622,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             OR (runs.status = 'terminal' AND runs.error_text LIKE
               'publishing run reached its terminal deadline without a verdict; reaped by %'
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
-            OR (runs.status = 'terminal' AND runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%')
+            OR (runs.status = 'terminal' AND runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
+              AND outbox.status = 'projected')
           )
             AND publication_mode = 'app-gate'
             AND result_digest IS NULL
@@ -707,6 +708,17 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         return false;
       }
       await publish();
+      // Successful publication consumes this outbox delivery. Retain the
+      // worker token as durable evidence for an explicit same-head retry, but
+      // move the row out of the reaper's projected-publication state so the
+      // preserved worker classification is not claimed repeatedly.
+      await client.query(
+        `UPDATE review_dispatch_outbox
+            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                updated_at = to_timestamp($2 / 1000.0)
+          WHERE run_id = $1 AND delivery_id = $3 AND execution_attempt + 1 = $4`,
+        [run.runId, now, run.deliveryId, run.executionAttempt],
+      );
       await client.query(
         `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
            error_text = CASE
