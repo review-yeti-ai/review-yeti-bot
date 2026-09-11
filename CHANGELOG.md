@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.3...v1.52.4) (2026-09-11)
+
+
+### Bug Fixes
+
+* **API-3215:** recover strict app-gate output ([#682](https://github.com/review-yeti-ai/review-yeti-bot/issues/682)) ([f26e8f1](https://github.com/review-yeti-ai/review-yeti-bot/commit/f26e8f1854ff3eb10bfca1867713ac3386696ccd))
+
 ## [1.52.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.2...v1.52.3) (2026-09-10)
 
 
