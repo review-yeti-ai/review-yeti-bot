@@ -222,6 +222,19 @@ describe('POST /api/dispatch/action', () => {
     expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({ retryRequested: true }));
   });
 
+  it('does not forward refresh from a non-central caller', async () => {
+    const fixture = app({ allowAppGate: true });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...body, publishMode: 'app-gate', refreshRequested: true });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(
+      expect.not.objectContaining({ retryRequested: true }),
+    );
+  });
+
   it('keeps app-gate disabled unless the verifier explicitly authorizes it', async () => {
     const fixture = app();
     const response = await request(fixture.instance)
