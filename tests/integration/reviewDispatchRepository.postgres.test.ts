@@ -1076,6 +1076,37 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect((await repository.claimNext('dispatcher-b', 3_000, 30_000))?.executionAttempt).toBe(2);
   });
 
+  it('leaves an active claimed execution untouched when refresh has no projected-worker evidence', async () => {
+    const { repository, client } = await createRepository();
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 43,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      snapshotDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    };
+    const input = (deliveryId: string, receivedAt: number, retryRequested = false) => ({
+      deliveryId, eventName: 'check_run', repositoryId: 123, installationId: 456,
+      receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, identity,
+      ...(retryRequested ? { retryRequested: true } : {}),
+    });
+
+    const first = await repository.admit(input('delivery-claimed', 1_000));
+    const claim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+    const refresh = await repository.admit(input('delivery-without-evidence', 2_000, true));
+
+    // The new delivery is acknowledged for idempotency, but the durable run
+    // and leased outbox stay bound to the original execution. A refresh may
+    // not invent worker existence merely because its flag is true.
+    expect(refresh).toMatchObject({ status: 'accepted', run: {
+      runId: first.run.runId, status: 'queued', attempt: 0, deliveryId: 'delivery-claimed',
+    } });
+    expect((await client.query('SELECT status, delivery_id, execution_attempt, projection_name, worker_token_digest FROM review_dispatch_outbox WHERE run_id = $1', [first.run.runId])).rows[0])
+      .toMatchObject({ status: 'claimed', delivery_id: 'delivery-claimed', execution_attempt: 0,
+        projection_name: null, worker_token_digest: null });
+    expect((await repository.claimNext('dispatcher-b', 3_000, 30_000))?.runId).toBeUndefined();
+    expect(claim.executionAttempt).toBe(1);
+  });
+
   it.each(['publishing', 'failed', 'terminal'])('retires a prior %s identity so it cannot be retried after identity drift', async (status) => {
     const { repository, client } = await createRepository();
     const prior = await repository.admit(sameHeadAdmission('prior', 1_000));
