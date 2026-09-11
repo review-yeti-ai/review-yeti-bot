@@ -741,9 +741,16 @@ function parseFenced<T>(content: string, expectedNonce: string): T {
 }
 
 function parseNativeJsonObject<T>(content: string, expectedNonce: string): T {
+  const trimmed = content.trim();
+  // Some OpenAI-compatible gateways preserve a model's single Markdown JSON
+  // fence even when response_format requests native JSON. Accept only a fence
+  // that wraps the entire response; prose, multiple fences, and embedded JSON
+  // remain malformed and fail closed below.
+  const fenced = trimmed.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
+  const candidateContent = fenced ? fenced[1].trim() : trimmed;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content.trim());
+    parsed = JSON.parse(candidateContent);
   } catch {
     throw new Error('invalid native JSON response object');
   }
@@ -936,13 +943,12 @@ async function invoke(
 ): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number; toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> }> {
   throwIfPanelAborted(options?.signal);
   const requestNonce = nonce();
-  const nativeJsonMode = ['json_object', 'json_schema'].includes(
-    String(options?.requestPolicy?.responseFormat?.type || '').toLowerCase(),
-  );
-  // Older callers supplied json_object. Upgrade that compatibility request in-place to the
-  // role-specific strict schema so providers receive the same contract the prompt describes.
-  // Fenced callers retain their established protocol and do not receive a provider schema.
-  const roleResponseFormat = nativeJsonMode ? buildPanelResponseFormat(role, payload) : undefined;
+  const responseFormatType = String(options?.requestPolicy?.responseFormat?.type || '').toLowerCase();
+  const nativeJsonMode = ['json_object', 'json_schema'].includes(responseFormatType);
+  // Preserve an explicit json_object request for OpenAI-compatible gateways that do not
+  // implement JSON Schema. Explicit json_schema callers receive the role-specific strict
+  // schema; fenced callers retain their established protocol.
+  const roleResponseFormat = responseFormatType === 'json_schema' ? buildPanelResponseFormat(role, payload) : undefined;
   const requestPolicy = roleResponseFormat
     ? { ...(options?.requestPolicy || {}), responseFormat: roleResponseFormat }
     : options?.requestPolicy;
