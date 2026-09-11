@@ -939,13 +939,13 @@ async function invoke(
   const nativeJsonMode = ['json_object', 'json_schema'].includes(
     String(options?.requestPolicy?.responseFormat?.type || '').toLowerCase(),
   );
-  // Older callers supplied json_object. Upgrade that compatibility request in-place to the
-  // role-specific strict schema so providers receive the same contract the prompt describes.
-  // Fenced callers retain their established protocol and do not receive a provider schema.
+  // A persona's first native turn may request one bounded read-only investigation tool. A
+  // role-final schema cannot represent that intermediate object, so keep that first turn on
+  // json_object and switch to the strict role schema immediately after a tool request. Moderator
+  // and arbiter turns are final-only and receive the strict schema from their first request.
   const roleResponseFormat = nativeJsonMode ? buildPanelResponseFormat(role, payload) : undefined;
-  const requestPolicy = roleResponseFormat
-    ? { ...(options?.requestPolicy || {}), responseFormat: roleResponseFormat }
-    : options?.requestPolicy;
+  const requestPolicy = options?.requestPolicy;
+  let requireNativeFinalSchema = nativeJsonMode && role !== 'persona';
 
   // Extract changed files, rules, and charter cleanly for prompt formatting
   const changedFiles = Array.isArray(payload.changedFiles) ? payload.changedFiles : [];
@@ -1007,7 +1007,10 @@ async function invoke(
     `CT_REVIEW_NONCE:${requestNonce}`,
     ...(nativeJsonMode
       ? [
-          'Return only one valid JSON object with no Markdown or plaintext fences.',
+          ...(role === 'persona'
+            ? ['You may first return one permitted investigation tool request as the raw JSON object described by the system. After its result, the next response is final-only.']
+            : []),
+          'When returning the final result, return only one valid JSON object with no Markdown or plaintext fences.',
           `The object MUST contain the exact top-level field "nonce":"${requestNonce}".`,
           'The response MUST validate against this exact strict JSON Schema; no additional properties are allowed:',
           JSON.stringify(structuredOutputSchema(role, payload), null, 2),
@@ -1080,7 +1083,9 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
   \`\`\`
 - NOTE: All file reads are limited to the workspace. File writes, shell execution, Linear/Productlane/GitHub actions, custom MCPs, and arbitrary local paths are strictly prohibited and will be rejected.
 - ${nativeJsonMode
-    ? `You MUST return one JSON object containing the exact top-level field "nonce":"${requestNonce}" that validates against the role-specific strict JSON Schema in the user message, with no Markdown or plaintext fences.`
+    ? role === 'persona'
+      ? `You may return one permitted investigation tool request as raw JSON. Otherwise, return one final JSON object containing the exact top-level field "nonce":"${requestNonce}" that validates against the role-specific strict JSON Schema in the user message, with no Markdown or plaintext fences.`
+      : `You MUST return one JSON object containing the exact top-level field "nonce":"${requestNonce}" that validates against the role-specific strict JSON Schema in the user message, with no Markdown or plaintext fences.`
     : `You MUST return your final evaluation strictly inside CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.`}`,
     },
     { role: 'user', content: userContent },
@@ -1110,9 +1115,17 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 
     const requestPersona = options?.persona || personaName;
     const effectiveOnFirstToken = options?.onFirstToken ?? (requestPolicy as any)?.onFirstToken;
+    const turnRequestPolicy = nativeJsonMode
+      ? {
+          ...(requestPolicy || {}),
+          responseFormat: requireNativeFinalSchema
+            ? roleResponseFormat
+            : { type: 'json_object' },
+        }
+      : requestPolicy;
     const response = await raceWithPanelAbort(
       Promise.resolve().then(() => client.complete({
-        ...(requestPolicy || {}),
+        ...(turnRequestPolicy || {}),
         model,
         messages,
         timeoutMs,
@@ -1158,9 +1171,10 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         break;
       }
       structuredCorrectionAttempts += 1;
-      messages.push({ role: 'assistant', content: response.content });
-      messages.push({ role: 'user', content: structuredOutputCorrection(role, requestNonce, contractError, nativeJsonMode, payload) });
-      continue;
+        messages.push({ role: 'assistant', content: response.content });
+        messages.push({ role: 'user', content: structuredOutputCorrection(role, requestNonce, contractError, nativeJsonMode, payload) });
+        requireNativeFinalSchema = nativeJsonMode;
+        continue;
     } catch (fenceErr: any) {
       if (iter + 1 >= maxTurns) {
         break;
@@ -1343,8 +1357,17 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
           exhaustive: isExhaustive,
         });
 
+        requireNativeFinalSchema = nativeJsonMode;
+        const finalOutputInstruction = nativeJsonMode
+          ? [
+              'Return only one valid JSON object with no Markdown or plaintext fences.',
+              `The object MUST contain the exact top-level field "nonce":"${requestNonce}".`,
+              `Return the final ${role} result that validates against the strict response schema already supplied; do not return CT_REVIEW_BEGIN or CT_REVIEW_END fences.`,
+            ].join('\n')
+          : `Please proceed to render final evaluation enclosed in CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.`;
+
         messages.push({ role: 'assistant', content: response.content });
-        messages.push({ role: 'user', content: `[PI_TOOL_RESULT]\n${toolOutput}\n\nPlease proceed to render final evaluation enclosed in CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.` });
+        messages.push({ role: 'user', content: `[PI_TOOL_RESULT]\n${toolOutput}\n\n${finalOutputInstruction}` });
         continue;
       }
 
@@ -1353,6 +1376,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       // failing closed. This is separate from tool exploration and never infers a verdict.
       if (structuredCorrectionAttempts < 1 && iter + 1 < maxTurns) {
         structuredCorrectionAttempts += 1;
+        requireNativeFinalSchema = nativeJsonMode;
         messages.push({ role: 'assistant', content: response.content });
         messages.push({
           role: 'user',
