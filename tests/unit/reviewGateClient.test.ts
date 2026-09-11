@@ -3,11 +3,13 @@ import {
   CHECK_RUN_PAGE_SIZE,
   MAX_CHECK_RUN_PAGES,
   MAX_GATE_RESPONSE_BYTES,
-  REVIEW_GATE_CHECK_NAME,
   GitHubReviewGateClient,
+} from '../../src/github/reviewGateClient';
+import {
+  REVIEW_GATE_CHECK_NAME,
   deriveReviewGateExternalId,
   type ReviewGateCoordinates,
-} from '../../src/github/reviewGateClient';
+} from '../../src/review/reviewCheckIdentity';
 
 const token = 'ghs_review_gate_test_token';
 const appId = 4_385_771;

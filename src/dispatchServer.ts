@@ -4,10 +4,12 @@ import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
 import { createRateLimiter } from './security/rateLimiter';
 import { createWebhookRouter, type RequestWithRawBody } from './github/webhookServer';
 import type { GitHubWebhookAdmissionEvent } from './review/githubWebhookAdmission';
+import { createReviewCiRouter, type ReviewCiRouterOptions } from './api/reviewCiApi';
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
   rateLimiter?: RequestHandler;
+  ci?: ReviewCiRouterOptions;
   githubWebhook?: {
     secret: string;
     onEvent(event: GitHubWebhookAdmissionEvent): Promise<Record<string, unknown>>;
@@ -61,6 +63,7 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
     }
   });
 
+  if (options.ci) app.use('/api/dispatch/ci', limiter, createReviewCiRouter(options.ci));
   app.use('/api/dispatch', limiter, createActionDispatchRouter(options));
   app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
     if (error && typeof error === 'object' && 'status' in error && error.status === 413) {

@@ -34,6 +34,7 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   /** Called by persistence while holding its PR admission lock, before writes. */
   validateAdmission(input: ReviewAdmissionInput): Promise<void>;
   runOnce(): Promise<void>;
+  resolver: AuthoritativePublishingResolver;
 } {
   const { config, repository } = options;
   if (Number(options.appId) !== config.expectedAppId || !options.workerId.trim()) {
@@ -88,6 +89,7 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     await publisher.runOnce();
   };
   return {
+    resolver,
     admission: { expectedAppId: config.expectedAppId, acceptNewRequests: config.admissionEnabled,
       repositoryIds: [...config.repositoryIds], resolver },
     completion: { verifier: createWorkerCompletionVerifier(), repository, resolve: resolveCompletion },
