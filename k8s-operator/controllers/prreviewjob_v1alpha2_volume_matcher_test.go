@@ -160,6 +160,16 @@ func TestManagedWorkerVolumeMatcherEmptyDirSizeLimit(t *testing.T) {
 		if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 			t.Fatalf("reconcile tampered worker: %v", err)
 		}
+		var failed reviewv1alpha2.PRReviewJob
+		if err := kube.Get(context.Background(), req.NamespacedName, &failed); err != nil {
+			t.Fatalf("get failed review: %v", err)
+		}
+		if failed.Status.Phase != reviewv1alpha2.PhaseFailed {
+			t.Fatalf("phase = %s, want Failed before worker evidence is released", failed.Status.Phase)
+		}
+		if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("release tampered worker evidence: %v", err)
+		}
 
 		var checkWorker batchv1.Job
 		err := kube.Get(context.Background(), workerKey, &checkWorker)

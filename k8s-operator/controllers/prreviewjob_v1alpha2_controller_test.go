@@ -223,6 +223,16 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsOwnedWorkerAndReleasesLeaseOnContract
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("fail mismatched worker: %v", err)
 	}
+	var failed reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed before worker evidence is released", failed.Status.Phase)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("release mismatched worker evidence: %v", err)
+	}
 	if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("mismatched owned worker still exists: %v", err)
 	}
@@ -261,6 +271,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
 		t.Fatal(err)
 	}
+	assignFakeWorkerUID(t, kube, &worker)
 	scheduled := metav1.NewTime(now.Add(2 * time.Second))
 	started := metav1.NewTime(now.Add(4 * time.Second))
 	pod := &corev1.Pod{
@@ -282,6 +293,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
 			}},
 		},
 	}
+	bindTestPodToWorker(pod, &worker)
 	if err := kube.Create(context.Background(), pod); err != nil {
 		t.Fatalf("create worker pod: %v", err)
 	}
@@ -323,6 +335,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsTerminatedPodProcessTiming(t *test
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
 		t.Fatal(err)
 	}
+	assignFakeWorkerUID(t, kube, &worker)
 	scheduled := metav1.NewTime(now.Add(2 * time.Second))
 	started := metav1.NewTime(now.Add(4 * time.Second))
 	finished := metav1.NewTime(now.Add(5 * time.Second))
@@ -345,6 +358,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsTerminatedPodProcessTiming(t *test
 			}},
 		},
 	}
+	bindTestPodToWorker(pod, &worker)
 	if err := kube.Create(context.Background(), pod); err != nil {
 		t.Fatalf("create terminated worker pod: %v", err)
 	}
@@ -1401,8 +1415,43 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsTamperedAppGateWorkers(t *testing.T) 
 			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
+			var failed reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), req.NamespacedName, &failed); err != nil {
+				t.Fatal(err)
+			}
+			if failed.Status.Phase != reviewv1alpha2.PhaseFailed {
+				t.Fatalf("tampered app-gate worker (%s) did not durably fail before deletion", name)
+			}
+			publication := meta.FindStatusCondition(failed.Status.Conditions, "FailurePublication")
+			if publication == nil || publication.Status != metav1.ConditionFalse || publication.Reason != "WorkerContractMismatch" {
+				t.Fatalf("failure publication condition = %#v, want durable pending obligation", publication)
+			}
+			if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); err != nil {
+				t.Fatalf("tampered app-gate worker was removed before the parent obligation became durable: %v", err)
+			}
+			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.Get(context.Background(), req.NamespacedName, &failed); err != nil {
+				t.Fatal(err)
+			}
+			publication = meta.FindStatusCondition(failed.Status.Conditions, "FailurePublication")
+			if publication == nil || publication.Status != metav1.ConditionUnknown || publication.Reason != "DelegatedToTrustedService" {
+				t.Fatalf("failure publication condition = %#v, want trusted-service delegation", publication)
+			}
+			var stopping batchv1.Job
+			if err := kube.Get(context.Background(), workerKey, &stopping); err != nil {
+				t.Fatalf("tampered app-gate worker disappeared before terminal evidence was released: %v", err)
+			}
+			if stopping.DeletionTimestamp == nil {
+				t.Fatal("tampered app-gate worker was not stopped after durable delegation")
+			}
+			assertFailurePublisherAbsent(t, kube, req)
+			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
 			if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
-				t.Fatalf("tampered app-gate worker (%s) was not stopped: %v", name, err)
+				t.Fatalf("tampered app-gate worker (%s) was not removed after finalizer release: %v", name, err)
 			}
 		})
 	}
