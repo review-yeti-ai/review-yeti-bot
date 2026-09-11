@@ -241,6 +241,20 @@ response protocol with its own follow-up instructions. The existing narrow
 compatibility for a single whole-response Markdown JSON wrapper around a
 native result remains supported; it is not fallback to legacy nonce fences.
 
+Native role inputs must be separate from the output schema. In particular,
+the moderator needs the completed persona evidence and the arbiter needs
+both that evidence and the moderator's findings ledger. A valid output shape
+does not prove that these inputs were present. Regression qualification must
+inspect actual model requests, carry a distinctive blocking finding through
+both handoffs, and preserve evidence during format correction. Never repair
+a missing evidence handoff by accepting an empty or inferred decision.
+
+For a quick moderator failure, retrieve the exact worker's bounded error
+category before retrying. A source-level missing-input defect and the observed
+malformed response are separate evidence: without retained response details,
+do not claim to know precisely what the model returned. Do not retain raw
+provider prompts or responses to improve this diagnosis.
+
 ## 📋 Operational Verification & Qualification Order
 
 To verify your cluster deployment before rolling out to production repositories:
