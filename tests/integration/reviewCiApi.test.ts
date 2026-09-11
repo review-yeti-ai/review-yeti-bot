@@ -1,8 +1,7 @@
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createActionDispatchApp } from '../../src/dispatchServer';
-import type { ReviewCiCaller } from '../../src/auth/reviewCiOidc';
-import { createReviewCiLanePlan } from '../../src/review/reviewCi';
+import { createReviewCiLanePlan, type ReviewCiCaller } from '../../src/review/reviewCi';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const repository = { repositoryId: 123, ownerId: 99, owner: 'example', repo: 'pilot',
@@ -14,8 +13,7 @@ const event = { schema_version: 'review-yeti-ci-request.v1', repository_id: 123,
   policy_digest: 'f'.repeat(64), validation_request_id: id };
 function fixture(enabled = true) {
   const verify = vi.fn(async (_token: string, role: ReviewCiCaller['role']): Promise<ReviewCiCaller> => ({
-    role, repository, runId: 100, runAttempt: 1, claims: { repository: 'example/pilot', repository_id: '123',
-      repository_owner_id: '99', run_id: '100', run_attempt: '1', event_name: 'workflow_dispatch', workflow_sha: 'b'.repeat(40) },
+    role, repository, workflowSha: 'b'.repeat(40), runId: 100, runAttempt: 1,
   }));
   const accepted = { version: 'ReviewCiClaim.v1' as const, allowed: true as const, requestId: id, epoch: 1,
     candidateSha: 'c'.repeat(40), headSha: 'b'.repeat(40), baseSha: 'a'.repeat(40), lanes: ['unit'], lanePlanDigest: repository.lanePlan.digest };
