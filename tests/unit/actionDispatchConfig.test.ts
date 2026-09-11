@@ -40,6 +40,16 @@ describe('Action dispatch service configuration', () => {
     });
   });
 
+  it('preserves expected-generation enforcement with the self-hosted repository opt-in', () => {
+    expect(actionDispatchConfigFromEnv({
+      ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION: 'true',
+      ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: selfHostedRepository,
+    })).toEqual({
+      requireExpectedGeneration: true,
+      centralExternalRepositories: new Map([[selfHostedRepository, 1326169548]]),
+    });
+  });
+
   it.each([
     '',
     ' ',
