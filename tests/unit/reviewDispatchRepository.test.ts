@@ -855,6 +855,14 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(query.mock.calls[0][1]).toEqual(['reaper-a', 1_700_000_000_000, 20]);
   });
 
+  it('declares the reaper identifier as text everywhere PostgreSQL infers its parameter type', async () => {
+    const { repository, query } = repositoryWith([swept]);
+    await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
+    const sql = String(query.mock.calls[0][0]);
+    expect(sql).toMatch(/lease_owner = \$1::text/u);
+    expect(sql).toMatch(/reaped by ' \|\| \$1::text/u);
+  });
+
   it('maps returned rows to the identity the reaper publishes against', async () => {
     const { repository } = repositoryWith([swept]);
     await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, 20)).resolves.toEqual([{

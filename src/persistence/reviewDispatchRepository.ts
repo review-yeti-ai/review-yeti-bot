@@ -533,8 +533,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
        )
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
-              lease_owner = $1, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
-              error_text = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1
+              lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
+              error_text = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
          FROM retired
         WHERE runs.run_id = retired.run_id
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
