@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.56.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.6...v1.56.7) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** close abandoned recovery contract gaps ([#729](https://github.com/review-yeti-ai/review-yeti-bot/issues/729)) ([72b653b](https://github.com/review-yeti-ai/review-yeti-bot/commit/72b653bdfa187878b064c3f991f54e4fc3ffe324))
+* **review:** fail closed abandoned check recovery ([#720](https://github.com/review-yeti-ai/review-yeti-bot/issues/720)) ([1af9548](https://github.com/review-yeti-ai/review-yeti-bot/commit/1af954871fb76cfbde8c4580e1e96b7395fa0942))
+
 ## [1.56.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.5...v1.56.6) (2026-09-11)
 
 
