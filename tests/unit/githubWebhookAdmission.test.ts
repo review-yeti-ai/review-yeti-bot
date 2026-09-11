@@ -97,7 +97,7 @@ describe('native GitHub App webhook admission', () => {
     expect(f.admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       deliveryId: `github-webhook:${auth.delivery}`,
       eventName: 'pull_request', repositoryId: 614653796, installationId: 456,
-      publicationMode: 'app-gate', receivedAt: NOW,
+      publicationMode: 'app-gate', centralActionDispatch: false, receivedAt: NOW,
       identity: expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE }),
     }));
   });

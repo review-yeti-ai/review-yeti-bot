@@ -47,9 +47,10 @@ carry the required counter, so this contract needs no schema migration.
 It defaults to `false`: missing central app-gate generation remains temporarily
 compatible, but a supplied value still receives the transactional comparison
 above. When set to exactly `true`, a missing value receives the same safe,
-field-only HTTP 400 diagnostic used for an invalid supplied value, before OIDC
-verification or durable admission. Values other than exact `true` or `false`
-prevent service startup. Disabled and non-central execution paths are unchanged.
+field-only HTTP 400 diagnostic used for an invalid supplied value, after OIDC
+identity verification and before durable admission. Values other than exact
+`true` or `false` prevent service startup. Disabled and non-central execution
+paths are unchanged.
 
 Use this zero-downtime order:
 
@@ -61,6 +62,25 @@ Use this zero-downtime order:
 4. Set `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=true`, redeploy, and prove a
    generation-less central app-gate request receives the safe field-only HTTP
    400 response before admission.
+
+### Exact-generation rollback
+
+After the central producer has been promoted, reverse the contract in this
+order:
+
+1. Disable expected-generation enforcement and roll the service pods by setting
+   `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=false` with the current service
+   image. Verify the standalone Deployment's config checksum changed and every
+   ready pod reports compatibility mode before continuing.
+2. Roll back the central producer to the previous pinned Action revision, then
+   verify new dispatches omit `expectedGeneration` and remain accepted by the
+   compatible service.
+3. Roll back the service image only after the producer rollback is live and
+   verified.
+
+Rolling back the service image alone is unsafe. The previous service schema
+does not accept the producer's `expectedGeneration` field, so a producer that
+has not been rolled back receives a permanent HTTP 400 for every new dispatch.
 
 The durable allocation and publication sequence remains:
 

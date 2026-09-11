@@ -14,6 +14,7 @@ import {
   actionDispatchRequestSchema,
   actionDispatchDigestInput,
   assertActionDispatchMatchesClaims,
+  type ActionDispatchCallerKind,
 } from '../review/actionDispatch';
 import { sha256 } from '../review/reviewCore';
 import { isCentralRefreshAuthorized } from '../review/reviewRecoveryPolicy';
@@ -88,17 +89,11 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       return rejectInvalidDispatch(response, invalidFields);
     }
     const dispatch = parsed.data;
-    if (options.requireExpectedGeneration === true
-      && dispatch.publishMode === 'app-gate'
-      && dispatch.caller.eventName === 'repository_dispatch'
-      && dispatch.expectedGeneration === undefined) {
-      return rejectInvalidDispatch(response, ['expectedGeneration']);
-    }
-
     let claims: GitHubActionsOidcClaims;
+    let callerKind: ActionDispatchCallerKind;
     try {
       claims = await options.verifier.verify(token);
-      assertActionDispatchMatchesClaims(dispatch, claims);
+      callerKind = assertActionDispatchMatchesClaims(dispatch, claims);
       if (dispatch.publishMode === 'app-gate' && options.allowAppGate !== true) {
         throw new Error('App-gate publication is not enabled for Action dispatch');
       }
@@ -108,6 +103,12 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         repositoryId: dispatch.repositoryId,
       });
       return response.status(403).json({ error: 'Action dispatch is not authorized' });
+    }
+    if (options.requireExpectedGeneration === true
+      && callerKind === 'central'
+      && dispatch.publishMode === 'app-gate'
+      && dispatch.expectedGeneration === undefined) {
+      return rejectInvalidDispatch(response, ['expectedGeneration']);
     }
 
     // A refresh is a privileged replacement of an exact worker generation. A
@@ -142,6 +143,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
         payloadDigest: sha256(actionDispatchDigestInput(dispatch)),
         publicationMode: dispatch.publishMode,
+        centralActionDispatch: callerKind === 'central',
         // Only the central repository-dispatch boundary may carry the explicit
         // refresh request. OIDC proves the workflow identity above; the
         // repository persists the retry only after its own state/evidence gate.

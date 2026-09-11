@@ -56,6 +56,7 @@ function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
     deliveryId, eventName: 'pull_request', repositoryId: 123, installationId: 456,
     receivedAt, terminalDeadline: receivedAt + 900_000,
     payloadDigest: sha256(identity), publicationMode: 'app-gate' as const,
+    centralActionDispatch: false,
     identity, effectivePolicyDigest: identity.reviewPolicy.effectivePolicyDigest,
   };
 }
@@ -331,7 +332,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     it('atomically binds central admission to the exact one-based durable generation', async () => {
       const { repository, client, gateRepository } = await createRepository();
       const firstInput = {
-        ...authoritativeAdmission('central-a1'), eventName: 'repository_dispatch', expectedGeneration: 1,
+        ...authoritativeAdmission('central-a1'), eventName: 'repository_dispatch', centralActionDispatch: true, expectedGeneration: 1,
       };
       const first = await repository.admit(firstInput);
       await bindPendingGate(gateRepository);
@@ -340,7 +341,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
       const before = await dispatchState(client, first.run.runId);
       const mismatched = {
-        ...authoritativeAdmission('central-a3', 2_000), eventName: 'repository_dispatch', expectedGeneration: 3,
+        ...authoritativeAdmission('central-a3', 2_000), eventName: 'repository_dispatch', centralActionDispatch: true, expectedGeneration: 3,
       };
       await expect(repository.admit(mismatched))
         .rejects.toThrow(/expected generation 3.*next durable generation is 2/i);
@@ -348,7 +349,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries WHERE delivery_id = $1', [mismatched.deliveryId])).rows[0].count).toBe(0);
 
       const exact = {
-        ...authoritativeAdmission('central-a2', 2_000), eventName: 'repository_dispatch', expectedGeneration: 2,
+        ...authoritativeAdmission('central-a2', 2_000), eventName: 'repository_dispatch', centralActionDispatch: true, expectedGeneration: 2,
       };
       const retried = await repository.admit(exact);
       expect(retried.run.attempt).toBe(1);
@@ -360,6 +361,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       const input = {
         ...authoritativeAdmission('central-a2-without-durable-a1'),
         eventName: 'repository_dispatch',
+        centralActionDispatch: true,
         expectedGeneration: 2,
       };
 
@@ -724,6 +726,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
       payloadDigest: 'f'.repeat(64),
       publicationMode: 'app-gate' as const,
+      centralActionDispatch: false,
       identity,
     });
 
@@ -1099,7 +1102,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const input = (deliveryId: string, receivedAt: number, retryRequested = false, retryAfterExecutionAttempt?: number) => ({
       deliveryId, eventName: 'check_run', repositoryId: 123, installationId: 456,
       receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
-      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, identity,
+      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, centralActionDispatch: false, identity,
       ...(retryRequested ? { retryRequested: true } : {}),
       ...(retryAfterExecutionAttempt === undefined ? {} : { retryAfterExecutionAttempt }),
     });
@@ -1129,7 +1132,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const input = (deliveryId: string, receivedAt: number, retryRequested = false, retryAfterExecutionAttempt?: number) => ({
       deliveryId, eventName: 'check_run', repositoryId: 123, installationId: 456,
       receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
-      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, identity,
+      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, centralActionDispatch: false, identity,
       ...(retryRequested ? { retryRequested: true } : {}),
       ...(retryAfterExecutionAttempt === undefined ? {} : { retryAfterExecutionAttempt }),
     });
@@ -1187,7 +1190,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const input = (deliveryId: string, receivedAt: number, retryAfterExecutionAttempt?: number) => ({
       deliveryId, eventName: 'check_run', repositoryId: 123, installationId: 456,
       receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
-      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, identity,
+      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, centralActionDispatch: false, identity,
       ...(retryAfterExecutionAttempt === undefined ? {} : {
         retryRequested: true,
         retryAfterExecutionAttempt,
