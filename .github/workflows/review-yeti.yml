@@ -38,6 +38,11 @@ on:
         required: false
         default: 0
         type: number
+      expected_generation:
+        description: Exact worker generation admitted by the central check ledger.
+        required: false
+        default: 1
+        type: number
       passthrough:
         description: Deliver SKIPPED passthrough semantics without LLM evaluation; DOKS remains blocked.
         required: false
@@ -334,6 +339,7 @@ jobs:
           github-token: ${{ steps.ry_token.outputs.token || github.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
           pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
+          expected-generation: ${{ inputs.expected_generation }}
           llm-api-key: ${{ steps.seed_key.outputs.llm_api_key }}
           llm-base-url: ${{ steps.smoke.outputs.resolved_base_url }}
           action-sha: ${{ steps.resolved.outputs.sha }}

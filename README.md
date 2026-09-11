@@ -247,20 +247,42 @@ The central receiver serializes the complete validation and dispatch run by the
 immutable tuple `repository + pull request + head SHA`, with cancellation
 disabled. While it holds that lease, the validator reads the complete App-owned
 `Review Yeti` check ledger for the exact head and admits only generation `a1`,
-or one `a2` replacement when the ledger contains exactly one worker row: a
-completed `a1` with conclusion `failure` and an exact infrastructure/no-verdict
-title. `BLOCK` and `FIX_FIRST` are terminal review verdicts and never authorize
-replacement. Every row and pagination boundary is validated fail closed before
-that decision; an inventory at the 1,000-run endpoint cap is ambiguous and is
+or bounded replacements `a2` and `a3`. Every prior generation must exist
+exactly once and be an App-owned, completed `failure` with an approved
+infrastructure/no-verdict title. `BLOCK`, `FIX_FIRST`, active checks, missing or
+duplicate generations, and attempts `a4` or later never authorize replacement.
+All prior worker rows must also carry the same DOKS `run_<id>` identity; rows
+from different worker identities cannot be combined into an apparent contiguous
+generation history.
+Every row and pagination boundary is validated fail closed before that
+decision; an inventory at the 1,000-run endpoint cap is ambiguous and is
 rejected.
 
 GitHub workflow concurrency is necessary but is not the durable allocator. The
 validated request is forced through the DOKS App-gate backend, where the
 service-owned request identity and database compare-and-swap allocate the worker
-attempt. Together, serial revalidation and the DOKS identity/CAS form the
-reservation boundary: after the first recovery dispatch reserves `a2`, a queued
-duplicate revalidates against that new generation and is rejected. Consumer or
-central repository variables cannot downgrade this path to local execution.
+attempt. The central validator exports its admitted generation and the receiver
+forwards it as the action's explicit `expected-generation`; the DOKS allocator
+must match that value when it performs the compare-and-swap. Together, serial
+revalidation, exact-generation forwarding, and the DOKS identity/CAS form the
+reservation boundary: after a recovery dispatch reserves its next generation,
+a queued duplicate revalidates against that new generation and is rejected.
+Consumer or central repository variables cannot downgrade this path to local
+execution.
+
+To recover a same-head provider outage, rerun the original consumer caller run:
+
+```bash
+gh run rerun <caller-run-id> --repo exampleorg/<repository>
+```
+
+GitHub preserves the original pull-request head and increments
+`github.run_attempt`; the caller re-reads the live PR coordinates before
+dispatch. Central validation then admits only the next contiguous recovery
+generation under the rules above. Rerunning a newly created caller run at
+attempt `a1`, changing a label to create another run, or pushing an empty commit
+does not bypass the ledger. Operators must stop after `a3`; later attempts fail
+closed and require a code or policy change with normal review.
 
 The legacy hosted/local compatibility path also publishes `Review Yeti Gate`
 alongside the raw check, including an honestly `skipped` pair during local

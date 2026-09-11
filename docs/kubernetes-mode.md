@@ -137,9 +137,16 @@ The governed central `repository_dispatch` path is fixed to
 `execution-backend: doks` and `doks-publish-mode: app-gate`. Its exact-head
 workflow concurrency lease serializes generation revalidation, while the DOKS
 service's durable request identity and database compare-and-swap own worker
-attempt allocation. Recovery requires exactly one completed, failed worker `a1`
-with an infrastructure/no-verdict title; terminal `BLOCK`/`FIX_FIRST` verdicts,
-duplicate `a1` rows, and endpoint-cap-ambiguous inventories fail closed.
+attempt allocation. Recovery is bounded at `a3`: every lower worker generation
+must exist exactly once as a completed App-owned `failure` with an approved
+infrastructure/no-verdict title, and all prior rows must share one DOKS
+`run_<id>`. The admitted generation is forwarded to the action as
+`expected-generation` for the service's transactional next-attempt check.
+Terminal `BLOCK`/`FIX_FIRST` verdicts, active, missing, duplicate, or
+mixed-identity generations, attempts `a4` or later, and endpoint-cap-ambiguous
+inventories fail closed. The operator recovery command is
+`gh run rerun <caller-run-id> --repo exampleorg/<repository>`; it preserves
+the original PR event identity while GitHub increments `github.run_attempt`.
 Repository variables cannot downgrade that admission path.
 
 The settings below apply only to non-central/manual workflow calls:

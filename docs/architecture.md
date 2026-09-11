@@ -100,18 +100,24 @@ by exact repository, pull request, and head SHA with `cancel-in-progress: false`
 New heads use different groups and can proceed independently. While holding the
 exact-head lease, central validation reads every page of the raw `Review Yeti`
 check ledger from App ID `4385771`, validates every row before classification,
-and admits only an initial `a1` with no worker ledger or one recovery `a2` after
-exactly one completed, failed `a1` carrying an approved infrastructure/no-verdict
-title. Duplicate `a1` rows and inventories at the 1,000-run endpoint cap fail
-closed. `BLOCK` and `FIX_FIRST` remain terminal review verdicts and can never
-justify another generation on the same head.
+and admits only an initial `a1` with no worker ledger or bounded recovery
+generations `a2` and `a3`. Every lower generation must appear exactly once as a
+completed App-owned `failure` carrying an approved infrastructure/no-verdict
+title, and all prior worker rows must share one identical DOKS `run_<id>`.
+Missing, duplicate, mixed-identity, active, successful, or verdict-bearing
+generations, attempts `a4` or later, and inventories at the 1,000-run endpoint
+cap fail closed. `BLOCK` and `FIX_FIRST` remain terminal review verdicts and can
+never justify another generation on the same head.
 
 Workflow concurrency closes the check-before-dispatch race inside GitHub, but it
 is not durable generation storage. Every validated central request is forced to
 the DOKS App-gate backend. The service-owned repository/PR/head identity and
-database compare-and-swap own worker-attempt allocation. That DOKS CAS plus the
-central serial revalidation is the atomic reservation boundary; repository
-variables and local execution cannot weaken it.
+database compare-and-swap own worker-attempt allocation. Central validation
+exports its admitted generation through both workflows as the action's explicit
+`expected-generation`, which the allocator compares to its next attempt. That
+DOKS CAS plus the central serial revalidation and exact-generation handoff is
+the atomic reservation boundary; repository variables and local execution
+cannot weaken it.
 
 The receiver's validation token is restricted to the target repository plus
 `example-review-actions`, deduplicated for central self-review. That is the minimum

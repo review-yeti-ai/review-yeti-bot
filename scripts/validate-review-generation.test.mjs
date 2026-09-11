@@ -242,10 +242,71 @@ test('attempt 2 rejects zero checks, active a1, terminal a1, and a2-or-later', a
   }
 });
 
-test('caller attempts beyond the single recovery generation fail closed', async () => {
+test('attempt 3 admits one governed same-head rerequest after two infrastructure failures', async () => {
+  const result = await validate({
+    attempt: 3,
+    pages: [page([
+      workerCheck({ id: 100, attempt: 1 }),
+      workerCheck({ id: 101, attempt: 2 }),
+    ])],
+  });
+  assert.equal(result.review_generation, 3);
+  assert.equal(result.worker_check_count, 2);
+  assert.equal(result.latest_worker_check_id, 101);
+});
+
+test('attempt 3 rejects prior worker generations from different DOKS run identities', async () => {
   await assert.rejects(
-    validate({ attempt: 3, pages: [page([workerCheck()])] }),
-    /caller run attempt 3 is outside the admitted generations/u,
+    validate({
+      attempt: 3,
+      pages: [page([
+        workerCheck({ id: 100, attempt: 1, externalId: `run_${'1'.repeat(32)}:a1` }),
+        workerCheck({ id: 101, attempt: 2, externalId: `run_${'2'.repeat(32)}:a2` }),
+      ])],
+    }),
+    /prior worker generations must share one DOKS run identity/u,
+  );
+});
+
+test('attempt 3 rejects gaps, duplicate generations, active workers, and terminal verdicts', async () => {
+  const cases = [
+    {
+      runs: [workerCheck({ id: 100, attempt: 1 })],
+      pattern: /attempt 3 requires exactly 2 prior worker checks; found 1/u,
+    },
+    {
+      runs: [workerCheck({ id: 100, attempt: 1 }), workerCheck({ id: 101, attempt: 1 })],
+      pattern: /requires exactly one worker a1; found 2/u,
+    },
+    {
+      runs: [workerCheck({ id: 100, attempt: 1 }), workerCheck({ id: 101, attempt: 2, status: 'in_progress', conclusion: null, title: 'Review Yeti: in progress' })],
+      pattern: /a2 worker is not a completed recoverable infrastructure failure/u,
+    },
+    {
+      runs: [workerCheck({ id: 100, attempt: 1 }), workerCheck({ id: 101, attempt: 2, conclusion: 'success', title: 'Review Yeti: SHIP' })],
+      pattern: /a2 worker is not a completed recoverable infrastructure failure/u,
+    },
+    {
+      runs: [workerCheck({ id: 100, attempt: 1 }), workerCheck({ id: 101, attempt: 3 })],
+      pattern: /worker attempt a3 already exists/u,
+    },
+  ];
+  for (const fixture of cases) {
+    await assert.rejects(validate({ attempt: 3, pages: [page(fixture.runs)] }), fixture.pattern);
+  }
+});
+
+test('caller attempts beyond the bounded recovery generations fail closed', async () => {
+  await assert.rejects(
+    validate({
+      attempt: 4,
+      pages: [page([
+        workerCheck({ id: 100, attempt: 1 }),
+        workerCheck({ id: 101, attempt: 2 }),
+        workerCheck({ id: 102, attempt: 3 }),
+      ])],
+    }),
+    /caller run attempt 4 is outside the admitted generations/u,
   );
 });
 

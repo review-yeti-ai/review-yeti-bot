@@ -62,7 +62,7 @@ const CASES = [
  * lets a test replay a
  * mutated or byte-exact-as-captured run object without touching the fixture file itself.
  */
-function fetchImplFor({ pull, run, apiBase, defaultBranchRef }, runOverride = run) {
+function fetchImplFor({ pull, run, apiBase, defaultBranchRef }, runOverride = run, checkRuns = null) {
   return async (url) => {
     if (url === `${apiBase}/pulls/${pull.number}`) return response(pull);
     if (url === `${apiBase}/actions/runs/${run.id}`) return response(runOverride);
@@ -80,18 +80,20 @@ function fetchImplFor({ pull, run, apiBase, defaultBranchRef }, runOverride = ru
       assert.equal(query.get('app_id'), '4385771');
       assert.equal(query.get('per_page'), '100');
       assert.equal(query.get('page'), '1');
-      return response({
-        total_count: 1,
-        check_runs: [{
+      const defaultCheckRuns = [{
           id: 8675309,
           name: 'Review Yeti',
-          head_sha: run.head_sha,
+          head_sha: runOverride.head_sha,
           status: 'completed',
           conclusion: 'failure',
           external_id: `run_${'1'.repeat(32)}:a1`,
           app: { id: 4385771, slug: 'ct-review-bot' },
           output: { title: 'Review Yeti: review did not complete', summary: 'Replay-only generation state.', text: null },
-        }],
+        }];
+      const ledger = checkRuns ?? defaultCheckRuns;
+      return response({
+        total_count: ledger.length,
+        check_runs: ledger,
       });
     }
     if (url.startsWith(`${apiBase}/contents/.github/workflows/ct-review-bot.yml?ref=`)) {
@@ -214,4 +216,35 @@ test('example-api-4804: the caller workflow is read from the repository default 
     fetchImpl: fetchImplFor(ctx, ctx.runWithOpenPullRequest),
   });
   assert.match(result.caller_workflow_sha256, /^[0-9a-f]{64}$/u);
+});
+
+test('recorded example-api request rejects an a3 replay whose prior workers have mixed DOKS run identities', async () => {
+  const ctx = buildFixtureContext(CASES.find((c) => c.name === 'example-api-4804'));
+  const run = { ...ctx.runWithOpenPullRequest, run_attempt: 3 };
+  const payload = {
+    ...ctx.payload,
+    request_id: `example-api:${ctx.pull.number}:${run.head_sha}:${run.id}:3`,
+  };
+  const check = (id, attempt, runId) => ({
+    id,
+    name: 'Review Yeti',
+    head_sha: run.head_sha,
+    status: 'completed',
+    conclusion: 'failure',
+    external_id: `run_${runId}:a${attempt}`,
+    app: { id: 4385771, slug: 'ct-review-bot' },
+    output: { title: 'Review Yeti: review did not complete', summary: 'Replay-only generation state.', text: null },
+  });
+
+  await assert.rejects(
+    validateCentralDispatch({
+      payload,
+      token: 'replay-token',
+      fetchImpl: fetchImplFor(ctx, run, [
+        check(8675310, 1, '1'.repeat(32)),
+        check(8675311, 2, '2'.repeat(32)),
+      ]),
+    }),
+    /prior worker generations must share one DOKS run identity/u,
+  );
 });

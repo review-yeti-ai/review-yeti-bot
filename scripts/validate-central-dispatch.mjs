@@ -76,13 +76,14 @@ export const CHECK_RUN_PAGE_SIZE = 100;
 export const CHECK_RUN_ENDPOINT_CAP = 1000;
 export const CAPACITY_RUN_PAGE_SIZE = 100;
 export const CAPACITY_RUN_ENDPOINT_CAP = 1000;
+export const MAX_REVIEW_GENERATIONS = 3;
 
 const PAYLOAD_KEYS = Object.freeze(['base_sha', 'head_sha', 'pr_number', 'repository', 'request_id']);
 const REFRESH_PAYLOAD_KEYS = Object.freeze([...PAYLOAD_KEYS, 'refresh_requested'].sort());
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const REQUEST_ID_PATTERN = /^([A-Za-z0-9_][A-Za-z0-9._-]{0,99}):([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
 const PROVIDER_SECRET_PATTERN = /(?:OLLAMA_PR_REVIEW_API_KEY|OPENROUTER(?:_PR_REVIEW_API_KEY|_REVIEW_FLEET_KEY|_API_KEY)|FIREWORKS_PR_REVIEW_API_KEY|SYNTHETIC_API_KEY|GEMINI_API_KEY)/u;
-const WORKER_EXTERNAL_ID_PATTERN = /^run_[a-f0-9]{32}:a([1-9][0-9]*)$/u;
+const WORKER_EXTERNAL_ID_PATTERN = /^(run_[a-f0-9]{32}):a([1-9][0-9]*)$/u;
 const MERGE_GROUP_EXTERNAL_ID_PATTERN = /^merge-group:([a-f0-9]{40})$/u;
 const CHECK_RUN_STATUSES = new Set(['completed', 'in_progress', 'pending', 'queued', 'requested', 'waiting']);
 const CHECK_RUN_CONCLUSIONS = new Set([
@@ -233,11 +234,11 @@ function validateExactHeadReviewCheck(row, expectedHeadSha) {
   }
   const workerIdentity = WORKER_EXTERNAL_ID_PATTERN.exec(row.external_id);
   if (workerIdentity) {
-    const attempt = Number(workerIdentity[1]);
+    const attempt = Number(workerIdentity[2]);
     if (!Number.isSafeInteger(attempt)) {
       throw new Error(`check-run ${row.id} external_id attempt exceeds the safe integer range`);
     }
-    return { row, kind: 'worker', attempt };
+    return { row, kind: 'worker', attempt, runId: workerIdentity[1] };
   }
   const mergeGroupIdentity = MERGE_GROUP_EXTERNAL_ID_PATTERN.exec(row.external_id);
   if (mergeGroupIdentity) {
@@ -306,16 +307,20 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
   throw new Error(`Review Yeti check inventory is truncated at the ${CHECK_RUN_ENDPOINT_CAP}-run endpoint cap`);
 }
 
-function isRecoverableFirstAttempt(identity) {
-  return identity.attempt === 1
+function isRecoverableInfrastructureAttempt(identity, expectedAttempt) {
+  return identity.attempt === expectedAttempt
     && identity.row.status === 'completed'
     && identity.row.conclusion === 'failure'
     && RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title);
 }
 
 export function assertReviewGeneration({ callerRunAttempt, inventory, refreshRequested = false }) {
-  if (callerRunAttempt !== 1 && callerRunAttempt !== 2) {
-    throw new Error(`caller run attempt ${callerRunAttempt} is outside the admitted generations a1 and a2`);
+  if (!Number.isSafeInteger(callerRunAttempt)
+      || callerRunAttempt < 1
+      || callerRunAttempt > MAX_REVIEW_GENERATIONS) {
+    throw new Error(
+      `caller run attempt ${callerRunAttempt} is outside the admitted generations a1 through a${MAX_REVIEW_GENERATIONS}`,
+    );
   }
   const workers = inventory.identities.filter((identity) => identity.kind === 'worker');
   if (refreshRequested) {
@@ -332,7 +337,7 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, refreshReq
       throw new Error(`refresh requires exactly one worker a1; found ${workers.length} worker checks`);
     }
     const [firstAttempt] = workers;
-    if (!isRecoverableFirstAttempt(firstAttempt)) {
+    if (!isRecoverableInfrastructureAttempt(firstAttempt, 1)) {
       throw new Error('refresh a1 worker is not a completed recoverable infrastructure failure');
     }
     return {
@@ -360,22 +365,44 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, refreshReq
     };
   }
 
-  const replacement = workers.find((identity) => identity.attempt >= 2);
+  const replacement = workers.find((identity) => identity.attempt >= callerRunAttempt);
   if (replacement) {
     throw new Error(`worker attempt a${replacement.attempt} already exists for this exact head`);
   }
-  if (workers.length !== 1) {
-    throw new Error(`caller attempt 2 requires exactly one worker a1; found ${workers.length} worker checks`);
+  const expectedPriorWorkers = callerRunAttempt - 1;
+  if (workers.length !== expectedPriorWorkers) {
+    if (callerRunAttempt === 2) {
+      throw new Error(`caller attempt 2 requires exactly one worker a1; found ${workers.length} worker checks`);
+    }
+    throw new Error(
+      `caller attempt ${callerRunAttempt} requires exactly ${expectedPriorWorkers} prior worker checks; found ${workers.length}`,
+    );
   }
-  const [firstAttempt] = workers;
-  if (!isRecoverableFirstAttempt(firstAttempt)) {
-    throw new Error('a1 worker is not a completed recoverable infrastructure failure');
+
+  const workerRunIds = new Set(workers.map((identity) => identity.runId));
+  if (workerRunIds.size !== 1) {
+    throw new Error('prior worker generations must share one DOKS run identity');
+  }
+
+  let latestWorker;
+  for (let expectedAttempt = 1; expectedAttempt < callerRunAttempt; expectedAttempt += 1) {
+    const matches = workers.filter((identity) => identity.attempt === expectedAttempt);
+    if (matches.length !== 1) {
+      throw new Error(
+        `caller attempt ${callerRunAttempt} requires exactly one worker a${expectedAttempt}; found ${matches.length}`,
+      );
+    }
+    const [worker] = matches;
+    if (!isRecoverableInfrastructureAttempt(worker, expectedAttempt)) {
+      throw new Error(`a${expectedAttempt} worker is not a completed recoverable infrastructure failure`);
+    }
+    latestWorker = worker;
   }
   return {
-    review_generation: 2,
+    review_generation: callerRunAttempt,
     review_check_count: inventory.rows.length,
     worker_check_count: workers.length,
-    latest_worker_check_id: firstAttempt.row.id,
+    latest_worker_check_id: latestWorker.row.id,
     refresh_requested: false,
   };
 }

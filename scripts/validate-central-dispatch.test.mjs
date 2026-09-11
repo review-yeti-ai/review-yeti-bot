@@ -344,6 +344,8 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(receiver, /group:\s*central-review-yeti-\$\{\{ github\.event\.client_payload\.repository \|\| inputs\.repository \}\}-\$\{\{ github\.event\.client_payload\.pr_number \|\| inputs\.pr_number \}\}-\$\{\{ github\.event\.client_payload\.head_sha \|\| inputs\.head_sha \}\}/u);
   assert.match(receiver, /cancel-in-progress:\s*false/u);
   assert.match(receiver, /uses: exampleorg\/example-review-actions\/\.github\/workflows\/review-yeti\.yml@v1/u);
+  assert.match(receiver, /review_generation:\s*\$\{\{ steps\.request\.outputs\.review_generation \}\}/u);
+  assert.match(receiver, /expected_generation:\s*\$\{\{ fromJSON\(needs\.validate\.outputs\.review_generation\) \}\}/u);
   assert.match(receiver, /execution_backend:\s*doks/u);
   assert.match(receiver, /secrets: inherit/u);
   // REL-540 / ADR 0511: the receiver's validate job runs as the ct-review-bot App, never the PAT.
@@ -365,6 +367,8 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   // token (own rate bucket); github.token remains the non-central fallback.
   assert.match(reusable, /GH_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \|\| github\.token \}\}/u);
   assert.match(reusable, /REVIEW_YETI_DOKS_PUBLISH_MODE:\s*\$\{\{ inputs\.central_execution && 'app-gate' \|\| vars\.REVIEW_YETI_DOKS_PUBLISH_MODE \|\| 'disabled' \}\}/u);
+  assert.match(reusable, /expected_generation:\s*[\s\S]*?default:\s*1[\s\S]*?type:\s*number/u);
+  assert.match(reusable, /expected-generation:\s*\$\{\{ inputs\.expected_generation \}\}/u);
   assert.match(reusable, /group:\s*exampleorg-review-yeti-[^\n]*inputs\.head_sha/u);
   assert.doesNotMatch(reusable, /secrets\.CROSS_REPO_TOKEN/u);
   assert.doesNotMatch(reusable, /workflow_call:[\s\S]{0,1200}OLLAMA_PR_REVIEW_API_KEY/u);
