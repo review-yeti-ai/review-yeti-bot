@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { GitHubActionsOidcClaims } from '../auth/githubActionsOidc';
+import { CENTRAL_REVIEW_REPOSITORY } from './reviewCheckIdentity';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
@@ -58,7 +59,7 @@ export function assertActionDispatchMatchesClaims(request: ActionDispatchRequest
   const repository = `${request.owner}/${request.repo}`;
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
   const isCentral = request.caller.eventName === 'repository_dispatch'
-    && claims.repository === 'calltelemetry/ct-review-actions'
+    && claims.repository === CENTRAL_REVIEW_REPOSITORY
     && request.owner === 'calltelemetry';
   const matches = (isDirect || isCentral)
     && request.caller.runId === claims.run_id
