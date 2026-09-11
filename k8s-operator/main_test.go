@@ -1,6 +1,36 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+
+	ctrl "sigs.k8s.io/controller-runtime"
+)
+
+func TestMainInitializesControllerRuntimeLogger(t *testing.T) {
+	const (
+		helperEnv = "REVIEW_YETI_TEST_MAIN_LOGGER_HELPER"
+		probe     = "controller-runtime logger probe"
+	)
+	if os.Getenv(helperEnv) == "1" {
+		t.Setenv("REVIEW_YETI_OPERATOR_ENABLED", "false")
+		main()
+		ctrl.Log.Info(probe)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMainInitializesControllerRuntimeLogger$")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("logger helper failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), probe) {
+		t.Fatalf("controller-runtime logger did not emit probe:\n%s", output)
+	}
+}
 
 func TestOperatorMaxConcurrentJobsFromEnv(t *testing.T) {
 	for _, test := range []struct {
