@@ -118,4 +118,28 @@ describe('runReviewJobDispatcherLoop', () => {
     expect(onCycleError).toHaveBeenCalledWith({ status: 'cycle-error', errorCode: '42P08' });
     expect(JSON.stringify(onCycleError.mock.calls)).not.toContain('secret-bearing');
   });
+
+  it.each([
+    ['a primitive throw', 'postgres://secret-bearing-error'],
+    ['a non-string code', Object.assign(new Error('private provider response'), { code: 42 })],
+    ['a free-form lowercase code', Object.assign(new Error('private provider response'), { code: 'secret-bearing' })],
+    ['an overlong code', Object.assign(new Error('private provider response'), { code: 'A'.repeat(33) })],
+  ])('drops unsafe diagnostic content from %s', async (_label, failure) => {
+    const controller = new AbortController();
+    const engine = { runOnce: vi.fn(async () => { throw failure; }) };
+    const onCycleError = vi.fn();
+    const sleep = vi.fn(async () => { controller.abort(); });
+
+    await runReviewJobDispatcherLoop(engine, {
+      signal: controller.signal,
+      idleDelayMs: 1_000,
+      activeDelayMs: 50,
+      errorDelayMs: 5_000,
+      sleep,
+      onCycleError,
+    });
+
+    expect(onCycleError).toHaveBeenCalledWith({ status: 'cycle-error' });
+    expect(JSON.stringify(onCycleError.mock.calls)).not.toMatch(/secret-bearing|private provider response/u);
+  });
 });
