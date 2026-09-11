@@ -83,12 +83,14 @@ describe('Milestone 4 Adversarial Challenger 2 Review Suite', () => {
         contents: 'read',
         issues: 'write',
         metadata: 'read',
+        merge_queues: 'read',
       });
       // Ensure no extra permissions are present in the constant
       expect(Object.keys(LEAST_PRIVILEGE_PERMISSIONS).sort()).toEqual([
         'checks',
         'contents',
         'issues',
+        'merge_queues',
         'metadata',
         'pull_requests',
       ]);
@@ -109,6 +111,8 @@ describe('Milestone 4 Adversarial Challenger 2 Review Suite', () => {
         'pull_request_review',
         'pull_request_review_comment',
         'issue_comment',
+        'check_run',
+        'merge_group',
       ]);
     });
   });
@@ -117,7 +121,7 @@ describe('Milestone 4 Adversarial Challenger 2 Review Suite', () => {
   // Section 2: Adversarial Permission Injection & Manifest Boundaries
   // =========================================================================
   describe('Section 2: Manifest Generation & Permission Injection', () => {
-    it('2.1: Strips all forbidden permissions even under aggressive injection attempts', () => {
+    it('2.1: Rejects all forbidden permissions even under aggressive injection attempts', () => {
       const hostilePermissions: Record<string, string> = {
         administration: 'write',
         secrets: 'read',
@@ -128,20 +132,9 @@ describe('Milestone 4 Adversarial Challenger 2 Review Suite', () => {
         pull_requests: 'write',
       };
 
-      const manifest = generateAppManifest({
+      expect(() => generateAppManifest({
         permissions: hostilePermissions,
-      });
-
-      for (const forbidden of FORBIDDEN_PERMISSIONS) {
-        expect(manifest.default_permissions[forbidden]).toBeUndefined();
-      }
-
-      // Legitimate permissions must remain intact
-      expect(manifest.default_permissions.checks).toBe('write');
-      expect(manifest.default_permissions.pull_requests).toBe('write');
-      expect(manifest.default_permissions.contents).toBe('read');
-      expect(manifest.default_permissions.issues).toBe('write');
-      expect(manifest.default_permissions.metadata).toBe('read');
+      })).toThrow(/Forbidden permission requested: administration/u);
     });
 
     it('2.2: Validates permission downgrade attempts with validateManifestPermissions', () => {
