@@ -252,6 +252,55 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(claimed.runId).toBe(active.run.runId);
   });
 
+  it('claims a durable worker failure before the original terminal deadline and retires it once', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('worker-failed-before-deadline', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'a'.repeat(64);
+    await expect(repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker', 1_002, workerTokenDigest,
+    )).resolves.toBe(true);
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      failureClass: 'provider_error',
+    }, { workerTokenDigest }, 1_003)).resolves.toMatchObject({ status: 'failed' });
+
+    // The worker has failed durably, but the 15-minute admission window is still
+    // open. Reconciliation must publish the exact one-based a1 identity now.
+    const [failed] = await repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1);
+    expect(failed).toMatchObject({
+      runId: admitted.run.runId, executionAttempt: 1, receivedAt: 1_000,
+      terminalDeadline: input.terminalDeadline,
+    });
+    let published = 0;
+    await expect(repository.reconcileAbandonedPublishingRun(failed, 'reaper-a', 2_001, async () => {
+      published += 1;
+    })).resolves.toBe(true);
+    expect(published).toBe(1);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
+  });
+
+  it('waits for the deadline before sweeping an unowned failed row', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('unowned-failure', 1_000);
+    const admitted = await repository.admit(input);
+    await client.query(`UPDATE review_runs SET status = 'failed', error_text = 'projection rejected'
+      WHERE run_id = $1`, [admitted.run.runId]);
+    await client.query(`UPDATE review_dispatch_outbox SET status = 'terminal', projection_name = NULL,
+      worker_token_digest = NULL WHERE run_id = $1`, [admitted.run.runId]);
+
+    await expect(repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1)).resolves.toEqual([]);
+    const [expired] = await repository.claimAbandonedPublishingRuns(
+      'reaper-b', input.terminalDeadline + 1, 1,
+    );
+    expect(expired).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+  });
+
   describe('atomic authoritative admission', () => {
     it('commits prepared policy, run, outbox and gate together; dispatch waits for durable check binding', async () => {
       const { repository, client, gateRepository } = await createRepository();

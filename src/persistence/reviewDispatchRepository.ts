@@ -189,7 +189,7 @@ export interface ReviewDispatchRepository {
     diagnostics?: WorkerFailureDiagnostics): Promise<boolean>;
   /** Persist a worker's fail-closed terminal outcome without approving the head. */
   markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
-  /** REL-586: sweep publishing runs whose deadline passed without ever publishing. */
+  /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
     publish: () => Promise<void>): Promise<boolean>;
@@ -605,18 +605,33 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          SELECT runs.run_id
            FROM review_runs runs
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
-          WHERE (runs.status IN ('queued', 'running') OR
-            (runs.status = 'terminal' AND runs.error_text LIKE
-              'publishing run reached its terminal deadline without a verdict; reaped by %'))
+          WHERE (
+            -- A worker callback or token-bound dispatcher terminalization is
+            -- already a durable fail-closed outcome. Publish its required check now;
+            -- waiting for the original deadline would strand the head until
+            -- the same-head retry path is invoked.
+            (runs.status = 'failed' AND (
+              (outbox.status = 'projected' OR outbox.worker_token_digest IS NOT NULL)
+              OR runs.terminal_deadline <= to_timestamp($2 / 1000.0)
+            ))
+            OR (runs.status IN ('queued', 'running')
+              AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
+            OR (runs.status = 'terminal' AND runs.error_text LIKE
+              'publishing run reached its terminal deadline without a verdict; reaped by %'
+              AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
+          )
             AND publication_mode = 'app-gate'
             AND result_digest IS NULL
             AND authoritative_gate_app_id IS NULL
-            AND terminal_deadline <= to_timestamp($2 / 1000.0)
             AND (runs.lease_expires_at IS NULL OR runs.lease_expires_at <= to_timestamp($2 / 1000.0))
-          -- A historical failure-publication backlog must not delay recovery of
-          -- a run that is still active in durable dispatch state. Sweep newly
-          -- expired queued/running work first, then retain FIFO within each class.
-          ORDER BY CASE WHEN runs.status IN ('queued', 'running') THEN 0 ELSE 1 END,
+          -- A durable worker failure is actionable immediately. Keep it ahead of
+          -- deadline sweeps so a failed head is not hidden behind old backlog.
+          -- Within each class, retain FIFO by the original terminal deadline.
+          ORDER BY CASE
+                     WHEN runs.status = 'failed' THEN 0
+                     WHEN runs.status IN ('queued', 'running') THEN 1
+                     ELSE 2
+                   END,
                    runs.terminal_deadline
           FOR UPDATE OF runs, outbox SKIP LOCKED
           LIMIT $3
