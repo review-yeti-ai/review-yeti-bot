@@ -729,15 +729,25 @@ func TestFailurePublicationIgnoresForeignPodWithOwnedWorkerLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	boundedPodLookup := false
+	workerGets := 0
+	podLists := 0
 	r.Client = interceptor.NewClient(kube.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			if _, ok := object.(*batchv1.Job); ok && key.Name == worker.Name {
+				workerGets++
+			}
+			return c.Get(ctx, key, object, opts...)
+		},
 		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 			options := &client.ListOptions{}
 			for _, option := range opts {
 				option.ApplyToList(options)
 			}
-			if _, ok := list.(*corev1.PodList); ok && options.LabelSelector != nil &&
-				options.LabelSelector.String() == "batch.kubernetes.io/job-name="+worker.Name {
-				boundedPodLookup = true
+			if _, ok := list.(*corev1.PodList); ok {
+				podLists++
+				if options.LabelSelector != nil && options.LabelSelector.String() == "batch.kubernetes.io/job-name="+worker.Name {
+					boundedPodLookup = true
+				}
 			}
 			return c.List(ctx, list, opts...)
 		},
@@ -749,10 +759,15 @@ func TestFailurePublicationIgnoresForeignPodWithOwnedWorkerLabel(t *testing.T) {
 	if !failurePublicationIsPending(storedReview(t, kube, req)) {
 		t.Fatal("contract mismatch did not persist failure recovery")
 	}
+	workerGets = 0
+	podLists = 0
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
 	assertFailureDelegated(t, storedReview(t, kube, req))
+	if workerGets != 1 || podLists != 1 {
+		t.Fatalf("pending reconcile performed %d worker Gets and %d Pod Lists, want one each", workerGets, podLists)
+	}
 	if !boundedPodLookup {
 		t.Fatal("failure recovery performed no Job-scoped Pod lookup")
 	}

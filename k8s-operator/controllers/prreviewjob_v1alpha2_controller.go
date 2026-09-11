@@ -470,9 +470,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 	// allowing a stale pending condition to manufacture a failure over SHIP.
 	var observed batchv1.Job
 	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &observed)
-	if err == nil && managedWorkerJobMatches(review, &observed) && observed.Status.Succeeded > 0 {
-		meta.RemoveStatusCondition(&review.Status.Conditions, failurePublicationCondition)
-		return r.reconcileExistingJob(ctx, review, &observed, r.clock())
+	var worker *batchv1.Job
+	if err == nil {
+		worker = &observed
+		if managedWorkerJobMatches(review, worker) && worker.Status.Succeeded > 0 {
+			meta.RemoveStatusCondition(&review.Status.Conditions, failurePublicationCondition)
+			return r.reconcileExistingJob(ctx, review, worker, r.clock())
+		}
 	}
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
@@ -481,12 +485,20 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 	// A contract mismatch may leave an untrusted owned Job running. Stop only the
 	// exact child after the pending obligation is durable; if deletion is lost,
 	// this reconcile retries it without ever recreating the worker.
-	worker, err := r.stopOwnedReviewWorker(ctx, review)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	activeWorker, err := r.hasActiveReviewWorkerPod(ctx, review)
 	if worker != nil {
+		if !metav1.IsControlledBy(worker, review) {
+			return ctrl.Result{}, errors.New("refusing to stop a worker Job not controlled by the failed review")
+		}
+		if worker.DeletionTimestamp == nil {
+			if err := r.Delete(ctx, worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+	var activeWorker bool
+	if worker == nil {
+		activeWorker, err = r.hasActiveReviewWorkerPod(ctx, review)
+	} else {
 		activeWorker, err = r.hasActiveWorkerJobPod(ctx, worker)
 	}
 	if err != nil {
@@ -512,29 +524,6 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
-}
-
-func (r *PRReviewJobV1Alpha2Reconciler) stopOwnedReviewWorker(
-	ctx context.Context,
-	review *reviewv1alpha2.PRReviewJob,
-) (*batchv1.Job, error) {
-	var worker batchv1.Job
-	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
-	if apierrors.IsNotFound(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !metav1.IsControlledBy(&worker, review) {
-		return nil, errors.New("refusing to stop a worker Job not controlled by the failed review")
-	}
-	if worker.DeletionTimestamp == nil {
-		if err := r.Delete(ctx, &worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
-			return nil, err
-		}
-	}
-	return &worker, nil
 }
 
 // observeWorkerPod records the stage timestamps that Kubernetes exposes on the
