@@ -647,7 +647,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
               lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
-              error_text = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
+              error_text = CASE
+                WHEN runs.status = 'failed' AND runs.error_text LIKE 'worker terminal failure: %'
+                  THEN runs.error_text
+                ELSE 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
+              END
          FROM retired
         WHERE runs.run_id = retired.run_id
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
@@ -701,7 +705,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await publish();
       await client.query(
         `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
-           error_text = 'publishing run reached its terminal deadline without a verdict; failure reconciled',
+           error_text = CASE
+             WHEN error_text LIKE 'worker terminal failure: %' THEN error_text
+             ELSE 'publishing run reached its terminal deadline without a verdict; failure reconciled'
+           END,
            updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
       );
       await client.query('COMMIT');

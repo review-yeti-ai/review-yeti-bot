@@ -282,6 +282,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       published += 1;
     })).resolves.toBe(true);
     expect(published).toBe(1);
+    const reconciled = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
+    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: provider_error' });
     await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
   });
 

@@ -961,6 +961,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(sql).toMatch(/runs\.status IN \('queued', 'running'\)/u);
     expect(sql).toMatch(/runs\.status = 'failed'[\s\S]*?AND publication_mode = 'app-gate'/u);
     expect(sql).not.toMatch(/runs\.status IN \([^)]*cancelled|runs\.status IN \([^)]*superseded/u);
+    expect(sql).toMatch(/error_text = CASE[\s\S]*?worker terminal failure: %[\s\S]*?THEN runs\.error_text/u);
   });
 
   it('claims and marks terminal in a single statement, under SKIP LOCKED', async () => {
