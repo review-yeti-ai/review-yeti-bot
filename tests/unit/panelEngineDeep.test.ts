@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelConfigurationError, extractMessageContentText, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { OpenRouterResponseError } from '../../src/gateway/openRouterClient';
@@ -714,6 +714,103 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(result.arbiter.verdict).toBe('SHIP');
   });
 
+  it('aborts a hanging model call at overall_timeout_s and does not accept a late response', async () => {
+    vi.useFakeTimers();
+    try {
+      const baseConfig = buildDeepConfig();
+      const config = {
+        ...baseConfig,
+        quorum: 1,
+        personas: [baseConfig.personas[0]],
+        reviewers: { ...baseConfig.reviewers, overall_timeout_s: 1 },
+      };
+      let resolveLate!: (value: any) => void;
+      mockClient.complete.mockImplementation(() => new Promise((resolve) => {
+        resolveLate = resolve;
+      }));
+
+      const panel = executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+        repository: 'calltelemetry/repo',
+        headSha: 'head-sha-overall-deadline',
+        client: mockClient as unknown as OmniRouteClient,
+        requestPolicy: { metadata: { qualificationMode: 'deadline-test' } },
+      });
+      const rejection = expect(panel).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await rejection;
+      expect(mockClient.complete).toHaveBeenCalledTimes(1);
+      expect(mockClient.complete.mock.calls[0][0].signal).toMatchObject({ aborted: true });
+      expect(getActivePersonaCallCount()).toBe(0);
+
+      resolveLate({
+        model: 'late-model',
+        content: 'late response must not become a panel result',
+        usage: null,
+        costUSD: null,
+      });
+      await Promise.resolve();
+      expect(mockClient.complete).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects an already-aborted panel before starting any model request', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(executePersonaPanel({
+      config: buildDeepConfig(),
+      changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-already-aborted',
+      client: mockClient as unknown as OmniRouteClient,
+      signal: controller.signal,
+    })).rejects.toBeInstanceOf(PanelCancellationError);
+    expect(mockClient.complete).not.toHaveBeenCalled();
+    expect(getActivePersonaCallCount()).toBe(0);
+  });
+
+  it('cleans the overall deadline timer after a healthy panel completes', async () => {
+    vi.useFakeTimers();
+    try {
+      const config = buildDeepConfig();
+      mockClient.complete.mockImplementation(async (opts: any) => {
+        const prompt = extractMessageContentText(opts.messages[1].content);
+        const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+        const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+        const body = opts.persona === 'arbiter'
+          ? { verdict: 'SHIP', rationale: 'Healthy completion.' }
+          : opts.persona === 'moderator'
+            ? { decision: 'RECONCILED', findings: [] }
+            : { decision: 'APPROVE', findings: [] };
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(body)}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      });
+
+      const result = await executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+        repository: 'calltelemetry/repo',
+        headSha: 'head-sha-deadline-cleanup',
+        client: mockClient as unknown as OmniRouteClient,
+      });
+
+      expect(result.arbiter.verdict).toBe('SHIP');
+      expect(getActivePersonaCallCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('enforces MAX_PERSONA_BUDGET_MS (5 turns × 3 min) cumulative cap per persona lane', async () => {
     const config = ctReviewConfigV3Schema.parse({
       version: 3,
@@ -763,8 +860,8 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     }
   });
 
-  it('safely defaults per-call, moderator, and arbiter timeouts to 90s when review_timeout_s is missing', async () => {
-    const recordedTimeouts: number[] = [];
+  it('uses the configured idle timeout separately from the remaining panel total timeout', async () => {
+    const recordedRequests: Array<{ timeoutMs: number; inactivityTimeoutMs?: number }> = [];
     const baseConfig = buildDeepConfig();
     const configWithoutTimeouts: CtReviewConfigV3 = {
       ...baseConfig,
@@ -778,7 +875,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     };
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      recordedTimeouts.push(opts.timeoutMs);
+      recordedRequests.push({ timeoutMs: opts.timeoutMs, inactivityTimeoutMs: opts.inactivityTimeoutMs });
       const prompt = extractMessageContentText(opts.messages?.[1]?.content || opts.messages?.[0]?.content);
       const nonceMatch = typeof prompt === 'string' ? prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) : null;
       const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
@@ -813,11 +910,13 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     });
 
     expect(result.arbiter.verdict).toBe('SHIP');
-    expect(recordedTimeouts.length).toBeGreaterThanOrEqual(3);
-    for (const timeout of recordedTimeouts) {
-      expect(Number.isFinite(timeout)).toBe(true);
-      expect(timeout).toBe(180_000);
-      expect(Number.isNaN(timeout)).toBe(false);
+    expect(recordedRequests.length).toBeGreaterThanOrEqual(3);
+    for (const request of recordedRequests) {
+      expect(Number.isFinite(request.timeoutMs)).toBe(true);
+      expect(request.timeoutMs).toBeGreaterThan(0);
+      expect(request.timeoutMs).toBeLessThanOrEqual(baseConfig.reviewers.overall_timeout_s * 1_000);
+      expect(Number.isNaN(request.timeoutMs)).toBe(false);
+      expect(request.inactivityTimeoutMs).toBe(180_000);
     }
   });
 
