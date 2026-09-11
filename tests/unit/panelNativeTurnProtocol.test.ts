@@ -64,6 +64,16 @@ function response(request: any, body: Record<string, unknown>, nonce = requestNo
   };
 }
 
+function fencedResponse(request: any, body: Record<string, unknown>, nonce = requestNonce(request)): any {
+  return {
+    model: request.model,
+    content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(body)}\nCT_REVIEW_END:${nonce}`,
+    usage: { prompt: 5, completion: 5, total: 10 },
+    costUSD: 0,
+    raw: {},
+  };
+}
+
 function personaCalls(mockClient: any): any[] {
   return mockClient.complete.mock.calls
     .map(([request]: [any]) => request)
@@ -357,6 +367,47 @@ describe('native panel turn protocol', () => {
     expect(result.personas[0]).toMatchObject({ providerId: 'glm', decision: 'APPROVE' });
     expect(personaCalls(mockClient).filter((request) => request.providerId === 'synthetic')).toHaveLength(4);
     expect(personaCalls(mockClient).filter((request) => request.providerId === 'glm')).toHaveLength(1);
+  });
+
+  it('retries one fresh persona request after the bounded nonce-fenced correction is still malformed', async () => {
+    let personaTurn = 0;
+    mockClient.complete.mockImplementation(async (request: any) => {
+      if (request.metadata?.role !== 'persona') {
+        if (request.metadata?.role === 'moderator') {
+          return fencedResponse(request, { decision: 'RECONCILED', findings: [] });
+        }
+        return fencedResponse(request, { verdict: 'SHIP', rationale: 'Fenced protocol test completed.' });
+      }
+
+      personaTurn += 1;
+      if (personaTurn <= 2) {
+        return {
+          model: request.model,
+          content: 'not a nonce-fenced response',
+          usage: { prompt: 5, completion: 5, total: 10 },
+          costUSD: 0,
+          raw: {},
+        };
+      }
+      return fencedResponse(request, { decision: 'APPROVE', findings: [] });
+    });
+
+    const result = await executePersonaPanel({
+      config: buildConfig(),
+      changedFiles: CHANGED_FILES,
+      repository: 'calltelemetry/review-yeti-bot',
+      headSha: 'fenced-structured-output-retry',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'text' } },
+    });
+
+    expect(result.personas[0].decision).toBe('APPROVE');
+    const requests = personaCalls(mockClient);
+    expect(requests).toHaveLength(3);
+    expect(requests[1].messages.at(-1)?.content).toContain('STRUCTURED_OUTPUT_CORRECTION');
+    expect(requestNonce(requests[1])).toBe(requestNonce(requests[0]));
+    expect(requestNonce(requests[2])).not.toBe(requestNonce(requests[0]));
+    expect(requestText(requests[2])).not.toContain('STRUCTURED_OUTPUT_CORRECTION');
   });
 
   it('propagates caller abort and releases the active persona slot after a pending native request', async () => {
