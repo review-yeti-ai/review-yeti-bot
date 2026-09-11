@@ -311,6 +311,54 @@ describe('native panel turn protocol', () => {
     expect(requestText(requests[2])).not.toContain('STRUCTURED_OUTPUT_CORRECTION');
   });
 
+  it('fails over after the structured-output retry budget is exhausted', async () => {
+    const baseConfig = buildConfig();
+    const config = ctReviewConfigV3Schema.parse({
+      ...baseConfig,
+      reviewers: {
+        ...baseConfig.reviewers,
+        providers: [
+          ...baseConfig.reviewers.providers,
+          {
+            id: 'glm',
+            enabled: true,
+            model: 'glm-structured-output-fallback',
+            effort: 'medium',
+            review_timeout_s: 30,
+            arbiter_timeout_s: 30,
+          },
+        ],
+      },
+    });
+
+    mockClient.complete.mockImplementation(async (request: any) => {
+      if (request.metadata?.role !== 'persona') return nonPersonaResponse(request);
+      if (request.providerId === 'synthetic') {
+        return {
+          model: request.model,
+          content: '{"nonce":"unterminated"',
+          usage: { prompt: 5, completion: 5, total: 10 },
+          costUSD: 0,
+          raw: {},
+        };
+      }
+      return response(request, { decision: 'APPROVE', findings: [] });
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: CHANGED_FILES,
+      repository: 'calltelemetry/review-yeti-bot',
+      headSha: 'native-structured-output-failover',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_object' } },
+    });
+
+    expect(result.personas[0]).toMatchObject({ providerId: 'glm', decision: 'APPROVE' });
+    expect(personaCalls(mockClient).filter((request) => request.providerId === 'synthetic')).toHaveLength(4);
+    expect(personaCalls(mockClient).filter((request) => request.providerId === 'glm')).toHaveLength(1);
+  });
+
   it('propagates caller abort and releases the active persona slot after a pending native request', async () => {
     const controller = new AbortController();
     const baselineActiveCalls = getActivePersonaCallCount();
