@@ -22,7 +22,7 @@
  *    deliberate: a `neutral` check does not block a merge, so an outage that
  *    published `neutral` would silently stop enforcing.
  */
-import { executePersonaPanel } from '../panel/panelEngine';
+import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted } from '../panel/panelEngine';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
@@ -37,7 +37,7 @@ import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManager';
 import { createDefaultV3Config } from '../config/configLoader';
 import type { ProviderId } from '../config/schema';
-import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
+import { resolveWorkerConfig, PUBLISHING_MAX_TURNS, PUBLISHING_IDLE_TIMEOUT_SECONDS, PUBLISHING_OVERALL_TIMEOUT_SECONDS } from '../config/publishingWorkerConfig';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { validateWorkerCompletionEndpoint, type WorkerCompletionAdapter, type WorkerTerminalFailure } from '../review/workerCompletion';
@@ -245,17 +245,19 @@ export function createBifrostPublishingConfig(model: string): ReturnType<typeof 
   const config = createDefaultV3Config();
   return {
     ...config,
+    default_max_turns: PUBLISHING_MAX_TURNS,
     personas: config.personas.map((persona) => ({ ...persona, providers: [providerId] })),
     reviewers: {
       ...config.reviewers,
+      overall_timeout_s: PUBLISHING_OVERALL_TIMEOUT_SECONDS,
       fallback: 'none',
       providers: [{
         id: providerId,
         enabled: true,
         model,
         effort: 'medium',
-        review_timeout_s: 90,
-        arbiter_timeout_s: 90,
+        review_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
+        arbiter_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
       }],
       arbiter: { order: [providerId] },
     },
@@ -308,6 +310,8 @@ export interface PublishingReviewDeps {
   panelRunner?: typeof executePersonaPanel;
   client?: ReviewModelClient;
   now?: () => number;
+  /** Worker/runtime shutdown signal; linked to the panel's configured deadline. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -365,6 +369,7 @@ export async function runPublishingReviewWorker(
   env: NodeJS.ProcessEnv,
   deps: PublishingReviewDeps,
 ): Promise<PublishingReviewReceipt> {
+  throwIfPanelAborted(deps.signal);
   if (!isPublishingReviewWorker(env)) throw invalidPublishingReviewContract();
   const authoritative = value(env, 'REVIEW_AUTHORITATIVE_GATE') === 'true';
   if ((value(env, 'REVIEW_AUTHORITATIVE_GATE') && !authoritative)
@@ -516,52 +521,57 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
-    const panelResult = await panelRunner({
-      config: workerConfig,
-      changedFiles,
-      repository: identity.repo,
-      headSha: identity.headSha,
-      baseSha: identity.baseSha,
-      prNumber: identity.prNumber,
-      repositoryVisibility,
-      client,
-      jobId: identity.runId,
-      // The production Bifrost profile supports strict structured output. Keep
-      // publishing reviews on the same native JSON contract already exercised
-      // by full-panel qualification instead of relying on a model to reproduce
-      // plaintext nonce fences exactly.
-      requestPolicy: { responseFormat: { type: 'json_object' } },
-    } as Parameters<typeof executePersonaPanel>[0]);
+    const panelDeadline = createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal);
+    try {
+      const panelResult = await raceWithPanelAbort(
+        Promise.resolve().then(() => panelRunner({
+          config: workerConfig,
+          changedFiles,
+          repository: identity.repo,
+          headSha: identity.headSha,
+          baseSha: identity.baseSha,
+          prNumber: identity.prNumber,
+          repositoryVisibility,
+          client,
+          jobId: identity.runId,
+          signal: panelDeadline.signal,
+          // Keep the upstream production Bifrost native JSON contract while
+          // enforcing the worker's overall cancellation boundary.
+          requestPolicy: { responseFormat: { type: 'json_object' } },
+        } as Parameters<typeof executePersonaPanel>[0])),
+        panelDeadline.signal,
+      );
+      throwIfPanelAborted(panelDeadline.signal);
 
-    const rawFindings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
-    // The model arbiter is evidence, not the policy boundary. The canonical
-    // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
-    // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
-    // Recompute from the exact persona findings and quorum so this lane shares
-    // the same fail-closed severity contract as the hosted review path.
-    const canonical = computeArbitration(panelResult.personas, panelResult.personas.length, {
-      changedFiles,
-      coverageComplete: panelResult?.quorum ? panelResult.quorum.satisfied : true,
-    });
-    const verdict = canonical.verdict;
-    // Count blocking findings from the canonical set, not the raw persona
-    // output. The two disagreed: the check reported a blocking count derived
-    // from unsanitized findings next to a verdict derived from the sanitized
-    // ones, so a run could read `SHIP` and `blocking P0/P1: 13` at once. The
-    // canonical set is the one the verdict is computed from, so it is the only
-    // set the conclusion may be computed from.
-    const findings = (canonical.findings || []) as ReviewFinding[];
-    const discardedFindingCount = Math.max(0, rawFindings.length - findings.length);
-    const blocking = findings.filter(
-      (finding) => BLOCKING_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
-    );
-    // A file whose header could not be read was never sent to the panel, so no
-    // finding can exist for it and the verdict describes less than the diff. That
-    // is the "absent capability, green check" shape: fail closed and name the
-    // headers, rather than publish a verdict over a partial review.
-    const conclusion = unreadable.length > 0
-      ? ('failure' as const)
-      : publishingConclusion(verdict, blocking.length);
+      const rawFindings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
+      // The model arbiter is evidence, not the policy boundary. The canonical
+      // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
+      // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
+      // Recompute from the exact persona findings and quorum so this lane shares
+      // the same fail-closed severity contract as the hosted review path.
+      const canonical = computeArbitration(panelResult.personas, panelResult.personas.length, {
+        changedFiles,
+        coverageComplete: panelResult?.quorum ? panelResult.quorum.satisfied : true,
+      });
+      const verdict = canonical.verdict;
+      // Count blocking findings from the canonical set, not the raw persona
+      // output. The two disagreed: the check reported a blocking count derived
+      // from unsanitized findings next to a verdict derived from the sanitized
+      // ones, so a run could read `SHIP` and `blocking P0/P1: 13` at once. The
+      // canonical set is the one the verdict is computed from, so it is the only
+      // set the conclusion may be computed from.
+      const findings = (canonical.findings || []) as ReviewFinding[];
+      const discardedFindingCount = Math.max(0, rawFindings.length - findings.length);
+      const blocking = findings.filter(
+        (finding) => BLOCKING_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
+      );
+      // A file whose header could not be read was never sent to the panel, so no
+      // finding can exist for it and the verdict describes less than the diff. That
+      // is the "absent capability, green check" shape: fail closed and name the
+      // headers, rather than publish a verdict over a partial review.
+      const conclusion = unreadable.length > 0
+        ? ('failure' as const)
+        : publishingConclusion(verdict, blocking.length);
 
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
       const pFindings = p.findings || [];
@@ -713,6 +723,9 @@ export async function runPublishingReviewWorker(
         totalDurationMs,
       },
     };
+    } finally {
+      panelDeadline.cleanup();
+    }
   } catch (error) {
     await reportTerminalFailure(error, checkId);
     throw error;
