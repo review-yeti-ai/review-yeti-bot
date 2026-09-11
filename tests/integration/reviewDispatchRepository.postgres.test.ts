@@ -36,13 +36,13 @@ function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000
 }
 
 function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
-  baseSha?: string; configDigest?: string; policyDigest?: string;
+  baseSha?: string; configDigest?: string; policyDigest?: string; prNumber?: number;
 } = {}) {
   // Mirror the authoritative identity's policy provenance without depending on
   // a network adapter. The repository must hash the entire supplied identity.
   const identity = {
     ...buildReviewRunIdentity({
-      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: overrides.prNumber || 42,
       headSha: 'a'.repeat(40), baseSha: overrides.baseSha || 'b'.repeat(40),
       configDigest: overrides.configDigest || 'd'.repeat(64),
     }),
@@ -91,6 +91,22 @@ async function dispatchState(client: PoolClient, runId: string) {
     run: (await client.query('SELECT * FROM review_runs WHERE run_id = $1', [runId])).rows[0],
     outbox: (await client.query('SELECT * FROM review_dispatch_outbox WHERE run_id = $1', [runId])).rows[0],
   };
+}
+
+async function lifecycleEvents(client: PoolClient, runId: string): Promise<Array<{
+  eventKind: string;
+  sequence: number;
+  data: Record<string, unknown>;
+}>> {
+  const result = await client.query(
+    'SELECT event_kind, sequence, payload FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence',
+    [runId],
+  );
+  return result.rows.map((row) => ({
+    eventKind: String(row.event_kind),
+    sequence: Number(row.sequence),
+    data: row.payload.data as Record<string, unknown>,
+  }));
 }
 
 describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () => {
@@ -212,6 +228,84 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     }), () => now + 1)).toBe('published');
     return claim;
   }
+
+  it('records the dispatch lifecycle transition matrix exactly once with unchanged authority returns', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+
+    const started = await repository.admit(sameHeadAdmission('matrix-started', 1_000));
+    expect(started.status).toBe('accepted');
+    const startedClaim = (await repository.claimNext('started-worker', 1_001, 30_000))!;
+    expect(startedClaim.runId).toBe(started.run.runId);
+    expect(await repository.markProjected(startedClaim.runId, startedClaim.leaseOwner, startedClaim.claimAttempt,
+      'matrix-projection', 1_002)).toBe(true);
+
+    const retrying = await repository.admit(sameHeadAdmission('matrix-retrying', 2_000,
+      { baseSha: 'c'.repeat(40), prNumber: 44 }));
+    expect(retrying.status).toBe('accepted');
+    const retryClaim = (await repository.claimNext('retry-worker', 2_001, 30_000))!;
+    expect(retryClaim.runId).toBe(retrying.run.runId);
+    expect(await repository.releaseForRetry(retryClaim.runId, retryClaim.leaseOwner, retryClaim.claimAttempt,
+      2_002, 3_000)).toBe(true);
+    const terminalClaim = (await repository.claimNext('terminal-worker', 3_000, 30_000))!;
+    expect(terminalClaim.runId).toBe(retrying.run.runId);
+    expect(await repository.markTerminal(terminalClaim.runId, terminalClaim.leaseOwner, terminalClaim.claimAttempt,
+      3_001, 'matrix failure')).toBe(true);
+
+    const superseded = await repository.admit(sameHeadAdmission('matrix-superseded', 4_000,
+      { baseSha: 'd'.repeat(40), prNumber: 43 }));
+    const replacement = await repository.admit(sameHeadAdmission('matrix-replacement', 5_000,
+      { baseSha: 'e'.repeat(40), prNumber: 43 }));
+    expect(replacement.status).toBe('accepted');
+
+    const expected = new Map<string, Array<{
+      eventKind: string;
+      sequence: number;
+      data: Record<string, unknown>;
+    }>>([
+      [started.run.runId, [
+        { eventKind: 'review.lifecycle.admission', sequence: 1,
+          data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+        { eventKind: 'review.lifecycle.queued', sequence: 2,
+          data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+        { eventKind: 'review.lifecycle.dispatched', sequence: 3,
+          data: { policy_digest: 'e'.repeat(64), stage: 'dispatch' } },
+        { eventKind: 'review.lifecycle.started', sequence: 4,
+          data: { policy_digest: 'e'.repeat(64), stage: 'started' } },
+      ]],
+      [retrying.run.runId, [
+        { eventKind: 'review.lifecycle.admission', sequence: 1,
+          data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+        { eventKind: 'review.lifecycle.queued', sequence: 2,
+          data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+        { eventKind: 'review.lifecycle.dispatched', sequence: 3,
+          data: { policy_digest: 'e'.repeat(64), stage: 'dispatch' } },
+        { eventKind: 'review.lifecycle.retrying', sequence: 4,
+          data: { policy_digest: 'e'.repeat(64), stage: 'dispatch', retry_class: 'projection_retry' } },
+        { eventKind: 'review.lifecycle.dispatched', sequence: 5,
+          data: { policy_digest: 'e'.repeat(64), stage: 'dispatch' } },
+        { eventKind: 'review.lifecycle.terminal', sequence: 6,
+          data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'dispatch_failure' } },
+      ]],
+      [superseded.run.runId, [
+        { eventKind: 'review.lifecycle.admission', sequence: 1,
+          data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+        { eventKind: 'review.lifecycle.queued', sequence: 2,
+          data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+        { eventKind: 'review.lifecycle.superseded', sequence: 3,
+          data: { policy_digest: 'e'.repeat(64), stage: 'superseded', terminal_class: 'candidate_superseded' } },
+      ]],
+      [replacement.run.runId, [
+        { eventKind: 'review.lifecycle.admission', sequence: 1,
+          data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+        { eventKind: 'review.lifecycle.queued', sequence: 2,
+          data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+      ]],
+    ]);
+    for (const [runId, events] of expected) expect(await lifecycleEvents(client, runId)).toEqual(events);
+    const allIds = (await client.query('SELECT event_id FROM review_event_outbox ORDER BY event_id')).rows.map((row) => row.event_id);
+    expect(new Set(allIds).size).toBe(allIds.length);
+    expect(allIds).toHaveLength(Array.from(expected.values()).reduce((total, events) => total + events.length, 0));
+  });
 
   it.each([false, true])('isolates legacy reconciliation from authoritative enrollment=%s', async (authoritative) => {
     const { repository, client, gateRepository } = await createRepository();

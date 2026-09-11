@@ -140,6 +140,23 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
     return (await repository.claimDelivery(claim.kind, 'reconciler', NOW + 2, 1000))!;
   }
 
+  it('records the CI admission lifecycle intent exactly once with its authoritative return states', async () => {
+    const review = await fixture();
+    const request = await complete(review);
+    await published(review);
+    await repositoryIntent(request.requestId);
+
+    expect(await repository.admit(request.requestId, binding(), validCurrent, NOW)).toBe('recorded');
+    expect(await repository.admit(request.requestId, binding(), validCurrent, NOW + 1)).toBe('duplicate');
+    expect((await pool.query(`SELECT event_kind, sequence, payload->'data' AS data
+      FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence`, [review.runId])).rows).toEqual([{
+      event_kind: 'review.lifecycle.ci_admission', sequence: '1',
+      data: { policy_digest: 'c'.repeat(64), stage: 'ci_admission', terminal_class: 'admitted' },
+    }]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [review.runId])).rows[0])
+      .toEqual({ next_sequence: '1' });
+  });
+
   it('installs additively/idempotently and constructor never queries', async () => {
     await pool.query(REVIEW_CI_SCHEMA_SQL);
     const fake = { query: vi.fn(), connect: vi.fn() };
