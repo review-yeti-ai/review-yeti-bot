@@ -161,6 +161,9 @@ dispatcher:
     host: "0.0.0.0"
     port: 3000
     allowAppGate: true
+    # Keep false for the service-first compatibility deployment. Enable only
+    # after the central producer is live and exact-generation dispatch is proven.
+    requireExpectedGeneration: false
     # Optional security allowlists (comma-separated):
     repositoryIds: "12345678,87654321"
     ownerIds: "998877"
@@ -169,6 +172,12 @@ dispatcher:
 
 > [!TIP]
 > Keep `podAntiAffinity` enabled (default in `values.yaml`) to ensure dispatcher pods are scheduled across separate Kubernetes worker nodes for fault tolerance.
+
+For a zero-downtime exact-generation rollout, deploy the chart with
+`dispatcher.config.requireExpectedGeneration=false`, promote the central Action
+producer, prove a live exact-generation admission, and only then set the value to
+`true`. Compatibility mode still validates and transactionally checks every
+supplied generation; it permits omission only during the producer transition.
 
 ### 2. Operator Controller (`operator`)
 

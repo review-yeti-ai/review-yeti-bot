@@ -36,6 +36,8 @@ export interface ReviewDispatchRepositoryOptions {
   validateAuthoritativeAdmission?: (input: ReviewAdmissionInput) => Promise<void>;
   /** Defaults to 30 seconds; safe integer values are clamped to 250–30,000 ms. */
   admissionValidationTimeoutMs?: number;
+  /** Require central repository_dispatch app-gate callers to supply the exact generation. */
+  requireExpectedGeneration?: boolean;
 }
 
 function constantTimeDigestEqual(expected: unknown, actual: string): boolean {
@@ -85,7 +87,7 @@ function fromRow(row: any): ReviewRun {
   };
 }
 
-function validateAdmission(input: ReviewAdmissionInput): void {
+function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneration: boolean): void {
   if (!input.deliveryId.trim()) throw new Error('delivery id is required');
   if (!Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0) throw new Error('repository id must be positive');
   if (!Number.isSafeInteger(input.installationId) || input.installationId <= 0) throw new Error('installation id must be positive');
@@ -99,6 +101,7 @@ function validateAdmission(input: ReviewAdmissionInput): void {
   }
   if (input.publicationMode === 'app-gate'
     && input.eventName === 'repository_dispatch'
+    && requireExpectedGeneration
     && input.expectedGeneration === undefined) {
     throw new Error('expected generation is required for central app-gate admission');
   }
@@ -219,7 +222,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   async admit(input: ReviewAdmissionInput): Promise<ReviewAdmission> {
-    validateAdmission(input);
+    validateAdmission(input, this.options.requireExpectedGeneration === true);
     if (input.authoritativeGate && !this.options.validateAuthoritativeAdmission) {
       throw new Error('Authoritative admission validator is required');
     }

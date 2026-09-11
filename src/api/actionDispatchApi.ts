@@ -29,6 +29,8 @@ export interface ActionDispatchRouterOptions {
   admission: Pick<ReviewDispatchRepository, 'admit'>;
   resolveInstallationId(owner: string, repo: string): Promise<number>;
   allowAppGate?: boolean;
+  /** Rollout fence: require the central App ledger's exact one-based generation. */
+  requireExpectedGeneration?: boolean;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
   authoritativePublishing?: AuthoritativeReviewAdmission;
   workerCompletion?: {
@@ -43,6 +45,16 @@ function bearerToken(request: Request): string | null {
   const header = request.header('authorization') || '';
   const match = /^Bearer\s+([^\s]+)$/iu.exec(header);
   return match?.[1] || null;
+}
+
+function rejectInvalidDispatch(response: Response, invalidFields: string[]) {
+  logger.warn('Rejected invalid Action dispatch request', {
+    reason: 'invalid_action_dispatch_request',
+    invalidFields,
+  });
+  return response.status(400).json(invalidFields.includes('expectedGeneration')
+    ? { error: 'Invalid Action dispatch request', invalidFields: ['expectedGeneration'] }
+    : { error: 'Invalid Action dispatch request' });
 }
 
 export function createActionDispatchRouter(options: ActionDispatchRouterOptions): Router {
@@ -67,15 +79,15 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       // runner's bounded failure detail actionable without reflecting request
       // data or verifier internals into logs.
       const invalidFields = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0] || 'request')))].sort();
-      logger.warn('Rejected invalid Action dispatch request', {
-        reason: 'invalid_action_dispatch_request',
-        invalidFields,
-      });
-      return response.status(400).json(invalidFields.includes('expectedGeneration')
-        ? { error: 'Invalid Action dispatch request', invalidFields: ['expectedGeneration'] }
-        : { error: 'Invalid Action dispatch request' });
+      return rejectInvalidDispatch(response, invalidFields);
     }
     const dispatch = parsed.data;
+    if (options.requireExpectedGeneration === true
+      && dispatch.publishMode === 'app-gate'
+      && dispatch.caller.eventName === 'repository_dispatch'
+      && dispatch.expectedGeneration === undefined) {
+      return rejectInvalidDispatch(response, ['expectedGeneration']);
+    }
 
     let claims: GitHubActionsOidcClaims;
     try {

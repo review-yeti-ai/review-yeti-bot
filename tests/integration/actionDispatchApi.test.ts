@@ -59,6 +59,7 @@ function app(overrides: Record<string, any> = {}) {
   instance.use('/api/dispatch', createActionDispatchRouter({
     verifier, admission, resolveInstallationId,
     allowAppGate: overrides.allowAppGate,
+    requireExpectedGeneration: overrides.requireExpectedGeneration,
     authoritativePublishing: overrides.authoritativePublishing,
     now: overrides.now,
   }));
@@ -193,8 +194,59 @@ describe('POST /api/dispatch/action', () => {
     });
   });
 
-  it.each([undefined, 0, -1, 1.5, '3'])(
-    'rejects missing or invalid expected generation %j for central app-gate before durable admission',
+  it('temporarily accepts a missing central app-gate generation while enforcement is disabled', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
+      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({ allowAppGate: true, verifier: { verify: vi.fn(async () => centralVerified) } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+      });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.not.objectContaining({ expectedGeneration: expect.anything() }));
+  });
+
+  it('rejects a missing central app-gate generation before admission when enforcement is enabled', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
+      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      allowAppGate: true,
+      requireExpectedGeneration: true,
+      verifier: { verify: vi.fn(async () => centralVerified) },
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: 'Invalid Action dispatch request',
+      invalidFields: ['expectedGeneration'],
+    });
+    expect(fixture.verifier.verify).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, 1.5, '3'])(
+    'rejects an invalid supplied expected generation %j before durable admission in compatibility mode',
     async (expectedGeneration) => {
       const centralVerified = {
         repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
@@ -202,7 +254,11 @@ describe('POST /api/dispatch/action', () => {
         job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
         job_workflow_sha: 'd'.repeat(40),
       };
-      const fixture = app({ allowAppGate: true, verifier: { verify: vi.fn(async () => centralVerified) } });
+      const fixture = app({
+        allowAppGate: true,
+        requireExpectedGeneration: false,
+        verifier: { verify: vi.fn(async () => centralVerified) },
+      });
       const response = await request(fixture.instance)
         .post('/api/dispatch/action')
         .set('Authorization', 'Bearer signed-oidc-token')
@@ -222,29 +278,36 @@ describe('POST /api/dispatch/action', () => {
     },
   );
 
-  it('forwards an exact expected generation from central app-gate admission to the durable allocator', async () => {
-    const centralVerified = {
-      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
-      run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
-      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
-      job_workflow_sha: 'd'.repeat(40),
-    };
-    const fixture = app({ allowAppGate: true, verifier: { verify: vi.fn(async () => centralVerified) } });
-    const response = await request(fixture.instance)
-      .post('/api/dispatch/action')
-      .set('Authorization', 'Bearer signed-oidc-token')
-      .send({
-        ...body,
-        publishMode: 'app-gate',
-        expectedGeneration: 3,
-        caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+  it.each([false, true])(
+    'forwards an exact expected generation to the durable allocator with enforcement %s',
+    async (requireExpectedGeneration) => {
+      const centralVerified = {
+        repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+        run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
+        job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+        job_workflow_sha: 'd'.repeat(40),
+      };
+      const fixture = app({
+        allowAppGate: true,
+        requireExpectedGeneration,
+        verifier: { verify: vi.fn(async () => centralVerified) },
       });
+      const response = await request(fixture.instance)
+        .post('/api/dispatch/action')
+        .set('Authorization', 'Bearer signed-oidc-token')
+        .send({
+          ...body,
+          publishMode: 'app-gate',
+          expectedGeneration: 3,
+          caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+        });
 
-    expect(response.status).toBe(202);
-    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
-      eventName: 'repository_dispatch', publicationMode: 'app-gate', expectedGeneration: 3,
-    }));
-  });
+      expect(response.status).toBe(202);
+      expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+        eventName: 'repository_dispatch', publicationMode: 'app-gate', expectedGeneration: 3,
+      }));
+    },
+  );
 
   it('keeps app-gate disabled unless the verifier explicitly authorizes it', async () => {
     const fixture = app();

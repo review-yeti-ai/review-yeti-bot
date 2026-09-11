@@ -89,8 +89,14 @@ a model in the request handler. Configure all allowlists before enabling it:
 - `ACTION_DISPATCH_WORKFLOW_REFS`: comma-separated exact trusted reusable-workflow refs.
 - `ACTION_DISPATCH_WORKFLOW_SHAS`: comma-separated immutable 40-hex workflow commit SHAs.
 - `ACTION_DISPATCH_ALLOW_APP_GATE=false` during qualification.
+- `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=false` while deploying the
+  compatible service and promoting the central producer; set exactly `true`
+  only after a live central app-gate request proves its admitted generation.
 - `DATABASE_URL` or `POSTGRES_URL`, plus the GitHub App credentials above.
 
 The Action requests audience `review-yeti-doks-dispatch` and posts to
 `https://review-bot.example.com/api/dispatch/action`. Keep App-gate publication disabled
 until the separate worker receipt/finalizer and required-check plans pass exact-head qualification.
+Even while expected-generation enforcement is off, any supplied value is checked
+against the durable allocator under its admission transaction; the switch only
+temporarily permits old central payloads that omit the field.

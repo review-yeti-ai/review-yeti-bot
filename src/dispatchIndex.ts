@@ -19,6 +19,7 @@ import { createMergeGroupGate } from './review/mergeGroupGate';
 import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
 import { createReviewCiRuntime } from './reviewCiRuntime';
 import { findReviewCiEnrollment } from './review/reviewCi';
+import { actionDispatchConfigFromEnv } from './config/actionDispatchConfig';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -30,6 +31,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   if (environment.ACTION_DISPATCH_ENABLED !== 'true') {
     throw new Error('ACTION_DISPATCH_ENABLED must be true for the dedicated Action dispatch service');
   }
+  const dispatchConfig = actionDispatchConfigFromEnv(environment);
   const policy = githubActionsOidcPolicyFromEnv(environment);
   const appId = required(environment, 'GITHUB_APP_ID');
   const privateKey = required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
@@ -57,8 +59,10 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     config: ciConfig, pool, appId, privateKey, baseUrl, resolver: authoritative.resolver,
     workerId: `review-ci-${environment.HOSTNAME || 'local'}`,
   }) : undefined;
-  const repository = new PostgresReviewDispatchRepository(pool, undefined,
-    authoritative ? { validateAuthoritativeAdmission: authoritative.validateAdmission } : undefined);
+  const repository = new PostgresReviewDispatchRepository(pool, undefined, {
+    ...(authoritative ? { validateAuthoritativeAdmission: authoritative.validateAdmission } : {}),
+    requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
+  });
   const githubWebhook = webhookConfig ? {
     secret: webhookConfig.secret,
     onEvent: createGitHubWebhookAdmissionHandler({
@@ -79,6 +83,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     verifier: new GitHubActionsOidcVerifier({ policy }),
     admission: repository,
     allowAppGate: policy.allowAppGate,
+    requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
     ...(ci ? { ci: ci.routes } : {}),
     ...(authoritative ? { authoritativePublishing: authoritative.admission,
       authoritativeWorkerCompletion: authoritative.completion } : {}),
