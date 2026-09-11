@@ -939,16 +939,30 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
   }
 
   it('binds expired publishing claims to a deadline (real eligibility is covered by the PostgreSQL lifecycle test)', async () => {
-    // These three predicates are what keep the reaper from force-failing live
+    // These predicates are what keep the reaper from force-failing live
     // traffic. Dropping publication_mode would fail non-publishing runs; dropping
-    // the status guard would fail runs a worker still owns; dropping the deadline
-    // comparison would fail runs that are simply in flight.
+    // the status/ownership guards would infer a verdict for active or unowned
+    // failures; dropping the deadline comparison would fail runs that are simply
+    // in flight.
     const { repository, query } = repositoryWith([swept]);
     await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
     const sql = String(query.mock.calls[0][0]);
     expect(sql).toMatch(/runs.status IN \('queued', 'running'\)/u);
+    expect(sql).toMatch(/runs.status = 'failed'/u);
     expect(sql).toMatch(/publication_mode\s*=\s*'app-gate'/u);
     expect(sql).toMatch(/terminal_deadline\s*<=\s*to_timestamp\(\$2/u);
+  });
+
+  it('allows a durable failed worker to be reconciled before its original deadline', async () => {
+    const { repository, query } = repositoryWith([swept]);
+    await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
+    const sql = String(query.mock.calls[0][0]).replace(/\s+/gu, ' ');
+    expect(sql).toMatch(/\(\s*runs\.status = 'failed'\s+AND\s+\(\s*\(outbox\.status = 'projected' OR outbox\.worker_token_digest IS NOT NULL\) OR runs\.terminal_deadline <=/u);
+    expect(sql).toMatch(/runs\.status IN \('queued', 'running'\)/u);
+    expect(sql).toMatch(/runs\.status = 'failed'[\s\S]*?AND publication_mode = 'app-gate'/u);
+    expect(sql).not.toMatch(/runs\.status IN \([^)]*cancelled|runs\.status IN \([^)]*superseded/u);
+    expect(sql).toMatch(/error_text = CASE[\s\S]*?worker terminal failure: %[\s\S]*?THEN runs\.error_text/u);
+    expect(sql).toMatch(/runs\.status = 'terminal'[\s\S]*?worker terminal failure: %[\s\S]*?outbox\.status = 'projected'[\s\S]*?runs\.lease_owner IS NOT NULL/u);
   });
 
   it('claims and marks terminal in a single statement, under SKIP LOCKED', async () => {
@@ -969,7 +983,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 1);
     const sql = String(query.mock.calls[0][0]);
     expect(sql).toMatch(
-      /ORDER BY CASE WHEN runs\.status IN \('queued', 'running'\) THEN 0 ELSE 1 END,\s*runs\.terminal_deadline/u,
+      /ORDER BY CASE\s+WHEN runs\.status = 'failed' THEN 0\s+WHEN runs\.status IN \('queued', 'running'\) THEN 1\s+ELSE 2\s+END,\s*runs\.terminal_deadline/u,
     );
   });
 
