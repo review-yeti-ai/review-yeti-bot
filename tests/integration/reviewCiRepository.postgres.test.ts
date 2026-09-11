@@ -3,6 +3,7 @@ import { Pool, type PoolClient } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
+import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { enqueueReviewCiCompletionInTransaction, PostgresReviewCiRepository, type ReviewCiRepositoryOptions } from '../../src/persistence/reviewCiRepository';
 import {
   createReviewCiLanePlan, reviewCiRequestEvent, reviewCiRunName,
@@ -57,12 +58,13 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
       run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id), status TEXT NOT NULL, execution_attempt INTEGER NOT NULL
     );`);
     await pool.query(REVIEW_GATE_SCHEMA_SQL);
+    await pool.query(REVIEW_EVENT_SCHEMA_SQL);
     await pool.query(REVIEW_CI_SCHEMA_SQL);
     await pool.query('CREATE TABLE review_ci_hook_test_events(request_id UUID, transition TEXT, snapshot JSONB, clock BIGINT)');
     repository = new PostgresReviewCiRepository(pool, publicationReady);
   });
   afterEach(async () => {
-    if (pool) await pool.query('TRUNCATE review_ci_hook_test_events,review_ci_deliveries,review_ci_requests,review_gate_attempts,review_dispatch_outbox,review_runs');
+    if (pool) await pool.query('TRUNCATE review_event_outbox,review_event_sequence_counters,review_ci_hook_test_events,review_ci_deliveries,review_ci_requests,review_gate_attempts,review_dispatch_outbox,review_runs CASCADE');
   });
   afterAll(async () => {
     if (!pool) return;

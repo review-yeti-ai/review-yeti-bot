@@ -9,10 +9,11 @@ import {
   type StoredReviewCiRequest,
 } from '../review/reviewCi';
 import { reviewDispatchPrLockKey, storedReviewCiRequestFromRow } from './reviewCiPersistence';
+import { appendLifecycleEventForRun } from './reviewEventRepository';
 
 export type { ReviewCiQueryable, ReviewCiStateTransition, ReviewCiTransition } from '../review/reviewCi';
 interface Client extends ReviewCiQueryable { release(): void }
-interface Pool extends ReviewCiQueryable { connect(): Promise<Client> }
+interface Pool extends ReviewCiQueryable { connect(): Promise<Client>; end?: (...args: any[]) => Promise<void> }
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
 const ATTEMPT = /^run_[a-f0-9]{32}-g\d+-e[1-9]\d*$/u;
 const TERMINAL = new Set(['completed', 'superseded', 'delivery_error']);
@@ -104,9 +105,11 @@ export async function enqueueReviewCiCompletionInTransaction(
 export class PostgresReviewCiRepository implements ReviewCiRepository {
   private readonly maxDispatchAttempts: number;
   private readonly admissionTimeoutMs: number;
+  private readonly lifecycleEventsEnabled: boolean;
   constructor(private readonly pool: Pool, private readonly options: ReviewCiRepositoryOptions = {}) {
     this.maxDispatchAttempts = options.maxDispatchAttempts ?? 5;
     this.admissionTimeoutMs = options.admissionTimeoutMs ?? 5_000;
+    this.lifecycleEventsEnabled = typeof pool.end === 'function';
     if (!Number.isInteger(this.maxDispatchAttempts) || this.maxDispatchAttempts < 1 || this.maxDispatchAttempts > 10
       || !Number.isInteger(this.admissionTimeoutMs) || this.admissionTimeoutMs < 50 || this.admissionTimeoutMs > 15_000) {
       throw new Error('Invalid Review CI repository bounds');
@@ -142,6 +145,15 @@ export class PostgresReviewCiRepository implements ReviewCiRepository {
     const request = storedReviewCiRequestFromRow(
       (await client.query('SELECT * FROM review_ci_requests WHERE request_id=$1', [requestId])).rows[0]);
     await this.options.onTransition(client, request, transition, now);
+  }
+  private async appendLifecycle(client: Client, runId: string, now: number): Promise<void> {
+    if (!this.lifecycleEventsEnabled) return;
+    await appendLifecycleEventForRun(client, {
+      runId,
+      eventKind: 'review.lifecycle.ci_admission',
+      occurredAt: now,
+      data: { stage: 'ci_admission', terminal_class: 'admitted' },
+    });
   }
   async get(requestId: string): Promise<StoredReviewCiRequest | null> {
     id(requestId);
@@ -201,6 +213,7 @@ export class PostgresReviewCiRepository implements ReviewCiRepository {
         updated_at=to_timestamp($2/1000.0) WHERE request_id=$1 AND kind='repository'`, [requestId, now]);
       await client.query(`INSERT INTO review_ci_deliveries(request_id,kind,epoch,available_at,created_at,updated_at)
         VALUES($1,'workflow',1,to_timestamp($2/1000.0),to_timestamp($2/1000.0),to_timestamp($2/1000.0))`, [requestId, now]);
+      await this.appendLifecycle(client, request.review.runId, now);
       await this.notifyTransition(client, requestId, 'admitted', now);
       return 'recorded';
     });

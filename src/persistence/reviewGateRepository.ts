@@ -13,6 +13,7 @@ import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationCallback,
   type GatePublicationTransition, type GatePublicationErrorClass, type ReviewGateRepository } from '../review/reviewGateContracts';
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
+import { appendLifecycleEventForRun } from './reviewEventRepository';
 export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationNotStarted } from '../review/reviewGateContracts';
 
@@ -42,6 +43,7 @@ function fromRow(row: any): StoredReviewGate {
  * and policy; workers cannot reserve, create or select authoritative checks. */
 export class PostgresReviewGateRepository implements ReviewGateRepository {
   private readonly completionResolutionTimeoutMs: number;
+  private readonly lifecycleEventsEnabled: boolean;
   constructor(private readonly pool: Pool, private readonly options: {
     completionResolutionTimeoutMs?: number;
     /** Explicit service enrollment only. Invoked after terminal updates under
@@ -49,9 +51,36 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     onEligibleCompletion?: (client: Queryable, gate: StoredReviewGate, now: number) => Promise<void>;
   } = {}) {
     this.completionResolutionTimeoutMs = options.completionResolutionTimeoutMs ?? 10_000;
+    this.lifecycleEventsEnabled = typeof (pool as unknown as { end?: unknown }).end === 'function';
     if (!Number.isSafeInteger(this.completionResolutionTimeoutMs)
       || this.completionResolutionTimeoutMs < 250 || this.completionResolutionTimeoutMs > 15_000) {
       throw new Error('Gate completion resolution timeout must be bounded');
+    }
+  }
+
+  private async appendLifecycle(
+    client: Queryable,
+    runId: string,
+    eventKind: string,
+    now: number,
+    data: Record<string, unknown> = {},
+  ): Promise<void> {
+    if (!this.lifecycleEventsEnabled) return;
+    await appendLifecycleEventForRun(client, { runId, eventKind, occurredAt: now, data });
+  }
+
+  private async inTransaction<T>(operation: (client: Client) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await operation(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
     }
   }
 
@@ -186,6 +215,9 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           updated_at = to_timestamp($5/1000.0) WHERE run_id = $1`,
       [event.runId, decision.status === 'success' ? 'succeeded' : decision.status === 'cancelled' ? 'superseded' : 'failed',
         resultDigest, decision.status === 'success' ? null : `review gate: ${decision.reason}`, now, failureDiagnostics]);
+      await this.appendLifecycle(client, event.runId, 'review.lifecycle.terminal', now, {
+        stage: 'terminal', terminal_class: decision.status, result_digest: resultDigest,
+      });
       if (decision.status === 'success') await this.options.onEligibleCompletion?.(client, gate, now);
       return await finish('recorded');
     } catch (error) {
@@ -201,6 +233,10 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     try {
       await client.query('BEGIN');
       const gate = await PostgresReviewGateRepository.reserveInTransaction(client, runId, expectedAppId, now);
+      if (gate) {
+        await this.appendLifecycle(client, runId, 'review.lifecycle.gate_publication', now,
+          { stage: 'gate_publication', terminal_class: 'reserved' });
+      }
       await client.query('COMMIT');
       return gate;
     } catch (error) {
@@ -270,18 +306,24 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     if (!workerId.trim() || !Number.isSafeInteger(leaseMs) || leaseMs < 1_000 || leaseMs > 120_000) {
       throw new Error('Invalid gate publication lease');
     }
-    const result = await this.pool.query(`WITH candidate AS (
-      SELECT attempt_id, creation_state = 'reserved' AS may_create FROM review_gate_attempts
-       WHERE published_version < desired_version AND available_at <= to_timestamp($2 / 1000.0)
-         AND (lease_owner IS NULL OR lease_expires_at <= to_timestamp($2 / 1000.0))
-       ORDER BY available_at, created_at FOR UPDATE SKIP LOCKED LIMIT 1
-    ) UPDATE review_gate_attempts gate SET
-      creation_state = CASE WHEN gate.creation_state = 'reserved' THEN 'creating' ELSE gate.creation_state END,
-      lease_owner = $1, lease_token = $4, lease_expires_at = to_timestamp(($2+$3)/1000.0), updated_at = to_timestamp($2/1000.0)
-      FROM candidate WHERE gate.attempt_id = candidate.attempt_id
-      RETURNING gate.*, candidate.may_create`, [workerId, now, leaseMs, randomUUID()]);
-    const row = result.rows[0];
-    return row ? { ...fromRow(row), leaseOwner: workerId, leaseToken: row.lease_token, mayCreate: row.may_create === true } : null;
+    return this.inTransaction(async (client) => {
+      const result = await client.query(`WITH candidate AS (
+        SELECT attempt_id, creation_state = 'reserved' AS may_create FROM review_gate_attempts
+         WHERE published_version < desired_version AND available_at <= to_timestamp($2 / 1000.0)
+           AND (lease_owner IS NULL OR lease_expires_at <= to_timestamp($2 / 1000.0))
+         ORDER BY available_at, created_at FOR UPDATE SKIP LOCKED LIMIT 1
+      ) UPDATE review_gate_attempts gate SET
+        creation_state = CASE WHEN gate.creation_state = 'reserved' THEN 'creating' ELSE gate.creation_state END,
+        lease_owner = $1, lease_token = $4, lease_expires_at = to_timestamp(($2+$3)/1000.0), updated_at = to_timestamp($2/1000.0)
+        FROM candidate WHERE gate.attempt_id = candidate.attempt_id
+        RETURNING gate.*, candidate.may_create`, [workerId, now, leaseMs, randomUUID()]);
+      const row = result.rows[0];
+      if (row) {
+        await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.gate_publication', now,
+          { stage: 'gate_publication', terminal_class: 'claimed' });
+      }
+      return row ? { ...fromRow(row), leaseOwner: workerId, leaseToken: row.lease_token, mayCreate: row.may_create === true } : null;
+    });
   }
 
   /** Service-side recovery, not an Actions waiter. Hints are re-read under the
@@ -352,6 +394,9 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
             status = CASE WHEN worker_token_digest IS NOT NULL THEN 'projected' ELSE 'terminal' END,
             lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($2/1000.0)
           WHERE run_id = $1`, [row.run_id, now]);
+        await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', now, {
+          stage: 'terminal', terminal_class: decision.status, retry_class: decision.reason,
+        });
         await client.query('COMMIT');
         reaped += 1;
       } catch (error) {
@@ -394,7 +439,11 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
             AND gate.review_generation = runs.attempt AND gate.execution_attempt = outbox.execution_attempt + 1
             AND gate.expected_app_id = runs.authoritative_gate_app_id
             AND runs.status IN ('queued', 'running') AND outbox.status = 'projected'
-            AND runs.terminal_deadline > to_timestamp($2/1000.0) RETURNING gate.attempt_id`, [hint.attempt_id, now]);
+            AND runs.terminal_deadline > to_timestamp($2/1000.0) RETURNING gate.attempt_id, gate.run_id`, [hint.attempt_id, now]);
+        for (const row of updated.rows) {
+          await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.started', now,
+            { stage: 'started' });
+        }
         await client.query('COMMIT');
         advanced += updated.rows.length;
       } catch (error) {
@@ -412,12 +461,20 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       || !['transport', 'unknown-create', 'identity-conflict', 'stale-claim'].includes(errorClass)) {
       throw new Error('Invalid gate publication retry');
     }
-    const result = await this.pool.query(`UPDATE review_gate_attempts
-      SET lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, available_at = to_timestamp(($3+$4)/1000.0),
-          last_error_class = $5, updated_at = to_timestamp($3/1000.0)
-      WHERE attempt_id = $1 AND lease_owner = $2 AND lease_token = $6 AND lease_expires_at > to_timestamp($3/1000.0)
-      RETURNING attempt_id`, [claim.coordinates.attemptId, claim.leaseOwner, now, delayMs, errorClass, claim.leaseToken]);
-    return result.rows.length === 1;
+    const update = async (client: Queryable): Promise<boolean> => {
+      const result = await client.query(`UPDATE review_gate_attempts
+        SET lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, available_at = to_timestamp(($3+$4)/1000.0),
+            last_error_class = $5, updated_at = to_timestamp($3/1000.0)
+        WHERE attempt_id = $1 AND lease_owner = $2 AND lease_token = $6 AND lease_expires_at > to_timestamp($3/1000.0)
+        RETURNING attempt_id`, [claim.coordinates.attemptId, claim.leaseOwner, now, delayMs, errorClass, claim.leaseToken]);
+      if (result.rows.length === 1) {
+        await this.appendLifecycle(client, claim.coordinates.runId, 'review.lifecycle.retrying', now,
+          { stage: 'gate_publication', retry_class: errorClass });
+      }
+      return result.rows.length === 1;
+    };
+    if (!this.lifecycleEventsEnabled) return update(this.pool);
+    return this.inTransaction(update);
   }
 
   /** Hold admission's lock through the bounded external publication. Without
@@ -459,6 +516,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         // operation. Recover only the original creation lease, under the same
         // PR lock that serializes cancellation, supersession and the reaper.
         // A later cancellation can then tombstone this never-started intent.
+        const resetAt = clock();
         const reset = await client.query(`UPDATE review_gate_attempts
           SET creation_state = 'reserved', lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
               available_at = to_timestamp(($4+$7)/1000.0), last_error_class = 'client-preparation',
@@ -468,7 +526,11 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
             AND creation_state = 'creating' AND check_id IS NULL AND current_attempt
             AND desired_state <> 'cancelled' AND expected_app_id = $6
           RETURNING attempt_id`, [gate.coordinates.attemptId, claim.leaseOwner, claim.leaseToken,
-          clock(), claim.desiredVersion, claim.expectedAppId, check.retryDelayMs]);
+          resetAt, claim.desiredVersion, claim.expectedAppId, check.retryDelayMs]);
+        if (reset.rows.length === 1) {
+          await this.appendLifecycle(client, gate.coordinates.runId, 'review.lifecycle.retrying', resetAt,
+            { stage: 'gate_publication', retry_class: 'client_preparation' });
+        }
         await client.query('COMMIT');
         return reset.rows.length === 1 ? 'retry' : 'stale-claim';
       }
@@ -489,6 +551,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           AND lease_expires_at > to_timestamp($4/1000.0) RETURNING attempt_id`,
       [gate.coordinates.attemptId, claim.leaseOwner, check.id, clock(), claim.leaseToken]);
       if (saved.rows.length !== 1) throw new Error('Gate publication lease expired before durable acknowledgement');
+      await this.appendLifecycle(client, gate.coordinates.runId, 'review.lifecycle.gate_publication', clock(),
+        { stage: 'gate_publication', terminal_class: terminal ? gate.desiredState : 'published' });
       await client.query('COMMIT');
       return 'published';
     } catch (error) {

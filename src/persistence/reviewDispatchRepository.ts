@@ -18,6 +18,7 @@ import { buildAuthoritativeReviewIdentity } from '../review/authoritativeReviewI
 import { savePreparedPublishingPolicy } from './preparedReviewRepository';
 import { PostgresReviewGateRepository } from './reviewGateRepository';
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
+import { appendLifecycleEventForRun, type ReviewEventQueryable } from './reviewEventRepository';
 
 interface QueryResult {
   rows: any[];
@@ -242,6 +243,8 @@ function validateClaimAttempt(claimAttempt: number): void {
 export class PostgresReviewDispatchRepository implements ReviewDispatchRepository {
   private readonly queryable: Queryable;
   private readonly admissionValidationTimeoutMs: number;
+  private readonly explicitQueryable: boolean;
+  private readonly lifecycleEventsEnabled: boolean;
 
   constructor(private readonly pool: ConnectionPool, queryable?: Queryable,
     private readonly options: ReviewDispatchRepositoryOptions = {}) {
@@ -252,9 +255,40 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     }
     this.admissionValidationTimeoutMs = Math.min(30_000, Math.max(250, timeoutMs));
     const possiblePool = pool as unknown as Partial<Queryable>;
+    this.explicitQueryable = queryable !== undefined;
+    this.lifecycleEventsEnabled = !this.explicitQueryable
+      && typeof possiblePool.query === 'function'
+      && typeof (pool as unknown as { end?: unknown }).end === 'function';
     this.queryable = queryable || (typeof possiblePool.query === 'function' ? possiblePool as Queryable : {
       query: async () => { throw new Error('direct PostgreSQL query interface is unavailable'); },
     });
+  }
+
+  private async inTransaction<T>(operation: (client: TransactionClient) => Promise<T>): Promise<T> {
+    if (this.explicitQueryable || !this.lifecycleEventsEnabled) return operation(this.queryable as TransactionClient);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await operation(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async appendLifecycle(
+    client: ReviewEventQueryable,
+    runId: string,
+    eventKind: string,
+    now: number,
+    data: Record<string, unknown> = {},
+  ): Promise<void> {
+    if (!this.lifecycleEventsEnabled) return;
+    await appendLifecycleEventForRun(client, { runId, eventKind, occurredAt: now, data });
   }
 
   private async validateAuthoritativeAdmission(input: ReviewAdmissionInput): Promise<void> {
@@ -473,7 +507,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       // the trusted validator above establishes freshness under this same lock;
       // the persisted-history guard alone cannot identify an unseen stale run.
       if (['queued', 'running', 'publishing'].includes(runRow.status)) {
-        await client.query(
+        const superseded = await client.query(
           `WITH superseded AS (
              UPDATE review_runs
                 SET status = 'superseded',
@@ -490,10 +524,15 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
            UPDATE review_dispatch_outbox AS outbox
               SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
                   updated_at = to_timestamp($5 / 1000.0)
-            WHERE outbox.run_id IN (SELECT run_id FROM superseded)`,
+            WHERE outbox.run_id IN (SELECT run_id FROM superseded)
+           RETURNING outbox.run_id`,
           [input.identity.owner, input.identity.repo, input.identity.prNumber, identityDigest, input.receivedAt,
             runRow.authoritative_gate_app_id != null],
         );
+        for (const supersededRow of superseded.rows) {
+          await this.appendLifecycle(client, String(supersededRow.run_id), 'review.lifecycle.superseded', input.receivedAt,
+            { stage: 'superseded', terminal_class: 'candidate_superseded' });
+        }
       }
 
       await client.query(
@@ -541,6 +580,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           client, runRow.run_id, input.authoritativeGate.expectedAppId, input.receivedAt);
         if (!gate) throw new Error('Authoritative dispatch has no durable gate reservation');
       }
+      await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.admission', input.receivedAt,
+        { stage: 'admission', policy_digest: input.effectivePolicyDigest || input.identity.configDigest });
+      await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.queued', input.receivedAt,
+        { stage: 'queued', policy_digest: input.effectivePolicyDigest || input.identity.configDigest });
+      if (Number(runRow.attempt || 0) > 0) {
+        await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.retrying', input.receivedAt,
+          { stage: 'admission', retry_class: 'same_identity_redelivery' });
+      }
       await client.query('COMMIT');
       return {
         status: 'accepted',
@@ -562,73 +609,78 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   async claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null> {
-    const result = await this.queryable.query(
-      `WITH candidate AS (
-         SELECT outbox.run_id, runs.publication_mode, runs.authoritative_gate_app_id, runs.owner, runs.repo,
-                runs.pr_number, runs.head_sha, runs.base_sha, runs.received_at,
-                runs.terminal_deadline, runs.effective_policy_digest,
-                runs.effective_config_digest
-           FROM review_dispatch_outbox AS outbox
-           JOIN review_runs AS runs ON runs.run_id = outbox.run_id
-          WHERE runs.status = 'queued'
-            AND (runs.authoritative_gate_app_id IS NULL OR EXISTS (
-              SELECT 1 FROM review_gate_attempts gate WHERE gate.run_id = runs.run_id
-                AND gate.current_attempt AND gate.review_generation = runs.attempt
-                AND gate.execution_attempt = outbox.execution_attempt + 1
-                AND gate.expected_app_id = runs.authoritative_gate_app_id
-                AND gate.creation_state = 'bound' AND gate.check_id IS NOT NULL
-                AND gate.desired_state IN ('queued', 'in_progress')
-                AND gate.published_version = gate.desired_version
-            ))
-            AND runs.terminal_deadline > to_timestamp($2 / 1000.0)
-            AND outbox.available_at <= to_timestamp($2 / 1000.0)
-            AND (outbox.status = 'pending'
-              OR (outbox.status = 'claimed' AND outbox.lease_expires_at <= to_timestamp($2 / 1000.0)))
-          ORDER BY outbox.available_at, outbox.created_at
-          FOR UPDATE OF outbox SKIP LOCKED
-          LIMIT 1
-       )
-       UPDATE review_dispatch_outbox AS outbox
-          SET status = 'claimed', lease_owner = $1,
-              lease_expires_at = to_timestamp(($2 + $3) / 1000.0),
-              attempt = attempt + 1, updated_at = to_timestamp($2 / 1000.0)
-         FROM candidate, github_deliveries AS deliveries
-        WHERE outbox.run_id = candidate.run_id
-          AND deliveries.delivery_id = outbox.delivery_id
-       RETURNING outbox.run_id, outbox.delivery_id, deliveries.repository_id,
-                 deliveries.installation_id, candidate.publication_mode, candidate.authoritative_gate_app_id,
-                 candidate.owner, candidate.repo, candidate.pr_number,
-                 candidate.head_sha, candidate.base_sha, candidate.received_at,
-                 candidate.terminal_deadline, candidate.effective_policy_digest,
-                 candidate.effective_config_digest,
-                 outbox.attempt AS claim_attempt,
-                 outbox.execution_attempt + 1 AS execution_attempt,
-                 outbox.worker_token_digest,
-                 outbox.lease_owner, outbox.lease_expires_at`,
-      [workerId, now, leaseMs],
-    );
-    const row = result.rows[0];
-    return row ? {
-      runId: row.run_id,
-      deliveryId: row.delivery_id,
-      claimAttempt: Number(row.claim_attempt),
-      executionAttempt: Number(row.execution_attempt || 1),
-      workerTokenDigest: row.worker_token_digest || undefined,
-      repositoryId: Number(row.repository_id),
-      installationId: Number(row.installation_id),
-      publicationMode: publicationMode(row.publication_mode),
-      authoritativeGateAppId: row.authoritative_gate_app_id == null ? undefined : Number(row.authoritative_gate_app_id),
-      repo: `${row.owner}/${row.repo}`,
-      prNumber: Number(row.pr_number),
-      headSha: row.head_sha,
-      baseSha: row.base_sha,
-      receivedAt: milliseconds(row.received_at) || 0,
-      terminalDeadline: milliseconds(row.terminal_deadline) || 0,
-      policyDigest: row.effective_policy_digest,
-      configDigest: row.effective_config_digest,
-      leaseOwner: row.lease_owner,
-      leaseExpiresAt: milliseconds(row.lease_expires_at) || 0,
-    } : null;
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `WITH candidate AS (
+           SELECT outbox.run_id, runs.publication_mode, runs.authoritative_gate_app_id, runs.owner, runs.repo,
+                  runs.pr_number, runs.head_sha, runs.base_sha, runs.received_at,
+                  runs.terminal_deadline, runs.effective_policy_digest,
+                  runs.effective_config_digest
+             FROM review_dispatch_outbox AS outbox
+             JOIN review_runs AS runs ON runs.run_id = outbox.run_id
+            WHERE runs.status = 'queued'
+              AND (runs.authoritative_gate_app_id IS NULL OR EXISTS (
+                SELECT 1 FROM review_gate_attempts gate WHERE gate.run_id = runs.run_id
+                  AND gate.current_attempt AND gate.review_generation = runs.attempt
+                  AND gate.execution_attempt = outbox.execution_attempt + 1
+                  AND gate.expected_app_id = runs.authoritative_gate_app_id
+                  AND gate.creation_state = 'bound' AND gate.check_id IS NOT NULL
+                  AND gate.desired_state IN ('queued', 'in_progress')
+                  AND gate.published_version = gate.desired_version
+              ))
+              AND runs.terminal_deadline > to_timestamp($2 / 1000.0)
+              AND outbox.available_at <= to_timestamp($2 / 1000.0)
+              AND (outbox.status = 'pending'
+                OR (outbox.status = 'claimed' AND outbox.lease_expires_at <= to_timestamp($2 / 1000.0)))
+            ORDER BY outbox.available_at, outbox.created_at
+            FOR UPDATE OF outbox SKIP LOCKED
+            LIMIT 1
+         )
+         UPDATE review_dispatch_outbox AS outbox
+            SET status = 'claimed', lease_owner = $1,
+                lease_expires_at = to_timestamp(($2 + $3) / 1000.0),
+                attempt = attempt + 1, updated_at = to_timestamp($2 / 1000.0)
+           FROM candidate, github_deliveries AS deliveries
+          WHERE outbox.run_id = candidate.run_id
+            AND deliveries.delivery_id = outbox.delivery_id
+         RETURNING outbox.run_id, outbox.delivery_id, deliveries.repository_id,
+                   deliveries.installation_id, candidate.publication_mode, candidate.authoritative_gate_app_id,
+                   candidate.owner, candidate.repo, candidate.pr_number,
+                   candidate.head_sha, candidate.base_sha, candidate.received_at,
+                   candidate.terminal_deadline, candidate.effective_policy_digest,
+                   candidate.effective_config_digest,
+                   outbox.attempt AS claim_attempt,
+                   outbox.execution_attempt + 1 AS execution_attempt,
+                   outbox.worker_token_digest,
+                   outbox.lease_owner, outbox.lease_expires_at`,
+        [workerId, now, leaseMs],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.dispatched', now,
+        { stage: 'dispatch' });
+      return {
+        runId: row.run_id,
+        deliveryId: row.delivery_id,
+        claimAttempt: Number(row.claim_attempt),
+        executionAttempt: Number(row.execution_attempt || 1),
+        workerTokenDigest: row.worker_token_digest || undefined,
+        repositoryId: Number(row.repository_id),
+        installationId: Number(row.installation_id),
+        publicationMode: publicationMode(row.publication_mode),
+        authoritativeGateAppId: row.authoritative_gate_app_id == null ? undefined : Number(row.authoritative_gate_app_id),
+        repo: `${row.owner}/${row.repo}`,
+        prNumber: Number(row.pr_number),
+        headSha: row.head_sha,
+        baseSha: row.base_sha,
+        receivedAt: milliseconds(row.received_at) || 0,
+        terminalDeadline: milliseconds(row.terminal_deadline) || 0,
+        policyDigest: row.effective_policy_digest,
+        configDigest: row.effective_config_digest,
+        leaseOwner: row.lease_owner,
+        leaseExpiresAt: milliseconds(row.lease_expires_at) || 0,
+      };
+    });
   }
 
   async claimAbandonedPublishingRuns(
@@ -639,8 +691,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('reaper limit must be a positive integer');
     // A failure to reach GitHub must remain retryable. Claim with a short lease;
     // only successful reconciliation removes the pending-publication marker.
-    const result = await this.queryable.query(
-      `WITH candidate AS (
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `WITH candidate AS (
          SELECT runs.run_id,
                 runs.error_text = $4::text
                   AS recovery_only
@@ -710,18 +763,23 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       [workerId, now, limit, RECOVERY_UNCONFIRMED_ERROR_TEXT,
         ABANDONED_PUBLISHING_ERROR_TEXT.reapedPrefix],
     );
-    return result.rows.map((row: Record<string, unknown>) => ({
-      runId: String(row.run_id),
-      owner: String(row.owner),
-      repo: String(row.repo),
-      prNumber: Number(row.pr_number),
-      headSha: String(row.head_sha),
-      deliveryId: String(row.delivery_id),
-      executionAttempt: Number(row.execution_attempt),
-      receivedAt: milliseconds(row.received_at) || 0,
-      terminalDeadline: milliseconds(row.terminal_deadline) || 0,
-      recoveryOnly: row.recovery_only === true,
-    }));
+      for (const row of result.rows as Record<string, unknown>[]) {
+        await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', now,
+          { stage: 'terminal', terminal_class: 'publishing_deadline', retry_class: 'reaper' });
+      }
+      return result.rows.map((row: Record<string, unknown>) => ({
+        runId: String(row.run_id),
+        owner: String(row.owner),
+        repo: String(row.repo),
+        prNumber: Number(row.pr_number),
+        headSha: String(row.head_sha),
+        deliveryId: String(row.delivery_id),
+        executionAttempt: Number(row.execution_attempt),
+        receivedAt: milliseconds(row.received_at) || 0,
+        terminalDeadline: milliseconds(row.terminal_deadline) || 0,
+        recoveryOnly: row.recovery_only === true,
+      }));
+    });
   }
 
   /** Hold the exact attempt's row locks through bounded GitHub publication.
@@ -788,6 +846,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [run.runId, now, outcome, RECOVERY_UNCONFIRMED_ERROR_TEXT,
           ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled],
       );
+      await this.appendLifecycle(client, run.runId, 'review.lifecycle.terminal', now,
+        { stage: 'terminal', terminal_class: 'publishing_deadline_reconciled' });
       await client.query('COMMIT');
       return true;
     } catch (error) {
@@ -827,8 +887,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     if (workerTokenDigest !== undefined && !/^[a-f0-9]{64}$/u.test(workerTokenDigest)) {
       throw new Error('worker token digest must be 64 lowercase hex characters');
     }
-    const result = await this.queryable.query(
-      `UPDATE review_dispatch_outbox
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE review_dispatch_outbox
           SET status = 'projected', projection_name = $3, worker_token_digest = COALESCE($5, worker_token_digest),
               lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($4 / 1000.0)
         WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
@@ -839,9 +900,13 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
               AND runs.terminal_deadline > to_timestamp($4 / 1000.0))
           AND ($5::text IS NULL OR worker_token_digest IS NULL OR worker_token_digest = $5)
       RETURNING run_id`,
-      [runId, workerId, projectionName, now, workerTokenDigest || null, claimAttempt],
-    );
-    return result.rows.length > 0;
+        [runId, workerId, projectionName, now, workerTokenDigest || null, claimAttempt],
+      );
+      if (result.rows.length > 0) {
+        await this.appendLifecycle(client, runId, 'review.lifecycle.started', now, { stage: 'started' });
+      }
+      return result.rows.length > 0;
+    });
   }
 
   async bindWorkerTokenDigest(runId: string, workerId: string, claimAttempt: number, workerTokenDigest: string, now: number): Promise<boolean> {
@@ -868,8 +933,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
 
   async releaseForRetry(runId: string, workerId: string, claimAttempt: number, now: number, availableAt: number): Promise<boolean> {
     validateClaimAttempt(claimAttempt);
-    const result = await this.queryable.query(
-      `UPDATE review_dispatch_outbox
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `UPDATE review_dispatch_outbox
           SET status = 'pending', lease_owner = NULL, lease_expires_at = NULL,
               available_at = to_timestamp($4 / 1000.0), updated_at = to_timestamp($3 / 1000.0)
         WHERE run_id = $1 AND lease_owner = $2 AND status = 'claimed'
@@ -879,9 +945,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             WHERE runs.run_id = review_dispatch_outbox.run_id
               AND runs.terminal_deadline > to_timestamp($3 / 1000.0))
       RETURNING run_id`,
-      [runId, workerId, now, availableAt, claimAttempt],
-    );
-    return result.rows.length > 0;
+        [runId, workerId, now, availableAt, claimAttempt],
+      );
+      if (result.rows.length > 0) {
+        await this.appendLifecycle(client, runId, 'review.lifecycle.retrying', now,
+          { stage: 'dispatch', retry_class: 'projection_retry' });
+      }
+      return result.rows.length > 0;
+    });
   }
 
   async markTerminal(runId: string, workerId: string, claimAttempt: number, now: number, error: string,
@@ -889,8 +960,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     validateClaimAttempt(claimAttempt);
     const failureDiagnostics = diagnostics
       ? JSON.stringify(buildDurableWorkerFailureDiagnostics('internal_error', diagnostics)) : null;
-    const result = await this.queryable.query(
-      `WITH terminalized AS (
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `WITH terminalized AS (
          UPDATE review_dispatch_outbox
             -- A bound token means the worker may exist despite a lost projection
             -- ACK. Retain that evidence so explicit admission rotates execution.
@@ -909,11 +981,16 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           SET status = 'failed', error_text = $4, failure_diagnostics = COALESCE($6::jsonb, failure_diagnostics), lease_owner = NULL,
               lease_expires_at = NULL, updated_at = to_timestamp($3 / 1000.0)
          FROM terminalized
-        WHERE runs.run_id = terminalized.run_id AND runs.status = 'queued'
+       WHERE runs.run_id = terminalized.run_id AND runs.status = 'queued'
       RETURNING runs.run_id`,
       [runId, workerId, now, error, claimAttempt, failureDiagnostics],
     );
-    return result.rows.length > 0;
+      if (result.rows.length > 0) {
+        await this.appendLifecycle(client, runId, 'review.lifecycle.terminal', now,
+          { stage: 'terminal', terminal_class: 'dispatch_failure' });
+      }
+      return result.rows.length > 0;
+    });
   }
 
   async markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now = Date.now()): Promise<WorkerFailureTransition> {
@@ -1039,6 +1116,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       ],
     );
     if (transitioned.rows.length !== 1) throw new Error('worker failure transition lost its locked identity');
+    await this.appendLifecycle(client, input.runId, 'review.lifecycle.terminal', now,
+      { stage: 'terminal', terminal_class: input.failureClass });
     return { runId: input.runId, status: 'failed' };
   }
 }

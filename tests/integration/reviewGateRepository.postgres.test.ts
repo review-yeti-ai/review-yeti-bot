@@ -18,6 +18,7 @@ import {
 } from '../../src/persistence/reviewGateRepository';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
+import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { enqueueReviewCiCompletionInTransaction } from '../../src/persistence/reviewCiRepository';
 import { ReviewGatePublisher, type ReviewGatePublisherOptions } from '../../src/review/reviewGatePublisher';
 import {
@@ -154,13 +155,14 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         );
       `);
       await client.query(REVIEW_GATE_SCHEMA_SQL);
+      await client.query(REVIEW_EVENT_SCHEMA_SQL);
     } finally {
       client.release();
     }
   });
 
   afterEach(async () => {
-    await pool?.query('TRUNCATE review_gate_attempts, review_dispatch_outbox, review_runs CASCADE');
+    await pool?.query('TRUNCATE review_event_outbox, review_event_sequence_counters, review_gate_attempts, review_dispatch_outbox, review_runs CASCADE');
   });
 
   afterAll(async () => {
