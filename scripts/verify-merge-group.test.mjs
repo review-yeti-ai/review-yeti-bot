@@ -103,6 +103,7 @@ test('publishes and completes the native Review Yeti check on the synthetic head
   assert.equal(queueReads, 2);
   assert.equal(writes[0].body.name, 'Review Yeti');
   assert.equal(writes[0].body.head_sha, groupSha);
+  assert.equal(writes[0].body.external_id, `merge-group:${groupSha}`);
   assert.equal(writes[0].body.status, 'in_progress');
   assert.equal(writes[1].body.conclusion, 'success');
 });

@@ -169,6 +169,7 @@ async function createSyntheticCheck({ repository, expectedHeadSha, token, fetchI
     body: {
       name: 'Review Yeti',
       head_sha: expectedHeadSha,
+      external_id: `merge-group:${expectedHeadSha}`,
       status: 'in_progress',
       output: {
         title: 'Review Yeti merge-group verification running',
