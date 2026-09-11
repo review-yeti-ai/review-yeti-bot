@@ -84,9 +84,13 @@ export interface ReviewJobDispatcherLoopOptions {
 }
 
 function safeErrorCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' && /^[A-Z0-9_-]{1,32}$/u.test(code) ? code : undefined;
+  try {
+    if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+    const code = (error as { code?: unknown }).code;
+    return typeof code === 'string' && /^[A-Z0-9_-]{1,32}$/u.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function abortableSleep(milliseconds: number, signal: AbortSignal): Promise<void> {
