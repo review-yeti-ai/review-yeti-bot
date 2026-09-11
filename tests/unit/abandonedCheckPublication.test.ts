@@ -178,6 +178,29 @@ describe('abandoned check exact App/attempt failure publication', () => {
       external_id: 'run_83c172a7d93c193fdb6dfa62bfa8bfde:a1', status: 'completed', conclusion: 'failure' });
   });
 
+  it('keeps recovery lookup-only when the create response is not bound to the exact attempt', async () => {
+    const malformed = {
+      ...exactCheck,
+      id: 77,
+      external_id: `${run.runId}:a2`,
+      status: 'completed',
+      conclusion: 'failure',
+    };
+    const fetchImplementation = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') return new Response(JSON.stringify(malformed));
+      return new Response(JSON.stringify({ check_runs: [] }));
+    });
+    const client = new GitHubInstallationClient({
+      token: 'ghs_offline',
+      fetchImplementation,
+      sleep: async () => undefined,
+    });
+
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('creation-unconfirmed');
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
+  });
+
   it('transports a worker external_id on check creation', async () => {
     const { client, fetchImplementation } = fixture([]);
     await client.createCheck(run.owner, run.repo, run.headSha, 'run_83c172a7d93c193fdb6dfa62bfa8bfde:a2');
@@ -281,6 +304,28 @@ describe('abandoned check exact App/attempt failure publication', () => {
     const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation, sleep: async () => undefined });
     await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('creation-unconfirmed');
     expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('reconciles a visible in-progress exact-attempt check during recovery-only lookup without creating', async () => {
+    const { client, fetchImplementation } = fixture([exactCheck], exactCheck);
+    await expect(client.failAbandonedCheck({ ...run, recoveryOnly: true }, 4385771, signal()))
+      .resolves.toBe('failure-published');
+    const patches = fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+    expect(patches).toHaveLength(1);
+    expect(patches[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+
+  it.each([
+    ['completed failure', 'failure', 'failure-existing'],
+    ['completed success', 'success', 'authoritative-success'],
+  ] as const)('returns %s recovery for a visible recovery-only exact attempt', async (_label, conclusion, outcome) => {
+    const completed = { ...exactCheck, status: 'completed', conclusion };
+    const { client, fetchImplementation } = fixture([completed], completed);
+    await expect(client.failAbandonedCheck({ ...run, recoveryOnly: true }, 4385771, signal()))
+      .resolves.toBe(outcome);
+    expect(fetchImplementation.mock.calls.filter(([, init]) => ['PATCH', 'POST'].includes(init?.method || '')))
+      .toHaveLength(0);
   });
 
   it('persists an unconfirmed create as recovery-only and never blindly creates it again', async () => {

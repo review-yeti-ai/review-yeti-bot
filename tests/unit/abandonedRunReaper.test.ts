@@ -13,7 +13,13 @@ const run: AbandonedPublishingRun = {
 };
 
 function fixture() {
-  const client = { failAbandonedCheck: vi.fn(async (_run: AbandonedPublishingRun, _appId: number, _signal: AbortSignal) => 'failure-published' as const) };
+  const client = {
+    failAbandonedCheck: vi.fn(async (
+      _run: AbandonedPublishingRun,
+      _appId: number,
+      _signal: AbortSignal,
+    ): Promise<AbandonedCheckRecoveryOutcome> => 'failure-published'),
+  };
   const repository = {
     claimAbandonedPublishingRuns: vi.fn(async () => [run]),
     reconcileAbandonedPublishingRun: vi.fn(async (

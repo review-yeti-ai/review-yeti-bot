@@ -445,9 +445,11 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const [sweep] = await repository.claimAbandonedPublishingRuns('reaper-a', input.terminalDeadline + 1, 1);
     await expect(repository.reconcileAbandonedPublishingRun(sweep, 'reaper-a', input.terminalDeadline + 2,
       async () => 'authoritative-success')).resolves.toBe(true);
-    expect((await client.query('SELECT error_text, lease_owner, lease_expires_at FROM review_runs WHERE run_id = $1',
+    expect((await client.query('SELECT status, stage, error_text, lease_owner, lease_expires_at FROM review_runs WHERE run_id = $1',
       [admitted.run.runId])).rows[0]).toMatchObject({
-      error_text: 'publishing run reached its terminal deadline without a verdict; authoritative success observed',
+      status: 'succeeded',
+      stage: 'complete',
+      error_text: null,
       lease_owner: null,
       lease_expires_at: null,
     });

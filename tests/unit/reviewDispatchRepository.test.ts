@@ -1051,12 +1051,30 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(update?.[1]).toEqual([
       swept.run_id, 902_000, 'creation-unconfirmed',
       'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
-      'publishing run reached its terminal deadline without a verdict; authoritative success observed',
       'publishing run reached its terminal deadline without a verdict; failure reconciled',
     ]);
     expect(String(update?.[0])).toMatch(/60000/u);
     expect(transactionQuery).toHaveBeenCalledWith('COMMIT');
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('synchronizes an observed authoritative success into the durable run state', async () => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release: vi.fn() }),
+    } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000,
+    }, 'reaper-a', 902_000, async () => 'authoritative-success')).resolves.toBe(true);
+    const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
+    expect(String(update?.[0])).toMatch(/status = CASE WHEN \$3 = 'authoritative-success' THEN 'succeeded'/u);
+    expect(String(update?.[0])).toMatch(/stage = CASE WHEN \$3 = 'authoritative-success' THEN 'complete'/u);
+    expect(String(update?.[0])).toMatch(/WHEN \$3 = 'authoritative-success' THEN NULL/u);
   });
 
   it('rejects an unknown recovery outcome and rolls back the acknowledgement', async () => {
