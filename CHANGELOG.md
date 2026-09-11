@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.7...v1.52.8) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** classify native output failures ([#691](https://github.com/review-yeti-ai/review-yeti-bot/issues/691)) ([f244d4c](https://github.com/review-yeti-ai/review-yeti-bot/commit/f244d4ce6a17b6a442c5dd0a9578e1ad4ace5ed0))
+
 ## [1.52.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.6...v1.52.7) (2026-09-11)
 
 
