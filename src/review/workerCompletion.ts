@@ -73,6 +73,12 @@ const SECRET_TOKEN_PATTERN = /(?:gh[pousr]_[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,
 // SDK error text. JWTs and AWS access-key IDs are recognizable even when they
 // are emitted as opaque response fragments rather than named assignments.
 const OPAQUE_CREDENTIAL_PATTERN = /(?:eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|(?:AKIA|ASIA)[0-9A-Z]{16})/gu;
+// Redact complete PEM private-key blocks before whitespace normalization. The
+// label backreference prevents a public-key or certificate block from being
+// consumed accidentally, while the orphan-start pass below fails closed when
+// a provider truncates the block before its matching END marker.
+const PEM_PRIVATE_KEY_BLOCK_PATTERN = /-----BEGIN ((?:[A-Z0-9][A-Z0-9 -]{0,96} )?PRIVATE KEY)-----[\s\S]*?-----END \1-----/giu;
+const PEM_PRIVATE_KEY_ORPHAN_PATTERN = /-----BEGIN (?:[A-Z0-9][A-Z0-9 -]{0,96} )?PRIVATE KEY-----[\s\S]*$/giu;
 const SENSITIVE_ASSIGNMENT_PATTERN = /((?:(?:api[_-]?key|access[_-]?(?:key|token)|aws[_-]?(?:access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key)(?:[_-]?id)?|x-amz-security-token|token|secret|password|private[_-]?key|authorization|prompt|request(?:[_ -]?body)?|response(?:[_ -]?body)?|content)\s*[:=]\s*))(?:"[^"]*"|'[^']*'|[^,;\s]+)/giu;
 // Provider SDKs often append a response/prompt/body excerpt without a key=value
 // delimiter (for example, "private provider response ..."). Treat those
@@ -89,6 +95,8 @@ const SENSITIVE_CONTEXT_PATTERN = /\b(?:private|secret|sensitive|credential|prom
 export function redactWorkerFailureLogTail(value: unknown): string {
   const text = typeof value === 'string' ? value : '';
   const redacted = text
+    .replace(PEM_PRIVATE_KEY_BLOCK_PATTERN, '[REDACTED]')
+    .replace(PEM_PRIVATE_KEY_ORPHAN_PATTERN, '[REDACTED]')
     .replace(/\r?\n|\s+/gu, ' ')
     .replace(SECRET_TOKEN_PATTERN, '[REDACTED]')
     .replace(OPAQUE_CREDENTIAL_PATTERN, '[REDACTED]')

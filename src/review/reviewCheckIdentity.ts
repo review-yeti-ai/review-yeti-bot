@@ -24,6 +24,19 @@ export const RECOVERABLE_FAILURE_TITLES: ReadonlySet<string> = new Set([
   'Review Yeti: NO VERDICT (no panel result for this head)',
 ]);
 
+/** Minimal domain-owned shape used when checking a trusted workflow ref. */
+export interface WorkflowRefAllowlist {
+  workflowRefs: ReadonlySet<string>;
+}
+
+/** Applies the explicit workflow-ref allowlist without depending on auth. */
+export function isAllowlistedWorkflowRef(
+  policy: WorkflowRefAllowlist,
+  workflowRef: string,
+): boolean {
+  return policy.workflowRefs.has('*') || policy.workflowRefs.has(workflowRef);
+}
+
 export type ReviewCheckName = typeof REVIEW_GATE_CHECK_NAME | typeof REVIEW_CI_CHECK_NAME;
 export type ReviewGatePendingStatus = 'queued' | 'in_progress';
 export type ReviewGateTerminalConclusion = 'success' | 'failure' | 'cancelled' | 'timed_out';

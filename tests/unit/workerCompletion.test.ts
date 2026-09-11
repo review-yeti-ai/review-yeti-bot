@@ -216,6 +216,31 @@ describe('workerTerminalFailureSchema', () => {
     expect(redacted).not.toContain(awsAccessKey);
   });
 
+  it.each([
+    'PRIVATE KEY',
+    'RSA PRIVATE KEY',
+    'EC PRIVATE KEY',
+    'DSA PRIVATE KEY',
+    'OPENSSH PRIVATE KEY',
+    'ENCRYPTED PRIVATE KEY',
+  ])('redacts complete PEM %s blocks without retaining key material', (label) => {
+    const secret = `pem-secret-${label.toLowerCase().replace(/\s+/gu, '-')}`;
+    const pem = `-----BEGIN ${label}-----\n${secret}\n-----END ${label}-----`;
+    const redacted = redactWorkerFailureLogTail(`provider failure ${pem} after`);
+    expect(redacted).not.toContain(secret);
+    expect(redacted).not.toContain(`BEGIN ${label}`);
+    expect(redacted).not.toContain(`END ${label}`);
+    expect(redacted).toBe('provider failure [REDACTED] after');
+  });
+
+  it('redacts an unterminated PEM private-key block through the bounded log tail', () => {
+    const secret = 'unterminated-pem-secret';
+    const redacted = redactWorkerFailureLogTail(`provider failure -----BEGIN RSA PRIVATE KEY-----\n${secret}`);
+    expect(redacted).not.toContain(secret);
+    expect(redacted).not.toContain('BEGIN RSA PRIVATE KEY');
+    expect(redacted).toBe('provider failure [REDACTED]');
+  });
+
   it('keeps the UTF-8 tail bound when truncation starts inside a multibyte code point', () => {
     const tail = redactWorkerFailureLogTail(`${'🙂'.repeat(1024)}x`);
     expect(Buffer.byteLength(tail, 'utf8')).toBeLessThanOrEqual(MAX_WORKER_FAILURE_LOG_TAIL_BYTES);

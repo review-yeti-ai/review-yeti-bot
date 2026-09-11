@@ -1,12 +1,10 @@
 import {
-  isAllowlistedWorkflowRef,
-  type GitHubActionsOidcPolicy,
-} from '../auth/githubActionsOidc';
-import {
   CENTRAL_REVIEW_REPOSITORY,
   CENTRAL_REVIEW_WORKFLOW_REF,
   RECOVERABLE_FAILURE_TITLES,
   REVIEW_REFRESH_ACTION,
+  isAllowlistedWorkflowRef,
+  type WorkflowRefAllowlist,
 } from './reviewCheckIdentity';
 
 export {
@@ -41,7 +39,7 @@ export interface CentralRefreshDispatchClaims {
 export function isCentralRefreshAuthorized(
   request: CentralRefreshDispatchRequest,
   claims: CentralRefreshDispatchClaims,
-  policy: Pick<GitHubActionsOidcPolicy, 'workflowRefs'> | undefined,
+  policy: WorkflowRefAllowlist | undefined,
 ): boolean {
   return request.publishMode === 'app-gate'
     && request.caller.eventName === 'repository_dispatch'
