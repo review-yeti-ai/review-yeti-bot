@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.54.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.53.0...v1.54.0) (2026-09-11)
+
+
+### Features
+
+* add durable event-driven review CI admission ([#640](https://github.com/review-yeti-ai/review-yeti-bot/issues/640)) ([809a912](https://github.com/review-yeti-ai/review-yeti-bot/commit/809a9121fac96ab4587e2f5ddfc904b5c7813589))
+
 ## [1.53.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.9...v1.53.0) (2026-09-11)
 
 
