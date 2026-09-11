@@ -80,7 +80,7 @@ export class AuthoritativePublishingResolver {
     } catch { throw new Error('Authoritative publishing resolver configuration invalid'); }
   }
 
-  async resolve(requested: RequestedReviewCandidate): Promise<AuthoritativePublishingResolution> {
+  async resolve(requested: RequestedReviewCandidate, signal?: AbortSignal): Promise<AuthoritativePublishingResolution> {
     const abort = new AbortController();
     const deadline = performance.now() + this.timeoutMs;
     const checkDeadline = () => {
@@ -93,8 +93,12 @@ export class AuthoritativePublishingResolver {
       return result;
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
     const expired = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => { abort.abort(); reject(unavailable()); }, this.timeoutMs);
+      onAbort = () => { abort.abort(); reject(unavailable()); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(onAbort, this.timeoutMs);
+      if (signal?.aborted) onAbort();
     });
     const resolve = async (): Promise<AuthoritativePublishingResolution> => {
       // Snapshot and validate before any factory/token mint. Extra request keys,
@@ -102,18 +106,18 @@ export class AuthoritativePublishingResolver {
       const target = requestedSchema.parse(requested);
       const repository = { repositoryId: target.repositoryId, owner: target.owner, repo: target.repo };
       const candidateReader = await step(() => this.candidateReaderFactory({ ...repository }, abort.signal));
-      const first = matchingCandidate(target, await step(() => candidateReader.currentCandidate({ ...repository, prNumber: target.prNumber })));
+      const first = matchingCandidate(target, await step(() => candidateReader.currentCandidate({ ...repository, prNumber: target.prNumber }, abort.signal)));
       const policyReader = await step(() => this.policyReaderFactory({ ...this.policyRepository }, abort.signal));
       const revision = reviewPolicySourceSchema.shape.sha.parse(await step(() =>
-        policyReader.resolvePolicyRevision({ ...this.policyRepository }, this.policyRef)));
-      const file = await step(() => policyReader.immutablePolicyFile({ ...this.policyRepository }, revision, this.policyPath));
+        policyReader.resolvePolicyRevision({ ...this.policyRepository }, this.policyRef, abort.signal)));
+      const file = await step(() => policyReader.immutablePolicyFile({ ...this.policyRepository }, revision, this.policyPath, abort.signal));
       const source = reviewPolicySourceSchema.parse(file.source);
       if (source.repositoryId !== this.policyRepository.repositoryId
         || source.repository !== `${this.policyRepository.owner}/${this.policyRepository.repo}`
         || source.sha !== revision || source.path !== this.policyPath) throw unavailable();
       const prepared = preparePublishingPolicy(file, this.transport);
       const identity = buildAuthoritativeReviewIdentity({ requested: target, current: first, policy: prepared.policy });
-      const current = matchingCandidate(target, await step(() => candidateReader.currentCandidate({ ...repository, prNumber: target.prNumber })));
+      const current = matchingCandidate(target, await step(() => candidateReader.currentCandidate({ ...repository, prNumber: target.prNumber }, abort.signal)));
       checkDeadline();
       return { current, identity, prepared };
     };
@@ -125,6 +129,7 @@ export class AuthoritativePublishingResolver {
       throw unavailable();
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
       abort.abort();
     }
   }

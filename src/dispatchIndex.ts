@@ -6,6 +6,7 @@ import {
 } from './github/boundedAppToken';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
+import { enqueueReviewCiCompletionInTransaction } from './persistence/reviewCiRepository';
 import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
 import { PostgresStore } from './persistence/postgresStore';
 import { logger } from './utils/logger';
@@ -15,6 +16,9 @@ import { githubWebhookConfigFromEnv } from './auth/githubWebhookConfig';
 import { createGitHubWebhookAdmissionHandler } from './review/githubWebhookAdmission';
 import { PostgresMergeGroupGateRepository } from './persistence/mergeGroupGateRepository';
 import { createMergeGroupGate } from './review/mergeGroupGate';
+import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
+import { createReviewCiRuntime } from './reviewCiRuntime';
+import { findReviewCiEnrollment } from './review/reviewCi';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -32,14 +36,26 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const baseUrl = validateGitHubAppApiBaseUrl(environment.GITHUB_API_BASE_URL);
   const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy);
   const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
+  const ciConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
   const store = new PostgresStore();
   await store.initialize();
   const pool = store.getPool();
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
-    repository: new PostgresReviewGateRepository(pool, { completionResolutionTimeoutMs: 15_000 }),
+    repository: new PostgresReviewGateRepository(pool, { completionResolutionTimeoutMs: 15_000,
+      ...(ciConfig ? { onEligibleCompletion: async (client, gate, now) => {
+        if (findReviewCiEnrollment(ciConfig,
+          { expectedAppId: gate.expectedAppId, repository: gate.coordinates })) {
+          await enqueueReviewCiCompletionInTransaction(client, gate.coordinates.attemptId, now);
+        }
+      } } : {}),
+    }),
     getStoredPrepared: (policyDigest) => getPreparedPublishingPolicy(pool, policyDigest),
     workerId: `authoritative-review-${environment.HOSTNAME || 'local'}`,
+  }) : undefined;
+  const ci = ciConfig && authoritative ? createReviewCiRuntime({
+    config: ciConfig, pool, appId, privateKey, baseUrl, resolver: authoritative.resolver,
+    workerId: `review-ci-${environment.HOSTNAME || 'local'}`,
   }) : undefined;
   const repository = new PostgresReviewDispatchRepository(pool, undefined,
     authoritative ? { validateAuthoritativeAdmission: authoritative.validateAdmission } : undefined);
@@ -63,6 +79,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     verifier: new GitHubActionsOidcVerifier({ policy }),
     admission: repository,
     allowAppGate: policy.allowAppGate,
+    ...(ci ? { ci: ci.routes } : {}),
     ...(authoritative ? { authoritativePublishing: authoritative.admission,
       authoritativeWorkerCompletion: authoritative.completion } : {}),
     workerCompletion: {
@@ -86,6 +103,10 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     void authoritative.runOnce().catch(() => logger.error('Authoritative review reconciliation unavailable'));
   }, authoritativeConfig.tickMs) : undefined;
   authoritativeTimer?.unref();
+  const ciTimer = ci && ciConfig ? setInterval(() => {
+    void ci.runOnce().catch(() => logger.error('Review CI reconciliation unavailable'));
+  }, ciConfig.tickMs) : undefined;
+  ciTimer?.unref();
 
   const port = Number(environment.PORT || 3000);
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error('PORT must be a valid TCP port');
@@ -95,6 +116,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const shutdown = (signal: string) => {
     logger.info('Stopping Review Yeti Action dispatch service', { signal });
     if (authoritativeTimer) clearInterval(authoritativeTimer);
+    if (ciTimer) clearInterval(ciTimer);
     server.close(() => void store.close().finally(() => process.exit(0)));
     setTimeout(() => process.exit(1), 10_000).unref();
   };
