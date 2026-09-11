@@ -153,7 +153,7 @@ describe('PostgresReviewDispatchRepository', () => {
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
 
     await expect(repository.admit({
-      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate',
+      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate', centralActionDispatch: true,
     })).resolves.toMatchObject({ status: 'accepted' });
     expect(client.query).toHaveBeenCalledWith('COMMIT');
   });
@@ -166,6 +166,19 @@ describe('PostgresReviewDispatchRepository', () => {
     await expect(repository.admit({
       ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate', centralActionDispatch: true,
     })).rejects.toThrow(/expected generation is required/i);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a missing classification', undefined, 'repository_dispatch'],
+    ['a non-boolean classification', 'yes', 'repository_dispatch'],
+    ['a central classification on a non-dispatch event', true, 'pull_request'],
+  ])('rejects %s before opening a transaction', async (_label, centralActionDispatch, eventName) => {
+    const connect = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect } as any);
+    await expect(repository.admit({
+      ...input(), centralActionDispatch, eventName,
+    } as any)).rejects.toThrow(/central Action dispatch classification is invalid/i);
     expect(connect).not.toHaveBeenCalled();
   });
 

@@ -54,7 +54,10 @@ export function assertActionDispatchMatchesClaims(
   const isCentral = request.caller.eventName === 'repository_dispatch'
     && claims.repository === 'calltelemetry/ct-review-actions'
     && request.owner === 'calltelemetry';
-  const callerKind: ActionDispatchCallerKind | null = isDirect ? 'direct' : (isCentral ? 'central' : null);
+  // The central repository can review itself, which makes both predicates true.
+  // Preserve the central ledger contract in that overlap; direct compatibility
+  // applies only when the trusted central identity did not originate the run.
+  const callerKind: ActionDispatchCallerKind | null = isCentral ? 'central' : (isDirect ? 'direct' : null);
   const matches = callerKind !== null
     && request.caller.runId === claims.run_id
     && String(request.caller.runAttempt) === claims.run_attempt
