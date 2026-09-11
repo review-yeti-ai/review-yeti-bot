@@ -292,7 +292,7 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
   if (/429|rate limit/iu.test(message)) return 'rate_limit';
   if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
-  if (/invalid (?:native )?JSON|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output/iu.test(message)) {
+  if (/invalid (?:or missing )?(?:native )?JSON|native JSON response must be an object|(?:persona|moderator|arbiter) response must|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output/iu.test(message)) {
     return 'malformed_output';
   }
   if (/provider|gateway|model/iu.test(message)) return 'provider_error';

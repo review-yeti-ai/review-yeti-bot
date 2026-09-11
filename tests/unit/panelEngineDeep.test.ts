@@ -174,6 +174,10 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
           persona: expect.any(String),
         },
       });
+      if (role === 'persona') {
+        expect(request.responseFormat).toEqual({ type: 'json_object' });
+        continue;
+      }
       expect(request.responseFormat).toMatchObject({
         type: 'json_schema',
         json_schema: {
@@ -196,6 +200,82 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
         expect(schema.properties.verdict.enum).toEqual(['SHIP', 'FIX_FIRST', 'BLOCK']);
       }
     }
+  });
+
+  it('keeps the native JSON nonce contract after an investigation tool turn', async () => {
+    const config = buildDeepConfig();
+    config.quorum = 1;
+    config.personas = [config.personas[0]];
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    let personaCalls = 0;
+    let toolFollowUp = '';
+    const personaResponseFormats: any[] = [];
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const requestNonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const role = opts.metadata.role;
+
+      if (role === 'persona') {
+        personaCalls += 1;
+        personaResponseFormats.push(opts.responseFormat);
+        if (personaCalls === 1) {
+          return {
+            model: opts.model,
+            content: '```json\n{"tool":"read_file","args":{"path":"src/security/auth.ts"}}\n```',
+            usage: null,
+            costUSD: null,
+            raw: {},
+          };
+        }
+
+        toolFollowUp = String(opts.messages.at(-1)?.content || '');
+        return {
+          model: opts.model,
+          content: JSON.stringify({ nonce: requestNonce, decision: 'APPROVE', findings: [] }),
+          usage: null,
+          costUSD: null,
+          raw: {},
+        };
+      }
+
+      const body = role === 'arbiter'
+        ? { verdict: 'SHIP', rationale: 'The investigated change is safe.' }
+        : { decision: 'RECONCILED', findings: [] };
+      return {
+        model: opts.model,
+        content: JSON.stringify({ nonce: requestNonce, ...body }),
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-native-tool-turn',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_object' } },
+    });
+
+    expect(result.personas[0].decision).toBe('APPROVE');
+    expect(personaCalls).toBe(2);
+    expect(personaResponseFormats[0]).toEqual({ type: 'json_object' });
+    expect(personaResponseFormats[1]).toMatchObject({
+      type: 'json_schema',
+      json_schema: {
+        strict: true,
+        schema: { required: expect.arrayContaining(['nonce', 'decision', 'findings']) },
+      },
+    });
+    expect(toolFollowUp).toContain('[PI_TOOL_RESULT]');
+    expect(toolFollowUp).toContain('Return only one valid JSON object');
+    expect(toolFollowUp).toContain(`"nonce":"`);
+    expect(toolFollowUp).not.toContain('CT_REVIEW_BEGIN:');
+    expect(toolFollowUp).not.toContain('CT_REVIEW_END:');
   });
 
   it('fails closed when native JSON returns the wrong request nonce', async () => {
