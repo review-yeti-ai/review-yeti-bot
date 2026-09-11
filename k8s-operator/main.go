@@ -28,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	reviewv1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
@@ -49,6 +50,8 @@ func init() {
 }
 
 func main() {
+	ctrl.SetLogger(zap.New())
+
 	if !operatorEnabled(os.Getenv) {
 		fmt.Println("k8s-operator disabled; set REVIEW_YETI_OPERATOR_ENABLED=true to start the controller")
 		return
