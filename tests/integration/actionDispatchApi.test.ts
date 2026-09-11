@@ -214,6 +214,10 @@ describe('POST /api/dispatch/action', () => {
         });
 
       expect(response.status).toBe(400);
+      expect(response.body).toEqual({
+        error: 'Invalid Action dispatch request',
+        invalidFields: ['expectedGeneration'],
+      });
       expect(fixture.admission.admit).not.toHaveBeenCalled();
     },
   );

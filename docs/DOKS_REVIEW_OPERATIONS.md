@@ -277,3 +277,8 @@ To verify your cluster deployment before rolling out to production repositories:
    - GitHub Actions runner exits in under 10 seconds.
    - Worker pod schedules on the DOKS cluster and processes the diff.
    - Worker updates the check run to `success` or `failure` and posts the consolidated review comment.
+
+Deploy the central producer and its pinned Action revision before enabling the
+service-side requirement. Reversing that order deliberately rejects older
+central dispatch payloads with HTTP 400 until the producer supplies
+`expectedGeneration`.

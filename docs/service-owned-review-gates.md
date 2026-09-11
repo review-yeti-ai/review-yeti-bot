@@ -43,6 +43,13 @@ next generation. Mismatch rolls back the delivery, run, outbox, prepared policy,
 and gate reservation together and returns HTTP 409. Existing tables already
 carry the required counter, so this contract needs no schema migration.
 
+Roll this contract out producer-first: the central `ct-review-actions`
+repository-dispatch workflow must pass its admitted generation to a pinned
+Action revision that sends `expectedGeneration` before (or atomically with)
+deploying service enforcement. Deploying the service first intentionally makes
+older central dispatches fail closed with HTTP 400 until the producer is
+updated. Disabled and non-central execution paths remain backward compatible.
+
 1. Reserve an immutable attempt and supersede the older gate atomically.
 2. Commit a unique publication claim before external work. A separate UUID
    lease token prevents an expired claim from becoming valid when the same
