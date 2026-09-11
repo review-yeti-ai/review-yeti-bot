@@ -55,6 +55,9 @@ const (
 	failurePublisherSuffix           = "-fail"
 )
 
+// The runtime repeats identity validation deliberately: a Pod spec and its
+// environment are a separate, mutable trust boundary from the Go builder. The
+// executable builder/script contract test keeps both validators in lockstep.
 const failurePublisherScript = `
 const repository = process.env.REVIEW_REPOSITORY || '';
 const [owner, repo, extra] = repository.split('/');

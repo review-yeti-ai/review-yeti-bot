@@ -95,6 +95,63 @@ func TestBuildFailurePublisherJobRejectsMalformedRepositoryIdentity(t *testing.T
 	}
 }
 
+func TestBuiltFailurePublisherIdentitySatisfiesRuntimeContract(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required to exercise the worker-image publication script")
+	}
+	review := newTestReview(time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC))
+	review.Spec.Repo = "calltelemetry/cisco-cdr"
+	review.Spec.RunID = failureScriptRunID
+	review.Spec.RunSecretName = "ct-review-run-" + strings.TrimPrefix(failureScriptRunID, "run_") + "-a2"
+	attempt := int32(2)
+	review.Spec.ExecutionAttempt = &attempt
+	publisher, err := buildFailurePublisherJob(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	container := publisher.Spec.Template.Spec.Containers[0]
+
+	var mu sync.Mutex
+	var posted map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/commits/") {
+			_ = json.NewEncoder(response).Encode(map[string]any{"check_runs": []any{}})
+			return
+		}
+		if request.Method == http.MethodPost {
+			mu.Lock()
+			defer mu.Unlock()
+			if err := json.NewDecoder(request.Body).Decode(&posted); err != nil {
+				t.Errorf("decode publication body: %v", err)
+				response.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{"id": 45})
+			return
+		}
+		http.Error(response, "unexpected request", http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	environment := []string{"PATH=" + os.Getenv("PATH")}
+	for _, variable := range container.Env {
+		value := variable.Value
+		if variable.Name == "GITHUB_PUBLISH_TOKEN" {
+			value = "ghs_test"
+		}
+		environment = append(environment, variable.Name+"="+value)
+	}
+	if output, err := executeFailurePublisherScript(container.Args[2], server.URL, environment); err != nil {
+		t.Fatalf("Go-built publisher identity failed runtime validation: %v: %s", err, output)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if posted["head_sha"] != review.Spec.HeadSHA || posted["external_id"] != failureScriptExternalID {
+		t.Fatalf("runtime publication identity = %#v", posted)
+	}
+}
+
 func TestFailurePublisherScriptIsIdempotentAndPreservesCompletedVerdicts(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is required to exercise the worker-image publication script")
@@ -244,15 +301,19 @@ type capturedCheckWrite struct {
 }
 
 func runFailurePublisherScript(apiURL string) ([]byte, error) {
-	script := strings.Replace(failurePublisherScript, "https://api.github.com", apiURL, 1)
-	command := exec.Command("node", "--input-type=module", "--eval", script)
-	command.Env = []string{
+	return executeFailurePublisherScript(failurePublisherScript, apiURL, []string{
 		"PATH=" + os.Getenv("PATH"),
 		"GITHUB_PUBLISH_TOKEN=ghs_test",
 		"REVIEW_REPOSITORY=calltelemetry/cisco-cdr",
 		"REVIEW_HEAD_SHA=" + failureScriptHead,
 		"REVIEW_RUN_ID=" + failureScriptRunID,
 		"REVIEW_EXECUTION_ATTEMPT=2",
-	}
+	})
+}
+
+func executeFailurePublisherScript(script, apiURL string, environment []string) ([]byte, error) {
+	script = strings.Replace(script, "https://api.github.com", apiURL, 1)
+	command := exec.Command("node", "--input-type=module", "--eval", script)
+	command.Env = environment
 	return command.CombinedOutput()
 }

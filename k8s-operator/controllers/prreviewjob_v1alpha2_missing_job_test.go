@@ -187,6 +187,30 @@ func TestCompletedWorkerObservedAfterDeadlinePreservesAuthoritativeSuccess(t *te
 	}
 }
 
+func TestMissingPublishingWorkerAfterDeadlineStartsFailurePublication(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	deleteLegacyWorker(t, kube, req)
+	r.Now = func() time.Time { return review.Spec.TerminalDeadline.Add(time.Second) }
+
+	result, err := r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := storedReview(t, kube, req)
+	publication := meta.FindStatusCondition(failed.Status.Conditions, "FailurePublication")
+	if result.RequeueAfter <= 0 || failed.Status.Phase != reviewv1alpha2.PhaseFailed || publication == nil ||
+		publication.Status != metav1.ConditionFalse || publication.Reason != "WorkerJobMissing" {
+		t.Fatalf("post-deadline missing worker outcome = %#v, result = %#v", failed.Status, result)
+	}
+	storedFailurePublisher(t, kube, req)
+	assertWorkerAbsent(t, kube, req)
+}
+
 func TestAbandonedPublishingWorkerWaitsForPodExitBeforeFailurePublisher(t *testing.T) {
 	ctx := context.Background()
 	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
