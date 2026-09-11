@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.0...v1.56.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **operator:** preserve terminal outcomes and recover failed checks ([#712](https://github.com/review-yeti-ai/review-yeti-bot/issues/712)) ([b7f7222](https://github.com/review-yeti-ai/review-yeti-bot/commit/b7f722218e462c2a87906f85fd9628b807d4a5cd))
+
 ## [1.56.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.55.2...v1.56.0) (2026-09-11)
 
 
