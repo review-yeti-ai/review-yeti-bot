@@ -78,6 +78,25 @@ func storedWorker(t *testing.T, kube client.Client, req ctrl.Request) *batchv1.J
 	return worker
 }
 
+func assignFakeWorkerUID(t *testing.T, kube client.Client, worker *batchv1.Job) {
+	t.Helper()
+	if worker.UID != "" {
+		return
+	}
+	worker.UID = types.UID("uid-" + worker.Name)
+	if err := kube.Update(context.Background(), worker); err != nil {
+		t.Fatalf("assign fake worker UID: %v", err)
+	}
+}
+
+func bindTestPodToWorker(pod *corev1.Pod, worker *batchv1.Job) {
+	controller := true
+	pod.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: batchv1.SchemeGroupVersion.String(), Kind: "Job", Name: worker.Name,
+		UID: worker.UID, Controller: &controller,
+	}}
+}
+
 func assertFailurePublisherAbsent(t *testing.T, kube client.Client, req ctrl.Request) {
 	t.Helper()
 	err := kube.Get(context.Background(), types.NamespacedName{
@@ -267,6 +286,44 @@ func TestSuccessfulWorkerObservedAfterFailurePendingPreservesAppShip(t *testing.
 	if condition := meta.FindStatusCondition(stored.Status.Conditions, "FailurePublication"); condition != nil {
 		t.Fatalf("late observed SHIP retained failure delegation: %#v", condition)
 	}
+	assertFailurePublisherAbsent(t, kube, req)
+}
+
+func TestMismatchedSucceededWorkerCannotOverridePendingFailure(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: "FailurePublication", Status: metav1.ConditionFalse, Reason: "WorkerContractMismatch",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	if err := kube.Status().Update(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	worker.Spec.Template.Spec.Containers[0].Image = "ghcr.io/review-yeti-ai/tampered@sha256:" + strings.Repeat("0", 64)
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	worker = storedWorker(t, kube, req)
+	worker.Status.Succeeded = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := kube.Status().Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	stored := storedReview(t, kube, req)
+	if stored.Status.Phase == reviewv1alpha2.PhaseSucceeded {
+		t.Fatal("contract-mismatched worker self-reported an authoritative success")
+	}
+	assertFailureDelegated(t, stored)
 	assertFailurePublisherAbsent(t, kube, req)
 }
 
@@ -643,6 +700,7 @@ func TestAppGateWorkerContractMismatchEntersDurableFailureDelegation(t *testing.
 		t.Fatal(err)
 	}
 	worker := storedWorker(t, kube, req)
+	assignFakeWorkerUID(t, kube, worker)
 	worker.Spec.Template.Spec.Containers[0].Image = "ghcr.io/review-yeti-ai/tampered@sha256:" + strings.Repeat("0", 64)
 	worker.Labels["review-yeti.ai/run-id"] = "run_ffffffffffffffffffffffffffffffff"
 	worker.Spec.Template.Labels["review-yeti.ai/run-id"] = "run_ffffffffffffffffffffffffffffffff"
@@ -662,6 +720,7 @@ func TestAppGateWorkerContractMismatchEntersDurableFailureDelegation(t *testing.
 		},
 		Spec: *worker.Spec.Template.Spec.DeepCopy(), Status: corev1.PodStatus{Phase: corev1.PodRunning},
 	}
+	bindTestPodToWorker(pod, worker)
 	if err := kube.Create(ctx, pod); err != nil {
 		t.Fatal(err)
 	}

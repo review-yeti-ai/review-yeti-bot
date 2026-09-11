@@ -271,6 +271,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
 		t.Fatal(err)
 	}
+	assignFakeWorkerUID(t, kube, &worker)
 	scheduled := metav1.NewTime(now.Add(2 * time.Second))
 	started := metav1.NewTime(now.Add(4 * time.Second))
 	pod := &corev1.Pod{
@@ -292,6 +293,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
 			}},
 		},
 	}
+	bindTestPodToWorker(pod, &worker)
 	if err := kube.Create(context.Background(), pod); err != nil {
 		t.Fatalf("create worker pod: %v", err)
 	}
@@ -333,6 +335,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsTerminatedPodProcessTiming(t *test
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
 		t.Fatal(err)
 	}
+	assignFakeWorkerUID(t, kube, &worker)
 	scheduled := metav1.NewTime(now.Add(2 * time.Second))
 	started := metav1.NewTime(now.Add(4 * time.Second))
 	finished := metav1.NewTime(now.Add(5 * time.Second))
@@ -355,6 +358,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsTerminatedPodProcessTiming(t *test
 			}},
 		},
 	}
+	bindTestPodToWorker(pod, &worker)
 	if err := kube.Create(context.Background(), pod); err != nil {
 		t.Fatalf("create terminated worker pod: %v", err)
 	}

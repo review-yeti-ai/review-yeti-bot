@@ -600,16 +600,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) observeWorkerPod(ctx context.Context, re
 }
 
 func podBelongsToWorkerJob(pod *corev1.Pod, worker *batchv1.Job) bool {
-	if pod == nil || worker == nil {
+	if pod == nil || worker == nil || worker.UID == "" {
 		return false
 	}
-	if worker.UID != "" {
-		return metav1.IsControlledBy(pod, worker)
-	}
-	// controller-runtime's fake client does not allocate UIDs. The production
-	// branch above is always used for persisted Jobs; this fallback keeps pure
-	// builder/unit fixtures meaningful without weakening live ownership checks.
-	return pod.Labels["job-name"] == worker.Name || pod.Labels["batch.kubernetes.io/job-name"] == worker.Name
+	return metav1.IsControlledBy(pod, worker)
 }
 
 func observeTiming(review *reviewv1alpha2.PRReviewJob, stage reviewv1alpha2.DispatchTimingStage, at metav1.Time) (bool, error) {
