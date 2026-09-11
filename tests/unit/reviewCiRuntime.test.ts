@@ -7,7 +7,7 @@ import type { ReviewCiCheckPublisherOptions } from '../../src/review/reviewCiChe
 import type { ReviewCiServiceOptions } from '../../src/review/reviewCiService';
 import { createReviewCiLanePlan, reviewCiIdentityDigest, type StoredReviewCiRequest } from '../../src/review/reviewCi';
 import { deriveReviewGateExternalId } from '../../src/github/reviewGateClient';
-import { createReviewCiRuntime } from '../../src/review/reviewCiRuntime';
+import { createReviewCiRuntime } from '../../src/reviewCiRuntime';
 
 const mocks = vi.hoisted(() => ({
   coreConstructor: vi.fn(), checkRepositoryConstructor: vi.fn(), serviceConstructor: vi.fn(),

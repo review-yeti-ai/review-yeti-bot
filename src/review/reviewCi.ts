@@ -118,6 +118,27 @@ export interface StoredReviewCiRequest {
   terminalReceipt: ReviewCiTerminalReceipt | null;
 }
 export type ReviewCiDeliveryKind = 'repository' | 'workflow';
+export type ReviewCiDispatchReceipt = { status: 'accepted'; runId?: number } | { status: 'uncertain' | 'rejected' };
+export interface ReviewCiRunCorrelation { requestId: string; epoch: number }
+export interface ReviewCiRunReadback extends ReviewCiRunCorrelation {
+  runId: number;
+  runAttempt: number;
+  workflowSha: string;
+  status: 'queued' | 'in_progress' | 'waiting' | 'requested' | 'pending' | 'completed';
+  conclusion: 'success' | 'failure' | 'cancelled' | 'timed_out' | 'action_required' | 'neutral' | 'skipped'
+    | 'stale' | 'startup_failure' | null;
+  requiredJobsPassed: boolean;
+  requiredJobs: { id: number; name: string; status: string; conclusion: string | null }[];
+}
+/** Narrow GitHub capability consumed by the domain coordinator. Transport,
+ * authentication, and response parsing remain adapter-owned. */
+export interface ReviewCiClient {
+  dispatchRepository(input: ReviewCiRequestEvent): Promise<ReviewCiDispatchReceipt>;
+  dispatchWorkflow(input: ReviewCiRunCorrelation): Promise<ReviewCiDispatchReceipt>;
+  correlateRun(input: ReviewCiRunCorrelation): Promise<{ runId: number; runAttempt: number } | null>;
+  readRun(input: ReviewCiRunCorrelation & { runId: number; runAttempt: number }): Promise<ReviewCiRunReadback>;
+  readTerminalReceipt(input: ReviewCiExecution): Promise<ReviewCiTerminalReceipt>;
+}
 export interface ReviewCiDeliveryClaim {
   request: StoredReviewCiRequest;
   kind: ReviewCiDeliveryKind;

@@ -46,7 +46,7 @@ vi.mock('../../src/persistence/reviewDispatchRepository', () => ({ PostgresRevie
 vi.mock('../../src/persistence/reviewGateRepository', () => ({ PostgresReviewGateRepository: mocks.gateRepository }));
 vi.mock('../../src/persistence/preparedReviewRepository', () => ({ getPreparedPublishingPolicy: mocks.getPrepared }));
 vi.mock('../../src/persistence/reviewCiRepository', () => ({ enqueueReviewCiCompletionInTransaction: mocks.enqueueCi }));
-vi.mock('../../src/review/reviewCiRuntime', () => ({ createReviewCiRuntime: mocks.ciRuntime }));
+vi.mock('../../src/reviewCiRuntime', () => ({ createReviewCiRuntime: mocks.ciRuntime }));
 vi.mock('../../src/review/abandonedRunReaper', () => ({ AbandonedRunReaper: class {
   constructor() { mocks.legacyReaper(); }
   runOnce = vi.fn();

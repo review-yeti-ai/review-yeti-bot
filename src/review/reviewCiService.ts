@@ -1,9 +1,8 @@
 import type { ReviewCiCaller } from '../auth/reviewCiOidc';
-import type { ReviewCiServiceConfig } from '../auth/reviewCiConfig';
-import type { GitHubReviewCiClient } from '../github/reviewCiClient';
+import { findReviewCiEnrollment, type ReviewCiServiceConfig } from '../auth/reviewCiConfig';
 import { sha256 } from './reviewCore';
 import { reviewCiExecutionSchema, reviewCiRequestEvent, reviewCiRunName,
-  type ReviewCiDeliveryClaim, type ReviewCiExecution, type ReviewCiRepository, type ReviewCiValidationBinding,
+  type ReviewCiClient, type ReviewCiDeliveryClaim, type ReviewCiExecution, type ReviewCiRepository, type ReviewCiValidationBinding,
   type StoredReviewCiRequest } from './reviewCi';
 
 export type ReviewCiCurrent = { status: 'stale' | 'waiting' }
@@ -16,7 +15,7 @@ export interface ReviewCiServiceOptions {
    * persistence holds the PR lock before admission/execution/terminal writes. */
   current(request: StoredReviewCiRequest): Promise<ReviewCiCurrent>;
   clientFor(request: StoredReviewCiRequest, purpose: 'repository-dispatch' | 'workflow-dispatch' | 'read'):
-    Promise<Pick<GitHubReviewCiClient, 'dispatchRepository' | 'dispatchWorkflow' | 'correlateRun' | 'readRun' | 'readTerminalReceipt'>>;
+    Promise<ReviewCiClient>;
   now?: () => number;
 }
 
@@ -29,9 +28,7 @@ export class ReviewCiService {
   constructor(private readonly options: ReviewCiServiceOptions) { this.now = options.now ?? Date.now; }
 
   private enrolled(request: StoredReviewCiRequest): void {
-    const repo = this.options.config.repositories.find((r) => r.repositoryId === request.review.repositoryId);
-    if (!repo || repo.owner !== request.review.owner || repo.repo !== request.review.repo
-      || request.expectedAppId !== this.options.config.expectedAppId) throw new Error('Review CI request is outside enrollment');
+    if (!findReviewCiEnrollment(this.options.config, request)) throw new Error('Review CI request is outside enrollment');
   }
   private async validate(request: StoredReviewCiRequest, binding = request.binding): Promise<void> {
     this.enrolled(request);

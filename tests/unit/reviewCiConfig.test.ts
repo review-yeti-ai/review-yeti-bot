@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthoritativeServiceConfig } from '../../src/auth/authoritativeServiceConfig';
-import { reviewCiConfigFromEnv } from '../../src/auth/reviewCiConfig';
-import { createReviewCiLanePlan } from '../../src/review/reviewCi';
+import { findReviewCiEnrollment, reviewCiConfigFromEnv } from '../../src/auth/reviewCiConfig';
+import { createReviewCiLanePlan, type StoredReviewCiRequest } from '../../src/review/reviewCi';
 
 const review: AuthoritativeServiceConfig = {
   expectedAppId: 4385771, admissionEnabled: false, repositoryIds: [123],
@@ -20,8 +20,21 @@ const repository = {
 };
 const env = () => ({ REVIEW_CI_ENABLED: 'true', REVIEW_CI_REPOSITORIES: JSON.stringify([repository]) });
 const rejected = 'Review CI service configuration is invalid';
+const request = (): StoredReviewCiRequest => ({
+  requestId: '07b3c7a1-12a4-4e42-bc18-71df2e0cae1d', expectedAppId: 4385771, state: 'pending', binding: null,
+  identityDigest: null, workflowEpoch: 0, execution: null, terminalReceipt: null,
+  review: { repositoryId: 123, owner: 'example', repo: 'pilot', prNumber: 42,
+    baseSha: 'b'.repeat(40), headSha: 'a'.repeat(40), policyDigest: 'c'.repeat(64),
+    runId: `run_${'d'.repeat(32)}`, attemptId: `run_${'d'.repeat(32)}-g0-e1`, reviewGeneration: 0, executionAttempt: 1 },
+});
 
 describe('finite default-off CI deployment configuration', () => {
+  it('owns one exact enrollment rule for service and runtime consumers', () => {
+    const config = reviewCiConfigFromEnv(env(), review)!;
+    expect(findReviewCiEnrollment(config, request())).toEqual(repository);
+    expect(findReviewCiEnrollment(config, { ...request(), expectedAppId: 1 })).toBeUndefined();
+    expect(findReviewCiEnrollment(config, { ...request(), review: { ...request().review, owner: 'outside' } })).toBeUndefined();
+  });
   it('keeps existing admitted work drainable when both admission and delivery opt-ins are absent', () => {
     expect(reviewCiConfigFromEnv(env(), review)).toMatchObject({ admissionEnabled: false,
       repositoryDispatchEnabled: false, tickMs: 5000, repositories: [repository] });
