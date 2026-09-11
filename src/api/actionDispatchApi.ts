@@ -1,6 +1,5 @@
 import { Router, type Request, type Response } from 'express';
 import {
-  isAllowlistedWorkflowRef,
   type GitHubActionsOidcClaims,
   type GitHubActionsOidcPolicy,
 } from '../auth/githubActionsOidc';
@@ -17,10 +16,7 @@ import {
   assertActionDispatchMatchesClaims,
 } from '../review/actionDispatch';
 import { sha256 } from '../review/reviewCore';
-import {
-  CENTRAL_REVIEW_REPOSITORY,
-  CENTRAL_REVIEW_WORKFLOW_REF,
-} from '../review/reviewCheckIdentity';
+import { isCentralRefreshAuthorized } from '../review/reviewRecoveryPolicy';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
@@ -118,14 +114,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     // repository_dispatch event name alone is not proof that the central
     // workflow issued it: require the OIDC job_workflow_ref itself, bind the
     // request to that claim, and apply the verifier's explicit allowlist.
-    const centralRefreshAuthorized = dispatch.publishMode === 'app-gate'
-      && dispatch.caller.eventName === 'repository_dispatch'
-      && dispatch.refreshRequested === true
-      && claims.repository === CENTRAL_REVIEW_REPOSITORY
-      && claims.job_workflow_ref === CENTRAL_REVIEW_WORKFLOW_REF
-      && dispatch.caller.workflowRef === CENTRAL_REVIEW_WORKFLOW_REF
-      && options.verifier.policy !== undefined
-      && isAllowlistedWorkflowRef(options.verifier.policy, CENTRAL_REVIEW_WORKFLOW_REF);
+    const centralRefreshAuthorized = isCentralRefreshAuthorized(dispatch, claims, options.verifier.policy);
 
     const receivedAt = now();
     const requestedAt = Date.parse(dispatch.requestedAt);

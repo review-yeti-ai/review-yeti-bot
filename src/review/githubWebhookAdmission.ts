@@ -13,7 +13,11 @@ import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
 } from '../auth/githubWebhookIdentity';
 import { MergeGroupGateInProgressError } from './mergeGroupGate';
-import { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from './reviewCheckIdentity';
+import {
+  RECOVERABLE_FAILURE_TITLES,
+  REVIEW_REFRESH_ACTION,
+  REVIEW_REFRESH_EXECUTION_ATTEMPT,
+} from './reviewRecoveryPolicy';
 
 const positiveInteger = z.number().int().positive().safe();
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -32,10 +36,6 @@ const pullRequestWebhook = z.object({
 }).passthrough();
 
 const REFRESH_ACTION_IDENTIFIER = REVIEW_REFRESH_ACTION.identifier;
-// The recovery action is only valid for the first worker execution. Keeping
-// this bound to the signed external_id's exact `:a1` schema lets persistence
-// reject a replay after a replacement execution has projected.
-const RETRY_AFTER_EXECUTION_ATTEMPT = 1;
 const refreshCheckRunWebhook = z.object({
   action: z.literal('requested_action'),
   installation: z.object({ id: positiveInteger }).passthrough(),
@@ -162,7 +162,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         // recovery authority. The repository still requires projected worker
         // evidence before re-arming an active durable run.
         retryRequested: true,
-        retryAfterExecutionAttempt: RETRY_AFTER_EXECUTION_ATTEMPT,
+        retryAfterExecutionAttempt: REVIEW_REFRESH_EXECUTION_ATTEMPT,
         identity: resolved?.identity || legacyIdentity,
         ...(resolved && authoritative ? {
           effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
