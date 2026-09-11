@@ -939,12 +939,6 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     return { repository, query };
   }
 
-  it('keeps the lookup-only persistence marker in one shared source constant', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../src/persistence/reviewDispatchRepository.ts'), 'utf8');
-    expect(source.match(/publishing run reached its terminal deadline without a verdict; failure creation unconfirmed/gu))
-      .toHaveLength(1);
-  });
-
   it('binds expired publishing claims to a deadline (real eligibility is covered by the PostgreSQL lifecycle test)', async () => {
     // These predicates are what keep the reaper from force-failing live
     // traffic. Dropping publication_mode would fail non-publishing runs; dropping

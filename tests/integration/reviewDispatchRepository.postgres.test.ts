@@ -404,6 +404,40 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimAbandonedPublishingRuns('reaper-c', firstSweepAt + 120_004, 1)).resolves.toEqual([]);
   });
 
+  it('re-extends lookup-only recovery when an already recovery-only create remains unconfirmed', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('repeated-lost-create', 1_000);
+    const admitted = await repository.admit(input);
+    const dispatch = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    await repository.markProjected(admitted.run.runId, 'dispatcher', dispatch.claimAttempt, 'worker-a1', 1_002);
+
+    const firstSweepAt = input.terminalDeadline + 1;
+    const [first] = await repository.claimAbandonedPublishingRuns('reaper-a', firstSweepAt, 1);
+    await repository.reconcileAbandonedPublishingRun(first, 'reaper-a', firstSweepAt + 1,
+      async () => 'creation-unconfirmed');
+
+    const recoverySweepAt = firstSweepAt + 60_002;
+    const [recovery] = await repository.claimAbandonedPublishingRuns('reaper-b', recoverySweepAt, 1);
+    expect(recovery).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: true });
+    const secondReconcileAt = recoverySweepAt + 1;
+    await expect(repository.reconcileAbandonedPublishingRun(recovery, 'reaper-b', secondReconcileAt,
+      async () => 'creation-unconfirmed')).resolves.toBe(true);
+
+    const pending = (await client.query(`SELECT runs.error_text, runs.lease_owner, runs.lease_expires_at,
+      outbox.status AS outbox_status FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`, [admitted.run.runId])).rows[0];
+    expect(pending).toMatchObject({
+      error_text: 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+      lease_owner: null,
+      lease_expires_at: new Date(secondReconcileAt + 60_000),
+      outbox_status: 'projected',
+    });
+    await expect(repository.claimAbandonedPublishingRuns('too-early', secondReconcileAt + 59_999, 1))
+      .resolves.toEqual([]);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-c', secondReconcileAt + 60_000, 1))
+      .resolves.toMatchObject([{ runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: true }]);
+  });
+
   it('retires only an explicitly reported authoritative success without re-sweeping it', async () => {
     const { repository, client } = await createRepository();
     const input = sameHeadAdmission('authoritative-success', 1_000);
