@@ -195,7 +195,7 @@ export interface ReviewDispatchRepository {
   /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<void>): Promise<boolean>;
+    publish: () => Promise<'failed' | 'already-completed' | void>): Promise<boolean>;
 }
 
 export interface WorkerFailureTransition {
@@ -686,7 +686,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
    * A crash/HTTP error rolls back the acknowledgement, not the failure itself.
    */
   async reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<void>): Promise<boolean> {
+    publish: () => Promise<'failed' | 'already-completed' | void>): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -711,7 +711,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         await client.query('COMMIT');
         return false;
       }
-      await publish();
+      const outcome = await publish();
       // Successful publication consumes this outbox delivery. Retain the
       // worker token as durable evidence for an explicit same-head retry, but
       // move the row out of the reaper's projected-publication state so the
@@ -723,14 +723,22 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           WHERE run_id = $1 AND delivery_id = $3 AND execution_attempt + 1 = $4`,
         [run.runId, now, run.deliveryId, run.executionAttempt],
       );
-      await client.query(
-        `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
-           error_text = CASE
-             WHEN error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%' THEN error_text
-             ELSE 'publishing run reached its terminal deadline without a verdict; failure reconciled'
-           END,
-           updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
-      );
+      if (outcome === 'already-completed') {
+        await client.query(
+          `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
+             status = 'succeeded', stage = 'complete', error_text = NULL,
+             updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
+        );
+      } else {
+        await client.query(
+          `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
+             error_text = CASE
+               WHEN error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%' THEN error_text
+               ELSE 'publishing run reached its terminal deadline without a verdict; failure reconciled'
+             END,
+             updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
+        );
+      }
       await client.query('COMMIT');
       return true;
     } catch (error) {
