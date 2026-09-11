@@ -106,6 +106,7 @@ var (
 // evidence.  No Secret object or credential is accepted by this builder.
 type Input struct {
 	Review           *v1alpha2.PRReviewJob
+	// WorkspacePVCName is required only when Review.Spec.RunnerMode == "generic".
 	WorkspacePVCName string
 	WorkspaceLease   workspace.LeaseAcquireResult
 	Now              time.Time
@@ -345,6 +346,22 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				`fi`,
 		}
 	}
+	var workspaceVolume corev1.VolumeSource
+	if spec.RunnerMode == "generic" {
+		workspaceVolume = corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: input.WorkspacePVCName,
+				ReadOnly:  false,
+			},
+		}
+	} else {
+		sizeLimit := WorkerStorageSize()
+		workspaceVolume = corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{
+				SizeLimit: &sizeLimit,
+			},
+		}
+	}
 	return &batchv1.Job{
 		TypeMeta: metav1.TypeMeta{APIVersion: batchv1.SchemeGroupVersion.String(), Kind: "Job"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -374,7 +391,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 					},
 					Containers: []corev1.Container{container},
 					Volumes: []corev1.Volume{
-						{Name: "workspace", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: input.WorkspacePVCName, ReadOnly: false}}},
+						{Name: "workspace", VolumeSource: workspaceVolume},
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},
 				},
@@ -436,8 +453,10 @@ func validateInput(input Input) error {
 		input.Now.Before(spec.ReceivedAt.Time) {
 		return ErrJobDeadline
 	}
-	if input.WorkspacePVCName != workspace.PVCName(spec.RepositoryID, spec.PRNumber) {
-		return configErr("workspace PVC name does not match the repository and PR it claims")
+	if spec.RunnerMode == "generic" {
+		if input.WorkspacePVCName != workspace.PVCName(spec.RepositoryID, spec.PRNumber) {
+			return configErr("workspace PVC name does not match the repository and PR it claims")
+		}
 	}
 	lease := input.WorkspaceLease
 	if !lease.Acquired || lease.Lease == nil || lease.HolderIdentity != spec.RunID {
@@ -635,6 +654,10 @@ func int32FromEnv(name string, fallback int32) int32 {
 		return fallback
 	}
 	return int32(parsed)
+}
+
+func WorkerStorageSize() resource.Quantity {
+	return quantityFromEnv("REVIEW_YETI_WORKER_STORAGE_SIZE", "1Gi")
 }
 
 func quantityFromEnv(name, fallback string) resource.Quantity {

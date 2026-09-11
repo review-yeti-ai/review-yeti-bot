@@ -63,6 +63,7 @@ func v1alpha2Review(now time.Time) *reviewv1alpha2.PRReviewJob {
 			ConfigDigest:     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			PublicationMode:  "disabled",
 			WorkerImage:      "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			RunnerMode:       "generic",
 			RunSecretName:    "ct-review-run-11111111111111111111111111111111",
 		},
 	}
@@ -1224,6 +1225,7 @@ func TestPRReviewJobV1Alpha2ReconcilerUsesStableEqualReceivedAtTieBreakers(t *te
 		t.Run(test.name, func(t *testing.T) {
 			scheme := v1alpha2Scheme(t)
 			candidate := v1alpha2Review(now)
+			candidate.Spec.RunnerMode = "generic"
 			candidate.Name = test.candidateName
 			candidate.Spec.RunID = "run_11111111111111111111111111111111"
 			candidate.Spec.DeliveryID = "delivery-tie-candidate"
@@ -1232,6 +1234,7 @@ func TestPRReviewJobV1Alpha2ReconcilerUsesStableEqualReceivedAtTieBreakers(t *te
 			candidate.CreationTimestamp = metav1.NewTime(test.candidateCreated)
 
 			newer := v1alpha2Review(now)
+			newer.Spec.RunnerMode = "generic"
 			newer.Name = test.newerName
 			newer.Spec.RunID = "run_99999999999999999999999999999999"
 			newer.Spec.DeliveryID = "delivery-tie-newer"
