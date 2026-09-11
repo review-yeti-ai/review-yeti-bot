@@ -183,11 +183,27 @@ export interface AbandonedPublishingRun {
   recoveryOnly?: boolean;
 }
 
-export type AbandonedCheckRecoveryOutcome =
-  | 'authoritative-success'
-  | 'failure-existing'
-  | 'failure-published'
-  | 'creation-unconfirmed';
+const ABANDONED_CHECK_RECOVERY_OUTCOMES = [
+  'authoritative-success',
+  'failure-existing',
+  'failure-published',
+  'creation-unconfirmed',
+] as const;
+
+export type AbandonedCheckRecoveryOutcome = typeof ABANDONED_CHECK_RECOVERY_OUTCOMES[number];
+
+const ABANDONED_PUBLISHING_ERROR_TEXT = {
+  reapedPrefix: 'publishing run reached its terminal deadline without a verdict; reaped by ',
+  creationUnconfirmed: 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+  failureReconciled: 'publishing run reached its terminal deadline without a verdict; failure reconciled',
+} as const;
+
+const ABANDONED_CHECK_RECOVERY_OUTCOME_SET: ReadonlySet<string> = new Set(ABANDONED_CHECK_RECOVERY_OUTCOMES);
+
+function isAbandonedCheckRecoveryOutcome(value: unknown): value is AbandonedCheckRecoveryOutcome {
+  return typeof value === 'string'
+    && ABANDONED_CHECK_RECOVERY_OUTCOME_SET.has(value);
+}
 
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
@@ -203,7 +219,7 @@ export interface ReviewDispatchRepository {
   /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<AbandonedCheckRecoveryOutcome | void>): Promise<boolean>;
+    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<boolean>;
 }
 
 export interface WorkerFailureTransition {
@@ -614,7 +630,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     const result = await this.queryable.query(
       `WITH candidate AS (
          SELECT runs.run_id,
-                runs.error_text = 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed'
+                runs.error_text = $4::text
                   AS recovery_only
            FROM review_runs runs
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
@@ -630,10 +646,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             OR (runs.status IN ('queued', 'running')
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
             OR (runs.status = 'terminal' AND runs.error_text LIKE
-              'publishing run reached its terminal deadline without a verdict; reaped by %'
+              $5::text || '%'
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
             OR (runs.status = 'terminal' AND runs.error_text =
-              'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed')
+              $4::text)
             -- A preserved worker failure is retryable only while a prior
             -- reaper claim still owns its publication lease. Successful
             -- reconciliation clears that owner without erasing the bounded
@@ -670,17 +686,18 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
               lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
               error_text = CASE
                 WHEN retired.recovery_only
-                  THEN 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed'
+                  THEN $4::text
                 WHEN runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
                   THEN runs.error_text
-                ELSE 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
+                ELSE $5::text || $1::text
               END
          FROM retired
         WHERE runs.run_id = retired.run_id
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
                  runs.delivery_id, runs.received_at, runs.terminal_deadline,
                  retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only`,
-      [workerId, now, limit],
+      [workerId, now, limit, ABANDONED_PUBLISHING_ERROR_TEXT.creationUnconfirmed,
+        ABANDONED_PUBLISHING_ERROR_TEXT.reapedPrefix],
     );
     return result.rows.map((row: Record<string, unknown>) => ({
       runId: String(row.run_id),
@@ -701,7 +718,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
    * A crash/HTTP error rolls back the acknowledgement, not the failure itself.
    */
   async reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<AbandonedCheckRecoveryOutcome | void>): Promise<boolean> {
+    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -726,9 +743,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         await client.query('COMMIT');
         return false;
       }
-      const rawOutcome = await publish();
-      const outcome: AbandonedCheckRecoveryOutcome = rawOutcome || 'failure-existing';
-      if (!['authoritative-success', 'failure-existing', 'failure-published', 'creation-unconfirmed'].includes(outcome)) {
+      const outcome: unknown = await publish();
+      if (!isAbandonedCheckRecoveryOutcome(outcome)) {
         throw new Error('invalid abandoned check recovery outcome');
       }
       // Successful publication consumes this outbox delivery. Retain the
@@ -752,12 +768,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
            stage = CASE WHEN $3 = 'authoritative-success' THEN 'complete' ELSE stage END,
            error_text = CASE
              WHEN $3 = 'creation-unconfirmed'
-               THEN 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed'
+               THEN $4::text
              WHEN $3 = 'authoritative-success' THEN NULL
              WHEN error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%' THEN error_text
-             ELSE 'publishing run reached its terminal deadline without a verdict; failure reconciled'
+             ELSE $5::text
            END,
-           updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now, outcome],
+           updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
+        [run.runId, now, outcome, ABANDONED_PUBLISHING_ERROR_TEXT.creationUnconfirmed,
+          ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled],
       );
       await client.query('COMMIT');
       return true;

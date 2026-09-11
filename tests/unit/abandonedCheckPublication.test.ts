@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
-import type { AbandonedPublishingRun } from '../../src/persistence/reviewDispatchRepository';
+import type {
+  AbandonedCheckRecoveryOutcome,
+  AbandonedPublishingRun,
+} from '../../src/persistence/reviewDispatchRepository';
 
 const run = {
   runId: 'run_83c172a7d93c193fdb6dfa62bfa8bfde',
@@ -272,7 +275,8 @@ describe('abandoned reaper with the actual GitHub publication adapter', () => {
     const repository = {
       claimAbandonedPublishingRuns: async () => pending ? [persistedRun] : [],
       reconcileAbandonedPublishingRun: async (
-        claimed: AbandonedPublishingRun, _worker: string, _now: number, publish: () => Promise<void>,
+        claimed: AbandonedPublishingRun, _worker: string, _now: number,
+        publish: () => Promise<AbandonedCheckRecoveryOutcome>,
       ) => {
         expect(claimed).toEqual(persistedRun);
         await publish();

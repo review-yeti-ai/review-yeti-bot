@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import {
+  PostgresReviewDispatchRepository,
+  type AbandonedPublishingRun,
+  type ReviewDispatchRepository,
+} from '../../src/persistence/reviewDispatchRepository';
 import { sha256 } from '../../src/review/reviewCore';
 import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
@@ -939,6 +943,21 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     return { repository, query };
   }
 
+  it('keeps the lookup-only persistence marker in one shared source constant', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, '../../src/persistence/reviewDispatchRepository.ts'), 'utf8');
+    expect(source.match(/publishing run reached its terminal deadline without a verdict; failure creation unconfirmed/gu))
+      .toHaveLength(1);
+  });
+
+  it('requires every reconciliation caller to return an explicit outcome', () => {
+    if (false) {
+      const repository = {} as ReviewDispatchRepository;
+      // @ts-expect-error publication without an explicit outcome cannot clear the durable recovery lease
+      void repository.reconcileAbandonedPublishingRun({} as AbandonedPublishingRun, 'reaper', 1, async () => undefined);
+    }
+    expect(true).toBe(true);
+  });
+
   it('binds expired publishing claims to a deadline (real eligibility is covered by the PostgreSQL lifecycle test)', async () => {
     // These predicates are what keep the reaper from force-failing live
     // traffic. Dropping publication_mode would fail non-publishing runs; dropping
@@ -1000,7 +1019,11 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     const sql = String(query.mock.calls[0][0]);
     expect(sql).toMatch(/error_text/u);
     expect(sql).not.toMatch(/last_error/u);
-    expect(query.mock.calls[0][1]).toEqual(['reaper-a', 1_700_000_000_000, 20]);
+    expect(query.mock.calls[0][1]).toEqual([
+      'reaper-a', 1_700_000_000_000, 20,
+      'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+      'publishing run reached its terminal deadline without a verdict; reaped by ',
+    ]);
   });
 
   it('declares the reaper identifier as text everywhere PostgreSQL infers its parameter type', async () => {
@@ -1008,7 +1031,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
     const sql = String(query.mock.calls[0][0]);
     expect(sql).toMatch(/lease_owner = \$1::text/u);
-    expect(sql).toMatch(/reaped by ' \|\| \$1::text/u);
+    expect(sql).toMatch(/\$5::text \|\| \$1::text/u);
   });
 
   it('maps returned rows to the identity the reaper publishes against', async () => {
@@ -1032,7 +1055,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
   });
 
   it('persists an unconfirmed create with a bounded lease instead of acknowledging or retrying creation', async () => {
-    const transactionQuery = vi.fn(async (sql: string) => {
+    const transactionQuery = vi.fn(async (sql: string, _values?: unknown[]) => {
       if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
       return { rows: [] };
     });
@@ -1044,9 +1067,31 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       receivedAt: 1_000, terminalDeadline: 901_000, recoveryOnly: false,
     }, 'reaper-a', 902_000, async () => 'creation-unconfirmed' as const)).resolves.toBe(true);
     const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
-    expect(String(update?.[0])).toMatch(/failure creation unconfirmed/u);
+    expect(update?.[1]).toEqual([
+      swept.run_id, 902_000, 'creation-unconfirmed',
+      'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+      'publishing run reached its terminal deadline without a verdict; authoritative success observed',
+      'publishing run reached its terminal deadline without a verdict; failure reconciled',
+    ]);
     expect(String(update?.[0])).toMatch(/60000/u);
     expect(transactionQuery).toHaveBeenCalledWith('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an unknown recovery outcome and rolls back the acknowledgement', async () => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect: async () => ({ query: transactionQuery, release }) } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000,
+    }, 'reaper-a', 902_000, async () => 'unexpected' as never)).rejects.toThrow(/invalid abandoned check recovery outcome/u);
+    expect(transactionQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(transactionQuery.mock.calls.some(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)))).toBe(false);
     expect(release).toHaveBeenCalledOnce();
   });
 

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AbandonedRunReaper, type ReaperCheckClient } from '../../src/review/abandonedRunReaper';
-import type { AbandonedCheckRecoveryOutcome, AbandonedPublishingRun } from '../../src/persistence/reviewDispatchRepository';
+import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
+import type {
+  AbandonedCheckRecoveryOutcome,
+  AbandonedPublishingRun,
+} from '../../src/persistence/reviewDispatchRepository';
 import { logger } from '../../src/utils/logger';
 
 const run: AbandonedPublishingRun = {
@@ -15,7 +18,7 @@ function fixture() {
     claimAbandonedPublishingRuns: vi.fn(async () => [run]),
     reconcileAbandonedPublishingRun: vi.fn(async (
       _run: AbandonedPublishingRun, _worker: string, _now: number,
-      publish: () => Promise<AbandonedCheckRecoveryOutcome | void>,
+      publish: () => Promise<AbandonedCheckRecoveryOutcome>,
     ) => { await publish(); return true; }),
   };
   const checkClientFor = vi.fn(async (_run: AbandonedPublishingRun, _signal: AbortSignal) => client);
