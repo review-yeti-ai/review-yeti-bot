@@ -31,11 +31,6 @@ export const DEFAULT_REPOSITORY_CONCURRENCY_CAP = 6;
 // below the lane's capacity while clearing the observed global peak of four.
 export const DEFAULT_GLOBAL_CONCURRENCY_CAP = 8;
 
-// With no usable count, a permissive fallback would silently delete both caps
-// exactly when the provider is most likely to be under stress. Admitting a small
-// number keeps a legitimate review moving without pretending the lane is empty.
-export const DEGRADED_CONCURRENCY_ALLOWANCE = 1;
-
 // A dispatched-but-not-started run is `queued` and still consumes a slot.
 export const CAPACITY_RUN_STATUSES = Object.freeze(['queued', 'in_progress']);
 
@@ -79,8 +74,11 @@ export const REQUIRED_REVIEW_APP_ID = 4385771;
 export const REQUIRED_REVIEW_APP_SLUG = 'ct-review-bot';
 export const CHECK_RUN_PAGE_SIZE = 100;
 export const CHECK_RUN_ENDPOINT_CAP = 1000;
+export const CAPACITY_RUN_PAGE_SIZE = 100;
+export const CAPACITY_RUN_ENDPOINT_CAP = 1000;
 
 const PAYLOAD_KEYS = Object.freeze(['base_sha', 'head_sha', 'pr_number', 'repository', 'request_id']);
+const REFRESH_PAYLOAD_KEYS = Object.freeze([...PAYLOAD_KEYS, 'refresh_requested'].sort());
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const REQUEST_ID_PATTERN = /^([A-Za-z0-9_][A-Za-z0-9._-]{0,99}):([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
 const PROVIDER_SECRET_PATTERN = /(?:OLLAMA_PR_REVIEW_API_KEY|OPENROUTER(?:_PR_REVIEW_API_KEY|_REVIEW_FLEET_KEY|_API_KEY)|FIREWORKS_PR_REVIEW_API_KEY|SYNTHETIC_API_KEY|GEMINI_API_KEY)/u;
@@ -112,8 +110,12 @@ function assertPlainObject(value, label) {
 export function validateDispatchPayload(payload) {
   assertPlainObject(payload, 'client_payload');
   const keys = Object.keys(payload).sort();
-  if (JSON.stringify(keys) !== JSON.stringify(PAYLOAD_KEYS)) {
-    throw new Error(`client_payload must contain exactly: ${PAYLOAD_KEYS.join(', ')}`);
+  const expectedKeys = Object.hasOwn(payload, 'refresh_requested') ? REFRESH_PAYLOAD_KEYS : PAYLOAD_KEYS;
+  if (JSON.stringify(keys) !== JSON.stringify(expectedKeys)) {
+    throw new Error(`client_payload must contain exactly: ${PAYLOAD_KEYS.join(', ')}${expectedKeys === REFRESH_PAYLOAD_KEYS ? ', refresh_requested' : ''}`);
+  }
+  if (Object.hasOwn(payload, 'refresh_requested') && typeof payload.refresh_requested !== 'boolean') {
+    throw new Error('refresh_requested must be a boolean');
   }
   assertAdmittedRepository(payload.repository);
   if (!Number.isSafeInteger(payload.pr_number) || payload.pr_number < 1) {
@@ -311,11 +313,40 @@ function isRecoverableFirstAttempt(identity) {
     && RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title);
 }
 
-export function assertReviewGeneration({ callerRunAttempt, inventory }) {
+export function assertReviewGeneration({ callerRunAttempt, inventory, refreshRequested = false }) {
   if (callerRunAttempt !== 1 && callerRunAttempt !== 2) {
     throw new Error(`caller run attempt ${callerRunAttempt} is outside the admitted generations a1 and a2`);
   }
   const workers = inventory.identities.filter((identity) => identity.kind === 'worker');
+  if (refreshRequested) {
+    // A refresh is an explicit, persisted retry request. It is deliberately
+    // admitted from either caller run attempt because a GitHub workflow retry
+    // must not change the worker generation. The exact-head ledger remains the
+    // authority: only one completed infrastructure-failed a1 may be replaced,
+    // and an existing a2 (or any duplicate worker) is never displaced.
+    const replacement = workers.find((identity) => identity.attempt >= 2);
+    if (replacement) {
+      throw new Error(`worker attempt a${replacement.attempt} already exists for this exact head`);
+    }
+    if (workers.length !== 1) {
+      throw new Error(`refresh requires exactly one worker a1; found ${workers.length} worker checks`);
+    }
+    const [firstAttempt] = workers;
+    if (!isRecoverableFirstAttempt(firstAttempt)) {
+      throw new Error('refresh a1 worker is not a completed recoverable infrastructure failure');
+    }
+    return {
+      review_generation: 2,
+      review_check_count: inventory.rows.length,
+      worker_check_count: workers.length,
+      latest_worker_check_id: firstAttempt.row.id,
+      refresh_requested: true,
+      // The signed refresh action names the failed a1 execution. Carry that
+      // one-based generation to the DOKS admission API so persistence can
+      // consume it exactly once even if GitHub redelivers the action event.
+      retry_after_execution_attempt: firstAttempt.attempt,
+    };
+  }
   if (callerRunAttempt === 1) {
     if (workers.length !== 0) {
       throw new Error(`caller attempt 1 requires zero worker checks; found ${workers.length}`);
@@ -325,6 +356,7 @@ export function assertReviewGeneration({ callerRunAttempt, inventory }) {
       review_check_count: inventory.rows.length,
       worker_check_count: 0,
       latest_worker_check_id: '',
+      refresh_requested: false,
     };
   }
 
@@ -344,6 +376,7 @@ export function assertReviewGeneration({ callerRunAttempt, inventory }) {
     review_check_count: inventory.rows.length,
     worker_check_count: workers.length,
     latest_worker_check_id: firstAttempt.row.id,
+    refresh_requested: false,
   };
 }
 
@@ -364,19 +397,51 @@ export async function assertRepositoryCapacity({
   // `in_progress`, and it will still consume an upstream slot. Counting only
   // in-progress runs undercounts exactly during the burst the cap exists for,
   // making the cap advisory when it matters most. Count both states.
-  const listUrl = (status) => `https://api.github.com/repos/${CENTRAL_REPOSITORY}`
+  const listUrl = (status, pageNumber) => `https://api.github.com/repos/${CENTRAL_REPOSITORY}`
     + '/actions/workflows/repository-dispatch.yml/runs'
-    + `?status=${status}&per_page=100`;
+    + `?status=${status}&per_page=${CAPACITY_RUN_PAGE_SIZE}&page=${pageNumber}`;
 
   // Both listings answer both caps, so the global bound costs no extra
   // round-trip beyond the states it must observe. Retry once: the preceding
   // identity lookups already proved the API reachable, so a single failure here
   // is far more likely transient than an outage.
+  //
+  // GitHub's paginated listing is only a page-at-a-time snapshot. A run may move
+  // between pages while this bounded read is in progress, so this is not a
+  // durable lease or a globally serialized admission. The direct service-owned
+  // admission cutover retires this pre-existing race; do not widen this caller
+  // into a second lease system.
+  async function listStatusRuns(status) {
+    const rows = [];
+    let expectedTotal = null;
+    for (let pageNumber = 1; pageNumber <= CAPACITY_RUN_ENDPOINT_CAP / CAPACITY_RUN_PAGE_SIZE; pageNumber += 1) {
+      const page = await githubJson(listUrl(status, pageNumber), token, fetchImpl);
+      if (!page || typeof page !== 'object' || Array.isArray(page)) {
+        throw new Error(`central ${status} workflow run page is invalid`);
+      }
+      if (page.total_count !== undefined) {
+        if (!Number.isSafeInteger(page.total_count) || page.total_count < 0) {
+          throw new Error(`central ${status} workflow run total_count is invalid`);
+        }
+        if (expectedTotal === null) expectedTotal = page.total_count;
+        else if (page.total_count !== expectedTotal) throw new Error(`central ${status} workflow run total_count changed while listing`);
+      }
+      if (!Array.isArray(page.workflow_runs) || page.workflow_runs.length > CAPACITY_RUN_PAGE_SIZE) {
+        throw new Error(`central ${status} workflow run page is invalid`);
+      }
+      rows.push(...page.workflow_runs);
+      if (rows.length > CAPACITY_RUN_ENDPOINT_CAP) throw new Error(`central ${status} workflow run inventory exceeds the endpoint cap`);
+      if (expectedTotal !== null && rows.length >= expectedTotal) return rows.slice(0, expectedTotal);
+      if (page.workflow_runs.length < CAPACITY_RUN_PAGE_SIZE) return rows;
+    }
+    throw new Error(`central ${status} workflow run inventory is truncated at the endpoint cap`);
+  }
+
   async function listRuns() {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const pages = await Promise.all(
-          CAPACITY_RUN_STATUSES.map((status) => githubJson(listUrl(status), token, fetchImpl)),
+          CAPACITY_RUN_STATUSES.map((status) => listStatusRuns(status)),
         );
         return pages;
       } catch {
@@ -387,29 +452,15 @@ export async function assertRepositoryCapacity({
   }
 
   const pages = await listRuns();
-  const runs = pages === null ? null : {
-    // Dedupe by id: a run can change state between the two listings.
+  if (pages === null) throw new Error('central workflow run capacity listing unavailable after bounded retries');
+
+  // Dedupe by id: a run can change state between the two listings.
+  const runs = {
     workflow_runs: [...new Map(
-      pages.flatMap((page) => (Array.isArray(page?.workflow_runs) ? page.workflow_runs : []))
+      pages.flatMap((page) => (Array.isArray(page) ? page : []))
         .map((run) => [run?.id, run]),
     ).values()],
   };
-
-  if (runs === null) {
-    // Degraded: no count is available. Rejecting outright would fail a required
-    // merge gate closed on a transient listing error; admitting without limit
-    // would delete both caps precisely when the lane is likely stressed. Admit a
-    // small allowance and report it, so the degradation is visible rather than
-    // silent.
-    return {
-      cap,
-      globalCap,
-      inFlight: null,
-      globalInFlight: null,
-      degraded: true,
-      allowance: DEGRADED_CONCURRENCY_ALLOWANCE,
-    };
-  }
 
   const all = Array.isArray(runs?.workflow_runs) ? runs.workflow_runs : [];
   const others = all.filter((run) => !(selfRunId && String(run?.id) === String(selfRunId)));
@@ -430,7 +481,7 @@ export async function assertRepositoryCapacity({
       + `(cap ${cap}); retry when capacity frees`,
     );
   }
-  return { cap, globalCap, inFlight, globalInFlight, degraded: false };
+  return { cap, globalCap, inFlight, globalInFlight };
 }
 
 export async function validateCentralDispatch({ payload, token, fetchImpl = globalThis.fetch }) {
@@ -468,12 +519,11 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
 
   // Capacity is checked only after identity is proven, so an invalid request
   // reports the validation failure rather than a misleading capacity message.
-  await assertRepositoryCapacity({
+  const capacity = await assertRepositoryCapacity({
     repositoryName: assertAdmittedRepository(request.repository),
     token,
     fetchImpl,
   });
-
   // repository-dispatch.yml serializes this exact repository/PR/head for the
   // full validation + DOKS admission run. Re-read the App-owned check ledger
   // while holding that lease; the DOKS service then owns the durable request
@@ -484,7 +534,11 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
     token,
     fetchImpl,
   });
-  const generation = assertReviewGeneration({ callerRunAttempt, inventory: reviewInventory });
+  const generation = assertReviewGeneration({
+    callerRunAttempt,
+    inventory: reviewInventory,
+    refreshRequested: request.refresh_requested === true,
+  });
 
   // The base-owned caller workflow. Live evidence (example-api #4804, base 0.8.8-stable, run
   // 33675866048): GitHub executed the caller from the repository DEFAULT branch — whose

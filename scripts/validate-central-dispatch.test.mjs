@@ -9,7 +9,6 @@ import {
   DEFAULT_GLOBAL_CONCURRENCY_CAP,
   DEFAULT_REPOSITORY_CONCURRENCY_CAP,
   CAPACITY_RUN_STATUSES,
-  DEGRADED_CONCURRENCY_ALLOWANCE,
   DISPATCH_EVENT_TYPE,
   TARGET_REPOSITORY,
   assertAdmittedRepository,
@@ -101,8 +100,7 @@ function buildFixture({ repository, name, pr, callerPath = '.github/workflows/ct
       });
     }
     if (url.includes('/actions/workflows/repository-dispatch.yml/runs')) {
-      // An idle lane: the happy path must exercise the real capacity branch,
-      // not the degraded fallback.
+      // An idle lane: the happy path must exercise the real capacity branch.
       return response({ workflow_runs: [] });
     }
     if (url.includes(`/commits/${headSha}/check-runs?`)) {
@@ -167,8 +165,7 @@ function successFetch(calls) {
       });
     }
     if (url.includes('/actions/workflows/repository-dispatch.yml/runs')) {
-      // An idle lane: the happy path must exercise the real capacity branch,
-      // not the degraded fallback.
+      // An idle lane: the happy path must exercise the real capacity branch.
       return response({ workflow_runs: [] });
     }
     if (url.includes(`/commits/${headSha}/check-runs?`)) {
@@ -183,6 +180,9 @@ function successFetch(calls) {
 
 test('accepts only the sanitized Cisco dispatch identity contract', () => {
   assert.deepEqual(validateDispatchPayload(payload), payload);
+  assert.deepEqual(validateDispatchPayload({ ...payload, refresh_requested: true }), {
+    ...payload, refresh_requested: true,
+  });
   for (const invalid of [
     { ...payload, repository: 'exampleorg/another-repo' },
     { ...payload, pr_number: '4527' },
@@ -192,6 +192,7 @@ test('accepts only the sanitized Cisco dispatch identity contract', () => {
     { ...payload, request_id: `example-api:4528:${headSha}:${callerRunId}:${callerRunAttempt}` },
     { ...payload, provider: 'ollama' },
     { ...payload, ollama_api_key: 'secret' },
+    { ...payload, refresh_requested: 'true' },
   ]) {
     assert.throws(() => validateDispatchPayload(invalid));
   }
@@ -371,6 +372,11 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(selfReview, /CENTRAL_EVENT_TYPE:\s*review-yeti-request/u);
   assert.match(selfReview, /create-github-app-token@[0-9a-f]{40}/u);
   assert.match(selfReview, /types:\s*\[opened, synchronize, reopened, ready_for_review, labeled, unlabeled\]/u);
+  assert.match(selfReview, /review-yeti\/refresh/u);
+  assert.match(selfReview, /refresh_requested/u);
+  assert.match(receiver, /refresh_requested:/u);
+  assert.match(reusable, /refresh_requested:/u);
+  assert.match(reusable, /refresh-requested:\s*\$\{\{ inputs\.refresh_requested/u);
   assert.doesNotMatch(selfReview, /review-yeti\.yml@|secrets\s*:\s*inherit|OPENROUTER|FIREWORKS|GEMINI|OLLAMA_PR_REVIEW/u);
   assert.equal((reusable.match(/^\s+max-file-diff-chars:/gmu) || []).length, 1);
 });
@@ -490,14 +496,14 @@ test('per-repository capacity cap bounds the shared lane without blocking normal
   });
   assert.equal(selfExcluded.inFlight, cap - 1);
 
-  // Capacity is a guard rail, not an evidence gate: a listing outage must not
-  // reject a legitimate review.
-  const degraded = await assertRepositoryCapacity({
-    repositoryName: 'example-workspace', token: 't', fetchImpl: async () => ({ ok: false, status: 500 }), cap: 1, selfRunId: '0',
-  });
-  assert.equal(degraded.inFlight, null);
-  assert.equal(degraded.degraded, true);
-  assert.equal(degraded.allowance, DEGRADED_CONCURRENCY_ALLOWANCE);
+  // A listing outage cannot prove either cap, so admission fails closed after
+  // the bounded retry rather than inventing an unbacked allowance.
+  await assert.rejects(
+    assertRepositoryCapacity({
+      repositoryName: 'example-workspace', token: 't', fetchImpl: async () => ({ ok: false, status: 500 }), cap: 1, selfRunId: '0',
+    }),
+    /capacity listing unavailable after bounded retries/u,
+  );
 });
 
 // A per-repository cap alone does not bound the shared provider: owner-based
@@ -568,9 +574,21 @@ test('a transient listing failure is retried before degrading', async () => {
   const result = await assertRepositoryCapacity({
     repositoryName: 'example-workspace', token: 't', fetchImpl: flaky, cap: 6, globalCap: 8, selfRunId: '0',
   });
-  assert.equal(result.degraded, false);
   assert.equal(result.globalInFlight, 0);
   assert.ok(calls > CAPACITY_RUN_STATUSES.length, 'expected a second listing round');
+});
+
+test('fails closed through central validation when capacity remains unavailable', async () => {
+  const calls = [];
+  const baseFetch = successFetch(calls);
+  const unavailableFetch = async (url, init) => {
+    if (url.includes('/actions/workflows/repository-dispatch.yml/runs')) return response({}, 503);
+    return baseFetch(url, init);
+  };
+  await assert.rejects(
+    validateCentralDispatch({ payload, token: 'central-token', fetchImpl: unavailableFetch }),
+    /capacity listing unavailable after bounded retries/u,
+  );
 });
 
 // A dispatched run that has not started a job is `queued`. Counting only
@@ -623,4 +641,34 @@ test('capacity counts queued runs, not only in-progress', async () => {
     repositoryName: 'example-workspace', token: 't', fetchImpl: dupe, cap: 6, globalCap: 8, selfRunId: '-1',
   });
   assert.equal(deduped.globalInFlight, 1);
+});
+
+test('paginates capacity listings beyond the first 100 workflow runs', async () => {
+  const seen = [];
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    seen.push(parsed);
+    const status = parsed.searchParams.get('status');
+    const pageNumber = Number(parsed.searchParams.get('page'));
+    if (status === 'in_progress') return response({ total_count: 0, workflow_runs: [] });
+    if (pageNumber === 1) {
+      return response({ total_count: 101, workflow_runs: Array.from({ length: 100 }, (_, index) => ({
+        id: 8_000 + index,
+        display_title: `Review Yeti central / example-workspace:1:${headSha}:1:1`,
+      })) });
+    }
+    return response({ total_count: 101, workflow_runs: [{
+      id: 8_100,
+      display_title: `Review Yeti central / example-workspace:1:${headSha}:1:1`,
+    }] });
+  };
+  const result = await assertRepositoryCapacity({
+    repositoryName: 'example-workspace', token: 't', fetchImpl, cap: 200, globalCap: 200, selfRunId: '-1',
+  });
+  assert.equal(result.inFlight, 101);
+  assert.equal(result.globalInFlight, 101);
+  assert.deepEqual(
+    seen.filter((url) => url.searchParams.get('status') === 'queued').map((url) => url.searchParams.get('page')),
+    ['1', '2'],
+  );
 });

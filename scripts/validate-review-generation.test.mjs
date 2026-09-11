@@ -113,9 +113,9 @@ function generationFetch({ attempt, checkPages, calls = [] }) {
   };
 }
 
-async function validate({ attempt, pages, calls = [] }) {
+async function validate({ attempt, pages, calls = [], refreshRequested = false }) {
   return validateCentralDispatch({
-    payload: payloadFor(attempt),
+    payload: { ...payloadFor(attempt), ...(refreshRequested ? { refresh_requested: true } : {}) },
     token: 'central-app-token',
     fetchImpl: generationFetch({ attempt, checkPages: pages, calls }),
   });
@@ -132,6 +132,26 @@ test('attempt 1 admits only when no worker generation exists', async () => {
   await assert.rejects(
     validate({ attempt: 1, pages: [page([workerCheck()])] }),
     /attempt 1 requires zero worker checks/u,
+  );
+});
+
+test('explicit refresh admits a persisted retry from caller attempt 1 after a recoverable a1', async () => {
+  const result = await validate({ attempt: 1, refreshRequested: true, pages: [page([workerCheck()])] });
+  assert.equal(result.review_generation, 2);
+  assert.equal(result.worker_check_count, 1);
+  assert.equal(result.latest_worker_check_id, 100);
+  assert.equal(result.refresh_requested, true);
+  assert.equal(result.retry_after_execution_attempt, 1);
+});
+
+test('explicit refresh still requires the authoritative recoverable a1 ledger', async () => {
+  await assert.rejects(
+    validate({ attempt: 1, refreshRequested: true, pages: [page([])] }),
+    /refresh requires exactly one worker a1; found 0 worker checks/u,
+  );
+  await assert.rejects(
+    validate({ attempt: 1, refreshRequested: true, pages: [page([workerCheck({ title: 'Review Yeti: SHIP' })])] }),
+    /refresh a1 worker is not a completed recoverable infrastructure failure/u,
   );
 });
 

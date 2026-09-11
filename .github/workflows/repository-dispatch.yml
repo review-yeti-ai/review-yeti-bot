@@ -26,6 +26,11 @@ on:
         description: 'Request ID'
         required: true
         type: string
+      refresh_requested:
+        description: 'Explicit same-head retry requested by review-yeti/refresh'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   # A called reusable workflow may not request more than its caller grants; GitHub
@@ -56,6 +61,8 @@ jobs:
       base_sha: ${{ steps.request.outputs.base_sha }}
       head_sha: ${{ steps.request.outputs.head_sha }}
       caller_workflow_sha256: ${{ steps.request.outputs.caller_workflow_sha256 }}
+      refresh_requested: ${{ steps.request.outputs.refresh_requested }}
+      retry_after_execution_attempt: ${{ steps.request.outputs.retry_after_execution_attempt || '0' }}
     steps:
       - name: Checkout promoted central validator
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -127,6 +134,8 @@ jobs:
       pr_number: ${{ fromJSON(needs.validate.outputs.pr_number) }}
       base_sha: ${{ needs.validate.outputs.base_sha }}
       head_sha: ${{ needs.validate.outputs.head_sha }}
+      refresh_requested: ${{ needs.validate.outputs.refresh_requested == 'true' }}
+      refresh_execution_attempt: ${{ fromJSON(needs.validate.outputs.retry_after_execution_attempt || '0') }}
       passthrough: ${{ vars.REVIEW_YETI_PASSTHROUGH == 'true' }}
       execution_backend: doks
     secrets: inherit

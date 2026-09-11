@@ -66,6 +66,13 @@ function fetchImplFor({ pull, run, apiBase, defaultBranchRef }, runOverride = ru
   return async (url) => {
     if (url === `${apiBase}/pulls/${pull.number}`) return response(pull);
     if (url === `${apiBase}/actions/runs/${run.id}`) return response(runOverride);
+    if (url.includes('/actions/workflows/repository-dispatch.yml/runs')) {
+      // Capacity is a fail-closed prerequisite. This replay models an idle
+      // central lane so generation/identity assertions remain the subject of
+      // the fixture; pagination movement is documented as a pre-existing race
+      // retired by direct service-owned admission.
+      return response({ workflow_runs: [] });
+    }
     if (url.startsWith(`${apiBase}/commits/${run.head_sha}/check-runs?`)) {
       const query = new URL(url).searchParams;
       assert.equal(query.get('check_name'), 'Review Yeti');

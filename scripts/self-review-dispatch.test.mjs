@@ -154,6 +154,13 @@ test('dispatch emits the exact immutable payload and propagates failure', () => 
   assert.equal(runBody(body, { POST_EXIT: '17' }).status, 17);
 });
 
+test('refresh label carries the explicit retry flag while ordinary dispatch omits it', () => {
+  const body = stepBody('Dispatch central Review Yeti');
+  const result = runBody(body, { REFRESH_REQUESTED_VALUE: 'true' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.payload).client_payload.refresh_requested, true);
+});
+
 test('dispatch confirmation names the raw App check without promising a DOKS Gate check', () => {
   const body = stepBody('Confirm central Review Yeti dispatch');
   const result = runBody(body);
