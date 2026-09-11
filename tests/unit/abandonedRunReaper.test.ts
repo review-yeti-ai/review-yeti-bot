@@ -110,6 +110,15 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 1 });
   });
 
+  it.each(['failure-existing', 'authoritative-success'] as const)(
+    'does not count %s as a new publication or failure',
+    async (outcome) => {
+      const { subject, client } = fixture();
+      client.failAbandonedCheck.mockResolvedValue(outcome as never);
+      await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 0 });
+    },
+  );
+
   it('requires a trusted publisher identity and a named lease owner', () => {
     const options = { repository: {} as never, checkClientFor: vi.fn(), publisherAppId: 4385771, workerId: ' ' };
     expect(() => new AbandonedRunReaper(options)).toThrow('worker id');
