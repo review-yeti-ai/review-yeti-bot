@@ -96,9 +96,10 @@ describe('runReviewJobDispatcherLoop', () => {
     });
   });
 
-  it('sanitizes cycle errors and applies bounded backoff instead of exiting', async () => {
+  it('reports only a safe error fingerprint and applies bounded backoff instead of exiting', async () => {
     const controller = new AbortController();
-    const engine = { runOnce: vi.fn(async () => { throw new Error('postgres://secret-bearing-error'); }) };
+    const failure = Object.assign(new Error('postgres://secret-bearing-error'), { code: '42P08' });
+    const engine = { runOnce: vi.fn(async () => { throw failure; }) };
     const onCycleError = vi.fn();
     const sleep = vi.fn(async (milliseconds: number) => {
       expect(milliseconds).toBe(5_000);
@@ -114,7 +115,7 @@ describe('runReviewJobDispatcherLoop', () => {
       onCycleError,
     });
 
-    expect(onCycleError).toHaveBeenCalledWith({ status: 'cycle-error' });
+    expect(onCycleError).toHaveBeenCalledWith({ status: 'cycle-error', errorCode: '42P08' });
     expect(JSON.stringify(onCycleError.mock.calls)).not.toContain('secret-bearing');
   });
 });

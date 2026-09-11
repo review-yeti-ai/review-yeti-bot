@@ -80,7 +80,13 @@ export interface ReviewJobDispatcherLoopOptions {
   errorDelayMs: number;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   onOutcome?: (outcome: ReviewJobDispatchOutcome) => void;
-  onCycleError?: (outcome: { status: 'cycle-error' }) => void;
+  onCycleError?: (outcome: { status: 'cycle-error'; errorCode?: string }) => void;
+}
+
+function safeErrorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && /^[A-Z0-9_-]{1,32}$/u.test(code) ? code : undefined;
 }
 
 async function abortableSleep(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -107,8 +113,9 @@ export async function runReviewJobDispatcherLoop(
       const outcome = await engine.runOnce();
       options.onOutcome?.(outcome);
       delay = outcome.status === 'idle' ? options.idleDelayMs : options.activeDelayMs;
-    } catch {
-      options.onCycleError?.({ status: 'cycle-error' });
+    } catch (error: unknown) {
+      const errorCode = safeErrorCode(error);
+      options.onCycleError?.(errorCode ? { status: 'cycle-error', errorCode } : { status: 'cycle-error' });
     }
     if (!options.signal.aborted) await sleep(delay, options.signal);
   }
