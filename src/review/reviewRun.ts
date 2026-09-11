@@ -1,5 +1,6 @@
 import type { PiStage } from './piWorkflow';
 import type { PreparedPublishingPolicy } from './preparedPublishingPolicy';
+import type { WorkerFailureDiagnostics } from './workerCompletion';
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -39,6 +40,8 @@ export interface ReviewRun {
   publicationFence?: string;
   resultDigest?: string;
   error?: string;
+  /** Last terminal worker diagnostic; provider text is redacted and bounded. */
+  failureDiagnostics?: WorkerFailureDiagnostics & { failureClass?: string; executionAttempt?: number };
   createdAt: number;
   updatedAt: number;
 }
@@ -55,6 +58,8 @@ export interface ReviewAdmissionInput {
   identity: ReviewRunIdentity;
   effectivePolicyDigest?: string;
   indexEpoch?: number;
+  /** Service-controlled same-head recovery; never decoded from an unverified request. */
+  retryRequested?: boolean;
   /** Service-resolved only; never decoded from an Action/worker request. */
   authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
 }

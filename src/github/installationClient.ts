@@ -97,6 +97,17 @@ export const BASE_POLICY_CANDIDATE_FILES = ConfigResolver.CONFIG_FILES;
 export const CHECK_CONTEXT_RAW_REVIEW = 'Review Yeti';
 export const CHECK_CONTEXT_GATE = 'Review Yeti Gate';
 export const CHECK_CONTEXT_CI = 'Review Yeti CI';
+/** GitHub Check Run action used for a persisted same-head recovery request. */
+export const REVIEW_REFRESH_ACTION = Object.freeze({
+  label: 'Refresh review',
+  description: 'Retry the failed Review Yeti check for this exact head.',
+  identifier: 'review-yeti/refresh',
+});
+
+const RECOVERABLE_FAILURE_TITLES = new Set([
+  'Review Yeti: review did not complete',
+  'Review Yeti: NO VERDICT (no panel result for this head)',
+]);
 
 export interface GateCheckOptions {
   conclusion: 'success' | 'failure';
@@ -424,6 +435,7 @@ export class GitHubInstallationClient {
       if (candidates.length > 1) throw new Error('ambiguous abandoned check');
       const failure = {
         status: 'completed', conclusion: 'failure', completed_at: new Date(this.now()).toISOString(),
+        actions: [REVIEW_REFRESH_ACTION],
         output: {
           title: 'Review Yeti: review did not complete',
           summary: `No durable verdict was recorded for \`${run.headSha}\` before its terminal deadline.\n\n`
@@ -502,6 +514,8 @@ export class GitHubInstallationClient {
         conclusion: options.conclusion,
         completed_at: new Date(this.now()).toISOString(),
         output,
+        ...(options.conclusion === 'failure' && RECOVERABLE_FAILURE_TITLES.has(options.title)
+          ? { actions: [REVIEW_REFRESH_ACTION] } : {}),
       }),
     });
   }

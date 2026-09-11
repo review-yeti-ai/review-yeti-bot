@@ -103,6 +103,8 @@ describe('Milestone 4: 30-Second GitHub App Setup Wizard (R4)', () => {
         'pull_request_review',
         'pull_request_review_comment',
         'issue_comment',
+        'check_run',
+        'merge_group',
       ]);
     });
 

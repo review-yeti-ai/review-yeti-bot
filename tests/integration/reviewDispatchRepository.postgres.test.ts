@@ -149,6 +149,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         result_digest TEXT,
         artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
         error_text TEXT,
+        failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
         delivery_id TEXT,
         received_at TIMESTAMPTZ,
         terminal_deadline TIMESTAMPTZ,
@@ -1044,6 +1045,35 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(await state()).toEqual(before);
     expect((await client.query("SELECT * FROM github_deliveries WHERE delivery_id = 'stale-new-delivery'")).rows).toEqual([]);
     await expect(repository.claimNext('dispatcher-other', 4_100, 30_000)).resolves.toBeNull();
+  });
+
+  it('re-arms an active projected execution only for an explicit persisted retry', async () => {
+    const { repository, client } = await createRepository();
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      snapshotDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    };
+    const input = (deliveryId: string, receivedAt: number, retryRequested = false) => ({
+      deliveryId, eventName: 'check_run', repositoryId: 123, installationId: 456,
+      receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, identity,
+      ...(retryRequested ? { retryRequested: true } : {}),
+    });
+
+    const first = await repository.admit(input('delivery-1', 1_000));
+    const claim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+    await repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', claim.claimAttempt, 'a'.repeat(64), 1_001);
+    await repository.markProjected(first.run.runId, 'dispatcher-a', claim.claimAttempt, 'projection', 1_002, 'a'.repeat(64));
+
+    const refresh = await repository.admit(input('delivery-refresh', 2_000, true));
+    expect(refresh).toMatchObject({ status: 'accepted', run: {
+      runId: first.run.runId, status: 'queued', attempt: 1, deliveryId: 'delivery-refresh',
+    } });
+    expect((await client.query('SELECT status, delivery_id, execution_attempt, projection_name, worker_token_digest FROM review_dispatch_outbox WHERE run_id = $1', [first.run.runId])).rows[0])
+      .toMatchObject({ status: 'pending', delivery_id: 'delivery-refresh', execution_attempt: 1,
+        projection_name: null, worker_token_digest: null });
+    expect((await repository.claimNext('dispatcher-b', 3_000, 30_000))?.executionAttempt).toBe(2);
   });
 
   it.each(['publishing', 'failed', 'terminal'])('retires a prior %s identity so it cannot be retried after identity drift', async (status) => {

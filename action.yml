@@ -83,6 +83,12 @@ inputs:
       allowlisted workflows; disabled admits a nonpublishing qualification run.
     required: false
     default: 'app-gate'
+  refresh-requested:
+    description: >-
+      Explicit same-head retry for a completed, recoverable Review Yeti worker failure. Only the
+      trusted central workflow sets this; ordinary callers leave it false.
+    required: false
+    default: 'false'
   openrouter-allowed-models:
     description: >-
       Trusted workflow/base-config OpenRouter model allowlist, as comma-separated model IDs.
@@ -421,6 +427,7 @@ runs:
         DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
         DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
+        REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
         ACTION_SHA: ${{ inputs.action-sha }}
         REPOSITORY_ID: ${{ steps.target.outputs.repository-id }}
         REPOSITORY: ${{ steps.target.outputs.repo }}

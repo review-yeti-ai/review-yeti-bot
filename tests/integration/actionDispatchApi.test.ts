@@ -192,6 +192,36 @@ describe('POST /api/dispatch/action', () => {
     });
   });
 
+  it('forwards refresh only from the central app-gate repository_dispatch boundary', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions',
+      repository_id: '99999',
+      repository_owner_id: '99',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'repository_dispatch',
+      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({ allowAppGate: true, verifier: { verify: vi.fn(async () => centralVerified) } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        refreshRequested: true,
+        caller: {
+          ...body.caller,
+          eventName: 'repository_dispatch',
+          workflowRef: centralVerified.job_workflow_ref,
+        },
+      });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({ retryRequested: true }));
+  });
+
   it('keeps app-gate disabled unless the verifier explicitly authorizes it', async () => {
     const fixture = app();
     const response = await request(fixture.instance)

@@ -46,6 +46,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('execution-backend');
     expect(inputs).toContain('doks-dispatch-url');
     expect(inputs).toContain('doks-publish-mode');
+    expect(inputs).toContain('refresh-requested');
     expect(inputs).toContain('ollama-api-key');
     expect(inputs).toContain('synthetic-api-key');
   });
@@ -90,6 +91,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(JSON.stringify(step.env)).not.toMatch(/OPENROUTER|FIREWORKS|OLLAMA|ANTHROPIC|GEMINI|OPENAI_API_KEY/u);
     expect(step.env).not.toHaveProperty('GH_TOKEN');
     expect(step.env.DOKS_OIDC_AUDIENCE).toBe('review-yeti-doks-dispatch');
+    expect(step.env.REFRESH_REQUESTED).toContain('inputs.refresh-requested');
   });
 
   it('reports remote admission as pending rather than a green review', () => {

@@ -1,8 +1,10 @@
 # Durable worker failure recovery
 
-Publishing workers can report a typed `WorkerTerminalFailure.v1` to the Action
-dispatch service at `/api/dispatch/completion`. The callback carries only
-immutable attempt coordinates and a bounded failure class, never provider
+Publishing workers can report a typed `WorkerTerminalFailure.v1` or
+`WorkerReviewCompletion.v1` to the Action dispatch service at
+`/api/dispatch/completion`. The callback carries only immutable attempt
+coordinates, a bounded failure class, and a redacted diagnostic (`reason`,
+optional `providerStatus`, and a UTF-8 bounded `logTail`), never provider
 response text. It cannot approve a review or change a provider.
 
 ## Activation and compatibility
@@ -91,6 +93,16 @@ request advances the existing execution counter and creates a fresh Job and
 Secret identity. An old execution's callback cannot fail or approve the new
 one. A failure before check creation can omit `checkId`; the check is useful
 evidence but is not the callback's authority.
+
+The service stores the latest failure in `review_runs.failure_diagnostics` as a
+redacted JSON object with `failureClass`, `reason`, `providerStatus` (when the
+provider supplied a valid HTTP status), `logTail`, and `executionAttempt`.
+Legacy callbacks without `diagnostics` receive a fixed class-derived reason and
+tail; service-side deadline recovery records the same fixed timeout/internal
+diagnostic when a pod disappears before it can callback. The worker and service
+both redact known token/key/prompt fields and cap the tail at 2,048 UTF-8 bytes
+before persistence. A same-head retry preserves the previous diagnostic until
+its replacement attempt reports a new one.
 
 This change does not implement success callbacks, replace raw check publishers,
 alter required checks, or establish event-driven consumer CI. Those lifecycle

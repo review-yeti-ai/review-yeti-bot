@@ -15,6 +15,8 @@ export const actionDispatchRequestSchema = z.object({
   baseSha: sha,
   actionSha: sha,
   publishMode: z.enum(['disabled', 'app-gate']),
+  /** Explicit same-head recovery requested by the trusted central workflow. */
+  refreshRequested: z.boolean().optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
   caller: z.object({

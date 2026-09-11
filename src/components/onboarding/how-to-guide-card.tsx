@@ -162,7 +162,8 @@ export function HowToGuideCard() {
     "pull_requests": "write",
     "issues": "write",
     "contents": "read",
-    "checks": "write"
+    "checks": "write",
+    "merge_queues": "read"
   }
 }`;
 

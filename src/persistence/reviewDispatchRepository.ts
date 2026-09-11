@@ -8,7 +8,10 @@ import {
   PublicationMode,
   ReviewRun,
 } from '../review/reviewRun';
-import type { WorkerCompletionProof, WorkerTerminalFailure } from '../review/workerCompletion';
+import {
+  buildDurableWorkerFailureDiagnostics,
+  type WorkerCompletionProof, type WorkerFailureDiagnostics, type WorkerTerminalFailure,
+} from '../review/workerCompletion';
 import { buildAuthoritativeReviewIdentity } from '../review/authoritativeReviewIdentity';
 import { savePreparedPublishingPolicy } from './preparedReviewRepository';
 import { PostgresReviewGateRepository } from './reviewGateRepository';
@@ -56,6 +59,8 @@ function publicationMode(value: unknown): PublicationMode {
 }
 
 function fromRow(row: any): ReviewRun {
+  const storedDiagnostics = typeof row.failure_diagnostics === 'string'
+    ? JSON.parse(row.failure_diagnostics) : row.failure_diagnostics;
   return {
     runId: row.run_id,
     identity: typeof row.identity === 'string' ? JSON.parse(row.identity) : row.identity,
@@ -79,6 +84,8 @@ function fromRow(row: any): ReviewRun {
     publicationFence: row.publication_fence || undefined,
     resultDigest: row.result_digest || undefined,
     error: row.error_text || undefined,
+    failureDiagnostics: storedDiagnostics && typeof storedDiagnostics === 'object'
+      && Object.keys(storedDiagnostics).length > 0 ? storedDiagnostics : undefined,
     createdAt: milliseconds(row.created_at) || 0,
     updatedAt: milliseconds(row.updated_at) || 0,
   };
@@ -91,6 +98,9 @@ function validateAdmission(input: ReviewAdmissionInput): void {
   if (!/^[a-f0-9]{64}$/u.test(input.payloadDigest)) throw new Error('payload digest must be 64 lowercase hex characters');
   if (input.publicationMode !== 'disabled' && input.publicationMode !== 'app-gate') {
     throw new Error('publication mode must be disabled or app-gate');
+  }
+  if (input.retryRequested !== undefined && typeof input.retryRequested !== 'boolean') {
+    throw new Error('retry requested must be a boolean');
   }
   assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
   if (input.authoritativeGate) {
@@ -138,7 +148,8 @@ export interface ReviewDispatchRepository {
   markProjected(runId: string, workerId: string, claimAttempt: number, projectionName: string, now: number, workerTokenDigest?: string): Promise<boolean>;
   bindWorkerTokenDigest(runId: string, workerId: string, claimAttempt: number, workerTokenDigest: string, now: number): Promise<boolean>;
   releaseForRetry(runId: string, workerId: string, claimAttempt: number, now: number, availableAt: number): Promise<boolean>;
-  markTerminal(runId: string, workerId: string, claimAttempt: number, now: number, error: string): Promise<boolean>;
+  markTerminal(runId: string, workerId: string, claimAttempt: number, now: number, error: string,
+    diagnostics?: WorkerFailureDiagnostics): Promise<boolean>;
   /** Persist a worker's fail-closed terminal outcome without approving the head. */
   markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
   /** REL-586: sweep publishing runs whose deadline passed without ever publishing. */
@@ -272,18 +283,86 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          ON CONFLICT (identity_digest) DO UPDATE
            SET updated_at = review_runs.updated_at,
                -- Retry only the same complete identity after a durable failure.
-               -- Active duplicates remain unchanged; superseded identities must
-               -- never be revived merely because a new delivery arrived.
-               status = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN 'queued' ELSE review_runs.status END,
-               attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
-               error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END,
-               lease_owner = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.lease_owner END,
-               lease_expires_at = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.lease_expires_at END,
-               delivery_id = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
-               received_at = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.received_at ELSE review_runs.received_at END,
+               -- Active duplicates remain unchanged unless the trusted App
+               -- requested-action path (or its central signed handoff) carries
+               -- an explicit retry. Even then, an active run must have a
+               -- projected/worker-token outbox record: the persisted ledger,
+               -- not a caller's desired attempt number, proves that an older
+               -- worker existed and may safely be replaced.
+               status = CASE WHEN review_runs.status IN ('failed', 'terminal')
+                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
+                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                      WHERE retry_outbox.run_id = review_runs.run_id
+                        AND (retry_outbox.status = 'projected'
+                          OR (retry_outbox.status = 'terminal'
+                            AND (retry_outbox.worker_token_digest IS NOT NULL
+                              OR retry_outbox.projection_name IS NOT NULL)))
+                   )) THEN 'queued' ELSE review_runs.status END,
+               attempt = CASE WHEN review_runs.status IN ('failed', 'terminal')
+                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
+                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                      WHERE retry_outbox.run_id = review_runs.run_id
+                        AND (retry_outbox.status = 'projected'
+                          OR (retry_outbox.status = 'terminal'
+                            AND (retry_outbox.worker_token_digest IS NOT NULL
+                              OR retry_outbox.projection_name IS NOT NULL)))
+                   )) THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
+               error_text = CASE WHEN review_runs.status IN ('failed', 'terminal')
+                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
+                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                      WHERE retry_outbox.run_id = review_runs.run_id
+                        AND (retry_outbox.status = 'projected'
+                          OR (retry_outbox.status = 'terminal'
+                            AND (retry_outbox.worker_token_digest IS NOT NULL
+                              OR retry_outbox.projection_name IS NOT NULL)))
+                   )) THEN NULL ELSE review_runs.error_text END,
+               lease_owner = CASE WHEN review_runs.status IN ('failed', 'terminal')
+                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
+                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                      WHERE retry_outbox.run_id = review_runs.run_id
+                        AND (retry_outbox.status = 'projected'
+                          OR (retry_outbox.status = 'terminal'
+                            AND (retry_outbox.worker_token_digest IS NOT NULL
+                              OR retry_outbox.projection_name IS NOT NULL)))
+                   )) THEN NULL ELSE review_runs.lease_owner END,
+               lease_expires_at = CASE WHEN review_runs.status IN ('failed', 'terminal')
+                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
+                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                      WHERE retry_outbox.run_id = review_runs.run_id
+                        AND (retry_outbox.status = 'projected'
+                          OR (retry_outbox.status = 'terminal'
+                            AND (retry_outbox.worker_token_digest IS NOT NULL
+                              OR retry_outbox.projection_name IS NOT NULL)))
+                   )) THEN NULL ELSE review_runs.lease_expires_at END,
+               delivery_id = CASE WHEN review_runs.status IN ('failed', 'terminal')
+                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
+                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                      WHERE retry_outbox.run_id = review_runs.run_id
+                        AND (retry_outbox.status = 'projected'
+                          OR (retry_outbox.status = 'terminal'
+                            AND (retry_outbox.worker_token_digest IS NOT NULL
+                              OR retry_outbox.projection_name IS NOT NULL)))
+                   )) THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
+               received_at = CASE WHEN review_runs.status IN ('failed', 'terminal')
+                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
+                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                      WHERE retry_outbox.run_id = review_runs.run_id
+                        AND (retry_outbox.status = 'projected'
+                          OR (retry_outbox.status = 'terminal'
+                            AND (retry_outbox.worker_token_digest IS NOT NULL
+                              OR retry_outbox.projection_name IS NOT NULL)))
+                   )) THEN EXCLUDED.received_at ELSE review_runs.received_at END,
                -- The old deadline is already in the past, so a retry would be
                -- swept by the abandoned-run reaper before it could start.
-               terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
+               terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal')
+                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
+                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                      WHERE retry_outbox.run_id = review_runs.run_id
+                        AND (retry_outbox.status = 'projected'
+                          OR (retry_outbox.status = 'terminal'
+                            AND (retry_outbox.worker_token_digest IS NOT NULL
+                              OR retry_outbox.projection_name IS NOT NULL)))
+                   )) THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
          WHERE review_runs.publication_mode = EXCLUDED.publication_mode
            AND review_runs.authoritative_gate_app_id IS NOT DISTINCT FROM EXCLUDED.authoritative_gate_app_id
            AND review_runs.status <> 'superseded'
@@ -326,6 +405,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           input.terminalDeadline,
           input.publicationMode,
           input.authoritativeGate?.expectedAppId ?? null,
+          input.retryRequested === true,
         ],
       );
       const runRow = inserted.rows[0];
@@ -688,8 +768,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     return result.rows.length > 0;
   }
 
-  async markTerminal(runId: string, workerId: string, claimAttempt: number, now: number, error: string): Promise<boolean> {
+  async markTerminal(runId: string, workerId: string, claimAttempt: number, now: number, error: string,
+    diagnostics?: WorkerFailureDiagnostics): Promise<boolean> {
     validateClaimAttempt(claimAttempt);
+    const failureDiagnostics = diagnostics
+      ? JSON.stringify(buildDurableWorkerFailureDiagnostics('internal_error', diagnostics)) : null;
     const result = await this.queryable.query(
       `WITH terminalized AS (
          UPDATE review_dispatch_outbox
@@ -707,12 +790,12 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         RETURNING run_id
        )
        UPDATE review_runs AS runs
-          SET status = 'failed', error_text = $4, lease_owner = NULL,
+          SET status = 'failed', error_text = $4, failure_diagnostics = COALESCE($6::jsonb, failure_diagnostics), lease_owner = NULL,
               lease_expires_at = NULL, updated_at = to_timestamp($3 / 1000.0)
          FROM terminalized
         WHERE runs.run_id = terminalized.run_id AND runs.status = 'queued'
       RETURNING runs.run_id`,
-      [runId, workerId, now, error, claimAttempt],
+      [runId, workerId, now, error, claimAttempt, failureDiagnostics],
     );
     return result.rows.length > 0;
   }
@@ -744,6 +827,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     now: number,
   ): Promise<WorkerFailureTransition> {
     const safeError = `worker terminal failure: ${input.failureClass}`;
+    const safeDiagnostics = buildDurableWorkerFailureDiagnostics(
+      input.failureClass, input.diagnostics, input.executionAttempt,
+    );
     const current = await client.query(
       `SELECT runs.status, runs.repository_id, runs.owner, runs.repo, runs.pr_number,
               runs.head_sha, runs.base_sha, runs.effective_policy_digest,
@@ -800,28 +886,29 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     );
     const transitioned = await client.query(
       `UPDATE review_runs AS runs
-          SET status = 'failed', error_text = $2, lease_owner = NULL,
-              lease_expires_at = NULL, updated_at = to_timestamp($3 / 1000.0)
+          SET status = 'failed', error_text = $2, failure_diagnostics = $3::jsonb, lease_owner = NULL,
+              lease_expires_at = NULL, updated_at = to_timestamp($4 / 1000.0)
         FROM review_dispatch_outbox AS outbox
         WHERE runs.run_id = $1
           AND outbox.run_id = runs.run_id
-          AND runs.owner = $4
-          AND runs.repo = $5
-          AND runs.pr_number = $6
-          AND runs.head_sha = $7
-          AND runs.base_sha = $8
-          AND runs.repository_id = $9
-          AND runs.effective_policy_digest = $10
-          AND runs.effective_config_digest = $11
+          AND runs.owner = $5
+          AND runs.repo = $6
+          AND runs.pr_number = $7
+          AND runs.head_sha = $8
+          AND runs.base_sha = $9
+          AND runs.repository_id = $10
+          AND runs.effective_policy_digest = $11
+          AND runs.effective_config_digest = $12
           AND runs.publication_mode = 'app-gate'
           AND runs.status IN ('queued', 'running')
           AND outbox.status = 'projected'
-          AND outbox.execution_attempt + 1 = $12
-          AND outbox.worker_token_digest = $13
+          AND outbox.execution_attempt + 1 = $13
+          AND outbox.worker_token_digest = $14
         RETURNING runs.run_id`,
       [
         input.runId,
         safeError,
+        JSON.stringify(safeDiagnostics),
         now,
         input.owner,
         input.repo,

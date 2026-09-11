@@ -74,6 +74,11 @@ export function buildDispatchRequest(environment) {
   if (publishMode !== 'disabled' && publishMode !== 'app-gate') {
     throw new Error('DOKS publish mode must be disabled or app-gate');
   }
+  const refreshRequestedRaw = String(environment.REFRESH_REQUESTED ?? '').trim().toLowerCase();
+  if (refreshRequestedRaw !== '' && refreshRequestedRaw !== 'false' && refreshRequestedRaw !== 'true') {
+    throw new Error('REFRESH_REQUESTED must be true or false');
+  }
+  const refreshRequested = refreshRequestedRaw === 'true';
   const eventName = required(environment, 'GITHUB_EVENT_NAME');
   if (!SUPPORTED_EVENTS.has(eventName)) throw new Error(`GitHub event ${eventName} is not supported for DOKS dispatch`);
 
@@ -110,6 +115,7 @@ export function buildDispatchRequest(environment) {
     baseSha,
     actionSha,
     publishMode,
+    ...(refreshRequested ? { refreshRequested: true } : {}),
     requestedAt: new Date().toISOString(),
     caller: {
       runId,

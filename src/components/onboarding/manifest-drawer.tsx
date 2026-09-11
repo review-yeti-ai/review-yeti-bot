@@ -100,6 +100,7 @@ export function ManifestDrawer({
         'push',
         'check_run',
         'check_suite',
+        'merge_group',
       ],
       default_permissions: {
         pull_requests: 'write',
@@ -108,6 +109,7 @@ export function ManifestDrawer({
         checks: 'write',
         statuses: 'write',
         metadata: 'read',
+        merge_queues: 'read',
         organization_hooks: 'read',
       },
     };

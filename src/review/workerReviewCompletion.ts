@@ -3,12 +3,13 @@ import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
 import { canonicalJson, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateEvidence } from './reviewGatePolicy';
-import { workerFailureClasses } from './workerCompletion';
+import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 
 /**
  * The success callback is deliberately smaller than the worker's operational receipt. It carries
  * the persona evidence needed for the service to re-run the existing canonical arbitration, while
- * excluding anything that could select or complete a GitHub check.
+ * excluding anything that could select or complete a GitHub check. A failed result may add only the
+ * same bounded diagnostic contract used by the terminal-failure callback; the service redacts it again.
  */
 export const WORKER_REVIEW_COMPLETION_VERSION = 'WorkerReviewCompletion.v1' as const;
 export const WORKER_REVIEW_RESULT_VERSION = 'WorkerReviewResult.v1' as const;
@@ -95,6 +96,8 @@ const resultSchema = z.object({
   verdict: z.enum(['SHIP', 'FIX_FIRST', 'BLOCK']).optional(),
   findingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
   blockingFindingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
+  /** Optional bounded context for a terminal error result; persisted after a second redaction. */
+  failureDiagnostics: workerFailureDiagnosticsSchema.optional(),
 }).strict();
 
 const completionSchema = z.object({
