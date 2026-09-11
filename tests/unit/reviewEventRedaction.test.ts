@@ -40,7 +40,6 @@ describe('progress event redaction boundary', () => {
       model: 'openai/gpt-5',
       durationMs: 850,
       findingsCount: 2,
-      message: 'Security persona completed',
     }), identity);
 
     expect(result).not.toBeInstanceOf(ReviewEventRejection);
@@ -63,7 +62,7 @@ describe('progress event redaction boundary', () => {
         model: 'openai/gpt-5',
         duration_ms: 850,
         findings_count: 2,
-        message: 'Security persona completed',
+        message: 'Persona review completed',
       },
     });
     expect(result).not.toHaveProperty('jobId');
@@ -92,8 +91,24 @@ describe('progress event redaction boundary', () => {
     expect(result).not.toHaveProperty('data.token');
   });
 
+  it('uses typed error metadata with a canonical message', () => {
+    const result = sanitizeProgressEvent(liveEvent({
+      provider: 'openrouter',
+      errorClass: 'provider_timeout',
+    }, 'llm:error'), identity);
+
+    expect(result).toMatchObject({
+      event_kind: 'review.progress.llm_error',
+      data: {
+        provider: 'openrouter',
+        error_class: 'provider_timeout',
+        message: 'LLM request failed',
+      },
+    });
+  });
+
   it('rejects unknown legacy data instead of silently forwarding it', () => {
-    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ message: 'safe', unknownField: 'not allowed' }), identity));
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ unknownField: 'not allowed' }), identity));
     expect(rejection.code).toBe('unknown_field');
     expect(rejection.field).toBe('unknownField');
   });
@@ -113,9 +128,23 @@ describe('progress event redaction boundary', () => {
     expect(rejection.field).toBe(field);
   });
 
-  it('rejects a progress message over 2,000 characters', () => {
+  it.each([
+    ['customer data', 'Customer ACME account 0042 reported private tenant data'],
+    ['source code', 'export const customerSecret = process.env.CUSTOMER_SECRET;'],
+    ['diff', '@@ -1 +1 @@\n-private customer value\n+replacement'],
+    ['prompt', 'System prompt: review the private repository source verbatim'],
+    ['raw output', 'Model output: hidden chain and unredacted finding body'],
+    ['error', 'Error: database password leaked\n    at private/customer.ts:42:7'],
+  ])('rejects arbitrary legacy message content with %s provenance', (_label, message) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ message }), identity));
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe('message');
+    expect(JSON.stringify(rejection)).not.toContain(message);
+  });
+
+  it('rejects an oversized arbitrary legacy message by provenance before content', () => {
     const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ message: 'x'.repeat(2_001) }), identity));
-    expect(rejection.code).toBe('message_too_long');
+    expect(rejection.code).toBe('forbidden_field');
     expect(rejection.field).toBe('message');
   });
 

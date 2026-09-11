@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { Format } from 'typebox/format';
+import { Check as checkJsonSchema, type XSchema } from 'typebox/schema';
 import { describe, expect, it } from 'vitest';
 import {
   EVENT_ENVELOPE_FIELD_INVENTORY,
@@ -8,6 +10,8 @@ import {
   REVIEW_EVENT_MAX_BYTES,
   REVIEW_EVENT_SCHEMA,
   REVIEW_EVENT_SCHEMA_VERSION,
+  REVIEW_PROGRESS_MESSAGE_FORMAT,
+  isReviewProgressMessageV1,
   parseReviewYetiEventV1,
   reviewYetiEventV1Schema,
 } from '../../src/events/reviewYetiEvent';
@@ -16,6 +20,15 @@ const eventId = '01J8Z5M6V7Q8R9S0T1V2W3X4Y5';
 const occurredAt = '2026-09-11T12:00:00.000Z';
 const baseSha = 'a'.repeat(40);
 const headSha = 'b'.repeat(40);
+const schemaPath = path.resolve(__dirname, '../../schemas/review-yeti-event.v1.schema.json');
+const jsonSchema = JSON.parse(fs.readFileSync(schemaPath, 'utf8')) as XSchema & {
+  $id: string;
+  properties: Record<string, unknown>;
+  additionalProperties: boolean;
+  $defs: Record<string, { properties: Record<string, unknown>; additionalProperties: boolean }>;
+};
+
+Format.Set(REVIEW_PROGRESS_MESSAGE_FORMAT, isReviewProgressMessageV1);
 
 function identityFields() {
   return {
@@ -121,15 +134,47 @@ describe('review-yeti-event.v1 parser', () => {
     expect(() => parseReviewYetiEventV1(oversized)).toThrow(/payload|size|16.?KiB/i);
   });
 
-  it('keeps the JSON Schema and Zod field inventory in parity', () => {
-    const schemaPath = path.resolve(__dirname, '../../schemas/review-yeti-event.v1.schema.json');
-    const jsonSchema = JSON.parse(fs.readFileSync(schemaPath, 'utf8')) as {
-      $id: string;
-      properties: Record<string, unknown>;
-      additionalProperties: boolean;
-      $defs: Record<string, { properties: Record<string, unknown>; additionalProperties: boolean }>;
-    };
+  it('keeps JSON Schema and Zod executable semantics in parity', () => {
+    const withoutRunId = { ...validProgressEvent() } as Record<string, unknown>;
+    delete withoutRunId.run_id;
 
+    const fixtures: Array<{ name: string; accepted: boolean; value: unknown }> = [
+      { name: 'valid lifecycle', accepted: true, value: validLifecycleEvent() },
+      { name: 'valid progress', accepted: true, value: validProgressEvent() },
+      { name: 'missing required run_id', accepted: false, value: withoutRunId },
+      { name: 'malformed ULID', accepted: false, value: { ...validProgressEvent(), event_id: eventId.toLowerCase() } },
+      { name: 'malformed event kind', accepted: false, value: { ...validProgressEvent(), event_kind: 'review.progress.v2.tokens' } },
+      { name: 'malformed SHA', accepted: false, value: { ...validLifecycleEvent(), base_sha: 'main' } },
+      { name: 'malformed digest', accepted: false, value: { ...validLifecycleEvent(), data: { ...validLifecycleEvent().data, result_digest: 'c'.repeat(63) } } },
+      { name: 'identifier whitespace', accepted: false, value: { ...validProgressEvent(), run_id: 'run id' } },
+      { name: 'zero repository id', accepted: false, value: { ...validLifecycleEvent(), repository_id: 0 } },
+      { name: 'fractional PR number', accepted: false, value: { ...validLifecycleEvent(), pr_number: 1.5 } },
+      { name: 'zero sequence', accepted: false, value: { ...validLifecycleEvent(), sequence: 0 } },
+      { name: 'unsafe sequence', accepted: false, value: { ...validLifecycleEvent(), sequence: Number.MAX_SAFE_INTEGER + 1 } },
+      { name: 'negative token count', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, prompt_tokens: -1 } } },
+      { name: 'unsafe cost', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, cost_usd: Number.MAX_SAFE_INTEGER + 1 } } },
+      { name: 'invalid occurred_at format', accepted: false, value: { ...validLifecycleEvent(), occurred_at: '2026-09-11' } },
+      { name: 'invalid nested timestamp format', accepted: false, value: { ...validLifecycleEvent(), data: { ...validLifecycleEvent().data, timing: { queued_at: 'not-a-date' } } } },
+      { name: 'unknown schema enum', accepted: false, value: { ...validProgressEvent(), schema: 'review-yeti-event.v2' } },
+      { name: 'unknown visibility enum', accepted: false, value: { ...validProgressEvent(), visibility: 'public' } },
+      { name: 'unknown progress status enum', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, status: 'running' } } },
+      { name: 'top-level additional property', accepted: false, value: { ...validProgressEvent(), unexpected: true } },
+      { name: 'data additional property', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, unexpected: true } } },
+      { name: 'nested additional property', accepted: false, value: { ...validLifecycleEvent(), data: { ...validLifecycleEvent().data, timing: { queued_at: occurredAt, unexpected: true } } } },
+      { name: '2,000 astral Unicode code points', accepted: true, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, message: '😀'.repeat(2_000) } } },
+      { name: '2,001 astral Unicode code points', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, message: '😀'.repeat(2_001) } } },
+      { name: '2,000 combining Unicode code points', accepted: true, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, message: `e${'\u0301'.repeat(1_999)}` } } },
+      { name: '2,001 combining Unicode code points', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, message: `e${'\u0301'.repeat(2_000)}` } } },
+      { name: 'forbidden message control', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, message: 'status\u0000detail' } } },
+    ];
+
+    for (const fixture of fixtures) {
+      expect(checkJsonSchema(jsonSchema, fixture.value), `${fixture.name} JSON Schema`).toBe(fixture.accepted);
+      expect(reviewYetiEventV1Schema.safeParse(fixture.value).success, `${fixture.name} Zod`).toBe(fixture.accepted);
+    }
+  });
+
+  it('keeps the shared field inventory and schema metadata aligned', () => {
     expect(jsonSchema.$id).toContain('review-yeti-event.v1.schema.json');
     expect(jsonSchema.additionalProperties).toBe(false);
     expect(Object.keys(jsonSchema.properties).sort()).toEqual([...EVENT_ENVELOPE_FIELD_INVENTORY].sort());

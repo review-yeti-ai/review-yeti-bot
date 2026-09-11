@@ -4,6 +4,7 @@ export const REVIEW_EVENT_SCHEMA = 'review-yeti-event.v1' as const;
 export const REVIEW_EVENT_SCHEMA_VERSION = 'v1' as const;
 export const REVIEW_EVENT_MAX_BYTES = 16 * 1024;
 export const REVIEW_PROGRESS_MESSAGE_MAX_CHARS = 2_000;
+export const REVIEW_PROGRESS_MESSAGE_FORMAT = 'review-yeti-progress-message-v1' as const;
 
 const EVENT_ID_PATTERN = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/u;
 const SHA_PATTERN = /^[a-f0-9]{40}$/iu;
@@ -18,8 +19,17 @@ const positiveInteger = z.number().int().positive().safe();
 const nonnegativeInteger = z.number().int().nonnegative().safe();
 const nonnegativeNumber = z.number().nonnegative().finite().safe();
 const timestamp = z.string().datetime({ offset: true });
-const progressMessage = z.string().max(REVIEW_PROGRESS_MESSAGE_MAX_CHARS)
-  .refine((value) => !SAFE_MESSAGE_CONTROL_PATTERN.test(value), 'message contains a control character');
+
+/** Executable definition of the schema format; length is Unicode code points, not UTF-16 code units. */
+export function isReviewProgressMessageV1(value: string): boolean {
+  return Array.from(value).length <= REVIEW_PROGRESS_MESSAGE_MAX_CHARS
+    && !SAFE_MESSAGE_CONTROL_PATTERN.test(value);
+}
+
+const progressMessage = z.string().refine(
+  isReviewProgressMessageV1,
+  `message must contain at most ${REVIEW_PROGRESS_MESSAGE_MAX_CHARS} Unicode code points and no forbidden controls`,
+);
 
 export const EVENT_ENVELOPE_FIELD_INVENTORY = [
   'schema',

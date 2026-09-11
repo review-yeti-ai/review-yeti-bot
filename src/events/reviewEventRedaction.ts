@@ -3,7 +3,6 @@ import { z } from 'zod';
 import type { LiveStreamEvent, ReviewEventIdentity } from '../types/live';
 import {
   REVIEW_EVENT_SCHEMA,
-  REVIEW_PROGRESS_MESSAGE_MAX_CHARS,
   isReviewEventValidationError,
   parseReviewYetiEventV1,
   reviewEventIdentitySchema,
@@ -52,6 +51,7 @@ const FORBIDDEN_LEGACY_FIELDS = new Map<string, string>([
   ['exception', 'unbounded error'],
   ['stack', 'unbounded error'],
   ['stderr', 'unbounded error'],
+  ['message', 'message without safe provenance'],
 ]);
 const legacyFieldName = (field: string) => field.replace(/[^a-z0-9]/giu, '').toLowerCase();
 
@@ -72,7 +72,6 @@ const legacyProgressFields = new Set([
   'totalFindings',
   'costUSD',
   'totalCostUSD',
-  'message',
   'status',
   'stage',
   'errorClass',
@@ -201,10 +200,6 @@ function buildProgressData(liveEvent: LiveStreamEvent): Record<string, unknown> 
     }
   }
 
-  if (typeof data.message === 'string' && data.message.length > REVIEW_PROGRESS_MESSAGE_MAX_CHARS) {
-    return new ReviewEventRejection('message_too_long', 'message');
-  }
-
   const output: Record<string, unknown> = {};
   const persona = typeof liveEvent.persona === 'string' && liveEvent.persona.length > 0
     ? liveEvent.persona
@@ -240,7 +235,6 @@ function buildProgressData(liveEvent: LiveStreamEvent): Record<string, unknown> 
   if (!hasOwn(data, 'findingsCount')) copyNumber(output, data, 'totalFindings', 'total_findings');
   copyNumber(output, data, 'costUSD', 'cost_usd');
   if (!hasOwn(data, 'costUSD')) copyNumber(output, data, 'totalCostUSD', 'total_cost_usd');
-  copyIfPresent(output, data, 'message');
   copyIfPresent(output, data, 'errorClass', 'error_class');
   copyIfPresent(output, data, 'verdict');
   copyIfPresent(output, data, 'quorumSatisfied', 'quorum_satisfied');
@@ -271,6 +265,19 @@ const EVENT_KIND_BY_TYPE: Record<string, string> = {
   quorum_verdict: 'review.progress.quorum_verdict',
 };
 const NEVER_FORWARD_EVENT_TYPES = new Set(['persona:chunk', 'llm:prompt', 'llm_chunk']);
+const CANONICAL_MESSAGE_BY_EVENT_KIND: Record<string, string> = {
+  'review.progress.persona_started': 'Persona review started',
+  'review.progress.persona_completed': 'Persona review completed',
+  'review.progress.token_metrics': 'Token metrics updated',
+  'review.progress.llm_error': 'LLM request failed',
+  'review.progress.provider_metric': 'Provider metrics updated',
+  'review.progress.analysis_lookup': 'Analysis lookup completed',
+  'review.progress.finding_suppression': 'Finding suppression evaluated',
+  'review.progress.job_queued': 'Review queued',
+  'review.progress.job_dispatched': 'Review dispatched',
+  'review.progress.job_completed': 'Review completed',
+  'review.progress.quorum_verdict': 'Quorum verdict recorded',
+};
 
 /**
  * Convert the legacy in-process event shape to the closed progress contract.
@@ -300,6 +307,9 @@ export function sanitizeProgressEvent(
 
   const data = buildProgressData(liveEvent);
   if (data instanceof ReviewEventRejection) return data;
+  const canonicalMessage = CANONICAL_MESSAGE_BY_EVENT_KIND[eventKind];
+  if (!canonicalMessage) return new ReviewEventRejection('invalid_live_event', 'type');
+  data.message = canonicalMessage;
 
   let eventId: string;
   try {
