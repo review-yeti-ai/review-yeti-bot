@@ -102,6 +102,13 @@ function validateAdmission(input: ReviewAdmissionInput): void {
   if (input.retryRequested !== undefined && typeof input.retryRequested !== 'boolean') {
     throw new Error('retry requested must be a boolean');
   }
+  if (input.retryAfterExecutionAttempt !== undefined
+    && (!Number.isSafeInteger(input.retryAfterExecutionAttempt) || input.retryAfterExecutionAttempt <= 0)) {
+    throw new Error('retry-after execution attempt must be a positive integer');
+  }
+  if (input.retryRequested === true && input.retryAfterExecutionAttempt === undefined) {
+    throw new Error('retry requested requires a retry-after execution attempt');
+  }
   assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
   if (input.authoritativeGate) {
     const { expectedAppId, prepared } = input.authoritativeGate;
@@ -269,17 +276,30 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       const identityDigest = sha256(input.identity);
       const runId = `run_${identityDigest.slice(0, 32)}`;
       const inserted = await client.query(
-        `WITH retry_eligibility AS (
+         `WITH retry_eligibility AS (
            SELECT runs.run_id,
-                  runs.status IN ('failed', 'terminal')
-                    OR ($20::boolean AND runs.status IN ('queued', 'running') AND EXISTS (
-                      SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                       WHERE retry_outbox.run_id = runs.run_id
-                         AND (retry_outbox.status = 'projected'
-                           OR (retry_outbox.status = 'terminal'
-                             AND (retry_outbox.worker_token_digest IS NOT NULL
-                               OR retry_outbox.projection_name IS NOT NULL)))
-                    )) AS should_retry
+                  (runs.status IN ('failed', 'terminal') AND (
+                    NOT $20::boolean OR (
+                      $21::integer IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                         WHERE retry_outbox.run_id = runs.run_id
+                           AND retry_outbox.execution_attempt + 1 = $21::integer
+                           AND (retry_outbox.status = 'projected'
+                             OR (retry_outbox.status = 'terminal'
+                               AND (retry_outbox.worker_token_digest IS NOT NULL
+                                 OR retry_outbox.projection_name IS NOT NULL)))
+                      )
+                    )
+                  ))
+                  OR ($20::boolean AND runs.status IN ('queued', 'running') AND $21::integer IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                     WHERE retry_outbox.run_id = runs.run_id
+                       AND retry_outbox.execution_attempt + 1 = $21::integer
+                       AND (retry_outbox.status = 'projected'
+                         OR (retry_outbox.status = 'terminal'
+                           AND (retry_outbox.worker_token_digest IS NOT NULL
+                             OR retry_outbox.projection_name IS NOT NULL)))
+                  )) AS should_retry
              FROM review_runs AS runs
             WHERE runs.run_id = $1
          )
@@ -364,6 +384,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           input.publicationMode,
           input.authoritativeGate?.expectedAppId ?? null,
           input.retryRequested === true,
+          input.retryAfterExecutionAttempt ?? null,
         ],
       );
       const runRow = inserted.rows[0];

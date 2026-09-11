@@ -17,6 +17,8 @@ export const actionDispatchRequestSchema = z.object({
   publishMode: z.enum(['disabled', 'app-gate']),
   /** Explicit same-head recovery requested by the trusted central workflow. */
   refreshRequested: z.boolean().optional(),
+  /** One-based worker generation proven by the central check ledger. */
+  refreshExecutionAttempt: positiveInteger.optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
   caller: z.object({
@@ -31,7 +33,13 @@ export const actionDispatchRequestSchema = z.object({
     maxInvestigationTurns: z.number().int().positive().optional(),
     laneCallBudget: z.number().int().positive().optional(),
   }).strict().optional(),
-}).strict();
+}).strict().superRefine((request, context) => {
+  if (request.refreshRequested === true && request.refreshExecutionAttempt === undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom,
+      message: 'refresh execution attempt is required for an explicit retry',
+      path: ['refreshExecutionAttempt'] });
+  }
+});
 
 export type ActionDispatchRequest = z.infer<typeof actionDispatchRequestSchema>;
 

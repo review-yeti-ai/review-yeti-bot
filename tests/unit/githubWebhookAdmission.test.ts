@@ -122,6 +122,7 @@ describe('native GitHub App webhook admission', () => {
       deliveryId: 'github-webhook:delivery-refresh', eventName: 'check_run',
       repositoryId: 614653796, installationId: 456, publicationMode: 'app-gate',
       retryRequested: true,
+      retryAfterExecutionAttempt: 1,
       identity: expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
         headSha: HEAD, baseSha: BASE }),
     }));
@@ -219,6 +220,7 @@ describe('native GitHub App webhook admission', () => {
     });
     expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       retryRequested: true,
+      retryAfterExecutionAttempt: 1,
       identity, effectivePolicyDigest: prepared.policy.effectivePolicyDigest,
       authoritativeGate: { expectedAppId: 4385771, prepared },
     }));

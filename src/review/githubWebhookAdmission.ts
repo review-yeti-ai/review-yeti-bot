@@ -32,6 +32,10 @@ const pullRequestWebhook = z.object({
 }).passthrough();
 
 const REFRESH_ACTION_IDENTIFIER = REVIEW_REFRESH_ACTION.identifier;
+// The recovery action is only valid for the first worker execution. Keeping
+// this bound to the signed external_id's exact `:a1` schema lets persistence
+// reject a replay after a replacement execution has projected.
+const RETRY_AFTER_EXECUTION_ATTEMPT = 1;
 const RECOVERABLE_FAILURE_TITLES = new Set([
   'Review Yeti: review did not complete',
   'Review Yeti: NO VERDICT (no panel result for this head)',
@@ -157,6 +161,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         // recovery authority. The repository still requires projected worker
         // evidence before re-arming an active durable run.
         retryRequested: true,
+        retryAfterExecutionAttempt: RETRY_AFTER_EXECUTION_ATTEMPT,
         identity: resolved?.identity || legacyIdentity,
         ...(resolved && authoritative ? {
           effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,

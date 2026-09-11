@@ -107,10 +107,8 @@ export function ManifestDrawer({
         issues: 'write',
         contents: 'read',
         checks: 'write',
-        statuses: 'write',
         metadata: 'read',
         merge_queues: 'read',
-        organization_hooks: 'read',
       },
     };
   }, [appName, org, webhookUrl]);

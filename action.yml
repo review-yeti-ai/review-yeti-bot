@@ -89,6 +89,12 @@ inputs:
       trusted central workflow sets this; ordinary callers leave it false.
     required: false
     default: 'false'
+  refresh-execution-attempt:
+    description: >-
+      One-based worker execution generation proven by the central check ledger for a refresh.
+      Required when refresh-requested is true on a central repository_dispatch.
+    required: false
+    default: ''
   openrouter-allowed-models:
     description: >-
       Trusted workflow/base-config OpenRouter model allowlist, as comma-separated model IDs.
@@ -428,6 +434,7 @@ runs:
         DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
         REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
+        REFRESH_EXECUTION_ATTEMPT: ${{ inputs.refresh-execution-attempt }}
         ACTION_SHA: ${{ inputs.action-sha }}
         REPOSITORY_ID: ${{ steps.target.outputs.repository-id }}
         REPOSITORY: ${{ steps.target.outputs.repo }}

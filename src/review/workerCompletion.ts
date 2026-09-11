@@ -69,7 +69,11 @@ export interface WorkerCompletionAdapter {
 }
 
 const SECRET_TOKEN_PATTERN = /(?:gh[pousr]_[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]{8,})/giu;
-const SENSITIVE_ASSIGNMENT_PATTERN = /((?:api[_-]?key|access[_-]?token|token|secret|password|private[_-]?key|authorization|prompt|request(?:[_ -]?body)?|response(?:[_ -]?body)?|content)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;\s]+)/giu;
+// Do not rely on a provider prefix for credentials that commonly appear in
+// SDK error text. JWTs and AWS access-key IDs are recognizable even when they
+// are emitted as opaque response fragments rather than named assignments.
+const OPAQUE_CREDENTIAL_PATTERN = /(?:eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|(?:AKIA|ASIA)[0-9A-Z]{16})/gu;
+const SENSITIVE_ASSIGNMENT_PATTERN = /((?:(?:api[_-]?key|access[_-]?(?:key|token)|aws[_-]?(?:access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key)(?:[_-]?id)?|x-amz-security-token|token|secret|password|private[_-]?key|authorization|prompt|request(?:[_ -]?body)?|response(?:[_ -]?body)?|content)\s*[:=]\s*))(?:"[^"]*"|'[^']*'|[^,;\s]+)/giu;
 // Provider SDKs often append a response/prompt/body excerpt without a key=value
 // delimiter (for example, "private provider response ..."). Treat those
 // context words as a disclosure boundary too; the stable class/reason/status
@@ -87,6 +91,7 @@ export function redactWorkerFailureLogTail(value: unknown): string {
   const redacted = text
     .replace(/\r?\n|\s+/gu, ' ')
     .replace(SECRET_TOKEN_PATTERN, '[REDACTED]')
+    .replace(OPAQUE_CREDENTIAL_PATTERN, '[REDACTED]')
     .replace(SENSITIVE_ASSIGNMENT_PATTERN, '$1[REDACTED]')
     .replace(SENSITIVE_CONTEXT_PATTERN, '[REDACTED]')
     .trim();

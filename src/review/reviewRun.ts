@@ -60,6 +60,12 @@ export interface ReviewAdmissionInput {
   indexEpoch?: number;
   /** Service-controlled same-head recovery; never decoded from an unverified request. */
   retryRequested?: boolean;
+  /**
+   * One-based worker execution generation that the trusted recovery request
+   * is allowed to replace. The durable outbox must still be immediately before
+   * this generation; replaying an older signed action is therefore a no-op.
+   */
+  retryAfterExecutionAttempt?: number;
   /** Service-resolved only; never decoded from an Action/worker request. */
   authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
 }

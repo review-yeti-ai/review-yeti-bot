@@ -68,8 +68,10 @@ describe('DOKS Action dispatch client', () => {
     const refresh = buildDispatchRequest(environment({
       GITHUB_EVENT_NAME: 'repository_dispatch',
       REFRESH_REQUESTED: 'true',
+      REFRESH_EXECUTION_ATTEMPT: '1',
     }));
     expect(refresh.refreshRequested).toBe(true);
+    expect(refresh.refreshExecutionAttempt).toBe(1);
     expect(() => buildDispatchRequest(environment({ REFRESH_REQUESTED: 'yes' })))
       .toThrow(/REFRESH_REQUESTED/u);
   });
