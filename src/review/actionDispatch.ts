@@ -44,6 +44,7 @@ export const actionDispatchRequestSchema = z.object({
 });
 
 export type ActionDispatchRequest = z.infer<typeof actionDispatchRequestSchema>;
+export type ActionDispatchCallerKind = 'direct' | 'central';
 
 export function expectedActionDeliveryId(request: ActionDispatchRequest): string {
   return `actions:${request.caller.runId}:${request.caller.runAttempt}:${request.repositoryId}:${request.prNumber}:${request.headSha}`;
@@ -55,13 +56,20 @@ export function actionDispatchDigestInput(request: ActionDispatchRequest): Omit<
   return immutableRequest;
 }
 
-export function assertActionDispatchMatchesClaims(request: ActionDispatchRequest, claims: GitHubActionsOidcClaims): void {
+export function assertActionDispatchMatchesClaims(
+  request: ActionDispatchRequest,
+  claims: GitHubActionsOidcClaims,
+): ActionDispatchCallerKind {
   const repository = `${request.owner}/${request.repo}`;
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
   const isCentral = request.caller.eventName === 'repository_dispatch'
     && claims.repository === CENTRAL_REVIEW_REPOSITORY
     && request.owner === 'calltelemetry';
-  const matches = (isDirect || isCentral)
+  // The central repository can review itself, which makes both predicates true.
+  // Preserve the central ledger contract in that overlap; direct compatibility
+  // applies only when the trusted central identity did not originate the run.
+  const callerKind: ActionDispatchCallerKind | null = isCentral ? 'central' : (isDirect ? 'direct' : null);
+  const matches = callerKind !== null
     && request.caller.runId === claims.run_id
     && String(request.caller.runAttempt) === claims.run_attempt
     && request.caller.eventName === claims.event_name
@@ -76,4 +84,5 @@ export function assertActionDispatchMatchesClaims(request: ActionDispatchRequest
     const shas = new Set([claims.workflow_sha, claims.job_workflow_sha].filter(Boolean));
     if (!shas.has(request.caller.workflowSha)) throw new Error('Action dispatch workflow SHA does not match the verified GitHub OIDC claims');
   }
+  return callerKind;
 }

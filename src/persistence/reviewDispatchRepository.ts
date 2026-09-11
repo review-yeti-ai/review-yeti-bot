@@ -103,6 +103,10 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
   if (input.publicationMode !== 'disabled' && input.publicationMode !== 'app-gate') {
     throw new Error('publication mode must be disabled or app-gate');
   }
+  if (typeof input.centralActionDispatch !== 'boolean'
+    || (input.centralActionDispatch && input.eventName !== 'repository_dispatch')) {
+    throw new Error('central Action dispatch classification is invalid');
+  }
   if (input.retryRequested !== undefined && typeof input.retryRequested !== 'boolean') {
     throw new Error('retry requested must be a boolean');
   }
@@ -118,7 +122,7 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
     throw new Error('expected generation must be a positive integer');
   }
   if (input.publicationMode === 'app-gate'
-    && input.eventName === 'repository_dispatch'
+    && input.centralActionDispatch
     && requireExpectedGeneration
     && input.expectedGeneration === undefined) {
     throw new Error('expected generation is required for central app-gate admission');

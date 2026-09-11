@@ -249,6 +249,7 @@ describe('POST /api/dispatch/action', () => {
       });
 
     expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({ centralActionDispatch: true }));
     expect(fixture.admission.admit).toHaveBeenCalledWith(expect.not.objectContaining({ expectedGeneration: expect.anything() }));
   });
 
@@ -340,8 +341,68 @@ describe('POST /api/dispatch/action', () => {
       error: 'Invalid Action dispatch request',
       invalidFields: ['expectedGeneration'],
     });
-    expect(fixture.verifier.verify).not.toHaveBeenCalled();
+    expect(fixture.verifier.verify).toHaveBeenCalledOnce();
     expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('keeps ct-review-actions self-review on the central generation ledger when both identities match', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: '98765', run_attempt: '2', event_name: 'repository_dispatch',
+      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      allowAppGate: true,
+      requireExpectedGeneration: true,
+      verifier: { verify: vi.fn(async () => centralVerified) },
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        deliveryId: `actions:98765:2:99999:42:${body.headSha}`,
+        repositoryId: 99999,
+        repo: 'ct-review-actions',
+        publishMode: 'app-gate',
+        caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: 'Invalid Action dispatch request',
+      invalidFields: ['expectedGeneration'],
+    });
+    expect(fixture.verifier.verify).toHaveBeenCalledOnce();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('does not impose the central generation ledger on a verified direct repository_dispatch caller', async () => {
+    const directVerified = {
+      ...verified,
+      event_name: 'repository_dispatch',
+    };
+    const fixture = app({
+      allowAppGate: true,
+      requireExpectedGeneration: true,
+      verifier: { verify: vi.fn(async () => directVerified) },
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        caller: { ...body.caller, eventName: 'repository_dispatch' },
+      });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+      centralActionDispatch: false,
+      eventName: 'repository_dispatch',
+      publicationMode: 'app-gate',
+    }));
   });
 
   it.each([0, -1, 1.5, '3'])(
@@ -403,6 +464,7 @@ describe('POST /api/dispatch/action', () => {
 
       expect(response.status).toBe(202);
       expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+        centralActionDispatch: true,
         eventName: 'repository_dispatch', publicationMode: 'app-gate', expectedGeneration: 3,
       }));
     },
@@ -650,6 +712,7 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
       repositoryId: body.repositoryId, installationId: 456,
       receivedAt: publishing.now, terminalDeadline: publishing.now + TERMINAL_DEADLINE_MS,
       payloadDigest: sha256(actionDispatchDigestInput(dispatch)), publicationMode: 'app-gate',
+      centralActionDispatch: false,
       identity: publishing.resolution.identity,
       effectivePolicyDigest: publishing.resolution.prepared.policy.effectivePolicyDigest,
       authoritativeGate: { expectedAppId: 789, prepared: publishing.resolution.prepared },
@@ -834,7 +897,7 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
     { effectivePolicyDigest: 'f'.repeat(64) }, { expectedPersonaIds: ['caller-lane'] },
     { policyRef: 'refs/heads/caller-policy' }, { transport: { model: 'caller-model' } },
     { policy: { config: {} } }, { policy: { expectedAppId: 1 } },
-    { caller: { ...body.caller, config: {} } },
+    { caller: { ...body.caller, config: {} } }, { centralActionDispatch: true },
   ])('rejects request-supplied authority/config override %j at the strict schema boundary', async (override) => {
     const publishing = publishingFixture();
     const fixture = app({ ...publishing, now: () => publishing.now, allowAppGate: true });

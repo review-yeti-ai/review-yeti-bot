@@ -158,6 +158,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
         payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
         publicationMode: 'app-gate',
+        centralActionDispatch: false,
         // The signed App check_run/requested_action payload is the dedicated
         // recovery authority. The repository still requires projected worker
         // evidence before re-arming an active durable run.
@@ -213,6 +214,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
       payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
       publicationMode: 'app-gate',
+      centralActionDispatch: false,
       identity: resolved?.identity || buildReviewRunIdentity(requested),
       ...(resolved && authoritative ? {
         effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
