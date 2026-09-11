@@ -84,8 +84,21 @@ export function buildDispatchRequest(environment) {
   if (publishMode !== 'disabled' && publishMode !== 'app-gate') {
     throw new Error('DOKS publish mode must be disabled or app-gate');
   }
+  const refreshRequestedRaw = String(environment.REFRESH_REQUESTED ?? '').trim().toLowerCase();
+  if (refreshRequestedRaw !== '' && refreshRequestedRaw !== 'false' && refreshRequestedRaw !== 'true') {
+    throw new Error('REFRESH_REQUESTED must be true or false');
+  }
+  const refreshRequested = refreshRequestedRaw === 'true';
   const eventName = required(environment, 'GITHUB_EVENT_NAME');
   if (!SUPPORTED_EVENTS.has(eventName)) throw new Error(`GitHub event ${eventName} is not supported for DOKS dispatch`);
+  const refreshExecutionAttemptRaw = String(environment.REFRESH_EXECUTION_ATTEMPT ?? '').trim();
+  const refreshExecutionAttempt = refreshExecutionAttemptRaw ? Number(refreshExecutionAttemptRaw) : undefined;
+  if (refreshExecutionAttemptRaw && (!Number.isSafeInteger(refreshExecutionAttempt) || refreshExecutionAttempt <= 0)) {
+    throw new Error('REFRESH_EXECUTION_ATTEMPT must be a positive integer');
+  }
+  if (refreshRequested && eventName === 'repository_dispatch' && refreshExecutionAttempt === undefined) {
+    throw new Error('REFRESH_EXECUTION_ATTEMPT is required for a central refresh dispatch');
+  }
   const expectedGeneration = parseExpectedGeneration(environment);
 
   const repositoryId = positiveInteger(environment, 'REPOSITORY_ID');
@@ -121,6 +134,10 @@ export function buildDispatchRequest(environment) {
     baseSha,
     actionSha,
     publishMode,
+    ...(refreshRequested ? {
+      refreshRequested: true,
+      ...(refreshExecutionAttempt === undefined ? {} : { refreshExecutionAttempt }),
+    } : {}),
     ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
     requestedAt: new Date().toISOString(),
     caller: {

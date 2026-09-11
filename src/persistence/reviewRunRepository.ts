@@ -1,4 +1,5 @@
 import { sha256 } from '../review/reviewCore';
+import { deriveReviewRunId } from '../review/reviewAdmission';
 import { assertStageTransition, PiStage } from '../review/piWorkflow';
 import { ReviewRun, ReviewRunIdentity, ReviewRunStatus } from '../review/reviewRun';
 
@@ -52,7 +53,7 @@ export class InMemoryReviewRunRepository implements ReviewRunRepository {
       }
     }
     const record: ReviewRunRecord = {
-      runId: `run_${identityDigest.slice(0, 32)}`,
+      runId: deriveReviewRunId(input.identity),
       identity: { ...input.identity },
       identityDigest,
       effectivePolicyDigest: input.effectivePolicyDigest || input.identity.configDigest,
@@ -221,7 +222,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
 
   async createOrGet(input: { identity: ReviewRunIdentity; indexEpoch?: number; effectivePolicyDigest?: string; now?: number }): Promise<ReviewRunRecord> {
     const identityDigest = sha256(input.identity);
-    const runId = `run_${identityDigest.slice(0, 32)}`;
+    const runId = deriveReviewRunId(input.identity);
     const now = new Date(input.now ?? Date.now()).toISOString();
     const result = await this.db.query(
       `WITH superseded AS (
