@@ -25,6 +25,7 @@ import { createGitHubAppApiRouter } from './api/githubAppApi';
 import { createOnboardingRouter } from './api/onboarding';
 import { createActionDispatchRouter, createWorkerCompletionVerifier } from './api/actionDispatchApi';
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
+import { actionDispatchConfigFromEnv } from './config/actionDispatchConfig';
 import { getSystemVersionInfo } from './utils/versionInfo';
 import { requireAuth } from './api/authMiddleware';
 import { dashboardStore } from './persistence/dashboardStore';
@@ -849,11 +850,15 @@ export function createApp(): Express {
       throw new Error('ACTION_DISPATCH_ENABLED requires DATABASE_URL or POSTGRES_URL for durable admission');
     }
     const oidcPolicy = githubActionsOidcPolicyFromEnv();
-    const dispatchRepository = new PostgresReviewDispatchRepository(postgresStore.getPool());
+    const dispatchConfig = actionDispatchConfigFromEnv();
+    const dispatchRepository = new PostgresReviewDispatchRepository(postgresStore.getPool(), undefined, {
+      requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
+    });
     app.use('/api/dispatch', createActionDispatchRouter({
       verifier: new GitHubActionsOidcVerifier({ policy: oidcPolicy }),
       admission: dispatchRepository,
       allowAppGate: oidcPolicy.allowAppGate,
+      requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
       workerCompletion: {
         verifier: createWorkerCompletionVerifier(),
         repository: dispatchRepository,

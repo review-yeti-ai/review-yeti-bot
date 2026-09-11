@@ -6,6 +6,19 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 export type ReviewRunStatus = 'queued' | 'running' | 'publishing' | 'succeeded' | 'failed' | 'cancelled' | 'superseded';
 export type PublicationMode = 'disabled' | 'app-gate';
 
+export class ReviewGenerationConflictError extends Error {
+  readonly name = 'ReviewGenerationConflictError';
+
+  constructor(
+    public readonly expectedGeneration: number,
+    public readonly durableGeneration: number,
+  ) {
+    super(
+      `expected generation ${expectedGeneration} does not match this exact identity; next durable generation is ${durableGeneration}`,
+    );
+  }
+}
+
 export interface ReviewRunIdentity {
   owner: string;
   repo: string;
@@ -52,6 +65,8 @@ export interface ReviewAdmissionInput {
   terminalDeadline: number;
   payloadDigest: string;
   publicationMode: PublicationMode;
+  /** One-based generation admitted by the central App gate, when that gate owns admission. */
+  expectedGeneration?: number;
   identity: ReviewRunIdentity;
   effectivePolicyDigest?: string;
   indexEpoch?: number;

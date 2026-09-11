@@ -13,6 +13,7 @@ data:
   PORT: {{ .Values.dispatcher.config.port | quote }}
   ACTION_DISPATCH_ENABLED: "true"
   ACTION_DISPATCH_ALLOW_APP_GATE: {{ .Values.dispatcher.config.allowAppGate | quote }}
+  ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION: {{ .Values.dispatcher.config.requireExpectedGeneration | quote }}
   ACTION_DISPATCH_REPOSITORY_IDS: {{ .Values.dispatcher.config.repositoryIds | quote }}
   ACTION_DISPATCH_OWNER_IDS: {{ .Values.dispatcher.config.ownerIds | quote }}
   ACTION_DISPATCH_WORKFLOW_REFS: {{ .Values.dispatcher.config.workflowRefs | quote }}
