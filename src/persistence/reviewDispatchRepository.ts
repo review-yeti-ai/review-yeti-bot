@@ -622,8 +622,12 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             OR (runs.status = 'terminal' AND runs.error_text LIKE
               'publishing run reached its terminal deadline without a verdict; reaped by %'
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
+            -- A preserved worker failure is retryable only while a prior
+            -- reaper claim still owns its publication lease. Successful
+            -- reconciliation clears that owner without erasing the bounded
+            -- worker classification, making the terminal row one-shot.
             OR (runs.status = 'terminal' AND runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
-              AND outbox.status = 'projected')
+              AND outbox.status = 'projected' AND runs.lease_owner IS NOT NULL)
           )
             AND publication_mode = 'app-gate'
             AND result_digest IS NULL
