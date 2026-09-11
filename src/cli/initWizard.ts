@@ -172,9 +172,11 @@ export function validateManifestPermissions(permissions: Record<string, string>)
 } {
   const violations: string[] = [];
 
-  for (const forbidden of FORBIDDEN_PERMISSIONS) {
-    if (permissions[forbidden] !== undefined) {
-      violations.push(`Forbidden permission requested: ${forbidden}`);
+  for (const key of Object.keys(permissions)) {
+    if ((FORBIDDEN_PERMISSIONS as readonly string[]).includes(key)) {
+      violations.push(`Forbidden permission requested: ${key}`);
+    } else if (!Object.hasOwn(LEAST_PRIVILEGE_PERMISSIONS, key)) {
+      violations.push(`Unknown permission requested: ${key}`);
     }
   }
 
@@ -206,9 +208,12 @@ export function generateAppManifest(options: AppManifestOptions = {}): GitHubApp
     ...(options.permissions ?? {}),
   };
 
-  // Strip any accidental forbidden permissions
-  for (const forbidden of FORBIDDEN_PERMISSIONS) {
-    delete permissions[forbidden];
+  // Permission overrides are an explicit security boundary. Reject unknown,
+  // forbidden, or widened/downgraded scopes instead of silently stripping or
+  // accepting them and presenting an apparently safe manifest to the operator.
+  const permissionValidation = validateManifestPermissions(permissions);
+  if (!permissionValidation.valid) {
+    throw new Error(`Invalid GitHub App permission override: ${permissionValidation.violations.join('; ')}`);
   }
 
   const events = options.events ? [...options.events] : [...DEFAULT_EVENTS];
