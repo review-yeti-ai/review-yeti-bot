@@ -65,6 +65,8 @@ export interface ReviewAdmissionInput {
   terminalDeadline: number;
   payloadDigest: string;
   publicationMode: PublicationMode;
+  /** Trusted service classification derived from verified GitHub OIDC claims. */
+  centralActionDispatch: boolean;
   /** One-based generation admitted by the central App gate, when that gate owns admission. */
   expectedGeneration?: number;
   identity: ReviewRunIdentity;

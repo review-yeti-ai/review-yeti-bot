@@ -212,6 +212,7 @@ describe('POST /api/dispatch/action', () => {
       });
 
     expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({ centralActionDispatch: true }));
     expect(fixture.admission.admit).toHaveBeenCalledWith(expect.not.objectContaining({ expectedGeneration: expect.anything() }));
   });
 
@@ -241,8 +242,35 @@ describe('POST /api/dispatch/action', () => {
       error: 'Invalid Action dispatch request',
       invalidFields: ['expectedGeneration'],
     });
-    expect(fixture.verifier.verify).not.toHaveBeenCalled();
+    expect(fixture.verifier.verify).toHaveBeenCalledOnce();
     expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('does not impose the central generation ledger on a verified direct repository_dispatch caller', async () => {
+    const directVerified = {
+      ...verified,
+      event_name: 'repository_dispatch',
+    };
+    const fixture = app({
+      allowAppGate: true,
+      requireExpectedGeneration: true,
+      verifier: { verify: vi.fn(async () => directVerified) },
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        caller: { ...body.caller, eventName: 'repository_dispatch' },
+      });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+      centralActionDispatch: false,
+      eventName: 'repository_dispatch',
+      publicationMode: 'app-gate',
+    }));
   });
 
   it.each([0, -1, 1.5, '3'])(
@@ -304,6 +332,7 @@ describe('POST /api/dispatch/action', () => {
 
       expect(response.status).toBe(202);
       expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+        centralActionDispatch: true,
         eventName: 'repository_dispatch', publicationMode: 'app-gate', expectedGeneration: 3,
       }));
     },
@@ -551,6 +580,7 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
       repositoryId: body.repositoryId, installationId: 456,
       receivedAt: publishing.now, terminalDeadline: publishing.now + TERMINAL_DEADLINE_MS,
       payloadDigest: sha256(actionDispatchDigestInput(dispatch)), publicationMode: 'app-gate',
+      centralActionDispatch: false,
       identity: publishing.resolution.identity,
       effectivePolicyDigest: publishing.resolution.prepared.policy.effectivePolicyDigest,
       authoritativeGate: { expectedAppId: 789, prepared: publishing.resolution.prepared },

@@ -48,6 +48,7 @@ function input() {
     terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
     payloadDigest: 'f'.repeat(64),
     publicationMode: 'disabled' as const,
+    centralActionDispatch: false,
     identity,
   };
 }
@@ -163,9 +164,21 @@ describe('PostgresReviewDispatchRepository', () => {
       requireExpectedGeneration: true,
     });
     await expect(repository.admit({
-      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate',
+      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate', centralActionDispatch: true,
     })).rejects.toThrow(/expected generation is required/i);
     expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('does not require a central generation for a direct repository_dispatch caller', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
+    const connect = vi.fn(async () => client);
+    const repository = new PostgresReviewDispatchRepository({ connect }, undefined, {
+      requireExpectedGeneration: true,
+    });
+    await expect(repository.admit({
+      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate', centralActionDispatch: false,
+    })).resolves.toMatchObject({ status: 'accepted' });
+    expect(connect).toHaveBeenCalledOnce();
   });
 
   it('rejects an invalid supplied expected generation before opening a transaction in compatibility mode', async () => {
