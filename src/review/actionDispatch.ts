@@ -19,6 +19,7 @@ export const actionDispatchRequestSchema = z.object({
   refreshRequested: z.boolean().optional(),
   /** One-based worker generation proven by the central check ledger. */
   refreshExecutionAttempt: positiveInteger.optional(),
+  expectedGeneration: positiveInteger.optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
   caller: z.object({

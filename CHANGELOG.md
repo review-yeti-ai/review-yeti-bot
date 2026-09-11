@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.55.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.3...v1.55.0) (2026-09-11)
+
+
+### Features
+
+* **events:** define Review Yeti event envelope ([#704](https://github.com/review-yeti-ai/review-yeti-bot/issues/704)) ([0f146a9](https://github.com/review-yeti-ai/review-yeti-bot/commit/0f146a97bcd3afbbea6c9cc91392466c9fd7f978))
+
+## [1.54.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.2...v1.54.3) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** bind dispatch to durable generation ([#703](https://github.com/review-yeti-ai/review-yeti-bot/issues/703)) ([8d1e46c](https://github.com/review-yeti-ai/review-yeti-bot/commit/8d1e46cd8bb01bcec5f8f849963b071f1b8fceac))
+
+## [1.54.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.1...v1.54.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* **webhook:** ignore irrelevant merge-group actions ([#705](https://github.com/review-yeti-ai/review-yeti-bot/issues/705)) ([3df1b67](https://github.com/review-yeti-ai/review-yeti-bot/commit/3df1b6753ddf13cba16b578e617ab365572eb6f7))
+
+## [1.54.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.0...v1.54.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** reconcile abandoned runs when checks already exist on head SHA ([#700](https://github.com/review-yeti-ai/review-yeti-bot/issues/700)) ([889d271](https://github.com/review-yeti-ai/review-yeti-bot/commit/889d27111189f2eb407b0ef7e141ca3800daf5fc))
+
 ## [1.54.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.53.0...v1.54.0) (2026-09-11)
 
 

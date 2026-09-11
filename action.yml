@@ -95,6 +95,12 @@ inputs:
       Required when refresh-requested is true on a central repository_dispatch.
     required: false
     default: ''
+  expected-generation:
+    description: >-
+      One-based review generation admitted by the central Review Yeti App gate. Required for
+      repository_dispatch app-gate execution and transactionally matched to durable service state.
+    required: false
+    default: ''
   openrouter-allowed-models:
     description: >-
       Trusted workflow/base-config OpenRouter model allowlist, as comma-separated model IDs.
@@ -435,6 +441,7 @@ runs:
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
         REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
         REFRESH_EXECUTION_ATTEMPT: ${{ inputs.refresh-execution-attempt }}
+        EXPECTED_GENERATION: ${{ inputs.expected-generation }}
         ACTION_SHA: ${{ inputs.action-sha }}
         REPOSITORY_ID: ${{ steps.target.outputs.repository-id }}
         REPOSITORY: ${{ steps.target.outputs.repo }}
