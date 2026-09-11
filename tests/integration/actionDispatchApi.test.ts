@@ -61,6 +61,7 @@ function app(overrides: Record<string, any> = {}) {
     verifier, admission, resolveInstallationId,
     allowAppGate: overrides.allowAppGate,
     requireExpectedGeneration: overrides.requireExpectedGeneration,
+    centralExternalRepositories: overrides.centralExternalRepositories,
     authoritativePublishing: overrides.authoritativePublishing,
     now: overrides.now,
   }));
@@ -193,6 +194,199 @@ describe('POST /api/dispatch/action', () => {
       status: 'accepted',
       runId: `run_${'1'.repeat(32)}`,
     });
+  });
+
+  it('accepts central dispatch for the exact configured self-hosted repository', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions',
+      repository_id: '99999',
+      repository_owner_id: '99',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'repository_dispatch',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const externalBody = {
+      ...body,
+      deliveryId: `actions:98765:2:1326169548:42:${body.headSha}`,
+      repositoryId: 1326169548,
+      owner: 'review-yeti-ai',
+      repo: 'review-yeti-bot',
+      caller: {
+        ...body.caller,
+        eventName: 'repository_dispatch',
+        workflowRef: centralVerified.job_workflow_ref,
+      },
+    };
+    const fixture = app({
+      allowAppGate: true,
+      requireExpectedGeneration: true,
+      verifier: { verify: vi.fn(async () => centralVerified) },
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...externalBody, publishMode: 'app-gate', expectedGeneration: 1 });
+
+    expect(response.status).toBe(202);
+    expect(fixture.resolveInstallationId).toHaveBeenCalledExactlyOnceWith('review-yeti-ai', 'review-yeti-bot');
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+      centralActionDispatch: true,
+      repositoryId: 1326169548,
+      publicationMode: 'app-gate',
+      expectedGeneration: 1,
+    }));
+  });
+
+  it('rejects the configured self-hosted target when its stable repository ID does not match', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions',
+      repository_id: '99999',
+      repository_owner_id: '99',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'repository_dispatch',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      verifier: { verify: vi.fn(async () => centralVerified) },
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        owner: 'review-yeti-ai',
+        repo: 'review-yeti-bot',
+        caller: {
+          ...body.caller,
+          eventName: 'repository_dispatch',
+          workflowRef: centralVerified.job_workflow_ref,
+        },
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('rejects the configured external target from a non-central OIDC repository', async () => {
+    const nonCentralVerified = {
+      repository: 'arbitrary-owner/arbitrary-caller',
+      repository_id: '88888',
+      repository_owner_id: '77',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'repository_dispatch',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      verifier: { verify: vi.fn(async () => nonCentralVerified) },
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        deliveryId: `actions:98765:2:1326169548:42:${body.headSha}`,
+        repositoryId: 1326169548,
+        owner: 'review-yeti-ai',
+        repo: 'review-yeti-bot',
+        caller: {
+          ...body.caller,
+          eventName: 'repository_dispatch',
+          workflowRef: nonCentralVerified.job_workflow_ref,
+        },
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('rejects the configured external target when the central caller event is not repository_dispatch', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions',
+      repository_id: '99999',
+      repository_owner_id: '99',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'workflow_dispatch',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      verifier: { verify: vi.fn(async () => centralVerified) },
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        deliveryId: `actions:98765:2:1326169548:42:${body.headSha}`,
+        repositoryId: 1326169548,
+        owner: 'review-yeti-ai',
+        repo: 'review-yeti-bot',
+        caller: {
+          ...body.caller,
+          eventName: 'workflow_dispatch',
+          workflowRef: centralVerified.job_workflow_ref,
+        },
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['review-yeti-ai', 'review-yeti-bot', new Map<string, number>()],
+    ['review-yeti-ai', 'other-repository', new Map([['review-yeti-ai/review-yeti-bot', 1326169548]])],
+    ['other-owner', 'review-yeti-bot', new Map([['review-yeti-ai/review-yeti-bot', 1326169548]])],
+    ['arbitrary-owner', 'arbitrary-repo', new Map([['review-yeti-ai/review-yeti-bot', 1326169548]])],
+  ])('rejects central dispatch for non-opted-in or unsupported external target %s/%s', async (
+    owner,
+    repo,
+    centralExternalRepositories,
+  ) => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions',
+      repository_id: '99999',
+      repository_owner_id: '99',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'repository_dispatch',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      verifier: { verify: vi.fn(async () => centralVerified) },
+      centralExternalRepositories,
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        owner,
+        repo,
+        caller: {
+          ...body.caller,
+          eventName: 'repository_dispatch',
+          workflowRef: centralVerified.job_workflow_ref,
+        },
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
   it('forwards refresh only from the central app-gate repository_dispatch boundary', async () => {
