@@ -5,9 +5,11 @@ import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainI
 
 // Native publishing must project the same bounded turn/idle policy as the
 // panel. Idle time is separate from the overall deadline enforced at runtime.
-export const PUBLISHING_MAX_TURNS = 5;
+// 10 turns matches the panel's doubled MAX_INVESTIGATION_TURNS so a caller
+// policy cannot be silently clamped below its requested budget.
+export const PUBLISHING_MAX_TURNS = 10;
 export const PUBLISHING_IDLE_TIMEOUT_SECONDS = 180;
-export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 900;
+export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 1800;
 
 let cachedCompiledIndex: CompiledDomainIndex | null = null;
 

@@ -234,8 +234,8 @@ describe('Bifrost is the only transport', () => {
     const config = createBifrostPublishingConfig('ollama/glm-5.3-flash');
 
     expect(config.reviewers.fallback).toBe('none');
-    expect(config.default_max_turns).toBe(5);
-    expect(config.reviewers.overall_timeout_s).toBe(900);
+    expect(config.default_max_turns).toBe(10);
+    expect(config.reviewers.overall_timeout_s).toBe(1800);
     expect(config.reviewers.providers).toEqual([expect.objectContaining({
       id: 'bifrost',
       enabled: true,
@@ -771,7 +771,7 @@ describe('the worker never holds the App private key', () => {
 describe('resolveWorkerConfig policy projection & telemetry persistence', () => {
   const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'vk-test', model: 'ollama/glm-5.3-flash' };
 
-  it('defaults to 6 central personas and max 5 turns under default env', () => {
+  it('defaults to 6 central personas and max 10 turns under default env', () => {
     const config = resolveWorkerConfig(env(), transport);
     expect(config.personas).toHaveLength(6);
     expect(config.personas.map((p) => p.id)).toEqual([
@@ -785,7 +785,7 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
     expect(config.personas.find((p) => p.id === 'sec-lane')?.required).toBe(true);
     expect(config.personas.find((p) => p.id === 'perf-lane')?.required).toBe(false);
     expect(config.personas.every((p) => p.providers.length === 1 && p.providers[0] === 'bifrost')).toBe(true);
-    expect(config.default_max_turns).toBe(5);
+    expect(config.default_max_turns).toBe(10);
     expect(config.reviewers.arbiter.order).toEqual(['bifrost']);
     expect(config.reviewers.providers[0].id).toBe('bifrost');
     expect(config.reviewers.providers[0].model).toBe('ollama/glm-5.3-flash');
@@ -807,15 +807,15 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
     expect(config.default_max_turns).toBe(3);
   });
 
-  it('caps default_max_turns at 5 even if policy declares higher turns', () => {
+  it('caps default_max_turns at 10 even if policy declares higher turns', () => {
     const policyJson = JSON.stringify({
       review_yeti: {
         personas: 'security',
-        budget: { max_investigation_turns: '10' },
+        budget: { max_investigation_turns: '20' },
       },
     });
     const config = resolveWorkerConfig(env({ REVIEW_YETI_POLICY_JSON: policyJson }), transport);
-    expect(config.default_max_turns).toBe(5);
+    expect(config.default_max_turns).toBe(10);
   });
 
   it('persists per-lane metrics and totals in receipt', async () => {
@@ -1047,5 +1047,41 @@ describe('hosted lane — repository visibility resolution', () => {
     });
     await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow('LLM Provider Outage');
     expect(publishGateCheck).not.toHaveBeenCalled();
+  });
+});
+
+describe('REL-810 follow-up: delivered failure clarity', () => {
+  it('names the failure point and remediation for budget_exhausted', async () => {
+    const { renderFailureSummary } = await import('../../src/cli/publishingReview');
+    const summary = renderFailureSummary('budget_exhausted', 'a'.repeat(40), {
+      reason: 'worker_budget_exhausted',
+      logTail: 'persona security turn budget exhausted without verdict (INCOMPLETE)',
+    });
+    expect(summary).toContain('failure class `budget_exhausted`');
+    expect(summary).toContain('What failed');
+    expect(summary).toContain('persona investigation turns or lane call budget');
+    expect(summary).toContain('not an approval');
+    expect(summary).toContain('persona security turn budget exhausted without verdict');
+  });
+
+  it('names provider status and transport guidance for transport failures', async () => {
+    const { renderFailureSummary } = await import('../../src/cli/publishingReview');
+    const summary = renderFailureSummary('transport', 'b'.repeat(40), { providerStatus: 502 });
+    expect(summary).toContain('could not reach the gateway');
+    expect(summary).toContain('provider_status=502');
+    expect(summary).toContain('not an approval');
+  });
+});
+
+describe('REL-810 follow-up: turn budget exhaustion detail', () => {
+  it('classifies an explicit turn-budget exhaustion as budget_exhausted', async () => {
+    const { classifyFailure } = await import('../../src/cli/publishingReview');
+    expect(classifyFailure(new Error('persona security turn budget exhausted without verdict (INCOMPLETE): used 3/3 investigation turns')))
+      .toBe('budget_exhausted');
+  });
+
+  it('does not classify a generic incomplete message as budget_exhausted', async () => {
+    const { classifyFailure } = await import('../../src/cli/publishingReview');
+    expect(classifyFailure(new Error('repository tree lookup incomplete'))).not.toBe('budget_exhausted');
   });
 });
