@@ -103,6 +103,9 @@ dispatcher:
     # check run at all -- a required gate that blocks with nothing red. Turn it on
     # deliberately, per environment, once the lane is proven.
     allowAppGate: false
+    # Zero-downtime rollout fence. Keep false until all central app-gate producers
+    # supply their admitted one-based generation, then enable service enforcement.
+    requireExpectedGeneration: false
     repositoryIds: ""
     ownerIds: ""
     workflowRefs: ""

@@ -83,6 +83,12 @@ inputs:
       allowlisted workflows; disabled admits a nonpublishing qualification run.
     required: false
     default: 'app-gate'
+  expected-generation:
+    description: >-
+      One-based review generation admitted by the central Review Yeti App gate. Required for
+      repository_dispatch app-gate execution and transactionally matched to durable service state.
+    required: false
+    default: ''
   openrouter-allowed-models:
     description: >-
       Trusted workflow/base-config OpenRouter model allowlist, as comma-separated model IDs.
@@ -421,6 +427,7 @@ runs:
         DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
         DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
+        EXPECTED_GENERATION: ${{ inputs.expected-generation }}
         ACTION_SHA: ${{ inputs.action-sha }}
         REPOSITORY_ID: ${{ steps.target.outputs.repository-id }}
         REPOSITORY: ${{ steps.target.outputs.repo }}

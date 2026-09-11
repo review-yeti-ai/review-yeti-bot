@@ -46,6 +46,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('execution-backend');
     expect(inputs).toContain('doks-dispatch-url');
     expect(inputs).toContain('doks-publish-mode');
+    expect(inputs).toContain('expected-generation');
     expect(inputs).toContain('ollama-api-key');
     expect(inputs).toContain('synthetic-api-key');
   });
@@ -82,6 +83,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_TOKEN');
     expect(raw).toContain("inputs.execution-backend == 'doks'");
     expect(raw).toContain("inputs.execution-backend != 'doks'");
+    expect(raw).toContain('EXPECTED_GENERATION: ${{ inputs.expected-generation }}');
   });
 
   it('does not expose provider credentials to the DOKS dispatch step', () => {
