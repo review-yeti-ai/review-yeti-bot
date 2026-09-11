@@ -111,6 +111,7 @@ function admissionInput(f: ReturnType<typeof fixture>): ReviewAdmissionInput {
     deliveryId: 'admission-test', eventName: 'pull_request', repositoryId: candidate.repositoryId,
     installationId: 456, receivedAt: 1_000, terminalDeadline: 901_000,
     payloadDigest: '1'.repeat(64), publicationMode: 'app-gate',
+    centralActionDispatch: false,
     identity: buildAuthoritativeReviewIdentity({ requested, current: candidate, policy: f.prepared.policy }),
     effectivePolicyDigest: f.prepared.policy.effectivePolicyDigest,
     authoritativeGate: { expectedAppId: APP_ID, prepared: f.prepared },

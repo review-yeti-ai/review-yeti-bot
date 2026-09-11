@@ -636,6 +636,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
         terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS,
         payloadDigest: 'e'.repeat(64),
         publicationMode: 'disabled' as const,
+        centralActionDispatch: false,
         identity,
       };
     }

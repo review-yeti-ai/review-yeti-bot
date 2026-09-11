@@ -103,6 +103,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
       payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
       publicationMode: 'app-gate',
+      centralActionDispatch: false,
       identity: resolved?.identity || buildReviewRunIdentity(requested),
       ...(resolved && authoritative ? {
         effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
