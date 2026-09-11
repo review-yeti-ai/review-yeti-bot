@@ -115,6 +115,7 @@ export class ReviewJobDispatchEngine {
         claim.claimAttempt,
         this.now(),
         'review job projection rejected',
+        { reason: 'review_job_projection_rejected', logTail: 'review job projection rejected' },
       );
       return marked
         ? { status: 'terminal', runId: claim.runId, reason: 'projection-rejected' }
@@ -136,6 +137,7 @@ export class ReviewJobDispatchEngine {
           claim.claimAttempt,
           this.now(),
           'publishing review dispatched without a run secret provisioner',
+          { reason: 'run_secret_provisioner_unavailable', logTail: 'run secret provisioner unavailable' },
         );
         return marked
           ? { status: 'terminal', runId: claim.runId, reason: 'run-secret-unavailable' }

@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HttpWorkerCompletionAdapter, validateWorkerCompletionEndpoint, workerTerminalFailureSchema } from '../../src/review/workerCompletion';
+import {
+  buildWorkerFailureDiagnostics,
+  HttpWorkerCompletionAdapter,
+  MAX_WORKER_FAILURE_LOG_TAIL_BYTES,
+  redactWorkerFailureLogTail,
+  validateWorkerCompletionEndpoint,
+  workerFailureDiagnosticsSchema,
+  workerTerminalFailureSchema,
+} from '../../src/review/workerCompletion';
 
 const event = {
   version: 'WorkerTerminalFailure.v1' as const,
@@ -179,6 +187,64 @@ describe('workerTerminalFailureSchema', () => {
 
   it.each(['malformed_output', 'internal_error'] as const)('accepts diagnostic failure class %s', (failureClass) => {
     expect(workerTerminalFailureSchema.parse({ ...event, failureClass }).failureClass).toBe(failureClass);
+  });
+
+  it('accepts a bounded redacted diagnostic with provider status and rejects oversized tails', () => {
+    const diagnostics = { reason: 'provider_rate_limited', providerStatus: 429, logTail: '429 [REDACTED]' };
+    expect(workerTerminalFailureSchema.parse({ ...event, diagnostics }).diagnostics).toEqual(diagnostics);
+    expect(workerFailureDiagnosticsSchema.safeParse({
+      ...diagnostics, logTail: '🙂'.repeat(MAX_WORKER_FAILURE_LOG_TAIL_BYTES),
+    }).success).toBe(false);
+    expect(workerFailureDiagnosticsSchema.safeParse({ ...diagnostics, providerStatus: 99 }).success).toBe(false);
+  });
+
+  it('redacts token, assignment, and free-form provider context before building diagnostics', () => {
+    const message = 'HTTP 429 api_key=super-secret ghs_123456789 private provider response body';
+    expect(redactWorkerFailureLogTail(message)).toBe('HTTP 429 api_key=[REDACTED] [REDACTED] [REDACTED]');
+    expect(buildWorkerFailureDiagnostics(Object.assign(new Error(message), { status: 429 }), 'rate_limit')).toEqual({
+      reason: 'provider_rate_limited', providerStatus: 429, logTail: 'HTTP 429 api_key=[REDACTED] [REDACTED] [REDACTED]',
+    });
+  });
+
+  it('redacts opaque JWT and AWS access-key shapes even without a known token prefix', () => {
+    const jwt = 'eyJaaaaaaaa.bbbbbbbb.cccccccc';
+    const awsAccessKey = `ASIA${'A'.repeat(16)}`;
+    const message = `provider detail ${jwt} AWS_ACCESS_KEY_ID=${awsAccessKey} AWS_SECRET_ACCESS_KEY=synthetic-secret`;
+    const redacted = redactWorkerFailureLogTail(message);
+    expect(redacted).toBe('provider detail [REDACTED] AWS_ACCESS_KEY_ID=[REDACTED] AWS_SECRET_ACCESS_KEY=[REDACTED]');
+    expect(redacted).not.toContain(jwt);
+    expect(redacted).not.toContain(awsAccessKey);
+  });
+
+  it.each([
+    'PRIVATE KEY',
+    'RSA PRIVATE KEY',
+    'EC PRIVATE KEY',
+    'DSA PRIVATE KEY',
+    'OPENSSH PRIVATE KEY',
+    'ENCRYPTED PRIVATE KEY',
+  ])('redacts complete PEM %s blocks without retaining key material', (label) => {
+    const secret = `pem-secret-${label.toLowerCase().replace(/\s+/gu, '-')}`;
+    const pem = `-----BEGIN ${label}-----\n${secret}\n-----END ${label}-----`;
+    const redacted = redactWorkerFailureLogTail(`provider failure ${pem} after`);
+    expect(redacted).not.toContain(secret);
+    expect(redacted).not.toContain(`BEGIN ${label}`);
+    expect(redacted).not.toContain(`END ${label}`);
+    expect(redacted).toBe('provider failure [REDACTED] after');
+  });
+
+  it('redacts an unterminated PEM private-key block through the bounded log tail', () => {
+    const secret = 'unterminated-pem-secret';
+    const redacted = redactWorkerFailureLogTail(`provider failure -----BEGIN RSA PRIVATE KEY-----\n${secret}`);
+    expect(redacted).not.toContain(secret);
+    expect(redacted).not.toContain('BEGIN RSA PRIVATE KEY');
+    expect(redacted).toBe('provider failure [REDACTED]');
+  });
+
+  it('keeps the UTF-8 tail bound when truncation starts inside a multibyte code point', () => {
+    const tail = redactWorkerFailureLogTail(`${'🙂'.repeat(1024)}x`);
+    expect(Buffer.byteLength(tail, 'utf8')).toBeLessThanOrEqual(MAX_WORKER_FAILURE_LOG_TAIL_BYTES);
+    expect(tail).not.toContain('\uFFFD');
   });
 
   it.each([

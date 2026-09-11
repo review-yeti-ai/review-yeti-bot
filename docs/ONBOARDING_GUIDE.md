@@ -14,7 +14,7 @@ npx review-yeti init
 ```
 
 ### What `review-yeti init` Does Automatically:
-1. Generates an exact **least-privilege GitHub App manifest** (`checks: write`, `pull_requests: write`, `contents: read`, `issues: write`).
+1. Generates an exact **least-privilege GitHub App manifest** (`checks: write`, `pull_requests: write`, `contents: read`, `issues: write`, `merge_queues: read`).
 2. Launches your browser to GitHub's pre-configured app creation page.
 3. Automatically exchanges the callback authorization code for your **App ID**, **Private Key PEM**, and **Webhook Secret**.
 4. Writes a restricted local `.env` configuration (`mode 0o600`) and updates `.gitignore` to prevent credential leaks.
@@ -58,6 +58,13 @@ jobs:
           llm-api-key: ${{ secrets.OPENROUTER_API_KEY }}
           model: deepseek/deepseek-v4-flash-0731
 ```
+
+For a native App deployment, subscribe the App to `pull_request`, `check_run`,
+and `merge_group`. The `check_run` event carries the **Refresh review** action
+for an exact-head failed check; `merge_group` is the optional merge-queue gate
+and requires the App's **Merge queues: Read** permission. Existing standalone
+and central dispatch workflows remain compatible and are not removed by this
+setup.
 
 ### 2. Add Your LLM API Key
 

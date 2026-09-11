@@ -100,15 +100,15 @@ export function ManifestDrawer({
         'push',
         'check_run',
         'check_suite',
+        'merge_group',
       ],
       default_permissions: {
         pull_requests: 'write',
         issues: 'write',
         contents: 'read',
         checks: 'write',
-        statuses: 'write',
         metadata: 'read',
-        organization_hooks: 'read',
+        merge_queues: 'read',
       },
     };
   }, [appName, org, webhookUrl]);

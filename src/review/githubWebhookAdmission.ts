@@ -4,11 +4,20 @@ import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepo
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { AuthoritativeReviewAdmission } from './authoritativeServiceContracts';
-import { buildReviewRunIdentity } from './reviewAdmission';
+import { buildReviewRunIdentity, deriveReviewRunId } from './reviewAdmission';
+import { sha256 } from './reviewCore';
+import {
+  AUTHORITATIVE_REVIEW_APP_ID, AUTHORITATIVE_REVIEW_APP_SLUG, AUTHORITATIVE_REVIEW_CHECK_NAME,
+} from '../auth/authoritativeServiceIdentity';
 import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
 } from '../auth/githubWebhookIdentity';
 import { MergeGroupGateInProgressError } from './mergeGroupGate';
+import {
+  RECOVERABLE_FAILURE_TITLES,
+  REVIEW_REFRESH_ACTION,
+  REVIEW_REFRESH_EXECUTION_ATTEMPT,
+} from './reviewRecoveryPolicy';
 
 const positiveInteger = z.number().int().positive().safe();
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -23,6 +32,42 @@ const pullRequestWebhook = z.object({
     draft: z.literal(false),
     head: z.object({ sha }).passthrough(),
     base: z.object({ sha, repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough() }).passthrough(),
+  }).passthrough(),
+}).passthrough();
+
+const REFRESH_ACTION_IDENTIFIER = REVIEW_REFRESH_ACTION.identifier;
+const refreshCheckRunWebhook = z.object({
+  action: z.literal('requested_action'),
+  installation: z.object({ id: positiveInteger }).passthrough(),
+  repository: githubWebhookRepositorySchema,
+  requested_action: z.object({ identifier: z.literal(REFRESH_ACTION_IDENTIFIER) }).passthrough(),
+  check_run: z.object({
+    id: positiveInteger,
+    name: z.literal(AUTHORITATIVE_REVIEW_CHECK_NAME),
+    head_sha: sha,
+    status: z.literal('completed'),
+    conclusion: z.literal('failure'),
+    external_id: z.string().regex(/^run_[a-f0-9]{32}:a1$/u),
+    app: z.object({
+      id: z.literal(AUTHORITATIVE_REVIEW_APP_ID),
+      slug: z.literal(AUTHORITATIVE_REVIEW_APP_SLUG),
+    }).passthrough(),
+    output: z.object({
+      title: z.string().refine((value) => RECOVERABLE_FAILURE_TITLES.has(value)),
+    }).passthrough(),
+    // GitHub leaves this array empty for fork pushes. Refuse to guess the PR
+    // coordinates in that case: refresh is only valid for a single exact head.
+    pull_requests: z.array(z.object({
+      number: positiveInteger,
+      head: z.object({
+        sha,
+        repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough(),
+      }).passthrough(),
+      base: z.object({
+        sha,
+        repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough(),
+      }).passthrough(),
+    }).passthrough()).length(1),
   }).passthrough(),
 }).passthrough();
 
@@ -41,7 +86,7 @@ export interface GitHubWebhookAdmissionEvent {
   body: unknown;
 }
 
-/** Admit a signed, allowlisted GitHub App pull_request webhook directly. */
+/** Admit signed, allowlisted GitHub App review events directly. */
 export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmissionOptions) {
   const now = options.now || Date.now;
   const authoritativeIds = new Set(options.authoritativePublishing?.repositoryIds || []);
@@ -66,6 +111,72 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         throw error;
       }
       return { status: result.conclusion, checkId: result.checkId, constituents: result.constituents };
+    }
+    if (eventName === 'check_run') {
+      const parsed = refreshCheckRunWebhook.safeParse(event.body);
+      if (!parsed.success) return { status: 'ignored', reason: 'unsupported_refresh_request' };
+      const payload = parsed.data;
+      let enrolled;
+      try { enrolled = requireEnrolledGitHubWebhookRepository(payload.repository, options.config); }
+      catch (error) {
+        if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+        throw error;
+      }
+      const pr = payload.check_run.pull_requests[0];
+      const { owner, repo } = enrolled;
+      if (payload.repository.full_name !== `${owner}/${repo}`
+        || pr.head.repo.full_name !== payload.repository.full_name
+        || pr.base.repo.full_name !== payload.repository.full_name
+        || pr.head.sha !== payload.check_run.head_sha) {
+        return { status: 'ignored', reason: 'not_enrolled' };
+      }
+      const requested = {
+        repositoryId: payload.repository.id, owner, repo, prNumber: pr.number,
+        headSha: pr.head.sha, baseSha: pr.base.sha,
+      };
+      const legacyIdentity = buildReviewRunIdentity(requested);
+      const runId = payload.check_run.external_id.slice(0, -3);
+      const authoritative = options.authoritativePublishing;
+      const authoritativeIds = new Set(authoritative?.repositoryIds || []);
+      if (authoritative?.acceptNewRequests === false && authoritativeIds.has(payload.repository.id)) {
+        return { status: 'ignored', reason: 'authoritative_admission_paused' };
+      }
+      const resolved = authoritative && authoritativeIds.has(payload.repository.id)
+        ? await authoritative.resolver.resolve(requested) : undefined;
+      const expectedIdentity = resolved?.identity || legacyIdentity;
+      const expectedRunId = deriveReviewRunId(expectedIdentity);
+      if (expectedRunId !== runId) {
+        return { status: 'ignored', reason: 'refresh_identity_mismatch' };
+      }
+      const receivedAt = now();
+      const admission = await options.admission.admit({
+        deliveryId: `github-webhook:${delivery}`,
+        eventName,
+        repositoryId: payload.repository.id,
+        installationId: payload.installation.id,
+        receivedAt,
+        terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+        payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
+        publicationMode: 'app-gate',
+        centralActionDispatch: false,
+        // The signed App check_run/requested_action payload is the dedicated
+        // recovery authority. The repository still requires projected worker
+        // evidence before re-arming an active durable run.
+        retryRequested: true,
+        retryAfterExecutionAttempt: REVIEW_REFRESH_EXECUTION_ATTEMPT,
+        identity: resolved?.identity || legacyIdentity,
+        ...(resolved && authoritative ? {
+          effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
+          authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+        } : {}),
+      });
+      return {
+        status: admission.status,
+        deliveryId: delivery,
+        prNumber: pr.number,
+        headSha: pr.head.sha,
+        reason: 'refresh_requested',
+      };
     }
     if (eventName !== 'pull_request') return { status: 'ignored', reason: 'unsupported_event' };
     const parsed = pullRequestWebhook.safeParse(event.body);

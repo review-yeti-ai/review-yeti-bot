@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import { buildWorkerFailureDiagnostics } from '../../src/review/workerCompletion';
 import { runPublishingReviewWorker, type PublishingReviewDeps } from '../../src/cli/publishingReview';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
@@ -213,7 +214,8 @@ describe('authoritative prepared publishing worker', () => {
       expectNoReview(f);
       expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
       expect(f.reportReviewResult.mock.calls[0][0].result).toEqual({ version: 'WorkerReviewResult.v1',
-        completedAt: COMPLETED, personas: [], coverageComplete: false, quorumSatisfied: false });
+        completedAt: COMPLETED, personas: [], coverageComplete: false, quorumSatisfied: false,
+        failureDiagnostics: buildWorkerFailureDiagnostics(new Error('Prepared review execution does not match its admitted identity'), 'internal_error') });
     });
 
   it.each([
@@ -228,6 +230,7 @@ describe('authoritative prepared publishing worker', () => {
       version: 'WorkerReviewResult.v1', completedAt: COMPLETED,
       personas: ['sec-lane', 'qual-lane'].map((id) => ({ id, decision: 'ERROR', status: 'ERROR', findings: [], errorClass })),
       coverageComplete: false, quorumSatisfied: false,
+      failureDiagnostics: buildWorkerFailureDiagnostics(original, errorClass),
     }));
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.errorLog.mock.calls)).not.toContain(TOKEN);
@@ -244,6 +247,7 @@ describe('authoritative prepared publishing worker', () => {
       version: 'WorkerReviewResult.v1', completedAt: COMPLETED,
       personas: ['sec-lane', 'qual-lane'].map((id) => ({ id, decision: 'ERROR', status: 'ERROR', findings: [], errorClass: 'transport' })),
       coverageComplete: false, quorumSatisfied: false,
+      failureDiagnostics: buildWorkerFailureDiagnostics(original, 'transport'),
     }));
   });
 
@@ -255,6 +259,7 @@ describe('authoritative prepared publishing worker', () => {
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, {
       version: 'WorkerReviewResult.v1', completedAt: COMPLETED, personas: [],
       coverageComplete: false, quorumSatisfied: false,
+      failureDiagnostics: buildWorkerFailureDiagnostics(new Error('publishing review worker contract is invalid'), 'contract'),
     }));
   });
 
