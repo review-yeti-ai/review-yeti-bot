@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.55.2...v1.56.0) (2026-09-11)
+
+
+### Features
+
+* **API-3210:** persist Review Yeti recovery diagnostics ([8bfb21b](https://github.com/review-yeti-ai/review-yeti-bot/commit/8bfb21b7b5cc9f846f6208451f07b08f635cb127))
+
 ## [1.55.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.55.1...v1.55.2) (2026-09-11)
 
 
