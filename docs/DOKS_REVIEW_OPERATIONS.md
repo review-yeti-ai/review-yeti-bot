@@ -193,8 +193,9 @@ all of them:
   A progressing stream may run longer than 180 seconds.
 - **Overall panel deadline:** the existing 900-second budget still bounds
   the complete panel. Expiry propagates cancellation and rejects late results;
-  progress does not reset this overall clock. Five investigation turns is an
-  upper bound, not a requirement to consume the full budget.
+  progress does not reset this overall clock. Five total model turns is an
+  upper bound, not a requirement to consume the full budget; finalization
+  shares that budget with investigation.
 
 For new authoritative prepared admissions, the API serializes this policy
 into the digest-bound execution envelope. A worker-only rollout cannot change
@@ -213,6 +214,32 @@ current-head review on the exact deployed images. Record the queue and worker
 times separately; an accepted dispatch, healthy pod, or green wrapper is not
 a completed review. Capture only bounded, sanitized diagnostic categories;
 do not retain raw review prompts or credentials.
+
+### Native output and turn-budget failures
+
+A quick `budget_exhausted` failure can mean the model spent its allowed
+turns reading code without returning a verdict. It does not necessarily mean
+the wall-clock deadline expired. Inspect per-persona error categories as well:
+the required lane's failure can coexist with nonce-invalid or malformed
+results from other lanes.
+
+Native investigation uses JSON-object responses for a read-only tool request
+or a complete nonce-bound result. The final allowed turn and format-correction
+finalization use the strict role-specific verdict schema for `json_schema`
+callers; explicit `json_object` callers retain that gateway-compatible mode
+and the same application validation. Tool results keep
+the native contract; they must not ask native callers for legacy fences.
+The final turn cannot start more tool work or create a sixth model call.
+
+Every early or final verdict still passes nonce, role and findings validation.
+Incomplete evidence, malformed output, an invalid nonce or continued tool
+requests at finalization fail closed. Do not raise limits, loosen parsing or
+infer approval to make the check green. Qualify the complete tool-to-verdict
+sequence, including nested arguments and final-turn refusal, not only a
+single preformatted mock result. Fenced compatibility remains a separate
+response protocol with its own follow-up instructions. The existing narrow
+compatibility for a single whole-response Markdown JSON wrapper around a
+native result remains supported; it is not fallback to legacy nonce fences.
 
 ## 📋 Operational Verification & Qualification Order
 
