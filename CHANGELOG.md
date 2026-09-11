@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.5...v1.56.6) (2026-09-11)
+
+
+### Bug Fixes
+
+* doks review reliability, reaper sync, and controller cache lag ([#726](https://github.com/review-yeti-ai/review-yeti-bot/issues/726)) ([d24090d](https://github.com/review-yeti-ai/review-yeti-bot/commit/d24090da829300b158d2c452f99c2ae31c3eb28e))
+
 ## [1.56.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.4...v1.56.5) (2026-09-11)
 
 
