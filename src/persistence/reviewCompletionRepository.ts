@@ -1,3 +1,5 @@
+import { appendLifecycleEventForRun } from './reviewEventRepository';
+
 export type ReviewCompletionStatus =
   | 'pending'
   | 'claimed'
@@ -101,6 +103,7 @@ interface TransactionClient extends Queryable {
 interface ConnectionPool {
   connect(): Promise<TransactionClient>;
   query?(text: string, values?: unknown[]): Promise<QueryResult>;
+  end?: (...args: any[]) => Promise<void>;
 }
 
 function milliseconds(value: unknown): number | undefined {
@@ -158,7 +161,11 @@ function rowToClaim(row: any): ReviewCompletionClaim {
 }
 
 export class PostgresReviewCompletionRepository implements ReviewCompletionRepository {
-  constructor(private readonly pool: ConnectionPool | Queryable) {}
+  private readonly lifecycleEventsEnabled: boolean;
+
+  constructor(private readonly pool: ConnectionPool | Queryable) {
+    this.lifecycleEventsEnabled = typeof (pool as ConnectionPool).end === 'function';
+  }
 
   private async executeQuery(text: string, values?: unknown[]): Promise<QueryResult> {
     if ('connect' in this.pool && typeof this.pool.connect === 'function') {
@@ -172,6 +179,40 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     return (this.pool as Queryable).query(text, values);
   }
 
+  private async appendLifecycle(
+    client: Queryable,
+    runId: string,
+    eventKind: string,
+    now: number,
+    data: Record<string, unknown> = {},
+  ): Promise<void> {
+    if (!this.lifecycleEventsEnabled) return;
+    await appendLifecycleEventForRun(client, { runId, eventKind, occurredAt: now, data });
+  }
+
+  private async mutate<T>(operation: (client: TransactionClient) => Promise<T>): Promise<T> {
+    const pool = this.pool as ConnectionPool | Queryable;
+    if (!this.lifecycleEventsEnabled) {
+      if ('connect' in pool && typeof pool.connect === 'function') {
+        const client = await pool.connect();
+        try { return await operation(client); } finally { client.release(); }
+      }
+      return operation({ query: (text, values) => (pool as Queryable).query(text, values), release: () => undefined });
+    }
+    const client = await (pool as ConnectionPool).connect();
+    try {
+      await client.query('BEGIN');
+      const result = await operation(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async recordCompletion(input: ReviewCompletionRecordInput): Promise<ReviewCompletionRecord> {
     const completionId = input.completionId || `cpl_${input.runId.replace(/^run_/, '')}`;
     const validationRequestId = input.validationRequestId || `validation-${input.prNumber}-${input.attemptId}`;
@@ -179,7 +220,8 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     const draftDeferred = Boolean(input.draftDeferred);
     const availableAt = input.availableAt ?? Date.now();
 
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `INSERT INTO review_completion_outbox
         (completion_id, run_id, delivery_id, repository_id, repository, pr_number,
          base_sha, head_sha, attempt_id, policy_digest, validation_request_id,
@@ -214,13 +256,20 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
         input.errorText || null,
         availableAt,
       ],
-    );
+      );
+      if (result.rows.length > 0) {
+        await this.appendLifecycle(client, input.runId, 'review.lifecycle.queued', availableAt,
+          { stage: 'completion' });
+      }
+      return result;
+    });
 
     return rowToRecord(result.rows[0]);
   }
 
   async claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewCompletionClaim | null> {
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `WITH candidate AS (
          SELECT completion_id
            FROM review_completion_outbox
@@ -243,7 +292,13 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
         WHERE outbox.completion_id = candidate.completion_id
        RETURNING outbox.*`,
       [workerId, now, leaseMs],
-    );
+      );
+      if (result.rows.length > 0) {
+        await this.appendLifecycle(client, String(result.rows[0].run_id), 'review.lifecycle.dispatched', now,
+          { stage: 'completion' });
+      }
+      return result;
+    });
 
     if (result.rows.length === 0) {
       return null;
@@ -265,7 +320,8 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
   }
 
   async markDispatched(completionId: string, workerId: string, now: number): Promise<boolean> {
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `UPDATE review_completion_outbox
           SET status = 'dispatched',
               lease_owner = NULL,
@@ -274,14 +330,21 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
         WHERE completion_id = $1
           AND lease_owner = $2
           AND status = 'claimed'
-       RETURNING completion_id`,
+       RETURNING completion_id, run_id`,
       [completionId, workerId, now],
-    );
+      );
+      if (result.rows.length > 0) {
+        if (result.rows[0].run_id) await this.appendLifecycle(client, String(result.rows[0].run_id), 'review.lifecycle.dispatched', now,
+          { stage: 'completion' });
+      }
+      return result;
+    });
     return result.rows.length > 0;
   }
 
   async markCompleted(completionId: string, workerId: string, now: number): Promise<boolean> {
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `UPDATE review_completion_outbox
           SET status = 'completed',
               lease_owner = NULL,
@@ -290,14 +353,21 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
         WHERE completion_id = $1
           AND (lease_owner = $2 OR lease_owner IS NULL)
           AND status IN ('claimed', 'dispatched')
-       RETURNING completion_id`,
+       RETURNING completion_id, run_id`,
       [completionId, workerId, now],
-    );
+      );
+      if (result.rows.length > 0) {
+        if (result.rows[0].run_id) await this.appendLifecycle(client, String(result.rows[0].run_id), 'review.lifecycle.terminal', now,
+          { stage: 'terminal', terminal_class: 'completion_completed' });
+      }
+      return result;
+    });
     return result.rows.length > 0;
   }
 
   async markTerminal(completionId: string, workerId: string, now: number): Promise<boolean> {
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `UPDATE review_completion_outbox
           SET status = 'terminal',
               lease_owner = NULL,
@@ -306,9 +376,15 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
         WHERE completion_id = $1
           AND (lease_owner = $2 OR lease_owner IS NULL)
           AND status IN ('claimed', 'dispatched', 'pending')
-       RETURNING completion_id`,
+       RETURNING completion_id, run_id`,
       [completionId, workerId, now],
-    );
+      );
+      if (result.rows.length > 0) {
+        if (result.rows[0].run_id) await this.appendLifecycle(client, String(result.rows[0].run_id), 'review.lifecycle.terminal', now,
+          { stage: 'terminal', terminal_class: 'completion_terminal' });
+      }
+      return result;
+    });
     return result.rows.length > 0;
   }
 
@@ -319,7 +395,8 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     delayMs: number,
     errorText?: string,
   ): Promise<boolean> {
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `UPDATE review_completion_outbox
           SET status = 'pending',
               lease_owner = NULL,
@@ -330,9 +407,15 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
         WHERE completion_id = $1
           AND lease_owner = $2
           AND status = 'claimed'
-       RETURNING completion_id`,
+       RETURNING completion_id, run_id`,
       [completionId, workerId, now, delayMs, errorText || null],
-    );
+      );
+      if (result.rows.length > 0 && result.rows[0].run_id) {
+        await this.appendLifecycle(client, String(result.rows[0].run_id), 'review.lifecycle.retrying', now,
+          { stage: 'completion', retry_class: 'delivery_retry' });
+      }
+      return result;
+    });
     return result.rows.length > 0;
   }
 
@@ -342,7 +425,8 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     now: number,
     errorText: string,
   ): Promise<boolean> {
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `UPDATE review_completion_outbox
           SET status = 'error',
               lease_owner = NULL,
@@ -352,9 +436,15 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
         WHERE completion_id = $1
           AND lease_owner = $2
           AND status = 'claimed'
-       RETURNING completion_id`,
+       RETURNING completion_id, run_id`,
       [completionId, workerId, errorText, now],
-    );
+      );
+      if (result.rows.length > 0 && result.rows[0].run_id) {
+        await this.appendLifecycle(client, String(result.rows[0].run_id), 'review.lifecycle.terminal', now,
+          { stage: 'terminal', terminal_class: 'completion_error' });
+      }
+      return result;
+    });
     return result.rows.length > 0;
   }
 
@@ -364,7 +454,8 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     headSha: string,
     now: number,
   ): Promise<number> {
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `UPDATE review_completion_outbox
           SET draft_deferred = FALSE,
               updated_at = to_timestamp($4 / 1000.0)
@@ -372,9 +463,15 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
           AND pr_number = $2
           AND head_sha = $3
           AND draft_deferred = TRUE
-       RETURNING completion_id`,
+       RETURNING completion_id, run_id`,
       [repositoryId, prNumber, headSha, now],
-    );
+      );
+      for (const row of result.rows) {
+        if (row.run_id) await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.queued', now,
+          { stage: 'completion' });
+      }
+      return result;
+    });
     return result.rows.length;
   }
 
@@ -384,7 +481,8 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     currentHeadSha: string,
     now: number,
   ): Promise<number> {
-    const result = await this.executeQuery(
+    const result = await this.mutate(async (client) => {
+      const result = await client.query(
       `UPDATE review_completion_outbox
           SET status = 'superseded',
               lease_owner = NULL,
@@ -394,9 +492,15 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
           AND pr_number = $2
           AND head_sha <> $3
           AND status IN ('pending', 'claimed')
-       RETURNING completion_id`,
+       RETURNING completion_id, run_id`,
       [repositoryId, prNumber, currentHeadSha, now],
-    );
+      );
+      for (const row of result.rows) {
+        if (row.run_id) await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.superseded', now,
+          { stage: 'superseded', terminal_class: 'candidate_superseded' });
+      }
+      return result;
+    });
     return result.rows.length;
   }
 
