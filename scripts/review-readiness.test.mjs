@@ -54,10 +54,15 @@ jobs:
           private-key: \${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
           owner: exampleorg
           repositories: example-review-actions,dashboard
-      - run: gh api repos/exampleorg/example-review-actions/dispatches
+      - run: gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -
       - run: echo review-yeti-request request_id repository pr_number base_sha head_sha
       - run: echo "request_id=dashboard:\${{ github.event.pull_request.number }}:\${{ github.event.pull_request.head.sha }}:\${{ github.run_id }}:\${{ github.run_attempt }}"
 `;
+
+const selfCallerWorkflow = readFileSync(
+  fileURLToPath(new URL('../.github/workflows/ct-review-bot.yml', import.meta.url)),
+  'utf8',
+);
 
 const mergeGroupWorkflow = `
 name: Dashboard Review Yeti Merge Group
@@ -436,6 +441,88 @@ test('fails closed across malformed source, workflow, ruleset, installation, and
     installation: { ...installation, permissions: undefined },
   }));
   assert.ok(missingPermissions.failures.some((failure) => failure.code === 'app_permissions'));
+});
+
+test('accepts cisco-style dispatch observability and exact-head dedup without mistaking them for polling', () => {
+  const ciscoStyleCaller = callerWorkflow
+    .replace('name: Dispatch native Review Yeti', 'name: Review Yeti / Review Yeti')
+    .replace(
+      '- run: gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -',
+      '- run: gh api "repos/${TARGET_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/check-runs?filter=all&per_page=100"\n'
+        + '      - run: gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -',
+    );
+  const result = qualifyReadiness(readyInput({ callerWorkflow: ciscoStyleCaller }));
+  assert.equal(result.failures.some((failure) => failure.code === 'caller_producer'), false);
+  assert.equal(result.status, 'ready');
+});
+
+test('central self-caller App token cannot publish its own protected check', () => {
+  const input = readyInput({
+    repository: 'exampleorg/example-review-actions',
+    callerWorkflow: selfCallerWorkflow,
+    pullRequest: {
+      number: 42,
+      state: 'open',
+      base: { sha: baseSha, repo: { full_name: 'exampleorg/example-review-actions' } },
+      head: { sha: headSha, ref: 'feature/readiness' },
+    },
+    callerRun: {
+      ...readyInput().callerRun,
+      repository: { full_name: 'exampleorg/example-review-actions' },
+    },
+  });
+  assert.equal(qualifyReadiness(input).failures.some((failure) => failure.code === 'app_token'), false);
+
+  const widened = selfCallerWorkflow.replace('permission-checks: read', 'permission-checks: write');
+  const result = qualifyReadiness({ ...input, callerWorkflow: widened });
+  assert.ok(result.failures.some((failure) => failure.code === 'app_token'));
+});
+
+test('rejects self-publication, polling, stale check coordinates, repeated reads, and widened caller permissions', () => {
+  const exactRead = 'gh api "repos/${TARGET_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/check-runs?filter=all&per_page=100"';
+  const base = callerWorkflow.replace(
+    'gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -',
+    `${exactRead}\n      - run: gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -`,
+  );
+  const producerCases = [
+    base.replace(exactRead, `gh api --method POST "repos/${'${TARGET_REPOSITORY}'}/commits/${'${EXPECTED_HEAD_SHA}'}/check-runs"`),
+    base.replace(exactRead, `while true; do ${exactRead}; sleep 1; done`),
+    base.replace(exactRead, `while true; do ${exactRead}; done`),
+    base.replace('${EXPECTED_HEAD_SHA}', '${GITHUB_SHA}'),
+    base.replace(exactRead, `${exactRead}\n      - run: ${exactRead}`),
+    base.replace(exactRead, 'gh api "repos/${TARGET_REPOSITORY}/actions/runs?per_page=100"'),
+    base.replace(exactRead, 'gh api "repos/${TARGET_REPOSITORY}/actions/workflows/repository-dispatch.yml/runs?per_page=100"'),
+    base.replace(exactRead, 'gh run list --workflow repository-dispatch.yml'),
+    base.replace(
+      exactRead,
+      `echo '${exactRead}' >/dev/null; endpoint='check''-runs'; gh api -f name='Review Yeti Gate' "repos/${'${TARGET_REPOSITORY}'}/commits/${'${EXPECTED_HEAD_SHA}'}/${'${endpoint}'}"`,
+    ),
+    base.replace(
+      'gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -',
+      `echo repos/exampleorg/example-review-actions/dispatches; endpoint='check''-runs'; gh api -f name='Review Yeti Gate' "repos/${'${TARGET_REPOSITORY}'}/commits/${'${EXPECTED_HEAD_SHA}'}/${'${endpoint}'}"`,
+    ),
+    base.replace(
+      'gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -',
+      `echo gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -; g=gh; endpoint='check''-runs'; "$g" api -f name='Review Yeti Gate' "repos/${'${TARGET_REPOSITORY}'}/commits/${'${EXPECTED_HEAD_SHA}'}/${'${endpoint}'}"`,
+    ),
+    base.replace(exactRead, `${exactRead}\n      - run: gh api -X GET repos/${'${TARGET_REPOSITORY}'}/pulls/42; gh api -X DELETE repos/${'${TARGET_REPOSITORY}'}/issues/1`),
+    base.replace(exactRead, `${exactRead}\n      - run: bash -c 'while true; do echo polling; done'`),
+  ];
+  for (const candidate of producerCases) {
+    const result = qualifyReadiness(readyInput({ callerWorkflow: candidate }));
+    assert.ok(result.failures.some((failure) => failure.code === 'caller_producer'));
+  }
+
+  const widened = callerWorkflow.replace('  contents: read', '  checks: write\n  contents: read');
+  const widenedResult = qualifyReadiness(readyInput({ callerWorkflow: widened }));
+  assert.ok(widenedResult.failures.some((failure) => failure.code === 'caller'));
+
+  const jobOverride = callerWorkflow.replace(
+    '  dispatch:\n',
+    '  dispatch:\n    permissions:\n      checks: write\n',
+  );
+  const overrideResult = qualifyReadiness(readyInput({ callerWorkflow: jobOverride }));
+  assert.ok(overrideResult.failures.some((failure) => failure.code === 'caller'));
 });
 
 test('keeps configuration consumer identity unknown and validates every runtime queue identity', () => {

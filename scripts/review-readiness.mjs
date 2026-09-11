@@ -311,6 +311,7 @@ function parseTopLevelPermissions(workflow) {
 
 function checkPermissions(workflow, required, code, failures, evidence) {
   const permissions = parseTopLevelPermissions(workflow);
+  const nestedOverride = nonCommentLines(workflow).some((line) => /^ {2,}permissions:\s*$/u.test(line));
   if (!permissions) {
     addFailure(failures, code, 'top-level permissions contract is missing or malformed');
     return;
@@ -318,9 +319,14 @@ function checkPermissions(workflow, required, code, failures, evidence) {
   const missing = Object.entries(required)
     .filter(([name, access]) => permissions[name] !== access)
     .map(([name, access]) => `${name}:${access}`);
+  const unexpected = Object.entries(permissions)
+    .filter(([name]) => !Object.hasOwn(required, name))
+    .map(([name, access]) => `${name}:${access}`);
+  const permissionIssues = [...missing, ...unexpected];
+  if (nestedOverride) permissionIssues.push('job-level permissions override');
   addEvidence(evidence, `${code}_permissions`, permissions);
-  if (missing.length > 0) {
-    addFailure(failures, code, `required permissions missing or widened: ${missing.join(', ')}`);
+  if (permissionIssues.length > 0) {
+    addFailure(failures, code, `required permissions missing or widened: ${permissionIssues.join(', ')}`);
   }
 }
 
@@ -349,6 +355,29 @@ function workflowStepBlocks(lines) {
     lines: lines.slice(start.index, starts[offset + 1]?.index || lines.length),
     indent: start.indent,
   }));
+}
+
+function workflowRunSource(stepLines) {
+  const runIndex = stepLines.findIndex((line) => /^\s+(?:-\s+)?run:\s*/u.test(line));
+  if (runIndex < 0) return '';
+  const runLine = stepLines[runIndex];
+  const value = runLine.replace(/^\s+(?:-\s+)?run:\s*/u, '');
+  if (value !== '|' && value !== '>' && value.length > 0) return value;
+  return stepLines.slice(runIndex + 1).join('\n');
+}
+
+function shellInvocation(source, command) {
+  const normalized = source.replace(/\\\r?\n\s*/gu, ' ');
+  const escaped = command.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  // Only bind an invocation that begins a shell command line. Text inside an
+  // echo/printf argument is evidence of nothing, and treating it as executable
+  // let a decoy dispatch string mask a differently-spelled write command.
+  const match = new RegExp(`^\\s*(${escaped})(?=\\s|$)`, 'mu').exec(normalized);
+  if (!match) return '';
+  const start = match.index + match[0].indexOf(match[1]);
+  const tail = normalized.slice(start);
+  const delimiter = tail.search(/(?:;|&&|\|\||\r?\n)/u);
+  return (delimiter < 0 ? tail : tail.slice(0, delimiter)).trim();
 }
 
 function workflowInput(stepLines, name) {
@@ -464,11 +493,65 @@ function checkCallerWorkflow(workflow, repository, failures, evidence) {
   if (!/^\s*pull_request_target:/mu.test(workflow)) {
     addFailure(failures, 'caller_producer', 'caller workflow does not produce pull_request_target runs');
   }
-  if (workflowJobBlocks(workflow).length !== 1) {
+  const callerJobs = workflowJobBlocks(workflow);
+  if (callerJobs.length !== 1) {
     addFailure(failures, 'caller_producer', 'caller must contain exactly one dispatch job');
   }
-  if (/Review Yeti \/ Review Yeti|actions\/workflows\/repository-dispatch\.yml\/runs|commits\/[^\s"']+\/check-runs/u.test(workflow)) {
-    addFailure(failures, 'caller_producer', 'caller must dispatch and exit without producing or adopting a review check');
+  const callerSteps = callerJobs.flatMap((job) => workflowStepBlocks(job.lines));
+  const runSources = callerSteps.map((step) => workflowRunSource(step.lines)).filter(Boolean);
+  const executable = runSources.join('\n');
+  const hasLoopOrSleep = /\b(?:while|until|sleep)\b|(?:^|[;'"&|]\s*)for\b/mu.test(executable);
+  const readsReceiverRuns = /\/actions\/(?:runs|workflows\/[^\s"']+\/runs)(?:[?\s"']|$)|\bgh\s+run\b/u.test(executable);
+  if (hasLoopOrSleep || readsReceiverRuns || /(?:^|[;&|]\s*)eval\b|\bcurl\b|\bwget\b/mu.test(executable)) {
+    addFailure(failures, 'caller_producer', 'caller must dispatch and exit without polling a review or receiver run');
+  }
+
+  const dispatchEndpoint = 'repos/exampleorg/example-review-actions/dispatches';
+  const dispatchSources = runSources.filter((source) => source.includes(dispatchEndpoint));
+  for (const source of runSources.filter((candidate) => /\bgh\s+api\b/u.test(candidate))) {
+    const apiCount = (source.match(/\bgh\s+api\b/gu) || []).length;
+    const methods = [...source.matchAll(/(?:--method(?:=|\s+)|-X\s*)([A-Za-z]+)/giu)]
+      .map((match) => match[1].toUpperCase());
+    const hasInput = /--input(?:=|\s+)/u.test(source);
+    const hasFields = /(?:^|\s)-(?:f|F)(?:\s|=)|--(?:field|raw-field)(?:=|\s+)/mu.test(source);
+    const isExplicitGet = methods.length === 1 && methods[0] === 'GET';
+    const isImplicitGet = methods.length === 0 && !hasInput && !hasFields;
+    const isDispatch = source.includes(dispatchEndpoint);
+    if (apiCount !== 1 || (!isExplicitGet && !isImplicitGet && !isDispatch)) {
+      addFailure(failures, 'caller_producer', 'caller may write only the central repository dispatch endpoint');
+    }
+  }
+
+  const dispatchSource = dispatchSources.length === 1 ? dispatchSources[0] : '';
+  const dispatchInvocation = shellInvocation(dispatchSource, 'gh api');
+  const dispatchMethods = [...dispatchInvocation.matchAll(/(?:--method(?:=|\s+)|-X\s*)([A-Za-z]+)/giu)]
+    .map((match) => match[1].toUpperCase());
+  const dispatchApiCount = (dispatchSource.match(/\bgh\s+api\b/gu) || []).length;
+  const dispatchEndpointCount = dispatchInvocation.split(dispatchEndpoint).length - 1;
+  const dispatchHasInput = /--input(?:=|\s+)-(?:\s|$)/u.test(dispatchInvocation);
+  const dispatchHasFields = /(?:^|\s)-(?:f|F)(?:\s|=)|--(?:field|raw-field)(?:=|\s+)/mu.test(dispatchInvocation);
+  if (dispatchSources.length !== 1 || dispatchApiCount !== 1 || dispatchEndpointCount !== 1
+      || dispatchMethods.length !== 1 || dispatchMethods[0] !== 'POST'
+      || !dispatchHasInput || dispatchHasFields) {
+    addFailure(failures, 'caller_producer', 'caller must perform exactly one POST-with-input to the central dispatch endpoint');
+  }
+
+  // The fleet caller may retain its historical Actions job name for operator
+  // observability and perform one read to deduplicate provider spend. That read
+  // must be the canonical exact-head endpoint, and its step must remain
+  // read-only. The App-owned gate is published only by the central receiver.
+  const checkRunMentions = executable.match(/check-runs/gu) || [];
+  if (checkRunMentions.length > 0) {
+    const exactEndpoint = 'repos/${TARGET_REPOSITORY}/commits/${EXPECTED_HEAD_SHA}/check-runs?filter=all&per_page=100';
+    const exactMentions = executable.split(exactEndpoint).length - 1;
+    const checkRunSteps = callerSteps.filter((step) => workflowRunSource(step.lines).includes('check-runs'));
+    const checkRunStep = checkRunSteps.length === 1 ? workflowRunSource(checkRunSteps[0].lines) : '';
+    const ghApiCount = (checkRunStep.match(/\bgh\s+api\b/gu) || []).length;
+    const mutatesChecks = /(?:--method(?:=|\s+)|-X\s*)\w+|--input(?:=|\s+)|(?:^|\s)-(?:f|F)(?:\s|=)|--(?:field|raw-field)(?:=|\s+)/mu.test(checkRunStep);
+    if (checkRunMentions.length !== 1 || exactMentions !== 1 || checkRunSteps.length !== 1
+        || ghApiCount !== 1 || mutatesChecks) {
+      addFailure(failures, 'caller_producer', 'caller check-run access must be one read-only exact-head dedup request');
+    }
   }
   checkPermissions(workflow, REQUIRED_CALLER_PERMISSIONS, 'caller', failures, evidence);
   if (!/actions\/create-github-app-token@[0-9a-f]{40}/u.test(workflow)
@@ -476,6 +559,25 @@ function checkCallerWorkflow(workflow, repository, failures, evidence) {
       || !/CT_REVIEW_BOT_APP_PRIVATE_KEY/u.test(workflow)
       || !/owner:\s*exampleorg/u.test(workflow)) {
     addFailure(failures, 'app_token', 'caller must mint the SHA-pinned Review Yeti App token for exampleorg');
+  }
+  if (repository === CENTRAL_REPOSITORY) {
+    const tokenSteps = callerSteps.filter((step) => step.lines.some((line) =>
+      /^\s*uses:\s*actions\/create-github-app-token@[0-9a-f]{40}(?:\s+#.*)?$/u.test(line)));
+    const tokenStep = tokenSteps.length === 1 ? tokenSteps[0] : null;
+    const requestedPermissions = tokenStep?.lines
+      .map((line) => /^\s*permission-([a-z-]+):\s*([^\s#]+)\s*(?:#.*)?$/u.exec(line))
+      .filter(Boolean)
+      .map((match) => `${match[1]}:${match[2]}`)
+      .sort() || [];
+    const requiredPermissions = ['checks:read', 'contents:write', 'pull-requests:read'];
+    if (tokenSteps.length !== 1
+        || JSON.stringify(requestedPermissions) !== JSON.stringify(requiredPermissions)) {
+      addFailure(
+        failures,
+        'app_token',
+        'central self-caller token must request only checks:read, contents:write, and pull-requests:read',
+      );
+    }
   }
   const repositoriesMatch = /repositories:\s*([^\n]+)/u.exec(workflow);
   const repositories = (repositoriesMatch?.[1] || '').replace(/["']/gu, '');

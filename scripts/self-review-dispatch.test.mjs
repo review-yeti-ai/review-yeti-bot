@@ -99,7 +99,11 @@ test('self-review is a bounded App-only dispatch-and-exit caller', () => {
   assert.match(source, /types: \[opened, synchronize, reopened, ready_for_review, labeled, unlabeled\]/u);
   assert.match(source, /repos\/exampleorg\/example-review-actions\/dispatches/u);
   assert.match(source, /create-github-app-token@[0-9a-f]{40}/u);
-  assert.match(source, /^permissions:\n  contents: read$/mu);
+  assert.match(source, /^\s+permission-checks: read$/mu);
+  assert.match(source, /^\s+permission-contents: write$/mu);
+  assert.match(source, /^\s+permission-pull-requests: read$/mu);
+  assert.doesNotMatch(source, /^\s+permission-checks: write$/mu);
+  assert.match(source, /^permissions:\n  actions: read\n  contents: read\n  pull-requests: read$/mu);
   assert.doesNotMatch(source, /review-yeti\.yml@|secrets\s*:\s*inherit|OPENROUTER|FIREWORKS|GEMINI|OLLAMA_PR_REVIEW/u);
   const shell = [
     'Decide whether this head still needs a panel',

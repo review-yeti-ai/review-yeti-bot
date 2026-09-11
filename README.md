@@ -74,6 +74,12 @@ Add `.github/workflows/review-yeti.yml` to your repository:
 > review check. Do not treat the placeholder `my-org`, `@v1`, secret names, or
 > `review-yeti.yml` filename below as qualification evidence.
 
+The central `example-review-actions` repository follows the same rule for its own
+pull requests: its base-owned `.github/workflows/ct-review-bot.yml` dispatches
+to the promoted `v1` receiver, and branch protection trusts only the exact-head
+`Review Yeti Gate` published by the `ct-review-bot` App. Central self-review
+must not call the development-line reusable workflow directly.
+
 ```yaml
 name: Review Yeti
 

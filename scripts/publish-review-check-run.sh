@@ -102,8 +102,40 @@ else
   summary="Review Yeti central evaluation finished with verdict: ${verdict}. See details in [central run](${CENTRAL_RUN_URL})."
 fi
 
-echo "Publishing Check Run 'Review Yeti' (${conclusion}) to ${TARGET_REPO} on ${HEAD_SHA}..."
+publish_completed_check() {
+  local name="$1"
+  local check_title="${title/#Review Yeti:/${name}:}"
+
+  echo "Publishing Check Run '${name}' (${conclusion}) to ${TARGET_REPO} on ${HEAD_SHA}..."
+  curl -sS -X POST \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
+    -d "$(jq -nc \
+      --arg name "${name}" \
+      --arg head_sha "${HEAD_SHA}" \
+      --arg conclusion "${conclusion}" \
+      --arg details_url "${CENTRAL_RUN_URL}" \
+      --arg title "${check_title}" \
+      --arg summary "${summary}" \
+      '{
+        name: $name,
+        head_sha: $head_sha,
+        status: "completed",
+        conclusion: $conclusion,
+        details_url: $details_url,
+        output: {
+          title: $title,
+          summary: $summary
+        }
+      }')" || {
+    echo "::warning::Failed to publish check-run '${name}' to ${TARGET_REPO}."
+  }
+}
+
 if [[ -n "${CHECK_ID:-}" ]]; then
+  echo "Updating Check Run 'Review Yeti' (${conclusion}) in ${TARGET_REPO} on ${HEAD_SHA}..."
   curl -sS -X PATCH \
     -H "Accept: application/vnd.github+json" \
     -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -128,29 +160,9 @@ if [[ -n "${CHECK_ID:-}" ]]; then
     echo "::warning::Failed to update check-run ${CHECK_ID} in ${TARGET_REPO}."
   }
 else
-  curl -sS -X POST \
-    -H "Accept: application/vnd.github+json" \
-    -H "Authorization: Bearer ${GH_TOKEN}" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "https://api.github.com/repos/${TARGET_REPO}/check-runs" \
-    -d "$(jq -nc \
-      --arg name "Review Yeti" \
-      --arg head_sha "${HEAD_SHA}" \
-      --arg conclusion "${conclusion}" \
-      --arg details_url "${CENTRAL_RUN_URL}" \
-      --arg title "${title}" \
-      --arg summary "${summary}" \
-      '{
-        name: $name,
-        head_sha: $head_sha,
-        status: "completed",
-        conclusion: $conclusion,
-        details_url: $details_url,
-        output: {
-          title: $title,
-          summary: $summary
-        }
-      }')" || {
-    echo "::warning::Failed to publish check-run to ${TARGET_REPO}."
-  }
+  publish_completed_check "Review Yeti"
 fi
+
+# Consumers protect on the stable gate name while the raw check remains useful
+# for verdict diagnostics. Both checks are App-owned and bound to the same head.
+publish_completed_check "Review Yeti Gate"

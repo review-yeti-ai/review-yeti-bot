@@ -10,7 +10,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
 
 concurrency:
   group: review-yeti-dispatch-${{ github.event.pull_request.number || github.ref }}
@@ -41,6 +43,12 @@ jobs:
           private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
           owner: exampleorg
           repositories: example-review-actions
+          # This token may read the exact head and PR, and may dispatch through
+          # the contents-scoped repository_dispatch API. It cannot write Checks,
+          # so the base-owned caller cannot manufacture its own protected gate.
+          permission-checks: read
+          permission-contents: write
+          permission-pull-requests: read
 
       - name: Report Review Yeti dispatch identity
         run: |

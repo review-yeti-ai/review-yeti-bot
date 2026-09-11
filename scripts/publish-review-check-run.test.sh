@@ -120,7 +120,7 @@ env -i PATH="$TMP:$ORIG_PATH" \
 grep -qF '"conclusion":"skipped"' "$TMP/curl_calls.log"
 grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 
-# Hosted/local SHIP without CHECK_ID still POSTs success.
+# Hosted/local SHIP without CHECK_ID POSTs both the raw verdict and required gate.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
@@ -131,10 +131,12 @@ env -i PATH="$TMP:$ORIG_PATH" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
   "$SCRIPT" >/dev/null 2>&1
 
-grep -qF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log"
+grep -cF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log" | grep -qx 2
+grep -qF '"name":"Review Yeti"' "$TMP/curl_calls.log"
+grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 grep -qF '"conclusion":"success"' "$TMP/curl_calls.log"
 
-# Hosted/local SHIP with CHECK_ID still PATCHes success.
+# Hosted/local SHIP with CHECK_ID PATCHes the raw verdict and POSTs the gate.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
@@ -147,9 +149,11 @@ env -i PATH="$TMP:$ORIG_PATH" \
   "$SCRIPT" >/dev/null 2>&1
 
 grep -qF "PATCH|https://api.github.com/repos/exampleorg/ct-test/check-runs/78901|" "$TMP/curl_calls.log"
+grep -qF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log"
+grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 grep -qF '"conclusion":"success"' "$TMP/curl_calls.log"
 
-# Hosted/local FIX_FIRST with CHECK_ID still PATCHes failure.
+# Hosted/local FIX_FIRST with CHECK_ID fails both the raw verdict and gate.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
@@ -162,6 +166,8 @@ env -i PATH="$TMP:$ORIG_PATH" \
   "$SCRIPT" >/dev/null 2>&1
 
 grep -qF "PATCH|https://api.github.com/repos/exampleorg/ct-test/check-runs/78901|" "$TMP/curl_calls.log"
+grep -qF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log"
+grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 grep -qF '"conclusion":"failure"' "$TMP/curl_calls.log"
 
 # Hosted/local unknown verdicts remain fail-closed and are still published as failures.
@@ -175,7 +181,8 @@ env -i PATH="$TMP:$ORIG_PATH" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
   "$SCRIPT" >/dev/null 2>&1
 
-grep -qF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log"
+grep -cF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log" | grep -qx 2
+grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 grep -qF '"conclusion":"failure"' "$TMP/curl_calls.log"
 
 echo "publish-review-check-run.test.sh: DOKS no-write and hosted publication contract passed"

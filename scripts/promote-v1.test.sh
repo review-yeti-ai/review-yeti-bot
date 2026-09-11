@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Behavioral contract test for promotion. The fake APIs deliberately put `validate` only on
-# the merged source commit and the App-owned `Review Yeti Gate` only on the exact PR head. This catches regressions
+# the merged source commit and the App-owned raw `Review Yeti` only on the exact PR head. This catches regressions
 # that accidentally validate all required checks against the wrong GitHub coordinate.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
@@ -35,14 +35,14 @@ case "$request" in
     ;;
   *"repos/exampleorg/example-review-actions/commits/oldhead1/check-runs?filter=all&per_page=100"*)
     if [[ "${FAKE_EARLIER_GREEN:-}" == true ]]; then
-      printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T14:58:00Z"}]}\n'
+      printf '{"check_runs":[{"id":1,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T14:58:00Z"}]}\n'
     else
-      printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T14:58:00Z"}]}\n'
+      printf '{"check_runs":[{"id":1,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T14:58:00Z"}]}\n'
     fi
     ;;
   *"repos/exampleorg/example-review-actions/commits/head123/check-runs?filter=all&per_page=100"*)
     if [[ "${FAKE_HEAD_RED:-}" == true ]]; then
-      printf '{"check_runs":[{"id":3,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:04:00Z"}]}\n'
+      printf '{"check_runs":[{"id":3,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:04:00Z"}]}\n'
     elif [[ "${FAKE_STALE_THEN_FRESH:-}" == true ]]; then
       # A prior attempt on this exact head SHA (e.g. a transient failure that was rerun)
       # completed and left a check-run behind; a fresh rerun (higher id, no completed_at yet)
@@ -52,18 +52,18 @@ case "$request" in
       # superseded, but the picker never looks past it.
       if [[ ! -e "${FAKE_STALE_MARKER:?}" ]]; then
         touch "$FAKE_STALE_MARKER"
-        printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:00:00Z"},{"id":2,"name":"Review Yeti Gate","app":{"id":4385771},"status":"in_progress","conclusion":null,"completed_at":null}]}\n'
+        printf '{"check_runs":[{"id":1,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:00:00Z"},{"id":2,"name":"Review Yeti","app":{"id":4385771},"status":"in_progress","conclusion":null,"completed_at":null}]}\n'
       else
-        printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:00:00Z"},{"id":2,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:03:00Z"}]}\n'
+        printf '{"check_runs":[{"id":1,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:00:00Z"},{"id":2,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:03:00Z"}]}\n'
       fi
     elif [[ "${FAKE_PENDING_ONCE:-}" == true && ! -e "${FAKE_PENDING_MARKER:?}" ]]; then
       touch "$FAKE_PENDING_MARKER"
-      printf '{"check_runs":[{"id":1,"name":"Review Yeti Gate","app":{"id":4385771},"status":"in_progress","conclusion":null,"completed_at":null}]}\n'
+      printf '{"check_runs":[{"id":1,"name":"Review Yeti","app":{"id":4385771},"status":"in_progress","conclusion":null,"completed_at":null}]}\n'
     else
       if [[ "${FAKE_SPOOF_APP:-}" == true ]]; then
-        printf '{"check_runs":[{"id":21,"name":"Review Yeti Gate","app":{"id":15368},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
+        printf '{"check_runs":[{"id":21,"name":"Review Yeti","app":{"id":15368},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
       else
-        printf '{"check_runs":[{"id":21,"name":"Review Yeti Gate","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
+        printf '{"check_runs":[{"id":21,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T15:02:00Z"}]}\n'
       fi
     fi
     ;;
@@ -343,7 +343,7 @@ pending_output="$({
     FAKE_PENDING_ONCE=true FAKE_PENDING_MARKER="$pending_marker" \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"
-grep -Fq 'Waiting for PR #42 head head123: Review Yeti Gate' <<<"$pending_output"
+grep -Fq 'Waiting for PR #42 head head123: Review Yeti' <<<"$pending_output"
 
 # A stale, already-completed FAILURE check-run must never permanently shadow a fresher rerun
 # (higher id) on the same head SHA that is still in flight (or has since succeeded). Deadlock
