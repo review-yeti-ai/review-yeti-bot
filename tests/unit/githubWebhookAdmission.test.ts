@@ -127,6 +127,28 @@ describe('native GitHub App webhook admission', () => {
     }));
   });
 
+  it('binds a later failed check requested_action to its exact execution attempt', async () => {
+    const f = fixture();
+    const original = refreshPayload();
+    const body = refreshPayload({
+      check_run: { ...original.check_run, external_id: original.check_run.external_id.replace(/:a1$/u, ':a2') },
+    });
+    const auth = signed(body, 'delivery-refresh-a2');
+    const response = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: 'accepted', reason: 'refresh_requested' });
+    expect(f.admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      retryRequested: true,
+      retryAfterExecutionAttempt: 2,
+    }));
+  });
+
   it('rejects a refresh whose external id is not the persisted exact-head identity', async () => {
     const f = fixture();
     const wrongIdentity = buildReviewRunIdentity({
@@ -264,6 +286,12 @@ describe('native GitHub App webhook admission', () => {
     refreshPayload({ check_run: { ...refreshPayload().check_run, conclusion: 'success' } }),
     refreshPayload({ check_run: { ...refreshPayload().check_run, output: { title: 'Review Yeti: SHIP' } } }),
     refreshPayload({ check_run: { ...refreshPayload().check_run, pull_requests: [] } }),
+    refreshPayload({ check_run: { ...refreshPayload().check_run,
+      external_id: refreshPayload().check_run.external_id.replace(/:a1$/u, ':a0') } }),
+    refreshPayload({ check_run: { ...refreshPayload().check_run,
+      external_id: refreshPayload().check_run.external_id.replace(/:a1$/u, ':a01') } }),
+    refreshPayload({ check_run: { ...refreshPayload().check_run,
+      external_id: refreshPayload().check_run.external_id.replace(/:a1$/u, ':a9007199254740992') } }),
   ])('ignores a non-recoverable or non-authoritative refresh request', async (body) => {
     const f = fixture();
     const auth = signed(body, 'delivery-invalid-refresh');

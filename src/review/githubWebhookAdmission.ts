@@ -16,7 +16,6 @@ import { MergeGroupGateInProgressError } from './mergeGroupGate';
 import {
   RECOVERABLE_FAILURE_TITLES,
   REVIEW_REFRESH_ACTION,
-  REVIEW_REFRESH_EXECUTION_ATTEMPT,
 } from './reviewRecoveryPolicy';
 
 const positiveInteger = z.number().int().positive().safe();
@@ -36,6 +35,9 @@ const pullRequestWebhook = z.object({
 }).passthrough();
 
 const REFRESH_ACTION_IDENTIFIER = REVIEW_REFRESH_ACTION.identifier;
+const refreshExternalId = z.string()
+  .regex(/^run_[a-f0-9]{32}:a[1-9][0-9]*$/u)
+  .refine((value) => Number.isSafeInteger(Number(value.slice(value.lastIndexOf(':a') + 2))));
 const refreshCheckRunWebhook = z.object({
   action: z.literal('requested_action'),
   installation: z.object({ id: positiveInteger }).passthrough(),
@@ -47,7 +49,7 @@ const refreshCheckRunWebhook = z.object({
     head_sha: sha,
     status: z.literal('completed'),
     conclusion: z.literal('failure'),
-    external_id: z.string().regex(/^run_[a-f0-9]{32}:a1$/u),
+    external_id: refreshExternalId,
     app: z.object({
       id: z.literal(AUTHORITATIVE_REVIEW_APP_ID),
       slug: z.literal(AUTHORITATIVE_REVIEW_APP_SLUG),
@@ -135,7 +137,9 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         headSha: pr.head.sha, baseSha: pr.base.sha,
       };
       const legacyIdentity = buildReviewRunIdentity(requested);
-      const runId = payload.check_run.external_id.slice(0, -3);
+      const attemptSeparator = payload.check_run.external_id.lastIndexOf(':a');
+      const runId = payload.check_run.external_id.slice(0, attemptSeparator);
+      const retryAfterExecutionAttempt = Number(payload.check_run.external_id.slice(attemptSeparator + 2));
       const authoritative = options.authoritativePublishing;
       const authoritativeIds = new Set(authoritative?.repositoryIds || []);
       if (authoritative?.acceptNewRequests === false && authoritativeIds.has(payload.repository.id)) {
@@ -160,10 +164,10 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         publicationMode: 'app-gate',
         centralActionDispatch: false,
         // The signed App check_run/requested_action payload is the dedicated
-        // recovery authority. The repository still requires projected worker
-        // evidence before re-arming an active durable run.
+        // recovery authority. The repository still requires exact persisted
+        // attempt evidence before re-arming the durable run.
         retryRequested: true,
-        retryAfterExecutionAttempt: REVIEW_REFRESH_EXECUTION_ATTEMPT,
+        retryAfterExecutionAttempt,
         identity: resolved?.identity || legacyIdentity,
         ...(resolved && authoritative ? {
           effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
