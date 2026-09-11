@@ -17,6 +17,23 @@ export interface ReviewEventPool {
   connect(): Promise<ReviewEventTransactionClient>;
 }
 
+export type ReviewLifecycleEventsMode = 'enabled' | 'disabled';
+
+export interface ReviewLifecycleEventsOptions {
+  /** Lifecycle intents are an explicit observer mode, never inferred from pool shape. */
+  lifecycleEvents: ReviewLifecycleEventsMode;
+}
+
+export function requireLifecycleEventsMode(
+  options: ReviewLifecycleEventsOptions | undefined,
+  component: string,
+): boolean {
+  if (options?.lifecycleEvents !== 'enabled' && options?.lifecycleEvents !== 'disabled') {
+    throw new Error(`${component} requires an explicit lifecycle event mode`);
+  }
+  return options.lifecycleEvents === 'enabled';
+}
+
 /**
  * The lifecycle outbox is an observation boundary.  It has no state that can
  * allocate work, execute a review, complete a review, or publish a gate.

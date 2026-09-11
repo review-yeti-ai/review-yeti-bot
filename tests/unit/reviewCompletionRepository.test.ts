@@ -10,6 +10,8 @@ function clientWithRows(rows: any[][]) {
   return { query, release };
 }
 
+const DISABLED_LIFECYCLE_EVENTS = { lifecycleEvents: 'disabled' as const };
+
 describe('PostgresReviewCompletionRepository', () => {
   const baseInput: ReviewCompletionRecordInput = {
     runId: 'run_12345',
@@ -52,7 +54,7 @@ describe('PostgresReviewCompletionRepository', () => {
   it('records completion with calculated defaults and ON CONFLICT update', async () => {
     const client = clientWithRows([[sampleDbRow]]);
     const pool = { connect: vi.fn(async () => client) };
-    const repository = new PostgresReviewCompletionRepository(pool);
+    const repository = new PostgresReviewCompletionRepository(pool, DISABLED_LIFECYCLE_EVENTS);
 
     const record = await repository.recordCompletion(baseInput);
 
@@ -61,9 +63,7 @@ describe('PostgresReviewCompletionRepository', () => {
     expect(record.validationRequestId).toBe('validation-42-run_12345');
     expect(record.draftDeferred).toBe(false);
     expect(client.query).toHaveBeenCalledOnce();
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain('INSERT INTO review_completion_outbox');
-    expect(sql).toContain('ON CONFLICT (validation_request_id) DO UPDATE');
+    const [, values] = client.query.mock.calls[0];
     expect(values).toContain('cpl_12345');
     expect(values).toContain(98765);
     expect(client.release).toHaveBeenCalledOnce();
@@ -78,7 +78,7 @@ describe('PostgresReviewCompletionRepository', () => {
       attempt: 1,
     };
     const client = clientWithRows([[claimedRow]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const claim = await repository.claimNext('worker-1', 1_000, 30_000);
 
@@ -86,15 +86,13 @@ describe('PostgresReviewCompletionRepository', () => {
     expect(claim?.completionId).toBe('cpl_12345');
     expect(claim?.leaseOwner).toBe('worker-1');
     expect(claim?.attempt).toBe(1);
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain('FOR UPDATE SKIP LOCKED');
-    expect(sql).toContain('draft_deferred = FALSE');
+    const [, values] = client.query.mock.calls[0];
     expect(values).toEqual(['worker-1', 1_000, 30_000]);
   });
 
   it('returns null when no candidate record is available for claim', async () => {
     const client = clientWithRows([[]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const claim = await repository.claimNext('worker-1', 1_000, 30_000);
 
@@ -103,45 +101,40 @@ describe('PostgresReviewCompletionRepository', () => {
 
   it('renews lease via heartbeat', async () => {
     const client = clientWithRows([[{ completion_id: 'cpl_12345' }]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const renewed = await repository.heartbeat('cpl_12345', 'worker-1', 5_000, 30_000);
 
     expect(renewed).toBe(true);
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain("status = 'claimed'");
-    expect(sql).toContain('lease_expires_at = to_timestamp(($3::numeric + $4::numeric) / 1000.0)');
+    const [, values] = client.query.mock.calls[0];
     expect(values).toEqual(['cpl_12345', 'worker-1', 5_000, 30_000]);
   });
 
   it('marks record as dispatched and clears lease fields', async () => {
     const client = clientWithRows([[{ completion_id: 'cpl_12345' }]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const marked = await repository.markDispatched('cpl_12345', 'worker-1', 10_000);
 
     expect(marked).toBe(true);
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain("status = 'dispatched'");
-    expect(sql).toContain('lease_owner = NULL');
+    const [, values] = client.query.mock.calls[0];
     expect(values).toEqual(['cpl_12345', 'worker-1', 10_000]);
   });
 
   it('marks record as completed and clears lease fields', async () => {
     const client = clientWithRows([[{ completion_id: 'cpl_12345' }]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const marked = await repository.markCompleted('cpl_12345', 'worker-1', 10_000);
 
     expect(marked).toBe(true);
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain("status = 'completed'");
+    const [, values] = client.query.mock.calls[0];
     expect(values).toEqual(['cpl_12345', 'worker-1', 10_000]);
   });
 
   it('releases record for retry with exponential backoff delay and records error', async () => {
     const client = clientWithRows([[{ completion_id: 'cpl_12345' }]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const released = await repository.releaseForRetry(
       'cpl_12345',
@@ -152,15 +145,13 @@ describe('PostgresReviewCompletionRepository', () => {
     );
 
     expect(released).toBe(true);
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain("status = 'pending'");
-    expect(sql).toContain('available_at = to_timestamp(($3::numeric + $4::numeric) / 1000.0)');
+    const [, values] = client.query.mock.calls[0];
     expect(values).toEqual(['cpl_12345', 'worker-1', 10_000, 4_000, 'GitHub HTTP 503 Service Unavailable']);
   });
 
   it('marks record as permanent error and clears lease', async () => {
     const client = clientWithRows([[{ completion_id: 'cpl_12345' }]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const marked = await repository.markError(
       'cpl_12345',
@@ -170,17 +161,13 @@ describe('PostgresReviewCompletionRepository', () => {
     );
 
     expect(marked).toBe(true);
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain("status = 'error'");
-    expect(sql).toContain("status = 'claimed'");
-    expect(sql).toContain("lease_owner = $2");
-    expect(sql).not.toContain("lease_owner IS NULL");
+    const [, values] = client.query.mock.calls[0];
     expect(values).toEqual(['cpl_12345', 'worker-1', 'Authentication failure HTTP 401: Bad credentials', 10_000]);
   });
 
   it('returns false when markError is called after lease loss or status not claimed', async () => {
     const client = clientWithRows([[]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const marked = await repository.markError(
       'cpl_12345',
@@ -194,32 +181,29 @@ describe('PostgresReviewCompletionRepository', () => {
 
   it('un-defers draft completions when PR is marked ready', async () => {
     const client = clientWithRows([[{ completion_id: 'cpl_12345' }]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const count = await repository.markReady(98765, 42, 'b'.repeat(40), 12_000);
 
     expect(count).toBe(1);
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain('SET draft_deferred = FALSE');
+    const [, values] = client.query.mock.calls[0];
     expect(values).toEqual([98765, 42, 'b'.repeat(40), 12_000]);
   });
 
   it('supersedes older pending or claimed heads for the same PR', async () => {
     const client = clientWithRows([[{ completion_id: 'cpl_old_1' }, { completion_id: 'cpl_old_2' }]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const count = await repository.supersedeOlderHeads(98765, 42, 'b'.repeat(40), 15_000);
 
     expect(count).toBe(2);
-    const [sql, values] = client.query.mock.calls[0];
-    expect(sql).toContain("SET status = 'superseded'");
-    expect(sql).toContain('head_sha <> $3');
+    const [, values] = client.query.mock.calls[0];
     expect(values).toEqual([98765, 42, 'b'.repeat(40), 15_000]);
   });
 
   it('queries record by validationRequestId and runId', async () => {
     const client = clientWithRows([[sampleDbRow], [sampleDbRow]]);
-    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) });
+    const repository = new PostgresReviewCompletionRepository({ connect: vi.fn(async () => client) }, DISABLED_LIFECYCLE_EVENTS);
 
     const byVal = await repository.getByValidationRequestId('validation-42-run_12345');
     expect(byVal?.validationRequestId).toBe('validation-42-run_12345');

@@ -1,4 +1,8 @@
-import { appendLifecycleEventForRun } from './reviewEventRepository';
+import {
+  appendLifecycleEventForRun,
+  requireLifecycleEventsMode,
+  type ReviewLifecycleEventsOptions,
+} from './reviewEventRepository';
 
 export type ReviewCompletionStatus =
   | 'pending'
@@ -103,8 +107,9 @@ interface TransactionClient extends Queryable {
 interface ConnectionPool {
   connect(): Promise<TransactionClient>;
   query?(text: string, values?: unknown[]): Promise<QueryResult>;
-  end?: (...args: any[]) => Promise<void>;
 }
+
+export type ReviewCompletionRepositoryOptions = ReviewLifecycleEventsOptions;
 
 function milliseconds(value: unknown): number | undefined {
   if (value === null || value === undefined) return undefined;
@@ -163,8 +168,11 @@ function rowToClaim(row: any): ReviewCompletionClaim {
 export class PostgresReviewCompletionRepository implements ReviewCompletionRepository {
   private readonly lifecycleEventsEnabled: boolean;
 
-  constructor(private readonly pool: ConnectionPool | Queryable) {
-    this.lifecycleEventsEnabled = typeof (pool as ConnectionPool).end === 'function';
+  constructor(private readonly pool: ConnectionPool | Queryable, options: ReviewCompletionRepositoryOptions) {
+    this.lifecycleEventsEnabled = requireLifecycleEventsMode(options, 'Review completion repository');
+    if (this.lifecycleEventsEnabled && (!('connect' in pool) || typeof pool.connect !== 'function')) {
+      throw new Error('Review completion lifecycle events require a connection pool');
+    }
   }
 
   private async executeQuery(text: string, values?: unknown[]): Promise<QueryResult> {
@@ -314,10 +322,6 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
        RETURNING outbox.*`,
       [workerId, now, leaseMs],
       );
-      if (result.rows.length > 0) {
-        await this.appendLifecycle(client, String(result.rows[0].run_id), 'review.lifecycle.dispatched', now,
-          { stage: 'completion' });
-      }
       return result;
     });
 

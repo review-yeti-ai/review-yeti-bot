@@ -13,7 +13,11 @@ import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationCallback,
   type GatePublicationTransition, type GatePublicationErrorClass, type ReviewGateRepository } from '../review/reviewGateContracts';
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
-import { appendLifecycleEventForRun } from './reviewEventRepository';
+import {
+  appendLifecycleEventForRun,
+  requireLifecycleEventsMode,
+  type ReviewLifecycleEventsOptions,
+} from './reviewEventRepository';
 export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationNotStarted } from '../review/reviewGateContracts';
 
@@ -44,14 +48,14 @@ function fromRow(row: any): StoredReviewGate {
 export class PostgresReviewGateRepository implements ReviewGateRepository {
   private readonly completionResolutionTimeoutMs: number;
   private readonly lifecycleEventsEnabled: boolean;
-  constructor(private readonly pool: Pool, private readonly options: {
+  constructor(private readonly pool: Pool, private readonly options: ReviewLifecycleEventsOptions & {
     completionResolutionTimeoutMs?: number;
     /** Explicit service enrollment only. Invoked after terminal updates under
      * the same transaction/PR lock; a failure rolls back the entire completion. */
     onEligibleCompletion?: (client: Queryable, gate: StoredReviewGate, now: number) => Promise<void>;
-  } = {}) {
+  }) {
+    this.lifecycleEventsEnabled = requireLifecycleEventsMode(options, 'Review gate repository');
     this.completionResolutionTimeoutMs = options.completionResolutionTimeoutMs ?? 10_000;
-    this.lifecycleEventsEnabled = typeof (pool as unknown as { end?: unknown }).end === 'function';
     if (!Number.isSafeInteger(this.completionResolutionTimeoutMs)
       || this.completionResolutionTimeoutMs < 250 || this.completionResolutionTimeoutMs > 15_000) {
       throw new Error('Gate completion resolution timeout must be bounded');

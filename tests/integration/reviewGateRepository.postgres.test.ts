@@ -34,6 +34,7 @@ const CONFIG_DIGEST = 'e'.repeat(64);
 const WORKER_PROOF = { workerTokenDigest: 'd'.repeat(64) };
 const RECEIVED_AT = Date.parse('2026-09-09T12:00:00.000Z');
 const COMPLETED_AT = RECEIVED_AT + 60_000;
+const ENABLED_LIFECYCLE_EVENTS = { lifecycleEvents: 'enabled' as const };
 
 describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   let pool: Pool | undefined;
@@ -179,7 +180,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   it('makes same-generation reserve idempotent', async () => {
     const id = runId(1);
     await insertRun(id);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
 
     const first = await repository.reserve(id, APP_ID, 1_000);
     const retry = await repository.reserve(id, APP_ID, 2_000);
@@ -206,7 +207,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     const conflictingRun = runId(3);
     await insertRun(currentRun);
     await insertRun(conflictingRun);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
     const current = await repository.reserve(currentRun, APP_ID, 1_000);
 
     // The conflicting generation is already persisted but stale. The attempted
@@ -243,7 +244,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   it('keeps independent gate history for one run across generations with unchanged execution attempt', async () => {
     const id = runId(4);
     await insertRun(id, 0, 0);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
 
     const first = await repository.reserve(id, APP_ID, 1_000);
     await pool!.query('UPDATE review_runs SET attempt = 1 WHERE run_id = $1', [id]);
@@ -295,7 +296,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     await insertRun(firstRun);
     await insertRun(secondRun);
     await insertRun(currentRun);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
 
     await repository.reserve(firstRun, APP_ID, 1_000);
     await repository.reserve(secondRun, APP_ID, 2_000);
@@ -328,7 +329,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     const currentRun = runId(6);
     await insertRun(staleRun);
     await insertRun(currentRun);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
     await repository.reserve(staleRun, APP_ID, 1_000);
     const staleClaim = (await repository.claimPublication('worker-a', 1_000, 5_000))!;
     await repository.reserve(currentRun, APP_ID, 2_000);
@@ -355,7 +356,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   it('leases one publication under real concurrency and never grants create again after expiry or retry', async () => {
     const id = runId(6);
     await insertRun(id);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
     await repository.reserve(id, APP_ID, 1_000);
 
     const claims = await Promise.all([
@@ -395,7 +396,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   it('retains committed creation intent when the publisher throws after external acceptance', async () => {
     const id = runId(8);
     await insertRun(id);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
     await repository.reserve(id, APP_ID, 1_000);
     const claim = (await repository.claimPublication('worker-a', 1_000, 5_000))!;
     let externallyAccepted = false;
@@ -423,7 +424,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   it('binds an exact queued check and marks the desired version published', async () => {
     const id = runId(9);
     await insertRun(id);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
     await repository.reserve(id, APP_ID, 1_000);
     const claim = (await repository.claimPublication('worker-a', 1_000, 5_000))!;
     const checkId = 8080;
@@ -463,7 +464,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   it('rolls back locked publication when the callback returns a mismatched check identity', async () => {
     const id = runId(10);
     await insertRun(id);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
     await repository.reserve(id, APP_ID, 1_000);
     const claim = (await repository.claimPublication('worker-a', 1_000, 5_000))!;
 
@@ -494,7 +495,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   it('fences same-worker ABA claims with the lease token', async () => {
     const id = runId(11);
     await insertRun(id);
-    const repository = new PostgresReviewGateRepository(pool!);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
     await repository.reserve(id, APP_ID, 1_000);
 
     const originalClaim = (await repository.claimPublication('same-worker', 1_000, 5_000))!;
@@ -528,7 +529,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const id = runId(200);
       let now = RECEIVED_AT + 1_000;
       await insertRun(id);
-      const repository = new PostgresReviewGateRepository(pool!);
+      const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
       const gate = (await repository.reserve(id, APP_ID, now))!;
       const external = new Map<string, ReviewGateCheck>();
       const client = {
@@ -816,7 +817,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     async function completionFixture(outboxStatus: 'pending' | 'claimed' | 'projected' = 'projected') {
       const id = runId(100);
       await insertRun(id, 2, 4);
-      const repository = new PostgresReviewGateRepository(pool!);
+      const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
       const gate = (await repository.reserve(id, APP_ID, RECEIVED_AT + 1_000))!;
       const claim = (await repository.claimPublication('test-publisher', RECEIVED_AT + 2_000, 5_000))!;
       // Simulate the trusted App's response locally; there is no GitHub client.
@@ -964,7 +965,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     });
 
     it.each([0, 101, 1.5, Infinity])('rejects unbounded reaper limit %s', async (limit) => {
-      await expect(new PostgresReviewGateRepository(pool!).reapTerminalAttempts(COMPLETED_AT, limit)).rejects.toThrow('bounds');
+      await expect(new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS).reapTerminalAttempts(COMPLETED_AT, limit)).rejects.toThrow('bounds');
     });
 
     it('advances the same bound gate on projection exactly once and never over a terminal result', async () => {
@@ -1026,7 +1027,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
             release: () => client.release(),
           };
         },
-      });
+      }, ENABLED_LIFECYCLE_EVENTS);
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
       expect(observedUpdates).toEqual(['review_gate_attempts', 'review_dispatch_outbox', 'review_runs']);
       expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
@@ -1049,11 +1050,11 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         expect(await snapshot(id)).toEqual(before);
         throw new Error('injected transaction failure');
       });
-      const failing = new PostgresReviewGateRepository(pool!, { onEligibleCompletion: hook });
+      const failing = new PostgresReviewGateRepository(pool!, { ...ENABLED_LIFECYCLE_EVENTS, onEligibleCompletion: hook });
       await expect(failing.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).rejects.toThrow('injected transaction failure');
       expect(await snapshot(id)).toEqual(before);
       expect((await pool!.query('SELECT * FROM review_ci_requests WHERE review->>\'runId\'=$1', [id])).rows).toHaveLength(0);
-      const repository = new PostgresReviewGateRepository(pool!, { onEligibleCompletion: async (client, gate, now) => {
+      const repository = new PostgresReviewGateRepository(pool!, { ...ENABLED_LIFECYCLE_EVENTS, onEligibleCompletion: async (client, gate, now) => {
         await enqueueReviewCiCompletionInTransaction(client, gate.coordinates.attemptId, now);
       } });
       expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
@@ -1243,7 +1244,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
 
     it('bounds an unresponsive completion resolver and leaves no terminal mutation behind', async () => {
       const { id, event } = await completionFixture('claimed');
-      const repository = new PostgresReviewGateRepository(pool!, { completionResolutionTimeoutMs: 250 });
+      const repository = new PostgresReviewGateRepository(pool!, { ...ENABLED_LIFECYCLE_EVENTS, completionResolutionTimeoutMs: 250 });
       const before = await snapshot(id);
       await expect(repository.recordWorkerResult(event, WORKER_PROOF,
         () => new Promise(() => undefined), COMPLETED_AT)).rejects.toThrow('resolution deadline exceeded');

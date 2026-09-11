@@ -90,7 +90,7 @@ export function createReviewCiRuntime(options: {
   };
   const current = async (request: StoredReviewCiRequest): Promise<ReviewCiCurrent> => readCurrent(request);
   const checks = new PostgresReviewCiCheckRepository(pool);
-  const repository = new PostgresReviewCiRepository(pool, { admissionTimeoutMs: 15_000,
+  const repository = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', admissionTimeoutMs: 15_000,
     onTransition: async (client, request, transition, now) => { await checks.transitionInTransaction(client, request, transition, now); },
     assertPendingPublished: (client, request, now) => checks.assertPendingPublishedInTransaction(client, request, now),
   });

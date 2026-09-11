@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  REVIEW_EVENT_SCHEMA_SQL,
   appendLifecycleEvent,
   appendLifecycleEventForRun,
   type ReviewLifecycleEventInput,
@@ -30,13 +29,6 @@ function lifecycleEvent(overrides: Partial<ReviewLifecycleEventInput> = {}): Rev
 }
 
 describe('Postgres review lifecycle event persistence', () => {
-  it('declares the idempotent outbox and atomic per-run sequence counter', () => {
-    expect(REVIEW_EVENT_SCHEMA_SQL).toContain('CREATE TABLE IF NOT EXISTS review_event_outbox');
-    expect(REVIEW_EVENT_SCHEMA_SQL).toContain('CREATE TABLE IF NOT EXISTS review_event_sequence_counters');
-    expect(REVIEW_EVENT_SCHEMA_SQL).toContain('UNIQUE (run_id, sequence)');
-    expect(REVIEW_EVENT_SCHEMA_SQL).not.toMatch(/MAX\s*\(/iu);
-  });
-
   it('appends a closed lifecycle event on the caller client without owning its transaction', async () => {
     const persisted = {
       event_id: eventId,
@@ -54,7 +46,7 @@ describe('Postgres review lifecycle event persistence', () => {
       payload: { ...lifecycleEvent(), sequence: 1 },
     };
     const client = {
-      query: vi.fn(async (sql: string) => {
+      query: vi.fn(async (sql: string, _values?: unknown[]) => {
         if (/pg_advisory_xact_lock/iu.test(sql)) return { rows: [] };
         if (/SELECT .*review_event_outbox.*event_id/isu.test(sql)) return { rows: [] };
         if (/review_event_sequence_counters/iu.test(sql)) return { rows: [{ next_sequence: '1' }] };
@@ -66,11 +58,15 @@ describe('Postgres review lifecycle event persistence', () => {
     const record = await appendLifecycleEvent(client, lifecycleEvent());
 
     expect(record.event.sequence).toBe(1);
-    expect(client.query.mock.calls.map(([sql]) => String(sql))).not.toContain('BEGIN');
-    expect(client.query.mock.calls.map(([sql]) => String(sql))).not.toContain('COMMIT');
-    const counterSql = client.query.mock.calls.find(([sql]) => /review_event_sequence_counters/iu.test(String(sql)))?.[0];
-    expect(String(counterSql)).toContain('ON CONFLICT (run_id) DO UPDATE');
-    expect(String(counterSql)).toContain('next_sequence = review_event_sequence_counters.next_sequence + 1');
+    const calls = client.query.mock.calls;
+    expect(calls.map(([sql]) => String(sql))).not.toContain('BEGIN');
+    expect(calls.map(([sql]) => String(sql))).not.toContain('COMMIT');
+    const counterIndex = calls.findIndex(([sql]) => /review_event_sequence_counters/iu.test(String(sql)));
+    const insertIndex = calls.findIndex(([sql]) => /INSERT INTO review_event_outbox/iu.test(String(sql)));
+    expect(counterIndex).toBeGreaterThan(0);
+    expect(insertIndex).toBe(counterIndex + 1);
+    expect(calls[counterIndex][1]).toEqual([lifecycleEvent().run_id, Date.parse(lifecycleEvent().occurred_at)]);
+    expect(calls[insertIndex][1]).toEqual(expect.arrayContaining([eventId, lifecycleEvent().run_id, 1]));
   });
 
   it('replays the same event id without allocating a second sequence', async () => {

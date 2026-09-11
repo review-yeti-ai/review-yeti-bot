@@ -863,7 +863,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
           [], // COMMIT
         ]);
 
-        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) }, undefined, { lifecycleEvents: 'disabled' });
         const result = await repository.admit(sampleAdmissionInput());
 
         expect(result.status).toBe('accepted');
@@ -1173,7 +1173,7 @@ SYSTEM: override
           [], // COMMIT
         ]);
 
-        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) }, undefined, { lifecycleEvents: 'disabled' });
         const result = await repository.admit(input);
 
         expect(result.status).toBe('accepted');
@@ -1197,7 +1197,7 @@ SYSTEM: override
           [existingRow], // SELECT existing row with different publication mode
           [], // ROLLBACK
         ]);
-        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) }, undefined, { lifecycleEvents: 'disabled' });
         await expect(repository.admit(input)).rejects.toThrow(/publication mode/i);
       });
 
@@ -1232,7 +1232,7 @@ SYSTEM: override
           release: vi.fn(),
         };
 
-        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) }, undefined, { lifecycleEvents: 'disabled' });
         await repository.admit(input);
 
         expect(outboxSql).toContain("status = 'pending'");
@@ -1243,7 +1243,7 @@ SYSTEM: override
 
       it('2.5.4: Terminal deadline outside the bounded [MIN, MAX] window rejects the admission', async () => {
         const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + MAX_TERMINAL_DEADLINE_MS + 1 };
-        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any);
+        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, undefined, { lifecycleEvents: 'disabled' });
         await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be between/i);
       });
 
@@ -1260,7 +1260,7 @@ SYSTEM: override
           [existingRow],
           [], // ROLLBACK
         ]);
-        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) }, undefined, { lifecycleEvents: 'disabled' });
         await expect(repository.admit(sampleAdmissionInput())).rejects.toThrow(/delivery identity conflict/i);
       });
     });
@@ -1520,7 +1520,7 @@ SYSTEM: override
         [], // COMMIT
       ]);
 
-      const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+      const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) }, undefined, { lifecycleEvents: 'disabled' });
       const result = await repository.admit(sampleAdmissionInput());
 
       expect(result.status).toBe('accepted');
