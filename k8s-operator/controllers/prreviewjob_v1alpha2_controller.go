@@ -20,12 +20,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,7 +50,81 @@ const (
 	v1Alpha2RequeueAfter             = 5 * time.Second
 	v1Alpha2PVCCreateRequeue         = 1 * time.Second
 	workerCreationReserved           = "WorkerCreationReserved"
+	terminalOutcomeFinalizer         = "review-yeti.ai/terminal-outcome"
+	failurePublicationCondition      = "FailurePublication"
+	failurePublisherSuffix           = "-fail"
 )
+
+const failurePublisherScript = `
+const repository = process.env.REVIEW_REPOSITORY || '';
+const [owner, repo, extra] = repository.split('/');
+const head = process.env.REVIEW_HEAD_SHA || '';
+const runId = process.env.REVIEW_RUN_ID || '';
+const attempt = Number(process.env.REVIEW_EXECUTION_ATTEMPT || '');
+const token = process.env.GITHUB_PUBLISH_TOKEN || '';
+if (!owner || !repo || extra || !/^[a-f0-9]{40}$/.test(head) || !/^run_[a-f0-9]{32}$/.test(runId)
+    || !Number.isSafeInteger(attempt) || attempt < 1 || !token.startsWith('ghs_')) {
+  throw new Error('invalid failure publication identity');
+}
+const externalId = runId + ':a' + attempt;
+const base = '/repos/' + encodeURIComponent(owner) + '/' + encodeURIComponent(repo);
+const request = async (path, init = {}) => {
+  const response = await fetch('https://api.github.com' + path, {
+    ...init,
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'User-Agent': 'review-yeti-failure-publisher',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    redirect: 'error',
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!response.ok) throw new Error('GitHub failure publication request failed with HTTP ' + response.status);
+  const text = await response.text();
+  return text ? JSON.parse(text) : {};
+};
+const checks = [];
+for (let page = 1; page <= 5; page += 1) {
+  const result = await request(base + '/commits/' + head
+    + '/check-runs?check_name=Review%20Yeti&filter=all&per_page=100&page=' + page);
+  if (!Array.isArray(result.check_runs)) throw new Error('invalid check lookup response');
+  checks.push(...result.check_runs);
+  if (result.check_runs.length < 100) break;
+  if (page === 5) throw new Error('check lookup exceeded bounded pagination');
+}
+const candidates = checks.filter((check) => check && check.name === 'Review Yeti'
+  && check.head_sha === head && check.external_id === externalId);
+if (candidates.length > 1) throw new Error('ambiguous failure publication identity');
+const failure = {
+  status: 'completed',
+  conclusion: 'failure',
+  completed_at: new Date().toISOString(),
+  output: {
+    title: 'Review Yeti: review did not complete',
+    summary: 'The Kubernetes worker failed or disappeared before a durable verdict was recorded. '
+      + 'This is a failed review rather than an approval. Re-run the governed review workflow to request a fresh attempt.',
+  },
+};
+if (candidates.length === 1) {
+  const candidate = candidates[0];
+  if (!Number.isSafeInteger(candidate.id) || candidate.id < 1) throw new Error('invalid check identity');
+  const current = await request(base + '/check-runs/' + candidate.id);
+  if (current.id !== candidate.id || current.name !== 'Review Yeti' || current.head_sha !== head
+      || current.external_id !== externalId) throw new Error('failure publication identity changed');
+  if (current.status !== 'completed') {
+    if (!['queued', 'in_progress', 'pending', 'waiting', 'requested'].includes(current.status)) {
+      throw new Error('unknown check state');
+    }
+    await request(base + '/check-runs/' + candidate.id, { method: 'PATCH', body: JSON.stringify(failure) });
+  }
+} else {
+  await request(base + '/check-runs', { method: 'POST', body: JSON.stringify({
+    name: 'Review Yeti', head_sha: head, external_id: externalId, ...failure,
+  }) });
+}
+`
 
 // PRReviewJobV1Alpha2Reconciler is the disabled-by-default receipt-only
 // execution controller. It owns only Jobs; PR-scoped workspace PVCs are
@@ -74,13 +151,20 @@ type PRReviewJobV1Alpha2Reconciler struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
-	if err := r.Get(ctx, req.NamespacedName, &review); err != nil {
+	err := r.Get(ctx, req.NamespacedName, &review)
+	if apierrors.IsNotFound(err) && r.APIReader != nil {
+		err = r.APIReader.Get(ctx, req.NamespacedName, &review)
+	}
+	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, r.releaseOrphanedWorkerObservation(ctx, req)
 		}
 		return ctrl.Result{}, err
 	}
 
+	if failurePublicationPending(&review) {
+		return r.reconcileFailurePublication(ctx, &review)
+	}
 	if isTerminalPhase(review.Status.Phase) {
 		return r.reconcileTerminalWorkspace(ctx, &review)
 	}
@@ -92,11 +176,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
 	}
 	if !now.Before(review.Spec.TerminalDeadline.Time) {
-		if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageCompleted, metav1.NewTime(now)); err != nil {
-			return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
-		}
-		r.recordDispatchTiming(&review, now)
-		return ctrl.Result{}, r.setPhase(ctx, &review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
+		return r.reconcileElapsedDeadline(ctx, &review, now)
 	}
 
 	workerName := review.Name + "-worker"
@@ -112,6 +192,15 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		if !managedWorkerJobMatches(&review, &existing) {
 			return ctrl.Result{}, r.failWorkerContractMismatch(ctx, &review, &existing, "existing worker Job does not match the immutable receipt-only contract")
 		}
+		// Adopt Jobs created by an older operator before observing their state.
+		// Terminal Jobs need the guard too: a parent status conflict must not let
+		// immediate TTL collection erase the authoritative outcome between retries.
+		if existing.DeletionTimestamp == nil && !controllerutil.ContainsFinalizer(&existing, terminalOutcomeFinalizer) {
+			controllerutil.AddFinalizer(&existing, terminalOutcomeFinalizer)
+			if err := r.Update(ctx, &existing); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		return r.reconcileExistingJob(ctx, &review, &existing, now)
 	}
 	if workerCreationWasAttempted(&review) {
@@ -119,8 +208,11 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		// terminal state. Missing execution evidence is not a fresh admission.
 		// Do not release its workspace here: surviving Pods or a newer Lease
 		// must still pass the normal guarded terminal cleanup path.
-		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, r.fail(ctx, &review,
-			"WorkerJobMissing", "previous worker creation was reserved or observed but its Job is missing; execution outcome is unknown and fresh admission is required")
+		message := "previous worker creation was reserved or observed but its Job is missing; execution outcome is unknown and fresh admission is required"
+		if review.Spec.PublicationMode == job.PublicationModeAppGate {
+			return r.startFailurePublication(ctx, &review, "WorkerJobMissing", message)
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, r.fail(ctx, &review, "WorkerJobMissing", message)
 	}
 
 	limit := r.MaxConcurrentJobs
@@ -218,6 +310,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, err
 		}
 	}
+	// TTL-after-finished may request deletion immediately. Hold the Job until
+	// its terminal result has been durably copied into the parent status; the
+	// next terminal reconcile releases this observation guard.
+	controllerutil.AddFinalizer(worker, terminalOutcomeFinalizer)
 	// Persist intent before Create, whose response or following status update
 	// can be lost. This condition reserves at most one creation attempt, not a
 	// claim that a Job started. Even an uncertain/unsent Create cannot be
@@ -257,6 +353,89 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// A finalizer on an owned child cannot delay deletion of its owner. If a
+// PRReviewJob is explicitly removed, release only this controller's guard from
+// its exact child so garbage collection cannot strand a terminating Job. The
+// uncached read above is required before entering this owner-absent path.
+func (r *PRReviewJobV1Alpha2Reconciler) releaseOrphanedWorkerObservation(ctx context.Context, req ctrl.Request) error {
+	var worker batchv1.Job
+	err := r.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name + "-worker"}, &worker)
+	if apierrors.IsNotFound(err) && r.APIReader != nil {
+		err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name + "-worker"}, &worker)
+	}
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) || !controlledByReviewName(&worker, req.Name) {
+		return nil
+	}
+	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
+	return r.Update(ctx, &worker)
+}
+
+func controlledByReviewName(worker *batchv1.Job, name string) bool {
+	for _, owner := range worker.OwnerReferences {
+		if owner.Controller != nil && *owner.Controller && owner.APIVersion == reviewv1alpha2.GroupVersion.String() &&
+			owner.Kind == "PRReviewJob" && owner.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcileElapsedDeadline checks an already-admitted worker before recording
+// expiry. Kubernetes may deliver a terminal Job event after the wall-clock
+// deadline, and that Job's terminal condition remains the authoritative result.
+// An app-gate worker that is still active or has disappeared is stopped and
+// routed into durable failure publication instead of silently expiring.
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileElapsedDeadline(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	now time.Time,
+) (ctrl.Result, error) {
+	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
+	var worker batchv1.Job
+	err := r.Get(ctx, workerKey, &worker)
+	if apierrors.IsNotFound(err) && r.APIReader != nil {
+		err = r.APIReader.Get(ctx, workerKey, &worker)
+	}
+	if err == nil {
+		if !managedWorkerJobMatches(review, &worker) {
+			return ctrl.Result{}, r.failWorkerContractMismatch(ctx, review, &worker, "existing worker Job does not match the immutable receipt-only contract")
+		}
+		if worker.DeletionTimestamp == nil && !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) {
+			controllerutil.AddFinalizer(&worker, terminalOutcomeFinalizer)
+			if err := r.Update(ctx, &worker); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if worker.Status.Succeeded > 0 || worker.Status.Failed > 0 {
+			return r.reconcileExistingJob(ctx, review, &worker, now)
+		}
+		if review.Spec.PublicationMode == job.PublicationModeAppGate && workerCreationWasAttempted(review) {
+			if worker.DeletionTimestamp == nil {
+				if err := r.Delete(ctx, &worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			}
+			return r.startFailurePublication(ctx, review, "DeadlineExpired", "publishing worker did not produce a durable verdict before its terminal deadline")
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	} else if review.Spec.PublicationMode == job.PublicationModeAppGate && workerCreationWasAttempted(review) {
+		return r.startFailurePublication(ctx, review, "WorkerJobMissing", "publishing worker disappeared without a durable verdict before terminal observation")
+	}
+
+	if _, err := observeTiming(review, reviewv1alpha2.DispatchStageCompleted, metav1.NewTime(now)); err != nil {
+		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
+	}
+	r.recordDispatchTiming(review, now)
+	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
 }
 
 func workerCreationWasAttempted(review *reviewv1alpha2.PRReviewJob) bool {
@@ -319,7 +498,284 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	if worker.Status.Succeeded > 0 {
 		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", "receipt-only worker Job completed")
 	}
+	if review.Spec.PublicationMode == job.PublicationModeAppGate {
+		return r.startFailurePublication(ctx, review, "WorkerFailed", "publishing worker Job failed")
+	}
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, "WorkerFailed", "receipt-only worker Job failed")
+}
+
+func failurePublicationPending(review *reviewv1alpha2.PRReviewJob) bool {
+	condition := meta.FindStatusCondition(review.Status.Conditions, failurePublicationCondition)
+	return condition != nil && condition.Status == metav1.ConditionFalse
+}
+
+// startFailurePublication first records the fail-closed parent outcome and the
+// publication obligation in one status write. A crash after this point is safe:
+// the next reconcile sees the pending condition before terminal cleanup and
+// recreates only the deterministic publisher, never the review worker.
+func (r *PRReviewJobV1Alpha2Reconciler) startFailurePublication(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	reason string,
+	message string,
+) (ctrl.Result, error) {
+	now := metav1.NewTime(r.clock())
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	review.Status.ObservedGeneration = review.Generation
+	review.Status.Message = message
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: now,
+	})
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               failurePublicationCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            "fail-closed App check publication is pending",
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: now,
+	})
+	if err := r.Status().Update(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
+	return r.reconcileFailurePublication(ctx, review)
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (ctrl.Result, error) {
+	activeWorker, err := r.hasActiveReviewWorkerPod(ctx, review)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if activeWorker {
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	name := review.Name + failurePublisherSuffix
+	var publisher batchv1.Job
+	err = r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: name}, &publisher)
+	if apierrors.IsNotFound(err) {
+		publisher, buildErr := buildFailurePublisherJob(review)
+		if buildErr != nil {
+			return ctrl.Result{}, buildErr
+		}
+		if r.Scheme != nil {
+			if ownerErr := controllerutil.SetControllerReference(review, publisher, r.Scheme); ownerErr != nil {
+				return ctrl.Result{}, ownerErr
+			}
+		}
+		if createErr := r.Create(ctx, publisher); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return ctrl.Result{}, createErr
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !managedFailurePublisherMatches(review, &publisher) {
+		return ctrl.Result{}, errors.New("failure publisher Job does not match its immutable App-check contract")
+	}
+	if publisher.Status.Succeeded > 0 {
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               failurePublicationCondition,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Published",
+			Message:            "fail-closed App check publication completed",
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.NewTime(r.clock()),
+		})
+		if err := r.Status().Update(ctx, review); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	if jobConditionIsTrue(&publisher, batchv1.JobFailed) {
+		if err := r.Delete(ctx, &publisher, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+}
+
+func buildFailurePublisherJob(review *reviewv1alpha2.PRReviewJob) (*batchv1.Job, error) {
+	owner, repo, ok := strings.Cut(review.Spec.Repo, "/")
+	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		return nil, errors.New("failure publisher repository identity is invalid")
+	}
+	attempt, err := executionAttemptForFailurePublisher(review)
+	if err != nil {
+		return nil, err
+	}
+	backoff := int32(6)
+	activeDeadline := int64(600)
+	automount := false
+	allowPrivilegeEscalation := false
+	readOnlyRootFilesystem := true
+	runAsNonRoot := true
+	runAsUser := int64(10001)
+	runAsGroup := int64(10001)
+	seccomp := corev1.SeccompProfileTypeRuntimeDefault
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      review.Name + failurePublisherSuffix,
+			Namespace: review.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":          "review-yeti-worker",
+				"review-yeti.ai/component":        job.PublishingWorkerComponent,
+				"review-yeti.ai/publication-mode": job.PublicationModeAppGate,
+				"review-yeti.ai/run-id":           review.Spec.RunID,
+				"review-yeti.ai/task":             "failure-publication",
+			},
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit:          &backoff,
+			ActiveDeadlineSeconds: &activeDeadline,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+					"app.kubernetes.io/name":          "review-yeti-worker",
+					"review-yeti.ai/component":        job.PublishingWorkerComponent,
+					"review-yeti.ai/publication-mode": job.PublicationModeAppGate,
+					"review-yeti.ai/run-id":           review.Spec.RunID,
+					"review-yeti.ai/task":             "failure-publication",
+				}},
+				Spec: corev1.PodSpec{
+					RestartPolicy:                corev1.RestartPolicyNever,
+					AutomountServiceAccountToken: &automount,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot:   &runAsNonRoot,
+						RunAsUser:      &runAsUser,
+						RunAsGroup:     &runAsGroup,
+						SeccompProfile: &corev1.SeccompProfile{Type: seccomp},
+					},
+					Containers: []corev1.Container{{
+						Name:            "failure-publisher",
+						Image:           review.Spec.WorkerImage,
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						Command:         []string{"node"},
+						Args:            []string{"--input-type=module", "--eval", failurePublisherScript},
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+							ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
+							RunAsNonRoot:             &runAsNonRoot,
+							RunAsUser:                &runAsUser,
+							RunAsGroup:               &runAsGroup,
+						},
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("25m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
+							Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("128Mi")},
+						},
+						Env: []corev1.EnvVar{
+							{Name: "GITHUB_PUBLISH_TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: review.Spec.RunSecretName}, Key: "GITHUB_PUBLISH_TOKEN",
+							}}},
+							{Name: "REVIEW_REPOSITORY", Value: owner + "/" + repo},
+							{Name: "REVIEW_HEAD_SHA", Value: review.Spec.HeadSHA},
+							{Name: "REVIEW_RUN_ID", Value: review.Spec.RunID},
+							{Name: "REVIEW_EXECUTION_ATTEMPT", Value: strconv.FormatInt(int64(attempt), 10)},
+						},
+					}},
+				},
+			},
+		},
+	}, nil
+}
+
+func executionAttemptForFailurePublisher(review *reviewv1alpha2.PRReviewJob) (int32, error) {
+	if review.Spec.ExecutionAttempt != nil {
+		if *review.Spec.ExecutionAttempt < 1 {
+			return 0, errors.New("failure publisher execution attempt is invalid")
+		}
+		return *review.Spec.ExecutionAttempt, nil
+	}
+	base := "ct-review-run-" + strings.TrimPrefix(review.Spec.RunID, "run_")
+	if review.Spec.RunSecretName == base {
+		return 1, nil
+	}
+	prefix := base + "-a"
+	raw, ok := strings.CutPrefix(review.Spec.RunSecretName, prefix)
+	if !ok || raw == "" || (len(raw) > 1 && raw[0] == '0') {
+		return 0, errors.New("failure publisher execution identity is invalid")
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || parsed < 1 {
+		return 0, errors.New("failure publisher execution identity is invalid")
+	}
+	return int32(parsed), nil
+}
+
+func managedFailurePublisherMatches(review *reviewv1alpha2.PRReviewJob, publisher *batchv1.Job) bool {
+	if publisher == nil || publisher.Name != review.Name+failurePublisherSuffix || publisher.Namespace != review.Namespace ||
+		publisher.Labels["review-yeti.ai/run-id"] != review.Spec.RunID || publisher.Labels["review-yeti.ai/task"] != "failure-publication" ||
+		publisher.Labels["review-yeti.ai/component"] != job.PublishingWorkerComponent ||
+		publisher.Labels["review-yeti.ai/publication-mode"] != job.PublicationModeAppGate ||
+		!metav1.IsControlledBy(publisher, review) || publisher.Spec.BackoffLimit == nil || *publisher.Spec.BackoffLimit != 6 ||
+		publisher.Spec.ActiveDeadlineSeconds == nil || *publisher.Spec.ActiveDeadlineSeconds != 600 ||
+		len(publisher.Spec.Template.Spec.Containers) != 1 || len(publisher.Spec.Template.Spec.InitContainers) != 0 ||
+		len(publisher.Spec.Template.Spec.Volumes) != 0 || publisher.Spec.Template.Spec.RestartPolicy != corev1.RestartPolicyNever ||
+		publisher.Spec.Template.Spec.AutomountServiceAccountToken == nil || *publisher.Spec.Template.Spec.AutomountServiceAccountToken ||
+		publisher.Spec.Template.Spec.HostNetwork || publisher.Spec.Template.Spec.HostPID || publisher.Spec.Template.Spec.HostIPC {
+		return false
+	}
+	container := publisher.Spec.Template.Spec.Containers[0]
+	if container.Name != "failure-publisher" || container.Image != review.Spec.WorkerImage || container.ImagePullPolicy != corev1.PullIfNotPresent ||
+		len(container.Command) != 1 || container.Command[0] != "node" || len(container.Args) != 3 ||
+		container.Args[0] != "--input-type=module" || container.Args[1] != "--eval" || container.Args[2] != failurePublisherScript ||
+		len(container.EnvFrom) != 0 || len(container.VolumeMounts) != 0 || len(container.Ports) != 0 ||
+		container.SecurityContext == nil || container.SecurityContext.AllowPrivilegeEscalation == nil || *container.SecurityContext.AllowPrivilegeEscalation ||
+		container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem ||
+		container.SecurityContext.RunAsNonRoot == nil || !*container.SecurityContext.RunAsNonRoot {
+		return false
+	}
+	attempt, err := executionAttemptForFailurePublisher(review)
+	if err != nil {
+		return false
+	}
+	return failurePublisherEnvMatches(review, attempt, container.Env)
+}
+
+func failurePublisherEnvMatches(review *reviewv1alpha2.PRReviewJob, attempt int32, env []corev1.EnvVar) bool {
+	if len(env) != 5 {
+		return false
+	}
+	expectedValues := map[string]string{
+		"REVIEW_REPOSITORY":        review.Spec.Repo,
+		"REVIEW_HEAD_SHA":          review.Spec.HeadSHA,
+		"REVIEW_RUN_ID":            review.Spec.RunID,
+		"REVIEW_EXECUTION_ATTEMPT": strconv.FormatInt(int64(attempt), 10),
+	}
+	seen := make(map[string]bool, len(env))
+	for _, variable := range env {
+		if seen[variable.Name] {
+			return false
+		}
+		seen[variable.Name] = true
+		if variable.Name == "GITHUB_PUBLISH_TOKEN" {
+			if variable.Value != "" || variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
+				variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != "GITHUB_PUBLISH_TOKEN" {
+				return false
+			}
+			continue
+		}
+		expected, ok := expectedValues[variable.Name]
+		if !ok || variable.ValueFrom != nil || variable.Value != expected {
+			return false
+		}
+	}
+	return seen["GITHUB_PUBLISH_TOKEN"] && len(seen) == 5
+}
+
+func jobConditionIsTrue(worker *batchv1.Job, conditionType batchv1.JobConditionType) bool {
+	for _, condition := range worker.Status.Conditions {
+		if condition.Type == conditionType && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 // observeWorkerPod records the stage timestamps that Kubernetes exposes on the
@@ -600,6 +1056,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 ) (ctrl.Result, error) {
+	if err := r.releaseTerminalWorkerObservation(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.removeCompletedFailurePublisher(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
 	activePod, err := r.hasActiveReviewWorkerPod(ctx, review)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -666,6 +1128,55 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	return ctrl.Result{}, nil
 }
 
+func (r *PRReviewJobV1Alpha2Reconciler) removeCompletedFailurePublisher(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) error {
+	var publisher batchv1.Job
+	err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + failurePublisherSuffix}, &publisher)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !managedFailurePublisherMatches(review, &publisher) {
+		return errors.New("refusing to delete a mismatched failure publisher Job")
+	}
+	if err := r.Delete(ctx, &publisher, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// releaseTerminalWorkerObservation runs only after the parent CR already has a
+// terminal phase. Removing the guard in a later reconcile keeps the ordering
+// durable across status-update conflicts, operator crashes, and TTL deletion.
+func (r *PRReviewJobV1Alpha2Reconciler) releaseTerminalWorkerObservation(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) error {
+	var worker batchv1.Job
+	err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
+	if apierrors.IsNotFound(err) && r.APIReader != nil {
+		err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
+	}
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) {
+		return nil
+	}
+	if worker.Labels["review-yeti.ai/run-id"] != review.Spec.RunID || !metav1.IsControlledBy(&worker, review) {
+		return nil
+	}
+	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
+	return r.Update(ctx, &worker)
+}
+
 func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (bool, error) {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(review.Namespace), client.MatchingLabels{
@@ -675,6 +1186,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Con
 		return false, err
 	}
 	for index := range pods.Items {
+		if pods.Items[index].Labels["review-yeti.ai/task"] == "failure-publication" {
+			continue
+		}
 		phase := pods.Items[index].Status.Phase
 		if phase != corev1.PodSucceeded && phase != corev1.PodFailed {
 			return true, nil

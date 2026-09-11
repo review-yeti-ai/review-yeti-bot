@@ -223,6 +223,16 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsOwnedWorkerAndReleasesLeaseOnContract
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("fail mismatched worker: %v", err)
 	}
+	var failed reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed before worker evidence is released", failed.Status.Phase)
+	}
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("release mismatched worker evidence: %v", err)
+	}
 	if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("mismatched owned worker still exists: %v", err)
 	}
@@ -1397,6 +1407,16 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsTamperedAppGateWorkers(t *testing.T) 
 			container.Env = tamper(container.Env)
 			if err := kube.Update(context.Background(), &worker); err != nil {
 				t.Fatal(err)
+			}
+			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			var failed reviewv1alpha2.PRReviewJob
+			if err := kube.Get(context.Background(), req.NamespacedName, &failed); err != nil {
+				t.Fatal(err)
+			}
+			if failed.Status.Phase != reviewv1alpha2.PhaseFailed {
+				t.Fatalf("tampered app-gate worker (%s) did not durably fail before deletion", name)
 			}
 			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 				t.Fatal(err)
