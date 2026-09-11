@@ -380,7 +380,9 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(selfReview, /refresh_requested/u);
   assert.match(receiver, /refresh_requested:/u);
   assert.match(reusable, /refresh_requested:/u);
-  assert.match(reusable, /refresh-requested:\s*\$\{\{ inputs\.refresh_requested/u);
+  assert.doesNotMatch(reusable, /^\s+refresh_execution_attempt:/mu);
+  assert.doesNotMatch(reusable, /^\s+refresh-requested:/mu);
+  assert.doesNotMatch(reusable, /^\s+refresh-execution-attempt:/mu);
   assert.doesNotMatch(selfReview, /review-yeti\.yml@|secrets\s*:\s*inherit|OPENROUTER|FIREWORKS|GEMINI|OLLAMA_PR_REVIEW/u);
   assert.equal((reusable.match(/^\s+max-file-diff-chars:/gmu) || []).length, 1);
 });

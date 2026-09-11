@@ -144,10 +144,15 @@ infrastructure/no-verdict title, and all prior rows must share one DOKS
 `expected-generation` for the service's transactional next-attempt check.
 Terminal `BLOCK`/`FIX_FIRST` verdicts, active, missing, duplicate, or
 mixed-identity generations, attempts `a4` or later, and endpoint-cap-ambiguous
-inventories fail closed. The operator recovery command is
-`gh run rerun <caller-run-id> --repo exampleorg/<repository>`; it preserves
-the original PR event identity while GitHub increments `github.run_attempt`.
-Repository variables cannot downgrade that admission path.
+inventories fail closed. The preferred recovery control is the
+`review-yeti/refresh` pull-request label. Central derives the next generation
+from the exact-head ledger, so a new label workflow's attempt counter cannot
+reset the durable sequence; remove and re-apply the label only when requesting
+the bounded `a3`. Operators may equivalently run
+`gh run rerun <caller-run-id> --repo exampleorg/<repository>`, which
+preserves the original PR event identity while GitHub increments
+`github.run_attempt`. Repository variables cannot downgrade either admission
+path.
 
 The settings below apply only to non-central/manual workflow calls:
 

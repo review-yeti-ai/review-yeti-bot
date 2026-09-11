@@ -33,11 +33,6 @@ on:
         required: false
         default: false
         type: boolean
-      refresh_execution_attempt:
-        description: One-based worker execution generation proven by central check-ledger validation.
-        required: false
-        default: 0
-        type: number
       expected_generation:
         description: Exact worker generation admitted by the central check ledger.
         required: false
@@ -368,8 +363,6 @@ jobs:
           max-investigation-turns: ${{ steps.policy.outputs.max_investigation_turns }}
           lane-call-budget: ${{ steps.policy.outputs.lane_call_budget }}
           execution-backend: ${{ env.TRUSTED_EXECUTION_BACKEND }}
-          refresh-requested: ${{ inputs.refresh_requested && 'true' || 'false' }}
-          refresh-execution-attempt: ${{ steps.central_validation.outputs.retry_after_execution_attempt || '0' }}
           doks-dispatch-url: https://review-bot.example.com/api/dispatch/action
           doks-publish-mode: ${{ steps.policy.outputs.doks_publish_mode }}
           honcho-api-key: ${{ secrets.HONCHO_API_KEY }}

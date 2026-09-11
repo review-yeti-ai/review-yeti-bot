@@ -141,7 +141,62 @@ test('explicit refresh admits a persisted retry from caller attempt 1 after a re
   assert.equal(result.worker_check_count, 1);
   assert.equal(result.latest_worker_check_id, 100);
   assert.equal(result.refresh_requested, true);
-  assert.equal(result.retry_after_execution_attempt, 1);
+});
+
+test('explicit refresh advances the persisted retry ledger from a2 to the bounded a3', async () => {
+  const result = await validate({
+    attempt: 1,
+    refreshRequested: true,
+    pages: [page([
+      workerCheck({ id: 100, attempt: 1 }),
+      workerCheck({ id: 101, attempt: 2 }),
+    ])],
+  });
+  assert.equal(result.review_generation, 3);
+  assert.equal(result.worker_check_count, 2);
+  assert.equal(result.latest_worker_check_id, 101);
+  assert.equal(result.refresh_requested, true);
+});
+
+test('explicit refresh fails closed after the bounded a3 already exists', async () => {
+  await assert.rejects(
+    validate({
+      attempt: 1,
+      refreshRequested: true,
+      pages: [page([
+        workerCheck({ id: 100, attempt: 1 }),
+        workerCheck({ id: 101, attempt: 2 }),
+        workerCheck({ id: 102, attempt: 3 }),
+      ])],
+    }),
+    /refresh generation limit a3 is exhausted/u,
+  );
+});
+
+test('explicit refresh rejects a2 ledgers with gaps, duplicate generations, or different run identities', async () => {
+  const cases = [
+    {
+      runs: [workerCheck({ id: 100, attempt: 1 }), workerCheck({ id: 101, attempt: 1 })],
+      pattern: /requires exactly one worker a1; found 2/u,
+    },
+    {
+      runs: [workerCheck({ id: 100, attempt: 1 }), workerCheck({ id: 101, attempt: 3 })],
+      pattern: /worker attempt a3 already exists/u,
+    },
+    {
+      runs: [
+        workerCheck({ id: 100, attempt: 1, externalId: `run_${'1'.repeat(32)}:a1` }),
+        workerCheck({ id: 101, attempt: 2, externalId: `run_${'2'.repeat(32)}:a2` }),
+      ],
+      pattern: /prior worker generations must share one DOKS run identity/u,
+    },
+  ];
+  for (const fixture of cases) {
+    await assert.rejects(
+      validate({ attempt: 1, refreshRequested: true, pages: [page(fixture.runs)] }),
+      fixture.pattern,
+    );
+  }
 });
 
 test('explicit refresh still requires the authoritative recoverable a1 ledger', async () => {

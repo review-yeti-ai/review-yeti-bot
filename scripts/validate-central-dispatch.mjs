@@ -314,6 +314,44 @@ function isRecoverableInfrastructureAttempt(identity, expectedAttempt) {
     && RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title);
 }
 
+function assertRecoverablePriorWorkers({ workers, nextGeneration, context }) {
+  const replacement = workers.find((identity) => identity.attempt >= nextGeneration);
+  if (replacement) {
+    throw new Error(`worker attempt a${replacement.attempt} already exists for this exact head`);
+  }
+  const expectedPriorWorkers = nextGeneration - 1;
+  if (workers.length !== expectedPriorWorkers) {
+    if (nextGeneration === 2) {
+      throw new Error(`${context} requires exactly one worker a1; found ${workers.length} worker checks`);
+    }
+    throw new Error(
+      `${context} requires exactly ${expectedPriorWorkers} prior worker checks; found ${workers.length}`,
+    );
+  }
+
+  const workerRunIds = new Set(workers.map((identity) => identity.runId));
+  if (workerRunIds.size !== 1) {
+    throw new Error('prior worker generations must share one DOKS run identity');
+  }
+
+  let latestWorker;
+  for (let expectedAttempt = 1; expectedAttempt < nextGeneration; expectedAttempt += 1) {
+    const matches = workers.filter((identity) => identity.attempt === expectedAttempt);
+    if (matches.length !== 1) {
+      throw new Error(
+        `${context} requires exactly one worker a${expectedAttempt}; found ${matches.length}`,
+      );
+    }
+    const [worker] = matches;
+    if (!isRecoverableInfrastructureAttempt(worker, expectedAttempt)) {
+      const prefix = context === 'refresh' ? 'refresh ' : '';
+      throw new Error(`${prefix}a${expectedAttempt} worker is not a completed recoverable infrastructure failure`);
+    }
+    latestWorker = worker;
+  }
+  return latestWorker;
+}
+
 export function assertReviewGeneration({ callerRunAttempt, inventory, refreshRequested = false }) {
   if (!Number.isSafeInteger(callerRunAttempt)
       || callerRunAttempt < 1
@@ -327,29 +365,34 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, refreshReq
     // A refresh is an explicit, persisted retry request. It is deliberately
     // admitted from either caller run attempt because a GitHub workflow retry
     // must not change the worker generation. The exact-head ledger remains the
-    // authority: only one completed infrastructure-failed a1 may be replaced,
-    // and an existing a2 (or any duplicate worker) is never displaced.
-    const replacement = workers.find((identity) => identity.attempt >= 2);
-    if (replacement) {
-      throw new Error(`worker attempt a${replacement.attempt} already exists for this exact head`);
+    // authority: every prior generation must be a contiguous, completed
+    // infrastructure failure from one durable DOKS run identity. The next
+    // generation is derived from that ledger, never from the label workflow's
+    // own run_attempt (which starts at one for each new label event).
+    if (workers.length === 0) {
+      throw new Error('refresh requires exactly one worker a1; found 0 worker checks');
     }
-    if (workers.length !== 1) {
-      throw new Error(`refresh requires exactly one worker a1; found ${workers.length} worker checks`);
+    const overLimit = workers.find((identity) => identity.attempt > MAX_REVIEW_GENERATIONS);
+    if (overLimit) {
+      throw new Error(
+        `worker attempt a${overLimit.attempt} exceeds the admitted generation limit a${MAX_REVIEW_GENERATIONS}`,
+      );
     }
-    const [firstAttempt] = workers;
-    if (!isRecoverableInfrastructureAttempt(firstAttempt, 1)) {
-      throw new Error('refresh a1 worker is not a completed recoverable infrastructure failure');
+    const nextGeneration = workers.length + 1;
+    const latestWorker = assertRecoverablePriorWorkers({
+      workers,
+      nextGeneration,
+      context: 'refresh',
+    });
+    if (nextGeneration > MAX_REVIEW_GENERATIONS) {
+      throw new Error(`refresh generation limit a${MAX_REVIEW_GENERATIONS} is exhausted`);
     }
     return {
-      review_generation: 2,
+      review_generation: nextGeneration,
       review_check_count: inventory.rows.length,
       worker_check_count: workers.length,
-      latest_worker_check_id: firstAttempt.row.id,
+      latest_worker_check_id: latestWorker.row.id,
       refresh_requested: true,
-      // The signed refresh action names the failed a1 execution. Carry that
-      // one-based generation to the DOKS admission API so persistence can
-      // consume it exactly once even if GitHub redelivers the action event.
-      retry_after_execution_attempt: firstAttempt.attempt,
     };
   }
   if (callerRunAttempt === 1) {
@@ -365,39 +408,11 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, refreshReq
     };
   }
 
-  const replacement = workers.find((identity) => identity.attempt >= callerRunAttempt);
-  if (replacement) {
-    throw new Error(`worker attempt a${replacement.attempt} already exists for this exact head`);
-  }
-  const expectedPriorWorkers = callerRunAttempt - 1;
-  if (workers.length !== expectedPriorWorkers) {
-    if (callerRunAttempt === 2) {
-      throw new Error(`caller attempt 2 requires exactly one worker a1; found ${workers.length} worker checks`);
-    }
-    throw new Error(
-      `caller attempt ${callerRunAttempt} requires exactly ${expectedPriorWorkers} prior worker checks; found ${workers.length}`,
-    );
-  }
-
-  const workerRunIds = new Set(workers.map((identity) => identity.runId));
-  if (workerRunIds.size !== 1) {
-    throw new Error('prior worker generations must share one DOKS run identity');
-  }
-
-  let latestWorker;
-  for (let expectedAttempt = 1; expectedAttempt < callerRunAttempt; expectedAttempt += 1) {
-    const matches = workers.filter((identity) => identity.attempt === expectedAttempt);
-    if (matches.length !== 1) {
-      throw new Error(
-        `caller attempt ${callerRunAttempt} requires exactly one worker a${expectedAttempt}; found ${matches.length}`,
-      );
-    }
-    const [worker] = matches;
-    if (!isRecoverableInfrastructureAttempt(worker, expectedAttempt)) {
-      throw new Error(`a${expectedAttempt} worker is not a completed recoverable infrastructure failure`);
-    }
-    latestWorker = worker;
-  }
+  const latestWorker = assertRecoverablePriorWorkers({
+    workers,
+    nextGeneration: callerRunAttempt,
+    context: `caller attempt ${callerRunAttempt}`,
+  });
   return {
     review_generation: callerRunAttempt,
     review_check_count: inventory.rows.length,

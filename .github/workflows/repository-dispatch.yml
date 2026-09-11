@@ -63,7 +63,6 @@ jobs:
       review_generation: ${{ steps.request.outputs.review_generation }}
       caller_workflow_sha256: ${{ steps.request.outputs.caller_workflow_sha256 }}
       refresh_requested: ${{ steps.request.outputs.refresh_requested }}
-      retry_after_execution_attempt: ${{ steps.request.outputs.retry_after_execution_attempt || '0' }}
     steps:
       - name: Checkout promoted central validator
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -136,7 +135,6 @@ jobs:
       base_sha: ${{ needs.validate.outputs.base_sha }}
       head_sha: ${{ needs.validate.outputs.head_sha }}
       refresh_requested: ${{ needs.validate.outputs.refresh_requested == 'true' }}
-      refresh_execution_attempt: ${{ fromJSON(needs.validate.outputs.retry_after_execution_attempt || '0') }}
       expected_generation: ${{ fromJSON(needs.validate.outputs.review_generation) }}
       passthrough: ${{ vars.REVIEW_YETI_PASSTHROUGH == 'true' }}
       execution_backend: doks

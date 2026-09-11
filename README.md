@@ -270,7 +270,14 @@ a queued duplicate revalidates against that new generation and is rejected.
 Consumer or central repository variables cannot downgrade this path to local
 execution.
 
-To recover a same-head provider outage, rerun the original consumer caller run:
+To recover a same-head provider outage, apply the `review-yeti/refresh` label to
+the pull request. The base-owned caller sends a signed Boolean refresh request;
+central validation ignores that new label workflow's `github.run_attempt` and
+derives the next generation from the complete exact-head worker ledger. If the
+label is already present after a failed `a2`, remove and re-apply it to request
+the bounded `a3`.
+
+Rerunning the original consumer caller run remains an equivalent operator path:
 
 ```bash
 gh run rerun <caller-run-id> --repo exampleorg/<repository>
@@ -278,11 +285,11 @@ gh run rerun <caller-run-id> --repo exampleorg/<repository>
 
 GitHub preserves the original pull-request head and increments
 `github.run_attempt`; the caller re-reads the live PR coordinates before
-dispatch. Central validation then admits only the next contiguous recovery
-generation under the rules above. Rerunning a newly created caller run at
-attempt `a1`, changing a label to create another run, or pushing an empty commit
-does not bypass the ledger. Operators must stop after `a3`; later attempts fail
-closed and require a code or policy change with normal review.
+dispatch. Both paths admit only the next contiguous recovery generation under
+the rules above. A label event or newly created caller run cannot reset or
+bypass the ledger, and an empty commit creates a different head rather than a
+same-head recovery. Operators must stop after `a3`; later attempts fail closed
+and require a code or policy change with normal review.
 
 The legacy hosted/local compatibility path also publishes `Review Yeti Gate`
 alongside the raw check, including an honestly `skipped` pair during local

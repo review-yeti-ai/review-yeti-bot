@@ -119,6 +119,12 @@ DOKS CAS plus the central serial revalidation and exact-generation handoff is
 the atomic reservation boundary; repository variables and local execution
 cannot weaken it.
 
+An explicit `review-yeti/refresh` label is only a signed request to inspect that
+ledger. Its newly created caller workflow may start at `github.run_attempt == 1`,
+so central derives `a2` or `a3` from the contiguous worker identities instead of
+trusting the label run's attempt number. Rerunning the original caller remains
+supported; neither route can replace active or terminal results or exceed `a3`.
+
 The receiver's validation token is restricted to the target repository plus
 `example-review-actions`, deduplicated for central self-review. That is the minimum
 repository scope needed to read both the target's exact-head ledger and the
