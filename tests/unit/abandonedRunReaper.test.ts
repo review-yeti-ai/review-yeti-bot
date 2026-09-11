@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
+import { AbandonedRunReaper, type ReaperCheckClient } from '../../src/review/abandonedRunReaper';
 import type { AbandonedPublishingRun } from '../../src/persistence/reviewDispatchRepository';
 import { logger } from '../../src/utils/logger';
 
@@ -10,11 +10,14 @@ const run: AbandonedPublishingRun = {
 };
 
 function fixture() {
-  const client = { failAbandonedCheck: vi.fn(async (_run: AbandonedPublishingRun, _appId: number, _signal: AbortSignal) => 'failed' as const) };
+  const client = {
+    failAbandonedCheck: vi.fn(async (_run: AbandonedPublishingRun, _appId: number, _signal: AbortSignal): Promise<'failed' | 'already-completed'> => 'failed'),
+  };
   const repository = {
     claimAbandonedPublishingRuns: vi.fn(async () => [run]),
     reconcileAbandonedPublishingRun: vi.fn(async (
-      _run: AbandonedPublishingRun, _worker: string, _now: number, publish: () => Promise<void>,
+      _run: AbandonedPublishingRun, _worker: string, _now: number,
+      publish: () => Promise<'failed' | 'already-completed' | void>,
     ) => { await publish(); return true; }),
   };
   const checkClientFor = vi.fn(async (_run: AbandonedPublishingRun, _signal: AbortSignal) => client);
@@ -32,6 +35,18 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(repository.claimAbandonedPublishingRuns).toHaveBeenCalledWith('reaper-a', 902_000, 5);
     expect(repository.reconcileAbandonedPublishingRun).toHaveBeenCalledWith(run, 'reaper-a', 902_000, expect.any(Function));
     expect(client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal));
+  });
+
+  it('reconciles already-completed check runs without re-publishing failure', async () => {
+    const { subject, client, repository } = fixture();
+    client.failAbandonedCheck.mockResolvedValueOnce('already-completed');
+    let capturedOutcome: unknown;
+    repository.reconcileAbandonedPublishingRun.mockImplementationOnce(async (_run, _worker, _now, publish) => {
+      capturedOutcome = await publish();
+      return true;
+    });
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 0 });
+    expect(capturedOutcome).toBe('already-completed');
   });
 
   it('does not mint or publish if re-admission invalidated the claimed delivery', async () => {

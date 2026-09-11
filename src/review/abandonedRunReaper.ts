@@ -65,6 +65,7 @@ export class AbandonedRunReaper {
             const outcome = await client.failAbandonedCheck(run, this.options.publisherAppId, bounded);
             bounded.throwIfAborted();
             if (outcome === 'failed') published += 1;
+            return outcome;
           },
         );
         if (!reconciled) continue;
