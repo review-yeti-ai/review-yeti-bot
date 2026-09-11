@@ -256,7 +256,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       expect(turnCounter).toBe(MAX_INVESTIGATION_TURNS);
     });
 
-    it('caps configured maxTurns = 20 at the five-turn runtime limit', async () => {
+    it('caps configured maxTurns = 20 at the ten-turn runtime limit', async () => {
       const config = createMockConfig({ maxTurns: 20 });
       const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log("test");' }];
       let turnCounter = 0;
