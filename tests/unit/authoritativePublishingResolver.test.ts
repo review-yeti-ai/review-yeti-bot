@@ -77,11 +77,11 @@ describe('AuthoritativePublishingResolver', () => {
       { repositoryId: requested.repositoryId, owner: requested.owner, repo: requested.repo }, expect.any(AbortSignal));
     expect(f.policyReaderFactory).toHaveBeenCalledExactlyOnceWith(policyRepository, expect.any(AbortSignal));
     expect(f.currentCandidate).toHaveBeenNthCalledWith(1, { repositoryId: requested.repositoryId,
-      owner: requested.owner, repo: requested.repo, prNumber: requested.prNumber });
+      owner: requested.owner, repo: requested.repo, prNumber: requested.prNumber }, expect.any(AbortSignal));
     expect(f.currentCandidate).toHaveBeenNthCalledWith(2, { repositoryId: requested.repositoryId,
-      owner: requested.owner, repo: requested.repo, prNumber: requested.prNumber });
-    expect(f.resolvePolicyRevision).toHaveBeenCalledExactlyOnceWith(policyRepository, policyRef);
-    expect(f.immutablePolicyFile).toHaveBeenCalledExactlyOnceWith(policyRepository, revision, policyPath);
+      owner: requested.owner, repo: requested.repo, prNumber: requested.prNumber }, expect.any(AbortSignal));
+    expect(f.resolvePolicyRevision).toHaveBeenCalledExactlyOnceWith(policyRepository, policyRef, expect.any(AbortSignal));
+    expect(f.immutablePolicyFile).toHaveBeenCalledExactlyOnceWith(policyRepository, revision, policyPath, expect.any(AbortSignal));
     const order = [f.candidateReaderFactory.mock.invocationCallOrder[0], f.currentCandidate.mock.invocationCallOrder[0],
       f.policyReaderFactory.mock.invocationCallOrder[0], f.resolvePolicyRevision.mock.invocationCallOrder[0],
       f.immutablePolicyFile.mock.invocationCallOrder[0], f.currentCandidate.mock.invocationCallOrder[1]];
@@ -131,8 +131,8 @@ describe('AuthoritativePublishingResolver', () => {
     f.options.policyReaderFactory = async () => { throw new Error(secret); };
     const result = await f.resolver.resolve(requested);
     expect(f.policyReaderFactory).toHaveBeenCalledExactlyOnceWith(policyRepository, expect.any(AbortSignal));
-    expect(f.resolvePolicyRevision).toHaveBeenCalledExactlyOnceWith(policyRepository, policyRef);
-    expect(f.immutablePolicyFile).toHaveBeenCalledExactlyOnceWith(policyRepository, revision, policyPath);
+    expect(f.resolvePolicyRevision).toHaveBeenCalledExactlyOnceWith(policyRepository, policyRef, expect.any(AbortSignal));
+    expect(f.immutablePolicyFile).toHaveBeenCalledExactlyOnceWith(policyRepository, revision, policyPath, expect.any(AbortSignal));
     expect(result.prepared.transport).toEqual(transport);
   });
 
@@ -260,6 +260,29 @@ describe('AuthoritativePublishingResolver', () => {
     finish({ currentCandidate: f.currentCandidate });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.currentCandidate).not.toHaveBeenCalled();
+    expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it('rejects a pre-aborted caller without minting or reading', async () => {
+    const f = fixture();
+    const controller = new AbortController(); controller.abort();
+    expectRedacted(await rejection(f.resolver.resolve(requested, controller.signal)));
+    expect(f.candidateReaderFactory).not.toHaveBeenCalled();
+    expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it('propagates caller cancellation and never continues a late reader result', async () => {
+    const f = fixture();
+    let finish!: (value: typeof current) => void;
+    f.currentCandidate.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const controller = new AbortController();
+    const pending = rejection(f.resolver.resolve(requested, controller.signal));
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    expectRedacted(await pending);
+    expect(f.candidateReaderFactory.mock.calls[0][1].aborted).toBe(true);
+    finish(current);
+    await vi.advanceTimersByTimeAsync(0);
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
   });
 });

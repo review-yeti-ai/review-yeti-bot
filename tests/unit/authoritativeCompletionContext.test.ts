@@ -110,8 +110,12 @@ describe('service-owned authoritative completion context', () => {
     expect((await f.context(f.gate)).coverage.coverageComplete).toBe(true);
     expect(candidateRead).toHaveBeenCalledTimes(2);
     expect(policyReaderFactory).toHaveBeenCalledExactlyOnceWith(policyRepository, expect.any(AbortSignal));
-    expect(resolvePolicyRevision).toHaveBeenCalledExactlyOnceWith(policyRepository, 'refs/heads/service-policy');
-    expect(immutablePolicyFile).toHaveBeenCalledExactlyOnceWith(policyRepository, 'c'.repeat(40), 'policy/review.json');
+    expect(resolvePolicyRevision).toHaveBeenCalledExactlyOnceWith(
+      policyRepository, 'refs/heads/service-policy', expect.any(AbortSignal),
+    );
+    expect(immutablePolicyFile).toHaveBeenCalledExactlyOnceWith(
+      policyRepository, 'c'.repeat(40), 'policy/review.json', expect.any(AbortSignal),
+    );
   });
 
   it('aborts a real reader stalled body at the context deadline, even with a longer reader timeout', async () => {
