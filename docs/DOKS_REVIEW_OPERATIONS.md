@@ -270,6 +270,9 @@ To verify your cluster deployment before rolling out to production repositories:
    Execute a manual review against a known sample PR diff fixture and verify that persona evaluations complete and output valid JSON.
 4. **End-to-End Validation**:
    Dispatch a test review from a GitHub Actions workflow using `execution-backend: doks` and verify:
+   - Central `repository_dispatch` app-gate execution supplies the App-admitted
+     one-based `expected-generation`; a missing, invalid, stale, or future value
+     is rejected before worker allocation.
    - Initial check run appears as `review-status: DISPATCHED`, `gate-decision: PENDING`.
    - GitHub Actions runner exits in under 10 seconds.
    - Worker pod schedules on the DOKS cluster and processes the diff.
