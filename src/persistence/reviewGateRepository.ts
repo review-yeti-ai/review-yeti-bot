@@ -1,5 +1,6 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateCoordinates } from '../github/reviewGateClient';
+import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME } from '../review/reviewCheckIdentity';
+import type { ReviewGateCoordinates } from '../review/reviewGateContracts';
 import type { WorkerCompletionProof } from '../review/workerCompletion';
 import {
   deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, workerReviewCompletionDigest,

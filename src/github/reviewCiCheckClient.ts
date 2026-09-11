@@ -1,7 +1,8 @@
-import { GitHubReviewGateClient, type ReviewGateCheck, type ReviewGateClientOptions,
-  type ReviewCiCheckCoordinates, type ReviewCiCheckCreateRequest, type ReviewCiCheckUpdateRequest, type ReviewGateUpdate } from './reviewGateClient';
+import { GitHubReviewGateClient, type ReviewGateClientOptions,
+  type ReviewCiCheckCreateRequest, type ReviewCiCheckUpdateRequest, type ReviewGateUpdate } from './reviewGateClient';
 import { REVIEW_CI_CHECK_NAME, reviewCiCoordinatesSchema, reviewCiIdentityDigest,
   type ReviewCiValidationIdentity } from '../review/reviewCi';
+import type { ReviewGateCheck, ReviewCiCheckCoordinates } from '../review/reviewCheckIdentity';
 import { REVIEW_CI_APP_ID } from './reviewCiClient';
 
 export type ReviewCiCheckClient = {
@@ -46,4 +47,4 @@ export function reviewCiCheckCoordinates(identity: ReviewCiValidationIdentity, e
   } catch { throw new Error('Invalid CI check binding'); }
 }
 
-export { deriveReviewCiCheckExternalId } from './reviewGateClient';
+export { deriveReviewCiCheckExternalId } from '../review/reviewCheckIdentity';

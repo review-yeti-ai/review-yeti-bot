@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createReviewCiCheckClient, reviewCiCheckCoordinates } from '../../src/github/reviewCiCheckClient';
-import { deriveReviewCiCheckExternalId, GitHubReviewGateClient } from '../../src/github/reviewGateClient';
+import { GitHubReviewGateClient } from '../../src/github/reviewGateClient';
 import { createReviewCiLanePlan, REVIEW_CI_CHECK_NAME, type ReviewCiValidationIdentity } from '../../src/review/reviewCi';
+import { deriveReviewCiCheckExternalId } from '../../src/review/reviewCheckIdentity';
 
 const identity: ReviewCiValidationIdentity = { requestId: '07b3c7a1-12a4-4e42-bc18-71df2e0cae1d', expectedAppId: 4385771,
   review: { repositoryId: 123, owner: 'calltelemetry', repo: 'ct-meta', prNumber: 42, baseSha: 'b'.repeat(40), headSha: 'a'.repeat(40),

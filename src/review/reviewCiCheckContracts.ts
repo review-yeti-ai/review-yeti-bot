@@ -1,4 +1,4 @@
-import type { ReviewGateCheck, ReviewCiCheckCoordinates } from '../github/reviewGateClient';
+import type { ReviewGateCheck, ReviewCiCheckCoordinates } from './reviewCheckIdentity';
 import type {
   ReviewCiExecution,
   ReviewCiQueryable,
