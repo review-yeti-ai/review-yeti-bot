@@ -38,6 +38,8 @@ export interface ActionDispatchRouterOptions {
   allowAppGate?: boolean;
   /** Rollout fence: require the central App ledger's exact one-based generation. */
   requireExpectedGeneration?: boolean;
+  /** Exact service-owned external targets admitted through the trusted central workflow. */
+  centralExternalRepositories?: ReadonlyMap<string, number>;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
   authoritativePublishing?: AuthoritativeReviewAdmission;
   workerCompletion?: {
@@ -93,7 +95,11 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     let callerKind: ActionDispatchCallerKind;
     try {
       claims = await options.verifier.verify(token);
-      callerKind = assertActionDispatchMatchesClaims(dispatch, claims);
+      callerKind = assertActionDispatchMatchesClaims(
+        dispatch,
+        claims,
+        options.centralExternalRepositories,
+      );
       if (dispatch.publishMode === 'app-gate' && options.allowAppGate !== true) {
         throw new Error('App-gate publication is not enabled for Action dispatch');
       }

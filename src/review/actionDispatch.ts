@@ -59,12 +59,14 @@ export function actionDispatchDigestInput(request: ActionDispatchRequest): Omit<
 export function assertActionDispatchMatchesClaims(
   request: ActionDispatchRequest,
   claims: GitHubActionsOidcClaims,
+  centralExternalRepositories: ReadonlyMap<string, number> = new Map(),
 ): ActionDispatchCallerKind {
   const repository = `${request.owner}/${request.repo}`;
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
+  const isSupportedExternalTarget = centralExternalRepositories.get(repository) === request.repositoryId;
   const isCentral = request.caller.eventName === 'repository_dispatch'
     && claims.repository === CENTRAL_REVIEW_REPOSITORY
-    && request.owner === 'calltelemetry';
+    && (request.owner === 'calltelemetry' || isSupportedExternalTarget);
   // The central repository can review itself, which makes both predicates true.
   // Preserve the central ledger contract in that overlap; direct compatibility
   // applies only when the trusted central identity did not originate the run.

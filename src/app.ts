@@ -859,6 +859,7 @@ export function createApp(): Express {
       admission: dispatchRepository,
       allowAppGate: oidcPolicy.allowAppGate,
       requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
+      centralExternalRepositories: dispatchConfig.centralExternalRepositories,
       workerCompletion: {
         verifier: createWorkerCompletionVerifier(),
         repository: dispatchRepository,
