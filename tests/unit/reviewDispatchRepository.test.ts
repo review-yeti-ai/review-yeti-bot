@@ -929,6 +929,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     head_sha: 'a'.repeat(40),
     delivery_id: 'delivery-1', execution_attempt: 2,
     received_at: new Date(1_000), terminal_deadline: new Date(901_000),
+    recovery_only: false,
   };
 
   function repositoryWith(rows: unknown[]) {
@@ -999,7 +1000,11 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     const sql = String(query.mock.calls[0][0]);
     expect(sql).toMatch(/error_text/u);
     expect(sql).not.toMatch(/last_error/u);
-    expect(query.mock.calls[0][1]).toEqual(['reaper-a', 1_700_000_000_000, 20]);
+    expect(query.mock.calls[0][1]).toEqual([
+      'reaper-a', 1_700_000_000_000, 20,
+      'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+      'publishing run reached its terminal deadline without a verdict; reaped by ',
+    ]);
   });
 
   it('declares the reaper identifier as text everywhere PostgreSQL infers its parameter type', async () => {
@@ -1007,7 +1012,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20);
     const sql = String(query.mock.calls[0][0]);
     expect(sql).toMatch(/lease_owner = \$1::text/u);
-    expect(sql).toMatch(/reaped by ' \|\| \$1::text/u);
+    expect(sql).toMatch(/\$5::text \|\| \$1::text/u);
   });
 
   it('maps returned rows to the identity the reaper publishes against', async () => {
@@ -1019,7 +1024,96 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       prNumber: 2795,
       headSha: swept.head_sha,
       deliveryId: 'delivery-1', executionAttempt: 2, receivedAt: 1_000, terminalDeadline: 901_000,
+      recoveryOnly: false,
     }]);
+  });
+
+  it('maps a prior uncertain create into lookup-only recovery', async () => {
+    const { repository } = repositoryWith([{ ...swept, recovery_only: true }]);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, 20)).resolves.toMatchObject([
+      { runId: swept.run_id, recoveryOnly: true },
+    ]);
+  });
+
+  it('persists an unconfirmed create with a bounded lease instead of acknowledging or retrying creation', async () => {
+    const transactionQuery = vi.fn(async (sql: string, _values?: unknown[]) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect: async () => ({ query: transactionQuery, release }) } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000, recoveryOnly: false,
+    }, 'reaper-a', 902_000, async () => 'creation-unconfirmed' as const)).resolves.toBe(true);
+    const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
+    expect(update?.[1]).toEqual([
+      swept.run_id, 902_000, 'creation-unconfirmed',
+      'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+      'publishing run reached its terminal deadline without a verdict; failure reconciled',
+    ]);
+    expect(String(update?.[0])).toMatch(/60000/u);
+    expect(transactionQuery).toHaveBeenCalledWith('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('synchronizes an observed authoritative success into the durable run state', async () => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release: vi.fn() }),
+    } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000,
+    }, 'reaper-a', 902_000, async () => 'authoritative-success')).resolves.toBe(true);
+    const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
+    expect(String(update?.[0])).toMatch(/status = CASE WHEN \$3 = 'authoritative-success' THEN 'succeeded'/u);
+    expect(String(update?.[0])).toMatch(/stage = CASE WHEN \$3 = 'authoritative-success' THEN 'complete'/u);
+    expect(String(update?.[0])).toMatch(/WHEN \$3 = 'authoritative-success' THEN NULL/u);
+  });
+
+  it('rejects an unknown recovery outcome and rolls back the acknowledgement', async () => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect: async () => ({ query: transactionQuery, release }) } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000,
+    }, 'reaper-a', 902_000, async () => 'unexpected' as never)).rejects.toThrow(/invalid abandoned check recovery outcome/u);
+    expect(transactionQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(transactionQuery.mock.calls.some(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)))).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an undefined recovery outcome and rolls back without acknowledging the lease', async () => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release }),
+    } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000,
+    }, 'reaper-a', 902_000, async () => undefined as never))
+      .rejects.toThrow(/invalid abandoned check recovery outcome/u);
+    expect(transactionQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(transactionQuery.mock.calls.some(([sql]) => /UPDATE review_(?:dispatch_outbox|runs)/u.test(String(sql))))
+      .toBe(false);
+    expect(transactionQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('returns nothing when no run is abandoned', async () => {
