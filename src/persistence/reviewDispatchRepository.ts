@@ -42,6 +42,9 @@ export const WORKER_TERMINAL_FAILURE_PREFIX = 'worker terminal failure: ';
 export const RECOVERY_UNCONFIRMED_ERROR_TEXT =
   'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed';
 
+/** Lease cadence for lookup-only recovery after a check-create response is lost. */
+export const ABANDONED_RECOVERY_LEASE_MS = 60_000;
+
 export interface ReviewDispatchRepositoryOptions {
   /** Trusted service read/validation only; invoked under the candidate's PR lock before any admission writes. */
   validateAuthoritativeAdmission?: (input: ReviewAdmissionInput) => Promise<void>;
@@ -685,7 +688,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
        )
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
-              lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
+              lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + ${ABANDONED_RECOVERY_LEASE_MS}) / 1000.0),
               error_text = CASE
                 WHEN retired.recovery_only
                   THEN $4::text
@@ -765,7 +768,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await client.query(
         `UPDATE review_runs SET lease_owner = NULL,
            lease_expires_at = CASE WHEN $3 = 'creation-unconfirmed'
-             THEN to_timestamp(($2 + 60000) / 1000.0) ELSE NULL END,
+             THEN to_timestamp(($2 + ${ABANDONED_RECOVERY_LEASE_MS}) / 1000.0) ELSE NULL END,
            status = CASE WHEN $3 = 'authoritative-success' THEN 'succeeded' ELSE status END,
            stage = CASE WHEN $3 = 'authoritative-success' THEN 'complete' ELSE stage END,
            error_text = CASE

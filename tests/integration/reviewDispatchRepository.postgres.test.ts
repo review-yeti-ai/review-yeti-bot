@@ -13,6 +13,7 @@ import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritative
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { createHash, randomBytes } from 'node:crypto';
 import { REVIEW_GATE_CHECK_NAME } from '../../src/github/reviewGateClient';
+import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { buildRunSecretName } from '../../src/k8s/reviewJobProjection';
 import type { WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 
@@ -287,6 +288,64 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       outbox.status AS outbox_status FROM review_runs runs
       JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`, [admitted.run.runId]);
     expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: provider_error', outbox_status: 'terminal' });
+    await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
+  });
+
+  it('reconciles a durable internal failure with a visible orphan check before the deadline', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('live-orphan-check', 1_000);
+    const admitted = await repository.admit(input);
+    const dispatch = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'e'.repeat(64);
+    await repository.markProjected(
+      admitted.run.runId, 'dispatcher', dispatch.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: dispatch.executionAttempt,
+      failureClass: 'internal_error',
+    }, { workerTokenDigest }, 1_003)).resolves.toMatchObject({ status: 'failed' });
+
+    const orphan = {
+      id: 103443976468,
+      name: 'Review Yeti',
+      head_sha: input.identity.headSha,
+      app: { id: 4385771, slug: 'ct-review-bot' },
+      status: 'in_progress',
+      conclusion: null,
+      started_at: '2026-09-11T22:25:00Z',
+      external_id: `${admitted.run.runId}:a1`,
+    };
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return new Response('{}');
+      if (String(url).includes('/commits/')) return new Response(JSON.stringify({ check_runs: [orphan] }));
+      return new Response(JSON.stringify(orphan));
+    });
+    const publisher = new GitHubInstallationClient({
+      token: 'ghs_offline', fetchImplementation, sleep: async () => undefined,
+    });
+    const [sweep] = await repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1);
+    expect(sweep).toMatchObject({
+      runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: false,
+    });
+    await expect(repository.reconcileAbandonedPublishingRun(sweep, 'reaper-a', 2_001,
+      () => publisher.failAbandonedCheck(sweep, 4385771, AbortSignal.timeout(20_000)),
+    )).resolves.toBe(true);
+
+    const writes = fetchImplementation.mock.calls.filter(([, request]) => request?.method === 'PATCH');
+    expect(writes).toHaveLength(1);
+    expect(fetchImplementation.mock.calls.filter(([, request]) => request?.method === 'POST')).toHaveLength(0);
+    expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure' });
+    expect((await client.query(`SELECT runs.status, runs.error_text, runs.lease_owner,
+      outbox.status AS outbox_status, outbox.lease_owner AS outbox_lease_owner
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId])).rows[0]).toMatchObject({
+      status: 'terminal', error_text: 'worker terminal failure: internal_error',
+      lease_owner: null, outbox_status: 'terminal', outbox_lease_owner: null,
+    });
     await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
   });
 
