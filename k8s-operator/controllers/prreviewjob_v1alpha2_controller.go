@@ -144,32 +144,35 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 	}
 
-	pvcName := workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
-	var pvc corev1.PersistentVolumeClaim
-	if err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: pvcName}, &pvc); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-		created, buildErr := workspace.BuildPVC(review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, now)
-		if buildErr != nil {
-			return ctrl.Result{}, r.fail(ctx, &review, "WorkspaceRejected", buildErr.Error())
-		}
-		if createErr := r.Create(ctx, created); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
-			return ctrl.Result{}, createErr
-		}
-		if statusErr := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "WorkspaceProvisioning", "workspace PVC created; waiting for it to become available"); statusErr != nil {
-			return ctrl.Result{}, statusErr
-		}
-		return ctrl.Result{RequeueAfter: v1Alpha2PVCCreateRequeue}, nil
-	}
-	if err := workspace.ValidatePVC(&pvc, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber); err != nil {
-		if errors.Is(err, workspace.ErrWorkspaceTerminating) {
-			if statusErr := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "WorkspaceTerminating", err.Error()); statusErr != nil {
+	pvcName := ""
+	if review.Spec.RunnerMode == "generic" {
+		pvcName = workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
+		var pvc corev1.PersistentVolumeClaim
+		if err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: pvcName}, &pvc); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			created, buildErr := workspace.BuildPVC(review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, now)
+			if buildErr != nil {
+				return ctrl.Result{}, r.fail(ctx, &review, "WorkspaceRejected", buildErr.Error())
+			}
+			if createErr := r.Create(ctx, created); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+				return ctrl.Result{}, createErr
+			}
+			if statusErr := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "WorkspaceProvisioning", "workspace PVC created; waiting for it to become available"); statusErr != nil {
 				return ctrl.Result{}, statusErr
 			}
-			return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+			return ctrl.Result{RequeueAfter: v1Alpha2PVCCreateRequeue}, nil
 		}
-		return ctrl.Result{}, r.fail(ctx, &review, "WorkspaceIdentityMismatch", err.Error())
+		if err := workspace.ValidatePVC(&pvc, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber); err != nil {
+			if errors.Is(err, workspace.ErrWorkspaceTerminating) {
+				if statusErr := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "WorkspaceTerminating", err.Error()); statusErr != nil {
+					return ctrl.Result{}, statusErr
+				}
+				return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+			}
+			return ctrl.Result{}, r.fail(ctx, &review, "WorkspaceIdentityMismatch", err.Error())
+		}
 	}
 
 	leaseResult, err := workspace.NewLeaseManager(r.Client).Acquire(
@@ -281,7 +284,11 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	if worker.Status.Succeeded == 0 && worker.Status.Failed == 0 {
 		if review.Status.Phase != reviewv1alpha2.PhaseRunning || review.Status.JobName != worker.Name {
 			review.Status.JobName = worker.Name
-			review.Status.PVCName = workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
+			if review.Spec.RunnerMode == "generic" {
+				review.Status.PVCName = workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
+			} else {
+				review.Status.PVCName = ""
+			}
 			review.Status.LeaseName = workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
 			if review.Status.StartTime == nil {
 				review.Status.StartTime = timePtr(jobCreatedAt)
@@ -611,6 +618,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 		return ctrl.Result{}, err
 	}
 
+	if review.Spec.RunnerMode != "generic" {
+		return ctrl.Result{}, nil
+	}
+
 	pvcName := workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
 	if pvcName == "" {
 		return ctrl.Result{}, nil
@@ -756,9 +767,20 @@ func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1
 	if worker.Spec.Template.Spec.AutomountServiceAccountToken == nil || *worker.Spec.Template.Spec.AutomountServiceAccountToken {
 		return false
 	}
+	if review.Spec.RunnerMode == "generic" {
+		for _, volume := range worker.Spec.Template.Spec.Volumes {
+			if volume.Name == "workspace" && volume.PersistentVolumeClaim != nil {
+				return volume.PersistentVolumeClaim.ClaimName == workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
+			}
+		}
+		return false
+	}
+	expectedLimit := job.WorkerStorageSize()
 	for _, volume := range worker.Spec.Template.Spec.Volumes {
-		if volume.Name == "workspace" && volume.PersistentVolumeClaim != nil {
-			return volume.PersistentVolumeClaim.ClaimName == workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
+		if volume.Name == "workspace" && volume.EmptyDir != nil {
+			if volume.EmptyDir.SizeLimit != nil && volume.EmptyDir.SizeLimit.Equal(expectedLimit) {
+				return true
+			}
 		}
 	}
 	return false

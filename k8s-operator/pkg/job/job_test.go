@@ -27,6 +27,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
@@ -650,6 +651,7 @@ func TestBuildWorkerJobNeverExtendsTerminalDeadline(t *testing.T) {
 func TestBuildWorkerJobRequiresCurrentRunLeaseAndExactPVC(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	review := reviewFixture(now)
+	review.Spec.RunnerMode = "generic"
 	tests := []struct {
 		name   string
 		mutate func(*job.Input)
@@ -984,5 +986,96 @@ func TestBuildWorkerJobFallsBackOnInvalidLifecycleEnv(t *testing.T) {
 	}
 	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
 		t.Fatalf("job TTL = %v, want 0 fallback from unparseable env", result.Spec.TTLSecondsAfterFinished)
+	}
+}
+
+func TestBuildWorkerJobPrebakedUsesEmptyDirWorkspace(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	for _, runnerMode := range []string{"prebaked", ""} {
+		t.Run("runnerMode_"+runnerMode, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.RunnerMode = runnerMode
+			input := buildInput(review, now)
+			input.WorkspacePVCName = "" // WorkspacePVCName is optional for prebaked
+
+			result, err := job.BuildWorkerJob(input)
+			if err != nil {
+				t.Fatalf("BuildWorkerJob failed for runnerMode %q: %v", runnerMode, err)
+			}
+
+			if len(result.Spec.Template.Spec.Volumes) != 2 {
+				t.Fatalf("volumes count = %d, want 2", len(result.Spec.Template.Spec.Volumes))
+			}
+			workspaceVol := result.Spec.Template.Spec.Volumes[0]
+			if workspaceVol.Name != "workspace" {
+				t.Fatalf("Volumes[0].Name = %q, want workspace", workspaceVol.Name)
+			}
+			if workspaceVol.EmptyDir == nil {
+				t.Fatal("Volumes[0].EmptyDir is nil, want EmptyDirVolumeSource")
+			}
+			if workspaceVol.PersistentVolumeClaim != nil {
+				t.Fatal("Volumes[0].PersistentVolumeClaim is non-nil, want nil for prebaked")
+			}
+			expectedLimit := resource.MustParse("1Gi")
+			if workspaceVol.EmptyDir.SizeLimit == nil || !workspaceVol.EmptyDir.SizeLimit.Equal(expectedLimit) {
+				t.Fatalf("Volumes[0].EmptyDir.SizeLimit = %v, want %v", workspaceVol.EmptyDir.SizeLimit, expectedLimit)
+			}
+		})
+	}
+}
+
+func TestBuildWorkerJobPrebakedCustomStorageSizeFromEnv(t *testing.T) {
+	t.Setenv("REVIEW_YETI_WORKER_STORAGE_SIZE", "2Gi")
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.RunnerMode = "prebaked"
+	input := buildInput(review, now)
+	input.WorkspacePVCName = ""
+
+	result, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("BuildWorkerJob: %v", err)
+	}
+
+	workspaceVol := result.Spec.Template.Spec.Volumes[0]
+	if workspaceVol.EmptyDir == nil {
+		t.Fatal("Volumes[0].EmptyDir is nil")
+	}
+	expectedLimit := resource.MustParse("2Gi")
+	if workspaceVol.EmptyDir.SizeLimit == nil || !workspaceVol.EmptyDir.SizeLimit.Equal(expectedLimit) {
+		t.Fatalf("Volumes[0].EmptyDir.SizeLimit = %v, want %v from env", workspaceVol.EmptyDir.SizeLimit, expectedLimit)
+	}
+}
+
+func TestBuildWorkerJobGenericRequiresPVC(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.RunnerMode = "generic"
+
+	// Valid PVC name succeeds
+	validInput := buildInput(review, now)
+	result, err := job.BuildWorkerJob(validInput)
+	if err != nil {
+		t.Fatalf("BuildWorkerJob failed with valid generic PVC: %v", err)
+	}
+	workspaceVol := result.Spec.Template.Spec.Volumes[0]
+	if workspaceVol.Name != "workspace" {
+		t.Fatalf("Volumes[0].Name = %q, want workspace", workspaceVol.Name)
+	}
+	if workspaceVol.PersistentVolumeClaim == nil {
+		t.Fatal("Volumes[0].PersistentVolumeClaim is nil, want PVC for generic")
+	}
+	if workspaceVol.PersistentVolumeClaim.ClaimName != workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber) {
+		t.Fatalf("ClaimName = %q, want %q", workspaceVol.PersistentVolumeClaim.ClaimName, workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber))
+	}
+	if workspaceVol.EmptyDir != nil {
+		t.Fatal("Volumes[0].EmptyDir is non-nil, want nil for generic")
+	}
+
+	// Empty PVC name fails
+	invalidInput := buildInput(review, now)
+	invalidInput.WorkspacePVCName = ""
+	if _, err := job.BuildWorkerJob(invalidInput); !errors.Is(err, job.ErrJobConfiguration) {
+		t.Fatalf("BuildWorkerJob error = %v, want ErrJobConfiguration for empty PVC name in generic mode", err)
 	}
 }
