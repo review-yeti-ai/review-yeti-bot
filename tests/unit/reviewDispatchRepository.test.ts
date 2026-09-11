@@ -116,6 +116,69 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(client.release).toHaveBeenCalledOnce();
   });
 
+  it('accepts only the exact one-based generation returned by the durable allocator', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await expect(repository.admit({ ...input(), expectedGeneration: 1 })).resolves.toMatchObject({
+      status: 'accepted', run: { attempt: 0 },
+    });
+    expect(client.query).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rolls back before outbox allocation when the expected generation does not match', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await expect(repository.admit({ ...input(), expectedGeneration: 2 }))
+      .rejects.toThrow(/expected generation 2.*next durable generation is 1/i);
+    expect(client.query.mock.calls.some(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(String(sql)))).toBe(false);
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
+  });
+
+  it('rejects a stale duplicate delivery after the exact identity has advanced', async () => {
+    const client = clientWithRows([[], [], [], [{
+      ...row, attempt: 1, payload_digest: input().payloadDigest, repository_id: 123,
+    }], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await expect(repository.admit({ ...input(), expectedGeneration: 1 }))
+      .rejects.toThrow(/expected generation 1.*next durable generation is 2/i);
+    expect(client.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
+  });
+
+  it('temporarily admits a missing central app-gate generation when enforcement is disabled', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await expect(repository.admit({
+      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate',
+    })).resolves.toMatchObject({ status: 'accepted' });
+    expect(client.query).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('requires a central app-gate generation before opening a transaction when enforcement is enabled', async () => {
+    const connect = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect } as any, undefined, {
+      requireExpectedGeneration: true,
+    });
+    await expect(repository.admit({
+      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate',
+    })).rejects.toThrow(/expected generation is required/i);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid supplied expected generation before opening a transaction in compatibility mode', async () => {
+    for (const expectedGeneration of [0, -1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      const connect = vi.fn();
+      const repository = new PostgresReviewDispatchRepository({ connect } as any);
+      await expect(repository.admit({
+        ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate', expectedGeneration,
+      } as any)).rejects.toThrow(/expected generation/i);
+      expect(connect).not.toHaveBeenCalled();
+    }
+  });
+
   it('returns the existing run for an identical duplicate delivery without another outbox insert', async () => {
     const client = clientWithRows([[], [], [], [{ ...row, payload_digest: input().payloadDigest, repository_id: 123 }], []]);
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });

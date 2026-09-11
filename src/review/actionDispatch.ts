@@ -15,6 +15,7 @@ export const actionDispatchRequestSchema = z.object({
   baseSha: sha,
   actionSha: sha,
   publishMode: z.enum(['disabled', 'app-gate']),
+  expectedGeneration: positiveInteger.optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
   caller: z.object({
