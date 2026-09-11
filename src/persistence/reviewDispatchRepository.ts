@@ -35,6 +35,9 @@ interface ConnectionPool {
   connect(): Promise<TransactionClient>;
 }
 
+/** Prefix for the bounded worker failure classification persisted in error_text. */
+export const WORKER_TERMINAL_FAILURE_PREFIX = 'worker terminal failure: ';
+
 export interface ReviewDispatchRepositoryOptions {
   /** Trusted service read/validation only; invoked under the candidate's PR lock before any admission writes. */
   validateAuthoritativeAdmission?: (input: ReviewAdmissionInput) => Promise<void>;
@@ -648,7 +651,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
               lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
               error_text = CASE
-                WHEN runs.status = 'failed' AND runs.error_text LIKE 'worker terminal failure: %'
+                WHEN runs.status = 'failed' AND runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
                   THEN runs.error_text
                 ELSE 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
               END
@@ -706,7 +709,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await client.query(
         `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
            error_text = CASE
-             WHEN error_text LIKE 'worker terminal failure: %' THEN error_text
+             WHEN error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%' THEN error_text
              ELSE 'publishing run reached its terminal deadline without a verdict; failure reconciled'
            END,
            updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
@@ -865,7 +868,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     proof: WorkerCompletionProof,
     now: number,
   ): Promise<WorkerFailureTransition> {
-    const safeError = `worker terminal failure: ${input.failureClass}`;
+    const safeError = `${WORKER_TERMINAL_FAILURE_PREFIX}${input.failureClass}`;
     const safeDiagnostics = buildDurableWorkerFailureDiagnostics(
       input.failureClass, input.diagnostics, input.executionAttempt,
     );
