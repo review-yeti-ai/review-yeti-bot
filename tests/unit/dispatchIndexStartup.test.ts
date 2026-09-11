@@ -111,6 +111,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     vi.stubGlobal('fetch', vi.fn(() => { throw new Error('unexpected network call'); }));
     vi.stubEnv('ACTION_DISPATCH_ENABLED', 'true');
     vi.stubEnv('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION', undefined);
+    vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', undefined);
     vi.stubEnv('GITHUB_APP_ID', '4385771');
     vi.stubEnv('GITHUB_APP_PRIVATE_KEY', 'synthetic-startup-private-key');
     vi.stubEnv('HOSTNAME', 'startup-test');
@@ -177,6 +178,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     });
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
       requireExpectedGeneration: false,
+      centralExternalRepositories: new Set(),
     }));
     expect(mocks.gateRepository).not.toHaveBeenCalled();
     expect(mocks.getPrepared).not.toHaveBeenCalled();
@@ -199,6 +201,34 @@ describe('Action dispatch startup transport and admission wiring', () => {
     }));
     expect(mocks.listen).toHaveBeenCalledOnce();
   });
+
+  it('wires only the exact configured self-hosted central-dispatch target', async () => {
+    vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
+    await start();
+
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
+      centralExternalRepositories: new Set(['review-yeti-ai/review-yeti-bot']),
+    }));
+    expect(mocks.listen).toHaveBeenCalledOnce();
+  });
+
+  it.each(['', 'review-yeti-ai/other-repository', 'other-owner/review-yeti-bot'])(
+    'rejects invalid external central-dispatch configuration before initialization: %j',
+    async (value) => {
+      vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', value);
+      await start();
+
+      expect(mocks.initialize).not.toHaveBeenCalled();
+      expect(mocks.repository).not.toHaveBeenCalled();
+      expect(mocks.createApp).not.toHaveBeenCalled();
+      expect(mocks.listen).not.toHaveBeenCalled();
+      expect(mocks.error).toHaveBeenCalledWith('Action dispatch service failed to start', {
+        error: 'ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES must contain only explicit supported repositories',
+      });
+      expect(process.exitCode).toBe(1);
+    },
+  );
 
   it('rejects an invalid expected-generation enforcement value before initialization', async () => {
     vi.stubEnv('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION', 'yes');

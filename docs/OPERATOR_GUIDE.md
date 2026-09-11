@@ -92,6 +92,13 @@ a model in the request handler. Configure all allowlists before enabling it:
 - `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=false` while deploying the
   compatible service and promoting the central producer; set exactly `true`
   only after a live central app-gate request proves its admitted generation.
+- `ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES` is unset by default. The only
+  accepted value is the exact service-supported target
+  `review-yeti-ai/review-yeti-bot`, whose request must also carry its stable
+  GitHub repository ID `1326169548`; an empty, duplicated, or different value
+  prevents service startup. This opt-in extends only central Action dispatch
+  admission and does not enroll the repository in the authoritative Review
+  Yeti Gate pilot.
 - `DATABASE_URL` or `POSTGRES_URL`, plus the GitHub App credentials above.
 
 The Action requests audience `review-yeti-doks-dispatch` and posts to
