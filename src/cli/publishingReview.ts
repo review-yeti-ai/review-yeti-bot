@@ -291,7 +291,7 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
   if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
-  if (/budget exhausted|incomplete/iu.test(message)) return 'budget_exhausted';
+  if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
   if (/429|rate limit/iu.test(message)) return 'rate_limit';
   if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
@@ -300,6 +300,45 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
   }
   if (/provider|gateway|model/iu.test(message)) return 'provider_error';
   return 'internal_error';
+}
+
+/**
+ * Renders the fail-closed check summary. The delivered body must name the
+ * failure point (which budget/stage/lane died and how far it got), not just a
+ * class token, so an operator knows whether to retry, wait, or fix inputs.
+ */
+export function renderFailureSummary(
+  failureClass: WorkerTerminalFailure['failureClass'],
+  headSha: string,
+  diagnostics?: { reason?: string; providerStatus?: number; logTail?: string },
+): string {
+  const guidance: Record<WorkerTerminalFailure['failureClass'], string> = {
+    budget_exhausted:
+      'a review budget was exhausted before a verdict (persona investigation turns or lane call budget). '
+      + 'Retry the review; if it recurs, the lane budget or turn ceiling needs raising for this repository.',
+    timeout: 'a transport or persona call exceeded its deadline. Retry the review.',
+    auth: 'the review gateway rejected the credential. Fix the key/secret binding, then re-run.',
+    rate_limit: 'the upstream provider rate-limited the review. Retry after the provider cools down.',
+    transport: 'the review worker could not reach the gateway. Check network/gateway health, then retry.',
+    provider_error: 'the upstream provider returned an error. Retry; if it persists, check provider status.',
+    malformed_output: 'a persona returned output that violated the review contract. Retry the review.',
+    contract: 'the review contract/configuration was invalid. Fix the repository review policy, then re-run.',
+    internal_error: 'the review worker hit an internal error. Retry; if it persists, inspect worker logs.',
+  };
+  const detail: string[] = [];
+  if (diagnostics?.reason) detail.push(`reason=\`${diagnostics.reason}\``);
+  if (diagnostics?.providerStatus !== undefined) detail.push(`provider_status=${diagnostics.providerStatus}`);
+  const tail = (diagnostics?.logTail || '').trim();
+  const lines = [
+    `Review Yeti could not complete a binding review at \`${headSha}\` (failure class \`${failureClass}\`).`,
+    '',
+    `**What failed:** ${guidance[failureClass]}`,
+    '',
+    'This is a failed review, not an approval. The unchanged head is not merge-eligible until a review completes.',
+  ];
+  if (detail.length > 0) lines.push('', `Failure detail: ${detail.join(' ')}`);
+  if (tail) lines.push('', `Diagnostic: \`${tail.slice(0, 500)}\``);
+  return lines.join('\n');
 }
 
 export interface PublishingReviewDeps {
@@ -427,7 +466,7 @@ export async function runPublishingReviewWorker(
           checkId: failedCheckId,
           conclusion: 'failure',
           title: 'Review Yeti: review did not complete',
-          summary: `Failure class \`${failureClass}\` at \`${identity.headSha}\`. This is a failed review, not an approval.`,
+          summary: renderFailureSummary(failureClass, identity.headSha, diagnostics),
         });
       } catch {
         logger.error('Failed to publish the fail-closed conclusion', {

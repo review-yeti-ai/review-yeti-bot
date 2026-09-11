@@ -141,7 +141,7 @@ describe('native panel turn protocol', () => {
     expect(String(postToolMessage?.content)).not.toMatch(/CT_REVIEW_BEGIN:|CT_REVIEW_END:/u);
   });
 
-  it('reserves the fifth and final provider call for a native answer without making a sixth call', async () => {
+  it('reserves the final provider call for a native answer without an overflow call', async () => {
     let personaTurn = 0;
     mockClient.complete.mockImplementation(async (request: any) => {
       if (request.metadata?.role !== 'persona') return nonPersonaResponse(request);
@@ -175,10 +175,7 @@ describe('native panel turn protocol', () => {
     expect(personaTurn).toBe(MAX_INVESTIGATION_TURNS);
     expect(personaCalls(mockClient)).toHaveLength(MAX_INVESTIGATION_TURNS);
     expect(personaCalls(mockClient).map((request) => request.responseFormat?.type)).toEqual([
-      'json_object',
-      'json_object',
-      'json_object',
-      'json_object',
+      ...Array(MAX_INVESTIGATION_TURNS - 1).fill('json_object'),
       'json_schema',
     ]);
   });
