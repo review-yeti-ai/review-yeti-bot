@@ -1418,11 +1418,36 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsTamperedAppGateWorkers(t *testing.T) 
 			if failed.Status.Phase != reviewv1alpha2.PhaseFailed {
 				t.Fatalf("tampered app-gate worker (%s) did not durably fail before deletion", name)
 			}
+			publication := meta.FindStatusCondition(failed.Status.Conditions, "FailurePublication")
+			if publication == nil || publication.Status != metav1.ConditionFalse || publication.Reason != "WorkerContractMismatch" {
+				t.Fatalf("failure publication condition = %#v, want durable pending obligation", publication)
+			}
+			if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); err != nil {
+				t.Fatalf("tampered app-gate worker was removed before the parent obligation became durable: %v", err)
+			}
+			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.Get(context.Background(), req.NamespacedName, &failed); err != nil {
+				t.Fatal(err)
+			}
+			publication = meta.FindStatusCondition(failed.Status.Conditions, "FailurePublication")
+			if publication == nil || publication.Status != metav1.ConditionUnknown || publication.Reason != "DelegatedToTrustedService" {
+				t.Fatalf("failure publication condition = %#v, want trusted-service delegation", publication)
+			}
+			var stopping batchv1.Job
+			if err := kube.Get(context.Background(), workerKey, &stopping); err != nil {
+				t.Fatalf("tampered app-gate worker disappeared before terminal evidence was released: %v", err)
+			}
+			if stopping.DeletionTimestamp == nil {
+				t.Fatal("tampered app-gate worker was not stopped after durable delegation")
+			}
+			assertFailurePublisherAbsent(t, kube, req)
 			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
 			if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
-				t.Fatalf("tampered app-gate worker (%s) was not stopped: %v", name, err)
+				t.Fatalf("tampered app-gate worker (%s) was not removed after finalizer release: %v", name, err)
 			}
 		})
 	}

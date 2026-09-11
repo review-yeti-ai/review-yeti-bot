@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,16 +78,15 @@ func storedWorker(t *testing.T, kube client.Client, req ctrl.Request) *batchv1.J
 	return worker
 }
 
-func storedFailurePublisher(t *testing.T, kube client.Client, req ctrl.Request) *batchv1.Job {
+func assertFailurePublisherAbsent(t *testing.T, kube client.Client, req ctrl.Request) {
 	t.Helper()
-	publisher := &batchv1.Job{}
-	if err := kube.Get(context.Background(), types.NamespacedName{
+	err := kube.Get(context.Background(), types.NamespacedName{
 		Namespace: req.Namespace,
 		Name:      req.Name + "-fail",
-	}, publisher); err != nil {
-		t.Fatal(err)
+	}, &batchv1.Job{})
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("operator created a direct failure publisher using the expiring run credential: %v", err)
 	}
-	return publisher
 }
 
 func assertWorkerAbsent(t *testing.T, kube client.Client, req ctrl.Request) {
@@ -159,6 +159,117 @@ func TestTerminalWorkerFinalizerPreservesSuccessfulOutcomeAcrossTTLDeletion(t *t
 	assertWorkerAbsent(t, kube, req)
 }
 
+// Regression for the deployed 1.55.2 a2 sequence observed on 2026-09-11:
+// the exact App check run_45df...:a2 had already completed SHIP when immediate
+// TTL collection hid the successful Job and the parent was incorrectly failed.
+// The finalizer must keep that Kubernetes success observable until the parent
+// terminal receipt is durable; recovery must not manufacture a failure path.
+func TestLiveRefreshA2ShipIsDurableBeforeTTLDeletesWorker(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 11, 19, 34, 0, 0, time.UTC)
+	review := v1alpha2Review(now)
+	review.Name = "ct-review-45df3bc195cee92c4612505adc8f6603-a2"
+	review.UID = types.UID("live-refresh-a2")
+	review.Spec.RunID = "run_45df3bc195cee92c4612505adc8f6603"
+	review.Spec.HeadSHA = "51d32639eac249f437b66ac863138ce2069f472c"
+	review.Spec.RunSecretName = "ct-review-run-45df3bc195cee92c4612505adc8f6603-a2"
+	attempt := int32(2)
+	review.Spec.ExecutionAttempt = &attempt
+	review.Spec.PublicationMode = job.PublicationModeAppGate
+	review.Spec.RunnerMode = "generic"
+	scheme := v1alpha2Scheme(t)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}, &batchv1.Job{}).Build()
+	r := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return now },
+		Publishing: job.PublishingConfig{
+			GatewayBaseURL: "https://gateway.example.invalid/v1", Model: "ollama/glm-5.3-flash",
+			GatewaySecretName: "review-yeti-gateway-credentials", GatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY",
+			CompletionURL: "https://dispatch.example.invalid/api/dispatch/completion",
+		},
+	}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(review)}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	completed := time.Date(2026, 9, 11, 19, 35, 10, 0, time.UTC)
+	worker.Status.Succeeded = 1
+	worker.Status.CompletionTime = &metav1.Time{Time: completed}
+	worker.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(completed),
+	}}
+	if err := kube.Status().Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Delete(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	stored := storedReview(t, kube, req)
+	ready := meta.FindStatusCondition(stored.Status.Conditions, "Ready")
+	if stored.Status.Phase != reviewv1alpha2.PhaseSucceeded || stored.Status.CompletionTime == nil ||
+		!stored.Status.CompletionTime.Time.Equal(completed) || ready == nil || ready.Reason != "WorkerSucceeded" {
+		t.Fatalf("live a2 terminal receipt = %#v, want exact successful completion", stored.Status)
+	}
+	if publication := meta.FindStatusCondition(stored.Status.Conditions, "FailurePublication"); publication != nil {
+		t.Fatalf("live App SHIP entered failure publication: %#v", publication)
+	}
+	if !containsString(storedWorker(t, kube, req).Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatal("worker evidence was released in the same write as the parent terminal receipt")
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	assertWorkerAbsent(t, kube, req)
+}
+
+func TestSuccessfulWorkerObservedAfterFailurePendingPreservesAppShip(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	r.Now = func() time.Time { return review.Spec.TerminalDeadline.Add(time.Second) }
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if !failurePublicationIsPending(storedReview(t, kube, req)) {
+		t.Fatal("deadline race did not persist the expected pending failure state")
+	}
+
+	worker := storedWorker(t, kube, req)
+	completed := review.Spec.TerminalDeadline.Add(-time.Second)
+	worker.Status.Succeeded = 1
+	worker.Status.CompletionTime = &metav1.Time{Time: completed}
+	worker.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(completed),
+	}}
+	if err := kube.Status().Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	stored := storedReview(t, kube, req)
+	if stored.Status.Phase != reviewv1alpha2.PhaseSucceeded || stored.Status.CompletionTime == nil ||
+		!stored.Status.CompletionTime.Time.Equal(completed) {
+		t.Fatalf("late observed SHIP = %#v, want authoritative worker success", stored.Status)
+	}
+	if condition := meta.FindStatusCondition(stored.Status.Conditions, "FailurePublication"); condition != nil {
+		t.Fatalf("late observed SHIP retained failure delegation: %#v", condition)
+	}
+	assertFailurePublisherAbsent(t, kube, req)
+}
+
 func TestCompletedWorkerObservedAfterDeadlinePreservesAuthoritativeSuccess(t *testing.T) {
 	ctx := context.Background()
 	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
@@ -207,11 +318,11 @@ func TestMissingPublishingWorkerAfterDeadlineStartsFailurePublication(t *testing
 		publication.Status != metav1.ConditionFalse || publication.Reason != "WorkerJobMissing" {
 		t.Fatalf("post-deadline missing worker outcome = %#v, result = %#v", failed.Status, result)
 	}
-	storedFailurePublisher(t, kube, req)
+	assertFailurePublisherAbsent(t, kube, req)
 	assertWorkerAbsent(t, kube, req)
 }
 
-func TestAbandonedPublishingWorkerWaitsForPodExitBeforeFailurePublisher(t *testing.T) {
+func TestAbandonedPublishingWorkerWaitsForPodExitBeforeDelegatingFailure(t *testing.T) {
 	ctx := context.Background()
 	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
 	if _, err := r.Reconcile(ctx, req); err != nil {
@@ -236,9 +347,7 @@ func TestAbandonedPublishingWorkerWaitsForPodExitBeforeFailurePublisher(t *testi
 	if result.RequeueAfter <= 0 || !failurePublicationIsPending(storedReview(t, kube, req)) {
 		t.Fatal("abandoned publishing worker did not enter durable failure publication")
 	}
-	if err := kube.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name + "-fail"}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("failure publisher started while the abandoned worker Pod was active: %v", err)
-	}
+	assertFailurePublisherAbsent(t, kube, req)
 	deletingWorker := storedWorker(t, kube, req)
 	if deletingWorker.DeletionTimestamp == nil || !containsString(deletingWorker.Finalizers, "review-yeti.ai/terminal-outcome") {
 		t.Fatal("abandoned worker was not stopped with its evidence guard retained")
@@ -249,7 +358,8 @@ func TestAbandonedPublishingWorkerWaitsForPodExitBeforeFailurePublisher(t *testi
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	storedFailurePublisher(t, kube, req)
+	assertFailureDelegated(t, storedReview(t, kube, req))
+	assertFailurePublisherAbsent(t, kube, req)
 }
 
 func TestRunningWorkerFromOlderOperatorAcquiresTerminalOutcomeFinalizer(t *testing.T) {
@@ -363,7 +473,7 @@ func TestStaleReviewCacheMissCannotReleaseWorkerObservationFinalizer(t *testing.
 	}
 }
 
-func TestFailedWorkerPublishesFailClosedCheckBeforeTerminalEvidenceIsReleased(t *testing.T) {
+func TestFailedWorkerDelegatesFailClosedPublicationBeforeTerminalEvidenceIsReleased(t *testing.T) {
 	ctx := context.Background()
 	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
 	if _, err := r.Reconcile(ctx, req); err != nil {
@@ -389,50 +499,25 @@ func TestFailedWorkerPublishesFailClosedCheckBeforeTerminalEvidenceIsReleased(t 
 		t.Fatal(err)
 	}
 	if result.RequeueAfter <= 0 {
-		t.Fatal("pending failure publication must requeue")
+		t.Fatal("pending failure delegation must requeue")
 	}
 	failedReview := storedReview(t, kube, req)
 	publication := meta.FindStatusCondition(failedReview.Status.Conditions, "FailurePublication")
 	if failedReview.Status.Phase != reviewv1alpha2.PhaseFailed || publication == nil || publication.Status != metav1.ConditionFalse {
-		t.Fatalf("failed review status = %#v, want durable fail-closed publication pending", failedReview.Status)
+		t.Fatalf("failed review status = %#v, want durable fail-closed delegation pending", failedReview.Status)
 	}
-	retained := storedWorker(t, kube, req)
-	if !containsString(retained.Finalizers, "review-yeti.ai/terminal-outcome") {
-		t.Fatal("terminal worker evidence was released before fail-closed publication")
+	if !containsString(storedWorker(t, kube, req).Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatal("terminal worker evidence was released before failure delegation")
 	}
+	assertFailurePublisherAbsent(t, kube, req)
 
-	publisher := storedFailurePublisher(t, kube, req)
-	if publisher.Spec.BackoffLimit == nil || *publisher.Spec.BackoffLimit < 1 || publisher.Spec.ActiveDeadlineSeconds == nil {
-		t.Fatalf("failure publisher retry bounds = backoff %v deadline %v", publisher.Spec.BackoffLimit, publisher.Spec.ActiveDeadlineSeconds)
-	}
-	container := publisher.Spec.Template.Spec.Containers[0]
-	if len(container.Env) != 5 || !hasExactSecretEnv(container.Env, "GITHUB_PUBLISH_TOKEN", failedReview.Spec.RunSecretName, "GITHUB_PUBLISH_TOKEN") {
-		t.Fatalf("failure publisher env = %#v, want exact App token plus bounded identity", container.Env)
-	}
-	for _, forbidden := range []string{"GH_TOKEN", "BIFROST_PR_REVIEW_API_KEY", "GITHUB_APP_PRIVATE_KEY"} {
-		if envNamed(container.Env, forbidden) {
-			t.Fatalf("failure publisher received forbidden credential %s", forbidden)
-		}
-	}
-	if container.Image != failedReview.Spec.WorkerImage || len(container.Command) != 1 || container.Command[0] != "node" {
-		t.Fatalf("failure publisher runtime = image %q command %v", container.Image, container.Command)
-	}
-	if publisher.Spec.Template.Spec.AutomountServiceAccountToken == nil || *publisher.Spec.Template.Spec.AutomountServiceAccountToken {
-		t.Fatal("failure publisher must not receive a Kubernetes API token")
-	}
-
-	publisher.Status.Succeeded = 1
-	publisher.Status.CompletionTime = &metav1.Time{Time: failedAt.Add(time.Second)}
-	if err := kube.Status().Update(ctx, publisher); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	publishedReview := storedReview(t, kube, req)
-	publication = meta.FindStatusCondition(publishedReview.Status.Conditions, "FailurePublication")
-	if publication == nil || publication.Status != metav1.ConditionTrue || publication.Reason != "Published" {
-		t.Fatalf("failure publication condition = %#v, want durable success", publication)
+	assertFailureDelegated(t, storedReview(t, kube, req))
+	assertFailurePublisherAbsent(t, kube, req)
+	if !containsString(storedWorker(t, kube, req).Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatal("delegation status was not durable before terminal worker evidence was released")
 	}
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
@@ -440,7 +525,7 @@ func TestFailedWorkerPublishesFailClosedCheckBeforeTerminalEvidenceIsReleased(t 
 	assertWorkerAbsent(t, kube, req)
 }
 
-func TestMissingAppGateWorkerStartsDurableFailurePublicationWithoutReplay(t *testing.T) {
+func TestMissingAppGateWorkerDelegatesFailureWithoutReplayingOrPublishing(t *testing.T) {
 	ctx := context.Background()
 	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
 	review := storedReview(t, kube, req)
@@ -450,87 +535,92 @@ func TestMissingAppGateWorkerStartsDurableFailurePublicationWithoutReplay(t *tes
 		t.Fatal(err)
 	}
 
-	result, err := r.Reconcile(ctx, req)
-	if err != nil {
+	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
-	}
-	if result.RequeueAfter <= 0 {
-		t.Fatal("missing App worker publication must keep retrying")
 	}
 	failed := storedReview(t, kube, req)
 	publication := meta.FindStatusCondition(failed.Status.Conditions, "FailurePublication")
 	if failed.Status.Phase != reviewv1alpha2.PhaseFailed || publication == nil || publication.Status != metav1.ConditionFalse || publication.Reason != "WorkerJobMissing" {
-		t.Fatalf("missing worker outcome = %#v, want durable pending failure publication", failed.Status)
+		t.Fatalf("missing worker outcome = %#v, want durable pending failure delegation", failed.Status)
 	}
-	storedFailurePublisher(t, kube, req)
+	assertFailurePublisherAbsent(t, kube, req)
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	assertFailureDelegated(t, storedReview(t, kube, req))
+	assertFailurePublisherAbsent(t, kube, req)
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
 	assertWorkerAbsent(t, kube, req)
 }
 
-func TestFailedWorkerPublicationJobRetriesAfterTerminalPublisherFailure(t *testing.T) {
+func TestAppGateWorkerContractMismatchEntersDurableFailureDelegation(t *testing.T) {
 	ctx := context.Background()
-	r, kube, req := failedPublisherFixture(t)
-	publisher := storedFailurePublisher(t, kube, req)
-	publisher.Status.Failed = 1
-	publisher.Status.Conditions = []batchv1.JobCondition{{
-		Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "BackoffLimitExceeded",
-	}}
-	if err := kube.Status().Update(ctx, publisher); err != nil {
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	worker.Spec.Template.Spec.Containers[0].Image = "ghcr.io/review-yeti-ai/tampered@sha256:" + strings.Repeat("0", 64)
+	worker.Labels["review-yeti.ai/run-id"] = "run_ffffffffffffffffffffffffffffffff"
+	worker.Spec.Template.Labels["review-yeti.ai/run-id"] = "run_ffffffffffffffffffffffffffffffff"
+	worker.Spec.Template.Labels["review-yeti.ai/component"] = "tampered-component"
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "tampered-worker-pod", Namespace: req.Namespace,
+			Labels: map[string]string{
+				"job-name":                        worker.Name,
+				"review-yeti.ai/run-id":           "run_ffffffffffffffffffffffffffffffff",
+				"review-yeti.ai/component":        "tampered-component",
+				"review-yeti.ai/publication-mode": job.PublicationModeAppGate,
+			},
+		},
+		Spec: *worker.Spec.Template.Spec.DeepCopy(), Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	if err := kube.Create(ctx, pod); err != nil {
 		t.Fatal(err)
 	}
 
-	result, err := r.Reconcile(ctx, req)
-	if err != nil {
+	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	if result.RequeueAfter <= 0 {
-		t.Fatal("terminal publisher failure must remain retryable")
+	pending := storedReview(t, kube, req)
+	condition := meta.FindStatusCondition(pending.Status.Conditions, "FailurePublication")
+	if pending.Status.Phase != reviewv1alpha2.PhaseFailed || condition == nil ||
+		condition.Status != metav1.ConditionFalse || condition.Reason != "WorkerContractMismatch" {
+		t.Fatalf("contract mismatch bypassed durable failure delegation: %#v", pending.Status)
 	}
-	err = kube.Get(ctx, client.ObjectKeyFromObject(publisher), &batchv1.Job{})
-	if !apierrors.IsNotFound(err) {
-		t.Fatalf("terminal publisher was not cleared for deterministic retry: %v", err)
+	assertFailurePublisherAbsent(t, kube, req)
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
 	}
-	failed := storedReview(t, kube, req)
-	if !failurePublicationIsPending(failed) {
-		t.Fatalf("publisher failure cleared the durable obligation: %#v", failed.Status.Conditions)
+	if !failurePublicationIsPending(storedReview(t, kube, req)) {
+		t.Fatal("tampered active worker was bypassed before Pod exit")
+	}
+	if storedWorker(t, kube, req).DeletionTimestamp == nil {
+		t.Fatal("exact owned mismatched worker was not stopped after durable failure state")
+	}
+	assertFailurePublisherAbsent(t, kube, req)
+	if err := kube.Delete(ctx, pod); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	retried := storedFailurePublisher(t, kube, req)
-	if retried.Status.Succeeded != 0 || retried.Status.Failed != 0 {
-		t.Fatalf("recreated publisher inherited terminal status: %#v", retried.Status)
-	}
-	if !containsString(storedWorker(t, kube, req).Finalizers, "review-yeti.ai/terminal-outcome") {
-		t.Fatal("publisher retry released terminal worker evidence")
-	}
-}
-
-func TestFailurePublisherContractTamperFailsClosed(t *testing.T) {
-	ctx := context.Background()
-	r, kube, req := failedPublisherFixture(t)
-	publisher := storedFailurePublisher(t, kube, req)
-	container := &publisher.Spec.Template.Spec.Containers[0]
-	container.Env = append(container.Env, corev1.EnvVar{Name: "GH_TOKEN", Value: "unexpected"})
-	container.Args = []string{"--input-type=module", "--eval", "console.log(process.env)"}
-	if err := kube.Update(ctx, publisher); err != nil {
+	assertFailureDelegated(t, storedReview(t, kube, req))
+	assertFailurePublisherAbsent(t, kube, req)
+	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-
-	if _, err := r.Reconcile(ctx, req); err == nil {
-		t.Fatal("tampered failure publisher was accepted")
-	}
-	if !failurePublicationIsPending(storedReview(t, kube, req)) {
-		t.Fatal("tampered publisher cleared the durable publication obligation")
-	}
-	if !containsString(storedWorker(t, kube, req).Finalizers, "review-yeti.ai/terminal-outcome") {
-		t.Fatal("tampered publisher released terminal worker evidence")
-	}
+	assertWorkerAbsent(t, kube, req)
 }
 
-func TestFailurePublicationStatusPrecedesPublisherCreation(t *testing.T) {
+func TestFailurePublicationStatusPrecedesTrustedServiceDelegation(t *testing.T) {
 	ctx := context.Background()
 	failPendingStatus := true
 	hooks := interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
@@ -553,9 +643,7 @@ func TestFailurePublicationStatusPrecedesPublisherCreation(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err == nil {
 		t.Fatal("expected injected pending-status failure")
 	}
-	if err := kube.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name + "-fail"}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("publisher was created before its durable obligation: %v", err)
-	}
+	assertFailurePublisherAbsent(t, kube, req)
 	if storedReview(t, kube, req).Status.Phase == reviewv1alpha2.PhaseFailed {
 		t.Fatal("injected failure status unexpectedly persisted")
 	}
@@ -570,96 +658,12 @@ func TestFailurePublicationStatusPrecedesPublisherCreation(t *testing.T) {
 	if !failurePublicationIsPending(storedReview(t, kube, req)) {
 		t.Fatal("publication obligation was not persisted on retry")
 	}
-	storedFailurePublisher(t, kube, req)
-}
-
-func TestPublisherSuccessStatusPrecedesTerminalEvidenceRelease(t *testing.T) {
-	ctx := context.Background()
-	failPublishedStatus := true
-	hooks := interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
-		if review, ok := obj.(*reviewv1alpha2.PRReviewJob); ok {
-			condition := meta.FindStatusCondition(review.Status.Conditions, "FailurePublication")
-			if condition != nil && condition.Status == metav1.ConditionTrue && failPublishedStatus {
-				return errors.New("injected publication receipt status write failure")
-			}
-		}
-		return c.SubResource(sub).Update(ctx, obj, opts...)
-	}}
-	r, kube, req := failedPublisherFixtureWithHooks(t, hooks)
-	publisher := storedFailurePublisher(t, kube, req)
-	publisher.Status.Succeeded = 1
-	if err := kube.Status().Update(ctx, publisher); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := r.Reconcile(ctx, req); err == nil {
-		t.Fatal("expected injected publication receipt failure")
-	}
-	if !failurePublicationIsPending(storedReview(t, kube, req)) {
-		t.Fatal("publisher completion was treated as durable before status write")
-	}
-	if !containsString(storedWorker(t, kube, req).Finalizers, "review-yeti.ai/terminal-outcome") {
-		t.Fatal("publication receipt failure released terminal worker evidence")
-	}
-
-	failPublishedStatus = false
+	assertFailurePublisherAbsent(t, kube, req)
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	condition := meta.FindStatusCondition(storedReview(t, kube, req).Status.Conditions, "FailurePublication")
-	if condition == nil || condition.Status != metav1.ConditionTrue {
-		t.Fatalf("publication success was not durably recorded on retry: %#v", condition)
-	}
-}
-
-func TestRunningFailurePublisherPodDoesNotBlockItsOwnCompletionObservation(t *testing.T) {
-	ctx := context.Background()
-	r, kube, req := failedPublisherFixture(t)
-	publisher := storedFailurePublisher(t, kube, req)
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "failure-publisher", Namespace: req.Namespace, Labels: publisher.Spec.Template.Labels},
-		Spec:       *publisher.Spec.Template.Spec.DeepCopy(),
-		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
-	}
-	if err := kube.Create(ctx, pod); err != nil {
-		t.Fatal(err)
-	}
-	publisher.Status.Succeeded = 1
-	if err := kube.Status().Update(ctx, publisher); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatal(err)
-	}
-	condition := meta.FindStatusCondition(storedReview(t, kube, req).Status.Conditions, "FailurePublication")
-	if condition == nil || condition.Status != metav1.ConditionTrue {
-		t.Fatalf("publisher Pod blocked its own completion receipt: %#v", condition)
-	}
-}
-
-func failedPublisherFixture(t *testing.T) (*controllers.PRReviewJobV1Alpha2Reconciler, client.Client, ctrl.Request) {
-	t.Helper()
-	return failedPublisherFixtureWithHooks(t, interceptor.Funcs{})
-}
-
-func failedPublisherFixtureWithHooks(t *testing.T, hooks interceptor.Funcs) (*controllers.PRReviewJobV1Alpha2Reconciler, client.Client, ctrl.Request) {
-	t.Helper()
-	ctx := context.Background()
-	r, kube, req := missingJobFixture(t, "app-gate", hooks)
-	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatal(err)
-	}
-	worker := storedWorker(t, kube, req)
-	worker.Status.Failed = 1
-	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
-	if err := kube.Status().Update(ctx, worker); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.Reconcile(ctx, req); err != nil {
-		t.Fatal(err)
-	}
-	return r, kube, req
+	assertFailureDelegated(t, storedReview(t, kube, req))
+	assertFailurePublisherAbsent(t, kube, req)
 }
 
 func failurePublicationIsPending(review *reviewv1alpha2.PRReviewJob) bool {
@@ -667,22 +671,12 @@ func failurePublicationIsPending(review *reviewv1alpha2.PRReviewJob) bool {
 	return condition != nil && condition.Status == metav1.ConditionFalse
 }
 
-func hasExactSecretEnv(env []corev1.EnvVar, name, secret, key string) bool {
-	for _, variable := range env {
-		if variable.Name == name && variable.ValueFrom != nil && variable.ValueFrom.SecretKeyRef != nil {
-			return variable.ValueFrom.SecretKeyRef.Name == secret && variable.ValueFrom.SecretKeyRef.Key == key
-		}
+func assertFailureDelegated(t *testing.T, review *reviewv1alpha2.PRReviewJob) {
+	t.Helper()
+	condition := meta.FindStatusCondition(review.Status.Conditions, "FailurePublication")
+	if condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "DelegatedToTrustedService" {
+		t.Fatalf("failure publication condition = %#v, want durable trusted-service delegation", condition)
 	}
-	return false
-}
-
-func envNamed(env []corev1.EnvVar, name string) bool {
-	for _, variable := range env {
-		if variable.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 func containsString(values []string, want string) bool {
