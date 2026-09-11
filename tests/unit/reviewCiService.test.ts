@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ReviewCiService } from '../../src/review/reviewCiService';
-import { createReviewCiLanePlan, reviewCiRunName, type ReviewCiRepository, type StoredReviewCiRequest } from '../../src/review/reviewCi';
-import type { ReviewCiCaller } from '../../src/auth/reviewCiOidc';
+import { createReviewCiLanePlan, reviewCiRunName, type ReviewCiCaller, type ReviewCiRepository,
+  type StoredReviewCiRequest } from '../../src/review/reviewCi';
 import type { ReviewCiRepositoryConfig } from '../../src/auth/reviewCiConfig';
 
 const id = '00000000-0000-4000-8000-000000000001';
@@ -20,9 +20,8 @@ function fixture(state: StoredReviewCiRequest['state'] = 'pending') {
   const execution = { requestId: id, epoch: 1, repositoryId: 123, workflowId: 12, workflowSha: binding.workflowSha,
     candidateSha: binding.candidateSha, runId: 100, runAttempt: 1, event: 'workflow_dispatch' as const, runName: reviewCiRunName(id, 1) };
   if (state === 'running') request.execution = execution;
-  const caller: ReviewCiCaller = { role: 'validation', repository: configured, runId: 100, runAttempt: 1,
-    claims: { repository: 'example/pilot', repository_id: '123', repository_owner_id: '99', run_id: '100', run_attempt: '1',
-      workflow_sha: binding.workflowSha, event_name: 'workflow_dispatch' } };
+  const caller: ReviewCiCaller = { role: 'validation', repository: configured, workflowSha: binding.workflowSha,
+    runId: 100, runAttempt: 1 };
   const repository = {
     get: vi.fn(async () => structuredClone(request)), listPending: vi.fn().mockResolvedValue([]),
     admit: vi.fn(async (_id, nextBinding, validate) => { await validate(request, nextBinding); return 'recorded' as const; }),
@@ -83,7 +82,7 @@ describe('event-driven CI service coordination', () => {
   it('rejects wrong epochs, workflow revision, and already-consumed different execution', async () => {
     const f = fixture('admitted');
     expect(await f.service.claim(id, 2, f.caller)).toBeNull();
-    expect(await f.service.claim(id, 1, { ...f.caller, claims: { ...f.caller.claims, workflow_sha: '9'.repeat(40) } })).toBeNull();
+    expect(await f.service.claim(id, 1, { ...f.caller, workflowSha: '9'.repeat(40) })).toBeNull();
     f.repository.claimExecution.mockResolvedValueOnce('conflict' as never);
     expect(await f.service.claim(id, 1, f.caller)).toBeNull();
     expect(f.client.dispatchWorkflow).not.toHaveBeenCalled();

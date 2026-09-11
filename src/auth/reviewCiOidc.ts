@@ -1,15 +1,10 @@
 import type { JWTVerifyGetKey } from 'jose';
-import { GitHubActionsOidcVerifier, REVIEW_CI_AUDIENCE, type GitHubActionsOidcClaims } from './githubActionsOidc';
+import { GitHubActionsOidcVerifier, REVIEW_CI_AUDIENCE } from './githubActionsOidc';
 import { reviewCiRepositoryConfigSchema, type ReviewCiRepositoryConfig } from './reviewCiConfig';
+import type { ReviewCiCaller } from '../review/reviewCi';
 
 export type ReviewCiOidcRole = 'relay' | 'validation';
-export interface ReviewCiCaller {
-  role: ReviewCiOidcRole;
-  repository: ReviewCiRepositoryConfig;
-  claims: GitHubActionsOidcClaims;
-  runId: number;
-  runAttempt: number;
-}
+export type { ReviewCiCaller } from '../review/reviewCi';
 function integer(value: string): number {
   if (!/^[1-9][0-9]*$/u.test(value) || !Number.isSafeInteger(Number(value))) throw new Error();
   return Number(value);
@@ -50,7 +45,8 @@ export class ReviewCiOidcVerifier {
       if (claims.workflow_ref !== expectedRef || claims.workflow_sha !== workflow.workflowSha
         || claims.job_workflow_ref !== undefined || claims.job_workflow_sha !== undefined
         || (role === 'validation' && claims.event_name !== 'workflow_dispatch')) throw new Error();
-      return { role, repository, claims, runId: integer(claims.run_id), runAttempt: integer(claims.run_attempt) };
+      return { role, repository, workflowSha: claims.workflow_sha,
+        runId: integer(claims.run_id), runAttempt: integer(claims.run_attempt) };
     } catch { throw new Error('Review CI caller is not authorized'); }
   }
 }

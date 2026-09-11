@@ -1,8 +1,7 @@
-import type { ReviewCiCaller } from '../auth/reviewCiOidc';
 import { findReviewCiEnrollment, type ReviewCiServiceConfig } from '../auth/reviewCiConfig';
 import { sha256 } from './reviewCore';
 import { reviewCiExecutionSchema, reviewCiRequestEvent, reviewCiRunName,
-  type ReviewCiClient, type ReviewCiDeliveryClaim, type ReviewCiExecution, type ReviewCiRepository, type ReviewCiValidationBinding,
+  type ReviewCiCaller, type ReviewCiClient, type ReviewCiDeliveryClaim, type ReviewCiExecution, type ReviewCiRepository, type ReviewCiValidationBinding,
   type StoredReviewCiRequest } from './reviewCi';
 
 export type ReviewCiCurrent = { status: 'stale' | 'waiting' }
@@ -62,7 +61,7 @@ export class ReviewCiService {
     this.enrolled(request);
     const binding = request.binding;
     if (binding.workflowId !== caller.repository.validation.workflowId
-      || binding.workflowSha !== caller.claims.workflow_sha) return null;
+      || binding.workflowSha !== caller.workflowSha) return null;
     const execution = this.execution(request, caller.runId, caller.runAttempt, epoch);
     // Signed OIDC alone does not prove the dispatched run's exact event/title.
     const client = await this.options.clientFor(request, 'read');

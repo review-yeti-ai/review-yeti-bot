@@ -118,6 +118,13 @@ export interface StoredReviewCiRequest {
   terminalReceipt: ReviewCiTerminalReceipt | null;
 }
 export type ReviewCiDeliveryKind = 'repository' | 'workflow';
+export interface ReviewCiCaller {
+  role: 'relay' | 'validation';
+  repository: { repositoryId: number; owner: string; repo: string; validation: { workflowId: number } };
+  workflowSha: string;
+  runId: number;
+  runAttempt: number;
+}
 export type ReviewCiDispatchReceipt = { status: 'accepted'; runId?: number } | { status: 'uncertain' | 'rejected' };
 export interface ReviewCiRunCorrelation { requestId: string; epoch: number }
 export interface ReviewCiRunReadback extends ReviewCiRunCorrelation {
