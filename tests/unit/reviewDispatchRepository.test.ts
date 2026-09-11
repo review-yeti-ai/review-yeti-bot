@@ -162,6 +162,8 @@ describe('PostgresReviewDispatchRepository', () => {
     expect((runSql.match(/SELECT should_retry FROM retry_eligibility/gu) || []).length).toBe(8);
     expect(runSql).toContain("runs.status IN ('failed', 'terminal')");
     expect(runSql).toContain("$20::boolean AND runs.status IN ('queued', 'running')");
+    expect(runSql).toContain('$21::integer IS NOT NULL');
+    expect(runSql).toContain('retry_outbox.execution_attempt + 1 = $21::integer');
     expect(runSql).toContain('retry_outbox.run_id = runs.run_id');
     // markTerminal writes 'failed'; the reaper writes 'terminal'. Both are dead
     // runs and both must be retryable, and no other status may be named.

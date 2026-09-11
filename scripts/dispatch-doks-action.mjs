@@ -81,6 +81,14 @@ export function buildDispatchRequest(environment) {
   const refreshRequested = refreshRequestedRaw === 'true';
   const eventName = required(environment, 'GITHUB_EVENT_NAME');
   if (!SUPPORTED_EVENTS.has(eventName)) throw new Error(`GitHub event ${eventName} is not supported for DOKS dispatch`);
+  const refreshExecutionAttemptRaw = String(environment.REFRESH_EXECUTION_ATTEMPT ?? '').trim();
+  const refreshExecutionAttempt = refreshExecutionAttemptRaw ? Number(refreshExecutionAttemptRaw) : undefined;
+  if (refreshExecutionAttemptRaw && (!Number.isSafeInteger(refreshExecutionAttempt) || refreshExecutionAttempt <= 0)) {
+    throw new Error('REFRESH_EXECUTION_ATTEMPT must be a positive integer');
+  }
+  if (refreshRequested && eventName === 'repository_dispatch' && refreshExecutionAttempt === undefined) {
+    throw new Error('REFRESH_EXECUTION_ATTEMPT is required for a central refresh dispatch');
+  }
 
   const repositoryId = positiveInteger(environment, 'REPOSITORY_ID');
   const prNumber = positiveInteger(environment, 'PR_NUMBER');
@@ -115,7 +123,10 @@ export function buildDispatchRequest(environment) {
     baseSha,
     actionSha,
     publishMode,
-    ...(refreshRequested ? { refreshRequested: true } : {}),
+    ...(refreshRequested ? {
+      refreshRequested: true,
+      ...(refreshExecutionAttempt === undefined ? {} : { refreshExecutionAttempt }),
+    } : {}),
     requestedAt: new Date().toISOString(),
     caller: {
       runId,

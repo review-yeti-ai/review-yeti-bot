@@ -206,6 +206,16 @@ describe('workerTerminalFailureSchema', () => {
     });
   });
 
+  it('redacts opaque JWT and AWS access-key shapes even without a known token prefix', () => {
+    const jwt = 'eyJaaaaaaaa.bbbbbbbb.cccccccc';
+    const awsAccessKey = `ASIA${'A'.repeat(16)}`;
+    const message = `provider detail ${jwt} AWS_ACCESS_KEY_ID=${awsAccessKey} AWS_SECRET_ACCESS_KEY=synthetic-secret`;
+    const redacted = redactWorkerFailureLogTail(message);
+    expect(redacted).toBe('provider detail [REDACTED] AWS_ACCESS_KEY_ID=[REDACTED] AWS_SECRET_ACCESS_KEY=[REDACTED]');
+    expect(redacted).not.toContain(jwt);
+    expect(redacted).not.toContain(awsAccessKey);
+  });
+
   it('keeps the UTF-8 tail bound when truncation starts inside a multibyte code point', () => {
     const tail = redactWorkerFailureLogTail(`${'🙂'.repeat(1024)}x`);
     expect(Buffer.byteLength(tail, 'utf8')).toBeLessThanOrEqual(MAX_WORKER_FAILURE_LOG_TAIL_BYTES);

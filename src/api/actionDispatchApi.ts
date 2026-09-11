@@ -110,7 +110,10 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         // repository persists the retry only after its own state/evidence gate.
         ...(dispatch.publishMode === 'app-gate'
           && dispatch.caller.eventName === 'repository_dispatch'
-          && dispatch.refreshRequested === true ? { retryRequested: true } : {}),
+          && dispatch.refreshRequested === true ? {
+            retryRequested: true,
+            retryAfterExecutionAttempt: dispatch.refreshExecutionAttempt,
+          } : {}),
         identity: resolved?.identity || buildReviewRunIdentity({
           owner: dispatch.owner,
           repo: dispatch.repo,

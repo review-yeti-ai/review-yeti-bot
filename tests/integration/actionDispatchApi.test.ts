@@ -211,6 +211,7 @@ describe('POST /api/dispatch/action', () => {
         ...body,
         publishMode: 'app-gate',
         refreshRequested: true,
+        refreshExecutionAttempt: 1,
         caller: {
           ...body.caller,
           eventName: 'repository_dispatch',
@@ -219,7 +220,9 @@ describe('POST /api/dispatch/action', () => {
       });
 
     expect(response.status).toBe(202);
-    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({ retryRequested: true }));
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+      retryRequested: true, retryAfterExecutionAttempt: 1,
+    }));
   });
 
   it('does not forward refresh from a non-central caller', async () => {
@@ -227,7 +230,7 @@ describe('POST /api/dispatch/action', () => {
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
       .set('Authorization', 'Bearer signed-oidc-token')
-      .send({ ...body, publishMode: 'app-gate', refreshRequested: true });
+      .send({ ...body, publishMode: 'app-gate', refreshRequested: true, refreshExecutionAttempt: 1 });
 
     expect(response.status).toBe(202);
     expect(fixture.admission.admit).toHaveBeenCalledWith(
