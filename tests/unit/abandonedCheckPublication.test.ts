@@ -100,9 +100,9 @@ describe('abandoned check exact App/attempt failure publication', () => {
     ['ambiguous legacy checks', [check, { ...check, id: 2 }], 4385771],
     ['newer execution', [{ ...check, external_id: `${run.runId}:a2`, started_at: '2026-09-09T17:38:00Z' }], 4385771],
     ['same-head different bound run', [{ ...check, external_id: `run_${'a'.repeat(32)}:a1` }], 4385771],
-  ])('refuses %s without writing any check', async (_label, checks, appId) => {
+  ])('reconciles %s as already-completed without writing any check', async (_label, checks, appId) => {
     const { client, fetchImplementation } = fixture(checks as unknown[]);
-    await expect(client.failAbandonedCheck(run, appId as number, signal())).rejects.toThrow();
+    await expect(client.failAbandonedCheck(run, appId as number, signal())).resolves.toBe('already-completed');
     expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
   });
 
