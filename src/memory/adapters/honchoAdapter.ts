@@ -188,7 +188,7 @@ export class HonchoMemoryAdapter implements MemoryAdapter {
     prNumber: number,
     learning: Omit<ReviewerLearning, "repo" | "prNumber">
   ): Promise<ReviewerLearning> {
-    const id = learning.id || `lrn_${crypto.randomUUID().slice(0, 8)}`;
+    const id = learning.id || `lrn_${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const createdAt = learning.createdAt || now;
     const updatedAt = learning.updatedAt || now;

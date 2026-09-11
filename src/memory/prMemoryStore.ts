@@ -290,7 +290,7 @@ export class PRMemoryStore {
       return record;
     }
 
-    const id = learning.id || `lrn_${crypto.randomUUID().slice(0, 8)}`;
+    const id = learning.id || `lrn_${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const createdAt = learning.createdAt || now;
     const updatedAt = learning.updatedAt || now;

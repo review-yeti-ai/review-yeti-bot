@@ -41,6 +41,16 @@ describe('PRMemoryStore Unit Tests', () => {
     expect(result.learnings[0].confidence).toBe(0.95);
   });
 
+  it('uses the full UUID entropy for generated learning IDs', async () => {
+    const learning = await store.recordLearning('calltelemetry/cisco-cdr', 43, {
+      category: 'architecture',
+      title: 'Collision-resistant learning ID',
+      description: 'Generated learning IDs must remain unique under concurrent inserts.',
+    });
+
+    expect(learning.id).toMatch(/^lrn_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  });
+
   it('records resolved nit patterns and increments suppression count', async () => {
     const nit = await store.recordResolvedNit('calltelemetry/cisco-cdr', 10, {
       pattern: 'avoid console\\.log',
@@ -200,4 +210,3 @@ describe('PRMemoryStore Unit Tests', () => {
     expect(result.learnings[0].title).toBe('SQLite Local Learning');
   });
 });
-
