@@ -1094,6 +1094,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
     const first = await repository.admit(input('delivery-claimed', 1_000));
     const claim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+    const before = await dispatchState(client, first.run.runId);
     const refresh = await repository.admit(input('delivery-without-evidence', 2_000, true, 1));
 
     // The new delivery is acknowledged for idempotency, but the durable run
@@ -1102,11 +1103,36 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(refresh).toMatchObject({ status: 'accepted', run: {
       runId: first.run.runId, status: 'queued', attempt: 0, deliveryId: 'delivery-claimed',
     } });
-    expect((await client.query('SELECT status, delivery_id, execution_attempt, projection_name, worker_token_digest FROM review_dispatch_outbox WHERE run_id = $1', [first.run.runId])).rows[0])
-      .toMatchObject({ status: 'claimed', delivery_id: 'delivery-claimed', execution_attempt: 0,
-        projection_name: null, worker_token_digest: null });
+    const after = await dispatchState(client, first.run.runId);
+    expect(after.run).toEqual(before.run);
+    expect(after.outbox).toEqual(before.outbox);
+    expect(after.run).toMatchObject({ status: 'queued', attempt: 0, delivery_id: 'delivery-claimed',
+      terminal_deadline: before.run.terminal_deadline });
+    expect(after.outbox).toMatchObject({ status: 'claimed', delivery_id: 'delivery-claimed', execution_attempt: 0,
+      projection_name: null, worker_token_digest: null });
     expect((await repository.claimNext('dispatcher-b', 3_000, 30_000))?.runId).toBeUndefined();
     expect(claim.executionAttempt).toBe(1);
+  });
+
+  it('persists markTerminal diagnostics and preserves them when a later terminal mark omits diagnostics', async () => {
+    const { repository, client } = await createRepository();
+    const first = await repository.admit(sameHeadAdmission('diagnostic-first', 1_000));
+    const firstClaim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+    const diagnostics = { reason: 'projection_rejected', logTail: 'projection rejected' };
+    await expect(repository.markTerminal(firstClaim.runId, firstClaim.leaseOwner, firstClaim.claimAttempt,
+      1_001, 'projection rejected', diagnostics)).resolves.toBe(true);
+    const firstState = await dispatchState(client, first.run.runId);
+    expect(firstState.run.failure_diagnostics).toMatchObject({
+      failureClass: 'internal_error', reason: diagnostics.reason, logTail: diagnostics.logTail,
+    });
+
+    const retry = await repository.admit(sameHeadAdmission('diagnostic-retry', 2_000));
+    expect(retry.run).toMatchObject({ runId: first.run.runId, status: 'queued', attempt: 1 });
+    const retryClaim = (await repository.claimNext('dispatcher-b', 2_001, 30_000))!;
+    await expect(repository.markTerminal(retryClaim.runId, retryClaim.leaseOwner, retryClaim.claimAttempt,
+      2_002, 'second projection rejected')).resolves.toBe(true);
+    const finalState = await dispatchState(client, first.run.runId);
+    expect(finalState.run.failure_diagnostics).toEqual(firstState.run.failure_diagnostics);
   });
 
   it('does not rearm a replayed a1 refresh after the replacement a2 is projected', async () => {

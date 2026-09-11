@@ -38,6 +38,14 @@ export interface GitHubActionsOidcVerifierOptions {
   audience?: typeof REVIEW_DISPATCH_AUDIENCE | typeof REVIEW_CI_AUDIENCE;
 }
 
+/** Applies the same explicit workflow-ref allowlist used by token verification. */
+export function isAllowlistedWorkflowRef(
+  policy: Pick<GitHubActionsOidcPolicy, 'workflowRefs'>,
+  workflowRef: string,
+): boolean {
+  return policy.workflowRefs.has('*') || policy.workflowRefs.has(workflowRef);
+}
+
 function requiredClaim(payload: JWTPayload, name: keyof GitHubActionsOidcClaims): string {
   const value = payload[name];
   if (typeof value !== 'string' || !value.trim()) throw new Error(`GitHub Actions OIDC claim ${String(name)} is missing`);
@@ -117,7 +125,7 @@ export class GitHubActionsOidcVerifier {
     if (!workflowRef || !workflowSha) {
       throw new Error('GitHub Actions OIDC token has no immutable workflow provenance');
     }
-    if (!this.policy.workflowRefs.has('*') && !this.policy.workflowRefs.has(workflowRef)) {
+    if (!isAllowlistedWorkflowRef(this.policy, workflowRef)) {
       throw new Error('GitHub Actions OIDC workflow ref is not allowlisted');
     }
     if (!this.policy.workflowShas.has('*') && !this.policy.workflowShas.has(workflowSha)) {

@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { sha256 } from '../review/reviewCore';
+import { deriveReviewRunId } from '../review/reviewAdmission';
 import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
 import {
   ReviewAdmission,
@@ -274,7 +275,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       }
 
       const identityDigest = sha256(input.identity);
-      const runId = `run_${identityDigest.slice(0, 32)}`;
+      const runId = deriveReviewRunId(input.identity);
       const inserted = await client.query(
          `WITH retry_eligibility AS (
            SELECT runs.run_id,

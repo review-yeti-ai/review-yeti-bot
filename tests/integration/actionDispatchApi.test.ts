@@ -11,8 +11,9 @@ import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritative
 import type { AuthoritativePublishingResolution, RequestedReviewCandidate } from '../../src/review/authoritativePublishingResolver';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
-import { actionDispatchDigestInput, type ActionDispatchRequest } from '../../src/review/actionDispatch';
+import { actionDispatchDigestInput, actionDispatchRequestSchema, type ActionDispatchRequest } from '../../src/review/actionDispatch';
 import { sha256 } from '../../src/review/reviewCore';
+import { CENTRAL_REVIEW_WORKFLOW_REF } from '../../src/review/reviewCheckIdentity';
 
 const body = {
   version: 'ActionDispatch.v1',
@@ -167,7 +168,7 @@ describe('POST /api/dispatch/action', () => {
       run_id: '98765',
       run_attempt: '2',
       event_name: 'repository_dispatch',
-      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
       job_workflow_sha: 'd'.repeat(40),
     };
     const centralBody = {
@@ -200,10 +201,13 @@ describe('POST /api/dispatch/action', () => {
       run_id: '98765',
       run_attempt: '2',
       event_name: 'repository_dispatch',
-      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
       job_workflow_sha: 'd'.repeat(40),
     };
-    const fixture = app({ allowAppGate: true, verifier: { verify: vi.fn(async () => centralVerified) } });
+    const fixture = app({ allowAppGate: true, verifier: {
+      verify: vi.fn(async () => centralVerified),
+      policy: { workflowRefs: new Set([centralVerified.job_workflow_ref]) },
+    } });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
       .set('Authorization', 'Bearer signed-oidc-token')
@@ -236,6 +240,55 @@ describe('POST /api/dispatch/action', () => {
     expect(fixture.admission.admit).toHaveBeenCalledWith(
       expect.not.objectContaining({ retryRequested: true }),
     );
+  });
+
+  it('does not forward refresh when the verified central job workflow ref is not allowlisted', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions',
+      repository_id: '99999',
+      repository_owner_id: '99',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'repository_dispatch',
+      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/untrusted.yml@refs/heads/main',
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({ allowAppGate: true, verifier: {
+      verify: vi.fn(async () => centralVerified),
+      // The ordinary dispatch verifier may be configured broadly, but refresh
+      // forwarding still requires the exact reusable workflow identity above.
+      policy: { workflowRefs: new Set(['*']) },
+    } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        refreshRequested: true,
+        refreshExecutionAttempt: 1,
+        caller: { ...body.caller, eventName: 'repository_dispatch', workflowRef: centralVerified.job_workflow_ref },
+      });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(
+      expect.not.objectContaining({ retryRequested: true, retryAfterExecutionAttempt: 1 }),
+    );
+  });
+
+  it('rejects an explicit refresh without its execution attempt at both schema and API boundaries', async () => {
+    const invalid = { ...body, refreshRequested: true };
+    expect(actionDispatchRequestSchema.safeParse(invalid).success).toBe(false);
+    const fixture = app({ allowAppGate: true });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...invalid, publishMode: 'app-gate' });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Invalid Action dispatch request' });
+    expect(fixture.verifier.verify).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
   it('keeps app-gate disabled unless the verifier explicitly authorizes it', async () => {

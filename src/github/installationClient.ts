@@ -9,6 +9,9 @@ import {
 } from './reviewCIRequest';
 import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
 import type { AbandonedPublishingRun } from '../persistence/reviewDispatchRepository';
+import { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from '../review/reviewCheckIdentity';
+
+export { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from '../review/reviewCheckIdentity';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -97,18 +100,6 @@ export const BASE_POLICY_CANDIDATE_FILES = ConfigResolver.CONFIG_FILES;
 export const CHECK_CONTEXT_RAW_REVIEW = 'Review Yeti';
 export const CHECK_CONTEXT_GATE = 'Review Yeti Gate';
 export const CHECK_CONTEXT_CI = 'Review Yeti CI';
-/** GitHub Check Run action used for a persisted same-head recovery request. */
-export const REVIEW_REFRESH_ACTION = Object.freeze({
-  label: 'Refresh review',
-  description: 'Retry the failed Review Yeti check for this exact head.',
-  identifier: 'review-yeti/refresh',
-});
-
-const RECOVERABLE_FAILURE_TITLES = new Set([
-  'Review Yeti: review did not complete',
-  'Review Yeti: NO VERDICT (no panel result for this head)',
-]);
-
 export interface GateCheckOptions {
   conclusion: 'success' | 'failure';
   title: string;

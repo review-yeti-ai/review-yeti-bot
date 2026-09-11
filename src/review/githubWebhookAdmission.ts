@@ -4,7 +4,7 @@ import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepo
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { AuthoritativeReviewAdmission } from './authoritativeServiceContracts';
-import { buildReviewRunIdentity } from './reviewAdmission';
+import { buildReviewRunIdentity, deriveReviewRunId } from './reviewAdmission';
 import { sha256 } from './reviewCore';
 import {
   AUTHORITATIVE_REVIEW_APP_ID, AUTHORITATIVE_REVIEW_APP_SLUG, AUTHORITATIVE_REVIEW_CHECK_NAME,
@@ -13,7 +13,7 @@ import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
 } from '../auth/githubWebhookIdentity';
 import { MergeGroupGateInProgressError } from './mergeGroupGate';
-import { REVIEW_REFRESH_ACTION } from '../github/installationClient';
+import { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from './reviewCheckIdentity';
 
 const positiveInteger = z.number().int().positive().safe();
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -36,10 +36,6 @@ const REFRESH_ACTION_IDENTIFIER = REVIEW_REFRESH_ACTION.identifier;
 // this bound to the signed external_id's exact `:a1` schema lets persistence
 // reject a replay after a replacement execution has projected.
 const RETRY_AFTER_EXECUTION_ATTEMPT = 1;
-const RECOVERABLE_FAILURE_TITLES = new Set([
-  'Review Yeti: review did not complete',
-  'Review Yeti: NO VERDICT (no panel result for this head)',
-]);
 const refreshCheckRunWebhook = z.object({
   action: z.literal('requested_action'),
   installation: z.object({ id: positiveInteger }).passthrough(),
@@ -143,7 +139,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const resolved = authoritative && authoritativeIds.has(payload.repository.id)
         ? await authoritative.resolver.resolve(requested) : undefined;
       const expectedIdentity = resolved?.identity || legacyIdentity;
-      const expectedRunId = `run_${sha256(expectedIdentity).slice(0, 32)}`;
+      const expectedRunId = deriveReviewRunId(expectedIdentity);
       if (expectedRunId !== runId) {
         return { status: 'ignored', reason: 'refresh_identity_mismatch' };
       }
