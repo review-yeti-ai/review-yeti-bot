@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   evaluateExactCheckRuns,
+  evaluateExactWorkerReviewCheckRuns,
   QUALIFYING_MERGE_QUEUE_STATES,
 } from './review-check-contract.mjs';
 
@@ -52,4 +53,28 @@ test('a foreign green alone cannot supply the required check', () => {
     const result = evaluateExactCheckRuns(checks.map((run) =>
       ({ ...run, app: { id: 123, slug: 'unrelated-operator-app' } })), head);
     assert.match(result.failures.join(' '), /required publisher/u);
+});
+
+test('merge-group qualification requires a successful worker review identity', () => {
+  const worker = { ...checks[0], external_id: `run_${'1'.repeat(32)}:a1` };
+  assert.deepEqual(evaluateExactWorkerReviewCheckRuns([worker], head).failures, []);
+  assert.match(evaluateExactWorkerReviewCheckRuns([
+    { ...worker, conclusion: 'skipped' },
+  ], head).failures.join(' '), /not successful/u);
+  for (const external_id of [undefined, `merge-group:${head}`, 'run_short:a1', `run_${'1'.repeat(32)}:a0`]) {
+    assert.match(evaluateExactWorkerReviewCheckRuns([
+      { ...worker, external_id },
+    ], head).failures.join(' '), /no worker review evidence/u);
+  }
+});
+
+test('merge-group qualification orders worker verdicts by immutable check id', () => {
+  const worker = { ...checks[0], external_id: `run_${'2'.repeat(32)}:a1` };
+  const result = evaluateExactWorkerReviewCheckRuns([
+    { ...worker, id: 100, conclusion: 'success', started_at: '2026-09-11T12:02:00Z' },
+    { ...worker, id: 101, conclusion: 'failure', started_at: '2026-09-11T12:01:00Z' },
+    { ...worker, id: 102, external_id: `merge-group:${head}`, conclusion: 'success' },
+  ], head);
+  assert.equal(result.verdict.id, 101);
+  assert.match(result.failures.join(' '), /not successful/u);
 });

@@ -18,7 +18,8 @@ const event = {
     head_ref: `refs/heads/gh-readonly-queue/master/pr-42-${baseSha}` },
 };
 const checks = [
-  { id: 11, name: 'Review Yeti', app: { id: 4385771, slug: 'ct-review-bot' }, status: 'completed', conclusion: 'success', head_sha: headSha },
+  { id: 11, name: 'Review Yeti', app: { id: 4385771, slug: 'ct-review-bot' }, status: 'completed', conclusion: 'success', head_sha: headSha,
+    external_id: `run_${'1'.repeat(32)}:a1` },
 ];
 const entry = (number = 42, position = 1) => ({
   position, state: 'AWAITING_CHECKS', baseCommit: { oid: baseSha }, headCommit: { oid: groupSha },
@@ -344,6 +345,20 @@ test('rejects a newer failed run rather than reusing older success', async () =>
     { ...checks[0], id: 12, conclusion: 'failure' },
   ] }) });
   assert.match(result.failures.join(' '), /latest exact-head run is not successful/u);
+});
+
+test('rejects App passthrough instead of treating skipped as a reviewed constituent', async () => {
+  const result = await verify({ fetchImpl: fetchFixture({ checkRuns: [
+    { ...checks[0], conclusion: 'skipped' },
+  ] }) });
+  assert.match(result.failures.join(' '), /not successful/u);
+});
+
+test('rejects synthetic App attestations instead of treating them as worker reviews', async () => {
+  const result = await verify({ fetchImpl: fetchFixture({ checkRuns: [
+    { ...checks[0], external_id: `merge-group:${groupSha}` },
+  ] }) });
+  assert.match(result.failures.join(' '), /worker review evidence/u);
 });
 
 test('fails closed when one constituent check-runs lookup is unavailable', async () => {

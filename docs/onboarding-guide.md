@@ -206,5 +206,6 @@ To require Review Yeti before a pull request can merge:
 Review Yeti natively supports GitHub Merge Queues:
 * The dedicated `.github/workflows/ct-review-merge-group.yml` workflow runs the centrally owned exact-head verifier at a full commit SHA, satisfying the merge-group context without an inline shell approximation.
 * For ordinary pull requests, `ct-review-bot` App `4385771` owns the required `Review Yeti` context on each constituent head.
-* The verifier checks every constituent's latest exact-head native verdict, then publishes the same App-owned `Review Yeti` context on the synthetic combined head.
+* The verifier checks every constituent's latest exact-head successful worker verdict with an immutable `run_<id>:a<attempt>` external ID. Passthrough/skipped checks and synthetic `merge-group:<sha>` attestations do not qualify.
+* After qualification, it publishes the same App-owned `Review Yeti` context on the synthetic combined head.
 * This prevents redundant and expensive re-reviews of code that was already thoroughly audited prior to queue admission.

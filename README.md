@@ -325,8 +325,11 @@ named check-run publisher identity; it does not merge the two queue schemas.
 
 The official `ct-review-bot` App `4385771` owns the required `Review Yeti`
 context on both constituent and combined heads. The verifier reads each
-constituent verdict and publishes the combined-head result without re-reviewing
-the synthetic group. These instructions do not change repository settings.
+constituent's latest successful worker verdict, identified by its immutable
+`run_<id>:a<attempt>` external ID, and publishes the combined-head result
+without re-reviewing the synthetic group. Passthrough/skipped checks and prior
+`merge-group:<sha>` attestations never qualify as worker review evidence. These
+instructions do not change repository settings.
 
 No owner-produced deployment readback is wired into this read-only collector
 yet. It therefore emits `runtime_qualification.ready: false` and

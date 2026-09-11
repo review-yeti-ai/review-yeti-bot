@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 import { isEntrypoint } from '../../../scripts/entrypoint-guard.mjs';
 import {
-  evaluateExactCheckRuns,
+  evaluateExactWorkerReviewCheckRuns,
   QUALIFYING_MERGE_QUEUE_STATES,
 } from '../../../scripts/review-check-contract.mjs';
 import { assertAdmittedRepository } from '../../../scripts/validate-central-dispatch.mjs';
@@ -135,7 +135,7 @@ export async function verifyMergeGroup({ repository, branch, event, expectedHead
         failures.push(`PR #${number}: check-run pagination is incomplete or unknown`);
         continue;
       }
-      const result = evaluateExactCheckRuns(checks.check_runs, headSha);
+      const result = evaluateExactWorkerReviewCheckRuns(checks.check_runs, headSha);
       for (const failure of result.failures) failures.push(`PR #${number}: ${failure}`);
     } catch {
       failures.push(`PR #${number}: exact-head check lookup is unavailable`);
