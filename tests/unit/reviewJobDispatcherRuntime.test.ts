@@ -96,9 +96,10 @@ describe('runReviewJobDispatcherLoop', () => {
     });
   });
 
-  it('reports only a safe error fingerprint and applies bounded backoff instead of exiting', async () => {
+  it.each(['42P08', 'A'.repeat(32)])(
+    'reports safe error fingerprint %s and applies bounded backoff instead of exiting', async (errorCode) => {
     const controller = new AbortController();
-    const failure = Object.assign(new Error('postgres://secret-bearing-error'), { code: '42P08' });
+    const failure = Object.assign(new Error('postgres://secret-bearing-error'), { code: errorCode });
     const engine = { runOnce: vi.fn(async () => { throw failure; }) };
     const onCycleError = vi.fn();
     const sleep = vi.fn(async (milliseconds: number) => {
@@ -115,15 +116,22 @@ describe('runReviewJobDispatcherLoop', () => {
       onCycleError,
     });
 
-    expect(onCycleError).toHaveBeenCalledWith({ status: 'cycle-error', errorCode: '42P08' });
+    expect(onCycleError).toHaveBeenCalledWith({ status: 'cycle-error', errorCode });
     expect(JSON.stringify(onCycleError.mock.calls)).not.toContain('secret-bearing');
   });
 
   it.each([
+    ['null', null],
+    ['undefined', undefined],
     ['a primitive throw', 'postgres://secret-bearing-error'],
     ['a non-string code', Object.assign(new Error('private provider response'), { code: 42 })],
+    ['an empty code', Object.assign(new Error('private provider response'), { code: '' })],
     ['a free-form lowercase code', Object.assign(new Error('private provider response'), { code: 'secret-bearing' })],
+    ['a code with spaces', Object.assign(new Error('private provider response'), { code: 'SQL STATE' })],
     ['an overlong code', Object.assign(new Error('private provider response'), { code: 'A'.repeat(33) })],
+    ['a throwing code getter', Object.defineProperty(new Error('private provider response'), 'code', {
+      get: () => { throw new Error('secret-bearing getter'); },
+    })],
   ])('drops unsafe diagnostic content from %s', async (_label, failure) => {
     const controller = new AbortController();
     const engine = { runOnce: vi.fn(async () => { throw failure; }) };
