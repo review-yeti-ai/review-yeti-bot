@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.55.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.3...v1.55.0) (2026-09-11)
+
+
+### Features
+
+* **events:** define Review Yeti event envelope ([#704](https://github.com/review-yeti-ai/review-yeti-bot/issues/704)) ([0f146a9](https://github.com/review-yeti-ai/review-yeti-bot/commit/0f146a97bcd3afbbea6c9cc91392466c9fd7f978))
+
 ## [1.54.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.2...v1.54.3) (2026-09-11)
 
 
