@@ -824,6 +824,15 @@ test('documentation labels generic callers and distinguishes constituent checks 
   }
 });
 
+test('README scopes dual check publication to legacy local execution and keeps DOKS raw-only', () => {
+  const source = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  assert.match(source, /DOKS central action writes zero checks/u);
+  assert.match(source, /worker publishes only the raw `Review Yeti` check/u);
+  assert.match(source, /legacy hosted\/local compatibility path/u);
+  assert.match(source, /also publishes `Review Yeti Gate`/u);
+  assert.match(source, /must not\s+be required for governed DOKS repositories/u);
+});
+
 test('accepts a thin consumer shim only when it pins and binds the central verifier action', () => {
   const actionWorkflow = mergeGroupWorkflow;
   const result = qualifyReadiness(readyInput({ mergeGroupWorkflow: actionWorkflow }));

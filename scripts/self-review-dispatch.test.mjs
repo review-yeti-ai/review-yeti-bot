@@ -153,3 +153,11 @@ test('dispatch emits the exact immutable payload and propagates failure', () => 
   });
   assert.equal(runBody(body, { POST_EXIT: '17' }).status, 17);
 });
+
+test('dispatch confirmation names the raw App check without promising a DOKS Gate check', () => {
+  const body = stepBody('Confirm central Review Yeti dispatch');
+  const result = runBody(body);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /App ID 4385771 publishes Review Yeti\./u);
+  assert.doesNotMatch(result.stdout, /Review Yeti Gate/u);
+});

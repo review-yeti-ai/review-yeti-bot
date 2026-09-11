@@ -29,7 +29,7 @@ on:
         default: ''
         type: string
       passthrough:
-        description: Deliver immediate SHIP in passthrough mode without LLM evaluation.
+        description: Deliver SKIPPED passthrough semantics without LLM evaluation; DOKS remains blocked.
         required: false
         default: false
         type: boolean
@@ -386,6 +386,7 @@ jobs:
           PR_NUMBER: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.central_execution && inputs.head_sha || github.event.pull_request.head.sha }}
           BASE_SHA: ${{ inputs.central_execution && inputs.base_sha || github.event.pull_request.base.sha }}
+          REVIEW_YETI_EXECUTION_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}
         run: .exampleorg-review-actions/scripts/deliver-passthrough.sh
 
       # The bot already writes per-lane telemetry (turnCount, failureClass,
@@ -470,4 +471,5 @@ jobs:
           PROVIDER_RECEIPT_DIGEST: ${{ steps.passthrough.outputs.review-dispatch-provider-receipt-digest || steps.review.outputs.review-dispatch-provider-receipt-digest }}
           RUN_REPORT_PATH: ${{ steps.passthrough.outputs.run-report-path || steps.review.outputs.run-report-path }}
           REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}
+          REVIEW_YETI_EXECUTION_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}
         run: .exampleorg-review-actions/scripts/check-review-verdict.sh

@@ -29,6 +29,7 @@ set -euo pipefail
 # real review ran and MUST have produced both).
 : "${DISPATCH_REFLECTION_STATUS:=}"
 : "${PROVIDER_RECEIPT_DIGEST:=}"
+execution_backend="${REVIEW_YETI_EXECUTION_BACKEND:-local}"
 
 metadata="$(gh api "repos/${REVIEW_REPOSITORY}/pulls/${REVIEW_PR_NUMBER}")"
 actual_base="$(jq -r '.base.sha // empty' <<<"$metadata")"
@@ -64,16 +65,29 @@ if [[ "$REVIEW_STATUS" == "DISPATCHED" && "$GATE_DECISION" == "PENDING" ]]; then
   exit 0
 fi
 
-# Maintenance hatch: passthrough never claims SHIP. SKIPPED means no panel ran
-# and the merge queue may proceed on a skipped required check.
+# Maintenance hatch: passthrough never claims SHIP. Legacy hosted/local runs
+# publish skipped checks, while DOKS publishes no check and leaves protected
+# merge blocked on the unsatisfied raw App check.
 if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" && ( "$REVIEW_STATUS" == "SKIPPED" || "$REVIEW_STATUS" == "NO_REVIEW" ) ]]; then
-  echo "Review Yeti PASSTHROUGH accepted for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
-  echo "Verdict is SKIPPED (not SHIP). No panel ran."
-  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-    {
-      echo "### Review Yeti: SKIPPED (passthrough)"
-      echo "No panel ran. Gate check is skipped so the merge queue can continue."
-    } >> "$GITHUB_STEP_SUMMARY"
+  if [[ "$execution_backend" == "doks" ]]; then
+    summary_line="No Review Yeti check is published. The protected raw App check remains unsatisfied, so merge remains blocked."
+    echo "Review Yeti DOKS PASSTHROUGH handling completed for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
+    echo "Verdict is SKIPPED (not SHIP). No panel ran. ${summary_line}"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      {
+        echo "### Review Yeti: SKIPPED (DOKS passthrough; no check published)"
+        echo "No panel ran. ${summary_line}"
+      } >> "$GITHUB_STEP_SUMMARY"
+    fi
+  else
+    echo "Review Yeti PASSTHROUGH accepted for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
+    echo "Verdict is SKIPPED (not SHIP). No panel ran."
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      {
+        echo "### Review Yeti: SKIPPED (passthrough)"
+        echo "No panel ran. Gate check is skipped so the merge queue can continue."
+      } >> "$GITHUB_STEP_SUMMARY"
+    fi
   fi
   exit 0
 fi

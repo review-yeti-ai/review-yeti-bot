@@ -8,9 +8,9 @@ import { join } from 'node:path';
 // Plan item 0.1: passthrough must never publish SHIP.
 //
 // Before this, the script emitted `verdict: "SHIP"`, `gate-decision=PASS` and
-// `merge-eligible=true` while its own comment body said no review was completed
-// -- and a pull request merged on one. These fixtures exist so that combination
-// cannot come back silently.
+// `merge-eligible=true` on a blocked DOKS path while its own comment body said
+// no review was completed. These fixtures keep DOKS fail-closed while preserving
+// the intentional legacy hosted/local SKIPPED-check behavior.
 
 const SCRIPT = new URL('./deliver-passthrough.sh', import.meta.url).pathname;
 
@@ -18,7 +18,7 @@ function run(env = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'passthrough-'));
   const outputs = join(dir, 'gh-output');
   const summary = join(dir, 'step-summary');
-  execFileSync('bash', [SCRIPT], {
+  const stdout = execFileSync('bash', [SCRIPT], {
     env: {
       ...process.env,
       PATH: process.env.PATH,
@@ -29,14 +29,17 @@ function run(env = {}) {
       RUNNER_TEMP: dir,
       GITHUB_OUTPUT: outputs,
       GITHUB_STEP_SUMMARY: summary,
+      REVIEW_YETI_EXECUTION_BACKEND: 'local',
       // No GH_TOKEN: comment publishing is skipped, which is the path under test.
       GH_TOKEN: '',
       ...env,
     },
+    encoding: 'utf8',
     stdio: 'pipe',
   });
   const report = readdirSync(dir).find((f) => f.startsWith('review-yeti-run-report-'));
   return {
+    stdout,
     outputs: readFileSync(outputs, 'utf8'),
     summary: readFileSync(summary, 'utf8'),
     report: JSON.parse(readFileSync(join(dir, report), 'utf8')),
@@ -50,7 +53,7 @@ test('passthrough never emits a SHIP verdict', () => {
   assert.doesNotMatch(outputs, /review-status=SHIP/);
 });
 
-test('passthrough is merge-eligible as SKIPPED without claiming SHIP', () => {
+test('legacy local passthrough is merge-eligible as SKIPPED without claiming SHIP', () => {
   const { outputs } = run();
   assert.match(outputs, /gate-decision=SKIPPED/);
   assert.match(outputs, /merge-eligible=true/);
@@ -79,3 +82,22 @@ test('the step summary does not describe the result as an approval', () => {
   assert.doesNotMatch(summary, /Verdict: SHIP/);
 });
 
+test('DOKS passthrough reports no check, blocked protection, and is not merge-eligible', () => {
+  const { stdout, outputs, summary } = run({ REVIEW_YETI_EXECUTION_BACKEND: 'doks' });
+  for (const output of [stdout, summary]) {
+    assert.match(output, /No Review Yeti check is published/u);
+    assert.match(output, /protected raw App check remains unsatisfied/u);
+    assert.match(output, /merge remains blocked/u);
+    assert.doesNotMatch(output, /Gate check is (?:\*\*)?skipped/iu);
+    assert.doesNotMatch(output, /merge queue can continue/iu);
+  }
+  assert.match(outputs, /^merge-eligible=false$/mu);
+  assert.doesNotMatch(outputs, /^merge-eligible=true$/mu);
+});
+
+test('legacy local passthrough retains skipped-check merge-queue wording', () => {
+  const { outputs, summary } = run({ REVIEW_YETI_EXECUTION_BACKEND: 'local' });
+  assert.match(summary, /Gate check is (?:\*\*)?skipped/iu);
+  assert.doesNotMatch(summary, /merge remains blocked/iu);
+  assert.match(outputs, /^merge-eligible=true$/mu);
+});

@@ -3,7 +3,7 @@ name: Review Yeti
 # Base-owned, dispatch-only self-review shim at the fleet-standard caller path.
 # The same repository_dispatch
 # boundary used by fleet consumers validates this caller, executes promoted v1,
-# and lets the ct-review-bot App publish the authoritative exact-head gate.
+# and lets the ct-review-bot App publish the authoritative exact-head raw check.
 on:
   pull_request_target:
     branches: [main]
@@ -20,8 +20,8 @@ concurrency:
 
 jobs:
   review:
-    # Dispatch observability only. Protection and v1 promotion require
-    # Review Yeti Gate from App ID 4385771 on the exact PR head.
+    # Dispatch observability only. Protection and v1 promotion require the raw
+    # Review Yeti check from App ID 4385771 on the exact PR head.
     name: Review Yeti / Review Yeti
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
@@ -155,4 +155,4 @@ jobs:
         if: steps.trigger.outputs.dispatch == 'true'
         run: |
           echo "Dispatched central Review Yeti for ${TARGET_REPOSITORY}#${PR_NUMBER} (${EXPECTED_HEAD_SHA}) to ${CENTRAL_REPOSITORY}."
-          echo "repository-dispatch.yml executes asynchronously; App ID 4385771 publishes Review Yeti Gate."
+          echo "repository-dispatch.yml executes asynchronously; App ID 4385771 publishes Review Yeti."

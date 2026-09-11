@@ -78,8 +78,9 @@ The central `example-review-actions` repository follows the same rule for its ow
 pull requests: its base-owned `.github/workflows/ct-review-bot.yml` dispatches
 to the promoted `v1` receiver, and branch protection trusts only the exact-head
 `Review Yeti` check published by the `ct-review-bot` App. The distinct
-`Review Yeti Gate` name remains reserved for the future service-owned gate. Central self-review
-must not call the development-line reusable workflow directly.
+`Review Yeti Gate` name is not part of the deployed DOKS contract; it remains
+reserved there for the future service-owned gate. Central self-review must not
+call the development-line reusable workflow directly.
 
 ```yaml
 name: Review Yeti
@@ -228,6 +229,21 @@ Review Yeti supports two distinct execution backends configured centrally in `po
 * The worker evaluates the diff and reports the final verdict directly back to GitHub Check Runs via the GitHub App token.
 * Best for: enterprise environments, private model inference (Ollama/vLLM on private GPUs), high PR volume, and eliminating long-running GHA runner bills.
 
+### Check Publication Contract
+
+The deployed DOKS central action writes zero checks. For a reviewed DOKS run,
+the worker publishes only the raw `Review Yeti` check. Governed branch
+protection and promotion therefore bind `Review Yeti` to the official
+`ct-review-bot` App (integration `4385771`). DOKS passthrough does not dispatch
+a worker or synthesize an approval; it leaves the protected raw check
+unsatisfied.
+
+The legacy hosted/local compatibility path also publishes `Review Yeti Gate`
+alongside the raw check, including an honestly `skipped` pair during local
+passthrough. That alias preserves existing non-DOKS consumers only. It must not
+be required for governed DOKS repositories and does not represent the future
+service-owned gate.
+
 For deep-dive setup and deployment instructions, see [Kubernetes & DOKS Execution Mode](docs/kubernetes-mode.md).
 
 ---
@@ -340,6 +356,6 @@ approval evidence boundary exists.
 Changes to Review Yeti are developed on `main` and promoted to the immutable `@v1` channel via the atomic release promotion workflow:
 
 1. Changes pass rigorous test suites on `main` (`scripts/validate-central-dispatch.mjs`, transport telemetry, and schema validation).
-2. Promotion requires the exact PR head's App-owned `Review Yeti` check. The App ID binding distinguishes it from similarly named Actions jobs; `Review Yeti Gate` remains reserved for the future service-owned gate.
+2. Promotion requires the exact PR head's App-owned `Review Yeti` check. The App ID binding distinguishes it from similarly named Actions jobs; the legacy hosted/local `Review Yeti Gate` alias is not part of DOKS promotion and remains reserved there for the future service-owned gate.
 3. The `promote-v1.yml` workflow performs an atomic fast-forward push to the `v1` branch and generates an immutable SHA receipt.
 4. All consumer repositories referencing `@v1` immediately receive updated policies and features without repository-side commits.

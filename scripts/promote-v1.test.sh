@@ -645,8 +645,33 @@ grep -Fq "check-id: \${{ env.TRUSTED_EXECUTION_BACKEND != 'doks' && steps.init_c
 grep -Fq 'execution-backend: ${{ env.TRUSTED_EXECUTION_BACKEND }}' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'REVIEW_YETI_EXECUTION_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}' "$repo_root/.github/workflows/review-yeti.yml"
+# Passthrough is explicitly unreviewed: legacy hosted/local publishes SKIPPED
+# checks, while DOKS leaves raw App protection unsatisfied and merge blocked.
+grep -Fq 'description: Deliver SKIPPED passthrough semantics without LLM evaluation; DOKS remains blocked.' "$repo_root/.github/workflows/review-yeti.yml"
+if grep -Fq 'Deliver immediate SHIP' "$repo_root/.github/workflows/review-yeti.yml"; then
+  echo "passthrough input must not promise an unreviewed SHIP" >&2
+  exit 1
+fi
+# shellcheck disable=SC2016
+if [[ "$(grep -Fc 'REVIEW_YETI_EXECUTION_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}' "$repo_root/.github/workflows/review-yeti.yml")" != 3 ]]; then
+  echo "resolved backend must reach passthrough delivery, check publication, and verdict enforcement" >&2
+  exit 1
+fi
 if [[ "$(grep -Fc 'inputs.execution_backend ||' "$repo_root/.github/workflows/review-yeti.yml")" != 1 ]]; then
   echo "backend selection must be resolved once while preserving existing qualified central inputs" >&2
+  exit 1
+fi
+
+# The hourly passthrough alarm must describe both backend contracts honestly:
+# legacy local publishes skipped compatibility checks, while DOKS publishes no
+# check and leaves protected merge blocked.
+# shellcheck disable=SC2016
+grep -Fq 'REVIEW_YETI_EXECUTION_BACKEND: ${{ vars.REVIEW_YETI_EXECUTION_BACKEND || '\''local'\'' }}' "$repo_root/.github/workflows/passthrough-drift-alarm.yml"
+grep -Fq 'No Review Yeti check is published' "$repo_root/.github/workflows/passthrough-drift-alarm.yml"
+grep -Fq 'protected raw App check remains unsatisfied' "$repo_root/.github/workflows/passthrough-drift-alarm.yml"
+grep -Fq 'Legacy hosted/local passthrough publishes skipped Review Yeti and compatibility Gate checks' "$repo_root/.github/workflows/passthrough-drift-alarm.yml"
+if grep -Fq "Every consumer repository's required Review Yeti check is publishing" "$repo_root/.github/workflows/passthrough-drift-alarm.yml"; then
+  echo "passthrough alarm must not claim universal neutral-check publication" >&2
   exit 1
 fi
 if grep -Fq 'Publishing Check Run' "$repo_root/.github/workflows/review-yeti.yml"; then
@@ -654,24 +679,24 @@ if grep -Fq 'Publishing Check Run' "$repo_root/.github/workflows/review-yeti.yml
   exit 1
 fi
 
-# Passthrough publishes required App checks even on DOKS (the worker is not
-# dispatched). Non-passthrough DOKS still records a receipt and does not write.
+# Every DOKS outcome records a receipt and writes no target checks. Legacy local
+# passthrough retains dual skipped-check publication after the DOKS boundary.
 python3 - "$repo_root/scripts/publish-review-check-run.sh" <<'PY_PUBLISH_CONTRACT_EOF'
 import sys
 script = open(sys.argv[1]).read()
-passthrough_start = script.index('if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]')
 doks_start = script.index('if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]]')
-assert passthrough_start < doks_start, 'passthrough must publish before the DOKS skip'
-doks_block = script[doks_start:script.index('conclusion="success"')]
+passthrough_start = script.rindex('if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]')
+assert doks_start < passthrough_start, 'DOKS must exit before legacy local passthrough publication'
+doks_block = script[doks_start:passthrough_start]
 assert 'Central Checks API writes: 0' in doks_block, 'DOKS receipt must state zero central check writes'
-assert 'worker is the only raw' in doks_block, 'DOKS receipt must name the worker as sole publisher'
+assert 'publishes only the raw' in doks_block, 'DOKS receipt must scope the worker to the raw check'
 assert 'PATCH' not in doks_block, 'DOKS path must not claim PATCH reuse'
 assert 'exit 0' in doks_block, 'DOKS path must not fall through to hosted publication'
 assert 'Worker will complete check-run via PATCH' not in script, 'publisher must not claim PATCH reuse for DOKS'
 hosted_block = script[script.index('conclusion="success"'):]
 assert 'if [[ -n "${CHECK_ID:-}" ]]' in hosted_block, 'hosted CHECK_ID PATCH path must remain'
 assert 'conclusion="failure"' in hosted_block, 'hosted non-SHIP publication must remain fail-closed'
-print('  passthrough-before-doks and hosted publication contract ok')
+print('  doks-zero-write and legacy-hosted publication contract ok')
 PY_PUBLISH_CONTRACT_EOF
 
 # Behavioral proof: invoke the real script (not a grep of its text) with a fake curl that

@@ -119,8 +119,9 @@ validate_check_id="$required_check_id"
 # exact-App only. An earlier PR commit or same-name Actions check cannot qualify.
 # The deployed DOKS worker owns the raw `Review Yeti` check. Binding both its
 # exact name and App ID makes it authoritative without confusing it with the
-# similarly named Actions job. `Review Yeti Gate` remains reserved for the
-# separately controlled service-owned gate rollout.
+# similarly named Actions job. The legacy local `Review Yeti Gate` alias is not
+# promotion evidence; that name remains reserved in DOKS for the separately
+# controlled service-owned gate rollout.
 require_success "$pr_check_runs" 'Review Yeti' "PR #${pr_number} head ${pr_head}" \
   "repos/${repository}/commits/${pr_head}/check-runs?filter=all&per_page=100" \
   "$review_yeti_app_id"

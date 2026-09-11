@@ -87,26 +87,10 @@ run_doks_case dispatched DISPATCHED "" 45678
 run_doks_case error ERROR "" ""
 run_doks_case missing-verdict "" "" ""
 run_doks_case success SHIP "" ""
+run_doks_case passthrough SKIPPED "true" ""
 
-# Passthrough on DOKS must still POST required App checks (worker is not dispatched).
-rm -f "$TMP/curl_calls.log"
-env -i PATH="$TMP:$ORIG_PATH" \
-  GH_TOKEN="test-token" \
-  TARGET_REPO="exampleorg/ct-test" \
-  HEAD_SHA="abc1234" \
-  REVIEW_YETI_EXECUTION_BACKEND="doks" \
-  REVIEW_STATUS="SKIPPED" \
-  REVIEW_YETI_PASSTHROUGH="true" \
-  CENTRAL_RUN_URL="https://example.com/run/1" \
-  "$SCRIPT" >/dev/null 2>&1
-
-grep -cF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log" | grep -qx 2
-grep -qF '"name":"Review Yeti"' "$TMP/curl_calls.log"
-grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
-grep -qF '"conclusion":"skipped"' "$TMP/curl_calls.log"
-grep -qF 'SKIPPED' "$TMP/curl_calls.log"
-
-# Local passthrough also POSTs skipped (not SHIP/success) for both required names.
+# Legacy local passthrough POSTs skipped (not SHIP/success) for the raw check and
+# its compatibility alias. Governed DOKS protection must not depend on the alias.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
@@ -117,10 +101,13 @@ env -i PATH="$TMP:$ORIG_PATH" \
   CENTRAL_RUN_URL="https://example.com/run/1" \
   "$SCRIPT" >/dev/null 2>&1
 
+grep -cF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log" | grep -qx 2
 grep -qF '"conclusion":"skipped"' "$TMP/curl_calls.log"
+grep -qF '"name":"Review Yeti"' "$TMP/curl_calls.log"
 grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 
-# Hosted/local SHIP without CHECK_ID POSTs both the raw verdict and required gate.
+# Legacy hosted/local SHIP without CHECK_ID POSTs the raw verdict and its
+# compatibility alias.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
@@ -136,7 +123,8 @@ grep -qF '"name":"Review Yeti"' "$TMP/curl_calls.log"
 grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 grep -qF '"conclusion":"success"' "$TMP/curl_calls.log"
 
-# Hosted/local SHIP with CHECK_ID PATCHes the raw verdict and POSTs the gate.
+# Legacy hosted/local SHIP with CHECK_ID PATCHes the raw verdict and POSTs its
+# compatibility alias.
 rm -f "$TMP/curl_calls.log"
 env -i PATH="$TMP:$ORIG_PATH" \
   GH_TOKEN="test-token" \
@@ -184,5 +172,31 @@ env -i PATH="$TMP:$ORIG_PATH" \
 grep -cF "POST|https://api.github.com/repos/exampleorg/ct-test/check-runs|" "$TMP/curl_calls.log" | grep -qx 2
 grep -qF '"name":"Review Yeti Gate"' "$TMP/curl_calls.log"
 grep -qF '"conclusion":"failure"' "$TMP/curl_calls.log"
+
+# Operator-facing passthrough messages must distinguish the legacy local alias
+# from DOKS, where the central action writes no check and protection stays closed.
+cat >"$TMP/gh" <<'INNER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"variable get REVIEW_YETI_PASSTHROUGH"* ]]; then
+  echo "true"
+fi
+INNER_EOF
+chmod +x "$TMP/gh"
+
+passthrough_on_output="$(PATH="$TMP:$ORIG_PATH" "$SCRIPT_DIR/set-passthrough.sh" on)"
+grep -qF "Legacy local reviews publish SKIPPED checks; DOKS writes no check and remains blocked." <<<"$passthrough_on_output"
+passthrough_status_output="$(PATH="$TMP:$ORIG_PATH" "$SCRIPT_DIR/set-passthrough.sh" status)"
+grep -qF "Legacy local reviews publish SKIPPED checks; DOKS writes no check and remains blocked." <<<"$passthrough_status_output"
+set +e
+passthrough_help_output="$(PATH="$TMP:$ORIG_PATH" "$SCRIPT_DIR/set-passthrough.sh" help 2>&1)"
+passthrough_help_status=$?
+set -e
+[[ "$passthrough_help_status" -eq 1 ]]
+grep -qF "local: SKIPPED checks; DOKS: no check, protection remains blocked" <<<"$passthrough_help_output"
+if grep -qF "Gate check is SKIPPED" <<<"${passthrough_on_output}${passthrough_status_output}${passthrough_help_output}"; then
+  echo "passthrough CLI must not imply that DOKS publishes a Gate check" >&2
+  exit 1
+fi
 
 echo "publish-review-check-run.test.sh: DOKS no-write and hosted publication contract passed"

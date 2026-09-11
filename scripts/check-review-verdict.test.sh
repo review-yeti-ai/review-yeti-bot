@@ -413,7 +413,7 @@ fi
 echo "[passthrough-mode] passed (zero-lane SHIP under passthrough is rejected, never announced as SHIP)"
 
 # 3c-2b. Honest passthrough: SKIPPED is merge-eligible without claiming SHIP.
-REVIEW_YETI_PASSTHROUGH="true" REVIEW_STATUS="SKIPPED" GATE_DECISION="SKIPPED" MERGE_ELIGIBLE="true" \
+REVIEW_YETI_EXECUTION_BACKEND="local" REVIEW_YETI_PASSTHROUGH="true" REVIEW_STATUS="SKIPPED" GATE_DECISION="SKIPPED" MERGE_ELIGIBLE="true" \
   DISPATCH_REFLECTION_STATUS="" PROVIDER_RECEIPT_DIGEST="" \
   run_script "$(pr_json "$base_sha" "$head_sha")" '' "$zero_lane_report"
 if [[ "$rc" -ne 0 ]]; then
@@ -437,7 +437,40 @@ if grep -Eq "Review Yeti: SHIP" <<<"$output"; then
   exit 1
 fi
 echo "[passthrough-skipped] passed (SKIPPED passthrough is merge-eligible, not SHIP)"
-unset REVIEW_YETI_PASSTHROUGH REVIEW_STATUS GATE_DECISION MERGE_ELIGIBLE
+
+# 3c-2c. DOKS passthrough suppresses worker dispatch and publishes no check. The
+# enforcement step itself completes cleanly, but must say that protected merge
+# remains blocked rather than borrowing the legacy local skipped-check wording.
+REVIEW_YETI_EXECUTION_BACKEND="doks" REVIEW_YETI_PASSTHROUGH="true" REVIEW_STATUS="SKIPPED" GATE_DECISION="SKIPPED" MERGE_ELIGIBLE="false" \
+  DISPATCH_REFLECTION_STATUS="" PROVIDER_RECEIPT_DIGEST="" \
+  run_script "$(pr_json "$base_sha" "$head_sha")" '' "$zero_lane_report"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[doks-passthrough-skipped] expected the DOKS passthrough handler to complete cleanly, got $rc" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "No Review Yeti check is published" <<<"$output" || {
+  echo "[doks-passthrough-skipped] expected explicit no-check wording" >&2
+  echo "$output" >&2
+  exit 1
+}
+grep -Fq "protected raw App check remains unsatisfied" <<<"$output" || {
+  echo "[doks-passthrough-skipped] expected unsatisfied-protection wording" >&2
+  echo "$output" >&2
+  exit 1
+}
+grep -Fq "merge remains blocked" <<<"$output" || {
+  echo "[doks-passthrough-skipped] expected blocked-merge wording" >&2
+  echo "$output" >&2
+  exit 1
+}
+if grep -Eq "Gate check is skipped|merge queue can continue|PASSTHROUGH accepted" <<<"$output"; then
+  echo "[doks-passthrough-skipped] DOKS must not claim a skipped Gate or accepted merge" >&2
+  echo "$output" >&2
+  exit 1
+fi
+echo "[doks-passthrough-skipped] passed (no check published, protected merge remains blocked)"
+unset REVIEW_YETI_EXECUTION_BACKEND REVIEW_YETI_PASSTHROUGH REVIEW_STATUS GATE_DECISION MERGE_ELIGIBLE
 
 # 3c-3. Direct execution of deliver-passthrough.sh:
 #       Ensures required coordinate enforcement, zero-lane SHIP report generation,

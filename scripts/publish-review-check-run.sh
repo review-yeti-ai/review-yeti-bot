@@ -45,22 +45,17 @@ publish_passthrough_check() {
   }
 }
 
-# Passthrough must publish even when the fleet backend is DOKS: the worker is
-# not dispatched, so if we skip Checks API writes here the required App gate
-# never appears and merges stay blocked.
-if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
-  echo "Publishing passthrough Check Runs (skipped, not SHIP) to ${TARGET_REPO} on ${HEAD_SHA}..."
-  publish_passthrough_check "Review Yeti"
-  publish_passthrough_check "Review Yeti Gate"
-  exit 0
-fi
-
 # DOKS is an asynchronous handoff. The worker owns the only raw `Review Yeti`
 # check-run publication for this backend; the central action must not create a
 # placeholder or try to reuse a check ID that does not exist in this workflow.
 if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]]; then
   doks_status="${REVIEW_STATUS:-MISSING_VERDICT}"
-  doks_receipt="Review Yeti DOKS backend returned ${doks_status} for ${TARGET_REPO}@${HEAD_SHA}; central check-run publication was skipped because the DOKS worker is the only raw 'Review Yeti' publisher."
+  if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
+    doks_publication="passthrough does not dispatch a worker, so this central action publishes no target check and the protected raw check remains unsatisfied"
+  else
+    doks_publication="the DOKS worker is the only publisher and publishes only the raw 'Review Yeti' check"
+  fi
+  doks_receipt="Review Yeti DOKS backend returned ${doks_status} for ${TARGET_REPO}@${HEAD_SHA}; central check-run publication was skipped because ${doks_publication}."
   echo "::notice::${doks_receipt}"
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
@@ -73,6 +68,17 @@ if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]]; then
       fi
     } >>"$GITHUB_STEP_SUMMARY"
   fi
+  exit 0
+fi
+
+# Legacy hosted/local execution publishes the raw check plus `Review Yeti Gate`
+# as a compatibility alias. This includes local passthrough, where both checks
+# are honestly SKIPPED. Governed DOKS repositories must require only the raw
+# App-owned `Review Yeti` check; the DOKS branch above always writes zero checks.
+if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
+  echo "Publishing legacy local passthrough Check Runs (skipped, not SHIP) to ${TARGET_REPO} on ${HEAD_SHA}..."
+  publish_passthrough_check "Review Yeti"
+  publish_passthrough_check "Review Yeti Gate"
   exit 0
 fi
 
@@ -163,6 +169,6 @@ else
   publish_completed_check "Review Yeti"
 fi
 
-# Consumers protect on the stable gate name while the raw check remains useful
-# for verdict diagnostics. Both checks are App-owned and bound to the same head.
+# Preserve the legacy hosted/local compatibility alias. It is App-owned and
+# bound to the same head, but it is not the governed DOKS protection contract.
 publish_completed_check "Review Yeti Gate"

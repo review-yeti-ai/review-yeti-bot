@@ -2,13 +2,13 @@ name: Review Yeti passthrough alarm
 
 # ADR-free standing patrol, same shape as v1-drift-alarm.yml: REVIEW_YETI_PASSTHROUGH is a
 # legitimate, real-incident escape hatch (see scripts/deliver-passthrough.sh and
-# scripts/publish-review-check-run.sh), but while it is true every consumer repository's
-# required Review Yeti check publishes a neutral "no review performed" result instead of a
-# real panel review -- and it has been toggled on and off repeatedly, so it is easy to forget
-# enabled. This workflow alarms hourly while the variable is true and opens/updates one
-# deduped issue naming the variable to unset. It never writes the variable itself; unsetting
-# REVIEW_YETI_PASSTHROUGH stays a deliberate human action, exactly like v1 promotion staying
-# the exclusive writer of the v1 ref.
+# scripts/publish-review-check-run.sh), but while it is true no real panel review runs. Legacy
+# hosted/local execution publishes skipped compatibility checks; DOKS suppresses dispatch,
+# publishes no check, and leaves protected merge blocked. The variable has been toggled on and
+# off repeatedly, so it is easy to forget enabled. This workflow alarms hourly while the
+# variable is true and opens/updates one deduped issue naming the variable to unset. It never
+# writes the variable itself; unsetting REVIEW_YETI_PASSTHROUGH stays a deliberate human action,
+# exactly like v1 promotion staying the exclusive writer of the v1 ref.
 
 on:
   schedule:
@@ -33,6 +33,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH }}
+          REVIEW_YETI_EXECUTION_BACKEND: ${{ vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
         run: |
           set -euo pipefail
 
@@ -44,7 +45,12 @@ jobs:
           fi
 
           title="Review Yeti passthrough is enabled: fleet is unreviewed"
-          body="The \`REVIEW_YETI_PASSTHROUGH\` repository variable is currently \`true\`. Every consumer repository's required Review Yeti check is publishing a **neutral, unreviewed** result -- no persona has run a real review on any PR in the fleet while this is set.\n\nThis is a legitimate maintenance escape hatch for real incidents, not a standing configuration. Unset it as soon as the incident that required it is resolved:\n\n\`gh variable set REVIEW_YETI_PASSTHROUGH --body false -R exampleorg/example-review-actions\`\n\nThis workflow never changes the variable itself."
+          if [ "${REVIEW_YETI_EXECUTION_BACKEND:-local}" = "doks" ]; then
+            impact="DOKS passthrough suppresses worker dispatch. No Review Yeti check is published; the protected raw App check remains unsatisfied, so merge remains blocked."
+          else
+            impact="Legacy hosted/local passthrough publishes skipped Review Yeti and compatibility Gate checks. No persona reviewed the head, although the skipped checks allow the merge queue to continue."
+          fi
+          body="The \`REVIEW_YETI_PASSTHROUGH\` repository variable is currently \`true\`. ${impact}\n\nThis is a legitimate maintenance escape hatch for real incidents, not a standing configuration. Unset it as soon as the incident that required it is resolved:\n\n\`gh variable set REVIEW_YETI_PASSTHROUGH --body false -R exampleorg/example-review-actions\`\n\nThis workflow never changes the variable itself."
 
           existing="$(gh api "repos/exampleorg/example-review-actions/issues?state=open&labels=passthrough-drift" --jq 'length')"
           if [ "$existing" -gt 0 ]; then
