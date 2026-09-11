@@ -47,6 +47,8 @@ const (
 	v1Alpha2RequeueAfter             = 5 * time.Second
 	v1Alpha2PVCCreateRequeue         = 1 * time.Second
 	workerCreationReserved           = "WorkerCreationReserved"
+	terminalOutcomeFinalizer         = "review-yeti.ai/terminal-outcome"
+	failurePublicationCondition      = "FailurePublication"
 )
 
 // PRReviewJobV1Alpha2Reconciler is the disabled-by-default receipt-only
@@ -74,13 +76,17 @@ type PRReviewJobV1Alpha2Reconciler struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
-	if err := r.Get(ctx, req.NamespacedName, &review); err != nil {
+	err := r.getCachedThenLive(ctx, req.NamespacedName, &review)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, r.releaseOrphanedWorkerObservation(ctx, req)
 		}
 		return ctrl.Result{}, err
 	}
 
+	if failurePublicationPending(&review) {
+		return r.reconcileFailurePublication(ctx, &review)
+	}
 	if isTerminalPhase(review.Status.Phase) {
 		return r.reconcileTerminalWorkspace(ctx, &review)
 	}
@@ -92,25 +98,27 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
 	}
 	if !now.Before(review.Spec.TerminalDeadline.Time) {
-		if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageCompleted, metav1.NewTime(now)); err != nil {
-			return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
-		}
-		r.recordDispatchTiming(&review, now)
-		return ctrl.Result{}, r.setPhase(ctx, &review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
+		return r.reconcileElapsedDeadline(ctx, &review, now)
 	}
 
 	workerName := review.Name + "-worker"
 	var existing batchv1.Job
-	existingErr := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
-	if apierrors.IsNotFound(existingErr) && r.APIReader != nil {
-		existingErr = r.APIReader.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
-	}
+	existingErr := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
 	if existingErr != nil && !apierrors.IsNotFound(existingErr) {
 		return ctrl.Result{}, existingErr
 	}
 	if existingErr == nil {
 		if !managedWorkerJobMatches(&review, &existing) {
-			return ctrl.Result{}, r.failWorkerContractMismatch(ctx, &review, &existing, "existing worker Job does not match the immutable receipt-only contract")
+			return r.failWorkerContractMismatch(ctx, &review, &existing, "existing worker Job does not match the immutable receipt-only contract")
+		}
+		// Adopt Jobs created by an older operator before observing their state.
+		// Terminal Jobs need the guard too: a parent status conflict must not let
+		// immediate TTL collection erase the authoritative outcome between retries.
+		if existing.DeletionTimestamp == nil && !controllerutil.ContainsFinalizer(&existing, terminalOutcomeFinalizer) {
+			controllerutil.AddFinalizer(&existing, terminalOutcomeFinalizer)
+			if err := r.Update(ctx, &existing); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		return r.reconcileExistingJob(ctx, &review, &existing, now)
 	}
@@ -119,8 +127,11 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		// terminal state. Missing execution evidence is not a fresh admission.
 		// Do not release its workspace here: surviving Pods or a newer Lease
 		// must still pass the normal guarded terminal cleanup path.
-		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, r.fail(ctx, &review,
-			"WorkerJobMissing", "previous worker creation was reserved or observed but its Job is missing; execution outcome is unknown and fresh admission is required")
+		message := "previous worker creation was reserved or observed but its Job is missing; execution outcome is unknown and fresh admission is required"
+		if review.Spec.PublicationMode == job.PublicationModeAppGate {
+			return r.startFailurePublication(ctx, &review, "WorkerJobMissing", message)
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, r.fail(ctx, &review, "WorkerJobMissing", message)
 	}
 
 	limit := r.MaxConcurrentJobs
@@ -218,6 +229,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, err
 		}
 	}
+	// TTL-after-finished may request deletion immediately. Hold the Job until
+	// its terminal result has been durably copied into the parent status; the
+	// next terminal reconcile releases this observation guard.
+	controllerutil.AddFinalizer(worker, terminalOutcomeFinalizer)
 	// Persist intent before Create, whose response or following status update
 	// can be lost. This condition reserves at most one creation attempt, not a
 	// claim that a Job started. Even an uncertain/unsent Create cannot be
@@ -241,7 +256,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, getErr
 		}
 		if !managedWorkerJobMatches(&review, &existing) {
-			return ctrl.Result{}, r.failWorkerContractMismatch(ctx, &review, &existing, "racing worker Job does not match the immutable receipt-only contract")
+			return r.failWorkerContractMismatch(ctx, &review, &existing, "racing worker Job does not match the immutable receipt-only contract")
 		}
 		return r.reconcileExistingJob(ctx, &review, &existing, now)
 	}
@@ -257,6 +272,83 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// A finalizer on an owned child cannot delay deletion of its owner. If a
+// PRReviewJob is explicitly removed, release only this controller's guard from
+// its exact child so garbage collection cannot strand a terminating Job. The
+// uncached read above is required before entering this owner-absent path.
+func (r *PRReviewJobV1Alpha2Reconciler) releaseOrphanedWorkerObservation(ctx context.Context, req ctrl.Request) error {
+	var worker batchv1.Job
+	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name + "-worker"}, &worker)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) || !controlledByDeletedReviewName(&worker, req.Name) {
+		return nil
+	}
+	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
+	return r.Update(ctx, &worker)
+}
+
+func controlledByDeletedReviewName(worker *batchv1.Job, name string) bool {
+	// The authoritative live read already proved that no owner object exists, so
+	// there is no owner UID to pass to metav1.IsControlledBy. Match the persisted
+	// controller tombstone by exact GVK/name; if a review with the same name was
+	// recreated, getCachedThenLive would find it before entering this path.
+	owner := metav1.GetControllerOf(worker)
+	return owner != nil && owner.APIVersion == reviewv1alpha2.GroupVersion.String() &&
+		owner.Kind == "PRReviewJob" && owner.Name == name
+}
+
+// reconcileElapsedDeadline checks an already-admitted worker before recording
+// expiry. Kubernetes may deliver a terminal Job event after the wall-clock
+// deadline, and that Job's terminal condition remains the authoritative result.
+// An app-gate worker that is still active or has disappeared is stopped and
+// routed into durable failure publication instead of silently expiring.
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileElapsedDeadline(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	now time.Time,
+) (ctrl.Result, error) {
+	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
+	var worker batchv1.Job
+	err := r.getCachedThenLive(ctx, workerKey, &worker)
+	if err == nil {
+		if !managedWorkerJobMatches(review, &worker) {
+			return r.failWorkerContractMismatch(ctx, review, &worker, "existing worker Job does not match the immutable receipt-only contract")
+		}
+		if worker.DeletionTimestamp == nil && !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) {
+			controllerutil.AddFinalizer(&worker, terminalOutcomeFinalizer)
+			if err := r.Update(ctx, &worker); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if worker.Status.Succeeded > 0 || worker.Status.Failed > 0 {
+			return r.reconcileExistingJob(ctx, review, &worker, now)
+		}
+		if review.Spec.PublicationMode == job.PublicationModeAppGate && workerCreationWasAttempted(review) {
+			if worker.DeletionTimestamp == nil {
+				if err := r.Delete(ctx, &worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			}
+			return r.startFailurePublication(ctx, review, "DeadlineExpired", "publishing worker did not produce a durable verdict before its terminal deadline")
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	} else if review.Spec.PublicationMode == job.PublicationModeAppGate && workerCreationWasAttempted(review) {
+		return r.startFailurePublication(ctx, review, "WorkerJobMissing", "publishing worker disappeared without a durable verdict before terminal observation")
+	}
+
+	if _, err := observeTiming(review, reviewv1alpha2.DispatchStageCompleted, metav1.NewTime(now)); err != nil {
+		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
+	}
+	r.recordDispatchTiming(review, now)
+	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
 }
 
 func workerCreationWasAttempted(review *reviewv1alpha2.PRReviewJob) bool {
@@ -319,7 +411,119 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	if worker.Status.Succeeded > 0 {
 		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", "receipt-only worker Job completed")
 	}
+	if review.Spec.PublicationMode == job.PublicationModeAppGate {
+		return r.startFailurePublication(ctx, review, "WorkerFailed", "publishing worker Job failed")
+	}
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, "WorkerFailed", "receipt-only worker Job failed")
+}
+
+func failurePublicationPending(review *reviewv1alpha2.PRReviewJob) bool {
+	condition := meta.FindStatusCondition(review.Status.Conditions, failurePublicationCondition)
+	return condition != nil && condition.Status == metav1.ConditionFalse
+}
+
+// startFailurePublication first records the fail-closed parent outcome and the
+// publication obligation in one status write. A crash after this point is safe:
+// the next reconcile sees the pending condition before terminal cleanup and
+// delegates the exact admitted identity to the dispatcher-owned deadline reaper.
+// The operator never retries GitHub with the worker's expiring installation
+// token and never receives App private-key material.
+func (r *PRReviewJobV1Alpha2Reconciler) startFailurePublication(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	reason string,
+	message string,
+) (ctrl.Result, error) {
+	now := metav1.NewTime(r.clock())
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	review.Status.ObservedGeneration = review.Generation
+	review.Status.Message = message
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: now,
+	})
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               failurePublicationCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            "fail-closed App check publication is pending",
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: now,
+	})
+	if err := r.Status().Update(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (ctrl.Result, error) {
+	// A worker can cross its deadline or enter deletion between the observation
+	// that started failure recovery and this reconcile. Its finalizer keeps a
+	// terminal success available; preserve that authoritative result instead of
+	// allowing a stale pending condition to manufacture a failure over SHIP.
+	var observed batchv1.Job
+	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &observed)
+	var worker *batchv1.Job
+	if err == nil {
+		worker = &observed
+		if managedWorkerJobMatches(review, worker) && worker.Status.Succeeded > 0 {
+			meta.RemoveStatusCondition(&review.Status.Conditions, failurePublicationCondition)
+			return r.reconcileExistingJob(ctx, review, worker, r.clock())
+		}
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	// A contract mismatch may leave an untrusted owned Job running. Stop only the
+	// exact child after the pending obligation is durable; if deletion is lost,
+	// this reconcile retries it without ever recreating the worker.
+	if worker != nil {
+		if !metav1.IsControlledBy(worker, review) {
+			return ctrl.Result{}, errors.New("refusing to stop a worker Job not controlled by the failed review")
+		}
+		if worker.DeletionTimestamp == nil {
+			if err := r.Delete(ctx, worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+	var activeWorker bool
+	if worker == nil {
+		activeWorker, err = r.hasActiveReviewWorkerPod(ctx, review)
+	} else {
+		activeWorker, err = r.hasActiveWorkerJobPod(ctx, worker)
+	}
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if activeWorker {
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	// Unknown is deliberate: the operator records only that responsibility moved
+	// to the durable service. It must never claim a GitHub check was published or
+	// accept a completed success/neutral/foreign check without the service's App
+	// identity and row lock. The dispatcher reaper reconciles exact identity with
+	// bounded pagination and a fresh repository-scoped App token.
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               failurePublicationCondition,
+		Status:             metav1.ConditionUnknown,
+		Reason:             "DelegatedToTrustedService",
+		Message:            "fail-closed publication delegated to the trusted dispatcher deadline reaper for exact-identity reconciliation with a fresh App token",
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: metav1.NewTime(r.clock()),
+	})
+	if err := r.Status().Update(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 }
 
 // observeWorkerPod records the stage timestamps that Kubernetes exposes on the
@@ -396,21 +600,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) observeWorkerPod(ctx context.Context, re
 }
 
 func podBelongsToWorkerJob(pod *corev1.Pod, worker *batchv1.Job) bool {
-	if pod == nil || worker == nil {
+	if pod == nil || worker == nil || worker.UID == "" {
 		return false
 	}
-	if pod.Labels["job-name"] == worker.Name || pod.Labels["batch.kubernetes.io/job-name"] == worker.Name {
-		return true
-	}
-	if worker.UID == "" {
-		return false
-	}
-	for _, owner := range pod.OwnerReferences {
-		if owner.UID == worker.UID && owner.Kind == "Job" {
-			return true
-		}
-	}
-	return false
+	return metav1.IsControlledBy(pod, worker)
 }
 
 func observeTiming(review *reviewv1alpha2.PRReviewJob, stage reviewv1alpha2.DispatchTimingStage, at metav1.Time) (bool, error) {
@@ -538,6 +731,21 @@ func (r *PRReviewJobV1Alpha2Reconciler) admissionReader() client.Reader {
 	return r.Client
 }
 
+// getCachedThenLive centralizes the stale-cache boundary used for exact parent
+// and worker identity reads. Only a cached NotFound may fall through to the
+// uncached reader; all other errors retain their original semantics.
+func (r *PRReviewJobV1Alpha2Reconciler) getCachedThenLive(
+	ctx context.Context,
+	key client.ObjectKey,
+	object client.Object,
+) error {
+	err := r.Get(ctx, key, object)
+	if apierrors.IsNotFound(err) && r.APIReader != nil {
+		return r.APIReader.Get(ctx, key, object)
+	}
+	return err
+}
+
 func validWorkerAdmissionCandidate(review *reviewv1alpha2.PRReviewJob, now time.Time) bool {
 	if review == nil || isTerminalPhase(review.Status.Phase) {
 		return false
@@ -600,6 +808,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 ) (ctrl.Result, error) {
+	if err := r.releaseTerminalWorkerObservation(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
 	activePod, err := r.hasActiveReviewWorkerPod(ctx, review)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -666,6 +877,31 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	return ctrl.Result{}, nil
 }
 
+// releaseTerminalWorkerObservation runs only after the parent CR already has a
+// terminal phase. Removing the guard in a later reconcile keeps the ordering
+// durable across status-update conflicts, operator crashes, and TTL deletion.
+func (r *PRReviewJobV1Alpha2Reconciler) releaseTerminalWorkerObservation(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) error {
+	var worker batchv1.Job
+	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) {
+		return nil
+	}
+	if !metav1.IsControlledBy(&worker, review) {
+		return nil
+	}
+	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
+	return r.Update(ctx, &worker)
+}
+
 func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (bool, error) {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(review.Namespace), client.MatchingLabels{
@@ -677,6 +913,29 @@ func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Con
 	for index := range pods.Items {
 		phase := pods.Items[index].Status.Phase
 		if phase != corev1.PodSucceeded && phase != corev1.PodFailed {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Contract-mismatched Jobs cannot be trusted to retain the admitted run or
+// component labels used by the normal indexed lookup. Once exact ownership has
+// been established, query the Job controller's stable Pod label and verify the
+// controller UID so a tampered review label cannot hide a running process.
+func (r *PRReviewJobV1Alpha2Reconciler) hasActiveWorkerJobPod(ctx context.Context, worker *batchv1.Job) (bool, error) {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(worker.Namespace), client.MatchingLabels{
+		"batch.kubernetes.io/job-name": worker.Name,
+	}); err != nil {
+		return false, err
+	}
+	for index := range pods.Items {
+		pod := &pods.Items[index]
+		if !podBelongsToWorkerJob(pod, worker) {
+			continue
+		}
+		if pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed {
 			return true, nil
 		}
 	}
@@ -707,14 +966,20 @@ func (r *PRReviewJobV1Alpha2Reconciler) failWorkerContractMismatch(
 	review *reviewv1alpha2.PRReviewJob,
 	worker *batchv1.Job,
 	message string,
-) error {
+) (ctrl.Result, error) {
+	if review.Spec.PublicationMode == job.PublicationModeAppGate {
+		// Persist the publication obligation before stopping a tampered child. A
+		// later pending-state reconcile owns deletion, Pod drain, and delegation;
+		// a failed status write therefore cannot erase the only execution evidence.
+		return r.startFailurePublication(ctx, review, "WorkerContractMismatch", message)
+	}
 	if worker != nil && worker.Labels["review-yeti.ai/run-id"] == review.Spec.RunID && metav1.IsControlledBy(worker, review) {
 		if err := r.Delete(ctx, worker, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
-			return err
+			return ctrl.Result{}, err
 		}
 		message += "; stopped the owned worker Job"
 	}
-	return r.fail(ctx, review, "WorkerContractMismatch", message)
+	return ctrl.Result{}, r.fail(ctx, review, "WorkerContractMismatch", message)
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) clock() time.Time {
