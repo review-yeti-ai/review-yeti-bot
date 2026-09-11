@@ -539,6 +539,37 @@ describe('PostgresReviewDispatchRepository', () => {
     ]);
   });
 
+  it('binds durable markTerminal diagnostics when provided', async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{ run_id: row.run_id }] }));
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
+    const diagnostics = {
+      reason: 'projection_rejected',
+      logTail: 'review worker rejected the projection',
+    };
+
+    await expect(repository.markTerminal(
+      row.run_id,
+      'dispatcher-a',
+      7,
+      1_000,
+      'review job projection rejected',
+      diagnostics,
+    )).resolves.toBe(true);
+
+    expect(query.mock.calls[0][1]).toEqual([
+      row.run_id,
+      'dispatcher-a',
+      1_000,
+      'review job projection rejected',
+      7,
+      JSON.stringify({
+        failureClass: 'internal_error',
+        reason: diagnostics.reason,
+        logTail: diagnostics.logTail,
+      }),
+    ]);
+  });
+
   it.each(['projected', 'claimed', 'pending'])('atomically records a matching failure from a %s execution', async (outboxStatus) => {
     const tokenDigest = 'a'.repeat(64);
     const query = vi.fn(async (sql: string, _values?: unknown[]) => /SELECT runs\.status/u.test(sql)

@@ -6,6 +6,23 @@ export { REVIEW_CI_CHECK_NAME } from './reviewCi';
 export type { ReviewGateCoordinates } from './reviewGateContracts';
 export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
 
+/** GitHub Check Run action used for a persisted same-head recovery request. */
+export const REVIEW_REFRESH_ACTION = Object.freeze({
+  label: 'Refresh review',
+  description: 'Retry the failed Review Yeti check for this exact head.',
+  identifier: 'review-yeti/refresh',
+});
+
+/** Exact reusable workflow identity authorized to forward a persisted refresh. */
+export const CENTRAL_REVIEW_WORKFLOW_REF =
+  'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/heads/v1';
+
+/** Failure titles for which the exact-head recovery action is offered/admitted. */
+export const RECOVERABLE_FAILURE_TITLES: ReadonlySet<string> = new Set([
+  'Review Yeti: review did not complete',
+  'Review Yeti: NO VERDICT (no panel result for this head)',
+]);
+
 export type ReviewCheckName = typeof REVIEW_GATE_CHECK_NAME | typeof REVIEW_CI_CHECK_NAME;
 export type ReviewGatePendingStatus = 'queued' | 'in_progress';
 export type ReviewGateTerminalConclusion = 'success' | 'failure' | 'cancelled' | 'timed_out';

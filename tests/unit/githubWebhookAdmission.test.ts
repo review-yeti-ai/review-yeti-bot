@@ -4,8 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createActionDispatchApp } from '../../src/dispatchServer';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 import { createMergeGroupGate, MergeGroupGateInProgressError } from '../../src/review/mergeGroupGate';
-import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
-import { sha256 } from '../../src/review/reviewCore';
+import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
 
 const SECRET = 'webhook-secret-with-at-least-thirty-two-bytes';
 const NOW = Date.parse('2026-09-10T12:00:00.000Z');
@@ -35,7 +34,7 @@ function refreshPayload(overrides: Record<string, unknown> = {}) {
     owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
     headSha: HEAD, baseSha: BASE,
   });
-  const runId = `run_${sha256(identity).slice(0, 32)}`;
+  const runId = deriveReviewRunId(identity);
   return {
     action: 'requested_action', installation: { id: 456 }, repository,
     requested_action: {
@@ -130,10 +129,14 @@ describe('native GitHub App webhook admission', () => {
 
   it('rejects a refresh whose external id is not the persisted exact-head identity', async () => {
     const f = fixture();
+    const wrongIdentity = buildReviewRunIdentity({
+      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      headSha: HEAD, baseSha: 'd'.repeat(40),
+    });
     const body = refreshPayload({
       check_run: {
         ...refreshPayload().check_run,
-        external_id: `run_${'0'.repeat(32)}:a1`,
+        external_id: `${deriveReviewRunId(wrongIdentity)}:a1`,
       },
     });
     const auth = signed(body, 'delivery-refresh-identity-mismatch');
@@ -145,6 +148,35 @@ describe('native GitHub App webhook admission', () => {
       .send(auth.raw);
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ status: 'ignored', reason: 'refresh_identity_mismatch' });
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['check head does not match pull request head', { check_run: {
+      ...refreshPayload().check_run,
+      pull_requests: [{ ...refreshPayload().check_run.pull_requests[0], head: { sha: 'd'.repeat(40), repo: { full_name: 'calltelemetry/dashboard' } } }],
+    } }],
+    ['pull request head repository does not match webhook repository', { check_run: {
+      ...refreshPayload().check_run,
+      pull_requests: [{ ...refreshPayload().check_run.pull_requests[0], head: { sha: HEAD, repo: { full_name: 'attacker/dashboard' } } }],
+    } }],
+    ['pull request base repository does not match webhook repository', { check_run: {
+      ...refreshPayload().check_run,
+      pull_requests: [{ ...refreshPayload().check_run.pull_requests[0], base: { sha: BASE, repo: { full_name: 'attacker/dashboard' } } }],
+    } }],
+  ])('ignores a refresh when %s', async (_label, overrides) => {
+    const f = fixture();
+    const body = refreshPayload(overrides);
+    const auth = signed(body, `delivery-refresh-coordinate-${_label}`);
+    const result = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ status: 'ignored', reason: 'not_enrolled' });
     expect(f.admit).not.toHaveBeenCalled();
   });
 
@@ -190,7 +222,7 @@ describe('native GitHub App webhook admission', () => {
       owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: BASE,
     }) };
-    const runId = `run_${sha256(identity).slice(0, 32)}`;
+    const runId = deriveReviewRunId(identity);
     const body = refreshPayload({
       check_run: {
         ...refreshPayload().check_run,
