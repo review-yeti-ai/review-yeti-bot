@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
 import type { CtReviewConfigV3 } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
-import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText, PanelConfigurationError } from '../../src/panel/panelEngine';
 
 const policy = `
 version: 3
@@ -99,22 +99,20 @@ describe('version 3 configurable persona panel', () => {
     const personaFiles = new Map<string, string[]>();
     const complete = vi.fn(async ({ model, messages }: any) => {
       const allContent = JSON.stringify(messages);
-      const prompt = messages[messages.length - 1].content as string;
+      const prompt: string = messages.map((message: { content: unknown }) => extractMessageContentText(message.content)).join('\n');
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       starts.push(model);
-      try {
-        const jsonMatch = prompt.match(/\{[\s\S]*"persona"[\s\S]*\}/);
-        if (jsonMatch) {
-          const payload = JSON.parse(jsonMatch[0]);
-          if (payload.persona) {
-            personaFiles.set(
-              payload.persona,
-              payload.changedFiles ? payload.changedFiles.map((file: { path: string }) => file.path) : [],
-            );
-          }
-        }
-      } catch {}
+      const personaName = prompt.match(/Role: PERSONA \[Persona: ([^\]]+)\]/)?.[1];
+      if (personaName) {
+        // File scope lives in the compact index, not the fenced response
+        // example: re-embedding changedFiles there would leak raw patches.
+        const fileIndex = prompt.match(/=== PR CHANGED FILES INDEX[^\n]*\n([\s\S]*?)\n\n/)?.[1] || '';
+        personaFiles.set(
+          personaName,
+          fileIndex.split('\n').filter((line) => line.startsWith('- ')).map((line) => line.slice(2)),
+        );
+      }
       if (allContent.includes('arbiter')) {
         return {
           model,
