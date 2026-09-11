@@ -126,6 +126,46 @@ describe('native GitHub App webhook admission', () => {
     expect(admit).not.toHaveBeenCalled();
   });
 
+  it('quietly ignores a signed merge_group destroyed lifecycle delivery', async () => {
+    const repository = {
+      claim: vi.fn(), complete: vi.fn(), release: vi.fn(),
+    };
+    const config = { secret: SECRET, admissionEnabled: true,
+      repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) };
+    const mergeGroupGate = createMergeGroupGate({
+      config, repository: repository as any, tokenFor: vi.fn(async () => 'ghs_test'),
+    });
+    const admit = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config, admission: { admit } as any, mergeGroupGate,
+    });
+    const instance = createActionDispatchApp({
+      verifier: { verify: vi.fn() } as any, admission: { admit: vi.fn() } as any,
+      resolveInstallationId: vi.fn(), databaseReady: vi.fn(async () => true), allowAppGate: true,
+      githubWebhook: { secret: SECRET, onEvent },
+    });
+    const body = {
+      action: 'destroyed', installation: { id: 123 }, repository: payload().repository,
+      merge_group: {
+        head_sha: HEAD, base_sha: BASE,
+        head_ref: 'refs/heads/gh-readonly-queue/main/pr-42-abcdef0', base_ref: 'refs/heads/main',
+      },
+    };
+    const auth = signed(body, 'merge-destroyed-delivery');
+
+    const response = await request(instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'merge_group')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ignored', reason: 'unsupported_merge_group_action' });
+    expect(repository.claim).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('rejects a malformed signed merge_group payload instead of treating it as unenrolled', async () => {
     const repository = {
       claim: vi.fn(), complete: vi.fn(), release: vi.fn(),

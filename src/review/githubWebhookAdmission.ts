@@ -52,6 +52,11 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       throw new Error('GitHub webhook identity is unavailable');
     }
     if (eventName === 'merge_group') {
+      const action = event.body && typeof event.body === 'object' && !Array.isArray(event.body)
+        ? (event.body as Record<string, unknown>).action : undefined;
+      if (typeof action === 'string' && action.length > 0 && action !== 'checks_requested') {
+        return { status: 'ignored', reason: 'unsupported_merge_group_action' };
+      }
       if (!options.mergeGroupGate) throw new Error('Merge-group webhook gate is unavailable');
       let result;
       try { result = await options.mergeGroupGate(event.body); }
