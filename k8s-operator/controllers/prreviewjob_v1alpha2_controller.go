@@ -109,7 +109,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	if existingErr == nil {
 		if !managedWorkerJobMatches(&review, &existing) {
-			return r.failWorkerContractMismatch(ctx, &review, &existing, "existing worker Job does not match the immutable receipt-only contract")
+			return r.failWorkerContractMismatch(ctx, &review, &existing, workerContractMessage(&review, "existing"))
 		}
 		// Adopt Jobs created by an older operator before observing their state.
 		// Terminal Jobs need the guard too: a parent status conflict must not let
@@ -123,6 +123,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		return r.reconcileExistingJob(ctx, &review, &existing, now)
 	}
 	if workerCreationWasAttempted(&review) {
+		cond := meta.FindStatusCondition(review.Status.Conditions, workerCreationReserved)
+		if cond != nil && cond.Status == metav1.ConditionTrue && !cond.LastTransitionTime.IsZero() &&
+			review.Status.JobName == "" && review.Status.Phase != reviewv1alpha2.PhaseRunning &&
+			now.Sub(cond.LastTransitionTime.Time) < 30*time.Second {
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
 		// A Job can finish and be garbage-collected before we observe its
 		// terminal state. Missing execution evidence is not a fresh admission.
 		// Do not release its workspace here: surviving Pods or a newer Lease
@@ -256,7 +262,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, getErr
 		}
 		if !managedWorkerJobMatches(&review, &existing) {
-			return r.failWorkerContractMismatch(ctx, &review, &existing, "racing worker Job does not match the immutable receipt-only contract")
+			return r.failWorkerContractMismatch(ctx, &review, &existing, workerContractMessage(&review, "racing"))
 		}
 		return r.reconcileExistingJob(ctx, &review, &existing, now)
 	}
@@ -268,7 +274,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageJobCreated, metav1.NewTime(now)); err != nil {
 		return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
 	}
-	if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseRunning, "WorkerCreated", "receipt-only worker Job created"); err != nil {
+	if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseRunning, "WorkerCreated", workerMessage(&review, "created")); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
@@ -319,7 +325,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileElapsedDeadline(
 	err := r.getCachedThenLive(ctx, workerKey, &worker)
 	if err == nil {
 		if !managedWorkerJobMatches(review, &worker) {
-			return r.failWorkerContractMismatch(ctx, review, &worker, "existing worker Job does not match the immutable receipt-only contract")
+			return r.failWorkerContractMismatch(ctx, review, &worker, workerContractMessage(review, "existing"))
 		}
 		if worker.DeletionTimestamp == nil && !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) {
 			controllerutil.AddFinalizer(&worker, terminalOutcomeFinalizer)
@@ -359,6 +365,22 @@ func workerCreationWasAttempted(review *reviewv1alpha2.PRReviewJob) bool {
 		(review.Status.Timing != nil && review.Status.Timing.JobCreatedAt != nil)
 }
 
+func workerMessage(review *reviewv1alpha2.PRReviewJob, action string) string {
+	mode := "receipt-only"
+	if review != nil && review.Spec.PublicationMode == job.PublicationModeAppGate {
+		mode = "app-gate publishing"
+	}
+	return fmt.Sprintf("%s worker Job %s", mode, action)
+}
+
+func workerContractMessage(review *reviewv1alpha2.PRReviewJob, prefix string) string {
+	mode := "receipt-only"
+	if review != nil && review.Spec.PublicationMode == job.PublicationModeAppGate {
+		mode = "app-gate publishing"
+	}
+	return fmt.Sprintf("%s worker Job does not match the immutable %s contract", prefix, mode)
+}
+
 func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context, review *reviewv1alpha2.PRReviewJob, worker *batchv1.Job, now time.Time) (ctrl.Result, error) {
 	jobCreatedAt := metav1.NewTime(now)
 	if !worker.CreationTimestamp.Time.IsZero() {
@@ -385,7 +407,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 			if review.Status.StartTime == nil {
 				review.Status.StartTime = timePtr(jobCreatedAt)
 			}
-			if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseRunning, "WorkerObserved", "receipt-only worker Job is running"); err != nil {
+			if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseRunning, "WorkerObserved", workerMessage(review, "is running")); err != nil {
 				return ctrl.Result{}, err
 			}
 		} else if timingChanged {
@@ -409,12 +431,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	}
 	r.recordDispatchTiming(review, completed.Time)
 	if worker.Status.Succeeded > 0 {
-		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", "receipt-only worker Job completed")
+		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", workerMessage(review, "completed"))
 	}
 	if review.Spec.PublicationMode == job.PublicationModeAppGate {
-		return r.startFailurePublication(ctx, review, "WorkerFailed", "publishing worker Job failed")
+		return r.startFailurePublication(ctx, review, "WorkerFailed", workerMessage(review, "failed"))
 	}
-	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, "WorkerFailed", "receipt-only worker Job failed")
+	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, "WorkerFailed", workerMessage(review, "failed"))
 }
 
 func failurePublicationPending(review *reviewv1alpha2.PRReviewJob) bool {
