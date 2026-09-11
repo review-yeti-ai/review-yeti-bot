@@ -57,6 +57,7 @@ export class AbandonedRunReaper {
     for (const run of runs) {
       if (signal?.aborted) break;
       try {
+        let outcome: AbandonedCheckRecoveryOutcome | undefined;
         const reconciled = await this.options.repository.reconcileAbandonedPublishingRun(
           run, this.options.workerId, this.now(), async () => {
             // Started after acquiring the lock, and below the 60-second claim
@@ -66,14 +67,14 @@ export class AbandonedRunReaper {
             const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
             bounded.throwIfAborted();
             const client = await this.options.checkClientFor(run, bounded);
-            const outcome = await client.failAbandonedCheck(run, this.options.publisherAppId, bounded);
+            outcome = await client.failAbandonedCheck(run, this.options.publisherAppId, bounded);
             bounded.throwIfAborted();
-            if (outcome === 'failure-published') published += 1;
-            if (outcome === 'creation-unconfirmed') failed += 1;
             return outcome;
           },
         );
         if (!reconciled) continue;
+        if (outcome === 'failure-published') published += 1;
+        if (outcome === 'creation-unconfirmed') failed += 1;
       } catch {
         // The claim expires and remains eligible after rollback. Never expose
         // token-mint or GitHub response bodies in logs.
