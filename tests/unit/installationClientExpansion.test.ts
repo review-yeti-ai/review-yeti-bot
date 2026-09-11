@@ -62,6 +62,15 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
     expect(capturedBody.actions).toBeUndefined();
   });
 
+  it.each([
+    ['label', 20],
+    ['description', 40],
+    ['identifier', 20],
+  ] as const)('keeps the refresh action %s inside GitHub\'s %i-character limit', (field, limit) => {
+    expect(REVIEW_REFRESH_ACTION[field].length).toBeGreaterThan(0);
+    expect(REVIEW_REFRESH_ACTION[field].length).toBeLessThanOrEqual(limit);
+  });
+
   it('publishGateCheck creates a completed check with Review Yeti Gate', async () => {
     let capturedUrl = '';
     let capturedBody: any = null;
