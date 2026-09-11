@@ -84,6 +84,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     admission: repository,
     allowAppGate: policy.allowAppGate,
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
+    centralExternalRepositories: dispatchConfig.centralExternalRepositories,
     ...(ci ? { ci: ci.routes } : {}),
     ...(authoritative ? { authoritativePublishing: authoritative.admission,
       authoritativeWorkerCompletion: authoritative.completion } : {}),
