@@ -156,7 +156,10 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       onOutcome: (outcome) => {
         if (outcome.status !== 'idle') logger.info('Review job dispatch cycle completed', outcome);
       },
-      onCycleError: () => logger.warn('Review job dispatch cycle failed; applying bounded retry delay'),
+      onCycleError: (outcome) => logger.warn(
+        'Review job dispatch cycle failed; applying bounded retry delay',
+        outcome.errorCode ? { errorCode: outcome.errorCode } : undefined,
+      ),
     });
   } finally {
     await store.close();
