@@ -68,8 +68,17 @@ func TestWorkerJobSandboxingInvariants(t *testing.T) {
 			if len(podSpec.Volumes) != 2 {
 				t.Fatalf("Volumes count = %d, want exactly 2", len(podSpec.Volumes))
 			}
-			if podSpec.Volumes[0].Name != "workspace" || podSpec.Volumes[0].PersistentVolumeClaim == nil {
-				t.Fatalf("Volume 0 must be workspace PVC, got %#v", podSpec.Volumes[0])
+			if podSpec.Volumes[0].Name != "workspace" {
+				t.Fatalf("Volume 0 must be workspace, got %#v", podSpec.Volumes[0])
+			}
+			if review.Spec.RunnerMode == "generic" {
+				if podSpec.Volumes[0].PersistentVolumeClaim == nil {
+					t.Fatalf("Volume 0 must be workspace PVC, got %#v", podSpec.Volumes[0])
+				}
+			} else {
+				if podSpec.Volumes[0].EmptyDir == nil {
+					t.Fatalf("Volume 0 must be workspace EmptyDir, got %#v", podSpec.Volumes[0])
+				}
 			}
 			if podSpec.Volumes[1].Name != "tmp" || podSpec.Volumes[1].EmptyDir == nil {
 				t.Fatalf("Volume 1 must be tmp EmptyDir, got %#v", podSpec.Volumes[1])
