@@ -1,14 +1,36 @@
-import { createHash } from 'node:crypto';
-import { REVIEW_CI_CHECK_NAME } from '../review/reviewCi';
-
-// Backward-compatible export for the shared typed client surface. The review
-// model remains the source of truth for the governed service check name.
-export { REVIEW_CI_CHECK_NAME } from '../review/reviewCi';
+import {
+  deriveReviewCheckExternalId,
+  REVIEW_CI_CHECK_NAME,
+  REVIEW_GATE_CHECK_NAME,
+  validateReviewCheckCoordinates,
+  type ReviewCheckCoordinates,
+  type ReviewCheckName,
+  type ReviewCiCheckCoordinates,
+  type ReviewGateCheck,
+  type ReviewGateObservedConclusion,
+  type ReviewGatePendingStatus,
+  type ReviewGateTerminalConclusion,
+} from '../review/reviewCheckIdentity';
 import type { ReviewGateCoordinates } from '../review/reviewGateContracts';
 export type { ReviewGateCoordinates } from '../review/reviewGateContracts';
+// Backward-compatible exports for the shared typed client surface. Domain
+// identity remains owned by reviewCheckIdentity, not this GitHub transport.
+export {
+  deriveReviewCiCheckExternalId,
+  deriveReviewGateExternalId,
+  REVIEW_CI_CHECK_NAME,
+  REVIEW_GATE_CHECK_NAME,
+} from '../review/reviewCheckIdentity';
+export type {
+  ReviewCheckCoordinates,
+  ReviewCheckName,
+  ReviewCiCheckCoordinates,
+  ReviewGateCheck,
+  ReviewGateObservedConclusion,
+  ReviewGatePendingStatus,
+  ReviewGateTerminalConclusion,
+} from '../review/reviewCheckIdentity';
 
-export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
-export type ReviewCheckName = typeof REVIEW_GATE_CHECK_NAME | typeof REVIEW_CI_CHECK_NAME;
 export const DEFAULT_GITHUB_API_BASE_URL = 'https://api.github.com';
 export const MAX_CHECK_RUN_PAGES = 100;
 export const CHECK_RUN_PAGE_SIZE = 100;
@@ -20,40 +42,7 @@ export const MAX_RECONCILE_TIMEOUT_MS = 30_000;
 /** Per response, counted from streamed UTF-8 bytes, never Content-Length. */
 export const MAX_GATE_RESPONSE_BYTES = 2 * 1024 * 1024;
 
-const GITHUB_NAME = /^[A-Za-z0-9_.-]+$/u;
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
-const SAFE_ASCII = /^[\x21-\x7e]+$/u;
-const EXACT_SHA = /^[a-f0-9]{40}$/u;
-const EXACT_POLICY_DIGEST = /^[a-f0-9]{64}$/u;
-const EXACT_RUN_ID = /^run_[a-f0-9]{32}$/u;
-const EXACT_REQUEST_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
-
-export type ReviewGatePendingStatus = 'queued' | 'in_progress';
-export type ReviewGateTerminalConclusion = 'success' | 'failure' | 'cancelled' | 'timed_out';
-export type ReviewGateObservedConclusion = ReviewGateTerminalConclusion
-  | 'action_required'
-  | 'neutral'
-  | 'skipped'
-  | 'stale';
-
-/** CI check identity is deliberately not represented as a ReviewGateCoordinates
- * cast. Its external ID is derived from the request UUID and immutable
- * validation identity digest. Delivery epochs and execution claims stay in the
- * durable CI request and are checked by the publisher separately. */
-export interface ReviewCiCheckCoordinates {
-  owner: string;
-  repo: string;
-  repositoryId: number;
-  prNumber: number;
-  headSha: string;
-  baseSha: string;
-  policyDigest: string;
-  requestId: string;
-  immutableBindingDigest: string;
-  epoch: number;
-}
-
-export type ReviewCheckCoordinates = ReviewGateCoordinates | ReviewCiCheckCoordinates;
 export interface ReviewGateClientOptions {
   /** Trusted service selection only; the review gate remains the default. */
   checkName?: ReviewCheckName;
@@ -71,17 +60,6 @@ export interface ReviewGateClientOptions {
   timeoutMs?: number;
   /** The complete reconcile operation is bounded independently of page count. */
   reconcileTimeoutMs?: number;
-}
-
-export interface ReviewGateCheck {
-  id: number;
-  name: ReviewCheckName;
-  appId: number;
-  headSha: string;
-  externalId: string;
-  status: 'queued' | 'in_progress' | 'completed';
-  conclusion: ReviewGateObservedConclusion | null;
-  htmlUrl?: string;
 }
 
 export interface ReviewGateCheckMetadata {
@@ -146,54 +124,6 @@ function positiveInteger(value: unknown, field: string): number {
     throw new Error(`GitHub Review Yeti gate ${field} is invalid`);
   }
   return value;
-}
-
-function validateCommonCoordinates(input: unknown): Omit<ReviewGateCoordinates, 'runId' | 'attemptId' | 'executionAttempt'> {
-  if (!input || typeof input !== 'object') throw new Error('GitHub Review Yeti gate coordinates are invalid');
-  const candidate = input as Record<string, unknown>;
-  const owner = requiredText(candidate.owner, 'owner', 100);
-  const repo = requiredText(candidate.repo, 'repo', 100);
-  if (!GITHUB_NAME.test(owner) || !GITHUB_NAME.test(repo)) {
-    throw new Error('GitHub Review Yeti gate repository identity is invalid');
-  }
-  const headSha = requiredText(candidate.headSha, 'head SHA', 256);
-  const baseSha = requiredText(candidate.baseSha, 'base SHA', 256);
-  const policyDigest = requiredText(candidate.policyDigest, 'policy digest', 512);
-  if (!EXACT_SHA.test(headSha) || !EXACT_SHA.test(baseSha)) {
-    throw new Error('GitHub Review Yeti gate commit identity is invalid');
-  }
-  if (!EXACT_POLICY_DIGEST.test(policyDigest)) {
-    throw new Error('GitHub Review Yeti gate policy digest is invalid');
-  }
-  return {
-    owner,
-    repo,
-    repositoryId: positiveInteger(candidate.repositoryId, 'repository id'),
-    prNumber: positiveInteger(candidate.prNumber, 'pull request number'),
-    headSha,
-    baseSha,
-    policyDigest,
-  };
-}
-
-function validateCoordinates(input: unknown, checkName: ReviewCheckName): ReviewCheckCoordinates {
-  const common = validateCommonCoordinates(input);
-  const candidate = input as Record<string, unknown>;
-  if (checkName === REVIEW_GATE_CHECK_NAME) {
-    const runId = requiredText(candidate.runId, 'run id', 512);
-    const attemptId = requiredText(candidate.attemptId, 'attempt id', 512);
-    if (!EXACT_RUN_ID.test(runId)) throw new Error('GitHub Review Yeti gate run id is invalid');
-    if (!SAFE_ASCII.test(attemptId)) throw new Error('GitHub Review Yeti gate attempt id is invalid');
-    return { ...common, runId, attemptId, executionAttempt: positiveInteger(candidate.executionAttempt, 'execution attempt') };
-  }
-  if (checkName !== REVIEW_CI_CHECK_NAME) throw new Error('Untrusted service check identity');
-  const requestId = requiredText(candidate.requestId, 'request id', 64);
-  const immutableBindingDigest = requiredText(candidate.immutableBindingDigest, 'binding digest', 64);
-  if (!EXACT_REQUEST_ID.test(requestId) || !EXACT_POLICY_DIGEST.test(immutableBindingDigest)) {
-    throw new Error('GitHub Review Yeti CI check identity is invalid');
-  }
-  return { ...common, requestId, immutableBindingDigest,
-    epoch: positiveInteger(candidate.epoch, 'CI delivery epoch') };
 }
 
 function validateBaseUrl(value: string): string {
@@ -261,45 +191,6 @@ function checkRunFrom(value: unknown, checkName: ReviewCheckName): ReviewGateChe
     conclusion: conclusion === undefined ? null : conclusion as ReviewGateObservedConclusion | null,
     ...(typeof item?.html_url === 'string' ? { htmlUrl: item.html_url } : {}),
   };
-}
-
-function coordinatesExternalId(coordinates: ReviewCheckCoordinates, checkName: ReviewCheckName): string {
-  if (checkName === REVIEW_GATE_CHECK_NAME) {
-    const normalized = validateCoordinates(coordinates, REVIEW_GATE_CHECK_NAME) as ReviewGateCoordinates;
-    const canonical = JSON.stringify([
-      normalized.owner,
-      normalized.repo,
-      normalized.repositoryId,
-      normalized.prNumber,
-      normalized.headSha,
-      normalized.baseSha,
-      normalized.policyDigest,
-      normalized.runId,
-      normalized.attemptId,
-      normalized.executionAttempt,
-    ]);
-    return `review-yeti-gate:v1:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
-  }
-  const normalized = validateCoordinates(coordinates, REVIEW_CI_CHECK_NAME) as ReviewCiCheckCoordinates;
-  // CI checks are keyed by the service-owned request and immutable validation
-  // identity. Delivery epochs and claimed executions are separately fenced in
-  // persistence so a retry retains one externally visible check.
-  const canonical = JSON.stringify([
-    'ReviewCiCheckExternalId.v1',
-    normalized.requestId,
-    normalized.immutableBindingDigest,
-  ]);
-  return `review-yeti-ci:v1:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
-}
-
-/** Derives the legacy immutable GitHub Gate external ID. */
-export function deriveReviewGateExternalId(coordinates: ReviewGateCoordinates): string {
-  return coordinatesExternalId(coordinates, REVIEW_GATE_CHECK_NAME);
-}
-
-/** Derives the typed service-owned CI check external ID. */
-export function deriveReviewCiCheckExternalId(coordinates: ReviewCiCheckCoordinates): string {
-  return coordinatesExternalId(coordinates, REVIEW_CI_CHECK_NAME);
 }
 
 function hasExactIdentity(
@@ -539,8 +430,8 @@ export class GitHubReviewGateClient {
    * follow-up create by this client.
    */
   private async reconcileCheck(coordinates: ReviewCheckCoordinates): Promise<ReviewGateCheck | null> {
-    const normalizedCoordinates = validateCoordinates(coordinates, this.checkName);
-    const externalId = coordinatesExternalId(normalizedCoordinates, this.checkName);
+    const normalizedCoordinates = validateReviewCheckCoordinates(coordinates, this.checkName);
+    const externalId = deriveReviewCheckExternalId(normalizedCoordinates, this.checkName);
     const deadline = Date.now() + this.reconcileTimeoutMs;
     const matches: ReviewGateCheck[] = [];
     for (const candidate of await this.listCheckRuns(normalizedCoordinates, deadline)) {
@@ -573,7 +464,7 @@ export class GitHubReviewGateClient {
     const request = ('coordinates' in coordinatesOrRequest
       ? coordinatesOrRequest
       : { coordinates: coordinatesOrRequest, ...options }) as ReviewGateCreateRequest | ReviewCiCheckCreateRequest;
-    const coordinates = validateCoordinates(request.coordinates, this.checkName);
+    const coordinates = validateReviewCheckCoordinates(request.coordinates, this.checkName);
     const metadata = validateMetadata(request);
     const status = request.status ?? 'queued';
     if (status !== 'queued' && status !== 'in_progress') {
@@ -586,7 +477,7 @@ export class GitHubReviewGateClient {
         body: JSON.stringify({
           name: this.checkName,
           head_sha: coordinates.headSha,
-          external_id: coordinatesExternalId(coordinates, this.checkName),
+          external_id: deriveReviewCheckExternalId(coordinates, this.checkName),
           status,
           ...(metadata.detailsUrl ? { details_url: metadata.detailsUrl } : {}),
           output: outputFor(metadata, `${this.checkName} pending`, 'Review Yeti has not completed this attempt.'),
@@ -597,7 +488,7 @@ export class GitHubReviewGateClient {
       data,
       coordinates,
       this.expectedAppId,
-      coordinatesExternalId(coordinates, this.checkName),
+      deriveReviewCheckExternalId(coordinates, this.checkName),
       'GitHub Review Yeti gate create response did not match the immutable check identity',
       this.checkName,
     );
@@ -633,10 +524,10 @@ export class GitHubReviewGateClient {
     const request = ('coordinates' in coordinatesOrRequest
       ? coordinatesOrRequest
       : { coordinates: coordinatesOrRequest, checkId: checkId as number, update: update as ReviewGateUpdate }) as ReviewCheckUpdateRequest;
-    const coordinates = validateCoordinates(request.coordinates, this.checkName);
+    const coordinates = validateReviewCheckCoordinates(request.coordinates, this.checkName);
     const validCheckId = positiveInteger(request.checkId, 'check id');
     const desired = assertUpdate(request.update);
-    const externalId = coordinatesExternalId(coordinates, this.checkName);
+    const externalId = deriveReviewCheckExternalId(coordinates, this.checkName);
 
     const existing = assertExactIdentity(
       await this.request<unknown>(

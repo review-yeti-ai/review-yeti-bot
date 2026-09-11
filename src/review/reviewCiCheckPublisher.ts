@@ -1,4 +1,4 @@
-import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateCheck } from '../github/reviewGateClient';
+import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateCheck } from './reviewCheckIdentity';
 import type { ReviewCiCheckClient, ReviewCiCheckPublicationClaim, ReviewCiCheckPublicationNotStarted,
   ReviewCiCheckPublisherRepository, StoredReviewCiCheck } from './reviewCiCheckContracts';
 

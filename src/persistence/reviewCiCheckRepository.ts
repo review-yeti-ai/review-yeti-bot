@@ -5,7 +5,7 @@ import {
   REVIEW_CI_CHECK_NAME,
   type ReviewCiCheckCoordinates,
   type ReviewGateCheck,
-} from '../github/reviewGateClient';
+} from '../review/reviewCheckIdentity';
 import {
   normalizeReviewCiBinding, reviewCiCoordinatesSchema, reviewCiExecutionSchema,
   reviewCiIdentityDigest, reviewCiTerminalReceiptSchema,
