@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.54.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.1...v1.54.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* **webhook:** ignore irrelevant merge-group actions ([#705](https://github.com/review-yeti-ai/review-yeti-bot/issues/705)) ([3df1b67](https://github.com/review-yeti-ai/review-yeti-bot/commit/3df1b6753ddf13cba16b578e617ab365572eb6f7))
+
 ## [1.54.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.0...v1.54.1) (2026-09-11)
 
 
