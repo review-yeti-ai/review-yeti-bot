@@ -379,6 +379,8 @@ describe('progress event redaction boundary', () => {
       stream: 'stdout',
     }), identity);
 
+    expect(result).not.toBeInstanceOf(ReviewEventRejection);
+    expect(result).toHaveProperty('event_kind', 'review.progress.persona_completed');
     for (const field of ['repo', 'prnumber', 'charter', 'required', 'paths', 'decision', 'isError', 'stream']) {
       expect(result).not.toHaveProperty(`data.${field}`);
     }
