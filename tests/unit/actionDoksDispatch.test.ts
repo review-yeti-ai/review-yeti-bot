@@ -93,6 +93,49 @@ describe('DOKS Action dispatch client', () => {
     })).expectedGeneration).toBeUndefined();
   });
 
+  it('carries an explicit refresh request without changing the legacy default payload', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    const legacy = buildDispatchRequest(environment());
+    expect((legacy as Record<string, unknown>).refreshRequested).toBeUndefined();
+
+    const refresh = buildDispatchRequest(environment({
+      GITHUB_EVENT_NAME: 'repository_dispatch',
+      REFRESH_REQUESTED: 'true',
+      REFRESH_EXECUTION_ATTEMPT: '1',
+    }));
+    expect(refresh.refreshRequested).toBe(true);
+    expect(refresh.refreshExecutionAttempt).toBe(1);
+    expect(() => buildDispatchRequest(environment({ REFRESH_REQUESTED: 'yes' })))
+      .toThrow(/REFRESH_REQUESTED/u);
+  });
+
+  it.each(['0', '-1', '1.5', 'abc'])('rejects an invalid refresh execution attempt %s', async (attempt) => {
+    const { buildDispatchRequest } = await import(modulePath);
+    expect(() => buildDispatchRequest(environment({
+      GITHUB_EVENT_NAME: 'repository_dispatch',
+      REFRESH_REQUESTED: 'true',
+      REFRESH_EXECUTION_ATTEMPT: attempt,
+    }))).toThrow(/REFRESH_EXECUTION_ATTEMPT must be a positive integer/u);
+  });
+
+  it('requires an execution attempt for a central refresh dispatch', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    expect(() => buildDispatchRequest(environment({
+      GITHUB_EVENT_NAME: 'repository_dispatch',
+      REFRESH_REQUESTED: 'true',
+    }))).toThrow(/REFRESH_EXECUTION_ATTEMPT is required/u);
+  });
+
+  it('does not invent an execution attempt for a non-central refresh request', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    const request = buildDispatchRequest(environment({
+      GITHUB_EVENT_NAME: 'pull_request',
+      REFRESH_REQUESTED: 'true',
+    }));
+    expect(request.refreshRequested).toBe(true);
+    expect(request.refreshExecutionAttempt).toBeUndefined();
+  });
+
   it('accepts only the fixed HTTPS dispatch origin and exact path', async () => {
     const { validateDispatchEndpoint } = await import(modulePath);
     expect(validateDispatchEndpoint('https://review-bot.calltelemetry.com/api/dispatch/action').href)

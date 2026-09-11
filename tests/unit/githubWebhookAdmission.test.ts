@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createActionDispatchApp } from '../../src/dispatchServer';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 import { createMergeGroupGate, MergeGroupGateInProgressError } from '../../src/review/mergeGroupGate';
+import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
 
 const SECRET = 'webhook-secret-with-at-least-thirty-two-bytes';
 const NOW = Date.parse('2026-09-10T12:00:00.000Z');
@@ -22,6 +23,34 @@ function payload(overrides: Record<string, unknown> = {}) {
       number: 42, state: 'open', draft: false,
       head: { sha: HEAD },
       base: { sha: BASE, repo: { full_name: 'calltelemetry/dashboard' } },
+    },
+    ...overrides,
+  };
+}
+
+function refreshPayload(overrides: Record<string, unknown> = {}) {
+  const repository = payload().repository;
+  const identity = buildReviewRunIdentity({
+    owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+    headSha: HEAD, baseSha: BASE,
+  });
+  const runId = deriveReviewRunId(identity);
+  return {
+    action: 'requested_action', installation: { id: 456 }, repository,
+    requested_action: {
+      identifier: 'review-yeti/refresh',
+      message: 'Retry this exact failed review.',
+    },
+    check_run: {
+      id: 4242, name: 'Review Yeti', head_sha: HEAD, status: 'completed', conclusion: 'failure',
+      external_id: `${runId}:a1`,
+      app: { id: 4385771, slug: 'ct-review-bot' },
+      output: { title: 'Review Yeti: review did not complete', summary: 'failed before verdict' },
+      pull_requests: [{
+        number: 42,
+        head: { sha: HEAD, repo: { full_name: 'calltelemetry/dashboard' } },
+        base: { sha: BASE, repo: { full_name: 'calltelemetry/dashboard' } },
+      }],
     },
     ...overrides,
   };
@@ -71,6 +100,182 @@ describe('native GitHub App webhook admission', () => {
       publicationMode: 'app-gate', centralActionDispatch: false, receivedAt: NOW,
       identity: expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE }),
     }));
+  });
+
+  it('admits the official failed check requested_action as a persisted same-head refresh', async () => {
+    const f = fixture();
+    const body = refreshPayload();
+    const auth = signed(body, 'delivery-refresh');
+    const response = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'accepted', deliveryId: auth.delivery, prNumber: 42, headSha: HEAD,
+      reason: 'refresh_requested',
+    });
+    expect(f.admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      deliveryId: 'github-webhook:delivery-refresh', eventName: 'check_run',
+      repositoryId: 614653796, installationId: 456, publicationMode: 'app-gate',
+      retryRequested: true,
+      retryAfterExecutionAttempt: 1,
+      identity: expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+        headSha: HEAD, baseSha: BASE }),
+    }));
+  });
+
+  it('rejects a refresh whose external id is not the persisted exact-head identity', async () => {
+    const f = fixture();
+    const wrongIdentity = buildReviewRunIdentity({
+      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      headSha: HEAD, baseSha: 'd'.repeat(40),
+    });
+    const body = refreshPayload({
+      check_run: {
+        ...refreshPayload().check_run,
+        external_id: `${deriveReviewRunId(wrongIdentity)}:a1`,
+      },
+    });
+    const auth = signed(body, 'delivery-refresh-identity-mismatch');
+    const response = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ignored', reason: 'refresh_identity_mismatch' });
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['check head does not match pull request head', { check_run: {
+      ...refreshPayload().check_run,
+      pull_requests: [{ ...refreshPayload().check_run.pull_requests[0], head: { sha: 'd'.repeat(40), repo: { full_name: 'calltelemetry/dashboard' } } }],
+    } }],
+    ['pull request head repository does not match webhook repository', { check_run: {
+      ...refreshPayload().check_run,
+      pull_requests: [{ ...refreshPayload().check_run.pull_requests[0], head: { sha: HEAD, repo: { full_name: 'attacker/dashboard' } } }],
+    } }],
+    ['pull request base repository does not match webhook repository', { check_run: {
+      ...refreshPayload().check_run,
+      pull_requests: [{ ...refreshPayload().check_run.pull_requests[0], base: { sha: BASE, repo: { full_name: 'attacker/dashboard' } } }],
+    } }],
+  ])('ignores a refresh when %s', async (_label, overrides) => {
+    const f = fixture();
+    const body = refreshPayload(overrides);
+    const auth = signed(body, `delivery-refresh-coordinate-${_label}`);
+    const result = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ status: 'ignored', reason: 'not_enrolled' });
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('pauses an authoritative refresh without resolving policy or admitting work', async () => {
+    const admit = vi.fn();
+    const resolve = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: false, repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+    const body = refreshPayload();
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'authoritative-refresh-paused',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'authoritative_admission_paused',
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('ignores a refresh for a repository outside the direct App enrollment', async () => {
+    const admit = vi.fn();
+    const body = refreshPayload();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['999999']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      now: () => NOW,
+    });
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'refresh-not-enrolled',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'not_enrolled',
+    });
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('re-resolves the current policy before admitting an enrolled authoritative refresh', async () => {
+    const identity = { ...buildReviewRunIdentity({
+      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      headSha: HEAD, baseSha: BASE,
+    }) };
+    const runId = deriveReviewRunId(identity);
+    const body = refreshPayload({
+      check_run: {
+        ...refreshPayload().check_run,
+        external_id: `${runId}:a1`,
+      },
+    });
+    const prepared = { policy: { effectivePolicyDigest: 'd'.repeat(64) } };
+    const resolve = vi.fn(async () => ({ identity, prepared }));
+    const admit = vi.fn(async () => ({ status: 'accepted', run: { runId } }));
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true, repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+    await expect(onEvent({
+      eventName: 'check_run', deliveryId: 'authoritative-refresh',
+      rawBody: Buffer.from(JSON.stringify(body)), body,
+    })).resolves.toEqual({ status: 'accepted', deliveryId: 'authoritative-refresh', prNumber: 42,
+      headSha: HEAD, reason: 'refresh_requested' });
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({
+      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      headSha: HEAD, baseSha: BASE,
+    });
+    expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      retryRequested: true,
+      retryAfterExecutionAttempt: 1,
+      identity, effectivePolicyDigest: prepared.policy.effectivePolicyDigest,
+      authoritativeGate: { expectedAppId: 4385771, prepared },
+    }));
+  });
+
+  it.each([
+    refreshPayload({ requested_action: { identifier: 'review-yeti/other' } }),
+    refreshPayload({ check_run: { ...refreshPayload().check_run, app: { id: 1, slug: 'ct-review-bot' } } }),
+    refreshPayload({ check_run: { ...refreshPayload().check_run, conclusion: 'success' } }),
+    refreshPayload({ check_run: { ...refreshPayload().check_run, output: { title: 'Review Yeti: SHIP' } } }),
+    refreshPayload({ check_run: { ...refreshPayload().check_run, pull_requests: [] } }),
+  ])('ignores a non-recoverable or non-authoritative refresh request', async (body) => {
+    const f = fixture();
+    const auth = signed(body, 'delivery-invalid-refresh');
+    const result = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ status: 'ignored', reason: 'unsupported_refresh_request' });
+    expect(f.admit).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid signature before admission', async () => {

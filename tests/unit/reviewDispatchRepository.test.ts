@@ -243,14 +243,17 @@ describe('PostgresReviewDispatchRepository', () => {
     // runnable ('queued'), be countable (attempt + 1), stop carrying the old
     // failure (error_text NULL), and get a deadline it can actually meet -- the
     // previous one is in the past and the reaper would sweep the retry at once.
-    expect(runSql).toContain("status = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN 'queued' ELSE review_runs.status END");
-    expect(runSql).toContain("attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN review_runs.attempt + 1 ELSE review_runs.attempt END");
-    expect(runSql).toContain("error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN NULL ELSE review_runs.error_text END");
-    expect(runSql).toContain("received_at = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.received_at ELSE review_runs.received_at END");
-    expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END");
-    // Every re-arm is conditioned on failure; active and superseded identities
-    // are not retryable. Older legacy identities are fenced by persisted history.
-    expect(runSql.match(/CASE WHEN review_runs\.status IN \('failed', 'terminal'\)/gu) || []).toHaveLength(8);
+    // Compute the persisted retry condition once, before the upsert. Every
+    // re-arm field consumes that single row-level decision, so the lifecycle
+    // cannot drift when the evidence predicate changes.
+    expect(runSql).toContain('WITH retry_eligibility AS');
+    expect(runSql).toContain('AS should_retry');
+    expect((runSql.match(/SELECT should_retry FROM retry_eligibility/gu) || []).length).toBe(8);
+    expect(runSql).toContain("runs.status IN ('failed', 'terminal')");
+    expect(runSql).toContain("$20::boolean AND runs.status IN ('queued', 'running')");
+    expect(runSql).toContain('$21::integer IS NOT NULL');
+    expect(runSql).toContain('retry_outbox.execution_attempt + 1 = $21::integer');
+    expect(runSql).toContain('retry_outbox.run_id = runs.run_id');
     // markTerminal writes 'failed'; the reaper writes 'terminal'. Both are dead
     // runs and both must be retryable, and no other status may be named.
     expect(runSql).not.toMatch(/CASE WHEN review_runs\.status (=|IN \()\s*'?(queued|running|superseded)/u);
@@ -258,6 +261,9 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(runSql).toContain('AND (other.authoritative_gate_app_id IS NOT NULL) = (review_runs.authoritative_gate_app_id IS NOT NULL)');
     expect(runSql).toContain('other.identity_digest <> review_runs.identity_digest');
     expect(runSql).toContain('other.created_at >= review_runs.created_at');
+    expect(runSql).toContain("retry_outbox.status = 'projected'");
+    expect(runSql).toContain('retry_outbox.worker_token_digest IS NOT NULL');
+    expect(runSql).toContain('retry_outbox.projection_name IS NOT NULL');
 
     const outboxSql = sqlFor(/INSERT INTO review_dispatch_outbox/u);
     // Payload and both guards, so a superseded run's terminal row is never
@@ -618,6 +624,38 @@ describe('PostgresReviewDispatchRepository', () => {
       1_000,
       'review job projection rejected',
       7,
+      null,
+    ]);
+  });
+
+  it('binds durable markTerminal diagnostics when provided', async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{ run_id: row.run_id }] }));
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
+    const diagnostics = {
+      reason: 'projection_rejected',
+      logTail: 'review worker rejected the projection',
+    };
+
+    await expect(repository.markTerminal(
+      row.run_id,
+      'dispatcher-a',
+      7,
+      1_000,
+      'review job projection rejected',
+      diagnostics,
+    )).resolves.toBe(true);
+
+    expect(query.mock.calls[0][1]).toEqual([
+      row.run_id,
+      'dispatcher-a',
+      1_000,
+      'review job projection rejected',
+      7,
+      JSON.stringify({
+        failureClass: 'internal_error',
+        reason: diagnostics.reason,
+        logTail: diagnostics.logTail,
+      }),
     ]);
   });
 
@@ -666,10 +704,16 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(sql).toContain("publication_mode = 'app-gate'");
     expect(sql).toContain("status IN ('queued', 'running')");
     expect(sql).toContain("outbox.status = 'projected'");
-    expect(sql).toContain('outbox.worker_token_digest = $13');
+    expect(sql).toContain('outbox.worker_token_digest = $14');
     expect(query.mock.calls[2][1]).toEqual([
       row.run_id,
       'worker terminal failure: provider_error',
+      JSON.stringify({
+        failureClass: 'provider_error',
+        reason: 'provider_request_failed',
+        logTail: 'provider_request_failed',
+        executionAttempt: 1,
+      }),
       4_000,
       identity.owner,
       identity.repo,

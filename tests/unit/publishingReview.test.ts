@@ -574,6 +574,7 @@ describe('runPublishingReviewWorker', () => {
       repositoryId: 1339040553, owner: 'calltelemetry', repo: 'ct-meta', prNumber: 2795,
       headSha: HEAD, baseSha: BASE, policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
       executionAttempt: 2, checkId: 4242, failureClass: 'rate_limit',
+      diagnostics: { reason: 'provider_rate_limited', logTail: '429 [REDACTED]' },
     });
     expect(log.mock.calls).toEqual([
       ['Failed to publish the fail-closed conclusion', {

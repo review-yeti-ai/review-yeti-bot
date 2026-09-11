@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { GitHubActionsOidcClaims } from '../auth/githubActionsOidc';
+import { CENTRAL_REVIEW_REPOSITORY } from './reviewCheckIdentity';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
@@ -15,6 +16,10 @@ export const actionDispatchRequestSchema = z.object({
   baseSha: sha,
   actionSha: sha,
   publishMode: z.enum(['disabled', 'app-gate']),
+  /** Explicit same-head recovery requested by the trusted central workflow. */
+  refreshRequested: z.boolean().optional(),
+  /** One-based worker generation proven by the central check ledger. */
+  refreshExecutionAttempt: positiveInteger.optional(),
   expectedGeneration: positiveInteger.optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
@@ -30,7 +35,13 @@ export const actionDispatchRequestSchema = z.object({
     maxInvestigationTurns: z.number().int().positive().optional(),
     laneCallBudget: z.number().int().positive().optional(),
   }).strict().optional(),
-}).strict();
+}).strict().superRefine((request, context) => {
+  if (request.refreshRequested === true && request.refreshExecutionAttempt === undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom,
+      message: 'refresh execution attempt is required for an explicit retry',
+      path: ['refreshExecutionAttempt'] });
+  }
+});
 
 export type ActionDispatchRequest = z.infer<typeof actionDispatchRequestSchema>;
 export type ActionDispatchCallerKind = 'direct' | 'central';
@@ -52,7 +63,7 @@ export function assertActionDispatchMatchesClaims(
   const repository = `${request.owner}/${request.repo}`;
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
   const isCentral = request.caller.eventName === 'repository_dispatch'
-    && claims.repository === 'calltelemetry/ct-review-actions'
+    && claims.repository === CENTRAL_REVIEW_REPOSITORY
     && request.owner === 'calltelemetry';
   // The central repository can review itself, which makes both predicates true.
   // Preserve the central ledger contract in that overlap; direct compatibility

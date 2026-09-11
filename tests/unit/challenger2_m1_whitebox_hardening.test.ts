@@ -699,7 +699,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
 
       // Verify that the SQL query handles failed status re-arm
       const reviewRunInsertCall = query.mock.calls.find(([sql]) => /INSERT INTO review_runs/u.test(sql));
-      expect(reviewRunInsertCall?.[0]).toMatch(/review_runs\.status IN \('failed', 'terminal'\)/);
+      expect(reviewRunInsertCall?.[0]).toMatch(/runs\.status IN \('failed', 'terminal'\)/);
 
       // Verify that outbox reset query handles terminal status and checks queued run
       const outboxInsertCall = query.mock.calls.find(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(sql));

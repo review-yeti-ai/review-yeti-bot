@@ -40,7 +40,10 @@ import type { ProviderId } from '../config/schema';
 import { resolveWorkerConfig, PUBLISHING_MAX_TURNS, PUBLISHING_IDLE_TIMEOUT_SECONDS, PUBLISHING_OVERALL_TIMEOUT_SECONDS } from '../config/publishingWorkerConfig';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
-import { validateWorkerCompletionEndpoint, type WorkerCompletionAdapter, type WorkerTerminalFailure } from '../review/workerCompletion';
+import {
+  buildWorkerFailureDiagnostics, validateWorkerCompletionEndpoint,
+  type WorkerCompletionAdapter, type WorkerTerminalFailure,
+} from '../review/workerCompletion';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '../pipeline/domainIndex';
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
@@ -301,7 +304,7 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
 
 export interface PublishingReviewDeps {
   checkClient: PublishingCheckClient;
-  /** Reports a terminal worker failure without carrying provider error text. */
+  /** Reports a terminal worker failure with bounded, redacted diagnostics. */
   completion?: WorkerCompletionAdapter;
   reviewCompletion?: WorkerReviewCompletionAdapter;
   sourceLoader?: typeof loadSameHeadReviewSource;
@@ -404,11 +407,12 @@ export async function runPublishingReviewWorker(
 
   const reportTerminalFailure = async (error: unknown, failedCheckId?: number): Promise<void> => {
     const failureClass = classifyFailure(error);
+    const diagnostics = buildWorkerFailureDiagnostics(error, failureClass);
     if (authoritative && !authoritativeCompletionAttempted) {
       try {
         await reportReviewResult({ version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
           personas: preparedPersonaIds.map((id) => ({ id, decision: 'ERROR', status: 'ERROR', errorClass: failureClass, findings: [] })),
-          coverageComplete: false, quorumSatisfied: false });
+          coverageComplete: false, quorumSatisfied: false, failureDiagnostics: diagnostics });
       } catch {
         logger.error('Authoritative worker failure could not be acknowledged', {
           runId: identity.runId, reason: 'completion_callback_failed', failureClass,
@@ -448,6 +452,7 @@ export async function runPublishingReviewWorker(
         executionAttempt: identity.executionAttempt,
         ...(failedCheckId === undefined ? {} : { checkId: failedCheckId }),
         failureClass,
+        diagnostics,
       };
       try {
         await deps.completion.reportTerminalFailure(event);

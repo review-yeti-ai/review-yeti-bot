@@ -1,7 +1,10 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME } from '../review/reviewCheckIdentity';
 import type { ReviewGateCoordinates } from '../review/reviewGateContracts';
-import type { WorkerCompletionProof } from '../review/workerCompletion';
+import {
+  buildDurableWorkerFailureDiagnostics,
+  type WorkerCompletionProof,
+} from '../review/workerCompletion';
 import {
   deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, workerReviewCompletionDigest,
 } from '../review/workerReviewCompletion';
@@ -151,6 +154,19 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         : { status: 'failure', eligible: false, reason: 'invalid-evidence' };
       if (decision.status === 'pending') throw new Error('Terminal gate result cannot remain pending');
 
+      // Persist a bounded diagnostic before retiring the worker execution. The
+      // callback's persona error class is the only worker-supplied category we
+      // trust; free-form provider context is redacted again at this boundary.
+      const errorPersona = event.result.personas.find((persona) => persona.errorClass !== undefined);
+      const failureClass = errorPersona?.errorClass
+        || (decision.status === 'timed_out' ? 'timeout' : 'internal_error');
+      const failureDiagnostics = decision.status === 'success' || decision.status === 'cancelled'
+        || (decision.status === 'failure' && decision.reason === 'blocking-findings')
+        ? null
+        : JSON.stringify(buildDurableWorkerFailureDiagnostics(
+          failureClass, event.result.failureDiagnostics, event.executionAttempt,
+        ));
+
       await client.query(`UPDATE review_gate_attempts SET evidence = $2, decision = $3,
           worker_result_digest = $4, desired_state = $5, desired_version = desired_version + 1,
           current_attempt = $6, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
@@ -164,10 +180,12 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($2/1000.0)
         WHERE run_id = $1`, [event.runId, now]);
       await client.query(`UPDATE review_runs SET status = $2, stage = 'publish',
-          result_digest = $3, error_text = $4, lease_owner = NULL, lease_expires_at = NULL,
+          result_digest = $3, error_text = $4,
+          failure_diagnostics = CASE WHEN $6::jsonb IS NULL THEN failure_diagnostics ELSE $6::jsonb END,
+          lease_owner = NULL, lease_expires_at = NULL,
           updated_at = to_timestamp($5/1000.0) WHERE run_id = $1`,
       [event.runId, decision.status === 'success' ? 'succeeded' : decision.status === 'cancelled' ? 'superseded' : 'failed',
-        resultDigest, decision.status === 'success' ? null : `review gate: ${decision.reason}`, now]);
+        resultDigest, decision.status === 'success' ? null : `review gate: ${decision.reason}`, now, failureDiagnostics]);
       if (decision.status === 'success') await this.options.onEligibleCompletion?.(client, gate, now);
       return await finish('recorded');
     } catch (error) {
@@ -291,7 +309,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         ]);
         if (!lock.rows[0]?.acquired) { await client.query('COMMIT'); continue; }
         const current = await client.query(`SELECT gate.*, runs.status AS run_status,
-            runs.terminal_deadline, outbox.worker_token_digest
+            runs.terminal_deadline, outbox.worker_token_digest, outbox.execution_attempt
           FROM review_gate_attempts gate JOIN review_runs runs USING (run_id)
           JOIN review_dispatch_outbox outbox USING (run_id)
           WHERE gate.attempt_id = $1 AND gate.current_attempt
@@ -311,6 +329,12 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           : expired
           ? { status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' }
           : { status: 'failure', eligible: false, reason: 'infrastructure-failure' };
+        const executionAttempt = Number(row.execution_attempt);
+        const durableExecutionAttempt = Number.isSafeInteger(executionAttempt) && executionAttempt >= 0
+          ? executionAttempt + 1 : undefined;
+        const failureDiagnostics = cancelled ? null : JSON.stringify(buildDurableWorkerFailureDiagnostics(
+          expired ? 'timeout' : 'internal_error', undefined, durableExecutionAttempt,
+        ));
         await client.query(`UPDATE review_gate_attempts SET desired_state = $2,
             desired_version = desired_version + 1, decision = $3, current_attempt = $4,
             lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
@@ -319,8 +343,9 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
               THEN desired_version + 1 ELSE published_version END
           WHERE attempt_id = $1`, [hint.attempt_id, decision.status, JSON.stringify(decision), !cancelled, now]);
         await client.query(`UPDATE review_runs SET status = $2, stage = 'publish', error_text = $3,
+            failure_diagnostics = CASE WHEN $5::jsonb IS NULL THEN failure_diagnostics ELSE $5::jsonb END,
             lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($4/1000.0)
-          WHERE run_id = $1`, [row.run_id, cancelled ? 'superseded' : 'failed', `review gate: ${decision.reason}`, now]);
+          WHERE run_id = $1`, [row.run_id, cancelled ? 'superseded' : 'failed', `review gate: ${decision.reason}`, now, failureDiagnostics]);
         // A bound token means a Job may have started before a lost projection
         // ACK. Preserve that execution so retry allocates a fresh Job/Secret.
         await client.query(`UPDATE review_dispatch_outbox SET
