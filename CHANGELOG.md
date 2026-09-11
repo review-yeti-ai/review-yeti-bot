@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.2...v1.56.3) (2026-09-11)
+
+
+### Bug Fixes
+
+* **API-3210:** reconcile durable worker failures immediately ([#718](https://github.com/review-yeti-ai/review-yeti-bot/issues/718)) ([305bf5c](https://github.com/review-yeti-ai/review-yeti-bot/commit/305bf5c3aad1461d54de53c50535fc3f4e383e5c))
+
 ## [1.56.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.1...v1.56.2) (2026-09-11)
 
 
