@@ -35,6 +35,7 @@ func missingJobFixture(t *testing.T, mode string, hooks interceptor.Funcs) (*con
 	review := v1alpha2Review(now)
 	review.UID = types.UID("missing-job-test")
 	review.Spec.PublicationMode = mode
+	review.Spec.RunnerMode = "generic"
 	attempt := int32(2)
 	review.Spec.ExecutionAttempt = &attempt
 	review.Name += "-a2"
