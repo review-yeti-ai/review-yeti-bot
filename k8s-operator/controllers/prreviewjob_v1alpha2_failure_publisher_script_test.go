@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const (
@@ -32,6 +33,67 @@ const (
 	failureScriptRunID      = "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	failureScriptExternalID = failureScriptRunID + ":a2"
 )
+
+func TestExecutionAttemptForFailurePublisherBoundaries(t *testing.T) {
+	tests := []struct {
+		name         string
+		hasExplicit  bool
+		explicit     int32
+		secretSuffix string
+		want         int32
+		wantErr      bool
+	}{
+		{name: "explicit zero", hasExplicit: true, explicit: 0, wantErr: true},
+		{name: "explicit one", hasExplicit: true, explicit: 1, want: 1},
+		{name: "explicit five", hasExplicit: true, explicit: 5, secretSuffix: "-a5", want: 5},
+		{name: "explicit retry mismatches base secret", hasExplicit: true, explicit: 5, wantErr: true},
+		{name: "explicit first attempt mismatches retry secret", hasExplicit: true, explicit: 1, secretSuffix: "-a2", wantErr: true},
+		{name: "legacy base secret", want: 1},
+		{name: "legacy attempt two", secretSuffix: "-a2", want: 2},
+		{name: "legacy multi-digit attempt", secretSuffix: "-a10", want: 10},
+		{name: "legacy leading zero", secretSuffix: "-a01", wantErr: true},
+		{name: "legacy zero", secretSuffix: "-a0", wantErr: true},
+		{name: "legacy signed positive", secretSuffix: "-a+2", wantErr: true},
+		{name: "legacy signed negative", secretSuffix: "-a-1", wantErr: true},
+		{name: "legacy empty suffix", secretSuffix: "-a", wantErr: true},
+		{name: "legacy wrong delimiter", secretSuffix: "-b2", wantErr: true},
+		{name: "legacy non-numeric suffix", secretSuffix: "-anonsense", wantErr: true},
+		{name: "legacy int32 overflow", secretSuffix: "-a2147483648", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			review := newTestReview(time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC))
+			review.Spec.RunSecretName += test.secretSuffix
+			if test.hasExplicit {
+				explicit := test.explicit
+				review.Spec.ExecutionAttempt = &explicit
+			}
+			got, err := executionAttemptForFailurePublisher(review)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("attempt = %d, want rejection", got)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("attempt = %d, err = %v, want %d", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestBuildFailurePublisherJobRejectsMalformedRepositoryIdentity(t *testing.T) {
+	for _, repository := range []string{"owner/a/b", "owner/", "/repo", "owner"} {
+		t.Run(repository, func(t *testing.T) {
+			review := newTestReview(time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC))
+			review.Spec.Repo = repository
+			if publisher, err := buildFailurePublisherJob(review); err == nil || publisher != nil {
+				t.Fatalf("malformed repository built publisher: %#v, err = %v", publisher, err)
+			}
+		})
+	}
+}
 
 func TestFailurePublisherScriptIsIdempotentAndPreservesCompletedVerdicts(t *testing.T) {
 	if _, err := exec.LookPath("node"); err != nil {

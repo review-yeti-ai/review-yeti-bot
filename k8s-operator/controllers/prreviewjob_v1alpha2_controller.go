@@ -686,13 +686,20 @@ func buildFailurePublisherJob(review *reviewv1alpha2.PRReviewJob) (*batchv1.Job,
 }
 
 func executionAttemptForFailurePublisher(review *reviewv1alpha2.PRReviewJob) (int32, error) {
+	base := "ct-review-run-" + strings.TrimPrefix(review.Spec.RunID, "run_")
 	if review.Spec.ExecutionAttempt != nil {
 		if *review.Spec.ExecutionAttempt < 1 {
 			return 0, errors.New("failure publisher execution attempt is invalid")
 		}
+		expectedSecret := base
+		if *review.Spec.ExecutionAttempt > 1 {
+			expectedSecret = fmt.Sprintf("%s-a%d", base, *review.Spec.ExecutionAttempt)
+		}
+		if review.Spec.RunSecretName != expectedSecret {
+			return 0, errors.New("failure publisher execution attempt does not match its run Secret")
+		}
 		return *review.Spec.ExecutionAttempt, nil
 	}
-	base := "ct-review-run-" + strings.TrimPrefix(review.Spec.RunID, "run_")
 	if review.Spec.RunSecretName == base {
 		return 1, nil
 	}
@@ -700,6 +707,11 @@ func executionAttemptForFailurePublisher(review *reviewv1alpha2.PRReviewJob) (in
 	raw, ok := strings.CutPrefix(review.Spec.RunSecretName, prefix)
 	if !ok || raw == "" || (len(raw) > 1 && raw[0] == '0') {
 		return 0, errors.New("failure publisher execution identity is invalid")
+	}
+	for _, digit := range raw {
+		if digit < '0' || digit > '9' {
+			return 0, errors.New("failure publisher execution identity is invalid")
+		}
 	}
 	parsed, err := strconv.ParseInt(raw, 10, 32)
 	if err != nil || parsed < 1 {
