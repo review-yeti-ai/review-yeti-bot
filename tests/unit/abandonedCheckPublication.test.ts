@@ -184,7 +184,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
 describe('abandoned reaper with the actual GitHub publication adapter', () => {
   it.each(persistedWindows.flatMap((window) =>
     (['existing', 'absent', 'completed'] as const).map((state) => ({ window, state })),
-  ))('reconciles a persisted $window ms / $state check once across admission-default changes', async ({ window, state }) => {
+  ))('reconciles a persisted $window ms / $state check once before its terminal deadline', async ({ window, state }) => {
     const persistedRun = { ...run, terminalDeadline: run.receivedAt + window };
     const owned = { ...check, external_id: `${run.runId}:a1` };
     const { client, fetchImplementation } = fixture(state === 'absent' ? [] : [owned],
@@ -203,14 +203,19 @@ describe('abandoned reaper with the actual GitHub publication adapter', () => {
         return true;
       },
     };
+    const reaperNow = persistedRun.receivedAt + 2_000;
+    expect(reaperNow).toBeLessThan(persistedRun.terminalDeadline);
     const reaper = new AbandonedRunReaper({ repository, checkClientFor: async () => client,
-      publisherAppId: 4385771, workerId: 'offline-reaper', now: () => persistedRun.terminalDeadline + 1 });
+      publisherAppId: 4385771, workerId: 'offline-reaper', now: () => reaperNow });
     await expect(reaper.runOnce()).resolves.toEqual({ swept: 1, published: state === 'completed' ? 0 : 1, failed: 0 });
     expect(pending).toBe(false);
     const writes = fetchImplementation.mock.calls.filter(([, init]) => ['PATCH', 'POST'].includes(init?.method || ''));
     expect(writes).toHaveLength(state === 'completed' ? 0 : 1);
     if (state !== 'completed') {
       expect(writes[0][1]?.method).toBe(state === 'absent' ? 'POST' : 'PATCH');
+      if (state === 'existing') {
+        expect(writes[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
+      }
       expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure',
         ...(state === 'absent' ? { head_sha: run.headSha, external_id: `${run.runId}:a1` } : {}) });
     }

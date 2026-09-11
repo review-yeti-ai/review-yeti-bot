@@ -252,6 +252,128 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(claimed.runId).toBe(active.run.runId);
   });
 
+  it('claims a durable worker failure before the original terminal deadline and retires it once', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('worker-failed-before-deadline', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'a'.repeat(64);
+    await expect(repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker', 1_002, workerTokenDigest,
+    )).resolves.toBe(true);
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      failureClass: 'provider_error',
+    }, { workerTokenDigest }, 1_003)).resolves.toMatchObject({ status: 'failed' });
+
+    // The worker has failed durably, but the 15-minute admission window is still
+    // open. Reconciliation must publish the exact one-based a1 identity now.
+    const [failed] = await repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1);
+    expect(failed).toMatchObject({
+      runId: admitted.run.runId, executionAttempt: 1, receivedAt: 1_000,
+      terminalDeadline: input.terminalDeadline,
+    });
+    let published = 0;
+    await expect(repository.reconcileAbandonedPublishingRun(failed, 'reaper-a', 2_001, async () => {
+      published += 1;
+    })).resolves.toBe(true);
+    expect(published).toBe(1);
+    const reconciled = await client.query(`SELECT runs.status, runs.error_text,
+      outbox.status AS outbox_status FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: provider_error', outbox_status: 'terminal' });
+    await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
+  });
+
+  it('claims a token-bound worker failure when its outbox advanced past projected', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('worker-token-bound-failure', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'c'.repeat(64);
+    await expect(repository.bindWorkerTokenDigest(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, workerTokenDigest, 1_002,
+    )).resolves.toBe(true);
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      failureClass: 'provider_error',
+    }, { workerTokenDigest }, 1_003)).resolves.toMatchObject({ status: 'failed' });
+
+    // A dispatcher can persist its token binding and terminalize its outbox
+    // before the worker-failure callback arrives. The token is still durable
+    // ownership evidence even though the outbox is no longer 'projected'.
+    await client.query(`UPDATE review_dispatch_outbox SET status = 'terminal'
+      WHERE run_id = $1 AND worker_token_digest = $2`, [admitted.run.runId, workerTokenDigest]);
+    const [failed] = await repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1);
+    expect(failed).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+    await expect(repository.reconcileAbandonedPublishingRun(
+      failed, 'reaper-a', 2_001, async () => {},
+    )).resolves.toBe(true);
+    const reconciled = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
+    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: provider_error' });
+    await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
+  });
+
+  it('waits for the deadline before sweeping an unowned failed row', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('unowned-failure', 1_000);
+    const admitted = await repository.admit(input);
+    await client.query(`UPDATE review_runs SET status = 'failed', error_text = 'projection rejected'
+      WHERE run_id = $1`, [admitted.run.runId]);
+    await client.query(`UPDATE review_dispatch_outbox SET status = 'terminal', projection_name = NULL,
+      worker_token_digest = NULL WHERE run_id = $1`, [admitted.run.runId]);
+
+    await expect(repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1)).resolves.toEqual([]);
+    const [expired] = await repository.claimAbandonedPublishingRuns(
+      'reaper-b', input.terminalDeadline + 1, 1,
+    );
+    expect(expired).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+  });
+
+  it('retries a failed worker publication after its claim lease without changing a1 or its classification', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('worker-failed-retry', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'b'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker', 1_002, workerTokenDigest,
+    );
+    await repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      failureClass: 'budget_exhausted',
+    }, { workerTokenDigest }, 1_003);
+
+    const [first] = await repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1);
+    await expect(repository.reconcileAbandonedPublishingRun(first, 'reaper-a', 2_001, async () => {
+      throw new Error('synthetic publisher outage');
+    })).rejects.toThrow('synthetic publisher outage');
+    await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
+
+    const [retry] = await repository.claimAbandonedPublishingRuns('reaper-b', 62_002, 1);
+    expect(retry).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+    const pending = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
+    expect(pending.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: budget_exhausted' });
+    await expect(repository.reconcileAbandonedPublishingRun(retry, 'reaper-b', 62_003, async () => {})).resolves.toBe(true);
+    const reconciled = await client.query(`SELECT runs.status, runs.error_text,
+      outbox.status AS outbox_status FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: budget_exhausted', outbox_status: 'terminal' });
+    await expect(repository.claimAbandonedPublishingRuns('reaper-c', 62_004, 1)).resolves.toEqual([]);
+  });
+
   describe('atomic authoritative admission', () => {
     it('commits prepared policy, run, outbox and gate together; dispatch waits for durable check binding', async () => {
       const { repository, client, gateRepository } = await createRepository();

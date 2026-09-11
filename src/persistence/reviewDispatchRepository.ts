@@ -35,6 +35,9 @@ interface ConnectionPool {
   connect(): Promise<TransactionClient>;
 }
 
+/** Prefix for the bounded worker failure classification persisted in error_text. */
+export const WORKER_TERMINAL_FAILURE_PREFIX = 'worker terminal failure: ';
+
 export interface ReviewDispatchRepositoryOptions {
   /** Trusted service read/validation only; invoked under the candidate's PR lock before any admission writes. */
   validateAuthoritativeAdmission?: (input: ReviewAdmissionInput) => Promise<void>;
@@ -189,7 +192,7 @@ export interface ReviewDispatchRepository {
     diagnostics?: WorkerFailureDiagnostics): Promise<boolean>;
   /** Persist a worker's fail-closed terminal outcome without approving the head. */
   markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
-  /** REL-586: sweep publishing runs whose deadline passed without ever publishing. */
+  /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
     publish: () => Promise<void>): Promise<boolean>;
@@ -605,18 +608,39 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          SELECT runs.run_id
            FROM review_runs runs
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
-          WHERE (runs.status IN ('queued', 'running') OR
-            (runs.status = 'terminal' AND runs.error_text LIKE
-              'publishing run reached its terminal deadline without a verdict; reaped by %'))
+          WHERE (
+            -- A worker callback or token-bound dispatcher terminalization is
+            -- already a durable fail-closed outcome. Publish its required check now;
+            -- waiting for the original deadline would strand the head until
+            -- the same-head retry path is invoked.
+            (runs.status = 'failed' AND (
+              (outbox.status = 'projected' OR outbox.worker_token_digest IS NOT NULL)
+              OR runs.terminal_deadline <= to_timestamp($2 / 1000.0)
+            ))
+            OR (runs.status IN ('queued', 'running')
+              AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
+            OR (runs.status = 'terminal' AND runs.error_text LIKE
+              'publishing run reached its terminal deadline without a verdict; reaped by %'
+              AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
+            -- A preserved worker failure is retryable only while a prior
+            -- reaper claim still owns its publication lease. Successful
+            -- reconciliation clears that owner without erasing the bounded
+            -- worker classification, making the terminal row one-shot.
+            OR (runs.status = 'terminal' AND runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
+              AND outbox.status = 'projected' AND runs.lease_owner IS NOT NULL)
+          )
             AND publication_mode = 'app-gate'
             AND result_digest IS NULL
             AND authoritative_gate_app_id IS NULL
-            AND terminal_deadline <= to_timestamp($2 / 1000.0)
             AND (runs.lease_expires_at IS NULL OR runs.lease_expires_at <= to_timestamp($2 / 1000.0))
-          -- A historical failure-publication backlog must not delay recovery of
-          -- a run that is still active in durable dispatch state. Sweep newly
-          -- expired queued/running work first, then retain FIFO within each class.
-          ORDER BY CASE WHEN runs.status IN ('queued', 'running') THEN 0 ELSE 1 END,
+          -- A durable worker failure is actionable immediately. Keep it ahead of
+          -- deadline sweeps so a failed head is not hidden behind old backlog.
+          -- Within each class, retain FIFO by the original terminal deadline.
+          ORDER BY CASE
+                     WHEN runs.status = 'failed' THEN 0
+                     WHEN runs.status IN ('queued', 'running') THEN 1
+                     ELSE 2
+                   END,
                    runs.terminal_deadline
           FOR UPDATE OF runs, outbox SKIP LOCKED
           LIMIT $3
@@ -632,7 +656,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
               lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
-              error_text = 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
+              error_text = CASE
+                WHEN runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
+                  THEN runs.error_text
+                ELSE 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
+              END
          FROM retired
         WHERE runs.run_id = retired.run_id
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
@@ -684,9 +712,23 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         return false;
       }
       await publish();
+      // Successful publication consumes this outbox delivery. Retain the
+      // worker token as durable evidence for an explicit same-head retry, but
+      // move the row out of the reaper's projected-publication state so the
+      // preserved worker classification is not claimed repeatedly.
+      await client.query(
+        `UPDATE review_dispatch_outbox
+            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                updated_at = to_timestamp($2 / 1000.0)
+          WHERE run_id = $1 AND delivery_id = $3 AND execution_attempt + 1 = $4`,
+        [run.runId, now, run.deliveryId, run.executionAttempt],
+      );
       await client.query(
         `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
-           error_text = 'publishing run reached its terminal deadline without a verdict; failure reconciled',
+           error_text = CASE
+             WHEN error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%' THEN error_text
+             ELSE 'publishing run reached its terminal deadline without a verdict; failure reconciled'
+           END,
            updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
       );
       await client.query('COMMIT');
@@ -843,7 +885,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     proof: WorkerCompletionProof,
     now: number,
   ): Promise<WorkerFailureTransition> {
-    const safeError = `worker terminal failure: ${input.failureClass}`;
+    const safeError = `${WORKER_TERMINAL_FAILURE_PREFIX}${input.failureClass}`;
     const safeDiagnostics = buildDurableWorkerFailureDiagnostics(
       input.failureClass, input.diagnostics, input.executionAttempt,
     );
