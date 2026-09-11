@@ -11,7 +11,7 @@ describe('Action dispatch service configuration', () => {
         ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION: value,
       })).toEqual({
         requireExpectedGeneration: false,
-        centralExternalRepositories: new Set(),
+        centralExternalRepositories: new Map(),
       });
     },
   );
@@ -21,7 +21,7 @@ describe('Action dispatch service configuration', () => {
       ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION: 'true',
     })).toEqual({
       requireExpectedGeneration: true,
-      centralExternalRepositories: new Set(),
+      centralExternalRepositories: new Map(),
     });
   });
 
@@ -36,7 +36,7 @@ describe('Action dispatch service configuration', () => {
       ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: selfHostedRepository,
     })).toEqual({
       requireExpectedGeneration: false,
-      centralExternalRepositories: new Set([selfHostedRepository]),
+      centralExternalRepositories: new Map([[selfHostedRepository, 1326169548]]),
     });
   });
 

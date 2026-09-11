@@ -223,7 +223,7 @@ describe('POST /api/dispatch/action', () => {
       allowAppGate: true,
       requireExpectedGeneration: true,
       verifier: { verify: vi.fn(async () => centralVerified) },
-      centralExternalRepositories: new Set(['review-yeti-ai/review-yeti-bot']),
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
     });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
@@ -253,7 +253,7 @@ describe('POST /api/dispatch/action', () => {
     };
     const fixture = app({
       verifier: { verify: vi.fn(async () => centralVerified) },
-      centralExternalRepositories: new Set(['review-yeti-ai/review-yeti-bot']),
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
     });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
@@ -274,11 +274,83 @@ describe('POST /api/dispatch/action', () => {
     expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
+  it('rejects the configured external target from a non-central OIDC repository', async () => {
+    const nonCentralVerified = {
+      repository: 'arbitrary-owner/arbitrary-caller',
+      repository_id: '88888',
+      repository_owner_id: '77',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'repository_dispatch',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      verifier: { verify: vi.fn(async () => nonCentralVerified) },
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        deliveryId: `actions:98765:2:1326169548:42:${body.headSha}`,
+        repositoryId: 1326169548,
+        owner: 'review-yeti-ai',
+        repo: 'review-yeti-bot',
+        caller: {
+          ...body.caller,
+          eventName: 'repository_dispatch',
+          workflowRef: nonCentralVerified.job_workflow_ref,
+        },
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('rejects the configured external target when the central caller event is not repository_dispatch', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions',
+      repository_id: '99999',
+      repository_owner_id: '99',
+      run_id: '98765',
+      run_attempt: '2',
+      event_name: 'workflow_dispatch',
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({
+      verifier: { verify: vi.fn(async () => centralVerified) },
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        deliveryId: `actions:98765:2:1326169548:42:${body.headSha}`,
+        repositoryId: 1326169548,
+        owner: 'review-yeti-ai',
+        repo: 'review-yeti-bot',
+        caller: {
+          ...body.caller,
+          eventName: 'workflow_dispatch',
+          workflowRef: centralVerified.job_workflow_ref,
+        },
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ['review-yeti-ai', 'review-yeti-bot', new Set<string>()],
-    ['review-yeti-ai', 'other-repository', new Set(['review-yeti-ai/review-yeti-bot'])],
-    ['other-owner', 'review-yeti-bot', new Set(['review-yeti-ai/review-yeti-bot'])],
-    ['arbitrary-owner', 'arbitrary-repo', new Set(['arbitrary-owner/arbitrary-repo'])],
+    ['review-yeti-ai', 'review-yeti-bot', new Map<string, number>()],
+    ['review-yeti-ai', 'other-repository', new Map([['review-yeti-ai/review-yeti-bot', 1326169548]])],
+    ['other-owner', 'review-yeti-bot', new Map([['review-yeti-ai/review-yeti-bot', 1326169548]])],
+    ['arbitrary-owner', 'arbitrary-repo', new Map([['review-yeti-ai/review-yeti-bot', 1326169548]])],
   ])('rejects central dispatch for non-opted-in or unsupported external target %s/%s', async (
     owner,
     repo,
