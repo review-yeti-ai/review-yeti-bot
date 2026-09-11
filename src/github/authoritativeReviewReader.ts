@@ -182,23 +182,23 @@ export class AuthoritativeReviewReader {
   /** Resolve only a service-configured policy reference, then retain the exact
    * SHA. Never resolve candidate-provided references or use a mutable ref when
    * reading the actual policy file. */
-  async resolvePolicyRevision(input: ReviewRepositoryIdentity, trustedRef: string): Promise<string> {
+  async resolvePolicyRevision(input: ReviewRepositoryIdentity, trustedRef: string, signal?: AbortSignal): Promise<string> {
     const { target, path } = this.route(input);
     if (!trustedRef || trustedRef.length > 256 || /[\u0000-\u001f\u007f]/u.test(trustedRef)) {
       throw new Error('Review reader policy reference invalid');
     }
-    this.assertRepository(parse(repositoryResponse, await this.json(path)), target);
-    return parse(z.object({ sha }), await this.json(`${path}/commits/${encodeURIComponent(trustedRef)}`)).sha;
+    this.assertRepository(parse(repositoryResponse, await this.json(path, signal)), target);
+    return parse(z.object({ sha }), await this.json(`${path}/commits/${encodeURIComponent(trustedRef)}`, signal)).sha;
   }
 
-  async immutablePolicyFile(input: ReviewRepositoryIdentity, revision: string, filePath: string): Promise<ImmutableReviewPolicyFile> {
+  async immutablePolicyFile(input: ReviewRepositoryIdentity, revision: string, filePath: string, signal?: AbortSignal): Promise<ImmutableReviewPolicyFile> {
     const { target, path } = this.route(input);
     parse(sha, revision); parse(sourcePath, filePath);
-    this.assertRepository(parse(repositoryResponse, await this.json(path)), target);
+    this.assertRepository(parse(repositoryResponse, await this.json(path, signal)), target);
     const file = parse(z.object({
       type: z.literal('file'), path: sourcePath, sha, encoding: z.literal('base64'),
       size: z.number().int().min(0).max(MAX_FILE_BYTES), content: z.string().max(MAX_RESPONSE_BYTES),
-    }), await this.json(`${path}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}?ref=${revision}`));
+    }), await this.json(`${path}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}?ref=${revision}`, signal));
     const encoded = file.content.replace(/[\r\n]/gu, '');
     const bytes = Buffer.from(encoded, 'base64');
     if (file.path !== filePath || bytes.length !== file.size || bytes.length > MAX_FILE_BYTES
