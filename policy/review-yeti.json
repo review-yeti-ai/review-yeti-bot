@@ -26,7 +26,7 @@
         "api_key_env": "BIFROST_PR_REVIEW_API_KEY",
         "model": "ollama/glm-5.3-flash",
         "compat": "openai",
-        "max_tokens": 32768,
+        "max_tokens": 65536,
         "timeout_ms": 90000,
         "connect_timeout_ms": 90000,
         "ttft_ms": 60000,
@@ -203,7 +203,7 @@
       "lane_overhead_ms": "120000",
       "lane_call_budget": "24",
       "max_review_assignments": "24",
-      "max_investigation_turns": 5
+      "max_investigation_turns": 15
     },
     "max_diff_chars": "2000000",
     "max_incremental_diff_chars": "60000",
