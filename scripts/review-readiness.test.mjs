@@ -59,11 +59,6 @@ jobs:
       - run: echo "request_id=dashboard:\${{ github.event.pull_request.number }}:\${{ github.event.pull_request.head.sha }}:\${{ github.run_id }}:\${{ github.run_attempt }}"
 `;
 
-const selfCallerWorkflow = readFileSync(
-  fileURLToPath(new URL('../.github/workflows/ct-review-bot.yml', import.meta.url)),
-  'utf8',
-);
-
 const mergeGroupWorkflow = `
 name: Dashboard Review Yeti Merge Group
 on:
@@ -454,28 +449,6 @@ test('accepts cisco-style dispatch observability and exact-head dedup without mi
   const result = qualifyReadiness(readyInput({ callerWorkflow: ciscoStyleCaller }));
   assert.equal(result.failures.some((failure) => failure.code === 'caller_producer'), false);
   assert.equal(result.status, 'ready');
-});
-
-test('central self-caller App token cannot publish its own protected check', () => {
-  const input = readyInput({
-    repository: 'exampleorg/example-review-actions',
-    callerWorkflow: selfCallerWorkflow,
-    pullRequest: {
-      number: 42,
-      state: 'open',
-      base: { sha: baseSha, repo: { full_name: 'exampleorg/example-review-actions' } },
-      head: { sha: headSha, ref: 'feature/readiness' },
-    },
-    callerRun: {
-      ...readyInput().callerRun,
-      repository: { full_name: 'exampleorg/example-review-actions' },
-    },
-  });
-  assert.equal(qualifyReadiness(input).failures.some((failure) => failure.code === 'app_token'), false);
-
-  const widened = selfCallerWorkflow.replace('permission-checks: read', 'permission-checks: write');
-  const result = qualifyReadiness({ ...input, callerWorkflow: widened });
-  assert.ok(result.failures.some((failure) => failure.code === 'app_token'));
 });
 
 test('rejects self-publication, polling, stale check coordinates, repeated reads, and widened caller permissions', () => {

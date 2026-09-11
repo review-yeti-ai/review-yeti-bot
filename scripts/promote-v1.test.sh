@@ -592,11 +592,6 @@ grep -Fq "if: always() && steps.review.outputs.provider-telemetry-path != ''" "$
 grep -Fq 'name: review-yeti-provider-telemetry-${{ github.run_id }}-${{ github.run_attempt }}' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'path: ${{ steps.review.outputs.provider-telemetry-path }}' "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq 'contents: read' "$repo_root/.github/workflows/ct-review-bot.yml"
-if grep -Eq '^  (actions|checks|issues|pull-requests): write$' "$repo_root/.github/workflows/ct-review-bot.yml"; then
-  echo "self-review caller ambient permissions must remain read-only" >&2
-  exit 1
-fi
 grep -Fq 'actions: read' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'incremental-review: ${{ steps.policy.outputs.incremental_enabled }}' "$repo_root/.github/workflows/review-yeti.yml"

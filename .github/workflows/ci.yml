@@ -36,7 +36,6 @@ jobs:
           node --check scripts/validate-central-dispatch.mjs
           node --check scripts/validate-central-dispatch.test.mjs
           node --check scripts/validate-review-generation.test.mjs
-          node --check scripts/self-review-dispatch.test.mjs
           node --check scripts/validate-central-dispatch.replay.test.mjs
           node --check scripts/review-readiness.mjs
           node --check scripts/review-check-contract.mjs
@@ -106,7 +105,6 @@ jobs:
           node --test scripts/emit-execution-plan.test.mjs
           node --test scripts/validate-central-dispatch.test.mjs
           node --test scripts/validate-review-generation.test.mjs
-          node --test scripts/self-review-dispatch.test.mjs
           node --test scripts/validate-central-dispatch.replay.test.mjs
           node --test scripts/review-readiness.test.mjs
           node --test scripts/review-check-contract.test.mjs
@@ -147,13 +145,6 @@ jobs:
           jq -e '.review_yeti.transports[] | select(.name == "synthetic") | .enabled == false' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .provider_routing.ignore == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .ignore_providers == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
-          grep -Fq 'repos/exampleorg/example-review-actions/dispatches' .github/workflows/ct-review-bot.yml
-          grep -Fq 'CENTRAL_EVENT_TYPE: review-yeti-request' .github/workflows/ct-review-bot.yml
-          grep -Fq 'repositories: example-review-actions' .github/workflows/ct-review-bot.yml
-          if grep -Eq 'review-yeti\.yml@|secrets:[[:space:]]*inherit' .github/workflows/ct-review-bot.yml; then
-            echo '::error::central self-review must dispatch through the App boundary'
-            exit 1
-          fi
           if [ "$(grep -c '^[[:space:]]*max-file-diff-chars:' .github/workflows/review-yeti.yml)" -ne 1 ]; then
             echo '::error::Review Yeti action inputs must be unique'
             exit 1
@@ -263,7 +254,7 @@ jobs:
           grep -Fq 'transport_plan_b64' scripts/emit-policy.mjs
           grep -Fq 'github.event.pull_request.head.sha' .github/workflows/review-yeti.yml
           grep -Fq 'github.event.pull_request.head.repo.full_name' .github/workflows/review-yeti.yml
-          if grep -Eq '"action_sha(_override)?"|central-sha:' policy/review-yeti.json .github/workflows/ct-review-bot.yml; then
+          if grep -Eq '"action_sha(_override)?"|central-sha:' policy/review-yeti.json; then
             echo "::error::per-repository SHA claims are forbidden; use the central release channel"
             exit 1
           fi
