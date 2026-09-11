@@ -64,4 +64,19 @@ describe('admission-only Action dispatch deployment', () => {
       expect(script).not.toContain(forbidden);
     }
   });
+
+  it('projects default-off expected-generation enforcement through manifest and chart config', () => {
+    const configMap = documents().find((document) => document.kind === 'ConfigMap');
+    expect(configMap?.data.ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION)
+      .toBe('${ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION}');
+
+    const values = yaml.load(fs.readFileSync(path.join(root, 'charts/review-yeti/values.yaml'), 'utf8')) as any;
+    expect(values.dispatcher.config.requireExpectedGeneration).toBe(false);
+    const template = fs.readFileSync(path.join(root, 'charts/review-yeti/templates/configmap.yaml'), 'utf8');
+    expect(template).toContain('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION: {{ .Values.dispatcher.config.requireExpectedGeneration | quote }}');
+
+    const script = fs.readFileSync(path.join(root, 'scripts/deploy-action-dispatch.sh'), 'utf8');
+    expect(script).toContain('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION="${ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION:-false}"');
+    expect(script).toContain('${ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION}');
+  });
 });

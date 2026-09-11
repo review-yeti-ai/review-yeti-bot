@@ -147,8 +147,29 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(client.query.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
   });
 
-  it('requires a valid expected generation for central app-gate before opening a transaction', async () => {
-    for (const expectedGeneration of [undefined, 0, -1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+  it('temporarily admits a missing central app-gate generation when enforcement is disabled', async () => {
+    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await expect(repository.admit({
+      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate',
+    })).resolves.toMatchObject({ status: 'accepted' });
+    expect(client.query).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('requires a central app-gate generation before opening a transaction when enforcement is enabled', async () => {
+    const connect = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect } as any, undefined, {
+      requireExpectedGeneration: true,
+    });
+    await expect(repository.admit({
+      ...input(), eventName: 'repository_dispatch', publicationMode: 'app-gate',
+    })).rejects.toThrow(/expected generation is required/i);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid supplied expected generation before opening a transaction in compatibility mode', async () => {
+    for (const expectedGeneration of [0, -1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 1]) {
       const connect = vi.fn();
       const repository = new PostgresReviewDispatchRepository({ connect } as any);
       await expect(repository.admit({

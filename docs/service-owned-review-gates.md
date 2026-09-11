@@ -34,21 +34,35 @@ review generation without advancing the execution counter.
 
 Central `repository_dispatch` app-gate callers must pass the one-based
 `expected-generation` admitted by their App ledger. The Action sends it as
-`expectedGeneration`; the API rejects missing or invalid values before
+`expectedGeneration`; a supplied value is always schema-validated before
 admission. Under the same PR advisory lock used for identity allocation, the
-repository compares it with the exact identity's zero-based persisted
+repository always compares a supplied value with the exact identity's zero-based persisted
 `review_runs.attempt + 1`. A new or identity-drifted row can therefore satisfy
 only `a1`; an admitted `a2` or `a3` must match that exact identity's durable
 next generation. Mismatch rolls back the delivery, run, outbox, prepared policy,
 and gate reservation together and returns HTTP 409. Existing tables already
 carry the required counter, so this contract needs no schema migration.
 
-Roll this contract out producer-first: the central `ct-review-actions`
-repository-dispatch workflow must pass its admitted generation to a pinned
-Action revision that sends `expectedGeneration` before (or atomically with)
-deploying service enforcement. Deploying the service first intentionally makes
-older central dispatches fail closed with HTTP 400 until the producer is
-updated. Disabled and non-central execution paths remain backward compatible.
+`ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION` is the service-side rollout fence.
+It defaults to `false`: missing central app-gate generation remains temporarily
+compatible, but a supplied value still receives the transactional comparison
+above. When set to exactly `true`, a missing value receives the same safe,
+field-only HTTP 400 diagnostic used for an invalid supplied value, before OIDC
+verification or durable admission. Values other than exact `true` or `false`
+prevent service startup. Disabled and non-central execution paths are unchanged.
+
+Use this zero-downtime order:
+
+1. Deploy the service with `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=false`.
+2. Promote the central `ct-review-actions` workflow and pinned Action producer
+   that send `expectedGeneration`.
+3. Prove a live central app-gate dispatch supplied the admitted generation and
+   was accepted only at the exact durable next generation.
+4. Set `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=true`, redeploy, and prove a
+   generation-less central app-gate request receives the safe field-only HTTP
+   400 response before admission.
+
+The durable allocation and publication sequence remains:
 
 1. Reserve an immutable attempt and supersede the older gate atomically.
 2. Commit a unique publication claim before external work. A separate UUID

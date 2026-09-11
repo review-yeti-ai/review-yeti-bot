@@ -271,14 +271,26 @@ To verify your cluster deployment before rolling out to production repositories:
 4. **End-to-End Validation**:
    Dispatch a test review from a GitHub Actions workflow using `execution-backend: doks` and verify:
    - Central `repository_dispatch` app-gate execution supplies the App-admitted
-     one-based `expected-generation`; a missing, invalid, stale, or future value
-     is rejected before worker allocation.
+     one-based `expected-generation`; an invalid, stale, or future value is
+     always rejected before worker allocation, and a missing value is rejected
+     once service enforcement is enabled.
    - Initial check run appears as `review-status: DISPATCHED`, `gate-decision: PENDING`.
    - GitHub Actions runner exits in under 10 seconds.
    - Worker pod schedules on the DOKS cluster and processes the diff.
    - Worker updates the check run to `success` or `failure` and posts the consolidated review comment.
 
-Deploy the central producer and its pinned Action revision before enabling the
-service-side requirement. Reversing that order deliberately rejects older
-central dispatch payloads with HTTP 400 until the producer supplies
-`expectedGeneration`.
+Roll out the exact-generation contract without an availability gap:
+
+1. Deploy the compatible service with
+   `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=false`.
+2. Promote the central producer and pinned Action revision that send
+   `expectedGeneration`.
+3. Prove a live central app-gate dispatch carried its admitted one-based
+   generation and matched the durable allocator exactly.
+4. Set `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=true`, redeploy, and verify a
+   generation-less probe fails before admission with HTTP 400 and only
+   `invalidFields: ["expectedGeneration"]`.
+
+Compatibility mode never ignores a supplied value: invalid values receive the
+safe HTTP 400 diagnostic and a valid but stale or future generation is rejected
+transactionally with HTTP 409.
