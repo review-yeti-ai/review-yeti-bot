@@ -154,16 +154,15 @@ describe('PostgresReviewDispatchRepository', () => {
     // runnable ('queued'), be countable (attempt + 1), stop carrying the old
     // failure (error_text NULL), and get a deadline it can actually meet -- the
     // previous one is in the past and the reaper would sweep the retry at once.
-    expect(runSql).toContain("status = CASE WHEN review_runs.status IN ('failed', 'terminal') OR");
-    expect(runSql).toContain("attempt = CASE WHEN review_runs.status IN ('failed', 'terminal') OR");
-    expect(runSql).toContain("error_text = CASE WHEN review_runs.status IN ('failed', 'terminal') OR");
-    expect(runSql).toContain("received_at = CASE WHEN review_runs.status IN ('failed', 'terminal') OR");
-    expect(runSql).toContain("terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal') OR");
-    // Every ordinary re-arm is conditioned on failure; the only active-run
-    // exception is the explicit retry flag plus projected worker evidence.
-    // Superseded identities are never retryable, and older legacy identities
-    // remain fenced by persisted history.
-    expect(runSql.match(/CASE WHEN review_runs\.status IN \('failed', 'terminal'\)/gu) || []).toHaveLength(8);
+    // Compute the persisted retry condition once, before the upsert. Every
+    // re-arm field consumes that single row-level decision, so the lifecycle
+    // cannot drift when the evidence predicate changes.
+    expect(runSql).toContain('WITH retry_eligibility AS');
+    expect(runSql).toContain('AS should_retry');
+    expect((runSql.match(/SELECT should_retry FROM retry_eligibility/gu) || []).length).toBe(8);
+    expect(runSql).toContain("runs.status IN ('failed', 'terminal')");
+    expect(runSql).toContain("$20::boolean AND runs.status IN ('queued', 'running')");
+    expect(runSql).toContain('retry_outbox.run_id = runs.run_id');
     // markTerminal writes 'failed'; the reaper writes 'terminal'. Both are dead
     // runs and both must be retryable, and no other status may be named.
     expect(runSql).not.toMatch(/CASE WHEN review_runs\.status (=|IN \()\s*'?(queued|running|superseded)/u);
@@ -171,7 +170,6 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(runSql).toContain('AND (other.authoritative_gate_app_id IS NOT NULL) = (review_runs.authoritative_gate_app_id IS NOT NULL)');
     expect(runSql).toContain('other.identity_digest <> review_runs.identity_digest');
     expect(runSql).toContain('other.created_at >= review_runs.created_at');
-    expect(runSql).toContain("$20::boolean AND review_runs.status IN ('queued', 'running')");
     expect(runSql).toContain("retry_outbox.status = 'projected'");
     expect(runSql).toContain('retry_outbox.worker_token_digest IS NOT NULL');
     expect(runSql).toContain('retry_outbox.projection_name IS NOT NULL');

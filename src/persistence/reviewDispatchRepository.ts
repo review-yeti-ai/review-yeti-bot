@@ -269,7 +269,21 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       const identityDigest = sha256(input.identity);
       const runId = `run_${identityDigest.slice(0, 32)}`;
       const inserted = await client.query(
-        `INSERT INTO review_runs
+        `WITH retry_eligibility AS (
+           SELECT runs.run_id,
+                  runs.status IN ('failed', 'terminal')
+                    OR ($20::boolean AND runs.status IN ('queued', 'running') AND EXISTS (
+                      SELECT 1 FROM review_dispatch_outbox AS retry_outbox
+                       WHERE retry_outbox.run_id = runs.run_id
+                         AND (retry_outbox.status = 'projected'
+                           OR (retry_outbox.status = 'terminal'
+                             AND (retry_outbox.worker_token_digest IS NOT NULL
+                               OR retry_outbox.projection_name IS NOT NULL)))
+                    )) AS should_retry
+             FROM review_runs AS runs
+            WHERE runs.run_id = $1
+         )
+         INSERT INTO review_runs
            (run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha,
             snapshot_digest, config_digest, effective_policy_digest, effective_config_digest,
             index_epoch, identity, status, stage, attempt, artifacts, repository_id,
@@ -289,80 +303,24 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                -- projected/worker-token outbox record: the persisted ledger,
                -- not a caller's desired attempt number, proves that an older
                -- worker existed and may safely be replaced.
-               status = CASE WHEN review_runs.status IN ('failed', 'terminal')
-                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
-                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                      WHERE retry_outbox.run_id = review_runs.run_id
-                        AND (retry_outbox.status = 'projected'
-                          OR (retry_outbox.status = 'terminal'
-                            AND (retry_outbox.worker_token_digest IS NOT NULL
-                              OR retry_outbox.projection_name IS NOT NULL)))
-                   )) THEN 'queued' ELSE review_runs.status END,
-               attempt = CASE WHEN review_runs.status IN ('failed', 'terminal')
-                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
-                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                      WHERE retry_outbox.run_id = review_runs.run_id
-                        AND (retry_outbox.status = 'projected'
-                          OR (retry_outbox.status = 'terminal'
-                            AND (retry_outbox.worker_token_digest IS NOT NULL
-                              OR retry_outbox.projection_name IS NOT NULL)))
-                   )) THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
-               error_text = CASE WHEN review_runs.status IN ('failed', 'terminal')
-                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
-                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                      WHERE retry_outbox.run_id = review_runs.run_id
-                        AND (retry_outbox.status = 'projected'
-                          OR (retry_outbox.status = 'terminal'
-                            AND (retry_outbox.worker_token_digest IS NOT NULL
-                              OR retry_outbox.projection_name IS NOT NULL)))
-                   )) THEN NULL ELSE review_runs.error_text END,
-               lease_owner = CASE WHEN review_runs.status IN ('failed', 'terminal')
-                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
-                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                      WHERE retry_outbox.run_id = review_runs.run_id
-                        AND (retry_outbox.status = 'projected'
-                          OR (retry_outbox.status = 'terminal'
-                            AND (retry_outbox.worker_token_digest IS NOT NULL
-                              OR retry_outbox.projection_name IS NOT NULL)))
-                   )) THEN NULL ELSE review_runs.lease_owner END,
-               lease_expires_at = CASE WHEN review_runs.status IN ('failed', 'terminal')
-                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
-                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                      WHERE retry_outbox.run_id = review_runs.run_id
-                        AND (retry_outbox.status = 'projected'
-                          OR (retry_outbox.status = 'terminal'
-                            AND (retry_outbox.worker_token_digest IS NOT NULL
-                              OR retry_outbox.projection_name IS NOT NULL)))
-                   )) THEN NULL ELSE review_runs.lease_expires_at END,
-               delivery_id = CASE WHEN review_runs.status IN ('failed', 'terminal')
-                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
-                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                      WHERE retry_outbox.run_id = review_runs.run_id
-                        AND (retry_outbox.status = 'projected'
-                          OR (retry_outbox.status = 'terminal'
-                            AND (retry_outbox.worker_token_digest IS NOT NULL
-                              OR retry_outbox.projection_name IS NOT NULL)))
-                   )) THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
-               received_at = CASE WHEN review_runs.status IN ('failed', 'terminal')
-                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
-                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                      WHERE retry_outbox.run_id = review_runs.run_id
-                        AND (retry_outbox.status = 'projected'
-                          OR (retry_outbox.status = 'terminal'
-                            AND (retry_outbox.worker_token_digest IS NOT NULL
-                              OR retry_outbox.projection_name IS NOT NULL)))
-                   )) THEN EXCLUDED.received_at ELSE review_runs.received_at END,
+               status = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN 'queued' ELSE review_runs.status END,
+               attempt = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
+               error_text = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN NULL ELSE review_runs.error_text END,
+               lease_owner = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN NULL ELSE review_runs.lease_owner END,
+               lease_expires_at = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN NULL ELSE review_runs.lease_expires_at END,
+               delivery_id = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN EXCLUDED.delivery_id ELSE review_runs.delivery_id END,
+               received_at = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN EXCLUDED.received_at ELSE review_runs.received_at END,
                -- The old deadline is already in the past, so a retry would be
                -- swept by the abandoned-run reaper before it could start.
-               terminal_deadline = CASE WHEN review_runs.status IN ('failed', 'terminal')
-                   OR ($20::boolean AND review_runs.status IN ('queued', 'running') AND EXISTS (
-                     SELECT 1 FROM review_dispatch_outbox AS retry_outbox
-                      WHERE retry_outbox.run_id = review_runs.run_id
-                        AND (retry_outbox.status = 'projected'
-                          OR (retry_outbox.status = 'terminal'
-                            AND (retry_outbox.worker_token_digest IS NOT NULL
-                              OR retry_outbox.projection_name IS NOT NULL)))
-                   )) THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
+               terminal_deadline = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
          WHERE review_runs.publication_mode = EXCLUDED.publication_mode
            AND review_runs.authoritative_gate_app_id IS NOT DISTINCT FROM EXCLUDED.authoritative_gate_app_id
            AND review_runs.status <> 'superseded'
