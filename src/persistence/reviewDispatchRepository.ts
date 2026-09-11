@@ -622,6 +622,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             OR (runs.status = 'terminal' AND runs.error_text LIKE
               'publishing run reached its terminal deadline without a verdict; reaped by %'
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
+            OR (runs.status = 'terminal' AND runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%')
           )
             AND publication_mode = 'app-gate'
             AND result_digest IS NULL
@@ -651,7 +652,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
               lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
               error_text = CASE
-                WHEN runs.status = 'failed' AND runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
+                WHEN runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
                   THEN runs.error_text
                 ELSE 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
               END

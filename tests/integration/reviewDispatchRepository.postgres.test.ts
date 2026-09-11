@@ -303,6 +303,40 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(expired).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
   });
 
+  it('retries a failed worker publication after its claim lease without changing a1 or its classification', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('worker-failed-retry', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'b'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker', 1_002, workerTokenDigest,
+    );
+    await repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      failureClass: 'budget_exhausted',
+    }, { workerTokenDigest }, 1_003);
+
+    const [first] = await repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1);
+    await expect(repository.reconcileAbandonedPublishingRun(first, 'reaper-a', 2_001, async () => {
+      throw new Error('synthetic publisher outage');
+    })).rejects.toThrow('synthetic publisher outage');
+    await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
+
+    const [retry] = await repository.claimAbandonedPublishingRuns('reaper-b', 62_002, 1);
+    expect(retry).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+    const pending = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
+    expect(pending.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: budget_exhausted' });
+    await expect(repository.reconcileAbandonedPublishingRun(retry, 'reaper-b', 62_003, async () => {})).resolves.toBe(true);
+    const reconciled = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
+    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: budget_exhausted' });
+    await expect(repository.claimAbandonedPublishingRuns('reaper-c', 62_004, 1)).resolves.toEqual([]);
+  });
+
   describe('atomic authoritative admission', () => {
     it('commits prepared policy, run, outbox and gate together; dispatch waits for durable check binding', async () => {
       const { repository, client, gateRepository } = await createRepository();
