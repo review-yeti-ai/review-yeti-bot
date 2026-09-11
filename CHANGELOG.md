@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.1...v1.56.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* **dispatch:** admit exact Review Yeti self-host target ([#716](https://github.com/review-yeti-ai/review-yeti-bot/issues/716)) ([6f08460](https://github.com/review-yeti-ai/review-yeti-bot/commit/6f08460e34656748cf51e3b6a0ab4b8aa0730c9d))
+
 ## [1.56.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.0...v1.56.1) (2026-09-11)
 
 
