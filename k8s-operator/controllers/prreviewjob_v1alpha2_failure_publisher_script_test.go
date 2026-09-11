@@ -34,6 +34,16 @@ const (
 	failureScriptExternalID = failureScriptRunID + ":a2"
 )
 
+func TestFailurePublisherScriptComesFromDedicatedEmbeddedAsset(t *testing.T) {
+	source, err := os.ReadFile(failurePublisherScriptAssetName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(source) != failurePublisherScript {
+		t.Fatal("embedded failure publisher policy differs from its reviewed asset")
+	}
+}
+
 func TestExecutionAttemptForFailurePublisherBoundaries(t *testing.T) {
 	tests := []struct {
 		name         string
