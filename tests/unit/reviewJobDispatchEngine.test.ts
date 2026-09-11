@@ -216,6 +216,7 @@ describe('ReviewJobDispatchEngine', () => {
       claim.claimAttempt,
       now,
       'review job projection rejected',
+      { reason: 'review_job_projection_rejected', logTail: 'review job projection rejected' },
     );
   });
 
@@ -307,6 +308,9 @@ describe('ReviewJobDispatchEngine', () => {
       reason === 'projection-rejected'
         ? 'review job projection rejected'
         : 'publishing review dispatched without a run secret provisioner',
+      reason === 'projection-rejected'
+        ? { reason: 'review_job_projection_rejected', logTail: 'review job projection rejected' }
+        : { reason: 'run_secret_provisioner_unavailable', logTail: 'run secret provisioner unavailable' },
     );
   });
 
@@ -396,6 +400,7 @@ describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
     await expect(f.engine.runOnce()).resolves.toEqual({ status: 'terminal', runId: claim.runId, reason: 'projection-rejected' });
     expect(f.repository.markTerminal).toHaveBeenCalledExactlyOnceWith(
       claim.runId, claim.leaseOwner, claim.claimAttempt, at, 'review job projection rejected',
+      { reason: 'review_job_projection_rejected', logTail: 'review job projection rejected' },
     );
     expectNoProjectionEffects(f);
   }
@@ -474,6 +479,7 @@ describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
     await expect(pending).resolves.toEqual({ status: 'terminal', runId: claim.runId, reason: 'projection-rejected' });
     expect(f.repository.markTerminal).toHaveBeenCalledExactlyOnceWith(
       claim.runId, claim.leaseOwner, claim.claimAttempt, now + 5_000, 'review job projection rejected',
+      { reason: 'review_job_projection_rejected', logTail: 'review job projection rejected' },
     );
     expect(vi.getTimerCount()).toBe(0);
     deferred.resolve(f.serialized);

@@ -4,6 +4,12 @@ import {
   type JWTVerifyGetKey,
   type JWTPayload,
 } from 'jose';
+import {
+  isAllowlistedWorkflowRef,
+  type WorkflowRefAllowlist,
+} from '../review/reviewCheckIdentity';
+
+export { isAllowlistedWorkflowRef } from '../review/reviewCheckIdentity';
 
 export const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 export const REVIEW_DISPATCH_AUDIENCE = 'review-yeti-doks-dispatch';
@@ -23,10 +29,9 @@ export interface GitHubActionsOidcClaims extends JWTPayload {
   job_workflow_sha?: string;
 }
 
-export interface GitHubActionsOidcPolicy {
+export interface GitHubActionsOidcPolicy extends WorkflowRefAllowlist {
   repositoryIds: ReadonlySet<string>;
   ownerIds: ReadonlySet<string>;
-  workflowRefs: ReadonlySet<string>;
   workflowShas: ReadonlySet<string>;
   allowedEvents: ReadonlySet<string>;
   allowAppGate: boolean;
@@ -117,7 +122,7 @@ export class GitHubActionsOidcVerifier {
     if (!workflowRef || !workflowSha) {
       throw new Error('GitHub Actions OIDC token has no immutable workflow provenance');
     }
-    if (!this.policy.workflowRefs.has('*') && !this.policy.workflowRefs.has(workflowRef)) {
+    if (!isAllowlistedWorkflowRef(this.policy, workflowRef)) {
       throw new Error('GitHub Actions OIDC workflow ref is not allowlisted');
     }
     if (!this.policy.workflowShas.has('*') && !this.policy.workflowShas.has(workflowSha)) {

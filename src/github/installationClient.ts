@@ -9,6 +9,9 @@ import {
 } from './reviewCIRequest';
 import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
 import type { AbandonedPublishingRun } from '../persistence/reviewDispatchRepository';
+import { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from '../review/reviewCheckIdentity';
+
+export { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from '../review/reviewCheckIdentity';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -97,7 +100,6 @@ export const BASE_POLICY_CANDIDATE_FILES = ConfigResolver.CONFIG_FILES;
 export const CHECK_CONTEXT_RAW_REVIEW = 'Review Yeti';
 export const CHECK_CONTEXT_GATE = 'Review Yeti Gate';
 export const CHECK_CONTEXT_CI = 'Review Yeti CI';
-
 export interface GateCheckOptions {
   conclusion: 'success' | 'failure';
   title: string;
@@ -424,6 +426,7 @@ export class GitHubInstallationClient {
       if (candidates.length > 1) return 'already-completed';
       const failure = {
         status: 'completed', conclusion: 'failure', completed_at: new Date(this.now()).toISOString(),
+        actions: [REVIEW_REFRESH_ACTION],
         output: {
           title: 'Review Yeti: review did not complete',
           summary: `No durable verdict was recorded for \`${run.headSha}\` before its terminal deadline.\n\n`
@@ -502,6 +505,8 @@ export class GitHubInstallationClient {
         conclusion: options.conclusion,
         completed_at: new Date(this.now()).toISOString(),
         output,
+        ...(options.conclusion === 'failure' && RECOVERABLE_FAILURE_TITLES.has(options.title)
+          ? { actions: [REVIEW_REFRESH_ACTION] } : {}),
       }),
     });
   }

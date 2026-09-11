@@ -197,6 +197,21 @@ describe('WorkerReviewCompletion.v1', () => {
     expect(safe.result.personas[0]).not.toHaveProperty('error');
   });
 
+  it('accepts only bounded failure diagnostics on the typed completion envelope', () => {
+    const diagnostic = { reason: 'provider_rate_limited', providerStatus: 429, logTail: 'HTTP 429 [REDACTED]' };
+    const parsed = parseWorkerReviewCompletion(completion({
+      result: {
+        ...completion().result,
+        personas: [lane('security', { decision: 'ERROR', status: 'ERROR', errorClass: 'rate_limit' }), lane('architecture')],
+        coverageComplete: false, quorumSatisfied: false, failureDiagnostics: diagnostic,
+      },
+    }));
+    expect(parsed.result.failureDiagnostics).toEqual(diagnostic);
+    expect(() => parseWorkerReviewCompletion(completion({
+      result: { ...completion().result, failureDiagnostics: { ...diagnostic, providerStatus: 99 } },
+    }))).toThrow(/providerStatus/u);
+  });
+
   it('preserves incomplete coverage and quorum failure as non-success evidence', () => {
     const coverage = derive(completion({ result: { ...completion().result, coverageComplete: false, verdict: 'BLOCK' } }));
     expect(coverage.valid).toBe(true);

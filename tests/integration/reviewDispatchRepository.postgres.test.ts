@@ -150,6 +150,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         result_digest TEXT,
         artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
         error_text TEXT,
+        failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
         delivery_id TEXT,
         received_at TIMESTAMPTZ,
         terminal_deadline TIMESTAMPTZ,
@@ -1089,6 +1090,132 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(await state()).toEqual(before);
     expect((await client.query("SELECT * FROM github_deliveries WHERE delivery_id = 'stale-new-delivery'")).rows).toEqual([]);
     await expect(repository.claimNext('dispatcher-other', 4_100, 30_000)).resolves.toBeNull();
+  });
+
+  it('re-arms an active projected execution only for an explicit persisted retry', async () => {
+    const { repository, client } = await createRepository();
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      snapshotDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    };
+    const input = (deliveryId: string, receivedAt: number, retryRequested = false, retryAfterExecutionAttempt?: number) => ({
+      deliveryId, eventName: 'check_run', repositoryId: 123, installationId: 456,
+      receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, centralActionDispatch: false, identity,
+      ...(retryRequested ? { retryRequested: true } : {}),
+      ...(retryAfterExecutionAttempt === undefined ? {} : { retryAfterExecutionAttempt }),
+    });
+
+    const first = await repository.admit(input('delivery-1', 1_000));
+    const claim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+    await repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', claim.claimAttempt, 'a'.repeat(64), 1_001);
+    await repository.markProjected(first.run.runId, 'dispatcher-a', claim.claimAttempt, 'projection', 1_002, 'a'.repeat(64));
+
+    const refresh = await repository.admit(input('delivery-refresh', 2_000, true, 1));
+    expect(refresh).toMatchObject({ status: 'accepted', run: {
+      runId: first.run.runId, status: 'queued', attempt: 1, deliveryId: 'delivery-refresh',
+    } });
+    expect((await client.query('SELECT status, delivery_id, execution_attempt, projection_name, worker_token_digest FROM review_dispatch_outbox WHERE run_id = $1', [first.run.runId])).rows[0])
+      .toMatchObject({ status: 'pending', delivery_id: 'delivery-refresh', execution_attempt: 1,
+        projection_name: null, worker_token_digest: null });
+    expect((await repository.claimNext('dispatcher-b', 3_000, 30_000))?.executionAttempt).toBe(2);
+  });
+
+  it('leaves an active claimed execution untouched when refresh has no projected-worker evidence', async () => {
+    const { repository, client } = await createRepository();
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 43,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      snapshotDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    };
+    const input = (deliveryId: string, receivedAt: number, retryRequested = false, retryAfterExecutionAttempt?: number) => ({
+      deliveryId, eventName: 'check_run', repositoryId: 123, installationId: 456,
+      receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, centralActionDispatch: false, identity,
+      ...(retryRequested ? { retryRequested: true } : {}),
+      ...(retryAfterExecutionAttempt === undefined ? {} : { retryAfterExecutionAttempt }),
+    });
+
+    const first = await repository.admit(input('delivery-claimed', 1_000));
+    const claim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+    const before = await dispatchState(client, first.run.runId);
+    const refresh = await repository.admit(input('delivery-without-evidence', 2_000, true, 1));
+
+    // The new delivery is acknowledged for idempotency, but the durable run
+    // and leased outbox stay bound to the original execution. A refresh may
+    // not invent worker existence merely because its flag is true.
+    expect(refresh).toMatchObject({ status: 'accepted', run: {
+      runId: first.run.runId, status: 'queued', attempt: 0, deliveryId: 'delivery-claimed',
+    } });
+    const after = await dispatchState(client, first.run.runId);
+    expect(after.run).toEqual(before.run);
+    expect(after.outbox).toEqual(before.outbox);
+    expect(after.run).toMatchObject({ status: 'queued', attempt: 0, delivery_id: 'delivery-claimed',
+      terminal_deadline: before.run.terminal_deadline });
+    expect(after.outbox).toMatchObject({ status: 'claimed', delivery_id: 'delivery-claimed', execution_attempt: 0,
+      projection_name: null, worker_token_digest: null });
+    expect((await repository.claimNext('dispatcher-b', 3_000, 30_000))?.runId).toBeUndefined();
+    expect(claim.executionAttempt).toBe(1);
+  });
+
+  it('persists markTerminal diagnostics and preserves them when a later terminal mark omits diagnostics', async () => {
+    const { repository, client } = await createRepository();
+    const first = await repository.admit(sameHeadAdmission('diagnostic-first', 1_000));
+    const firstClaim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+    const diagnostics = { reason: 'projection_rejected', logTail: 'projection rejected' };
+    await expect(repository.markTerminal(firstClaim.runId, firstClaim.leaseOwner, firstClaim.claimAttempt,
+      1_001, 'projection rejected', diagnostics)).resolves.toBe(true);
+    const firstState = await dispatchState(client, first.run.runId);
+    expect(firstState.run.failure_diagnostics).toMatchObject({
+      failureClass: 'internal_error', reason: diagnostics.reason, logTail: diagnostics.logTail,
+    });
+
+    const retry = await repository.admit(sameHeadAdmission('diagnostic-retry', 2_000));
+    expect(retry.run).toMatchObject({ runId: first.run.runId, status: 'queued', attempt: 1 });
+    const retryClaim = (await repository.claimNext('dispatcher-b', 2_001, 30_000))!;
+    await expect(repository.markTerminal(retryClaim.runId, retryClaim.leaseOwner, retryClaim.claimAttempt,
+      2_002, 'second projection rejected')).resolves.toBe(true);
+    const finalState = await dispatchState(client, first.run.runId);
+    expect(finalState.run.failure_diagnostics).toEqual(firstState.run.failure_diagnostics);
+  });
+
+  it('does not rearm a replayed a1 refresh after the replacement a2 is projected', async () => {
+    const { repository, client } = await createRepository();
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 44,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      snapshotDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    };
+    const input = (deliveryId: string, receivedAt: number, retryAfterExecutionAttempt?: number) => ({
+      deliveryId, eventName: 'check_run', repositoryId: 123, installationId: 456,
+      receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+      payloadDigest: 'f'.repeat(64), publicationMode: 'app-gate' as const, centralActionDispatch: false, identity,
+      ...(retryAfterExecutionAttempt === undefined ? {} : {
+        retryRequested: true,
+        retryAfterExecutionAttempt,
+      }),
+    });
+
+    const first = await repository.admit(input('delivery-a1', 1_000));
+    const firstClaim = (await repository.claimNext('dispatcher-a', 1_000, 30_000))!;
+    await repository.bindWorkerTokenDigest(first.run.runId, 'dispatcher-a', firstClaim.claimAttempt, 'a'.repeat(64), 1_001);
+    await repository.markProjected(first.run.runId, 'dispatcher-a', firstClaim.claimAttempt, 'projection-a1', 1_002, 'a'.repeat(64));
+
+    const refresh = await repository.admit(input('delivery-refresh-a1', 2_000, 1));
+    expect(refresh.run).toMatchObject({ runId: first.run.runId, status: 'queued', attempt: 1, deliveryId: 'delivery-refresh-a1' });
+    const secondClaim = (await repository.claimNext('dispatcher-b', 3_000, 30_000))!;
+    expect(secondClaim.executionAttempt).toBe(2);
+    await repository.bindWorkerTokenDigest(secondClaim.runId, 'dispatcher-b', secondClaim.claimAttempt, 'b'.repeat(64), 3_001);
+    await repository.markProjected(secondClaim.runId, 'dispatcher-b', secondClaim.claimAttempt, 'projection-a2', 3_002, 'b'.repeat(64));
+
+    const beforeReplay = await dispatchState(client, first.run.runId);
+    const replay = await repository.admit(input('delivery-replay-old-a1', 4_000, 1));
+    expect(replay).toMatchObject({ status: 'accepted', run: {
+      runId: first.run.runId, status: 'queued', attempt: 1, deliveryId: 'delivery-refresh-a1',
+    } });
+    expect(await dispatchState(client, first.run.runId)).toEqual(beforeReplay);
+    expect(await repository.claimNext('dispatcher-c', 4_001, 30_000)).toBeNull();
   });
 
   it.each(['publishing', 'failed', 'terminal'])('retires a prior %s identity so it cannot be retried after identity drift', async (status) => {

@@ -103,12 +103,14 @@ describe('Milestone 4: 30-Second GitHub App Setup Wizard (R4)', () => {
         'pull_request_review',
         'pull_request_review_comment',
         'issue_comment',
+        'check_run',
+        'merge_group',
       ]);
     });
 
-    it('strictly omits forbidden administrative and high-risk secret permissions', () => {
-      const manifest = generateAppManifest({
-        // Attempting to inject forbidden permissions should be cleanly stripped
+    it('rejects forbidden administrative and high-risk secret permission overrides', () => {
+      expect(() => generateAppManifest({
+        // Attempting to inject forbidden permissions must fail closed.
         permissions: {
           administration: 'write',
           secrets: 'write',
@@ -116,11 +118,7 @@ describe('Milestone 4: 30-Second GitHub App Setup Wizard (R4)', () => {
           members: 'write',
           organization_administration: 'write',
         } as any,
-      });
-
-      for (const forbidden of FORBIDDEN_PERMISSIONS) {
-        expect(manifest.default_permissions[forbidden], `Must omit ${forbidden}`).toBeUndefined();
-      }
+      })).toThrow(/Forbidden permission requested: administration/u);
     });
 
     it('validateManifestPermissions verifies correct permissions and catches violations', () => {
@@ -140,6 +138,21 @@ describe('Milestone 4: 30-Second GitHub App Setup Wizard (R4)', () => {
       const resMissing = validateManifestPermissions(missingRequired);
       expect(resMissing.valid).toBe(false);
       expect(resMissing.violations.some((v) => v.includes('pull_requests'))).toBe(true);
+
+      const unknownPermission = { ...LEAST_PRIVILEGE_PERMISSIONS, statuses: 'write' };
+      const resUnknown = validateManifestPermissions(unknownPermission);
+      expect(resUnknown.valid).toBe(false);
+      expect(resUnknown.violations).toContain('Unknown permission requested: statuses');
+    });
+
+    it('rejects unknown permission overrides instead of widening the App manifest', () => {
+      expect(() => generateAppManifest({
+        permissions: { statuses: 'write' },
+      })).toThrow(/Unknown permission requested: statuses/u);
+
+      expect(() => generateAppManifest({
+        permissions: { organization_hooks: 'read' },
+      })).toThrow(/Unknown permission requested: organization_hooks/u);
     });
 
     it('constructs manifest creation URL for personal accounts and organizations', () => {

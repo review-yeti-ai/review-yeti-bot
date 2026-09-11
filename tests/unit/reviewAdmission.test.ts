@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
+import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
 
 describe('review admission identity', () => {
   it('binds the durable run to repository, PR, exact head/base, and the event snapshot', () => {
@@ -20,5 +20,20 @@ describe('review admission identity', () => {
     expect(first.snapshotDigest).toHaveLength(64);
     expect(first.configDigest).toHaveLength(64);
     expect(buildReviewRunIdentity({ ...input, headSha: 'c'.repeat(40) }).snapshotDigest).not.toBe(first.snapshotDigest);
+  });
+
+  it('derives the same run id for every persistence and webhook caller from the full identity', () => {
+    const identity = buildReviewRunIdentity({
+      owner: 'calltelemetry',
+      repo: 'ct-review-bot',
+      prNumber: 42,
+      headSha: 'a'.repeat(40),
+      baseSha: 'b'.repeat(40),
+      changedFiles: [],
+    });
+
+    expect(deriveReviewRunId(identity)).toMatch(/^run_[a-f0-9]{32}$/u);
+    expect(deriveReviewRunId(identity)).toBe(deriveReviewRunId({ ...identity }));
+    expect(deriveReviewRunId({ ...identity, baseSha: 'c'.repeat(40) })).not.toBe(deriveReviewRunId(identity));
   });
 });
