@@ -451,6 +451,25 @@ describe('runPublishingReviewWorker', () => {
     }));
   });
 
+  it('reports a missing native nonce as malformed output in the terminal receipt', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const d = deps({
+      completion,
+      panelRunner: vi.fn(async () => {
+        throw new Error('required persona failure: persona sec-lane failed closed: bifrost: invalid or missing native JSON nonce');
+      }) as never,
+    });
+
+    await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow(/missing native JSON nonce/u);
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
+      conclusion: 'failure',
+    }));
+    expect(completion.reportTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({
+      checkId: 4242,
+      failureClass: 'malformed_output',
+    }));
+  });
+
   it('does not report completion for a successful review', async () => {
     const completion = { reportTerminalFailure: vi.fn(async () => {}) };
     const d = deps({ completion });
@@ -608,6 +627,8 @@ describe('identity and failure classification', () => {
     ['persona dep-lane failed closed: bifrost: OpenRouter compatibility response exceeded total deadline of 300000ms', 'timeout'],
     ['fetch failed', 'transport'],
     ['invalid native JSON response object', 'malformed_output'],
+    ['invalid or missing native JSON nonce', 'malformed_output'],
+    ['native JSON response must be an object', 'malformed_output'],
     ['invalid findings contract at index 0', 'malformed_output'],
     ['APPROVE cannot contain findings', 'malformed_output'],
     ['FINDINGS requires at least one finding', 'malformed_output'],
