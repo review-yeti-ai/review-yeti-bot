@@ -3,7 +3,8 @@ import { BoundedCiTransport, ciUnavailable, type CiTransportOptions } from './bo
 import { REVIEW_CI_EVENT, reviewCiRunName, reviewCiRequestEventSchema, reviewCiCoordinatesSchema,
   reviewCiExecutionSchema, normalizeReviewCiBinding,
   reviewCiTerminalReceiptSchema, type ReviewCiExecution, type ReviewCiTerminalReceipt,
-  type ReviewCiRequestEvent, type ReviewCiValidationBinding } from '../review/reviewCi';
+  type ReviewCiDispatchReceipt, type ReviewCiRequestEvent, type ReviewCiRunCorrelation,
+  type ReviewCiRunReadback, type ReviewCiValidationBinding } from '../review/reviewCi';
 export { REVIEW_CI_EVENT, reviewCiRunName, reviewCiRequestEventSchema as reviewCiRequestSchema } from '../review/reviewCi';
 
 export const REVIEW_CI_APP_ID = 4385771;
@@ -15,7 +16,7 @@ export type CiRepository = z.infer<typeof ciRepositorySchema>;
 
 export type ReviewCiRequest = ReviewCiRequestEvent;
 const correlationSchema = reviewCiExecutionSchema.innerType().pick({ requestId: true, epoch: true });
-export type CiRunCorrelation = z.infer<typeof correlationSchema>;
+export type CiRunCorrelation = ReviewCiRunCorrelation;
 const nonempty = z.string().min(1).max(256).regex(/^[^\u0000-\u001f\u007f]+$/u);
 const repositoryResponse = z.object({ id: positive, full_name: z.string().max(201) });
 const baseRef = z.string().min(1).max(255)
@@ -38,18 +39,8 @@ function parse<T extends z.ZodTypeAny>(schema: T, input: unknown): z.infer<T> {
   try { return schema.parse(input); } catch { throw ciUnavailable(); }
 }
 
-export type CiDispatchReceipt = { status: 'accepted'; runId?: number } | { status: 'uncertain' | 'rejected' };
-export interface CiRunReadback extends CiRunCorrelation {
-  runId: number;
-  runAttempt: number;
-  workflowSha: string;
-  status: Run['status'];
-  conclusion: Run['conclusion'];
-  /** Observation only. The domain must also verify the durable candidate claim,
-   * current eligibility and trusted workflow's candidate-checkout contract. */
-  requiredJobsPassed: boolean;
-  requiredJobs: { id: number; name: string; status: string; conclusion: string | null }[];
-}
+export type CiDispatchReceipt = ReviewCiDispatchReceipt;
+export type CiRunReadback = ReviewCiRunReadback;
 
 /** Unwired, explicit service capability. All paths/ref/job expectations come
  * from trusted configuration; responses never supply a URL for another call. */

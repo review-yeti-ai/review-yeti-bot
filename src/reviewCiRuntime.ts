@@ -1,35 +1,36 @@
 import type { Pool } from 'pg';
-import type { ReviewCiServiceConfig } from '../auth/reviewCiConfig';
-import { ReviewCiOidcVerifier } from '../auth/reviewCiOidc';
-import type { ReviewCiRouterOptions } from '../api/reviewCiApi';
-import { AuthoritativeReviewReader } from '../github/authoritativeReviewReader';
-import { getBoundedCiRepositoryToken } from '../github/ciAppToken';
-import { GitHubReviewCiClient } from '../github/reviewCiClient';
-import { GitHubReviewGateClient } from '../github/reviewGateClient';
-import { createReviewCiCheckClient } from '../github/reviewCiCheckClient';
-import { PostgresReviewCiRepository } from '../persistence/reviewCiRepository';
-import { PostgresReviewCiCheckRepository } from '../persistence/reviewCiCheckRepository';
-import { ReviewCiCheckPublisher, type ReviewCiCheckGateFreshness } from './reviewCiCheckPublisher';
-import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
-import { ReviewCiService, type ReviewCiCurrent } from './reviewCiService';
-import type { StoredReviewCiRequest } from './reviewCi';
+import { findReviewCiEnrollment, type ReviewCiServiceConfig } from './auth/reviewCiConfig';
+import { ReviewCiOidcVerifier } from './auth/reviewCiOidc';
+import { AuthoritativeReviewReader } from './github/authoritativeReviewReader';
+import { getBoundedCiRepositoryToken } from './github/ciAppToken';
+import { GitHubReviewCiClient } from './github/reviewCiClient';
+import { GitHubReviewGateClient } from './github/reviewGateClient';
+import { createReviewCiCheckClient } from './github/reviewCiCheckClient';
+import { PostgresReviewCiRepository } from './persistence/reviewCiRepository';
+import { PostgresReviewCiCheckRepository } from './persistence/reviewCiCheckRepository';
+import { ReviewCiCheckPublisher, type ReviewCiCheckGateFreshness } from './review/reviewCiCheckPublisher';
+import type { AuthoritativePublishingResolver } from './review/authoritativePublishingResolver';
+import { ReviewCiService, type ReviewCiCurrent } from './review/reviewCiService';
+import type { StoredReviewCiRequest } from './review/reviewCi';
+
+export interface ReviewCiRuntimeRoutes {
+  verifier: Pick<ReviewCiOidcVerifier, 'verify'>;
+  service: Pick<ReviewCiService, 'wake' | 'claim'>;
+}
 
 export function createReviewCiRuntime(options: {
   config: ReviewCiServiceConfig; pool: Pool; appId: string; privateKey: string;
   baseUrl: string; workerId: string;
   resolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
   fetchImplementation?: typeof fetch;
-}): { routes: ReviewCiRouterOptions; service: ReviewCiService; runOnce(): Promise<void> } {
+}): { routes: ReviewCiRuntimeRoutes; service: ReviewCiService; runOnce(): Promise<void> } {
   const { config, pool } = options;
   if (String(config.expectedAppId) !== options.appId || !options.workerId.trim()) {
     throw new Error('Review CI runtime identity mismatch');
   }
   const enrolled = (request: StoredReviewCiRequest) => {
-    const repository = config.repositories.find((r) => r.repositoryId === request.review.repositoryId);
-    if (!repository || repository.owner !== request.review.owner || repository.repo !== request.review.repo
-      || config.expectedAppId !== request.expectedAppId || String(config.expectedAppId) !== options.appId) {
-      throw new Error('Review CI runtime identity mismatch');
-    }
+    const repository = findReviewCiEnrollment(config, request);
+    if (!repository) throw new Error('Review CI runtime identity mismatch');
     return repository;
   };
   const readToken = (request: StoredReviewCiRequest, signal?: AbortSignal) => {

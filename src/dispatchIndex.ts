@@ -17,7 +17,7 @@ import { createGitHubWebhookAdmissionHandler } from './review/githubWebhookAdmis
 import { PostgresMergeGroupGateRepository } from './persistence/mergeGroupGateRepository';
 import { createMergeGroupGate } from './review/mergeGroupGate';
 import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
-import { createReviewCiRuntime } from './review/reviewCiRuntime';
+import { createReviewCiRuntime } from './reviewCiRuntime';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
