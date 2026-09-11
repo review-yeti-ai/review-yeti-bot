@@ -154,8 +154,12 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(requests.map((request: any) => request.persona).sort()).toEqual([
       'arbiter', 'correct-lane', 'moderator', 'sec-lane',
     ]);
+    // A response that is already a valid final object may terminate on the first native
+    // exploration turn. In that case the generic JSON-object contract is sufficient; the strict
+    // role schema is reserved for a later terminal turn (covered below).
+    expect(requests.every((request: any) => request.responseFormat)).toBe(true);
+    expect(requests.every((request: any) => request.responseFormat.type === 'json_object')).toBe(true);
     for (const request of requests) {
-      const role = request.metadata.role;
       expect(request).toMatchObject({
         jobId: 'run_11111111111111111111111111111111',
         stream: true,
@@ -174,28 +178,216 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
           persona: expect.any(String),
         },
       });
-      expect(request.responseFormat).toMatchObject({
-        type: 'json_schema',
-        json_schema: {
-          strict: true,
-          name: `ct_review_${role}_v1`,
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-          },
-        },
-      });
-      const schema = request.responseFormat.json_schema.schema;
-      expect(schema.required).toContain('nonce');
-      if (role === 'persona' || role === 'moderator') {
-        expect(schema.required).toContain('findings');
-        expect(schema.properties.findings.items.properties.severity.enum).toEqual(['P0', 'P1', 'P2']);
-      }
-      if (role === 'arbiter') {
-        expect(schema.required).toEqual(['nonce', 'verdict', 'rationale']);
-        expect(schema.properties.verdict.enum).toEqual(['SHIP', 'FIX_FIRST', 'BLOCK']);
-      }
     }
+  });
+
+  it.each(['direct', 'wrapped'])('uses generic native JSON for %s exploration and reserves strict schema for the terminal turn', async (envelope) => {
+    const config = buildDeepConfig();
+    config.personas = config.personas.map((persona) => persona.id === 'sec-lane'
+      ? { ...persona, id: 'native-lane', maxTurns: 2 }
+      : persona);
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    const attempts = new Map<string, number>();
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const role = opts.metadata.role;
+      const key = `${role}:${opts.persona}`;
+      const attempt = (attempts.get(key) || 0) + 1;
+      attempts.set(key, attempt);
+
+      if (role === 'persona' && opts.persona === 'native-lane' && attempt === 1) {
+        const toolObject = JSON.stringify({
+          tool: 'read_file',
+          args: { path: 'src/security/auth.ts', range: { startLine: 1, endLine: 3 } },
+        });
+        return {
+          model: opts.model,
+          content: envelope === 'wrapped' ? `\`\`\`json\n${toolObject}\n\`\`\`` : toolObject,
+          usage: null,
+          costUSD: null,
+          raw: {},
+        };
+      }
+
+      const body = role === 'arbiter'
+        ? { verdict: 'SHIP', rationale: 'The native turn protocol is valid.' }
+        : role === 'moderator'
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+      return {
+        model: opts.model,
+        content: JSON.stringify({ nonce, ...body }),
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-native-turns',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    const secRequests = mockClient.complete.mock.calls
+      .map(([request]: any[]) => request)
+      .filter((request: any) => request.metadata.role === 'persona' && request.persona === 'native-lane');
+    expect(secRequests).toHaveLength(2);
+    expect(secRequests[0].responseFormat).toEqual({ type: 'json_object' });
+    expect(secRequests[1].responseFormat).toMatchObject({
+      type: 'json_schema',
+      json_schema: {
+        strict: true,
+        name: 'ct_review_persona_v1',
+        schema: { type: 'object', additionalProperties: false },
+      },
+    });
+    expect(secRequests[1].messages.at(-1).content).toContain('NATIVE TURN 2 OF 2; REMAINING TURNS: 0');
+    expect(secRequests[1].messages.at(-1).content).toContain('terminal finalization turn');
+    expect(secRequests[1].messages.at(-1).content).not.toContain('CT_REVIEW_BEGIN:');
+    expect(result.personas.find((persona) => persona.id === 'native-lane')?.toolCalls).toEqual([
+      expect.objectContaining({
+        tool: 'read_file',
+        args: { path: 'src/security/auth.ts', range: { startLine: 1, endLine: 3 } },
+      }),
+    ]);
+  });
+
+  it('makes native format correction terminal and does not reopen tool exploration', async () => {
+    const config = buildDeepConfig();
+    config.personas = config.personas.map((persona) => persona.id === 'sec-lane'
+      ? { ...persona, id: 'correction-lane', maxTurns: 3 }
+      : persona);
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    const attempts = new Map<string, number>();
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata.role;
+      const key = `${role}:${opts.persona}`;
+      const attempt = (attempts.get(key) || 0) + 1;
+      attempts.set(key, attempt);
+      if (role === 'persona' && opts.persona === 'correction-lane' && attempt === 1) {
+        return { model: opts.model, content: 'not JSON', usage: null, costUSD: null, raw: {} };
+      }
+      const body = role === 'arbiter'
+        ? { verdict: 'SHIP', rationale: 'The corrected native response is valid.' }
+        : role === 'moderator'
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+      return { model: opts.model, content: JSON.stringify({ nonce, ...body }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-native-correction',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    const correctionRequests = mockClient.complete.mock.calls
+      .map(([request]: any[]) => request)
+      .filter((request: any) => request.metadata.role === 'persona' && request.persona === 'correction-lane');
+    expect(correctionRequests).toHaveLength(2);
+    expect(correctionRequests.map((request: any) => request.responseFormat.type)).toEqual(['json_object', 'json_schema']);
+    expect(correctionRequests[1].messages.at(-1).content).toContain('NATIVE TURN 2 OF 3; REMAINING TURNS: 1');
+    expect(correctionRequests[1].messages.at(-1).content).toContain('terminal finalization turn');
+    expect(correctionRequests[1].messages.at(-1).content).not.toContain('request another read-only tool');
+    expect(result.personas.find((persona) => persona.id === 'correction-lane')?.decision).toBe('APPROVE');
+  });
+
+  it('fails closed instead of executing a native final object that mixes tool fields with approval', async () => {
+    const baseConfig = buildDeepConfig();
+    const config = {
+      ...baseConfig,
+      quorum: 1,
+      personas: [{ ...baseConfig.personas[0], id: 'hybrid-lane', providers: ['claude'], maxTurns: 1 }],
+      reviewers: { ...baseConfig.reviewers, fallback: 'none' as const },
+    };
+    const readFile = vi.fn().mockResolvedValue('should not be read');
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      if (opts.metadata.role !== 'persona') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'not reached' }), usage: null, costUSD: null, raw: {} };
+      }
+      return {
+        model: opts.model,
+        content: JSON.stringify({
+          nonce,
+          decision: 'APPROVE',
+          findings: [],
+          tool: 'read_file',
+          args: { path: 'src/other.ts' },
+        }),
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-native-hybrid',
+      client: mockClient as unknown as OmniRouteClient,
+      repoFileProvider: {
+        readFile,
+        findFiles: vi.fn().mockResolvedValue([]),
+        treeTruncated: vi.fn().mockResolvedValue(false),
+      },
+      requestPolicy: { responseFormat: { type: 'json_object' } },
+    })).rejects.toThrow('required persona failure');
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('accepts native INCOMPLETE only as an explicit fail-closed persona outcome', async () => {
+    const baseConfig = buildDeepConfig();
+    const config = {
+      ...baseConfig,
+      quorum: 1,
+      personas: [{ ...baseConfig.personas[0], id: 'incomplete-lane', providers: ['claude'], maxTurns: 1 }],
+      reviewers: { ...baseConfig.reviewers, fallback: 'none' as const },
+    };
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      return {
+        model: opts.model,
+        content: JSON.stringify({ nonce, decision: 'INCOMPLETE', findings: [] }),
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-native-incomplete',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    })).rejects.toThrow(/required persona failure.*INCOMPLETE/iu);
+
+    const personaRequest = mockClient.complete.mock.calls
+      .map(([request]: any[]) => request)
+      .find((request: any) => request.metadata?.role === 'persona');
+    expect(personaRequest.responseFormat.json_schema.schema.properties.decision.enum).toContain('INCOMPLETE');
+    expect(mockClient.complete.mock.calls.some(([request]: any[]) => request.metadata?.role === 'arbiter')).toBe(false);
   });
 
   it('fails closed when native JSON returns the wrong request nonce', async () => {
