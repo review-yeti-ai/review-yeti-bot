@@ -161,6 +161,7 @@ export class PostgresStore {
           result_digest VARCHAR(64),
           artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           error_text TEXT,
+          failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
           created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -171,6 +172,7 @@ export class PostgresStore {
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS effective_config_digest VARCHAR(64);
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS index_epoch BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS artifacts JSONB NOT NULL DEFAULT '{}'::jsonb;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS publication_fence VARCHAR(64);
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS repository_id BIGINT;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS installation_id BIGINT;

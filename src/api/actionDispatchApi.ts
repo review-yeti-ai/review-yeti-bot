@@ -1,5 +1,8 @@
 import { Router, type Request, type Response } from 'express';
-import type { GitHubActionsOidcClaims } from '../auth/githubActionsOidc';
+import {
+  type GitHubActionsOidcClaims,
+  type GitHubActionsOidcPolicy,
+} from '../auth/githubActionsOidc';
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
 import {
   workerTerminalFailureSchema,
@@ -14,6 +17,7 @@ import {
   type ActionDispatchCallerKind,
 } from '../review/actionDispatch';
 import { sha256 } from '../review/reviewCore';
+import { isCentralRefreshAuthorized } from '../review/reviewRecoveryPolicy';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
@@ -23,6 +27,8 @@ export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '.
 
 export interface ActionOidcVerifier {
   verify(token: string): Promise<GitHubActionsOidcClaims>;
+  /** The verified token policy; required to authorize central refresh forwarding. */
+  policy?: Pick<GitHubActionsOidcPolicy, 'workflowRefs'>;
 }
 
 export interface ActionDispatchRouterOptions {
@@ -105,6 +111,12 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       return rejectInvalidDispatch(response, ['expectedGeneration']);
     }
 
+    // A refresh is a privileged replacement of an exact worker generation. A
+    // repository_dispatch event name alone is not proof that the central
+    // workflow issued it: require the OIDC job_workflow_ref itself, bind the
+    // request to that claim, and apply the verifier's explicit allowlist.
+    const centralRefreshAuthorized = isCentralRefreshAuthorized(dispatch, claims, options.verifier.policy);
+
     const receivedAt = now();
     const requestedAt = Date.parse(dispatch.requestedAt);
     if (!Number.isFinite(requestedAt) || Math.abs(receivedAt - requestedAt) > 10 * 60_000) {
@@ -132,6 +144,13 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         payloadDigest: sha256(actionDispatchDigestInput(dispatch)),
         publicationMode: dispatch.publishMode,
         centralActionDispatch: callerKind === 'central',
+        // Only the central repository-dispatch boundary may carry the explicit
+        // refresh request. OIDC proves the workflow identity above; the
+        // repository persists the retry only after its own state/evidence gate.
+        ...(centralRefreshAuthorized ? {
+          retryRequested: true,
+          retryAfterExecutionAttempt: dispatch.refreshExecutionAttempt,
+        } : {}),
         ...(dispatch.expectedGeneration === undefined ? {} : { expectedGeneration: dispatch.expectedGeneration }),
         identity: resolved?.identity || buildReviewRunIdentity({
           owner: dispatch.owner,

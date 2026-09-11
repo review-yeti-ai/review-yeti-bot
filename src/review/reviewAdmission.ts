@@ -1,5 +1,5 @@
 import { sha256 } from './reviewCore';
-import { ReviewRunIdentity } from '../persistence/reviewRunRepository';
+import type { ReviewRunIdentity } from './reviewRun';
 
 export interface ReviewAdmissionInput {
   owner: string;
@@ -9,6 +9,11 @@ export interface ReviewAdmissionInput {
   baseSha: string;
   changedFiles?: Array<{ path: string; patch?: string; status?: string; mode?: string; oldSha?: string; newSha?: string }>;
   configDigest?: string;
+}
+
+/** Derives the durable run identifier from the complete admission identity. */
+export function deriveReviewRunId(identity: ReviewRunIdentity): string {
+  return `run_${sha256(identity).slice(0, 32)}`;
 }
 
 /** Creates the stable identity used before asynchronous work begins. */

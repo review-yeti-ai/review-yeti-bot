@@ -138,6 +138,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           stage TEXT NOT NULL DEFAULT 'admission',
           result_digest VARCHAR(64),
           error_text TEXT,
+          failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
           lease_owner TEXT,
           lease_expires_at TIMESTAMPTZ,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -874,6 +875,14 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         error_text: status === 'success' ? null : `review gate: ${reason}`,
         lease_owner: null, lease_expires_at: null,
       });
+      if (status === 'success' || status === 'cancelled' || reason === 'blocking-findings') {
+        expect(state.run.failure_diagnostics).toEqual({});
+      } else {
+        expect(state.run.failure_diagnostics).toMatchObject({
+          failureClass: expect.any(String), reason: expect.any(String),
+          logTail: expect.any(String), executionAttempt: 5,
+        });
+      }
       expect(state.outbox).toMatchObject({
         status: 'projected', execution_attempt: 4, worker_token_digest: WORKER_PROOF.workerTokenDigest,
         lease_owner: null, lease_expires_at: null,
@@ -903,6 +912,10 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       expect(await repository.reapTerminalAttempts(deadline)).toBe(1);
       const state = await snapshot(id);
       expect(state.run).toMatchObject({ status: 'failed', stage: 'publish', error_text: 'review gate: review-deadline-exceeded' });
+      expect(state.run.failure_diagnostics).toMatchObject({
+        failureClass: 'timeout', reason: 'worker_deadline_exceeded',
+        logTail: 'worker_deadline_exceeded', executionAttempt: 5,
+      });
       expect(state.outbox).toMatchObject({ status: 'projected', execution_attempt: 4,
         worker_token_digest: WORKER_PROOF.workerTokenDigest, lease_owner: null, lease_expires_at: null });
       expect(state.gates[0]).toMatchObject({ attempt_id: gate.coordinates.attemptId, check_id: 8080,
@@ -1150,7 +1163,13 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const { id, repository, event, resolve, trusted } = await completionFixture();
       const lane = event.result.personas[0];
       switch (scenario) {
-        case 'provider-error': lane.decision = 'ERROR'; lane.errorClass = 'timeout'; break;
+        case 'provider-error':
+          lane.decision = 'ERROR'; lane.errorClass = 'timeout';
+          event.result.failureDiagnostics = {
+            reason: 'provider_rate_limited', providerStatus: 429,
+            logTail: '429 provider response secret=do-not-store',
+          };
+          break;
         case 'missing-lane': event.result.personas.pop(); break;
         case 'worker-coverage': event.result.coverageComplete = false; break;
         case 'worker-quorum': event.result.quorumSatisfied = false; break;
@@ -1170,6 +1189,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
       const state = await snapshot(id);
       expectTerminalState(state, event, 'failure', reason);
+      if (scenario === 'provider-error') {
+        expect(state.run.failure_diagnostics).toMatchObject({
+          failureClass: 'timeout', reason: 'provider_rate_limited', providerStatus: 429,
+        });
+        expect(JSON.stringify(state.run.failure_diagnostics)).not.toContain('do-not-store');
+      }
       if (reason === 'invalid-evidence') expect(state.gates[0].evidence).toBeNull();
       else expect(state.gates[0].evidence).not.toBeNull();
     });

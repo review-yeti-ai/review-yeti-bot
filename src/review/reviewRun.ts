@@ -1,5 +1,6 @@
 import type { PiStage } from './piWorkflow';
 import type { PreparedPublishingPolicy } from './preparedPublishingPolicy';
+import type { WorkerFailureDiagnostics } from './workerCompletion';
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -52,6 +53,8 @@ export interface ReviewRun {
   publicationFence?: string;
   resultDigest?: string;
   error?: string;
+  /** Last terminal worker diagnostic; provider text is redacted and bounded. */
+  failureDiagnostics?: WorkerFailureDiagnostics & { failureClass?: string; executionAttempt?: number };
   createdAt: number;
   updatedAt: number;
 }
@@ -72,6 +75,14 @@ export interface ReviewAdmissionInput {
   identity: ReviewRunIdentity;
   effectivePolicyDigest?: string;
   indexEpoch?: number;
+  /** Service-controlled same-head recovery; never decoded from an unverified request. */
+  retryRequested?: boolean;
+  /**
+   * One-based worker execution generation that the trusted recovery request
+   * is allowed to replace. The durable outbox must still be immediately before
+   * this generation; replaying an older signed action is therefore a no-op.
+   */
+  retryAfterExecutionAttempt?: number;
   /** Service-resolved only; never decoded from an Action/worker request. */
   authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
 }

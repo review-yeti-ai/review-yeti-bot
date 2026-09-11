@@ -83,6 +83,18 @@ inputs:
       allowlisted workflows; disabled admits a nonpublishing qualification run.
     required: false
     default: 'app-gate'
+  refresh-requested:
+    description: >-
+      Explicit same-head retry for a completed, recoverable Review Yeti worker failure. Only the
+      trusted central workflow sets this; ordinary callers leave it false.
+    required: false
+    default: 'false'
+  refresh-execution-attempt:
+    description: >-
+      One-based worker execution generation proven by the central check ledger for a refresh.
+      Required when refresh-requested is true on a central repository_dispatch.
+    required: false
+    default: ''
   expected-generation:
     description: >-
       One-based review generation admitted by the central Review Yeti App gate. Required for trusted
@@ -428,6 +440,8 @@ runs:
         DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
         DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
+        REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
+        REFRESH_EXECUTION_ATTEMPT: ${{ inputs.refresh-execution-attempt }}
         EXPECTED_GENERATION: ${{ inputs.expected-generation }}
         ACTION_SHA: ${{ inputs.action-sha }}
         REPOSITORY_ID: ${{ steps.target.outputs.repository-id }}
