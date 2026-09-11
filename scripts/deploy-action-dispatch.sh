@@ -10,6 +10,7 @@ need() {
 
 need kubectl
 need envsubst
+need awk
 
 : "${CT_REVIEW_DISPATCH_IMAGE:?set CT_REVIEW_DISPATCH_IMAGE to an immutable image@sha256:digest}"
 : "${ACTION_DISPATCH_REPOSITORY_IDS:?set the explicit GitHub repository id allowlist}"
@@ -69,7 +70,20 @@ fi
 echo "deploy-action-dispatch: expected-generation enforcement = ${ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION}"
 
 envsubst '${CT_REVIEW_DISPATCH_IMAGE} ${ACTION_DISPATCH_REPOSITORY_IDS} ${ACTION_DISPATCH_OWNER_IDS} ${ACTION_DISPATCH_WORKFLOW_REFS} ${ACTION_DISPATCH_WORKFLOW_SHAS} ${ACTION_DISPATCH_ALLOW_APP_GATE} ${ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION}' \
-  < k8s/action-dispatch.yaml.tpl > "$render_dir/action-dispatch.yaml"
+  < k8s/action-dispatch.yaml.tpl > "$render_dir/action-dispatch.without-checksum.yaml"
+
+if command -v shasum >/dev/null 2>&1; then
+  checksum_output="$(awk '/^---$/ { exit } { print }' "$render_dir/action-dispatch.without-checksum.yaml" | shasum -a 256)"
+elif command -v sha256sum >/dev/null 2>&1; then
+  checksum_output="$(awk '/^---$/ { exit } { print }' "$render_dir/action-dispatch.without-checksum.yaml" | sha256sum)"
+else
+  echo "deploy-action-dispatch: missing required command: shasum or sha256sum" >&2
+  exit 2
+fi
+export ACTION_DISPATCH_CONFIG_CHECKSUM="${checksum_output%% *}"
+
+envsubst '${ACTION_DISPATCH_CONFIG_CHECKSUM}' \
+  < "$render_dir/action-dispatch.without-checksum.yaml" > "$render_dir/action-dispatch.yaml"
 
 # shellcheck source=scripts/lib/assert-rendered.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/assert-rendered.sh"
