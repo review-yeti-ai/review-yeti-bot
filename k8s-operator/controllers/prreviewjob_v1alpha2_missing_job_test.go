@@ -448,6 +448,87 @@ func TestDeletedReviewDoesNotStrandWorkerObservationFinalizer(t *testing.T) {
 	}
 }
 
+func TestDeletedReviewDoesNotReleaseForeignWorkerObservationFinalizer(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	worker.OwnerReferences[0].Name = "foreign-review"
+	worker.OwnerReferences[0].UID = types.UID("foreign-review")
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Delete(ctx, storedReview(t, kube, req)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker = storedWorker(t, kube, req)
+	if !containsString(worker.Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatal("owner-absent cleanup released a foreign worker's observation guard")
+	}
+}
+
+func TestTerminalReviewDoesNotReleaseForeignWorkerObservationFinalizer(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	worker.OwnerReferences[0].UID = types.UID("foreign-review")
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	if err := kube.Status().Update(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker = storedWorker(t, kube, req)
+	if !containsString(worker.Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatal("terminal cleanup released a foreign worker's observation guard")
+	}
+}
+
+func TestFailurePublicationRefusesToStopForeignWorker(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	worker.OwnerReferences[0].UID = types.UID("foreign-review")
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: "FailurePublication", Status: metav1.ConditionFalse, Reason: "WorkerContractMismatch",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	if err := kube.Status().Update(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err == nil || !strings.Contains(err.Error(), "not controlled by the failed review") {
+		t.Fatalf("foreign worker stop error = %v", err)
+	}
+	worker = storedWorker(t, kube, req)
+	if worker.DeletionTimestamp != nil || !containsString(worker.Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatalf("foreign worker was mutated during failure recovery: deletion=%v finalizers=%v", worker.DeletionTimestamp, worker.Finalizers)
+	}
+}
+
 func TestStaleReviewCacheMissCannotReleaseWorkerObservationFinalizer(t *testing.T) {
 	ctx := context.Background()
 	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})

@@ -76,10 +76,7 @@ type PRReviewJobV1Alpha2Reconciler struct {
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
-	err := r.Get(ctx, req.NamespacedName, &review)
-	if apierrors.IsNotFound(err) && r.APIReader != nil {
-		err = r.APIReader.Get(ctx, req.NamespacedName, &review)
-	}
+	err := r.getCachedThenLive(ctx, req.NamespacedName, &review)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, r.releaseOrphanedWorkerObservation(ctx, req)
@@ -106,10 +103,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 
 	workerName := review.Name + "-worker"
 	var existing batchv1.Job
-	existingErr := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
-	if apierrors.IsNotFound(existingErr) && r.APIReader != nil {
-		existingErr = r.APIReader.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
-	}
+	existingErr := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
 	if existingErr != nil && !apierrors.IsNotFound(existingErr) {
 		return ctrl.Result{}, existingErr
 	}
@@ -286,10 +280,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 // uncached read above is required before entering this owner-absent path.
 func (r *PRReviewJobV1Alpha2Reconciler) releaseOrphanedWorkerObservation(ctx context.Context, req ctrl.Request) error {
 	var worker batchv1.Job
-	err := r.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name + "-worker"}, &worker)
-	if apierrors.IsNotFound(err) && r.APIReader != nil {
-		err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name + "-worker"}, &worker)
-	}
+	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name + "-worker"}, &worker)
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -325,10 +316,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileElapsedDeadline(
 ) (ctrl.Result, error) {
 	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
 	var worker batchv1.Job
-	err := r.Get(ctx, workerKey, &worker)
-	if apierrors.IsNotFound(err) && r.APIReader != nil {
-		err = r.APIReader.Get(ctx, workerKey, &worker)
-	}
+	err := r.getCachedThenLive(ctx, workerKey, &worker)
 	if err == nil {
 		if !managedWorkerJobMatches(review, &worker) {
 			return r.failWorkerContractMismatch(ctx, review, &worker, "existing worker Job does not match the immutable receipt-only contract")
@@ -481,10 +469,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 	// terminal success available; preserve that authoritative result instead of
 	// allowing a stale pending condition to manufacture a failure over SHIP.
 	var observed batchv1.Job
-	err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &observed)
-	if apierrors.IsNotFound(err) && r.APIReader != nil {
-		err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &observed)
-	}
+	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &observed)
 	if err == nil && managedWorkerJobMatches(review, &observed) && observed.Status.Succeeded > 0 {
 		meta.RemoveStatusCondition(&review.Status.Conditions, failurePublicationCondition)
 		return r.reconcileExistingJob(ctx, review, &observed, r.clock())
@@ -534,10 +519,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) stopOwnedReviewWorker(
 	review *reviewv1alpha2.PRReviewJob,
 ) (*batchv1.Job, error) {
 	var worker batchv1.Job
-	err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
-	if apierrors.IsNotFound(err) && r.APIReader != nil {
-		err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
-	}
+	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
 	if apierrors.IsNotFound(err) {
 		return nil, nil
 	}
@@ -771,6 +753,21 @@ func (r *PRReviewJobV1Alpha2Reconciler) admissionReader() client.Reader {
 	return r.Client
 }
 
+// getCachedThenLive centralizes the stale-cache boundary used for exact parent
+// and worker identity reads. Only a cached NotFound may fall through to the
+// uncached reader; all other errors retain their original semantics.
+func (r *PRReviewJobV1Alpha2Reconciler) getCachedThenLive(
+	ctx context.Context,
+	key client.ObjectKey,
+	object client.Object,
+) error {
+	err := r.Get(ctx, key, object)
+	if apierrors.IsNotFound(err) && r.APIReader != nil {
+		return r.APIReader.Get(ctx, key, object)
+	}
+	return err
+}
+
 func validWorkerAdmissionCandidate(review *reviewv1alpha2.PRReviewJob, now time.Time) bool {
 	if review == nil || isTerminalPhase(review.Status.Phase) {
 		return false
@@ -910,10 +907,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) releaseTerminalWorkerObservation(
 	review *reviewv1alpha2.PRReviewJob,
 ) error {
 	var worker batchv1.Job
-	err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
-	if apierrors.IsNotFound(err) && r.APIReader != nil {
-		err = r.APIReader.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
-	}
+	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
