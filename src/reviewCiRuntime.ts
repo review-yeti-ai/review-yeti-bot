@@ -1,5 +1,4 @@
 import type { Pool } from 'pg';
-import { findReviewCiEnrollment, type ReviewCiServiceConfig } from './auth/reviewCiConfig';
 import { ReviewCiOidcVerifier } from './auth/reviewCiOidc';
 import { AuthoritativeReviewReader } from './github/authoritativeReviewReader';
 import { getBoundedCiRepositoryToken } from './github/ciAppToken';
@@ -11,7 +10,7 @@ import { PostgresReviewCiCheckRepository } from './persistence/reviewCiCheckRepo
 import { ReviewCiCheckPublisher, type ReviewCiCheckGateFreshness } from './review/reviewCiCheckPublisher';
 import type { AuthoritativePublishingResolver } from './review/authoritativePublishingResolver';
 import { ReviewCiService, type ReviewCiCurrent } from './review/reviewCiService';
-import type { StoredReviewCiRequest } from './review/reviewCi';
+import { findReviewCiEnrollment, type ReviewCiServiceConfig, type StoredReviewCiRequest } from './review/reviewCi';
 
 export interface ReviewCiRuntimeRoutes {
   verifier: Pick<ReviewCiOidcVerifier, 'verify'>;
@@ -29,7 +28,8 @@ export function createReviewCiRuntime(options: {
     throw new Error('Review CI runtime identity mismatch');
   }
   const enrolled = (request: StoredReviewCiRequest) => {
-    const repository = findReviewCiEnrollment(config, request);
+    const repository = findReviewCiEnrollment(config,
+      { expectedAppId: request.expectedAppId, repository: request.review });
     if (!repository) throw new Error('Review CI runtime identity mismatch');
     return repository;
   };

@@ -1,8 +1,7 @@
-import { findReviewCiEnrollment, type ReviewCiServiceConfig } from '../auth/reviewCiConfig';
 import { sha256 } from './reviewCore';
-import { reviewCiExecutionSchema, reviewCiRequestEvent, reviewCiRunName,
+import { findReviewCiEnrollment, reviewCiExecutionSchema, reviewCiRequestEvent, reviewCiRunName,
   type ReviewCiCaller, type ReviewCiClient, type ReviewCiDeliveryClaim, type ReviewCiExecution, type ReviewCiRepository, type ReviewCiValidationBinding,
-  type StoredReviewCiRequest } from './reviewCi';
+  type ReviewCiServiceConfig, type StoredReviewCiRequest } from './reviewCi';
 
 export type ReviewCiCurrent = { status: 'stale' | 'waiting' }
   | { status: 'ready'; binding: ReviewCiValidationBinding };
@@ -27,7 +26,10 @@ export class ReviewCiService {
   constructor(private readonly options: ReviewCiServiceOptions) { this.now = options.now ?? Date.now; }
 
   private enrolled(request: StoredReviewCiRequest): void {
-    if (!findReviewCiEnrollment(this.options.config, request)) throw new Error('Review CI request is outside enrollment');
+    if (!findReviewCiEnrollment(this.options.config,
+      { expectedAppId: request.expectedAppId, repository: request.review })) {
+      throw new Error('Review CI request is outside enrollment');
+    }
   }
   private async validate(request: StoredReviewCiRequest, binding = request.binding): Promise<void> {
     this.enrolled(request);

@@ -41,6 +41,20 @@ describe('shared CI check publication client', () => {
     expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(['POST', 'GET', 'PATCH']);
     expect(new Headers(fetcher.mock.calls[0][1]?.headers).get('x-github-api-version')).toBe('2022-11-28');
   });
+  it('forwards create options and the publisher request-object update form', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json(check({ status: 'in_progress' }), 201))
+      .mockResolvedValueOnce(json(check()))
+      .mockResolvedValueOnce(json(check({ status: 'completed', conclusion: 'success' })));
+    const client = createReviewCiCheckClient({ ...options, fetchImplementation: fetcher });
+    await expect(client.createPending(coordinates, { status: 'in_progress' }))
+      .resolves.toMatchObject({ id: 77, status: 'in_progress' });
+    await expect(client.updateExisting({ coordinates, checkId: 77, update: { conclusion: 'success' } }))
+      .resolves.toMatchObject({ id: 77, status: 'completed', conclusion: 'success' });
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toMatchObject({ status: 'in_progress' });
+    expect(JSON.parse(String(fetcher.mock.calls[2][1]?.body))).toMatchObject({ conclusion: 'success' });
+    expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(['POST', 'GET', 'PATCH']);
+  });
   it('does not reconcile a foreign App, eligibility gate, or unrelated attempt as CI', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json({ total_count: 4, check_runs: [
       check({ id: 1, app: { id: 1 } }), check({ id: 2, name: 'Review Yeti Gate' }), check({ id: 3, external_id: 'old-attempt' }), check(),
