@@ -17,6 +17,8 @@ import {
   type TrustedGateCompletionContext,
 } from '../../src/persistence/reviewGateRepository';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
+import { enqueueReviewCiCompletionInTransaction } from '../../src/persistence/reviewCiRepository';
 import { ReviewGatePublisher, type ReviewGatePublisherOptions } from '../../src/review/reviewGatePublisher';
 import {
   workerReviewCompletionDigest,
@@ -1017,6 +1019,36 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         checkId: 8080, creationState: 'bound', reviewGeneration: 2,
         coordinates: expect.objectContaining({ runId: id, executionAttempt: 5 }),
       }));
+    });
+
+    it('commits an enrolled CI intent with the terminal review, and rolls all of it back if the hook fails', async () => {
+      await pool!.query(REVIEW_CI_SCHEMA_SQL);
+      const { id, event, resolve } = await completionFixture();
+      const before = await snapshot(id);
+      const hook = vi.fn(async (client, gate, now) => {
+        const request = await enqueueReviewCiCompletionInTransaction(client, gate.coordinates.attemptId, now);
+        expect(request?.review.runId).toBe(id);
+        expect((await client.query('SELECT * FROM review_ci_requests WHERE attempt_id=$1', [gate.coordinates.attemptId])).rows).toHaveLength(1);
+        // A different connection cannot see either partial terminal state or intent.
+        expect((await pool!.query('SELECT * FROM review_ci_requests WHERE attempt_id=$1', [gate.coordinates.attemptId])).rows).toHaveLength(0);
+        expect(await snapshot(id)).toEqual(before);
+        throw new Error('injected transaction failure');
+      });
+      const failing = new PostgresReviewGateRepository(pool!, { onEligibleCompletion: hook });
+      await expect(failing.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).rejects.toThrow('injected transaction failure');
+      expect(await snapshot(id)).toEqual(before);
+      expect((await pool!.query('SELECT * FROM review_ci_requests WHERE review->>\'runId\'=$1', [id])).rows).toHaveLength(0);
+      const repository = new PostgresReviewGateRepository(pool!, { onEligibleCompletion: async (client, gate, now) => {
+        await enqueueReviewCiCompletionInTransaction(client, gate.coordinates.attemptId, now);
+      } });
+      expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
+      expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT + 1)).toBe('duplicate');
+      expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+      const requests = (await pool!.query('SELECT * FROM review_ci_requests WHERE review->>\'runId\'=$1', [id])).rows;
+      expect(requests).toHaveLength(1);
+      expect((await pool!.query('SELECT * FROM review_ci_deliveries WHERE request_id=$1', [requests[0].request_id])).rows)
+        .toEqual([expect.objectContaining({ kind: 'repository', state: 'pending', epoch: 0 })]);
+      await pool!.query('TRUNCATE review_ci_deliveries, review_ci_requests');
     });
 
     it.each(['pending', 'claimed', 'projected'] as const)(

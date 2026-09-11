@@ -145,7 +145,7 @@ describe('createAuthoritativeReviewService wiring', () => {
     await expect(service.validateAdmission(admissionInput(f))).resolves.toBeUndefined();
     expect(mocks.currentCandidate).toHaveBeenCalledTimes(2);
     expect(mocks.immutablePolicyFile).toHaveBeenCalledExactlyOnceWith(f.config.policyRepository,
-      policyFile.source.sha, f.config.policyPath);
+      policyFile.source.sha, f.config.policyPath, expect.any(AbortSignal));
     expect(publishMints()).toHaveLength(0);
   });
 
@@ -197,7 +197,9 @@ describe('createAuthoritativeReviewService wiring', () => {
   it('constructs separate admission and completion capabilities without I/O or scheduling', () => {
     const f = fixture();
     const service = createAuthoritativeReviewService(f.options);
-    expect(Object.keys(service).sort()).toEqual(['admission', 'completion', 'runOnce', 'validateAdmission']);
+    expect(Object.keys(service).sort()).toEqual(['admission', 'completion', 'resolver', 'runOnce', 'validateAdmission']);
+    expect(service.resolver).toBe(service.admission.resolver);
+    expect(service.resolver).toBe(completionOptions().publishingResolver);
     expect(service.admission).toEqual({ expectedAppId: APP_ID, acceptNewRequests: true, repositoryIds: [123, 456],
       resolver: completionOptions().publishingResolver });
     expect(service.admission.repositoryIds).not.toBe(f.config.repositoryIds);
@@ -367,11 +369,13 @@ describe('gate publication identity and fresh success', () => {
     await expect(publisherOptions().clientFor(f.gate)).resolves.toEqual({ client: 'gate' });
     expect(mocks.currentCandidate).toHaveBeenCalledTimes(2);
     for (const args of mocks.currentCandidate.mock.calls) expect(args).toEqual([
-      { repositoryId: 123, owner: 'example', repo: 'candidate', prNumber: 42 },
+      { repositoryId: 123, owner: 'example', repo: 'candidate', prNumber: 42 }, expect.any(AbortSignal),
     ]);
-    expect(mocks.resolvePolicyRevision).toHaveBeenCalledExactlyOnceWith(f.config.policyRepository, f.config.policyRef);
+    const signal = mocks.currentCandidate.mock.calls[0][1];
+    expect(mocks.currentCandidate.mock.calls[1][1]).toBe(signal);
+    expect(mocks.resolvePolicyRevision).toHaveBeenCalledExactlyOnceWith(f.config.policyRepository, f.config.policyRef, signal);
     expect(mocks.immutablePolicyFile).toHaveBeenCalledExactlyOnceWith(f.config.policyRepository,
-      policyFile.source.sha, f.config.policyPath);
+      policyFile.source.sha, f.config.policyPath, signal);
     expect(mocks.mint.mock.calls.map(([auth, purpose]) => [auth.owner, auth.repo, purpose])).toEqual([
       ['example', 'candidate', 'read'], ['central', 'policies', 'read'], ['example', 'candidate', 'publish'],
     ]);

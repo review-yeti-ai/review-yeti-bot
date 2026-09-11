@@ -12,6 +12,7 @@ import type { WorkerCompletionProof, WorkerTerminalFailure } from '../review/wor
 import { buildAuthoritativeReviewIdentity } from '../review/authoritativeReviewIdentity';
 import { savePreparedPublishingPolicy } from './preparedReviewRepository';
 import { PostgresReviewGateRepository } from './reviewGateRepository';
+import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 
 interface QueryResult {
   rows: any[];
@@ -206,7 +207,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       if (input.authoritativeGate) await client.query("SET LOCAL lock_timeout = '5s'");
       await client.query(
         'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
-        [`review-dispatch:${input.repositoryId}:${input.identity.prNumber}`],
+        [reviewDispatchPrLockKey(input.repositoryId, input.identity.prNumber)],
       );
       if (input.authoritativeGate) {
         await this.validateAuthoritativeAdmission(input);
@@ -723,7 +724,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       // Use admission's repository/PR lock so a same-head rerequest cannot
       // interleave the run transition with the execution's outbox transition.
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-        `review-dispatch:${input.repositoryId}:${input.prNumber}`,
+        reviewDispatchPrLockKey(input.repositoryId, input.prNumber),
       ]);
       const result = await this.persistWorkerFailure(client, input, proof, now);
       await client.query('COMMIT');

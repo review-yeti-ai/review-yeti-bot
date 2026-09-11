@@ -7,6 +7,7 @@ import {
 
 export const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 export const REVIEW_DISPATCH_AUDIENCE = 'review-yeti-doks-dispatch';
+export const REVIEW_CI_AUDIENCE = 'review-yeti-ci-control';
 export const GITHUB_ACTIONS_JWKS_URL = new URL('https://token.actions.githubusercontent.com/.well-known/jwks');
 
 export interface GitHubActionsOidcClaims extends JWTPayload {
@@ -34,6 +35,7 @@ export interface GitHubActionsOidcPolicy {
 export interface GitHubActionsOidcVerifierOptions {
   keySet?: JWTVerifyGetKey;
   policy: GitHubActionsOidcPolicy;
+  audience?: typeof REVIEW_DISPATCH_AUDIENCE | typeof REVIEW_CI_AUDIENCE;
 }
 
 function requiredClaim(payload: JWTPayload, name: keyof GitHubActionsOidcClaims): string {
@@ -62,6 +64,7 @@ export function githubActionsOidcPolicyFromEnv(environment: NodeJS.ProcessEnv = 
 export class GitHubActionsOidcVerifier {
   private readonly keySet: JWTVerifyGetKey;
   public readonly policy: GitHubActionsOidcPolicy;
+  private readonly audience: typeof REVIEW_DISPATCH_AUDIENCE | typeof REVIEW_CI_AUDIENCE;
 
   constructor(options: GitHubActionsOidcVerifierOptions) {
     this.keySet = options.keySet || createRemoteJWKSet(GITHUB_ACTIONS_JWKS_URL, {
@@ -70,12 +73,16 @@ export class GitHubActionsOidcVerifier {
       timeoutDuration: 5_000,
     });
     this.policy = options.policy;
+    this.audience = options.audience ?? REVIEW_DISPATCH_AUDIENCE;
+    if (![REVIEW_DISPATCH_AUDIENCE, REVIEW_CI_AUDIENCE].includes(this.audience)) {
+      throw new Error('GitHub Actions OIDC audience is not supported');
+    }
   }
 
   async verify(token: string): Promise<GitHubActionsOidcClaims> {
     const { payload } = await jwtVerify(token, this.keySet, {
       issuer: GITHUB_ACTIONS_OIDC_ISSUER,
-      audience: REVIEW_DISPATCH_AUDIENCE,
+      audience: this.audience,
       algorithms: ['RS256'],
       clockTolerance: 5,
       maxTokenAge: '10m',
