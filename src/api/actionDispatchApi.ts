@@ -62,7 +62,19 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     if (!token) return response.status(401).json({ error: 'GitHub Actions OIDC bearer token is required' });
 
     const parsed = actionDispatchRequestSchema.safeParse(request.body);
-    if (!parsed.success) return response.status(400).json({ error: 'Invalid Action dispatch request' });
+    if (!parsed.success) {
+      // Return only schema field names, never rejected values. This keeps the
+      // runner's bounded failure detail actionable without reflecting request
+      // data or verifier internals into logs.
+      const invalidFields = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0] || 'request')))].sort();
+      logger.warn('Rejected invalid Action dispatch request', {
+        reason: 'invalid_action_dispatch_request',
+        invalidFields,
+      });
+      return response.status(400).json(invalidFields.includes('expectedGeneration')
+        ? { error: 'Invalid Action dispatch request', invalidFields: ['expectedGeneration'] }
+        : { error: 'Invalid Action dispatch request' });
+    }
     const dispatch = parsed.data;
 
     let claims: GitHubActionsOidcClaims;

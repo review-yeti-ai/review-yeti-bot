@@ -240,6 +240,15 @@ describe('DOKS Action dispatch client', () => {
     expect(rejected).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledTimes(2);
 
+    const invalidGeneration = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: 'Invalid Action dispatch request', invalidFields: ['expectedGeneration'],
+      }), { status: 400 }));
+    await expect(dispatchAction(environment(), invalidGeneration, { sleep }))
+      .rejects.toThrow(/expectedGeneration/u);
+    expect(invalidGeneration).toHaveBeenCalledTimes(2);
+
     const conflict = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
