@@ -53,14 +53,13 @@ describe('strict CI provenance and opt-in configuration', () => {
   it('accepts only the configured direct relay or validation workflow tuple', async () => {
     await expect(verifier().verify(await token(), 'relay')).resolves.toMatchObject({ role: 'relay', runId: 987, runAttempt: 1 });
     await expect(verifier().verify(await token({}, 'validation'), 'validation')).resolves.toMatchObject({ role: 'validation' });
-    await expect(verifier().verify(await token({ event_name: 'workflow_run' }), 'relay')).resolves.toMatchObject({ role: 'relay' });
   });
   it('rejects legacy audience, role swaps, ref/SHA cross-product, callee substitution, and candidate event', async () => {
     await expect(verifier().verify(await token({}, 'relay', 'review-yeti-doks-dispatch'), 'relay')).rejects.toThrow('not authorized');
     await expect(verifier().verify(await token(), 'validation')).rejects.toThrow('not authorized');
     for (const override of [{ workflow_sha: repository.validation.workflowSha },
       { job_workflow_ref: `example/pilot/${repository.relay.workflowPath}@refs/heads/main`, job_workflow_sha: repository.relay.workflowSha },
-      { event_name: 'pull_request' }, { repository: 'example/imposter' }, { repository_owner_id: '100' },
+      { event_name: 'pull_request' }, { event_name: 'workflow_run' }, { repository: 'example/imposter' }, { repository_owner_id: '100' },
       { run_id: '9007199254740992' }, { run_attempt: '0' }, { run_attempt: '1e2' }]) {
       await expect(verifier().verify(await token(override), 'relay')).rejects.toThrow('not authorized');
     }

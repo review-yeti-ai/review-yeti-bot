@@ -116,6 +116,7 @@ export class ReviewCiService {
       const client = await this.options.clientFor(request, 'repository-dispatch');
       const result = await client.dispatchRepository(reviewCiRequestEvent(request));
       if (result.status === 'accepted') await repository.acknowledgeRepositoryDispatch(claim, this.now());
+      else if (result.status === 'rejected') await repository.rejectDelivery(claim, this.now());
       else await repository.markDeliveryUncertain(claim, 'transport', this.now(), 5_000);
       return;
     }
@@ -129,6 +130,9 @@ export class ReviewCiService {
       if (result.status === 'accepted' && result.runId) {
         const readback = await readClient.readRun({ ...correlation, runId: result.runId, runAttempt: 1 });
         run = { runId: readback.runId, runAttempt: readback.runAttempt };
+      } else if (result.status === 'rejected') {
+        await repository.rejectDelivery(claim, this.now());
+        return;
       } else {
         await repository.markDeliveryUncertain(claim, 'transport', this.now(), 5_000);
         return;

@@ -7,7 +7,7 @@ import {
   type ReviewGateCheck,
 } from '../review/reviewCheckIdentity';
 import {
-  normalizeReviewCiBinding, reviewCiCoordinatesSchema, reviewCiExecutionSchema,
+  reviewCiExecutionSchema,
   reviewCiIdentityDigest, reviewCiTerminalReceiptSchema,
   type ReviewCiState, type ReviewCiTerminalReceipt, type StoredReviewCiRequest,
 } from '../review/reviewCi';
@@ -17,6 +17,7 @@ import type {
   ReviewCiCheckPublicationClaim, ReviewCiCheckPublicationNotStarted, ReviewCiCheckRepository,
   StoredReviewCiCheck,
 } from '../review/reviewCiCheckContracts';
+import { reviewDispatchPrLockKey, storedReviewCiRequestFromRow } from './reviewCiPersistence';
 export type {
   ReviewCiCheckClient, ReviewCiCheckCreationState, ReviewCiCheckDesiredState, ReviewCiCheckError,
   ReviewCiCheckPublicationClaim, ReviewCiCheckPublicationNotStarted, StoredReviewCiCheck,
@@ -44,26 +45,6 @@ function positive(value: unknown, field: string): number {
   return value as number;
 }
 function sameJson(left: unknown, right: unknown): boolean { return sha256(left) === sha256(right); }
-
-function requestFromRow(row: any): StoredReviewCiRequest {
-  const review = reviewCiCoordinatesSchema.parse(row.review);
-  const binding = row.binding === null ? null : normalizeReviewCiBinding(row.binding);
-  const result: StoredReviewCiRequest = {
-    requestId: row.request_id, review, expectedAppId: Number(row.expected_app_id), state: row.state,
-    binding, identityDigest: row.identity_digest, workflowEpoch: Number(row.workflow_epoch),
-    execution: row.execution === null ? null : reviewCiExecutionSchema.parse(row.execution),
-    terminalReceipt: row.terminal_receipt === null ? null : reviewCiTerminalReceiptSchema.parse(row.terminal_receipt),
-  };
-  requestId(result.requestId);
-  if (!Number.isSafeInteger(result.expectedAppId) || result.expectedAppId <= 0
-    || row.attempt_id !== review.attemptId || Number(row.repository_id) !== review.repositoryId
-    || Number(row.pr_number) !== review.prNumber
-    || (binding && result.identityDigest !== reviewCiIdentityDigest({ ...result, binding }))
-    || (result.terminalReceipt && row.terminal_digest !== sha256(result.terminalReceipt))) {
-    throw new Error('Invalid stored Review CI check request identity');
-  }
-  return result;
-}
 
 function immutableBindingDigest(request: StoredReviewCiRequest): string {
   if (!request.binding) throw new Error('Review CI check requires an admitted binding');
@@ -122,7 +103,7 @@ function checkFromRows(request: StoredReviewCiRequest, row: any): StoredReviewCi
 }
 
 async function prLock(client: ReviewCiQueryable, repositoryId: number, prNumber: number): Promise<void> {
-  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`review-dispatch:${repositoryId}:${prNumber}`]);
+  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [reviewDispatchPrLockKey(repositoryId, prNumber)]);
 }
 
 /** CI check publication persistence. All transition methods with `InTransaction`
@@ -172,7 +153,7 @@ export class PostgresReviewCiCheckRepository implements ReviewCiCheckRepository 
   private async requestFor(client: Client, id: string, lock = false): Promise<StoredReviewCiRequest | null> {
     requestId(id);
     const result = await client.query(`SELECT * FROM review_ci_requests WHERE request_id=$1${lock ? ' FOR UPDATE' : ''}`, [id]);
-    return result.rows[0] ? requestFromRow(result.rows[0]) : null;
+    return result.rows[0] ? storedReviewCiRequestFromRow(result.rows[0]) : null;
   }
 
   private async checkFor(client: Client, id: string, lock = false): Promise<any | null> {
@@ -308,7 +289,7 @@ export class PostgresReviewCiCheckRepository implements ReviewCiCheckRepository 
       for (const candidate of candidates) {
         const acquired = (await client.query(
           'SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS acquired',
-          [`review-dispatch:${Number(candidate.repository_id)}:${Number(candidate.pr_number)}`],
+          [reviewDispatchPrLockKey(Number(candidate.repository_id), Number(candidate.pr_number))],
         )).rows[0]?.acquired === true;
         if (!acquired) continue;
         const request = await this.requestFor(client, candidate.request_id, true);

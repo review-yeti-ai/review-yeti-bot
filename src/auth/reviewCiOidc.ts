@@ -42,9 +42,10 @@ export class ReviewCiOidcVerifier {
       const expectedRef = `${repository.owner}/${repository.repo}/${workflow.workflowPath}@${workflow.workflowRef}`;
       // This initial lane is direct and base-owned. Reusable workflow authority
       // needs its own explicit caller+callee contract, not a wildcard fallback.
+      const expectedEvent = role === 'relay' ? 'repository_dispatch' : 'workflow_dispatch';
       if (claims.workflow_ref !== expectedRef || claims.workflow_sha !== workflow.workflowSha
         || claims.job_workflow_ref !== undefined || claims.job_workflow_sha !== undefined
-        || (role === 'validation' && claims.event_name !== 'workflow_dispatch')) throw new Error();
+        || claims.event_name !== expectedEvent) throw new Error();
       return { role, repository, workflowSha: claims.workflow_sha,
         runId: integer(claims.run_id), runAttempt: integer(claims.run_attempt) };
     } catch { throw new Error('Review CI caller is not authorized'); }
