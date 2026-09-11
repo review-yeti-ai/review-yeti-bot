@@ -6,6 +6,7 @@ import {
   isReviewEventValidationError,
   parseReviewYetiEventV1,
   reviewEventIdentitySchema,
+  reviewEventTimestampSchema,
   type ReviewYetiEventV1,
 } from './reviewYetiEvent';
 
@@ -229,12 +230,12 @@ function buildProgressData(liveEvent: LiveStreamEvent): Record<string, unknown> 
   copyNumber(output, data, 'completionTokens', 'completion_tokens');
   copyNumber(output, data, 'totalTokens', 'total_tokens');
   copyNumber(output, data, 'durationMs', 'duration_ms');
-  if (!hasOwn(data, 'durationMs')) copyNumber(output, data, 'totalDurationMs', 'total_duration_ms');
+  copyNumber(output, data, 'totalDurationMs', 'total_duration_ms');
   copyNumber(output, data, 'latencyMs', 'latency_ms');
   copyNumber(output, data, 'findingsCount', 'findings_count');
-  if (!hasOwn(data, 'findingsCount')) copyNumber(output, data, 'totalFindings', 'total_findings');
+  copyNumber(output, data, 'totalFindings', 'total_findings');
   copyNumber(output, data, 'costUSD', 'cost_usd');
-  if (!hasOwn(data, 'costUSD')) copyNumber(output, data, 'totalCostUSD', 'total_cost_usd');
+  copyNumber(output, data, 'totalCostUSD', 'total_cost_usd');
   copyIfPresent(output, data, 'errorClass', 'error_class');
   copyIfPresent(output, data, 'verdict');
   copyIfPresent(output, data, 'quorumSatisfied', 'quorum_satisfied');
@@ -310,6 +311,10 @@ export function sanitizeProgressEvent(
   const canonicalMessage = CANONICAL_MESSAGE_BY_EVENT_KIND[eventKind];
   if (!canonicalMessage) return new ReviewEventRejection('invalid_live_event', 'type');
   data.message = canonicalMessage;
+
+  if (!reviewEventTimestampSchema.safeParse(liveEvent.timestamp).success) {
+    return new ReviewEventRejection('invalid_field', 'timestamp');
+  }
 
   let eventId: string;
   try {
