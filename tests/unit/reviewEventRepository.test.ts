@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   REVIEW_EVENT_SCHEMA_SQL,
   appendLifecycleEvent,
+  appendLifecycleEventForRun,
   type ReviewLifecycleEventInput,
 } from '../../src/persistence/reviewEventRepository';
 
@@ -98,5 +99,28 @@ describe('Postgres review lifecycle event persistence', () => {
 
     expect(record.sequence).toBe(4);
     expect(client.query).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed when the authoritative run metadata is incomplete', async () => {
+    const client = { query: vi.fn(async (sql: string) => {
+      if (/FROM review_runs/iu.test(sql)) {
+        return { rows: [{
+          run_id: lifecycleEvent().run_id,
+          repository_id: null,
+          pr_number: 42,
+          base_sha: 'a'.repeat(40),
+          head_sha: 'b'.repeat(40),
+          attempt: 0,
+          effective_policy_digest: 'c'.repeat(64),
+        }] };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    }) };
+
+    await expect(appendLifecycleEventForRun(client, {
+      runId: lifecycleEvent().run_id,
+      eventKind: 'review.lifecycle.queued',
+    })).rejects.toThrow(/metadata/i);
+    expect(client.query.mock.calls.some(([sql]) => /review_event_sequence_counters/iu.test(String(sql)))).toBe(false);
   });
 });
