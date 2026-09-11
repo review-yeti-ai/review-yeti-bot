@@ -4,6 +4,12 @@ import {
   type JWTVerifyGetKey,
   type JWTPayload,
 } from 'jose';
+import {
+  isAllowlistedWorkflowRef,
+  type WorkflowRefAllowlist,
+} from '../review/reviewCheckIdentity';
+
+export { isAllowlistedWorkflowRef } from '../review/reviewCheckIdentity';
 
 export const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 export const REVIEW_DISPATCH_AUDIENCE = 'review-yeti-doks-dispatch';
@@ -23,10 +29,9 @@ export interface GitHubActionsOidcClaims extends JWTPayload {
   job_workflow_sha?: string;
 }
 
-export interface GitHubActionsOidcPolicy {
+export interface GitHubActionsOidcPolicy extends WorkflowRefAllowlist {
   repositoryIds: ReadonlySet<string>;
   ownerIds: ReadonlySet<string>;
-  workflowRefs: ReadonlySet<string>;
   workflowShas: ReadonlySet<string>;
   allowedEvents: ReadonlySet<string>;
   allowAppGate: boolean;
@@ -36,14 +41,6 @@ export interface GitHubActionsOidcVerifierOptions {
   keySet?: JWTVerifyGetKey;
   policy: GitHubActionsOidcPolicy;
   audience?: typeof REVIEW_DISPATCH_AUDIENCE | typeof REVIEW_CI_AUDIENCE;
-}
-
-/** Applies the same explicit workflow-ref allowlist used by token verification. */
-export function isAllowlistedWorkflowRef(
-  policy: Pick<GitHubActionsOidcPolicy, 'workflowRefs'>,
-  workflowRef: string,
-): boolean {
-  return policy.workflowRefs.has('*') || policy.workflowRefs.has(workflowRef);
 }
 
 function requiredClaim(payload: JWTPayload, name: keyof GitHubActionsOidcClaims): string {
