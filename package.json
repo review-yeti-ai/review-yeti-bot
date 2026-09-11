@@ -12,6 +12,7 @@
     "action.yml",
     ".github/workflows/pipelines/",
     "src/",
+    "schemas/",
     "dist/",
     "bin/",
     "scripts/",
