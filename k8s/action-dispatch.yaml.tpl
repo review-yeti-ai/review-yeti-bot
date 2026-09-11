@@ -49,6 +49,8 @@ spec:
       app.kubernetes.io/name: ct-review-action-dispatch
   template:
     metadata:
+      annotations:
+        checksum/config: "${ACTION_DISPATCH_CONFIG_CHECKSUM}"
       labels:
         app.kubernetes.io/name: ct-review-action-dispatch
         app.kubernetes.io/component: admission
