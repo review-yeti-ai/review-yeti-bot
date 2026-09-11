@@ -8,7 +8,10 @@ import {
   validateReviewCIRequestPayload,
 } from './reviewCIRequest';
 import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
-import type { AbandonedPublishingRun } from '../persistence/reviewDispatchRepository';
+import type {
+  AbandonedCheckRecoveryOutcome,
+  AbandonedPublishingRun,
+} from '../persistence/reviewDispatchRepository';
 import { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from '../review/reviewCheckIdentity';
 
 export { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from '../review/reviewCheckIdentity';
@@ -121,6 +124,7 @@ export class GitHubInstallationClient {
   private readonly token: string;
   private readonly publisher: CommentPublisher;
   private readonly now: () => number;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly fetchImplementation: FetchImplementation;
   private readonly repositoryVisibilityCache = new Map<string, Promise<RepositoryVisibility>>();
 
@@ -142,6 +146,7 @@ export class GitHubInstallationClient {
     this.token = options.token;
     this.baseUrl = (options.baseUrl || 'https://api.github.com').replace(/\/+$/, '');
     this.now = options.now || Date.now;
+    this.sleep = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
     this.publisher = new CommentPublisher({
       githubToken: options.token,
@@ -389,7 +394,7 @@ export class GitHubInstallationClient {
    * Never choose a check by its display name alone or replace a newer verdict.
    */
   async failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal):
-    Promise<'failed' | 'already-completed'> {
+    Promise<AbandonedCheckRecoveryOutcome> {
     try {
       // Validate the persisted admission, not the current process's default:
       // a configuration change must not strand an already-admitted attempt.
@@ -401,29 +406,28 @@ export class GitHubInstallationClient {
       }
       const base = `/repos/${encodeURIComponent(run.owner)}/${encodeURIComponent(run.repo)}`;
       const externalId = `${run.runId}:a${run.executionAttempt}`;
-      // GitHub legacy started_at may have second precision, unlike admission.
-      const earliestLegacyStart = Math.floor(run.receivedAt / 1_000) * 1_000;
       const request = async (path: string, init: RequestInit = {}) => {
         signal.throwIfAborted();
         return this.request(path, { ...init, signal });
       };
-      const checks: any[] = [];
-      for (let page = 1; ; page += 1) {
-        if (page > 5) throw new Error('check lookup exceeded bounded pagination');
-        const result = await request(`${base}/commits/${run.headSha}/check-runs?check_name=Review%20Yeti&filter=all&per_page=100&page=${page}`);
-        if (!Array.isArray(result.check_runs)) throw new Error('invalid check list');
-        checks.push(...result.check_runs);
-        if (result.check_runs.length < 100) break;
-      }
       const exactHead = (check: any) => check?.name === 'Review Yeti' && check.head_sha === run.headSha;
-      const inWindow = (check: any) => {
-        const started = Date.parse(check.started_at);
-        return started >= earliestLegacyStart && started <= run.terminalDeadline;
+      const exactAttempt = (check: any) => exactHead(check) && check.app?.id === publisherAppId
+        && check.external_id === externalId;
+      const conflictsWithAttempt = (check: any) => exactHead(check) && check.app?.id === publisherAppId
+        && check.external_id !== externalId
+        && (!Number.isFinite(Date.parse(check.started_at))
+          || Date.parse(check.started_at) >= Math.floor(run.receivedAt / 1_000) * 1_000);
+      const listChecks = async () => {
+        const checks: any[] = [];
+        for (let page = 1; ; page += 1) {
+          if (page > 5) throw new Error('check lookup exceeded bounded pagination');
+          const result = await request(`${base}/commits/${run.headSha}/check-runs?check_name=Review%20Yeti&filter=all&per_page=100&page=${page}`);
+          if (!Array.isArray(result.check_runs)) throw new Error('invalid check list');
+          checks.push(...result.check_runs);
+          if (result.check_runs.length < 100) break;
+        }
+        return checks;
       };
-      const ownedAttempt = (check: any) => exactHead(check) && check.app?.id === publisherAppId
-        && (check.external_id === externalId || (!check.external_id && inWindow(check)));
-      const candidates = checks.filter(ownedAttempt);
-      if (candidates.length > 1) return 'already-completed';
       const failure = {
         status: 'completed', conclusion: 'failure', completed_at: new Date(this.now()).toISOString(),
         actions: [REVIEW_REFRESH_ACTION],
@@ -434,29 +438,78 @@ export class GitHubInstallationClient {
             + 'Re-run the governed review workflow to request a fresh attempt.',
         },
       };
-      if (candidates.length === 1) {
-        const candidate = candidates[0];
+      const reconcileCandidate = async (candidate: any): Promise<AbandonedCheckRecoveryOutcome> => {
         if (!Number.isSafeInteger(candidate.id) || candidate.id <= 0) throw new Error('invalid check id');
         const current = await request(`${base}/check-runs/${candidate.id}`);
-        if (current.id !== candidate.id || !ownedAttempt(current)) throw new Error('check identity changed');
-        if (current.status === 'completed') return 'already-completed';
+        if (current.id !== candidate.id || !exactAttempt(current)) throw new Error('check identity changed');
+        if (current.status === 'completed' && current.conclusion === 'success') return 'authoritative-success';
+        if (current.status === 'completed' && current.conclusion === 'failure') return 'failure-existing';
         if (!['queued', 'in_progress', 'pending', 'waiting', 'requested'].includes(current.status)) {
-          throw new Error('unknown check status');
+          if (current.status !== 'completed' || typeof current.conclusion !== 'string') {
+            throw new Error('unknown check status');
+          }
         }
         await request(`${base}/check-runs/${candidate.id}`, { method: 'PATCH', body: JSON.stringify(failure) });
-      } else {
-        // A foreign App, another bound run, or a newer execution is not ours to
-        // replace. Earlier completed attempts do not prevent an unstarted retry
-        // from acquiring its own explicit failure check.
-        if (checks.some((check) => exactHead(check) &&
-          (!Number.isFinite(Date.parse(check.started_at)) || Date.parse(check.started_at) >= earliestLegacyStart))) {
-          return 'already-completed';
+        return 'failure-published';
+      };
+      const inspectChecks = async (checks: any[]): Promise<AbandonedCheckRecoveryOutcome | undefined> => {
+        const candidates = checks.filter(exactAttempt);
+        if (candidates.length > 1) throw new Error('ambiguous abandoned check');
+        if (candidates.length === 1) return reconcileCandidate(candidates[0]);
+        if (checks.some(conflictsWithAttempt)) throw new Error('conflicting publisher-owned check');
+        return undefined;
+      };
+      const wait = async (milliseconds: number) => {
+        signal.throwIfAborted();
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            signal.removeEventListener('abort', onAbort);
+            reject(signal.reason);
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
+          if (signal.aborted) return onAbort();
+          this.sleep(milliseconds).then(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, (error) => {
+            signal.removeEventListener('abort', onAbort);
+            reject(error);
+          });
+        });
+        signal.throwIfAborted();
+      };
+      const observeEventually = async (): Promise<AbandonedCheckRecoveryOutcome | undefined> => {
+        for (const delay of [0, 250, 1_000]) {
+          if (delay > 0) await wait(delay);
+          const observed = await inspectChecks(await listChecks());
+          if (observed) return observed;
         }
-        await request(`${base}/check-runs`, { method: 'POST', body: JSON.stringify({
+        return undefined;
+      };
+
+      const visible = await observeEventually();
+      if (visible) return visible;
+      if (run.recoveryOnly) return 'creation-unconfirmed';
+
+      try {
+        const created = await request(`${base}/check-runs`, { method: 'POST', body: JSON.stringify({
           name: 'Review Yeti', head_sha: run.headSha, external_id: externalId, ...failure,
         }) });
+        if (!Number.isSafeInteger(created.id) || created.id <= 0 || !exactAttempt(created)
+          || created.status !== 'completed' || created.conclusion !== 'failure') {
+          throw new Error('created check identity was not authoritative');
+        }
+        return 'failure-published';
+      } catch {
+        // A successful create can lose its response. Re-read exact identity for a
+        // bounded interval; if it remains invisible, persist lookup-only recovery
+        // so no later sweep can blindly duplicate the check.
+        try {
+          return await observeEventually() || 'creation-unconfirmed';
+        } catch {
+          return 'creation-unconfirmed';
+        }
       }
-      return 'failed';
     } catch {
       // Upstream response bodies may contain private payloads. Fixed diagnostic
       // only; the durable pending publication is retried, never marked success.
