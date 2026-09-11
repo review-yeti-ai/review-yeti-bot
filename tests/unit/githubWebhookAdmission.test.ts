@@ -127,6 +127,63 @@ describe('native GitHub App webhook admission', () => {
     }));
   });
 
+  it('rejects a refresh whose external id is not the persisted exact-head identity', async () => {
+    const f = fixture();
+    const body = refreshPayload({
+      check_run: {
+        ...refreshPayload().check_run,
+        external_id: `run_${'0'.repeat(32)}:a1`,
+      },
+    });
+    const auth = signed(body, 'delivery-refresh-identity-mismatch');
+    const response = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ignored', reason: 'refresh_identity_mismatch' });
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('pauses an authoritative refresh without resolving policy or admitting work', async () => {
+    const admit = vi.fn();
+    const resolve = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: false, repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+    const body = refreshPayload();
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'authoritative-refresh-paused',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'authoritative_admission_paused',
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('ignores a refresh for a repository outside the direct App enrollment', async () => {
+    const admit = vi.fn();
+    const body = refreshPayload();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['999999']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      now: () => NOW,
+    });
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'refresh-not-enrolled',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'not_enrolled',
+    });
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('re-resolves the current policy before admitting an enrolled authoritative refresh', async () => {
     const identity = { ...buildReviewRunIdentity({
       owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
