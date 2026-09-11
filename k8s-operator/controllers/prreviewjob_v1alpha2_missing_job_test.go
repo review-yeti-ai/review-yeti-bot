@@ -1031,6 +1031,8 @@ func TestMissingWorkerJobAfterLostPostCreateStatusIsNotRecreated(t *testing.T) {
 				}
 				deleteLegacyWorker(t, kube, req)
 			}
+			advanceTime := r.Now().Add(31 * time.Second)
+			r.Now = func() time.Time { return advanceTime }
 			if _, err := r.Reconcile(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
@@ -1083,6 +1085,8 @@ func TestMissingWorkerJobCreationUncertaintyDoesNotRetryCreate(t *testing.T) {
 				t.Fatal("creation reservation must not fabricate a started/created receipt")
 			}
 			failCreate = false
+			advanceTime := r.Now().Add(31 * time.Second)
+			r.Now = func() time.Time { return advanceTime }
 			if _, err := r.Reconcile(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
@@ -1186,3 +1190,84 @@ func TestMissingWorkerJobCleanupPreservesActivePodAndForeignLease(t *testing.T) 
 		}
 	}
 }
+
+func TestReservedWorkerJobCreationRequeuesDuringInformerCacheLag(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	review := storedReview(t, kube, req)
+
+	// Simulate reservation set at current time without Job in cache
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               "WorkerCreationReserved",
+		Status:             metav1.ConditionTrue,
+		Reason:             "CreateAttemptReserved",
+		Message:            "worker Job creation is reserved; outcome has not yet been observed",
+		LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	review.Status.JobName = ""
+	review.Status.Phase = reviewv1alpha2.PhaseQueued
+	if err := kube.Status().Update(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+
+	// First reconcile within grace period: should requeue after 2 seconds without failing
+	result, err := r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RequeueAfter != 2*time.Second {
+		t.Fatalf("expected RequeueAfter 2s during informer cache lag, got: %v", result.RequeueAfter)
+	}
+	reviewAfterLag := storedReview(t, kube, req)
+	if reviewAfterLag.Status.Phase == reviewv1alpha2.PhaseFailed {
+		t.Fatal("review must not fail during informer cache lag grace period")
+	}
+
+	// Advance clock past 30 seconds: now missing Job must fail closed
+	advanceTime := r.Now().Add(31 * time.Second)
+	r.Now = func() time.Time { return advanceTime }
+
+	result, err = r.Reconcile(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedReview := storedReview(t, kube, req)
+	if failedReview.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("expected PhaseFailed after grace period elapsed, got: %v", failedReview.Status.Phase)
+	}
+	pub := meta.FindStatusCondition(failedReview.Status.Conditions, "FailurePublication")
+	if pub == nil || pub.Reason != "WorkerJobMissing" {
+		t.Fatalf("expected FailurePublication with reason WorkerJobMissing, got: %#v", pub)
+	}
+}
+
+func TestAppGatePublicationWorkerStatusMessages(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+
+	// Step 1: Initial reconcile creates worker and sets WorkerCreated message
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	runningReview := storedReview(t, kube, req)
+	ready := meta.FindStatusCondition(runningReview.Status.Conditions, "Ready")
+	if ready == nil || ready.Message != "app-gate publishing worker Job created" {
+		t.Fatalf("expected 'app-gate publishing worker Job created', got: %#v", ready)
+	}
+
+	// Step 2: Mark worker succeeded -> WorkerSucceeded message
+	worker := storedWorker(t, kube, req)
+	worker.Status.Succeeded = 1
+	if err := kube.Status().Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	succeededReview := storedReview(t, kube, req)
+	ready = meta.FindStatusCondition(succeededReview.Status.Conditions, "Ready")
+	if ready == nil || ready.Message != "app-gate publishing worker Job completed" {
+		t.Fatalf("expected 'app-gate publishing worker Job completed', got: %#v", ready)
+	}
+}
+
