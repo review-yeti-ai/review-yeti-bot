@@ -67,7 +67,11 @@ function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 
 const describeWithPostgres = databaseUrl ? describe : describe.skip;
-const trustedValidation: ReviewDispatchRepositoryOptions = { validateAuthoritativeAdmission: async () => undefined };
+type TestDispatchRepositoryOptions = Omit<ReviewDispatchRepositoryOptions, 'lifecycleEvents'>
+  & Partial<Pick<ReviewDispatchRepositoryOptions, 'lifecycleEvents'>>;
+const trustedValidation: ReviewDispatchRepositoryOptions = {
+  lifecycleEvents: 'disabled', validateAuthoritativeAdmission: async () => undefined,
+};
 const ownedSharedSchema = /^review_dispatch_test_[a-f0-9]{16}$/u;
 
 const claimMutations = ['heartbeat', 'bindWorkerTokenDigest', 'markProjected', 'releaseForRetry', 'markTerminal'] as const;
@@ -110,7 +114,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     sharedSchema = undefined;
   });
 
-  async function createRepository(options: ReviewDispatchRepositoryOptions = trustedValidation, shared = false) {
+  async function createRepository(options: TestDispatchRepositoryOptions = trustedValidation, shared = false) {
     if (shared) sharedSchema = `review_dispatch_test_${randomBytes(8).toString('hex')}`;
     pool = new Pool({ connectionString: databaseUrl,
       ...(sharedSchema ? { options: `-c search_path=${sharedSchema},public`, application_name: sharedSchema } : {}) });
@@ -184,14 +188,17 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       query: client.query.bind(client),
       release: () => undefined,
     };
+    const effectiveOptions: ReviewDispatchRepositoryOptions = {
+      ...options, lifecycleEvents: options.lifecycleEvents ?? (shared ? 'enabled' : 'disabled'),
+    };
     const repository = new PostgresReviewDispatchRepository(
       shared ? pool : { connect: async () => transactionClient },
       shared ? undefined : client,
-      options,
+      effectiveOptions,
     );
     const gateRepository = new PostgresReviewGateRepository(shared ? pool : {
       query: client.query.bind(client), connect: async () => transactionClient,
-    });
+    }, { lifecycleEvents: shared ? 'enabled' : 'disabled' });
     return { repository, client, gateRepository };
   }
 
@@ -864,7 +871,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     it.each([NaN, Infinity, 250.5])('rejects invalid validation timeout %s before connecting', (admissionValidationTimeoutMs) => {
       let connected = false;
       expect(() => new PostgresReviewDispatchRepository({ connect: async () => { connected = true; throw new Error(); } },
-        undefined, { admissionValidationTimeoutMs })).toThrow('validation configuration');
+        undefined, { lifecycleEvents: 'disabled', admissionValidationTimeoutMs })).toThrow('validation configuration');
       expect(connected).toBe(false);
     });
 
@@ -1327,7 +1334,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         if (/UPDATE review_runs AS runs/u.test(sql)) throw new Error('injected run-write failure');
         return client!.query(sql, values);
       },
-    }) });
+    }) }, undefined, { lifecycleEvents: 'disabled' });
     await expect(failingRepository.markWorkerFailure({ ...failure, executionAttempt: 4 }, { workerTokenDigest: 'd'.repeat(64) }, 9_030))
       .rejects.toThrow('injected run-write failure');
     // The outbox write preceded the injected fault but must not survive it.
@@ -1431,7 +1438,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       await peer.query(`SET search_path TO "${schema}", pg_temp`);
       const peerRepository = new PostgresReviewDispatchRepository({ connect: async () => ({
         query: peer.query.bind(peer), release: () => {},
-      }) }, peer);
+      }) }, peer, { lifecycleEvents: 'disabled' });
       const admitted = await repository.admit(admission('concurrent-1', 1_000));
       const concurrentClaim = await repository.claimNext('concurrent-dispatch', 1_001, 30_000);
       await repository.markProjected(admitted.run.runId, 'concurrent-dispatch', concurrentClaim!.claimAttempt, 'old-terminal-cr', 1_002, 'a'.repeat(64));

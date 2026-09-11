@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import {
   REVIEW_EVENT_SCHEMA_SQL,
+  PostgresReviewEventRepository,
   appendLifecycleEvent,
   appendLifecycleEventForRun,
   type ReviewLifecycleEventInput,
@@ -172,5 +173,93 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     }
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
+  });
+
+  it('excludes a live lease, increments attempts, and reclaims an expired lease', async () => {
+    const runId = 'run_00000000000000000000000000000000';
+    const occurredAt = Date.parse('2026-09-11T12:00:00.000Z');
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [runId]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await appendLifecycleEvent(client, lifecycleEvent(eventId(30), 999));
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+
+    const repository = new PostgresReviewEventRepository(pool);
+    const first = await repository.claimNext('worker-a', occurredAt + 1_000, 30_000);
+    expect(first).toMatchObject({ eventId: eventId(30), state: 'claimed', leaseOwner: 'worker-a', attemptCount: 1 });
+    expect(first?.leaseExpiresAt).toBe(occurredAt + 31_000);
+    await expect(repository.claimNext('worker-b', occurredAt + 2_000, 30_000)).resolves.toBeNull();
+
+    const reclaimed = await repository.claimNext('worker-b', occurredAt + 31_001, 10_000);
+    expect(reclaimed).toMatchObject({ eventId: eventId(30), state: 'claimed', leaseOwner: 'worker-b', attemptCount: 2 });
+    expect((await pool.query('SELECT attempt_count, lease_owner FROM review_event_outbox WHERE event_id = $1', [eventId(30)])).rows[0])
+      .toMatchObject({ attempt_count: 2, lease_owner: 'worker-b' });
+  });
+
+  it('requires the live lease owner and window for publication, and schedules a retry', async () => {
+    const runId = 'run_00000000000000000000000000000000';
+    const occurredAt = Date.parse('2026-09-11T12:00:00.000Z');
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [runId]);
+    const append = async (event: ReviewLifecycleEventInput): Promise<void> => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await appendLifecycleEvent(client, event);
+        await client.query('COMMIT');
+      } finally {
+        client.release();
+      }
+    };
+    await append(lifecycleEvent(eventId(31)));
+    await append({ ...lifecycleEvent(eventId(32)), occurred_at: new Date(occurredAt + 2_000).toISOString() });
+    const repository = new PostgresReviewEventRepository(pool);
+    const published = await repository.claimNext('publisher-a', occurredAt + 1_000, 10_000);
+    expect(published).not.toBeNull();
+    await expect(repository.markPublished(eventId(31), 'publisher-b', occurredAt + 2_000)).resolves.toBe(false);
+    await expect(repository.markPublished(eventId(31), 'publisher-a', occurredAt + 11_001)).resolves.toBe(false);
+
+    const retry = await repository.claimNext('retry-a', occurredAt + 11_002, 10_000);
+    expect(retry?.eventId).toBe(eventId(31));
+    await expect(repository.markPublished(eventId(31), 'retry-a', occurredAt + 12_000, 'ack-31')).resolves.toBe(true);
+    expect((await pool.query('SELECT state, publish_ack FROM review_event_outbox WHERE event_id = $1', [eventId(31)])).rows[0])
+      .toMatchObject({ state: 'published', publish_ack: 'ack-31' });
+
+    const released = await repository.claimNext('retry-owner', occurredAt + 13_000, 10_000);
+    expect(released?.eventId).toBe(eventId(32));
+    await expect(repository.releaseForRetry(eventId(32), 'wrong-owner', occurredAt + 14_000, 5_000)).resolves.toBe(false);
+    await expect(repository.releaseForRetry(eventId(32), 'retry-owner', occurredAt + 23_001, 5_000)).resolves.toBe(false);
+    await expect(repository.releaseForRetry(eventId(32), 'retry-owner', occurredAt + 15_000, 5_000)).resolves.toBe(true);
+    expect((await pool.query('SELECT state, next_attempt_at FROM review_event_outbox WHERE event_id = $1', [eventId(32)])).rows[0])
+      .toMatchObject({ state: 'pending' });
+    await expect(repository.claimNext('scheduled-too-early', occurredAt + 19_999, 10_000)).resolves.toBeNull();
+    const scheduled = await repository.claimNext('scheduled-worker', occurredAt + 20_000, 10_000);
+    expect(scheduled).toMatchObject({ eventId: eventId(32), attemptCount: 2, leaseOwner: 'scheduled-worker' });
+  });
+
+  it('extends only the live owner heartbeat and prevents reclaim until the extension expires', async () => {
+    const runId = 'run_00000000000000000000000000000000';
+    const occurredAt = Date.parse('2026-09-11T12:00:00.000Z');
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [runId]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await appendLifecycleEvent(client, lifecycleEvent(eventId(33)));
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+    const repository = new PostgresReviewEventRepository(pool);
+    await expect(repository.claimNext('heartbeat-owner', occurredAt + 1_000, 10_000)).resolves.toMatchObject({ attemptCount: 1 });
+    await expect(repository.heartbeat(eventId(33), 'wrong-owner', occurredAt + 5_000, 10_000)).resolves.toBe(false);
+    await expect(repository.heartbeat(eventId(33), 'heartbeat-owner', occurredAt + 5_000, 10_000)).resolves.toBe(true);
+    expect((await pool.query('SELECT lease_expires_at FROM review_event_outbox WHERE event_id = $1', [eventId(33)])).rows[0].lease_expires_at)
+      .toEqual(new Date(occurredAt + 15_000));
+    await expect(repository.claimNext('before-heartbeat-expiry', occurredAt + 10_001, 10_000)).resolves.toBeNull();
+    const reclaimed = await repository.claimNext('after-heartbeat-expiry', occurredAt + 15_001, 10_000);
+    expect(reclaimed).toMatchObject({ eventId: eventId(33), attemptCount: 2, leaseOwner: 'after-heartbeat-expiry' });
   });
 });

@@ -687,7 +687,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       });
 
       const client = { query, release: vi.fn() };
-      const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+      const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) }, undefined, { lifecycleEvents: 'disabled' });
 
       const result = await repository.admit(admissionInput('new-delivery'));
 
@@ -727,7 +727,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       });
 
       const client = { query, release: vi.fn() };
-      const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+      const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) }, undefined, { lifecycleEvents: 'disabled' });
 
       await expect(repository.admit(admissionInput('existing-delivery'))).rejects.toThrow(
         /delivery identity conflict/i

@@ -101,8 +101,8 @@ describe('Review CI immutable domain/wire boundaries', () => {
   });
   it('permits a configured 15-second freshness bound but rejects unbounded settings', () => {
     const pool = { query: async () => ({ rows: [] }), connect: async () => { throw new Error('no I/O'); } };
-    expect(() => new PostgresReviewCiRepository(pool, { admissionTimeoutMs: 15_000 })).not.toThrow();
-    expect(() => new PostgresReviewCiRepository(pool, { admissionTimeoutMs: 15_001 })).toThrow('bounds');
-    expect(() => new PostgresReviewCiRepository(pool, { maxDispatchAttempts: 11 })).toThrow('bounds');
+    expect(() => new PostgresReviewCiRepository(pool, { lifecycleEvents: 'disabled', admissionTimeoutMs: 15_000 })).not.toThrow();
+    expect(() => new PostgresReviewCiRepository(pool, { lifecycleEvents: 'disabled', admissionTimeoutMs: 15_001 })).toThrow('bounds');
+    expect(() => new PostgresReviewCiRepository(pool, { lifecycleEvents: 'disabled', maxDispatchAttempts: 11 })).toThrow('bounds');
   });
 });

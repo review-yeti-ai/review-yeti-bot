@@ -110,11 +110,8 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
       },
     };
 
-    repository = new PostgresReviewCompletionRepository(schemaPool);
-    lifecycleRepository = new PostgresReviewCompletionRepository({
-      ...schemaPool,
-      end: async () => undefined,
-    });
+    repository = new PostgresReviewCompletionRepository(schemaPool, { lifecycleEvents: 'disabled' });
+    lifecycleRepository = new PostgresReviewCompletionRepository(schemaPool, { lifecycleEvents: 'enabled' });
   });
 
   afterAll(async () => {
@@ -257,6 +254,87 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
       expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_completion_outbox')).rows[0].count).toBe(0);
       expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
       expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
+    });
+
+    it('emits the exact completion mutation event kinds and keeps claim and heartbeat lease-only', async () => {
+      const claimedRun = 'run_completion_event_kinds_claimed';
+      await insertLifecycleRun(claimedRun);
+      const record = await lifecycleRepository.recordCompletion(lifecycleInput(claimedRun, {
+        validationRequestId: 'validation-event-kinds-claimed',
+      }));
+      const claim = await lifecycleRepository.claimNext('completion-worker', 2_000, 30_000);
+      expect(claim?.completionId).toBe(record.completionId);
+      await expect(lifecycleRepository.heartbeat(record.completionId, 'completion-worker', 3_000, 30_000)).resolves.toBe(true);
+      await expect(lifecycleRepository.markDispatched(record.completionId, 'completion-worker', 4_000)).resolves.toBe(true);
+      await expect(lifecycleRepository.markCompleted(record.completionId, 'completion-worker', 5_000)).resolves.toBe(true);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [claimedRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.dispatched' },
+          { event_kind: 'review.lifecycle.terminal' },
+        ]);
+
+      const retriedRun = 'run_completion_event_kinds_retry';
+      await insertLifecycleRun(retriedRun);
+      const retried = await lifecycleRepository.recordCompletion(lifecycleInput(retriedRun, {
+        validationRequestId: 'validation-event-kinds-retry',
+      }));
+      await lifecycleRepository.claimNext('retry-worker', 2_000, 30_000);
+      await expect(lifecycleRepository.releaseForRetry(retried.completionId, 'retry-worker', 3_000, 5_000)).resolves.toBe(true);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [retriedRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.retrying' },
+        ]);
+
+      const terminalRun = 'run_completion_event_kinds_terminal';
+      await insertLifecycleRun(terminalRun);
+      const terminal = await lifecycleRepository.recordCompletion(lifecycleInput(terminalRun, {
+        validationRequestId: 'validation-event-kinds-terminal',
+      }));
+      await expect(lifecycleRepository.markTerminal(terminal.completionId, 'terminal-worker', 2_000)).resolves.toBe(true);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [terminalRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.terminal' },
+        ]);
+
+      const errorRun = 'run_completion_event_kinds_error';
+      await insertLifecycleRun(errorRun);
+      const errored = await lifecycleRepository.recordCompletion(lifecycleInput(errorRun, {
+        validationRequestId: 'validation-event-kinds-error',
+      }));
+      await lifecycleRepository.claimNext('error-worker', 2_000, 30_000);
+      await expect(lifecycleRepository.markError(errored.completionId, 'error-worker', 3_000, 'permanent')).resolves.toBe(true);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [errorRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.terminal' },
+        ]);
+
+      const readyRun = 'run_completion_event_kinds_ready';
+      await insertLifecycleRun(readyRun);
+      await lifecycleRepository.recordCompletion(lifecycleInput(readyRun, {
+        validationRequestId: 'validation-event-kinds-ready', draftDeferred: true,
+      }));
+      await expect(lifecycleRepository.markReady(123, 42, 'b'.repeat(40), 2_000)).resolves.toBe(1);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [readyRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.queued' },
+        ]);
+
+      const supersededRun = 'run_completion_event_kinds_superseded';
+      await insertLifecycleRun(supersededRun);
+      await lifecycleRepository.recordCompletion(lifecycleInput(supersededRun, {
+        validationRequestId: 'validation-event-kinds-superseded', headSha: 'c'.repeat(40),
+      }));
+      await expect(lifecycleRepository.supersedeOlderHeads(123, 42, 'b'.repeat(40), 2_000)).resolves.toBe(1);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [supersededRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.superseded' },
+        ]);
     });
   });
 

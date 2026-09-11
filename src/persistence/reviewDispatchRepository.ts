@@ -18,7 +18,12 @@ import { buildAuthoritativeReviewIdentity } from '../review/authoritativeReviewI
 import { savePreparedPublishingPolicy } from './preparedReviewRepository';
 import { PostgresReviewGateRepository } from './reviewGateRepository';
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
-import { appendLifecycleEventForRun, type ReviewEventQueryable } from './reviewEventRepository';
+import {
+  appendLifecycleEventForRun,
+  requireLifecycleEventsMode,
+  type ReviewEventQueryable,
+  type ReviewLifecycleEventsOptions,
+} from './reviewEventRepository';
 
 interface QueryResult {
   rows: any[];
@@ -46,7 +51,7 @@ export const RECOVERY_UNCONFIRMED_ERROR_TEXT =
 /** Lease cadence for lookup-only recovery after a check-create response is lost. */
 export const ABANDONED_RECOVERY_LEASE_MS = 60_000;
 
-export interface ReviewDispatchRepositoryOptions {
+export interface ReviewDispatchRepositoryOptions extends ReviewLifecycleEventsOptions {
   /** Trusted service read/validation only; invoked under the candidate's PR lock before any admission writes. */
   validateAuthoritativeAdmission?: (input: ReviewAdmissionInput) => Promise<void>;
   /** Defaults to 30 seconds; safe integer values are clamped to 250–30,000 ms. */
@@ -246,8 +251,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   private readonly explicitQueryable: boolean;
   private readonly lifecycleEventsEnabled: boolean;
 
-  constructor(private readonly pool: ConnectionPool, queryable?: Queryable,
-    private readonly options: ReviewDispatchRepositoryOptions = {}) {
+  constructor(private readonly pool: ConnectionPool, queryable: Queryable | undefined,
+    private readonly options: ReviewDispatchRepositoryOptions) {
+    this.lifecycleEventsEnabled = requireLifecycleEventsMode(options, 'Review dispatch repository');
     const timeoutMs = options.admissionValidationTimeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeoutMs)
       || (options.validateAuthoritativeAdmission !== undefined && typeof options.validateAuthoritativeAdmission !== 'function')) {
@@ -256,16 +262,16 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     this.admissionValidationTimeoutMs = Math.min(30_000, Math.max(250, timeoutMs));
     const possiblePool = pool as unknown as Partial<Queryable>;
     this.explicitQueryable = queryable !== undefined;
-    this.lifecycleEventsEnabled = !this.explicitQueryable
-      && typeof possiblePool.query === 'function'
-      && typeof (pool as unknown as { end?: unknown }).end === 'function';
+    if (this.lifecycleEventsEnabled && this.explicitQueryable) {
+      throw new Error('Review dispatch lifecycle events require the pool transaction client');
+    }
     this.queryable = queryable || (typeof possiblePool.query === 'function' ? possiblePool as Queryable : {
       query: async () => { throw new Error('direct PostgreSQL query interface is unavailable'); },
     });
   }
 
   private async inTransaction<T>(operation: (client: TransactionClient) => Promise<T>): Promise<T> {
-    if (this.explicitQueryable || !this.lifecycleEventsEnabled) return operation(this.queryable as TransactionClient);
+    if (!this.lifecycleEventsEnabled) return operation(this.queryable as TransactionClient);
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');

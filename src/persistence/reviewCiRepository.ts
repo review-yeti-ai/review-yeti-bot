@@ -9,15 +9,19 @@ import {
   type StoredReviewCiRequest,
 } from '../review/reviewCi';
 import { reviewDispatchPrLockKey, storedReviewCiRequestFromRow } from './reviewCiPersistence';
-import { appendLifecycleEventForRun } from './reviewEventRepository';
+import {
+  appendLifecycleEventForRun,
+  requireLifecycleEventsMode,
+  type ReviewLifecycleEventsOptions,
+} from './reviewEventRepository';
 
 export type { ReviewCiQueryable, ReviewCiStateTransition, ReviewCiTransition } from '../review/reviewCi';
 interface Client extends ReviewCiQueryable { release(): void }
-interface Pool extends ReviewCiQueryable { connect(): Promise<Client>; end?: (...args: any[]) => Promise<void> }
+interface Pool extends ReviewCiQueryable { connect(): Promise<Client> }
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
 const ATTEMPT = /^run_[a-f0-9]{32}-g\d+-e[1-9]\d*$/u;
 const TERMINAL = new Set(['completed', 'superseded', 'delivery_error']);
-export interface ReviewCiRepositoryOptions {
+export interface ReviewCiRepositoryOptions extends ReviewLifecycleEventsOptions {
   maxDispatchAttempts?: number;
   /** Bounds external fresh reads, not transaction hooks; default 5s, maximum 15s. */
   admissionTimeoutMs?: number;
@@ -106,10 +110,10 @@ export class PostgresReviewCiRepository implements ReviewCiRepository {
   private readonly maxDispatchAttempts: number;
   private readonly admissionTimeoutMs: number;
   private readonly lifecycleEventsEnabled: boolean;
-  constructor(private readonly pool: Pool, private readonly options: ReviewCiRepositoryOptions = {}) {
+  constructor(private readonly pool: Pool, private readonly options: ReviewCiRepositoryOptions) {
+    this.lifecycleEventsEnabled = requireLifecycleEventsMode(options, 'Review CI repository');
     this.maxDispatchAttempts = options.maxDispatchAttempts ?? 5;
     this.admissionTimeoutMs = options.admissionTimeoutMs ?? 5_000;
-    this.lifecycleEventsEnabled = typeof pool.end === 'function';
     if (!Number.isInteger(this.maxDispatchAttempts) || this.maxDispatchAttempts < 1 || this.maxDispatchAttempts > 10
       || !Number.isInteger(this.admissionTimeoutMs) || this.admissionTimeoutMs < 50 || this.admissionTimeoutMs > 15_000) {
       throw new Error('Invalid Review CI repository bounds');
