@@ -14,8 +14,9 @@ export const REVIEW_REFRESH_ACTION = Object.freeze({
 });
 
 /** Exact reusable workflow identity authorized to forward a persisted refresh. */
+export const CENTRAL_REVIEW_REPOSITORY = 'calltelemetry/ct-review-actions';
 export const CENTRAL_REVIEW_WORKFLOW_REF =
-  'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/heads/v1';
+  `${CENTRAL_REVIEW_REPOSITORY}/.github/workflows/review-yeti.yml@refs/heads/v1`;
 
 /** Failure titles for which the exact-head recovery action is offered/admitted. */
 export const RECOVERABLE_FAILURE_TITLES: ReadonlySet<string> = new Set([

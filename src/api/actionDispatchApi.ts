@@ -17,7 +17,10 @@ import {
   assertActionDispatchMatchesClaims,
 } from '../review/actionDispatch';
 import { sha256 } from '../review/reviewCore';
-import { CENTRAL_REVIEW_WORKFLOW_REF } from '../review/reviewCheckIdentity';
+import {
+  CENTRAL_REVIEW_REPOSITORY,
+  CENTRAL_REVIEW_WORKFLOW_REF,
+} from '../review/reviewCheckIdentity';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
@@ -118,7 +121,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     const centralRefreshAuthorized = dispatch.publishMode === 'app-gate'
       && dispatch.caller.eventName === 'repository_dispatch'
       && dispatch.refreshRequested === true
-      && claims.repository === 'calltelemetry/ct-review-actions'
+      && claims.repository === CENTRAL_REVIEW_REPOSITORY
       && claims.job_workflow_ref === CENTRAL_REVIEW_WORKFLOW_REF
       && dispatch.caller.workflowRef === CENTRAL_REVIEW_WORKFLOW_REF
       && options.verifier.policy !== undefined
