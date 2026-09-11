@@ -16,25 +16,52 @@ const check = {
   app: { id: 4385771, slug: 'ct-review-bot' }, status: 'in_progress', conclusion: null,
   started_at: '2026-09-09T17:22:31Z', external_id: null,
 };
+const externalId = `${run.runId}:a${run.executionAttempt}`;
+const exactCheck = { ...check, external_id: externalId };
 
-function fixture(checks: unknown[] = [check], reread: unknown = check) {
+function fixture(checks: unknown[] = [exactCheck], reread: unknown = exactCheck) {
   const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url);
     if (init?.method === 'PATCH') return new Response('{}');
-    if (init?.method === 'POST') return new Response(JSON.stringify({ ...check, id: 77 }));
+    if (init?.method === 'POST') return new Response(JSON.stringify({
+      ...exactCheck, ...JSON.parse(String(init.body)), id: 77,
+    }));
     return new Response(JSON.stringify(path.includes('/commits/') ? { check_runs: checks } : reread));
   });
-  const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation });
+  const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation, sleep: async () => undefined });
   return { client, fetchImplementation };
 }
 const signal = () => AbortSignal.timeout(20_000);
 const persistedWindows = [900_000, 1_800_000, 2_700_000, 3_600_000];
 
 describe('abandoned check exact App/attempt failure publication', () => {
+  it('recognizes only an exact App/run/attempt completed success as authoritative', async () => {
+    const succeeded = { ...exactCheck, status: 'completed', conclusion: 'success' };
+    const { client, fetchImplementation } = fixture([succeeded], succeeded);
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('authoritative-success');
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
+  });
+
+  it('reconciles an exact completed failure without publishing another check', async () => {
+    const failed = { ...exactCheck, status: 'completed', conclusion: 'failure' };
+    const { client, fetchImplementation } = fixture([failed], failed);
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-existing');
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
+  });
+
+  it.each(['cancelled', 'neutral', 'skipped'])('normalizes an exact completed %s check to explicit failure', async (conclusion) => {
+    const completed = { ...exactCheck, status: 'completed', conclusion };
+    const { client, fetchImplementation } = fixture([completed], completed);
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+    const writes = fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure' });
+  });
+
   it.each(persistedWindows)('publishes a valid persisted %i ms window independently of the current admission default', async (window) => {
     const persistedRun = { ...run, terminalDeadline: run.receivedAt + window };
     const { client, fetchImplementation } = fixture();
-    await expect(client.failAbandonedCheck(persistedRun, 4385771, signal())).resolves.toBe('failed');
+    await expect(client.failAbandonedCheck(persistedRun, 4385771, signal())).resolves.toBe('failure-published');
     expect(fetchImplementation.mock.calls).toHaveLength(3);
     expect(fetchImplementation.mock.calls[2][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
     expect(fetchImplementation.mock.calls[2][1]?.method).toBe('PATCH');
@@ -82,11 +109,11 @@ describe('abandoned check exact App/attempt failure publication', () => {
   });
 
   it('fails the existing genuine App orphan, ignoring the preview App failure; never creates a replacement', async () => {
-    const { client, fetchImplementation } = fixture([check, {
+    const { client, fetchImplementation } = fixture([exactCheck, {
       ...check, id: 102575533973, app: { id: 4435435, slug: 'ct-pr-operator-local-5f8cc6' },
       status: 'completed', conclusion: 'failure', started_at: '2026-09-09T17:37:00Z',
     }]);
-    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failed');
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
     const writes = fetchImplementation.mock.calls.filter(([, init]) => ['PATCH', 'POST'].includes(init?.method || ''));
     expect(writes).toHaveLength(1);
     expect(writes[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
@@ -96,21 +123,26 @@ describe('abandoned check exact App/attempt failure publication', () => {
   });
 
   it.each([
-    ['wrong publishing App', [check], 4435435],
-    ['ambiguous legacy checks', [check, { ...check, id: 2 }], 4385771],
+    ['ambiguous exact checks', [exactCheck, { ...exactCheck, id: 2 }], 4385771],
     ['newer execution', [{ ...check, external_id: `${run.runId}:a2`, started_at: '2026-09-09T17:38:00Z' }], 4385771],
     ['same-head different bound run', [{ ...check, external_id: `run_${'a'.repeat(32)}:a1` }], 4385771],
-  ])('reconciles %s as already-completed without writing any check', async (_label, checks, appId) => {
+    ['legacy check without exact attempt identity', [check], 4385771],
+  ])('refuses %s without writing any check', async (_label, checks, appId) => {
     const { client, fetchImplementation } = fixture(checks as unknown[]);
-    await expect(client.failAbandonedCheck(run, appId as number, signal())).resolves.toBe('already-completed');
+    await expect(client.failAbandonedCheck(run, appId as number, signal())).rejects.toThrow();
     expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
   });
 
-  it.each(['success', 'failure', 'cancelled'])('does not overwrite a completed %s check or mask it with a new one', async (conclusion) => {
-    const { client, fetchImplementation } = fixture([check], { ...check, status: 'completed', conclusion });
-    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('already-completed');
-    expect(fetchImplementation.mock.calls).toHaveLength(2);
-    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
+  it('does not let a foreign App success suppress the exact publisher-owned failure', async () => {
+    const foreign = { ...exactCheck, app: { id: 4435435 }, status: 'completed', conclusion: 'success' };
+    const created = { ...exactCheck, id: 77, status: 'completed', conclusion: 'failure' };
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') return new Response(JSON.stringify(created));
+      return new Response(JSON.stringify(String(url).includes('/commits/') ? { check_runs: [foreign] } : created));
+    });
+    const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation, sleep: async () => undefined });
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
   });
 
   it.each([
@@ -118,7 +150,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
     { app: { id: 4435435 } },
     { external_id: `${run.runId}:a2` },
   ])('refuses changed identity %j on the direct pre-write read', async (identity) => {
-    const { client, fetchImplementation } = fixture([check], { ...check, ...identity });
+    const { client, fetchImplementation } = fixture([exactCheck], { ...exactCheck, ...identity });
     await expect(client.failAbandonedCheck(run, 4385771, signal())).rejects.toThrow();
     expect(fetchImplementation.mock.calls).toHaveLength(2);
   });
@@ -140,13 +172,6 @@ describe('abandoned check exact App/attempt failure publication', () => {
     });
   });
 
-  it('accepts an unambiguous legacy start rounded to the GitHub timestamp second', async () => {
-    const rounded = { ...check, started_at: '2026-09-09T17:21:31Z' };
-    const { client, fetchImplementation } = fixture([rounded], rounded);
-    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failed');
-    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
-  });
-
   it('propagates a bounded cancellation signal through reads and write, without leaking upstream errors', async () => {
     const { client, fetchImplementation } = fixture();
     const abort = new AbortController();
@@ -165,10 +190,10 @@ describe('abandoned check exact App/attempt failure publication', () => {
       expect(init?.signal).toBe(bounded);
       const page = new URL(String(url)).searchParams.get('page');
       if (page === '1') return new Response(JSON.stringify({ check_runs: older }));
-      if (page === '2') return new Response(JSON.stringify({ check_runs: [check] }));
-      return new Response(JSON.stringify(check));
+      if (page === '2') return new Response(JSON.stringify({ check_runs: [exactCheck] }));
+      return new Response(JSON.stringify(exactCheck));
     });
-    await expect(client.failAbandonedCheck(run, 4385771, bounded)).resolves.toBe('failed');
+    await expect(client.failAbandonedCheck(run, 4385771, bounded)).resolves.toBe('failure-published');
     expect(fetchImplementation.mock.calls).toHaveLength(4);
     expect(fetchImplementation.mock.calls[3][1]?.method).toBe('PATCH');
   });
@@ -178,6 +203,58 @@ describe('abandoned check exact App/attempt failure publication', () => {
     await expect(client.failAbandonedCheck(run, 4385771, signal())).rejects.toThrow();
     expect(fetchImplementation.mock.calls).toHaveLength(5);
     expect(fetchImplementation.mock.calls.every(([, init]) => !init?.method)).toBe(true);
+  });
+
+  it('recovers one lost create response after bounded eventual visibility without a duplicate POST', async () => {
+    const created = { ...exactCheck, id: 77, status: 'completed', conclusion: 'failure' };
+    let postCount = 0;
+    let lookupsAfterPost = 0;
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        postCount += 1;
+        throw new TypeError('response lost after create');
+      }
+      if (String(url).includes('/commits/')) {
+        if (postCount === 0) return new Response(JSON.stringify({ check_runs: [] }));
+        lookupsAfterPost += 1;
+        return new Response(JSON.stringify({ check_runs: lookupsAfterPost < 2 ? [] : [created] }));
+      }
+      return new Response(JSON.stringify(created));
+    });
+    const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation, sleep: async () => undefined });
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-existing');
+    expect(postCount).toBe(1);
+  });
+
+  it('persists lookup-only recovery when both the create response and recovery lookup are unavailable', async () => {
+    let postAttempted = false;
+    const fetchImplementation = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        postAttempted = true;
+        throw new TypeError('response lost after create');
+      }
+      if (postAttempted) throw new TypeError('visibility lookup unavailable');
+      return new Response(JSON.stringify({ check_runs: [] }));
+    });
+    const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation, sleep: async () => undefined });
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('creation-unconfirmed');
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+  });
+
+  it('persists an unconfirmed create as recovery-only and never blindly creates it again', async () => {
+    let postCount = 0;
+    const fetchImplementation = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        postCount += 1;
+        throw new TypeError('response lost after create');
+      }
+      return new Response(JSON.stringify({ check_runs: [] }));
+    });
+    const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation, sleep: async () => undefined });
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('creation-unconfirmed');
+    await expect(client.failAbandonedCheck({ ...run, recoveryOnly: true }, 4385771, signal()))
+      .resolves.toBe('creation-unconfirmed');
+    expect(postCount).toBe(1);
   });
 });
 
@@ -220,7 +297,7 @@ describe('abandoned reaper with the actual GitHub publication adapter', () => {
         ...(state === 'absent' ? { head_sha: run.headSha, external_id: `${run.runId}:a1` } : {}) });
     }
     const requests = fetchImplementation.mock.calls.length;
-    expect(requests).toBe(state === 'existing' ? 3 : 2);
+    expect(requests).toBe(state === 'existing' ? 3 : state === 'absent' ? 4 : 2);
     await expect(reaper.runOnce()).resolves.toEqual({ swept: 0, published: 0, failed: 0 });
     expect(fetchImplementation.mock.calls).toHaveLength(requests);
   });

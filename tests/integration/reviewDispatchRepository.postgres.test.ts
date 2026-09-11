@@ -374,6 +374,34 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimAbandonedPublishingRuns('reaper-c', 62_004, 1)).resolves.toEqual([]);
   });
 
+  it('persists a lost create response as bounded lookup-only recovery without allocating another attempt', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('lost-create', 1_000);
+    const admitted = await repository.admit(input);
+    const dispatch = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    await repository.markProjected(admitted.run.runId, 'dispatcher', dispatch.claimAttempt, 'worker-a1', 1_002);
+
+    const firstSweepAt = input.terminalDeadline + 1;
+    const [first] = await repository.claimAbandonedPublishingRuns('reaper-a', firstSweepAt, 1);
+    expect(first).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: false });
+    await expect(repository.reconcileAbandonedPublishingRun(first, 'reaper-a', firstSweepAt + 1,
+      async () => 'creation-unconfirmed')).resolves.toBe(true);
+
+    const pending = (await client.query('SELECT error_text, lease_owner, lease_expires_at FROM review_runs WHERE run_id = $1',
+      [admitted.run.runId])).rows[0];
+    expect(pending).toMatchObject({
+      error_text: 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+      lease_owner: null,
+    });
+    await expect(repository.claimAbandonedPublishingRuns('too-early', firstSweepAt + 60_000, 1)).resolves.toEqual([]);
+
+    const [recovery] = await repository.claimAbandonedPublishingRuns('reaper-b', firstSweepAt + 60_002, 1);
+    expect(recovery).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: true });
+    await expect(repository.reconcileAbandonedPublishingRun(recovery, 'reaper-b', firstSweepAt + 60_003,
+      async () => 'failure-existing')).resolves.toBe(true);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-c', firstSweepAt + 120_004, 1)).resolves.toEqual([]);
+  });
+
   describe('atomic authoritative admission', () => {
     it('commits prepared policy, run, outbox and gate together; dispatch waits for durable check binding', async () => {
       const { repository, client, gateRepository } = await createRepository();

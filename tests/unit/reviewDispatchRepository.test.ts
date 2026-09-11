@@ -929,6 +929,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     head_sha: 'a'.repeat(40),
     delivery_id: 'delivery-1', execution_attempt: 2,
     received_at: new Date(1_000), terminal_deadline: new Date(901_000),
+    recovery_only: false,
   };
 
   function repositoryWith(rows: unknown[]) {
@@ -1019,7 +1020,34 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       prNumber: 2795,
       headSha: swept.head_sha,
       deliveryId: 'delivery-1', executionAttempt: 2, receivedAt: 1_000, terminalDeadline: 901_000,
+      recoveryOnly: false,
     }]);
+  });
+
+  it('maps a prior uncertain create into lookup-only recovery', async () => {
+    const { repository } = repositoryWith([{ ...swept, recovery_only: true }]);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, 20)).resolves.toMatchObject([
+      { runId: swept.run_id, recoveryOnly: true },
+    ]);
+  });
+
+  it('persists an unconfirmed create with a bounded lease instead of acknowledging or retrying creation', async () => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect: async () => ({ query: transactionQuery, release }) } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000, recoveryOnly: false,
+    }, 'reaper-a', 902_000, async () => 'creation-unconfirmed' as const)).resolves.toBe(true);
+    const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
+    expect(String(update?.[0])).toMatch(/failure creation unconfirmed/u);
+    expect(String(update?.[0])).toMatch(/60000/u);
+    expect(transactionQuery).toHaveBeenCalledWith('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it('returns nothing when no run is abandoned', async () => {

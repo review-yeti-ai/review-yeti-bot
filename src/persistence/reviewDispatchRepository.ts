@@ -179,7 +179,15 @@ export interface AbandonedPublishingRun {
   executionAttempt: number;
   receivedAt: number;
   terminalDeadline: number;
+  /** A prior create response was lost. Recovery may observe, but never recreate, that exact attempt. */
+  recoveryOnly?: boolean;
 }
+
+export type AbandonedCheckRecoveryOutcome =
+  | 'authoritative-success'
+  | 'failure-existing'
+  | 'failure-published'
+  | 'creation-unconfirmed';
 
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
@@ -195,7 +203,7 @@ export interface ReviewDispatchRepository {
   /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<'failed' | 'already-completed' | void>): Promise<boolean>;
+    publish: () => Promise<AbandonedCheckRecoveryOutcome | void>): Promise<boolean>;
 }
 
 export interface WorkerFailureTransition {
@@ -605,7 +613,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     // only successful reconciliation removes the pending-publication marker.
     const result = await this.queryable.query(
       `WITH candidate AS (
-         SELECT runs.run_id
+         SELECT runs.run_id,
+                runs.error_text = 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed'
+                  AS recovery_only
            FROM review_runs runs
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
           WHERE (
@@ -622,6 +632,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             OR (runs.status = 'terminal' AND runs.error_text LIKE
               'publishing run reached its terminal deadline without a verdict; reaped by %'
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
+            OR (runs.status = 'terminal' AND runs.error_text =
+              'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed')
             -- A preserved worker failure is retryable only while a prior
             -- reaper claim still owns its publication lease. Successful
             -- reconciliation clears that owner without erasing the bounded
@@ -651,12 +663,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 lease_owner = NULL, lease_expires_at = NULL,
                 updated_at = to_timestamp($2 / 1000.0)
            FROM candidate WHERE outbox.run_id = candidate.run_id
-         RETURNING outbox.run_id, outbox.execution_attempt
+         RETURNING outbox.run_id, outbox.execution_attempt, candidate.recovery_only
        )
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
               lease_owner = $1::text, lease_expires_at = to_timestamp(($2 + 60000) / 1000.0),
               error_text = CASE
+                WHEN retired.recovery_only
+                  THEN 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed'
                 WHEN runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
                   THEN runs.error_text
                 ELSE 'publishing run reached its terminal deadline without a verdict; reaped by ' || $1::text
@@ -665,7 +679,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         WHERE runs.run_id = retired.run_id
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
                  runs.delivery_id, runs.received_at, runs.terminal_deadline,
-                 retired.execution_attempt + 1 AS execution_attempt`,
+                 retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only`,
       [workerId, now, limit],
     );
     return result.rows.map((row: Record<string, unknown>) => ({
@@ -678,6 +692,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       executionAttempt: Number(row.execution_attempt),
       receivedAt: milliseconds(row.received_at) || 0,
       terminalDeadline: milliseconds(row.terminal_deadline) || 0,
+      recoveryOnly: row.recovery_only === true,
     }));
   }
 
@@ -686,7 +701,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
    * A crash/HTTP error rolls back the acknowledgement, not the failure itself.
    */
   async reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<'failed' | 'already-completed' | void>): Promise<boolean> {
+    publish: () => Promise<AbandonedCheckRecoveryOutcome | void>): Promise<boolean> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -711,34 +726,39 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         await client.query('COMMIT');
         return false;
       }
-      const outcome = await publish();
+      const rawOutcome = await publish();
+      const outcome: AbandonedCheckRecoveryOutcome = rawOutcome || 'failure-existing';
+      if (!['authoritative-success', 'failure-existing', 'failure-published', 'creation-unconfirmed'].includes(outcome)) {
+        throw new Error('invalid abandoned check recovery outcome');
+      }
       // Successful publication consumes this outbox delivery. Retain the
       // worker token as durable evidence for an explicit same-head retry, but
       // move the row out of the reaper's projected-publication state so the
       // preserved worker classification is not claimed repeatedly.
-      await client.query(
-        `UPDATE review_dispatch_outbox
-            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
-                updated_at = to_timestamp($2 / 1000.0)
-          WHERE run_id = $1 AND delivery_id = $3 AND execution_attempt + 1 = $4`,
-        [run.runId, now, run.deliveryId, run.executionAttempt],
-      );
-      if (outcome === 'already-completed') {
+      if (outcome !== 'creation-unconfirmed') {
         await client.query(
-          `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
-             status = 'succeeded', stage = 'complete', error_text = NULL,
-             updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
-        );
-      } else {
-        await client.query(
-          `UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL,
-             error_text = CASE
-               WHEN error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%' THEN error_text
-               ELSE 'publishing run reached its terminal deadline without a verdict; failure reconciled'
-             END,
-             updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now],
+          `UPDATE review_dispatch_outbox
+              SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($2 / 1000.0)
+            WHERE run_id = $1 AND delivery_id = $3 AND execution_attempt + 1 = $4`,
+          [run.runId, now, run.deliveryId, run.executionAttempt],
         );
       }
+      await client.query(
+        `UPDATE review_runs SET lease_owner = NULL,
+           lease_expires_at = CASE WHEN $3 = 'creation-unconfirmed'
+             THEN to_timestamp(($2 + 60000) / 1000.0) ELSE NULL END,
+           status = CASE WHEN $3 = 'authoritative-success' THEN 'succeeded' ELSE status END,
+           stage = CASE WHEN $3 = 'authoritative-success' THEN 'complete' ELSE stage END,
+           error_text = CASE
+             WHEN $3 = 'creation-unconfirmed'
+               THEN 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed'
+             WHEN $3 = 'authoritative-success' THEN NULL
+             WHEN error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%' THEN error_text
+             ELSE 'publishing run reached its terminal deadline without a verdict; failure reconciled'
+           END,
+           updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`, [run.runId, now, outcome],
+      );
       await client.query('COMMIT');
       return true;
     } catch (error) {
