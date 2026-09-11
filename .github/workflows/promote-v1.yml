@@ -1,7 +1,7 @@
 name: Promote Review Yeti v1
 
 # Automated path: fires once per `main` push, right after "Validate central review contract"
-# completes. Its bounded wait for the PR-head "review / Review Yeti" check
+# completes. Its bounded wait for the PR-head App-owned "Review Yeti" check
 # (PROMOTION_WAIT_SECONDS, promote-v1.sh) can legitimately be shorter than a slow-but-healthy
 # multi-provider review under degraded transport -- that is not a gate failure, just a timing
 # miss, and this workflow only fires once per push. Without a retry entry point, the only way to

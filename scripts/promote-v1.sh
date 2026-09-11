@@ -117,8 +117,10 @@ validate_check_id="$required_check_id"
 
 # Promotion is release-channel authority, so review evidence is exact-head and
 # exact-App only. An earlier PR commit or same-name Actions check cannot qualify.
-# The raw check is the bootstrap bridge from the pre-dual-publisher v1. The
-# follow-up promotion restores `Review Yeti Gate` after this version is live.
+# The deployed DOKS worker owns the raw `Review Yeti` check. Binding both its
+# exact name and App ID makes it authoritative without confusing it with the
+# similarly named Actions job. `Review Yeti Gate` remains reserved for the
+# separately controlled service-owned gate rollout.
 require_success "$pr_check_runs" 'Review Yeti' "PR #${pr_number} head ${pr_head}" \
   "repos/${repository}/commits/${pr_head}/check-runs?filter=all&per_page=100" \
   "$review_yeti_app_id"

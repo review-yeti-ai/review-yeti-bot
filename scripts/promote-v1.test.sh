@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Behavioral contract test for promotion. The fake APIs deliberately put `validate` only on
-# the merged source commit and the App-owned raw `Review Yeti` only on the exact PR head. This catches regressions
+# the merged source commit and the App-owned `Review Yeti` only on the exact PR head. This catches regressions
 # that accidentally validate all required checks against the wrong GitHub coordinate.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d)"

@@ -77,7 +77,8 @@ Add `.github/workflows/review-yeti.yml` to your repository:
 The central `example-review-actions` repository follows the same rule for its own
 pull requests: its base-owned `.github/workflows/ct-review-bot.yml` dispatches
 to the promoted `v1` receiver, and branch protection trusts only the exact-head
-`Review Yeti Gate` published by the `ct-review-bot` App. Central self-review
+`Review Yeti` check published by the `ct-review-bot` App. The distinct
+`Review Yeti Gate` name remains reserved for the future service-owned gate. Central self-review
 must not call the development-line reusable workflow directly.
 
 ```yaml
@@ -339,5 +340,6 @@ approval evidence boundary exists.
 Changes to Review Yeti are developed on `main` and promoted to the immutable `@v1` channel via the atomic release promotion workflow:
 
 1. Changes pass rigorous test suites on `main` (`scripts/validate-central-dispatch.mjs`, transport telemetry, and schema validation).
-2. The `promote-v1.yml` workflow performs an atomic fast-forward push to the `v1` branch and generates an immutable SHA receipt.
-3. All consumer repositories referencing `@v1` immediately receive updated policies and features without repository-side commits.
+2. Promotion requires the exact PR head's App-owned `Review Yeti` check. The App ID binding distinguishes it from similarly named Actions jobs; `Review Yeti Gate` remains reserved for the future service-owned gate.
+3. The `promote-v1.yml` workflow performs an atomic fast-forward push to the `v1` branch and generates an immutable SHA receipt.
+4. All consumer repositories referencing `@v1` immediately receive updated policies and features without repository-side commits.
