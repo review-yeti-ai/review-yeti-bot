@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.52.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.8...v1.52.9) (2026-09-11)
+
+
+### Bug Fixes
+
+* **memory:** preserve UUID entropy for learning IDs ([7326617](https://github.com/review-yeti-ai/review-yeti-bot/commit/732661797c370cb75788b68e74f8e23dd63af0f3))
+* **panel:** retry malformed structured output once ([3c0b4bb](https://github.com/review-yeti-ai/review-yeti-bot/commit/3c0b4bba2f6ac3154537d40ab4d5644393dc6903))
+* **panel:** retry malformed structured output once ([0944e34](https://github.com/review-yeti-ai/review-yeti-bot/commit/0944e34397b7fb880a4c49888b3bce8930dea5b5))
+
 ## [1.52.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.7...v1.52.8) (2026-09-11)
 
 
