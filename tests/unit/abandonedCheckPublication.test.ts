@@ -61,6 +61,17 @@ describe('abandoned check exact App/attempt failure publication', () => {
     expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure' });
   });
 
+  it.each(['queued', 'pending', 'waiting', 'requested'])(
+    'patches an exact %s check to explicit failure without creating another check',
+    async (status) => {
+      const visible = { ...exactCheck, status, conclusion: null };
+      const { client, fetchImplementation } = fixture([visible], visible);
+      await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+      expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
+      expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+    },
+  );
+
   it.each(persistedWindows)('publishes a valid persisted %i ms window independently of the current admission default', async (window) => {
     const persistedRun = { ...run, terminalDeadline: run.receivedAt + window };
     const { client, fetchImplementation } = fixture();
@@ -136,6 +147,22 @@ describe('abandoned check exact App/attempt failure publication', () => {
     expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
   });
 
+  it('allows an older previous-attempt check while creating failure for the current exact attempt', async () => {
+    const retryRun = { ...run, executionAttempt: 2 };
+    const previous = {
+      ...exactCheck,
+      status: 'completed',
+      conclusion: 'failure',
+      started_at: '2026-09-09T17:20:00Z',
+    };
+    const { client, fetchImplementation } = fixture([previous]);
+    await expect(client.failAbandonedCheck(retryRun, 4385771, signal())).resolves.toBe('failure-published');
+    const posts = fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(String(posts[0][1]?.body))).toMatchObject({ external_id: `${run.runId}:a2` });
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
+  });
+
   it('does not let a foreign App success suppress the exact publisher-owned failure', async () => {
     const foreign = { ...exactCheck, app: { id: 4435435 }, status: 'completed', conclusion: 'success' };
     const created = { ...exactCheck, id: 77, status: 'completed', conclusion: 'failure' };
@@ -199,6 +226,25 @@ describe('abandoned check exact App/attempt failure publication', () => {
       external_id: 'run_83c172a7d93c193fdb6dfa62bfa8bfde:a1', status: 'completed', conclusion: 'failure' });
   });
 
+  it('observes an exact attempt that becomes visible during pre-create backoff without posting', async () => {
+    let lookups = 0;
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') throw new Error('create must not run after eventual visibility');
+      if (String(url).includes('/commits/')) {
+        lookups += 1;
+        return new Response(JSON.stringify({ check_runs: lookups === 1 ? [] : [exactCheck] }));
+      }
+      return new Response(JSON.stringify(exactCheck));
+    });
+    const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation,
+      sleep: async () => undefined });
+
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+    expect(lookups).toBe(2);
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1);
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+
   it('keeps recovery lookup-only when the create response is not bound to the exact attempt', async () => {
     const malformed = {
       ...exactCheck,
@@ -221,6 +267,39 @@ describe('abandoned check exact App/attempt failure publication', () => {
     expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
     expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
   });
+
+  it.each([
+    [401, JSON.stringify({ message: 'bad credentials' })],
+    [403, JSON.stringify({ message: 'forbidden' })],
+    [422, '<html>unprocessable</html>'],
+    [500, ''],
+  ] as const)(
+    'keeps a definitive HTTP %i create rejection retryable after credentials or permissions recover',
+    async (status, responseBody) => {
+      let postCount = 0;
+      const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          postCount += 1;
+          if (postCount === 1) {
+            return new Response(responseBody, { status });
+          }
+          return new Response(JSON.stringify({
+            ...exactCheck,
+            ...JSON.parse(String(init.body)),
+            id: 77,
+          }));
+        }
+        return new Response(JSON.stringify(String(url).includes('/commits/') ? { check_runs: [] } : exactCheck));
+      });
+      const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation,
+        sleep: async () => undefined });
+
+      await expect(client.failAbandonedCheck(run, 4385771, signal())).rejects.toThrow();
+      await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+      expect(postCount).toBe(2);
+      expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
+    },
+  );
 
   it('transports a worker external_id on check creation', async () => {
     const { client, fetchImplementation } = fixture([]);

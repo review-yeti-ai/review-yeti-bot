@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { PostgresReviewDispatchRepository, type ReviewDispatchRepositoryOptions } from '../../src/persistence/reviewDispatchRepository';
-import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
+import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
 import { sha256 } from '../../src/review/reviewCore';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
@@ -16,6 +16,7 @@ import { REVIEW_GATE_CHECK_NAME } from '../../src/github/reviewGateClient';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { buildRunSecretName } from '../../src/k8s/reviewJobProjection';
 import type { WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
+import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 
 function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000) {
   const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
@@ -396,6 +397,111 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       'reaper-b', input.terminalDeadline + 1, 1,
     );
     expect(expired).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+  });
+
+  it('re-arms a pre-worker reaper failure through its exact requested action and dispatches a2', async () => {
+    const { repository, client } = await createRepository();
+    const identity = buildReviewRunIdentity({
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+    });
+    const input = {
+      ...sameHeadAdmission('pre-worker-expiry', 1_000),
+      identity,
+      payloadDigest: sha256(identity),
+      effectivePolicyDigest: identity.configDigest,
+    };
+    const admitted = await repository.admit(input);
+    const sweepAt = input.terminalDeadline + 1;
+    const [sweep] = await repository.claimAbandonedPublishingRuns('pre-worker-reaper', sweepAt, 1);
+    expect(sweep).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+    await expect(repository.reconcileAbandonedPublishingRun(
+      sweep, 'pre-worker-reaper', sweepAt + 1, async () => 'failure-published',
+    )).resolves.toBe(true);
+    expect((await client.query(`SELECT runs.status, runs.error_text, outbox.status AS outbox_status,
+      outbox.execution_attempt, outbox.worker_token_digest, outbox.projection_name
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId])).rows[0]).toMatchObject({
+      status: 'terminal',
+      error_text: 'publishing run reached its terminal deadline without a verdict; failure reconciled',
+      outbox_status: 'terminal',
+      execution_attempt: 0,
+      worker_token_digest: null,
+      projection_name: null,
+    });
+
+    const refreshAt = sweepAt + 2;
+    const fullName = 'calltelemetry/cisco-cdr';
+    const body = {
+      action: 'requested_action',
+      installation: { id: input.installationId },
+      repository: {
+        id: input.repositoryId, name: 'cisco-cdr', full_name: fullName,
+        owner: { id: 57884877, login: 'calltelemetry' },
+      },
+      requested_action: { identifier: 'review-yeti/refresh' },
+      check_run: {
+        id: 4242, name: 'Review Yeti', head_sha: identity.headSha,
+        status: 'completed', conclusion: 'failure', external_id: `${deriveReviewRunId(identity)}:a1`,
+        app: { id: 4385771, slug: 'ct-review-bot' },
+        output: { title: 'Review Yeti: review did not complete' },
+        pull_requests: [{
+          number: identity.prNumber,
+          head: { sha: identity.headSha, repo: { full_name: fullName } },
+          base: { sha: identity.baseSha, repo: { full_name: fullName } },
+        }],
+      },
+    };
+    const rawBody = Buffer.from(JSON.stringify(body));
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: {
+        secret: 'test-webhook-secret', admissionEnabled: true,
+        repositoryIds: new Set([String(input.repositoryId)]), ownerIds: new Set(['57884877']),
+      },
+      admission: repository,
+      now: () => refreshAt,
+    });
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'pre-worker-refresh', rawBody, body }))
+      .resolves.toMatchObject({ status: 'accepted', reason: 'refresh_requested' });
+
+    const rearmed = await client.query(`SELECT runs.status, runs.attempt, runs.delivery_id,
+      outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(rearmed.rows[0]).toMatchObject({
+      status: 'queued', attempt: 1, delivery_id: 'github-webhook:pre-worker-refresh',
+      outbox_status: 'pending', execution_attempt: 1,
+    });
+    await expect(repository.claimNext('retry-dispatcher', refreshAt + 1, 30_000)).resolves.toMatchObject({
+      runId: admitted.run.runId,
+      deliveryId: 'github-webhook:pre-worker-refresh',
+      executionAttempt: 2,
+    });
+  });
+
+  it('does not re-arm an unbound terminal failure from an explicit retry flag alone', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('unbound-terminal', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    await expect(repository.markTerminal(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 1_002, 'projection rejected',
+    )).resolves.toBe(true);
+    const before = await dispatchState(client, admitted.run.runId);
+
+    const refresh = await repository.admit({
+      ...sameHeadAdmission('unbound-terminal-refresh', 2_000),
+      retryRequested: true,
+      retryAfterExecutionAttempt: 1,
+    });
+
+    expect(refresh.run).toMatchObject({
+      runId: admitted.run.runId,
+      status: 'failed',
+      deliveryId: 'unbound-terminal',
+    });
+    expect(await dispatchState(client, admitted.run.runId)).toEqual(before);
+    await expect(repository.claimNext('retry-dispatcher', 2_001, 30_000)).resolves.toBeNull();
   });
 
   it('retries a failed worker publication after its claim lease without changing a1 or its classification', async () => {

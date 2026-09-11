@@ -119,6 +119,14 @@ export interface ValidationCheckOptions {
   detailsUrl?: string;
 }
 
+class GitHubApiResponseError extends Error {
+  readonly name = 'GitHubApiResponseError';
+
+  constructor(public readonly status: number, path: string, body: string) {
+    super(`GitHub API ${status} ${path}: ${body}`);
+  }
+}
+
 export class GitHubInstallationClient {
   private readonly baseUrl: string;
   private readonly token: string;
@@ -169,8 +177,8 @@ export class GitHubInstallationClient {
     if (init.body) headers.set('Content-Type', 'application/json');
     const response = await this.fetchImplementation(`${this.baseUrl}${path}`, { ...init, headers });
     const text = await response.text();
+    if (!response.ok) throw new GitHubApiResponseError(response.status, path, text);
     const data = text ? JSON.parse(text) : {};
-    if (!response.ok) throw new Error(`GitHub API ${response.status} ${path}: ${text}`);
     return data;
   }
 
@@ -500,7 +508,8 @@ export class GitHubInstallationClient {
           throw new Error('created check identity was not authoritative');
         }
         return 'failure-published';
-      } catch {
+      } catch (error) {
+        if (error instanceof GitHubApiResponseError) throw error;
         // A successful create can lose its response. Re-read exact identity for a
         // bounded interval; if it remains invisible, persist lookup-only recovery
         // so no later sweep can blindly duplicate the check.
