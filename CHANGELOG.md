@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.6...v1.52.7) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** separate bounded native exploration and finalization ([#690](https://github.com/review-yeti-ai/review-yeti-bot/issues/690)) ([9e4b24b](https://github.com/review-yeti-ai/review-yeti-bot/commit/9e4b24b1c1ee21392e7e5fabb30ee05f0112a3f9))
+
 ## [1.52.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.5...v1.52.6) (2026-09-11)
 
 
