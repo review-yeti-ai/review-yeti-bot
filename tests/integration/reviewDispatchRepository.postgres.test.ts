@@ -287,6 +287,39 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
   });
 
+  it('claims a token-bound worker failure when its outbox advanced past projected', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('worker-token-bound-failure', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'c'.repeat(64);
+    await expect(repository.bindWorkerTokenDigest(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, workerTokenDigest, 1_002,
+    )).resolves.toBe(true);
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      failureClass: 'provider_error',
+    }, { workerTokenDigest }, 1_003)).resolves.toMatchObject({ status: 'failed' });
+
+    // A dispatcher can persist its token binding and terminalize its outbox
+    // before the worker-failure callback arrives. The token is still durable
+    // ownership evidence even though the outbox is no longer 'projected'.
+    await client.query(`UPDATE review_dispatch_outbox SET status = 'terminal'
+      WHERE run_id = $1 AND worker_token_digest = $2`, [admitted.run.runId, workerTokenDigest]);
+    const [failed] = await repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1);
+    expect(failed).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+    await expect(repository.reconcileAbandonedPublishingRun(
+      failed, 'reaper-a', 2_001, async () => {},
+    )).resolves.toBe(true);
+    const reconciled = await client.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [admitted.run.runId]);
+    expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: provider_error' });
+    await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
+  });
+
   it('waits for the deadline before sweeping an unowned failed row', async () => {
     const { repository, client } = await createRepository();
     const input = sameHeadAdmission('unowned-failure', 1_000);
