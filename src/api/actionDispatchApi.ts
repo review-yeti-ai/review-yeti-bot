@@ -105,6 +105,12 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
         payloadDigest: sha256(actionDispatchDigestInput(dispatch)),
         publicationMode: dispatch.publishMode,
+        // Only the central repository-dispatch boundary may carry the explicit
+        // refresh request. OIDC proves the workflow identity above; the
+        // repository persists the retry only after its own state/evidence gate.
+        ...(dispatch.publishMode === 'app-gate'
+          && dispatch.caller.eventName === 'repository_dispatch'
+          && dispatch.refreshRequested === true ? { retryRequested: true } : {}),
         identity: resolved?.identity || buildReviewRunIdentity({
           owner: dispatch.owner,
           repo: dispatch.repo,

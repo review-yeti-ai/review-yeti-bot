@@ -4,6 +4,7 @@ const runId = z.string().regex(/^run_[a-f0-9]{32}$/u);
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const positiveInteger = z.number().int().positive().safe();
+export const MAX_WORKER_FAILURE_LOG_TAIL_BYTES = 2_048;
 
 export const workerFailureClasses = [
   'contract',
@@ -16,6 +17,27 @@ export const workerFailureClasses = [
   'malformed_output',
   'internal_error',
 ] as const;
+
+export type WorkerFailureClass = typeof workerFailureClasses[number];
+
+export const workerFailureDiagnosticsSchema = z.object({
+  /** Stable, non-secret category for operators and recovery automation. */
+  reason: z.string().regex(/^[a-z][a-z0-9_.:-]{0,127}$/u),
+  /** Provider HTTP status when one was observed; omitted for local failures. */
+  providerStatus: z.number().int().min(100).max(599).optional(),
+  /** Last bounded, redacted worker log line(s). */
+  logTail: z.string().refine(
+    (value) => Buffer.byteLength(value, 'utf8') <= MAX_WORKER_FAILURE_LOG_TAIL_BYTES,
+    `logTail must be at most ${MAX_WORKER_FAILURE_LOG_TAIL_BYTES} UTF-8 bytes`,
+  ),
+}).strict();
+
+export type WorkerFailureDiagnostics = z.infer<typeof workerFailureDiagnosticsSchema>;
+
+export interface DurableWorkerFailureDiagnostics extends WorkerFailureDiagnostics {
+  failureClass: WorkerFailureClass;
+  executionAttempt?: number;
+}
 
 export const workerTerminalFailureSchema = z.object({
   version: z.literal('WorkerTerminalFailure.v1'),
@@ -31,6 +53,8 @@ export const workerTerminalFailureSchema = z.object({
   executionAttempt: positiveInteger,
   checkId: positiveInteger.optional(),
   failureClass: z.enum(workerFailureClasses),
+  /** Optional for mixed-version workers; new workers always send it. */
+  diagnostics: workerFailureDiagnosticsSchema.optional(),
 }).strict();
 
 export type WorkerTerminalFailure = z.infer<typeof workerTerminalFailureSchema>;
@@ -42,6 +66,98 @@ export interface WorkerCompletionProof {
 
 export interface WorkerCompletionAdapter {
   reportTerminalFailure(event: WorkerTerminalFailure): Promise<void>;
+}
+
+const SECRET_TOKEN_PATTERN = /(?:gh[pousr]_[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]{8,})/giu;
+const SENSITIVE_ASSIGNMENT_PATTERN = /((?:api[_-]?key|access[_-]?token|token|secret|password|private[_-]?key|authorization|prompt|request(?:[_ -]?body)?|response(?:[_ -]?body)?|content)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^,;\s]+)/giu;
+// Provider SDKs often append a response/prompt/body excerpt without a key=value
+// delimiter (for example, "private provider response ..."). Treat those
+// context words as a disclosure boundary too; the stable class/reason/status
+// fields carry the operator signal when the free-form excerpt is unsafe.
+const SENSITIVE_CONTEXT_PATTERN = /\b(?:private|secret|sensitive|credential|prompt|request|response|content|transcript|body)(?:[_-][^\s,;]{1,160})?(?:\s+[^,;\n]{0,160})?/giu;
+
+/**
+ * Keep diagnostic context useful without allowing provider responses, prompts,
+ * bearer tokens, or private-key material to cross the worker boundary. The
+ * dispatch API repeats this normalization before persistence because a worker
+ * is not an authority merely because it holds a short-lived token.
+ */
+export function redactWorkerFailureLogTail(value: unknown): string {
+  const text = typeof value === 'string' ? value : '';
+  const redacted = text
+    .replace(/\r?\n|\s+/gu, ' ')
+    .replace(SECRET_TOKEN_PATTERN, '[REDACTED]')
+    .replace(SENSITIVE_ASSIGNMENT_PATTERN, '$1[REDACTED]')
+    .replace(SENSITIVE_CONTEXT_PATTERN, '[REDACTED]')
+    .trim();
+  const bytes = Buffer.from(redacted, 'utf8');
+  if (bytes.byteLength <= MAX_WORKER_FAILURE_LOG_TAIL_BYTES) return redacted;
+  let start = bytes.byteLength - MAX_WORKER_FAILURE_LOG_TAIL_BYTES;
+  while (start > 0 && (bytes[start] & 0xc0) === 0x80) start -= 1;
+  let tail = bytes.subarray(start).toString('utf8');
+  // The byte cut may begin in the middle of a UTF-8 code point. Drop complete
+  // leading code points until the decoded tail itself is still within the cap.
+  while (Buffer.byteLength(tail, 'utf8') > MAX_WORKER_FAILURE_LOG_TAIL_BYTES) {
+    const first = [...tail][0];
+    if (!first) return '';
+    tail = tail.slice(first.length);
+  }
+  return tail;
+}
+
+export function workerFailureReason(failureClass: WorkerTerminalFailure['failureClass']): string {
+  return {
+    contract: 'worker_contract_invalid',
+    timeout: 'worker_deadline_exceeded',
+    budget_exhausted: 'worker_budget_exhausted',
+    auth: 'provider_authentication_failed',
+    rate_limit: 'provider_rate_limited',
+    transport: 'provider_transport_failed',
+    provider_error: 'provider_request_failed',
+    malformed_output: 'provider_structured_output_invalid',
+    internal_error: 'worker_internal_error',
+  }[failureClass];
+}
+
+/** Normalize worker context at the persistence boundary, retaining only
+ * bounded fields that operators and recovery automation can safely consume. */
+export function buildDurableWorkerFailureDiagnostics(
+  failureClass: WorkerFailureClass,
+  diagnostics?: Partial<WorkerFailureDiagnostics>,
+  executionAttempt?: number,
+): DurableWorkerFailureDiagnostics {
+  const providerStatus = diagnostics?.providerStatus;
+  const safeProviderStatus = typeof providerStatus === 'number' && Number.isInteger(providerStatus)
+    && providerStatus >= 100 && providerStatus <= 599 ? providerStatus : undefined;
+  const reason = typeof diagnostics?.reason === 'string'
+    && /^[a-z][a-z0-9_.:-]{0,127}$/u.test(diagnostics.reason)
+    ? diagnostics.reason : workerFailureReason(failureClass);
+  const logTail = redactWorkerFailureLogTail(diagnostics?.logTail) || workerFailureReason(failureClass);
+  return {
+    failureClass,
+    reason,
+    ...(safeProviderStatus === undefined ? {} : { providerStatus: safeProviderStatus }),
+    logTail,
+    ...(executionAttempt === undefined ? {} : { executionAttempt }),
+  };
+}
+
+/** Build the redacted diagnostic emitted by the publishing worker. */
+export function buildWorkerFailureDiagnostics(
+  error: unknown,
+  failureClass: WorkerTerminalFailure['failureClass'],
+): WorkerFailureDiagnostics {
+  const providerStatus = error && typeof error === 'object' && 'status' in error
+    ? Number((error as { status?: unknown }).status)
+    : Number.NaN;
+  const safeStatus = Number.isInteger(providerStatus) && providerStatus >= 100 && providerStatus <= 599
+    ? providerStatus : undefined;
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return {
+    reason: workerFailureReason(failureClass),
+    ...(safeStatus === undefined ? {} : { providerStatus: safeStatus }),
+    logTail: redactWorkerFailureLogTail(message || workerFailureReason(failureClass)),
+  };
 }
 
 export function validateWorkerCompletionEndpoint(endpoint: string): string {
@@ -62,8 +178,8 @@ export function validateWorkerCompletionEndpoint(endpoint: string): string {
 /**
  * Sends only the typed terminal-failure event. The provider error itself never
  * crosses the worker boundary: upstream responses can contain prompts, keys, or
- * other sensitive material, while the bounded failure class is sufficient for
- * durable recovery and diagnosis.
+ * other sensitive material. New workers add a bounded redacted diagnostic tail
+ * and status/category fields; older workers remain valid during rollout.
  */
 export class HttpWorkerCompletionAdapter implements WorkerCompletionAdapter {
   private readonly endpoint: string;

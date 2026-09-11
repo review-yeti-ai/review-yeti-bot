@@ -15,6 +15,9 @@ export const LEAST_PRIVILEGE_PERMISSIONS = {
   contents: 'read',
   issues: 'write',
   metadata: 'read',
+  // Required only by the optional native merge-queue admission lane. GitHub
+  // will still omit metadata from the returned installation token implicitly.
+  merge_queues: 'read',
 } as const;
 
 /**
@@ -37,6 +40,8 @@ export const DEFAULT_EVENTS = [
   'pull_request_review',
   'pull_request_review_comment',
   'issue_comment',
+  'check_run',
+  'merge_group',
 ] as const;
 
 export interface GitHubAppManifest {

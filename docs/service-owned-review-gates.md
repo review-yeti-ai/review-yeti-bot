@@ -148,8 +148,15 @@ finite Actions/OIDC repository and owner allowlists:
   `GITHUB_APP_WEBHOOK_REPOSITORY_IDS` and `GITHUB_APP_WEBHOOK_OWNER_IDS` values
   that are subsets of the existing app-gate allowlists.
 - `GITHUB_APP_WEBHOOK_ADMISSION_ENABLED=true` admits new `pull_request` and
-  `merge_group` work. Its default is false so ingress, signature verification,
-  and delivery can be proven before the old producer is removed.
+  `merge_group` work and accepts the signed `check_run` `requested_action`
+  delivery for an exact-head `review-yeti/refresh`. Its default is false so
+  ingress, signature verification, and delivery can be proven before the old
+  producer is removed.
+- A refresh is fail-closed: the check must be the official App's completed
+  `Review Yeti` failure for `:a1`, carry one exact pull request, and use one of
+  the persisted no-verdict/infrastructure failure titles. The service derives
+  the replacement attempt from its durable outbox/check ledger; a requested
+  action cannot select an attempt or displace an existing `:a2` worker.
 - Pull requests admit only open, non-draft exact candidates from `opened`,
   `synchronize`, `reopened`, and `ready_for_review` deliveries. The GitHub
   delivery ID remains the idempotency boundary.
@@ -163,8 +170,9 @@ finite Actions/OIDC repository and owner allowlists:
   100 queue entries and performs check lookups with concurrency five, keeping
   request and rate-limit pressure explicit and bounded.
 
-The GitHub App registration must have an active webhook, subscribe to both
-`pull_request` and `merge_group`, and grant read access to merge queues. The
+The GitHub App registration must have an active webhook, subscribe to
+`pull_request`, `check_run`, and `merge_group`, and grant read access to merge
+queues. The
 runtime installation token is still minted for exactly one repository with
 only `checks:write`, `contents:read`, `pull_requests:read`, and
 `merge_queues:read`; broader effective grants are refused. Expose only the exact

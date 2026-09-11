@@ -4,6 +4,7 @@ import {
   CHECK_CONTEXT_RAW_REVIEW,
   CHECK_CONTEXT_GATE,
   CHECK_CONTEXT_CI,
+  REVIEW_REFRESH_ACTION,
 } from '../../src/github/installationClient';
 import { getGitHubAppRepositoryDispatchToken } from '../../src/github/appAuth';
 import { SCHEMA_VERSION_CI_REQUEST } from '../../src/github/reviewCIRequest';
@@ -42,6 +43,23 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
     await client.createCheck('owner', 'repo', 'a'.repeat(40), 'run_12345:a1');
     expect(capturedBody.name).toBe('Review Yeti');
     expect(capturedBody.external_id).toBe('run_12345:a1');
+  });
+
+  it('offers the persisted refresh action only on a recoverable failed Review Yeti check', async () => {
+    let capturedBody: any = null;
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body || '{}'));
+      return { ok: true, status: 200, text: async () => '{}' };
+    });
+    const client = new GitHubInstallationClient({ token: 'ghs_dummytoken', fetchImplementation: fetchMock as any });
+
+    await client.completeCheck({ owner: 'owner', repo: 'repo', checkId: 1, conclusion: 'failure',
+      title: 'Review Yeti: review did not complete', summary: 'worker failed' });
+    expect(capturedBody.actions).toEqual([REVIEW_REFRESH_ACTION]);
+
+    await client.completeCheck({ owner: 'owner', repo: 'repo', checkId: 1, conclusion: 'failure',
+      title: 'Review Yeti: BLOCK', summary: 'policy finding' });
+    expect(capturedBody.actions).toBeUndefined();
   });
 
   it('publishGateCheck creates a completed check with Review Yeti Gate', async () => {

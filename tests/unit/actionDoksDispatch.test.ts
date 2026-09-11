@@ -60,6 +60,20 @@ describe('DOKS Action dispatch client', () => {
     expect(request.caller.eventName).toBe('repository_dispatch');
   });
 
+  it('carries an explicit refresh request without changing the legacy default payload', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    const legacy = buildDispatchRequest(environment());
+    expect((legacy as Record<string, unknown>).refreshRequested).toBeUndefined();
+
+    const refresh = buildDispatchRequest(environment({
+      GITHUB_EVENT_NAME: 'repository_dispatch',
+      REFRESH_REQUESTED: 'true',
+    }));
+    expect(refresh.refreshRequested).toBe(true);
+    expect(() => buildDispatchRequest(environment({ REFRESH_REQUESTED: 'yes' })))
+      .toThrow(/REFRESH_REQUESTED/u);
+  });
+
   it('accepts only the fixed HTTPS dispatch origin and exact path', async () => {
     const { validateDispatchEndpoint } = await import(modulePath);
     expect(validateDispatchEndpoint('https://review-bot.calltelemetry.com/api/dispatch/action').href)

@@ -38,7 +38,7 @@ While Review Yeti can run as a basic standalone GitHub Action using the built-in
 
 - If you run **Standalone GitHub Action** or **Async Dispatch Mode**, you can uncheck **Active** under the Webhook section (no webhook required).
 - If you run **Self-Hosted Webhook Ingress Mode** (e.g., Review Yeti Kubernetes Ingress), configure:
-  - **Webhook URL**: `https://review-bot.example.com/webhook`
+  - **Webhook URL**: `https://review-bot.example.com/api/webhooks/github`
   - **Webhook secret**: Generate a secure random string (e.g. `openssl rand -hex 32`) and save it for your secrets configuration.
 
 ---
@@ -54,6 +54,7 @@ Review Yeti adheres to the principle of **least privilege**. Set the following p
 | **Contents** | **Read** | Read repository source code, configuration (`.ct-review.yaml`), and custom persona charters (`.ct-review/personas/*.md`) from the base branch. |
 | **Issues** | **Write** | Post comments, label PRs, and update review status threads. |
 | **Metadata** | **Read** | Mandatory default permission required by all GitHub Apps to inspect repository metadata. |
+| **Merge queues** | **Read** | Read merge-queue constituents when the optional native `merge_group` gate is enabled. |
 
 > [!TIP]
 > Leave all other permissions (such as Administration, Commit statuses, Workflows, etc.) set to **No access**.
@@ -67,7 +68,8 @@ Under **Subscribe to events**, select the events matching your deployment:
 - ☑️ **Pull request** (opened, synchronize, reopened, ready_for_review)
 - ☑️ **Pull request review comment** (created, edited)
 - ☑️ **Issue comment** (created — enables interactive learning commands like `@review-yeti learn`)
-- ☑️ **Check suite** (requested, rerequested)
+- ☑️ **Check run** (`requested_action` enables the persisted **Refresh review** action on a failed exact-head check)
+- ☑️ **Merge group** (`checks_requested` enables the native merge-queue gate; requires **Merge queues: Read**)
 
 ---
 
