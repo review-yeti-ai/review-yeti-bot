@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.52.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.5...v1.52.6) (2026-09-11)
+
+
+### Bug Fixes
+
+* **API-3215:** accept bounded fenced JSON responses ([8400702](https://github.com/review-yeti-ai/review-yeti-bot/commit/8400702318635c48007af4a0e2af9893b52415d1))
+* **review:** accept bounded fenced JSON responses ([4574b38](https://github.com/review-yeti-ai/review-yeti-bot/commit/4574b38ac422a9029778c0f37ba0dde5c3d77c5f))
+
 ## [1.52.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.4...v1.52.5) (2026-09-11)
 
 

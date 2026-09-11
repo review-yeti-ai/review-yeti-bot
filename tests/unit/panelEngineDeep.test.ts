@@ -137,7 +137,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
         ttftTimeoutMs: 30_000,
         maxTokens: 24_576,
         models: ['z-ai/glm-5.3-flash'],
-        responseFormat: { type: 'json_object' },
+        responseFormat: { type: 'json_schema' },
         provider: {
           allow_fallbacks: true,
           require_parameters: true,
@@ -181,7 +181,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     }
   });
 
-  it('uses generic native JSON for exploration and reserves strict schema for the terminal turn', async () => {
+  it.each(['direct', 'wrapped'])('uses generic native JSON for %s exploration and reserves strict schema for the terminal turn', async (envelope) => {
     const config = buildDeepConfig();
     config.personas = config.personas.map((persona) => persona.id === 'sec-lane'
       ? { ...persona, id: 'native-lane', maxTurns: 2 }
@@ -199,12 +199,13 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       attempts.set(key, attempt);
 
       if (role === 'persona' && opts.persona === 'native-lane' && attempt === 1) {
+        const toolObject = JSON.stringify({
+          tool: 'read_file',
+          args: { path: 'src/security/auth.ts', range: { startLine: 1, endLine: 3 } },
+        });
         return {
           model: opts.model,
-          content: JSON.stringify({
-            tool: 'read_file',
-            args: { path: 'src/security/auth.ts', range: { startLine: 1, endLine: 3 } },
-          }),
+          content: envelope === 'wrapped' ? `\`\`\`json\n${toolObject}\n\`\`\`` : toolObject,
           usage: null,
           costUSD: null,
           raw: {},
@@ -417,6 +418,71 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       requestPolicy: {
         responseFormat: { type: 'json_object' },
       },
+    })).rejects.toThrow('required persona failure');
+  });
+
+  it('accepts one whole-response Markdown JSON fence in native JSON mode', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const body = prompt.includes('Role: ARBITER')
+        ? { verdict: 'SHIP', rationale: 'The fenced response is valid.' }
+        : prompt.includes('Role: MODERATOR')
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+      return {
+        model: opts.model,
+        content: `\`\`\`json\n${JSON.stringify({ nonce, ...body })}\n\`\`\``,
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-native-json-fence',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_object' } },
+    });
+
+    expect(result.personas).toHaveLength(2);
+    expect(result.moderator.decision).toBe('RECONCILED');
+    expect(result.arbiter.verdict).toBe('SHIP');
+    expect(mockClient.complete).toHaveBeenCalledTimes(4);
+    expect(mockClient.complete.mock.calls.every(([request]: any[]) => (
+      JSON.stringify(request.responseFormat) === JSON.stringify({ type: 'json_object' })
+    ))).toBe(true);
+  });
+
+  it('rejects native JSON fenced alongside prose', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      return {
+        model: opts.model,
+        content: `Result follows.\n\`\`\`json\n${JSON.stringify({ nonce, decision: 'APPROVE', findings: [] })}\n\`\`\``,
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-native-json-fence-with-prose',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_object' } },
     })).rejects.toThrow('required persona failure');
   });
 

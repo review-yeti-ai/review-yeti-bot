@@ -759,7 +759,7 @@ type NativeToolCall = {
 function parseNativeToolCall(content: string): NativeToolCall | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content.trim());
+    parsed = JSON.parse(nativeJsonContent(content));
   } catch {
     return null;
   }
@@ -790,10 +790,20 @@ function withNativeTurnDirective(messages: OpenRouterMessage[], directive: strin
   return [...messages.slice(0, -1), { ...last, content }];
 }
 
+function nativeJsonContent(content: string): string {
+  const trimmed = content.trim();
+  // Some OpenAI-compatible gateways preserve a model's single Markdown JSON
+  // fence even when response_format requests native JSON. Accept only a fence
+  // that wraps the entire response; prose, multiple fences, and embedded JSON
+  // remain malformed and fail closed below.
+  const fenced = trimmed.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
 function parseNativeJsonObject<T>(content: string, expectedNonce: string): T {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content.trim());
+    parsed = JSON.parse(nativeJsonContent(content));
   } catch {
     throw new Error('invalid native JSON response object');
   }
