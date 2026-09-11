@@ -37,7 +37,12 @@ function fromRow(row: any): StoredReviewGate {
  * and policy; workers cannot reserve, create or select authoritative checks. */
 export class PostgresReviewGateRepository implements ReviewGateRepository {
   private readonly completionResolutionTimeoutMs: number;
-  constructor(private readonly pool: Pool, options: { completionResolutionTimeoutMs?: number } = {}) {
+  constructor(private readonly pool: Pool, private readonly options: {
+    completionResolutionTimeoutMs?: number;
+    /** Explicit service enrollment only. Invoked after terminal updates under
+     * the same transaction/PR lock; a failure rolls back the entire completion. */
+    onEligibleCompletion?: (client: Queryable, gate: StoredReviewGate, now: number) => Promise<void>;
+  } = {}) {
     this.completionResolutionTimeoutMs = options.completionResolutionTimeoutMs ?? 10_000;
     if (!Number.isSafeInteger(this.completionResolutionTimeoutMs)
       || this.completionResolutionTimeoutMs < 250 || this.completionResolutionTimeoutMs > 15_000) {
@@ -161,6 +166,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           updated_at = to_timestamp($5/1000.0) WHERE run_id = $1`,
       [event.runId, decision.status === 'success' ? 'succeeded' : decision.status === 'cancelled' ? 'superseded' : 'failed',
         resultDigest, decision.status === 'success' ? null : `review gate: ${decision.reason}`, now]);
+      if (decision.status === 'success') await this.options.onEligibleCompletion?.(client, gate, now);
       return await finish('recorded');
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined); throw error;
