@@ -91,6 +91,100 @@ describe('progress event redaction boundary', () => {
     expect(result).not.toHaveProperty('data.token');
   });
 
+  it('maps numeric tokensUsed to total_tokens', () => {
+    const result = sanitizeProgressEvent(liveEvent({
+      tokensUsed: 130,
+    }, 'llm:token'), identity);
+
+    expect(result).toMatchObject({
+      data: {
+        total_tokens: 130,
+      },
+    });
+    expect(result).not.toHaveProperty('data.prompt_tokens');
+    expect(result).not.toHaveProperty('data.completion_tokens');
+  });
+
+  it('maps aggregate duration, finding, and cost fields to total fields', () => {
+    const result = sanitizeProgressEvent(liveEvent({
+      totalDurationMs: 2_400,
+      totalFindings: 7,
+      totalCostUSD: 0.42,
+    }), identity);
+
+    expect(result).toMatchObject({
+      data: {
+        total_duration_ms: 2_400,
+        total_findings: 7,
+        total_cost_usd: 0.42,
+      },
+    });
+  });
+
+  it('keeps aggregate and explicit per-stage metrics when both are present', () => {
+    const result = sanitizeProgressEvent(liveEvent({
+      durationMs: 850,
+      totalDurationMs: 2_400,
+      findingsCount: 2,
+      totalFindings: 7,
+      costUSD: 0.04,
+      totalCostUSD: 0.42,
+    }), identity);
+
+    expect(result).toMatchObject({
+      data: {
+        duration_ms: 850,
+        total_duration_ms: 2_400,
+        findings_count: 2,
+        total_findings: 7,
+        cost_usd: 0.04,
+        total_cost_usd: 0.42,
+      },
+    });
+  });
+
+  it.each([
+    ['eventId', '01J8Z5M6V7Q8R9S0T1V2W3X4Y5'],
+    ['event_id', '01J8Z5M6V7Q8R9S0T1V2W3X4Y6'],
+  ] as const)('uses a caller-supplied %s', (field, suppliedEventId) => {
+    const result = sanitizeProgressEvent(liveEvent({}), {
+      ...identity,
+      [field]: suppliedEventId,
+    });
+
+    expect(result).toMatchObject({ event_id: suppliedEventId });
+  });
+
+  it('returns a typed timestamp rejection when a supplied event ID bypasses ULID generation', () => {
+    const event = liveEvent({});
+    event.timestamp = 'not-a-timestamp';
+
+    const rejection = rejectionOf(sanitizeProgressEvent(event, {
+      ...identity,
+      eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4Y5',
+    }));
+
+    expect(rejection.code).toBe('invalid_field');
+    expect(rejection.field).toBe('timestamp');
+  });
+
+  it('returns payload_too_large for a valid sanitized envelope over 16 KiB', () => {
+    const distinctProviders = Array.from(
+      { length: 32 },
+      (_, index) => `provider-${index}-${'界'.repeat(240)}`,
+    );
+
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({
+      distinctProviders,
+    }, 'quorum_verdict'), {
+      ...identity,
+      eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4Y5',
+    }));
+
+    expect(rejection.code).toBe('payload_too_large');
+    expect(rejection.field).toBeUndefined();
+  });
+
   it('uses typed error metadata with a canonical message', () => {
     const result = sanitizeProgressEvent(liveEvent({
       provider: 'openrouter',

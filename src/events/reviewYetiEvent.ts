@@ -1,5 +1,11 @@
 import { z } from 'zod';
 
+/**
+ * Maintenance contract: this typed Zod runtime and the language-neutral
+ * schemas/review-yeti-event.v1.schema.json artifact are intentionally dual
+ * representations. Change them together; tests/unit/reviewYetiEvent.test.ts
+ * is their executable semantic parity gate.
+ */
 export const REVIEW_EVENT_SCHEMA = 'review-yeti-event.v1' as const;
 export const REVIEW_EVENT_SCHEMA_VERSION = 'v1' as const;
 export const REVIEW_EVENT_MAX_BYTES = 16 * 1024;
@@ -18,7 +24,8 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/iu);
 const positiveInteger = z.number().int().positive().safe();
 const nonnegativeInteger = z.number().int().nonnegative().safe();
 const nonnegativeNumber = z.number().nonnegative().finite().safe();
-const timestamp = z.string().datetime({ offset: true });
+export const reviewEventTimestampSchema = z.string().datetime({ offset: true });
+const timestamp = reviewEventTimestampSchema;
 
 /** Executable definition of the schema format; length is Unicode code points, not UTF-16 code units. */
 export function isReviewProgressMessageV1(value: string): boolean {

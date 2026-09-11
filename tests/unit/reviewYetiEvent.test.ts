@@ -134,7 +134,7 @@ describe('review-yeti-event.v1 parser', () => {
     expect(() => parseReviewYetiEventV1(oversized)).toThrow(/payload|size|16.?KiB/i);
   });
 
-  it('keeps JSON Schema and Zod executable semantics in parity', () => {
+  it('is the executable maintenance gate for JSON Schema and Zod semantic parity', () => {
     const withoutRunId = { ...validProgressEvent() } as Record<string, unknown>;
     delete withoutRunId.run_id;
 

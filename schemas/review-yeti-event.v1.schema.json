@@ -3,6 +3,7 @@
   "$id": "https://review-yeti.ai/schemas/review-yeti-event.v1.schema.json",
   "title": "Review Yeti Event Envelope v1",
   "description": "Closed, sanitized Review Yeti lifecycle and progress event envelope.",
+  "$comment": "Maintenance contract: update this language-neutral schema and src/events/reviewYetiEvent.ts together; tests/unit/reviewYetiEvent.test.ts is the executable semantic parity gate.",
   "type": "object",
   "additionalProperties": false,
   "required": [
