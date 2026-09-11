@@ -234,10 +234,14 @@ describe('Bifrost is the only transport', () => {
     const config = createBifrostPublishingConfig('ollama/glm-5.3-flash');
 
     expect(config.reviewers.fallback).toBe('none');
+    expect(config.default_max_turns).toBe(5);
+    expect(config.reviewers.overall_timeout_s).toBe(900);
     expect(config.reviewers.providers).toEqual([expect.objectContaining({
       id: 'bifrost',
       enabled: true,
       model: 'ollama/glm-5.3-flash',
+      review_timeout_s: 180,
+      arbiter_timeout_s: 180,
     })]);
     expect(config.reviewers.arbiter.order).toEqual(['bifrost']);
     expect(config.personas.every((persona) => persona.providers.every((provider) => provider === 'bifrost'))).toBe(true);
@@ -745,7 +749,7 @@ describe('the worker never holds the App private key', () => {
 describe('resolveWorkerConfig policy projection & telemetry persistence', () => {
   const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'vk-test', model: 'ollama/glm-5.3-flash' };
 
-  it('defaults to 6 central personas and max 2 turns under default env', () => {
+  it('defaults to 6 central personas and max 5 turns under default env', () => {
     const config = resolveWorkerConfig(env(), transport);
     expect(config.personas).toHaveLength(6);
     expect(config.personas.map((p) => p.id)).toEqual([
@@ -759,7 +763,7 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
     expect(config.personas.find((p) => p.id === 'sec-lane')?.required).toBe(true);
     expect(config.personas.find((p) => p.id === 'perf-lane')?.required).toBe(false);
     expect(config.personas.every((p) => p.providers.length === 1 && p.providers[0] === 'bifrost')).toBe(true);
-    expect(config.default_max_turns).toBe(2);
+    expect(config.default_max_turns).toBe(5);
     expect(config.reviewers.arbiter.order).toEqual(['bifrost']);
     expect(config.reviewers.providers[0].id).toBe('bifrost');
     expect(config.reviewers.providers[0].model).toBe('ollama/glm-5.3-flash');
@@ -781,7 +785,7 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
     expect(config.default_max_turns).toBe(3);
   });
 
-  it('caps default_max_turns at 3 even if policy declares higher turns', () => {
+  it('caps default_max_turns at 5 even if policy declares higher turns', () => {
     const policyJson = JSON.stringify({
       review_yeti: {
         personas: 'security',
@@ -789,7 +793,7 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
       },
     });
     const config = resolveWorkerConfig(env({ REVIEW_YETI_POLICY_JSON: policyJson }), transport);
-    expect(config.default_max_turns).toBe(3);
+    expect(config.default_max_turns).toBe(5);
   });
 
   it('persists per-lane metrics and totals in receipt', async () => {
