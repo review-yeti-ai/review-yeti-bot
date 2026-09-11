@@ -236,7 +236,17 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
              draft_deferred = EXCLUDED.draft_deferred,
              error_text = EXCLUDED.error_text,
              updated_at = EXCLUDED.updated_at
-       RETURNING *`,
+         WHERE review_completion_outbox.completion_id = EXCLUDED.completion_id
+           AND review_completion_outbox.run_id = EXCLUDED.run_id
+           AND review_completion_outbox.delivery_id IS NOT DISTINCT FROM EXCLUDED.delivery_id
+           AND review_completion_outbox.repository_id = EXCLUDED.repository_id
+           AND review_completion_outbox.repository = EXCLUDED.repository
+           AND review_completion_outbox.pr_number = EXCLUDED.pr_number
+           AND review_completion_outbox.base_sha = EXCLUDED.base_sha
+           AND review_completion_outbox.head_sha = EXCLUDED.head_sha
+           AND review_completion_outbox.attempt_id = EXCLUDED.attempt_id
+           AND review_completion_outbox.policy_digest = EXCLUDED.policy_digest
+       RETURNING *, (xmax = 0) AS inserted`,
       [
         completionId,
         input.runId,
@@ -258,10 +268,21 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
       ],
       );
       if (result.rows.length > 0) {
-        await this.appendLifecycle(client, input.runId, 'review.lifecycle.queued', availableAt,
-          { stage: 'completion' });
+        const persisted = rowToRecord(result.rows[0]);
+        if (result.rows[0].inserted === true || result.rows[0].inserted === 't') {
+          await this.appendLifecycle(client, persisted.runId, 'review.lifecycle.queued', availableAt,
+            { stage: 'completion' });
+        }
+        return result;
       }
-      return result;
+      const conflicting = await client.query(
+        'SELECT * FROM review_completion_outbox WHERE validation_request_id = $1 FOR UPDATE',
+        [validationRequestId],
+      );
+      if (conflicting.rows.length === 0) {
+        throw new Error('Review completion replay disappeared before identity validation');
+      }
+      throw new Error('Review completion validation request identity conflict');
     });
 
     return rowToRecord(result.rows[0]);

@@ -285,7 +285,7 @@ export async function appendLifecycleEvent(
 export async function appendLifecycleEventForRun(
   client: ReviewEventQueryable,
   input: AppendLifecycleEventForRunInput,
-): Promise<ReviewEventOutboxRecord | null> {
+): Promise<ReviewEventOutboxRecord> {
   const row = (await client.query(
     `SELECT runs.run_id, runs.repository_id, runs.pr_number, runs.base_sha, runs.head_sha,
             runs.attempt, runs.effective_policy_digest,
@@ -295,17 +295,29 @@ export async function appendLifecycleEventForRun(
       WHERE runs.run_id = $1`,
     [input.runId],
   )).rows[0];
-  if (!row || Number(row.repository_id) <= 0 || Number(row.pr_number) <= 0) return null;
+  if (!row) {
+    throw new Error(`Review lifecycle run metadata is unavailable for ${input.runId}`);
+  }
+  const repositoryId = Number(row.repository_id);
+  const prNumber = Number(row.pr_number);
+  const baseSha = typeof row.base_sha === 'string' ? row.base_sha : '';
+  const headSha = typeof row.head_sha === 'string' ? row.head_sha : '';
+  if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0
+    || !Number.isSafeInteger(prNumber) || prNumber <= 0
+    || !/^[a-f0-9]{40}$/iu.test(baseSha)
+    || !/^[a-f0-9]{40}$/iu.test(headSha)) {
+    throw new Error(`Review lifecycle run metadata is incomplete for ${input.runId}`);
+  }
   const occurredAt = input.occurredAt ?? Date.now();
   const attemptId = input.attemptId || `${input.runId}-g${Number(row.attempt || 0)}-e${Number(row.execution_attempt || 1)}`;
   return appendLifecycleEvent(client, buildLifecycleEvent({
     eventKind: input.eventKind,
     eventId: input.eventId,
     occurredAt: new Date(occurredAt).toISOString(),
-    repositoryId: Number(row.repository_id),
-    prNumber: Number(row.pr_number),
-    baseSha: String(row.base_sha),
-    headSha: String(row.head_sha),
+    repositoryId,
+    prNumber,
+    baseSha,
+    headSha,
     attemptId,
     runId: String(row.run_id),
     correlationId: input.correlationId || String(row.run_id),

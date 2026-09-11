@@ -4,6 +4,7 @@ import { Pool, type PoolClient } from 'pg';
 import {
   REVIEW_EVENT_SCHEMA_SQL,
   appendLifecycleEvent,
+  appendLifecycleEventForRun,
   type ReviewLifecycleEventInput,
 } from '../../src/persistence/reviewEventRepository';
 
@@ -37,7 +38,19 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     if (!ownedSchema.test(schema)) throw new Error('Generated schema is not owned by this test');
     pool = new Pool({ connectionString: databaseUrl, max: 8, options: `-c search_path=${schema},public` });
     await pool.query(`CREATE SCHEMA "${schema}"`);
-    await pool.query('CREATE TABLE review_runs (run_id TEXT PRIMARY KEY)');
+    await pool.query(`CREATE TABLE review_runs (
+      run_id TEXT PRIMARY KEY,
+      repository_id BIGINT,
+      pr_number INTEGER,
+      base_sha TEXT,
+      head_sha TEXT,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      effective_policy_digest TEXT
+    )`);
+    await pool.query(`CREATE TABLE review_dispatch_outbox (
+      run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
+      execution_attempt INTEGER NOT NULL DEFAULT 0
+    )`);
     await pool.query(REVIEW_EVENT_SCHEMA_SQL);
     await pool.query(REVIEW_EVENT_SCHEMA_SQL);
   });
@@ -139,5 +152,25 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     await Promise.all(Array.from({ length: 8 }, () => appendAndCommit()));
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(1);
     expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters')).rows[0].next_sequence).toBe('1');
+  });
+
+  it('rejects incomplete run metadata before allocating an event sequence', async () => {
+    await pool.query(`INSERT INTO review_runs
+      (run_id, pr_number, base_sha, head_sha, attempt, effective_policy_digest)
+      VALUES ('run_00000000000000000000000000000000', 42, $1, $2, 0, $3)`,
+    ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64)]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await expect(appendLifecycleEventForRun(client, {
+        runId: 'run_00000000000000000000000000000000',
+        eventKind: 'review.lifecycle.queued',
+      })).rejects.toThrow(/metadata/i);
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+    expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
+    expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
   });
 });
