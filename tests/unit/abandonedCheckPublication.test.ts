@@ -169,6 +169,27 @@ describe('abandoned check exact App/attempt failure publication', () => {
       .toBe(true);
   });
 
+  it('does not treat an older same-App check as a conflicting newer attempt', async () => {
+    const olderCheck = {
+      ...check,
+      external_id: `${run.runId}:a0`,
+      started_at: '2026-09-09T17:21:30Z',
+    };
+    const { client, fetchImplementation } = fixture([olderCheck]);
+
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+
+    const writes = fetchImplementation.mock.calls.filter(([, init]) => ['PATCH', 'POST'].includes(init?.method || ''));
+    expect(writes).toHaveLength(1);
+    expect(writes[0][1]?.method).toBe('POST');
+    expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({
+      external_id: externalId,
+      head_sha: run.headSha,
+      status: 'completed',
+      conclusion: 'failure',
+    });
+  });
+
   it('creates only a completed failure bound to the abandoned attempt when no check ever existed', async () => {
     const { client, fetchImplementation } = fixture([]);
     await client.failAbandonedCheck(run, 4385771, signal());
