@@ -654,7 +654,7 @@ func TestAppGateWorkerContractMismatchEntersDurableFailureDelegation(t *testing.
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "tampered-worker-pod", Namespace: req.Namespace,
 			Labels: map[string]string{
-				"job-name":                        worker.Name,
+				"batch.kubernetes.io/job-name":    worker.Name,
 				"review-yeti.ai/run-id":           "run_ffffffffffffffffffffffffffffffff",
 				"review-yeti.ai/component":        "tampered-component",
 				"review-yeti.ai/publication-mode": job.PublicationModeAppGate,
@@ -699,6 +699,66 @@ func TestAppGateWorkerContractMismatchEntersDurableFailureDelegation(t *testing.
 		t.Fatal(err)
 	}
 	assertWorkerAbsent(t, kube, req)
+}
+
+func TestFailurePublicationIgnoresForeignPodWithOwnedWorkerLabel(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	worker.UID = types.UID("owned-worker")
+	worker.Spec.Template.Spec.Containers[0].Image = "ghcr.io/review-yeti-ai/tampered@sha256:" + strings.Repeat("0", 64)
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	controller := true
+	foreignPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "foreign-pod", Namespace: req.Namespace,
+			Labels: map[string]string{"batch.kubernetes.io/job-name": worker.Name},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: batchv1.SchemeGroupVersion.String(), Kind: "Job", Name: worker.Name,
+				UID: types.UID("foreign-worker"), Controller: &controller,
+			}},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	if err := kube.Create(ctx, foreignPod); err != nil {
+		t.Fatal(err)
+	}
+	boundedPodLookup := false
+	r.Client = interceptor.NewClient(kube.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			options := &client.ListOptions{}
+			for _, option := range opts {
+				option.ApplyToList(options)
+			}
+			if _, ok := list.(*corev1.PodList); ok && options.LabelSelector != nil &&
+				options.LabelSelector.String() == "batch.kubernetes.io/job-name="+worker.Name {
+				boundedPodLookup = true
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if !failurePublicationIsPending(storedReview(t, kube, req)) {
+		t.Fatal("contract mismatch did not persist failure recovery")
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	assertFailureDelegated(t, storedReview(t, kube, req))
+	if !boundedPodLookup {
+		t.Fatal("failure recovery performed no Job-scoped Pod lookup")
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(foreignPod), &corev1.Pod{}); err != nil {
+		t.Fatalf("failure recovery mutated a foreign Pod: %v", err)
+	}
 }
 
 func TestFailurePublicationStatusPrecedesTrustedServiceDelegation(t *testing.T) {

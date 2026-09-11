@@ -287,21 +287,21 @@ func (r *PRReviewJobV1Alpha2Reconciler) releaseOrphanedWorkerObservation(ctx con
 	if err != nil {
 		return err
 	}
-	if !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) || !controlledByReviewName(&worker, req.Name) {
+	if !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) || !controlledByDeletedReviewName(&worker, req.Name) {
 		return nil
 	}
 	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
 	return r.Update(ctx, &worker)
 }
 
-func controlledByReviewName(worker *batchv1.Job, name string) bool {
-	for _, owner := range worker.OwnerReferences {
-		if owner.Controller != nil && *owner.Controller && owner.APIVersion == reviewv1alpha2.GroupVersion.String() &&
-			owner.Kind == "PRReviewJob" && owner.Name == name {
-			return true
-		}
-	}
-	return false
+func controlledByDeletedReviewName(worker *batchv1.Job, name string) bool {
+	// The authoritative live read already proved that no owner object exists, so
+	// there is no owner UID to pass to metav1.IsControlledBy. Match the persisted
+	// controller tombstone by exact GVK/name; if a review with the same name was
+	// recreated, getCachedThenLive would find it before entering this path.
+	owner := metav1.GetControllerOf(worker)
+	return owner != nil && owner.APIVersion == reviewv1alpha2.GroupVersion.String() &&
+		owner.Kind == "PRReviewJob" && owner.Name == name
 }
 
 // reconcileElapsedDeadline checks an already-admitted worker before recording
@@ -614,18 +614,13 @@ func podBelongsToWorkerJob(pod *corev1.Pod, worker *batchv1.Job) bool {
 	if pod == nil || worker == nil {
 		return false
 	}
-	if pod.Labels["job-name"] == worker.Name || pod.Labels["batch.kubernetes.io/job-name"] == worker.Name {
-		return true
+	if worker.UID != "" {
+		return metav1.IsControlledBy(pod, worker)
 	}
-	if worker.UID == "" {
-		return false
-	}
-	for _, owner := range pod.OwnerReferences {
-		if owner.UID == worker.UID && owner.Kind == "Job" {
-			return true
-		}
-	}
-	return false
+	// controller-runtime's fake client does not allocate UIDs. The production
+	// branch above is always used for persisted Jobs; this fallback keeps pure
+	// builder/unit fixtures meaningful without weakening live ownership checks.
+	return pod.Labels["job-name"] == worker.Name || pod.Labels["batch.kubernetes.io/job-name"] == worker.Name
 }
 
 func observeTiming(review *reviewv1alpha2.PRReviewJob, stage reviewv1alpha2.DispatchTimingStage, at metav1.Time) (bool, error) {
@@ -943,11 +938,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Con
 
 // Contract-mismatched Jobs cannot be trusted to retain the admitted run or
 // component labels used by the normal indexed lookup. Once exact ownership has
-// been established, scan the namespace and bind Pods to the Job name/UID so a
-// tampered label cannot make terminal cleanup race a still-running process.
+// been established, query the Job controller's stable Pod label and verify the
+// controller UID so a tampered review label cannot hide a running process.
 func (r *PRReviewJobV1Alpha2Reconciler) hasActiveWorkerJobPod(ctx context.Context, worker *batchv1.Job) (bool, error) {
 	var pods corev1.PodList
-	if err := r.List(ctx, &pods, client.InNamespace(worker.Namespace)); err != nil {
+	if err := r.List(ctx, &pods, client.InNamespace(worker.Namespace), client.MatchingLabels{
+		"batch.kubernetes.io/job-name": worker.Name,
+	}); err != nil {
 		return false, err
 	}
 	for index := range pods.Items {
