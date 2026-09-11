@@ -38,6 +38,10 @@ interface ConnectionPool {
 /** Prefix for the bounded worker failure classification persisted in error_text. */
 export const WORKER_TERMINAL_FAILURE_PREFIX = 'worker terminal failure: ';
 
+/** Marker for a check create whose response was lost; recovery may only look up the exact attempt. */
+export const RECOVERY_UNCONFIRMED_ERROR_TEXT =
+  'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed';
+
 export interface ReviewDispatchRepositoryOptions {
   /** Trusted service read/validation only; invoked under the candidate's PR lock before any admission writes. */
   validateAuthoritativeAdmission?: (input: ReviewAdmissionInput) => Promise<void>;
@@ -194,7 +198,6 @@ export type AbandonedCheckRecoveryOutcome = typeof ABANDONED_CHECK_RECOVERY_OUTC
 
 const ABANDONED_PUBLISHING_ERROR_TEXT = {
   reapedPrefix: 'publishing run reached its terminal deadline without a verdict; reaped by ',
-  creationUnconfirmed: 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
   failureReconciled: 'publishing run reached its terminal deadline without a verdict; failure reconciled',
 } as const;
 
@@ -648,8 +651,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             OR (runs.status = 'terminal' AND runs.error_text LIKE
               $5::text || '%'
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
-            OR (runs.status = 'terminal' AND runs.error_text =
-              $4::text)
+            OR (runs.status = 'terminal' AND runs.error_text = $4::text)
             -- A preserved worker failure is retryable only while a prior
             -- reaper claim still owns its publication lease. Successful
             -- reconciliation clears that owner without erasing the bounded
@@ -696,7 +698,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
                  runs.delivery_id, runs.received_at, runs.terminal_deadline,
                  retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only`,
-      [workerId, now, limit, ABANDONED_PUBLISHING_ERROR_TEXT.creationUnconfirmed,
+      [workerId, now, limit, RECOVERY_UNCONFIRMED_ERROR_TEXT,
         ABANDONED_PUBLISHING_ERROR_TEXT.reapedPrefix],
     );
     return result.rows.map((row: Record<string, unknown>) => ({
@@ -774,7 +776,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
              ELSE $5::text
            END,
            updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
-        [run.runId, now, outcome, ABANDONED_PUBLISHING_ERROR_TEXT.creationUnconfirmed,
+        [run.runId, now, outcome, RECOVERY_UNCONFIRMED_ERROR_TEXT,
           ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled],
       );
       await client.query('COMMIT');

@@ -376,32 +376,69 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimAbandonedPublishingRuns('reaper-c', 62_004, 1)).resolves.toEqual([]);
   });
 
-  it('persists a lost create response as bounded lookup-only recovery without allocating another attempt', async () => {
+  it('keeps lost-create recovery lookup-only and lease-driven before the original deadline', async () => {
     const { repository, client } = await createRepository();
     const input = sameHeadAdmission('lost-create', 1_000);
     const admitted = await repository.admit(input);
     const dispatch = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
-    await repository.markProjected(admitted.run.runId, 'dispatcher', dispatch.claimAttempt, 'worker-a1', 1_002);
+    const workerTokenDigest = 'd'.repeat(64);
+    await repository.markProjected(
+      admitted.run.runId, 'dispatcher', dispatch.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
 
-    const firstSweepAt = input.terminalDeadline + 1;
+    // Model a durable worker failure while the original admission window is
+    // still open. A lost check-create response must be recoverable on its
+    // short lease cadence; waiting for the terminal deadline would strand the
+    // required check unnecessarily.
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: dispatch.executionAttempt,
+      failureClass: 'provider_error',
+    }, { workerTokenDigest }, 1_003)).resolves.toMatchObject({ status: 'failed' });
+    const firstSweepAt = 2_000;
+    expect(firstSweepAt).toBeLessThan(input.terminalDeadline);
     const [first] = await repository.claimAbandonedPublishingRuns('reaper-a', firstSweepAt, 1);
     expect(first).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: false });
     await expect(repository.reconcileAbandonedPublishingRun(first, 'reaper-a', firstSweepAt + 1,
       async () => 'creation-unconfirmed')).resolves.toBe(true);
 
-    const pending = (await client.query('SELECT error_text, lease_owner, lease_expires_at FROM review_runs WHERE run_id = $1',
+    const pending = (await client.query(`SELECT runs.error_text, runs.lease_owner, runs.lease_expires_at,
+      outbox.status AS outbox_status FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
       [admitted.run.runId])).rows[0];
     expect(pending).toMatchObject({
       error_text: 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
       lease_owner: null,
+      outbox_status: 'projected',
     });
     await expect(repository.claimAbandonedPublishingRuns('too-early', firstSweepAt + 60_000, 1)).resolves.toEqual([]);
 
-    const [recovery] = await repository.claimAbandonedPublishingRuns('reaper-b', firstSweepAt + 60_002, 1);
+    const recoveryAt = firstSweepAt + 60_002;
+    expect(recoveryAt).toBeLessThan(input.terminalDeadline);
+    const [recovery] = await repository.claimAbandonedPublishingRuns('reaper-b', recoveryAt, 1);
     expect(recovery).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: true });
-    await expect(repository.reconcileAbandonedPublishingRun(recovery, 'reaper-b', firstSweepAt + 60_003,
-      async () => 'failure-existing')).resolves.toBe(true);
-    await expect(repository.claimAbandonedPublishingRuns('reaper-c', firstSweepAt + 120_004, 1)).resolves.toEqual([]);
+    await expect(repository.reconcileAbandonedPublishingRun(recovery, 'reaper-b', recoveryAt + 1,
+      async () => 'creation-unconfirmed')).resolves.toBe(true);
+
+    // A second lost response keeps the same attempt and re-extends only the
+    // recovery lease. It must not retire the outbox or allocate a2.
+    const repeated = (await client.query(`SELECT runs.error_text, runs.lease_owner, runs.lease_expires_at,
+      outbox.status AS outbox_status, outbox.execution_attempt FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
+      [admitted.run.runId])).rows[0];
+    expect(repeated).toMatchObject({
+      error_text: 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+      lease_owner: null,
+      lease_expires_at: new Date(recoveryAt + 60_001),
+      outbox_status: 'projected',
+      execution_attempt: 0,
+    });
+    await expect(repository.claimAbandonedPublishingRuns('reaper-c', recoveryAt + 60_000, 1)).resolves.toEqual([]);
+    await expect(repository.claimAbandonedPublishingRuns('reaper-d', recoveryAt + 60_002, 1))
+      .resolves.toMatchObject([{ runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: true }]);
   });
 
   it('re-extends lookup-only recovery when an already recovery-only create remains unconfirmed', async () => {
@@ -445,13 +482,19 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const [sweep] = await repository.claimAbandonedPublishingRuns('reaper-a', input.terminalDeadline + 1, 1);
     await expect(repository.reconcileAbandonedPublishingRun(sweep, 'reaper-a', input.terminalDeadline + 2,
       async () => 'authoritative-success')).resolves.toBe(true);
-    expect((await client.query('SELECT status, stage, error_text, lease_owner, lease_expires_at FROM review_runs WHERE run_id = $1',
+    expect((await client.query(`SELECT runs.status, runs.stage, runs.error_text, runs.lease_owner, runs.lease_expires_at,
+      outbox.status AS outbox_status, outbox.lease_owner AS outbox_lease_owner,
+      outbox.lease_expires_at AS outbox_lease_expires_at FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
       [admitted.run.runId])).rows[0]).toMatchObject({
       status: 'succeeded',
       stage: 'complete',
       error_text: null,
       lease_owner: null,
       lease_expires_at: null,
+      outbox_status: 'terminal',
+      outbox_lease_owner: null,
+      outbox_lease_expires_at: null,
     });
     await expect(repository.claimAbandonedPublishingRuns('reaper-b', input.terminalDeadline + 120_000, 1))
       .resolves.toEqual([]);
