@@ -1,9 +1,5 @@
 import { z } from 'zod';
 import type { GitHubActionsOidcClaims } from '../auth/githubActionsOidc';
-import {
-  SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY,
-  SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID,
-} from '../config/actionDispatchConfig';
 import { CENTRAL_REVIEW_REPOSITORY } from './reviewCheckIdentity';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -63,13 +59,11 @@ export function actionDispatchDigestInput(request: ActionDispatchRequest): Omit<
 export function assertActionDispatchMatchesClaims(
   request: ActionDispatchRequest,
   claims: GitHubActionsOidcClaims,
-  centralExternalRepositories: ReadonlySet<string> = new Set(),
+  centralExternalRepositories: ReadonlyMap<string, number> = new Map(),
 ): ActionDispatchCallerKind {
   const repository = `${request.owner}/${request.repo}`;
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
-  const isSupportedExternalTarget = repository === SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY
-    && request.repositoryId === SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID
-    && centralExternalRepositories.has(repository);
+  const isSupportedExternalTarget = centralExternalRepositories.get(repository) === request.repositoryId;
   const isCentral = request.caller.eventName === 'repository_dispatch'
     && claims.repository === CENTRAL_REVIEW_REPOSITORY
     && (request.owner === 'calltelemetry' || isSupportedExternalTarget);

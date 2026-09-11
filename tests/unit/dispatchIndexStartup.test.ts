@@ -178,7 +178,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     });
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
       requireExpectedGeneration: false,
-      centralExternalRepositories: new Set(),
+      centralExternalRepositories: new Map(),
     }));
     expect(mocks.gateRepository).not.toHaveBeenCalled();
     expect(mocks.getPrepared).not.toHaveBeenCalled();
@@ -208,7 +208,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
 
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
-      centralExternalRepositories: new Set(['review-yeti-ai/review-yeti-bot']),
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
     }));
     expect(mocks.listen).toHaveBeenCalledOnce();
   });

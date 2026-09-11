@@ -3,7 +3,7 @@ export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID = 1326169548;
 
 export interface ActionDispatchConfig {
   requireExpectedGeneration: boolean;
-  centralExternalRepositories: ReadonlySet<string>;
+  centralExternalRepositories: ReadonlyMap<string, number>;
 }
 
 interface ActionDispatchEnvironment {
@@ -22,13 +22,15 @@ export function actionDispatchConfigFromEnv(
 
   const configuredRepositories = environment.ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES;
   if (configuredRepositories === undefined) {
-    return { requireExpectedGeneration, centralExternalRepositories: new Set() };
+    return { requireExpectedGeneration, centralExternalRepositories: new Map() };
   }
   if (configuredRepositories !== SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY) {
     throw new Error('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES must contain only explicit supported repositories');
   }
   return {
     requireExpectedGeneration,
-    centralExternalRepositories: new Set([SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY]),
+    centralExternalRepositories: new Map([
+      [SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY, SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID],
+    ]),
   };
 }

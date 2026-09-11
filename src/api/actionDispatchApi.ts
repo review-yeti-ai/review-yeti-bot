@@ -39,7 +39,7 @@ export interface ActionDispatchRouterOptions {
   /** Rollout fence: require the central App ledger's exact one-based generation. */
   requireExpectedGeneration?: boolean;
   /** Exact service-owned external targets admitted through the trusted central workflow. */
-  centralExternalRepositories?: ReadonlySet<string>;
+  centralExternalRepositories?: ReadonlyMap<string, number>;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
   authoritativePublishing?: AuthoritativeReviewAdmission;
   workerCompletion?: {
