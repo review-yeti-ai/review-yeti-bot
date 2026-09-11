@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.55.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.55.0...v1.55.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **deploy:** roll dispatcher pods on config changes ([#710](https://github.com/review-yeti-ai/review-yeti-bot/issues/710)) ([f117ffc](https://github.com/review-yeti-ai/review-yeti-bot/commit/f117ffca80687cabd97e0e73e0e6ab52c754751d))
+
 ## [1.55.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.3...v1.55.0) (2026-09-11)
 
 
