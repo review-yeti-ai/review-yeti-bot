@@ -165,6 +165,14 @@ function rowToClaim(row: any): ReviewCompletionClaim {
   };
 }
 
+function completionClaimPredicate(timeParameter: string): string {
+  return `outbox.draft_deferred = FALSE
+            AND (
+              (outbox.status = 'pending' AND outbox.available_at <= to_timestamp(${timeParameter} / 1000.0))
+              OR (outbox.status = 'claimed' AND outbox.lease_expires_at <= to_timestamp(${timeParameter} / 1000.0))
+            )`;
+}
+
 export class PostgresReviewCompletionRepository implements ReviewCompletionRepository {
   private readonly lifecycleEventsEnabled: boolean;
 
@@ -196,6 +204,21 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
   ): Promise<void> {
     if (!this.lifecycleEventsEnabled) return;
     await appendLifecycleEventForRun(client, { runId, eventKind, occurredAt: now, data });
+  }
+
+  private async hasClaimableCompletion(now: number): Promise<boolean> {
+    const query = (this.pool as Queryable).query;
+    if (typeof query !== 'function') {
+      throw new Error('Review completion lifecycle candidate probe requires the pool query interface');
+    }
+    const result = await query.call(this.pool,
+      `SELECT 1
+         FROM review_completion_outbox AS outbox
+        WHERE ${completionClaimPredicate('$1')}
+        LIMIT 1`,
+      [now],
+    );
+    return result.rows.length > 0;
   }
 
   private async mutate<T>(operation: (client: TransactionClient) => Promise<T>): Promise<T> {
@@ -297,16 +320,13 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
   }
 
   async claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewCompletionClaim | null> {
+    if (this.lifecycleEventsEnabled && !(await this.hasClaimableCompletion(now))) return null;
     const result = await this.mutate(async (client) => {
       const result = await client.query(
       `WITH candidate AS (
          SELECT completion_id
-           FROM review_completion_outbox
-          WHERE draft_deferred = FALSE
-            AND (
-              (status = 'pending' AND available_at <= to_timestamp($2 / 1000.0))
-              OR (status = 'claimed' AND lease_expires_at <= to_timestamp($2 / 1000.0))
-            )
+           FROM review_completion_outbox AS outbox
+          WHERE ${completionClaimPredicate('$2')}
           ORDER BY available_at, created_at
           FOR UPDATE SKIP LOCKED
           LIMIT 1

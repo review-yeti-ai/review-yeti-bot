@@ -11,6 +11,7 @@ function clientWithRows(rows: any[][]) {
 }
 
 const DISABLED_LIFECYCLE_EVENTS = { lifecycleEvents: 'disabled' as const };
+const ENABLED_LIFECYCLE_EVENTS = { lifecycleEvents: 'enabled' as const };
 
 describe('PostgresReviewCompletionRepository', () => {
   const baseInput: ReviewCompletionRecordInput = {
@@ -97,6 +98,72 @@ describe('PostgresReviewCompletionRepository', () => {
     const claim = await repository.claimNext('worker-1', 1_000, 30_000);
 
     expect(claim).toBeNull();
+  });
+
+  describe('lifecycle-enabled claim preflight', () => {
+    const claimedRow = {
+      ...sampleDbRow,
+      status: 'claimed',
+      lease_owner: 'worker-1',
+      lease_expires_at: new Date(31_000),
+      attempt: 1,
+    };
+
+    it('returns idle without checking out a transaction client', async () => {
+      const connect = vi.fn();
+      const probe = vi.fn(async () => ({ rows: [] }));
+      const repository = new PostgresReviewCompletionRepository(
+        { connect, query: probe }, ENABLED_LIFECYCLE_EVENTS,
+      );
+
+      await expect(repository.claimNext('worker-1', 1_000, 30_000)).resolves.toBeNull();
+      expect(probe).toHaveBeenCalledOnce();
+      expect(connect).not.toHaveBeenCalled();
+    });
+
+    it('keeps a positive candidate claim on one transaction client', async () => {
+      const clientCalls: string[] = [];
+      const clientQuery = vi.fn(async (sql: string) => {
+        clientCalls.push(sql);
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+        if (/WITH candidate/u.test(sql)) return { rows: [claimedRow] };
+        throw new Error(`unexpected completion claim query: ${sql}`);
+      });
+      const client = { query: clientQuery, release: vi.fn() };
+      const connect = vi.fn(async () => client);
+      const probe = vi.fn(async () => ({ rows: [{}] }));
+      const repository = new PostgresReviewCompletionRepository(
+        { connect, query: probe }, ENABLED_LIFECYCLE_EVENTS,
+      );
+
+      await expect(repository.claimNext('worker-1', 1_000, 30_000)).resolves.toMatchObject({
+        completionId: sampleDbRow.completion_id, attempt: 1,
+      });
+      expect(probe).toHaveBeenCalledOnce();
+      expect(connect).toHaveBeenCalledOnce();
+      expect(clientCalls).toEqual(['BEGIN', expect.stringContaining('WITH candidate'), 'COMMIT']);
+      expect(client.release).toHaveBeenCalledOnce();
+    });
+
+    it('commits a safe empty transaction when a probed candidate is claimed by a race', async () => {
+      const clientCalls: string[] = [];
+      const clientQuery = vi.fn(async (sql: string) => {
+        clientCalls.push(sql);
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+        if (/WITH candidate/u.test(sql)) return { rows: [] };
+        throw new Error(`unexpected completion race query: ${sql}`);
+      });
+      const client = { query: clientQuery, release: vi.fn() };
+      const connect = vi.fn(async () => client);
+      const probe = vi.fn(async () => ({ rows: [{}] }));
+      const repository = new PostgresReviewCompletionRepository(
+        { connect, query: probe }, ENABLED_LIFECYCLE_EVENTS,
+      );
+
+      await expect(repository.claimNext('worker-1', 1_000, 30_000)).resolves.toBeNull();
+      expect(clientCalls).toEqual(['BEGIN', expect.stringContaining('WITH candidate'), 'COMMIT']);
+      expect(client.release).toHaveBeenCalledOnce();
+    });
   });
 
   it('renews lease via heartbeat', async () => {
