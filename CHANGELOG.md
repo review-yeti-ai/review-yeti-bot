@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.4...v1.56.5) (2026-09-11)
+
+
+### Bug Fixes
+
+* **REL-814:** double persona turn budget and clarify delivered failure ([#723](https://github.com/review-yeti-ai/review-yeti-bot/issues/723)) ([609b51f](https://github.com/review-yeti-ai/review-yeti-bot/commit/609b51fe3fa63f19f436db6216adc4354d112349))
+
 ## [1.56.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.3...v1.56.4) (2026-09-11)
 
 
