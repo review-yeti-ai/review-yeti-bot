@@ -342,6 +342,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       const inserted = await client.query(
          `WITH retry_eligibility AS (
            SELECT runs.run_id,
+                  (runs.status = 'terminal' AND runs.error_text = $22::text)
+                    AS retry_from_reaper_failure,
                   (runs.status IN ('failed', 'terminal') AND (
                     NOT $20::boolean OR (
                       $21::integer IS NOT NULL AND EXISTS (
@@ -351,7 +353,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                            AND (retry_outbox.status = 'projected'
                              OR (retry_outbox.status = 'terminal'
                                AND (retry_outbox.worker_token_digest IS NOT NULL
-                                 OR retry_outbox.projection_name IS NOT NULL)))
+                                 OR retry_outbox.projection_name IS NOT NULL
+                                 OR runs.error_text = $22::text)))
                       )
                     )
                   ))
@@ -426,7 +429,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 AND other.status <> 'superseded'
                 AND other.created_at >= review_runs.created_at
            )
-         RETURNING *`,
+         RETURNING *, (SELECT retry_from_reaper_failure FROM retry_eligibility
+           WHERE run_id = review_runs.run_id) AS retry_from_reaper_failure`,
         [
           runId,
           identityDigest,
@@ -449,6 +453,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           input.authoritativeGate?.expectedAppId ?? null,
           input.retryRequested === true,
           input.retryAfterExecutionAttempt ?? null,
+          ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled,
         ],
       );
       const runRow = inserted.rows[0];
@@ -504,14 +509,15 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                lease_expires_at = NULL, projection_name = NULL,
          -- Re-arm only alongside a run the statement above just returned to
          -- 'queued'. A worker provider failure leaves the outbox 'projected'
-         -- and needs a new execution attempt. A terminal dispatch with token
-         -- or projection evidence may also have created a worker before losing
-         -- its acknowledgement, so it too needs a fresh identity. Guarding on the
-         -- run's status keeps a superseded run's terminal outbox row untouched,
-         -- and an in-flight row is never disturbed.
+         -- and needs a new execution attempt. A terminal dispatch with token or
+         -- projection evidence may also have created a worker before losing its
+         -- acknowledgement. An exact reaper-failure marker proves the App check
+         -- already consumed that otherwise pre-worker attempt. Guarding on the
+         -- run's status keeps a superseded run's terminal outbox row untouched.
                execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'
                  OR review_dispatch_outbox.worker_token_digest IS NOT NULL
                  OR review_dispatch_outbox.projection_name IS NOT NULL
+                 OR ($4::boolean AND review_dispatch_outbox.status = 'terminal')
                  THEN review_dispatch_outbox.execution_attempt + 1
                  ELSE review_dispatch_outbox.execution_attempt END,
                worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal')
@@ -528,7 +534,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 -- untouched even when a new delivery arrives while its worker starts.
                 AND r.delivery_id = EXCLUDED.delivery_id
            )`,
-        [runRow.run_id, input.deliveryId, input.receivedAt],
+        [runRow.run_id, input.deliveryId, input.receivedAt, runRow.retry_from_reaper_failure === true],
       );
       if (input.authoritativeGate && ['queued', 'running'].includes(runRow.status)) {
         const gate = await PostgresReviewGateRepository.reserveInTransaction(

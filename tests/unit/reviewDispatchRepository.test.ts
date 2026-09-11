@@ -272,7 +272,9 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(outboxSql).toContain("lease_owner = NULL");
     expect(outboxSql).toContain('projection_name = NULL');
     expect(outboxSql).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
-    expect(outboxSql).toContain("execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected' OR review_dispatch_outbox.worker_token_digest IS NOT NULL OR review_dispatch_outbox.projection_name IS NOT NULL THEN review_dispatch_outbox.execution_attempt + 1 ELSE review_dispatch_outbox.execution_attempt END");
+    expect(outboxSql).toContain("execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'");
+    expect(outboxSql).toContain("OR ($4::boolean AND review_dispatch_outbox.status = 'terminal')");
+    expect(outboxSql).toContain('THEN review_dispatch_outbox.execution_attempt + 1');
     expect(outboxSql).toContain("worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal') THEN NULL ELSE review_dispatch_outbox.worker_token_digest END");
     expect(outboxSql).toContain("r.status = 'queued'");
     expect(outboxSql).toContain('r.delivery_id = EXCLUDED.delivery_id');
@@ -365,9 +367,9 @@ describe('PostgresReviewDispatchRepository', () => {
         // terminal dispatcher failure has no worker object to replace, while a
         // projected worker failure must advance to a new CR/Secret name.
         const normalized = sql.replace(/\s+/gu, ' ');
-        expect(normalized).toContain(
-          "execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected' OR review_dispatch_outbox.worker_token_digest IS NOT NULL OR review_dispatch_outbox.projection_name IS NOT NULL THEN review_dispatch_outbox.execution_attempt + 1 ELSE review_dispatch_outbox.execution_attempt END",
-        );
+        expect(normalized).toContain("execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'");
+        expect(normalized).toContain("OR ($4::boolean AND review_dispatch_outbox.status = 'terminal')");
+        expect(normalized).toContain('THEN review_dispatch_outbox.execution_attempt + 1');
         expect(normalized).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
         expect(normalized).toContain("r.status = 'queued'");
         expect(normalized).toContain('r.delivery_id = EXCLUDED.delivery_id');

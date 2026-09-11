@@ -116,6 +116,19 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 1 });
   });
 
+  it('counts an unconfirmed create once when its persistence transaction fails after publication', async () => {
+    const { subject, client, repository } = fixture();
+    client.failAbandonedCheck.mockResolvedValue('creation-unconfirmed' as never);
+    repository.reconcileAbandonedPublishingRun.mockImplementation(async (_run, _worker, _now, publish) => {
+      await publish();
+      throw new Error('injected commit failure');
+    });
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 1 });
+    } finally { log.mockRestore(); }
+  });
+
   it.each(['failure-existing', 'authoritative-success'] as const)(
     'does not count %s as a new publication or failure',
     async (outcome) => {
