@@ -22,6 +22,7 @@ import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
 import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, AuthoritativeReviewCompletion } from '../review/authoritativeServiceContracts';
+import { ReviewGenerationConflictError } from '../review/reviewRun';
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 
 export interface ActionOidcVerifier {
@@ -35,6 +36,8 @@ export interface ActionDispatchRouterOptions {
   admission: Pick<ReviewDispatchRepository, 'admit'>;
   resolveInstallationId(owner: string, repo: string): Promise<number>;
   allowAppGate?: boolean;
+  /** Rollout fence: require the central App ledger's exact one-based generation. */
+  requireExpectedGeneration?: boolean;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
   authoritativePublishing?: AuthoritativeReviewAdmission;
   workerCompletion?: {
@@ -49,6 +52,16 @@ function bearerToken(request: Request): string | null {
   const header = request.header('authorization') || '';
   const match = /^Bearer\s+([^\s]+)$/iu.exec(header);
   return match?.[1] || null;
+}
+
+function rejectInvalidDispatch(response: Response, invalidFields: string[]) {
+  logger.warn('Rejected invalid Action dispatch request', {
+    reason: 'invalid_action_dispatch_request',
+    invalidFields,
+  });
+  return response.status(400).json(invalidFields.includes('expectedGeneration')
+    ? { error: 'Invalid Action dispatch request', invalidFields: ['expectedGeneration'] }
+    : { error: 'Invalid Action dispatch request' });
 }
 
 export function createActionDispatchRouter(options: ActionDispatchRouterOptions): Router {
@@ -68,8 +81,20 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     if (!token) return response.status(401).json({ error: 'GitHub Actions OIDC bearer token is required' });
 
     const parsed = actionDispatchRequestSchema.safeParse(request.body);
-    if (!parsed.success) return response.status(400).json({ error: 'Invalid Action dispatch request' });
+    if (!parsed.success) {
+      // Return only schema field names, never rejected values. This keeps the
+      // runner's bounded failure detail actionable without reflecting request
+      // data or verifier internals into logs.
+      const invalidFields = [...new Set(parsed.error.issues.map((issue) => String(issue.path[0] || 'request')))].sort();
+      return rejectInvalidDispatch(response, invalidFields);
+    }
     const dispatch = parsed.data;
+    if (options.requireExpectedGeneration === true
+      && dispatch.publishMode === 'app-gate'
+      && dispatch.caller.eventName === 'repository_dispatch'
+      && dispatch.expectedGeneration === undefined) {
+      return rejectInvalidDispatch(response, ['expectedGeneration']);
+    }
 
     let claims: GitHubActionsOidcClaims;
     try {
@@ -129,9 +154,10 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         // refresh request. OIDC proves the workflow identity above; the
         // repository persists the retry only after its own state/evidence gate.
         ...(centralRefreshAuthorized ? {
-            retryRequested: true,
-            retryAfterExecutionAttempt: dispatch.refreshExecutionAttempt,
-          } : {}),
+          retryRequested: true,
+          retryAfterExecutionAttempt: dispatch.refreshExecutionAttempt,
+        } : {}),
+        ...(dispatch.expectedGeneration === undefined ? {} : { expectedGeneration: dispatch.expectedGeneration }),
         identity: resolved?.identity || buildReviewRunIdentity({
           owner: dispatch.owner,
           repo: dispatch.repo,
@@ -150,6 +176,19 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         runId: admission.run.runId,
       });
     } catch (error) {
+      if (error instanceof ReviewGenerationConflictError) {
+        logger.warn('Rejected mismatched review generation', {
+          reason: 'review_generation_conflict',
+          repositoryId: dispatch.repositoryId,
+          expectedGeneration: error.expectedGeneration,
+          durableGeneration: error.durableGeneration,
+        });
+        return response.status(409).json({
+          error: 'Expected review generation does not match durable service state',
+          expectedGeneration: error.expectedGeneration,
+          durableGeneration: error.durableGeneration,
+        });
+      }
       logger.error('Failed to durably admit GitHub Actions dispatch', {
         reason: 'admission_unavailable',
         repositoryId: dispatch.repositoryId,

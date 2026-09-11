@@ -13,6 +13,9 @@ data:
   # run at all -- a required gate that blocks with nothing red. Turn it on
   # deliberately, per environment, once the lane is proven.
   ACTION_DISPATCH_ALLOW_APP_GATE: "${ACTION_DISPATCH_ALLOW_APP_GATE}"
+  # Keep false while old central producers are still draining. Once every live
+  # app-gate request proves its exact generation, set true and redeploy.
+  ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION: "${ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION}"
   ACTION_DISPATCH_REPOSITORY_IDS: "${ACTION_DISPATCH_REPOSITORY_IDS}"
   ACTION_DISPATCH_OWNER_IDS: "${ACTION_DISPATCH_OWNER_IDS}"
   ACTION_DISPATCH_WORKFLOW_REFS: "${ACTION_DISPATCH_WORKFLOW_REFS}"

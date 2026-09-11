@@ -423,7 +423,7 @@ export class GitHubInstallationClient {
       const ownedAttempt = (check: any) => exactHead(check) && check.app?.id === publisherAppId
         && (check.external_id === externalId || (!check.external_id && inWindow(check)));
       const candidates = checks.filter(ownedAttempt);
-      if (candidates.length > 1) throw new Error('ambiguous abandoned check');
+      if (candidates.length > 1) return 'already-completed';
       const failure = {
         status: 'completed', conclusion: 'failure', completed_at: new Date(this.now()).toISOString(),
         actions: [REVIEW_REFRESH_ACTION],
@@ -450,7 +450,7 @@ export class GitHubInstallationClient {
         // from acquiring its own explicit failure check.
         if (checks.some((check) => exactHead(check) &&
           (!Number.isFinite(Date.parse(check.started_at)) || Date.parse(check.started_at) >= earliestLegacyStart))) {
-          throw new Error('unowned or newer check blocks failure creation');
+          return 'already-completed';
         }
         await request(`${base}/check-runs`, { method: 'POST', body: JSON.stringify({
           name: 'Review Yeti', head_sha: run.headSha, external_id: externalId, ...failure,

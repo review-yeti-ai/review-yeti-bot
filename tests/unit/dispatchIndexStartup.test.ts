@@ -110,6 +110,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     vi.spyOn(process, 'once').mockReturnValue(process);
     vi.stubGlobal('fetch', vi.fn(() => { throw new Error('unexpected network call'); }));
     vi.stubEnv('ACTION_DISPATCH_ENABLED', 'true');
+    vi.stubEnv('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION', undefined);
     vi.stubEnv('GITHUB_APP_ID', '4385771');
     vi.stubEnv('GITHUB_APP_PRIVATE_KEY', 'synthetic-startup-private-key');
     vi.stubEnv('HOSTNAME', 'startup-test');
@@ -171,13 +172,46 @@ describe('Action dispatch startup transport and admission wiring', () => {
       appId: '4385771', privateKey: 'synthetic-startup-private-key', owner: 'calltelemetry', repo: 'ct-meta',
       baseUrl: baseUrl ? 'https://api.example.invalid/api/v3' : 'https://api.github.com',
     });
-    expect(mocks.repository).toHaveBeenCalledWith(mocks.pool, undefined, undefined);
+    expect(mocks.repository).toHaveBeenCalledWith(mocks.pool, undefined, {
+      requireExpectedGeneration: false,
+    });
+    expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
+      requireExpectedGeneration: false,
+    }));
     expect(mocks.gateRepository).not.toHaveBeenCalled();
     expect(mocks.getPrepared).not.toHaveBeenCalled();
     expect(mocks.authoritative).not.toHaveBeenCalled();
     expect(mocks.legacyReaper).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0); // Legacy publication belongs only to the worker-App dispatcher.
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('wires enabled expected-generation enforcement into request and durable admission', async () => {
+    vi.stubEnv('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION', 'true');
+    await start();
+
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.repository).toHaveBeenCalledExactlyOnceWith(mocks.pool, undefined, {
+      requireExpectedGeneration: true,
+    });
+    expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
+      requireExpectedGeneration: true,
+    }));
+    expect(mocks.listen).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an invalid expected-generation enforcement value before initialization', async () => {
+    vi.stubEnv('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION', 'yes');
+    await start();
+
+    expect(mocks.initialize).not.toHaveBeenCalled();
+    expect(mocks.repository).not.toHaveBeenCalled();
+    expect(mocks.createApp).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(mocks.error).toHaveBeenCalledWith('Action dispatch service failed to start', {
+      error: 'ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION must be exactly true or false',
+    });
+    expect(process.exitCode).toBe(1);
   });
 
   it('composes bounded storage and prepared lookup, then passes the exact service validator into admission', async () => {
@@ -201,11 +235,13 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.gateRepository.mock.invocationCallOrder[0]).toBeLessThan(mocks.authoritative.mock.invocationCallOrder[0]);
     expect(mocks.repository).toHaveBeenCalledExactlyOnceWith(mocks.pool, undefined, {
       validateAuthoritativeAdmission: mocks.validateAdmission,
+      requireExpectedGeneration: false,
     });
     expect(mocks.authoritative.mock.invocationCallOrder[0]).toBeLessThan(mocks.repository.mock.invocationCallOrder[0]);
     const service = mocks.authoritative.mock.results[0].value;
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
       authoritativePublishing: service.admission, authoritativeWorkerCompletion: service.completion,
+      requireExpectedGeneration: false,
     }));
     expect(mocks.validateAdmission).not.toHaveBeenCalled();
     expect(mocks.listen).toHaveBeenCalledOnce();
