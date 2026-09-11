@@ -535,6 +535,9 @@ export async function runPublishingReviewWorker(
           client,
           jobId: identity.runId,
           signal: panelDeadline.signal,
+          // Keep the upstream production Bifrost native JSON contract while
+          // enforcing the worker's overall cancellation boundary.
+          requestPolicy: { responseFormat: { type: 'json_object' } },
         } as Parameters<typeof executePersonaPanel>[0])),
         panelDeadline.signal,
       );

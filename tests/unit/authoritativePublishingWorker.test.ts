@@ -110,6 +110,7 @@ describe('authoritative prepared publishing worker', () => {
       repository: 'example/project', headSha: HEAD, repositoryVisibility: 'PRIVATE', client: f.client,
       jobId: f.env.REVIEW_RUN_ID, baseSha: BASE, prNumber: 42,
       signal: expect.any(AbortSignal),
+      requestPolicy: { responseFormat: { type: 'json_object' } },
     });
     expect(f.panelRunner.mock.calls[0][0].config.default_max_turns).toBe(1);
     expect(f.panelRunner.mock.calls[0][0].config.personas.map((p) => p.id)).toEqual(['sec-lane', 'qual-lane']);
