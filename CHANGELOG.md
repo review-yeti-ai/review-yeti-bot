@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.53.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.9...v1.53.0) (2026-09-11)
+
+
+### Features
+
+* **operator:** switch prebaked review workers to ephemeral emptyDir workspace ([#697](https://github.com/review-yeti-ai/review-yeti-bot/issues/697)) ([13661bc](https://github.com/review-yeti-ai/review-yeti-bot/commit/13661bcc9e5ec73285d505d2e7e23419e0658b5e))
+
 ## [1.52.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.8...v1.52.9) (2026-09-11)
 
 
