@@ -5,6 +5,7 @@ import {
   REVIEW_EVENT_SCHEMA,
   isReviewEventValidationError,
   parseReviewYetiEventV1,
+  progressDataSchema,
   reviewEventIdentitySchema,
   reviewEventTimestampSchema,
   type ReviewYetiEventV1,
@@ -89,7 +90,6 @@ export type ReviewEventRejectionCode =
   | 'unknown_field'
   | 'forbidden_field'
   | 'invalid_field'
-  | 'message_too_long'
   | 'payload_too_large';
 
 export class ReviewEventRejection extends Error {
@@ -311,6 +311,11 @@ export function sanitizeProgressEvent(
   const canonicalMessage = CANONICAL_MESSAGE_BY_EVENT_KIND[eventKind];
   if (!canonicalMessage) return new ReviewEventRejection('invalid_live_event', 'type');
   data.message = canonicalMessage;
+  const dataResult = progressDataSchema.safeParse(data);
+  if (!dataResult.success) {
+    const issuePath = dataResult.error.issues[0]?.path.join('.');
+    return new ReviewEventRejection('invalid_field', issuePath ? `data.${issuePath}` : 'data');
+  }
 
   if (!reviewEventTimestampSchema.safeParse(liveEvent.timestamp).success) {
     return new ReviewEventRejection('invalid_field', 'timestamp');
@@ -332,7 +337,7 @@ export function sanitizeProgressEvent(
     occurred_at: liveEvent.timestamp,
     ...identityResult.data,
     visibility: 'internal' as const,
-    data,
+    data: dataResult.data,
   };
 
   try {
@@ -344,7 +349,6 @@ export function sanitizeProgressEvent(
     if (error instanceof z.ZodError) {
       const issue = error.issues[0];
       const field = issue?.path.length ? issue.path.join('.') : undefined;
-      if (field === 'data.message') return new ReviewEventRejection('message_too_long', 'message');
       return new ReviewEventRejection('invalid_field', field);
     }
     return new ReviewEventRejection('invalid_live_event');

@@ -123,6 +123,18 @@ describe('progress event redaction boundary', () => {
     expect(rejection.field).toBe('tokensUsed');
   });
 
+  it.each([
+    ['null', null],
+    ['array', []],
+  ])('rejects a %s tokensUsed value', (_label, tokensUsed) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({
+      tokensUsed,
+    }, 'llm:token'), identity));
+
+    expect(rejection.code).toBe('invalid_field');
+    expect(rejection.field).toBe('tokensUsed');
+  });
+
   it('maps aggregate duration, finding, and cost fields to total fields', () => {
     const result = sanitizeProgressEvent(liveEvent({
       totalDurationMs: 2_400,
@@ -161,6 +173,88 @@ describe('progress event redaction boundary', () => {
     });
   });
 
+  it('maps remaining typed progress fields and prefers the resolved model', () => {
+    const result = sanitizeProgressEvent(liveEvent({
+      stage: 'quorum',
+      status: 'completed',
+      provider: 'openrouter',
+      requestedModel: 'requested/model',
+      model: 'configured/model',
+      resolvedModel: 'resolved/model',
+      promptTokens: 11,
+      completionTokens: 7,
+      totalTokens: 18,
+      latencyMs: 44,
+      errorClass: 'none',
+      verdict: 'ship',
+      quorumSatisfied: true,
+      distinctProviders: ['provider-a', 'provider-b'],
+      totalPersonasExecuted: 2,
+    }, 'quorum_verdict'), identity);
+
+    expect(result).toMatchObject({
+      data: {
+        stage: 'quorum',
+        status: 'completed',
+        provider: 'openrouter',
+        model: 'resolved/model',
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        total_tokens: 18,
+        latency_ms: 44,
+        error_class: 'none',
+        verdict: 'ship',
+        quorum_satisfied: true,
+        distinct_providers: ['provider-a', 'provider-b'],
+        total_personas_executed: 2,
+      },
+    });
+  });
+
+  it('uses requestedModel when no configured or resolved model exists', () => {
+    const result = sanitizeProgressEvent(liveEvent({
+      requestedModel: 'requested/model',
+    }), identity);
+
+    expect(result).toMatchObject({ data: { model: 'requested/model' } });
+  });
+
+  it('uses personaId when the top-level legacy persona is empty', () => {
+    const event = liveEvent({ personaId: 'architecture' });
+    event.persona = '';
+
+    const result = sanitizeProgressEvent(event, identity);
+    expect(result).toMatchObject({ data: { persona: 'architecture' } });
+  });
+
+  it('accepts wire-format identity fields without dropping their bindings', () => {
+    const result = sanitizeProgressEvent(liveEvent({}), {
+      repository_id: 321,
+      pr_number: 24,
+      base_sha: 'c'.repeat(40),
+      head_sha: 'd'.repeat(40),
+      attempt_id: 'wire-attempt',
+      run_id: 'wire-run',
+      sequence: 9,
+      correlation_id: 'wire-correlation',
+      trace_id: 'wire-trace',
+      event_id: '01J8Z5M6V7Q8R9S0T1V2W3X4Y7',
+    });
+
+    expect(result).toMatchObject({
+      event_id: '01J8Z5M6V7Q8R9S0T1V2W3X4Y7',
+      repository_id: 321,
+      pr_number: 24,
+      base_sha: 'c'.repeat(40),
+      head_sha: 'd'.repeat(40),
+      attempt_id: 'wire-attempt',
+      run_id: 'wire-run',
+      sequence: 9,
+      correlation_id: 'wire-correlation',
+      trace_id: 'wire-trace',
+    });
+  });
+
   it.each([
     ['eventId', '01J8Z5M6V7Q8R9S0T1V2W3X4Y5'],
     ['event_id', '01J8Z5M6V7Q8R9S0T1V2W3X4Y6'],
@@ -171,6 +265,33 @@ describe('progress event redaction boundary', () => {
     });
 
     expect(result).toMatchObject({ event_id: suppliedEventId });
+  });
+
+  it('generates a strict ULID when the caller supplies no event ID', () => {
+    const result = sanitizeProgressEvent(liveEvent({}), identity);
+
+    expect(result).not.toBeInstanceOf(ReviewEventRejection);
+    expect(result).toMatchObject({ schema: 'review-yeti-event.v1' });
+    expect('event_id' in result ? result.event_id : '').toMatch(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/u);
+  });
+
+  it('rejects an invalid caller event ID with its exact envelope field', () => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({}), {
+      ...identity,
+      eventId: 'not-a-ulid',
+    }));
+
+    expect(rejection.code).toBe('invalid_field');
+    expect(rejection.field).toBe('event_id');
+  });
+
+  it('returns a typed timestamp rejection for a pre-epoch ULID timestamp', () => {
+    const event = liveEvent({});
+    event.timestamp = '0000-01-01T00:00:00.000Z';
+
+    const rejection = rejectionOf(sanitizeProgressEvent(event, identity));
+    expect(rejection.code).toBe('invalid_field');
+    expect(rejection.field).toBe('timestamp');
   });
 
   it('returns a typed timestamp rejection when a supplied event ID bypasses ULID generation', () => {
@@ -184,6 +305,27 @@ describe('progress event redaction boundary', () => {
 
     expect(rejection.code).toBe('invalid_field');
     expect(rejection.field).toBe('timestamp');
+  });
+
+  it('returns the exact envelope path for a negative legacy duration', () => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({
+      durationMs: -1,
+    }), identity));
+
+    expect(rejection.code).toBe('invalid_field');
+    expect(rejection.field).toBe('data.duration_ms');
+  });
+
+  it.each([
+    ['invalid', 'persona with spaces'],
+    ['oversized', 'p'.repeat(129)],
+  ])('returns the exact envelope path for an %s legacy persona', (_label, persona) => {
+    const event = liveEvent({});
+    event.persona = persona;
+
+    const rejection = rejectionOf(sanitizeProgressEvent(event, identity));
+    expect(rejection.code).toBe('invalid_field');
+    expect(rejection.field).toBe('data.persona');
   });
 
   it('returns payload_too_large for a valid sanitized envelope over 16 KiB', () => {
@@ -225,6 +367,23 @@ describe('progress event redaction boundary', () => {
     expect(rejection.field).toBe('unknownField');
   });
 
+  it('omits allowlisted legacy-only metadata rather than forwarding it', () => {
+    const result = sanitizeProgressEvent(liveEvent({
+      repo: 'owner/private-repository',
+      prnumber: 42,
+      charter: 'private review instructions',
+      required: true,
+      paths: ['private/source.ts'],
+      decision: 'legacy-only',
+      isError: false,
+      stream: 'stdout',
+    }), identity);
+
+    for (const field of ['repo', 'prnumber', 'charter', 'required', 'paths', 'decision', 'isError', 'stream']) {
+      expect(result).not.toHaveProperty(`data.${field}`);
+    }
+  });
+
   it('rejects an unknown top-level live event field and names it', () => {
     const event = {
       ...liveEvent({}),
@@ -234,6 +393,33 @@ describe('progress event redaction boundary', () => {
     const rejection = rejectionOf(sanitizeProgressEvent(event, identity));
     expect(rejection.code).toBe('unknown_field');
     expect(rejection.field).toBe('tenantSecret');
+  });
+
+  it.each([
+    ['null event', null],
+    ['array event', []],
+  ])('rejects a malformed %s without throwing', (_label, event) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(event as any, identity));
+    expect(rejection.code).toBe('invalid_live_event');
+    expect(rejection.field).toBeUndefined();
+  });
+
+  it.each([
+    ['null data', null],
+    ['array data', []],
+  ])('rejects malformed %s without throwing', (_label, data) => {
+    const event = liveEvent({});
+    event.data = data;
+
+    const rejection = rejectionOf(sanitizeProgressEvent(event, identity));
+    expect(rejection.code).toBe('invalid_live_event');
+    expect(rejection.field).toBe('data');
+  });
+
+  it('rejects an unknown legacy event type', () => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({}, 'unknown:event'), identity));
+    expect(rejection.code).toBe('invalid_live_event');
+    expect(rejection.field).toBe('type');
   });
 
   it.each([
@@ -276,6 +462,18 @@ describe('progress event redaction boundary', () => {
       ...identity,
       headSha: 'stale',
     }));
+    expect(rejection.code).toBe('invalid_identity');
+  });
+
+  it.each([
+    ['null', null],
+    ['array', []],
+  ])('rejects a malformed %s identity without throwing', (_label, malformedIdentity) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(
+      liveEvent({}),
+      malformedIdentity as unknown as ReviewEventIdentity,
+    ));
+
     expect(rejection.code).toBe('invalid_identity');
   });
 
