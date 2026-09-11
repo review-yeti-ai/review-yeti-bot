@@ -51,7 +51,10 @@ vi.mock('../../src/review/abandonedRunReaper', () => ({ AbandonedRunReaper: clas
   constructor() { mocks.legacyReaper(); }
   runOnce = vi.fn();
 } }));
-vi.mock('../../src/github/installationClient', () => ({ GitHubInstallationClient: class {} }));
+vi.mock('../../src/github/installationClient', () => ({
+  GitHubInstallationClient: class {},
+  REVIEW_REFRESH_ACTION: Object.freeze({ identifier: 'review-yeti/refresh' }),
+}));
 vi.mock('../../src/github/appAuth', () => ({ getGitHubAppRepositoryPublishToken: vi.fn() }));
 vi.mock('../../src/auth/authoritativeServiceConfig', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/auth/authoritativeServiceConfig')>(),
