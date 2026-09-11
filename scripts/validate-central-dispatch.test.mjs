@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 
 import {
@@ -31,6 +33,34 @@ const payload = Object.freeze({
   base_sha: baseSha,
   head_sha: headSha,
 });
+const receiverWorkflow = readFileSync(new URL('../.github/workflows/repository-dispatch.yml', import.meta.url), 'utf8');
+
+function workflowStepRun(source, name) {
+  const marker = `      - name: ${name}\n`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `missing workflow step ${name}`);
+  const blockStart = start + marker.length;
+  const next = source.indexOf('\n      - name: ', blockStart);
+  const block = source.slice(blockStart, next === -1 ? source.length : next + 1);
+  const run = block.match(/^        run: \|\n([\s\S]*)$/mu);
+  assert.ok(run, `missing run body for ${name}`);
+  return run[1].split('\n').map((line) => line.startsWith('          ') ? line.slice(10) : line).join('\n');
+}
+
+function resolveValidationTokenScope(targetRepository) {
+  const directory = mkdtempSync(`${tmpdir()}/review-yeti-token-scope-`);
+  const outputPath = `${directory}/github-output`;
+  try {
+    const result = spawnSync('bash', ['-c', workflowStepRun(receiverWorkflow, 'Resolve target repository name')], {
+      encoding: 'utf8',
+      env: { ...process.env, GITHUB_OUTPUT: outputPath, TARGET_REPOSITORY: targetRepository },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return Object.fromEntries(readFileSync(outputPath, 'utf8').trim().split('\n').map((line) => line.split('=', 2)));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 // ADR 0490 scope widened 2026-09-02 (example-review-actions #200): every admitted
 // repository must pass the full dispatch contract end-to-end, not just the
@@ -75,6 +105,9 @@ function buildFixture({ repository, name, pr, callerPath = '.github/workflows/ct
       // not the degraded fallback.
       return response({ workflow_runs: [] });
     }
+    if (url.includes(`/commits/${headSha}/check-runs?`)) {
+      return response({ total_count: 1, check_runs: [infrastructureFailedFirstAttemptCheck()] });
+    }
     if (url.includes(`/contents/${callerPath}?ref=`)) {
       return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
     }
@@ -90,6 +123,19 @@ jobs:
     steps:
       - run: gh api repos/exampleorg/example-review-actions/dispatches -f event_type=${DISPATCH_EVENT_TYPE}
 `;
+
+function infrastructureFailedFirstAttemptCheck(id = 100) {
+  return {
+    id,
+    name: 'Review Yeti',
+    head_sha: headSha,
+    status: 'completed',
+    conclusion: 'failure',
+    external_id: `run_${'1'.repeat(32)}:a1`,
+    app: { id: 4385771, slug: 'ct-review-bot' },
+    output: { title: 'Review Yeti: review did not complete', summary: 'recorded dead first attempt', text: null },
+  };
+}
 
 function response(payloadValue, status = 200) {
   return {
@@ -124,6 +170,9 @@ function successFetch(calls) {
       // An idle lane: the happy path must exercise the real capacity branch,
       // not the degraded fallback.
       return response({ workflow_runs: [] });
+    }
+    if (url.includes(`/commits/${headSha}/check-runs?`)) {
+      return response({ total_count: 1, check_runs: [infrastructureFailedFirstAttemptCheck()] });
     }
     if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=')) {
       return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
@@ -200,10 +249,11 @@ test('validates exact live PR identity and the immutable base-owned caller with 
   assert.match(result.caller_workflow_sha256, /^[0-9a-f]{64}$/u);
   assert.equal(result.caller_run_id, callerRunId);
   assert.equal(result.caller_run_attempt, callerRunAttempt);
-  // 5 calls: PR identity, caller run, two capacity listings (queued and
-  // in_progress), caller workflow bytes. Capacity is checked after identity so
-  // an invalid request reports the validation failure, not a capacity message.
-  assert.equal(calls.length, 5);
+  // 6 calls: PR identity, caller run, two capacity listings (queued and
+  // in_progress), exact-head App checks, and caller workflow bytes. Capacity is
+  // checked after identity so an invalid request reports the validation
+  // failure, not a capacity message.
+  assert.equal(calls.length, 6);
   assert.equal(calls[0].init.headers.authorization, 'Bearer central-token');
   assert.equal(calls[1].url.endsWith(`/actions/runs/${callerRunId}`), true);
   // The fixture PR targets 0.8.8-stable while the default branch is 0.8.7-stable: the caller
@@ -214,8 +264,8 @@ test('validates exact live PR identity and the immutable base-owned caller with 
     listings.map((call) => new URL(call.url).searchParams.get('status')).sort(),
     ['in_progress', 'queued'],
   );
-  assert.equal(calls[4].url.endsWith('?ref=0.8.7-stable'), true);
-  assert.equal(calls[4].url.includes('0.8.8-stable'), false);
+  assert.equal(calls[5].url.endsWith('?ref=0.8.7-stable'), true);
+  assert.equal(calls[5].url.includes('0.8.8-stable'), false);
   assert.equal(calls.some((call) => call.url.includes('central-token')), false);
 });
 
@@ -284,23 +334,37 @@ test('immutable caller contract rejects inherited or provider credentials and di
 });
 
 test('workflow contract delegates promoted v1 bytes and keeps provider secrets in the central job', () => {
-  const receiver = readFileSync(new URL('../.github/workflows/repository-dispatch.yml', import.meta.url), 'utf8');
+  const receiver = receiverWorkflow;
   const reusable = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
   const selfReview = readFileSync(new URL('../.github/workflows/ct-review-bot.yml', import.meta.url), 'utf8');
 
   assert.match(receiver, /types:\s*\[review-yeti-request\]/u);
   assert.match(receiver, /run-name:\s*Review Yeti central \/ \$\{\{ github\.event\.client_payload\.request_id \}\}/u);
+  assert.match(receiver, /group:\s*central-review-yeti-\$\{\{ github\.event\.client_payload\.repository \|\| inputs\.repository \}\}-\$\{\{ github\.event\.client_payload\.pr_number \|\| inputs\.pr_number \}\}-\$\{\{ github\.event\.client_payload\.head_sha \|\| inputs\.head_sha \}\}/u);
+  assert.match(receiver, /cancel-in-progress:\s*false/u);
   assert.match(receiver, /uses: exampleorg\/example-review-actions\/\.github\/workflows\/review-yeti\.yml@v1/u);
+  assert.match(receiver, /execution_backend:\s*doks/u);
   assert.match(receiver, /secrets: inherit/u);
   // REL-540 / ADR 0511: the receiver's validate job runs as the ct-review-bot App, never the PAT.
   assert.match(receiver, /create-github-app-token@[0-9a-f]{40}/u);
   assert.match(receiver, /app-id: \$\{\{ secrets\.CT_REVIEW_BOT_APP_ID \}\}/u);
+  const validationTokenStep = receiver.match(/- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Validate payload)/u)?.[0] ?? '';
+  const scopedPermissions = [...validationTokenStep.matchAll(/^\s+permission-([a-z-]+):\s*(\w+)\s*$/gmu)]
+    .map((match) => `${match[1]}:${match[2]}`).sort();
+  assert.deepEqual(scopedPermissions, [
+    'actions:read',
+    'checks:read',
+    'contents:read',
+    'pull-requests:read',
+  ]);
   assert.doesNotMatch(receiver, /secrets\.CROSS_REPO_TOKEN/u);
   assert.doesNotMatch(receiver, /OLLAMA_PR_REVIEW_API_KEY/u);
   assert.match(reusable, /OLLAMA_PR_REVIEW_API_KEY:\s*\$\{\{ secrets\.OLLAMA_PR_REVIEW_API_KEY \}\}/u);
   // REL-519: GitHub-surface auth moved to the ct-review-bot App installation
   // token (own rate bucket); github.token remains the non-central fallback.
   assert.match(reusable, /GH_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \|\| github\.token \}\}/u);
+  assert.match(reusable, /REVIEW_YETI_DOKS_PUBLISH_MODE:\s*\$\{\{ inputs\.central_execution && 'app-gate' \|\| vars\.REVIEW_YETI_DOKS_PUBLISH_MODE \|\| 'disabled' \}\}/u);
+  assert.match(reusable, /group:\s*exampleorg-review-yeti-[^\n]*inputs\.head_sha/u);
   assert.doesNotMatch(reusable, /secrets\.CROSS_REPO_TOKEN/u);
   assert.doesNotMatch(reusable, /workflow_call:[\s\S]{0,1200}OLLAMA_PR_REVIEW_API_KEY/u);
   assert.match(selfReview, /repos\/exampleorg\/example-review-actions\/dispatches/u);
@@ -309,6 +373,23 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(selfReview, /types:\s*\[opened, synchronize, reopened, ready_for_review, labeled, unlabeled\]/u);
   assert.doesNotMatch(selfReview, /review-yeti\.yml@|secrets\s*:\s*inherit|OPENROUTER|FIREWORKS|GEMINI|OLLAMA_PR_REVIEW/u);
   assert.equal((reusable.match(/^\s+max-file-diff-chars:/gmu) || []).length, 1);
+});
+
+test('receiver validation token covers target and central capacity repositories without duplicates', () => {
+  assert.deepEqual(resolveValidationTokenScope('exampleorg/example-api'), {
+    name: 'example-api',
+    repositories: 'example-api,example-review-actions',
+  });
+  assert.deepEqual(resolveValidationTokenScope(CENTRAL_REPOSITORY), {
+    name: 'example-review-actions',
+    repositories: 'example-review-actions',
+  });
+
+  const validationTokenStep = receiverWorkflow.match(
+    /- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Validate payload)/u,
+  )?.[0] ?? '';
+  assert.match(validationTokenStep, /repositories:\s*\$\{\{ steps\.target\.outputs\.repositories \}\}/u);
+  assert.doesNotMatch(validationTokenStep, /repositories:\s*\$\{\{ steps\.target\.outputs\.name \}\}/u);
 });
 
 

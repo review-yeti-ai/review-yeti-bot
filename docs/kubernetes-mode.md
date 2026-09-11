@@ -133,6 +133,17 @@ Kubernetes worker pods run with strict security boundaries:
 
 ## Configuring the Execution Backend
 
+The governed central `repository_dispatch` path is fixed to
+`execution-backend: doks` and `doks-publish-mode: app-gate`. Its exact-head
+workflow concurrency lease serializes generation revalidation, while the DOKS
+service's durable request identity and database compare-and-swap own worker
+attempt allocation. Recovery requires exactly one completed, failed worker `a1`
+with an infrastructure/no-verdict title; terminal `BLOCK`/`FIX_FIRST` verdicts,
+duplicate `a1` rows, and endpoint-cap-ambiguous inventories fail closed.
+Repository variables cannot downgrade that admission path.
+
+The settings below apply only to non-central/manual workflow calls:
+
 In your central `policy/review-yeti.json` or repository settings:
 
 ```json

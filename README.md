@@ -216,7 +216,10 @@ For more details, see the [Consumer Repository Onboarding Guide](docs/onboarding
 
 ## Execution Modes
 
-Review Yeti supports two distinct execution backends configured centrally in `policy/review-yeti.json` or via repository variables:
+Review Yeti supports two execution backends. Governed `repository_dispatch`
+admissions always use DOKS App-gate mode; repository variables cannot select the
+local backend or disable App-gate publication for that path. Local mode remains
+available to non-central/manual workflows.
 
 ### 1. Hosted GitHub Actions Mode (`execution_backend: local`)
 * The review runs inside standard GitHub Actions runners (`ubuntu-latest` or self-hosted/Blacksmith).
@@ -237,6 +240,27 @@ protection and promotion therefore bind `Review Yeti` to the official
 `ct-review-bot` App (integration `4385771`). DOKS passthrough does not dispatch
 a worker or synthesize an approval; it leaves the protected raw check
 unsatisfied.
+
+### Atomic Worker-Generation Reservation
+
+The central receiver serializes the complete validation and dispatch run by the
+immutable tuple `repository + pull request + head SHA`, with cancellation
+disabled. While it holds that lease, the validator reads the complete App-owned
+`Review Yeti` check ledger for the exact head and admits only generation `a1`,
+or one `a2` replacement when the ledger contains exactly one worker row: a
+completed `a1` with conclusion `failure` and an exact infrastructure/no-verdict
+title. `BLOCK` and `FIX_FIRST` are terminal review verdicts and never authorize
+replacement. Every row and pagination boundary is validated fail closed before
+that decision; an inventory at the 1,000-run endpoint cap is ambiguous and is
+rejected.
+
+GitHub workflow concurrency is necessary but is not the durable allocator. The
+validated request is forced through the DOKS App-gate backend, where the
+service-owned request identity and database compare-and-swap allocate the worker
+attempt. Together, serial revalidation and the DOKS identity/CAS form the
+reservation boundary: after the first recovery dispatch reserves `a2`, a queued
+duplicate revalidates against that new generation and is rejected. Consumer or
+central repository variables cannot downgrade this path to local execution.
 
 The legacy hosted/local compatibility path also publishes `Review Yeti Gate`
 alongside the raw check, including an honestly `skipped` pair during local

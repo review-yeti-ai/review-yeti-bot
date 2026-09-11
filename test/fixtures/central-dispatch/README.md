@@ -43,6 +43,13 @@ would miss:
 Each fixture's `_provenance` block spells out exactly which fields are byte-exact and which are
 reconstructed, and how. Never delete or "clean up" that block -- it is the point of the fixture.
 
+The validator now also reads the exact head's App-owned `Review Yeti` check ledger before it
+admits a worker generation. The historical captures predate that endpoint read, so the replay
+test supplies an explicitly synthetic infrastructure-failed `a1` check page while preserving the
+run, pull, and workflow objects above unchanged. That mock is deliberately inline and labelled
+replay-only; it must not be mistaken for a live-captured check-run object or used to weaken the
+byte-exact object replay.
+
 ## Caller workflow content
 
 `ct-review-bot-0.8.7-stable.yml` is the real, current byte content of

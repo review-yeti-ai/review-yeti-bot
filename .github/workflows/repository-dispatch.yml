@@ -38,8 +38,11 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: central-review-yeti-${{ github.event.client_payload.repository || inputs.repository }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}
-  cancel-in-progress: true
+  # This is the GitHub-side half of the generation reservation. Every admission
+  # for one immutable PR head revalidates serially; the DOKS App-gate database
+  # identity/CAS is the durable half that owns worker-attempt allocation.
+  group: central-review-yeti-${{ github.event.client_payload.repository || inputs.repository }}-${{ github.event.client_payload.pr_number || inputs.pr_number }}-${{ github.event.client_payload.head_sha || inputs.head_sha }}
+  cancel-in-progress: false
 
 jobs:
   validate:
@@ -63,9 +66,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      # The validator reads the target PR and the caller run on the consumer
-      # repository. Run it as the ct-review-bot App (its own rate bucket, ADR
-      # 0511): a PAT here shares the operator's 5,000 req/hr bucket, and on
+      # The validator reads the target PR, caller run, and check ledger on the
+      # consumer plus central workflow runs for capacity admission. Run it as
+      # the ct-review-bot App (its own rate bucket, ADR 0511): a PAT here shares
+      # the operator's 5,000 req/hr bucket, and on
       # 2026-09-03 that bucket was exhausted by unrelated tooling and every
       # central review was rejected with HTTP 403. No fallback: a missing App
       # secret or permission fails this job loudly.
@@ -76,7 +80,17 @@ jobs:
         run: |
           set -euo pipefail
           case "${TARGET_REPOSITORY}" in
-            exampleorg/*) echo "name=${TARGET_REPOSITORY#exampleorg/}" >> "$GITHUB_OUTPUT" ;;
+            exampleorg/*)
+              target_name="${TARGET_REPOSITORY#exampleorg/}"
+              repositories="${target_name}"
+              if [[ "${target_name}" != "example-review-actions" ]]; then
+                repositories="${target_name},example-review-actions"
+              fi
+              {
+                echo "name=${target_name}"
+                echo "repositories=${repositories}"
+              } >> "$GITHUB_OUTPUT"
+              ;;
             *) echo "::error::target repository must be a exampleorg repository, got '${TARGET_REPOSITORY}'"; exit 1 ;;
           esac
 
@@ -87,7 +101,11 @@ jobs:
           app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
           private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
           owner: exampleorg
-          repositories: ${{ steps.target.outputs.name }}
+          repositories: ${{ steps.target.outputs.repositories }}
+          permission-actions: read
+          permission-checks: read
+          permission-contents: read
+          permission-pull-requests: read
 
       - name: Validate payload, current PR, and immutable caller
         id: request
@@ -110,4 +128,5 @@ jobs:
       base_sha: ${{ needs.validate.outputs.base_sha }}
       head_sha: ${{ needs.validate.outputs.head_sha }}
       passthrough: ${{ vars.REVIEW_YETI_PASSTHROUGH == 'true' }}
+      execution_backend: doks
     secrets: inherit

@@ -35,6 +35,7 @@ jobs:
           node --check scripts/emit-execution-plan.test.mjs
           node --check scripts/validate-central-dispatch.mjs
           node --check scripts/validate-central-dispatch.test.mjs
+          node --check scripts/validate-review-generation.test.mjs
           node --check scripts/self-review-dispatch.test.mjs
           node --check scripts/validate-central-dispatch.replay.test.mjs
           node --check scripts/review-readiness.mjs
@@ -104,6 +105,7 @@ jobs:
           node --test scripts/align-panel-seed-key.test.mjs
           node --test scripts/emit-execution-plan.test.mjs
           node --test scripts/validate-central-dispatch.test.mjs
+          node --test scripts/validate-review-generation.test.mjs
           node --test scripts/self-review-dispatch.test.mjs
           node --test scripts/validate-central-dispatch.replay.test.mjs
           node --test scripts/review-readiness.test.mjs

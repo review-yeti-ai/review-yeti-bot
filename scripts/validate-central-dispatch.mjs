@@ -74,11 +74,34 @@ export function assertAdmittedRepository(repository) {
 }
 export const DISPATCH_EVENT_TYPE = 'review-yeti-request';
 export const CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
+export const REQUIRED_REVIEW_CONTEXT = 'Review Yeti';
+export const REQUIRED_REVIEW_APP_ID = 4385771;
+export const REQUIRED_REVIEW_APP_SLUG = 'ct-review-bot';
+export const CHECK_RUN_PAGE_SIZE = 100;
+export const CHECK_RUN_ENDPOINT_CAP = 1000;
 
 const PAYLOAD_KEYS = Object.freeze(['base_sha', 'head_sha', 'pr_number', 'repository', 'request_id']);
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const REQUEST_ID_PATTERN = /^([A-Za-z0-9_][A-Za-z0-9._-]{0,99}):([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
 const PROVIDER_SECRET_PATTERN = /(?:OLLAMA_PR_REVIEW_API_KEY|OPENROUTER(?:_PR_REVIEW_API_KEY|_REVIEW_FLEET_KEY|_API_KEY)|FIREWORKS_PR_REVIEW_API_KEY|SYNTHETIC_API_KEY|GEMINI_API_KEY)/u;
+const WORKER_EXTERNAL_ID_PATTERN = /^run_[a-f0-9]{32}:a([1-9][0-9]*)$/u;
+const MERGE_GROUP_EXTERNAL_ID_PATTERN = /^merge-group:([a-f0-9]{40})$/u;
+const CHECK_RUN_STATUSES = new Set(['completed', 'in_progress', 'pending', 'queued', 'requested', 'waiting']);
+const CHECK_RUN_CONCLUSIONS = new Set([
+  'action_required',
+  'cancelled',
+  'failure',
+  'neutral',
+  'skipped',
+  'stale',
+  'startup_failure',
+  'success',
+  'timed_out',
+]);
+const RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES = new Set([
+  'Review Yeti: review did not complete',
+  'Review Yeti: NO VERDICT (no panel result for this head)',
+]);
 
 function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -162,6 +185,166 @@ async function githubJson(url, token, fetchImpl) {
   });
   if (!response?.ok) throw new Error(`GitHub target lookup failed with HTTP ${response?.status ?? 'unknown'}`);
   return response.json();
+}
+
+function assertNullableString(value, label) {
+  if (value !== null && typeof value !== 'string') {
+    throw new Error(`${label} must be a string or null`);
+  }
+}
+
+function validateExactHeadReviewCheck(row, expectedHeadSha) {
+  assertPlainObject(row, 'check-run row');
+  if (!Number.isSafeInteger(row.id) || row.id < 1) {
+    throw new Error('check-run row id must be a positive safe integer');
+  }
+  if (row.name !== REQUIRED_REVIEW_CONTEXT) {
+    throw new Error(`check-run ${row.id} name is not ${REQUIRED_REVIEW_CONTEXT}`);
+  }
+  if (row.head_sha !== expectedHeadSha) {
+    throw new Error(`check-run ${row.id} is not bound to the exact requested head`);
+  }
+  assertPlainObject(row.app, `check-run ${row.id} app`);
+  if (row.app.id !== REQUIRED_REVIEW_APP_ID || row.app.slug !== REQUIRED_REVIEW_APP_SLUG) {
+    throw new Error(`check-run ${row.id} is not owned by the required Review Yeti App`);
+  }
+  if (!CHECK_RUN_STATUSES.has(row.status)) {
+    throw new Error(`check-run ${row.id} status is invalid`);
+  }
+  if (row.status === 'completed') {
+    if (!CHECK_RUN_CONCLUSIONS.has(row.conclusion)) {
+      throw new Error(`completed check-run ${row.id} conclusion is invalid`);
+    }
+  } else if (row.conclusion !== null) {
+    throw new Error(`non-completed check-run ${row.id} must have a null conclusion`);
+  }
+  assertPlainObject(row.output, `check-run ${row.id} output`);
+  if (typeof row.output.title !== 'string' || row.output.title.length === 0) {
+    throw new Error(`check-run ${row.id} output.title must be a non-empty string`);
+  }
+  if (typeof row.output.summary !== 'string') {
+    throw new Error(`check-run ${row.id} output.summary must be a string`);
+  }
+  assertNullableString(row.output.text, `check-run ${row.id} output.text`);
+  if (typeof row.external_id !== 'string' || row.external_id.length === 0) {
+    throw new Error(`check-run ${row.id} external_id must be a non-empty string`);
+  }
+  const workerIdentity = WORKER_EXTERNAL_ID_PATTERN.exec(row.external_id);
+  if (workerIdentity) {
+    const attempt = Number(workerIdentity[1]);
+    if (!Number.isSafeInteger(attempt)) {
+      throw new Error(`check-run ${row.id} external_id attempt exceeds the safe integer range`);
+    }
+    return { row, kind: 'worker', attempt };
+  }
+  const mergeGroupIdentity = MERGE_GROUP_EXTERNAL_ID_PATTERN.exec(row.external_id);
+  if (mergeGroupIdentity) {
+    if (mergeGroupIdentity[1] !== expectedHeadSha) {
+      throw new Error(`check-run ${row.id} merge-group external_id is not bound to the exact requested head`);
+    }
+    return { row, kind: 'merge-group', attempt: null };
+  }
+  throw new Error(`check-run ${row.id} external_id is not a valid worker or merge-group identity`);
+}
+
+export async function listExactHeadReviewChecks({ repository, headSha, token, fetchImpl = globalThis.fetch }) {
+  const apiBase = `https://api.github.com/repos/${repository}`;
+  const rows = [];
+  const identities = [];
+  const seenIds = new Set();
+  let expectedTotal = null;
+
+  for (let pageNumber = 1; pageNumber <= CHECK_RUN_ENDPOINT_CAP / CHECK_RUN_PAGE_SIZE; pageNumber += 1) {
+    const query = new URLSearchParams({
+      check_name: REQUIRED_REVIEW_CONTEXT,
+      filter: 'all',
+      app_id: String(REQUIRED_REVIEW_APP_ID),
+      per_page: String(CHECK_RUN_PAGE_SIZE),
+      page: String(pageNumber),
+    });
+    const page = await githubJson(`${apiBase}/commits/${headSha}/check-runs?${query}`, token, fetchImpl);
+    assertPlainObject(page, `check-runs page ${pageNumber}`);
+    if (!Number.isSafeInteger(page.total_count) || page.total_count < 0) {
+      throw new Error(`check-runs page ${pageNumber} total_count must be a non-negative safe integer`);
+    }
+    if (page.total_count >= CHECK_RUN_ENDPOINT_CAP) {
+      throw new Error(`Review Yeti check inventory reaches or exceeds the ${CHECK_RUN_ENDPOINT_CAP}-run endpoint cap`);
+    }
+    if (expectedTotal === null) {
+      expectedTotal = page.total_count;
+    } else if (page.total_count !== expectedTotal) {
+      throw new Error(`Review Yeti check inventory total_count changed from ${expectedTotal} to ${page.total_count}`);
+    }
+    if (!Array.isArray(page.check_runs)) {
+      throw new Error(`check-runs page ${pageNumber} check_runs must be an array`);
+    }
+    if (page.check_runs.length > CHECK_RUN_PAGE_SIZE) {
+      throw new Error(`check-runs page ${pageNumber} exceeds the requested page size`);
+    }
+
+    for (const row of page.check_runs) {
+      const identity = validateExactHeadReviewCheck(row, headSha);
+      if (seenIds.has(row.id)) {
+        throw new Error(`Review Yeti check inventory contains duplicate check-run id ${row.id}`);
+      }
+      seenIds.add(row.id);
+      rows.push(row);
+      identities.push(identity);
+    }
+    if (rows.length > expectedTotal) {
+      throw new Error(`Review Yeti check inventory returned ${rows.length} rows for total_count ${expectedTotal}`);
+    }
+    if (rows.length === expectedTotal) {
+      return { rows, identities, totalCount: expectedTotal };
+    }
+    if (page.check_runs.length === 0 || page.check_runs.length < CHECK_RUN_PAGE_SIZE) {
+      throw new Error(`Review Yeti check inventory is truncated at ${rows.length} of ${expectedTotal} rows`);
+    }
+  }
+  throw new Error(`Review Yeti check inventory is truncated at the ${CHECK_RUN_ENDPOINT_CAP}-run endpoint cap`);
+}
+
+function isRecoverableFirstAttempt(identity) {
+  return identity.attempt === 1
+    && identity.row.status === 'completed'
+    && identity.row.conclusion === 'failure'
+    && RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title);
+}
+
+export function assertReviewGeneration({ callerRunAttempt, inventory }) {
+  if (callerRunAttempt !== 1 && callerRunAttempt !== 2) {
+    throw new Error(`caller run attempt ${callerRunAttempt} is outside the admitted generations a1 and a2`);
+  }
+  const workers = inventory.identities.filter((identity) => identity.kind === 'worker');
+  if (callerRunAttempt === 1) {
+    if (workers.length !== 0) {
+      throw new Error(`caller attempt 1 requires zero worker checks; found ${workers.length}`);
+    }
+    return {
+      review_generation: 1,
+      review_check_count: inventory.rows.length,
+      worker_check_count: 0,
+      latest_worker_check_id: '',
+    };
+  }
+
+  const replacement = workers.find((identity) => identity.attempt >= 2);
+  if (replacement) {
+    throw new Error(`worker attempt a${replacement.attempt} already exists for this exact head`);
+  }
+  if (workers.length !== 1) {
+    throw new Error(`caller attempt 2 requires exactly one worker a1; found ${workers.length} worker checks`);
+  }
+  const [firstAttempt] = workers;
+  if (!isRecoverableFirstAttempt(firstAttempt)) {
+    throw new Error('a1 worker is not a completed recoverable infrastructure failure');
+  }
+  return {
+    review_generation: 2,
+    review_check_count: inventory.rows.length,
+    worker_check_count: workers.length,
+    latest_worker_check_id: firstAttempt.row.id,
+  };
 }
 
 // ADR 0519: the shared Ollama lane is protected by a per-repository cap rather
@@ -291,6 +474,18 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
     fetchImpl,
   });
 
+  // repository-dispatch.yml serializes this exact repository/PR/head for the
+  // full validation + DOKS admission run. Re-read the App-owned check ledger
+  // while holding that lease; the DOKS service then owns the durable request
+  // identity and compare-and-swap allocation of the admitted worker attempt.
+  const reviewInventory = await listExactHeadReviewChecks({
+    repository: request.repository,
+    headSha: request.head_sha,
+    token,
+    fetchImpl,
+  });
+  const generation = assertReviewGeneration({ callerRunAttempt, inventory: reviewInventory });
+
   // The base-owned caller workflow. Live evidence (example-api #4804, base 0.8.8-stable, run
   // 33675866048): GitHub executed the caller from the repository DEFAULT branch — whose
   // pull_request_target filter lists every stable line — not the PR base branch's copy. Read
@@ -314,6 +509,7 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
     caller_run_id: callerRunId,
     caller_run_attempt: callerRunAttempt,
     caller_workflow_sha256: callerWorkflowSha256,
+    ...generation,
   };
 }
 

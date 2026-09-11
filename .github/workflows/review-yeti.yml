@@ -47,7 +47,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: exampleorg-review-yeti-${{ inputs.central_execution && inputs.repository || github.repository }}-${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
+  group: exampleorg-review-yeti-${{ inputs.central_execution && inputs.repository || github.repository }}-${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}-${{ inputs.central_execution && inputs.head_sha || github.event.pull_request.head.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -71,7 +71,9 @@ jobs:
       CENTRAL_REF: ${{ inputs.central_execution && 'v1' || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
       # Resolve once so policy, execution and publication agree. Preserve existing
       # qualified central inputs; consumer override admission remains separately guarded.
-      TRUSTED_EXECUTION_BACKEND: ${{ inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
+      # Central admissions always cross the DOKS App-gate boundary. A repository
+      # variable or reusable-workflow input cannot downgrade them to local mode.
+      TRUSTED_EXECUTION_BACKEND: ${{ inputs.central_execution && 'doks' || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
     steps:
       # REL-519: mint the ct-review-bot App installation token once, up front,
       # and use it for every GitHub surface in this workflow. App installation
@@ -163,7 +165,7 @@ jobs:
           # emit-policy.mjs refuses a "doks" backend whose publish mode is not
           # "app-gate": that combination accepts the dispatch and never reports a
           # verdict, so the run fails closed before it can leave incomplete evidence.
-          REVIEW_YETI_DOKS_PUBLISH_MODE: ${{ vars.REVIEW_YETI_DOKS_PUBLISH_MODE || 'disabled' }}
+          REVIEW_YETI_DOKS_PUBLISH_MODE: ${{ inputs.central_execution && 'app-gate' || vars.REVIEW_YETI_DOKS_PUBLISH_MODE || 'disabled' }}
         run: node scripts/emit-policy.mjs
 
       - name: Validate encoded transport handoff

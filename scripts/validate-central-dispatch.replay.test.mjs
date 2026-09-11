@@ -58,13 +58,35 @@ const CASES = [
 
 /**
  * Builds a fetchImpl that serves the recorded pull, run, and caller-workflow-contents responses,
- * exactly the three calls validateCentralDispatch makes. `runOverride` lets a test replay a
+ * plus a generation-ledger mock for the newly required exact-head check-runs read. `runOverride`
+ * lets a test replay a
  * mutated or byte-exact-as-captured run object without touching the fixture file itself.
  */
 function fetchImplFor({ pull, run, apiBase, defaultBranchRef }, runOverride = run) {
   return async (url) => {
     if (url === `${apiBase}/pulls/${pull.number}`) return response(pull);
     if (url === `${apiBase}/actions/runs/${run.id}`) return response(runOverride);
+    if (url.startsWith(`${apiBase}/commits/${run.head_sha}/check-runs?`)) {
+      const query = new URL(url).searchParams;
+      assert.equal(query.get('check_name'), 'Review Yeti');
+      assert.equal(query.get('filter'), 'all');
+      assert.equal(query.get('app_id'), '4385771');
+      assert.equal(query.get('per_page'), '100');
+      assert.equal(query.get('page'), '1');
+      return response({
+        total_count: 1,
+        check_runs: [{
+          id: 8675309,
+          name: 'Review Yeti',
+          head_sha: run.head_sha,
+          status: 'completed',
+          conclusion: 'failure',
+          external_id: `run_${'1'.repeat(32)}:a1`,
+          app: { id: 4385771, slug: 'ct-review-bot' },
+          output: { title: 'Review Yeti: review did not complete', summary: 'Replay-only generation state.', text: null },
+        }],
+      });
+    }
     if (url.startsWith(`${apiBase}/contents/.github/workflows/ct-review-bot.yml?ref=`)) {
       const requestedRef = decodeURIComponent(url.split('ref=')[1]);
       assert.equal(requestedRef, defaultBranchRef, 'validateCentralDispatch must read the caller workflow from the repository default branch, not pull.base.ref');
@@ -101,20 +123,31 @@ function buildFixtureContext({ repository, prNumber, runFile, pullFile }) {
 }
 
 for (const testCase of CASES) {
-  test(`replays the recorded ${testCase.name} run + PR through validateCentralDispatch and accepts it`, async () => {
+  test(`replays the recorded ${testCase.name} run + PR through immutable identity validation`, async () => {
     const ctx = buildFixtureContext(testCase);
-    const result = await validateCentralDispatch({
-      payload: ctx.payload,
-      token: 'replay-token',
-      fetchImpl: fetchImplFor(ctx, ctx.runWithOpenPullRequest),
-    });
-
-    assert.equal(result.repository, testCase.repository);
-    assert.equal(result.pr_number, testCase.prNumber);
-    assert.equal(result.head_sha, ctx.run.head_sha);
-    assert.equal(result.caller_run_id, ctx.run.id);
-    assert.equal(result.caller_run_attempt, ctx.run.run_attempt);
-    assert.match(result.caller_workflow_sha256, /^[0-9a-f]{64}$/u);
+    if (ctx.run.run_attempt > 2) {
+      await assert.rejects(
+        validateCentralDispatch({
+          payload: ctx.payload,
+          token: 'replay-token',
+          fetchImpl: fetchImplFor(ctx, ctx.runWithOpenPullRequest),
+        }),
+        /outside the admitted generations/u,
+      );
+    } else {
+      const result = await validateCentralDispatch({
+        payload: ctx.payload,
+        token: 'replay-token',
+        fetchImpl: fetchImplFor(ctx, ctx.runWithOpenPullRequest),
+      });
+      assert.equal(result.repository, testCase.repository);
+      assert.equal(result.pr_number, testCase.prNumber);
+      assert.equal(result.head_sha, ctx.run.head_sha);
+      assert.equal(result.caller_run_id, ctx.run.id);
+      assert.equal(result.caller_run_attempt, ctx.run.run_attempt);
+      assert.equal(result.review_generation, 2);
+      assert.match(result.caller_workflow_sha256, /^[0-9a-f]{64}$/u);
+    }
   });
 
   test(`${testCase.name}: rejects when replayed with a mutated head_sha`, async () => {

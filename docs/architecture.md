@@ -93,5 +93,30 @@ Before executing any review step, the central dispatch validator (`scripts/valid
 2. Calls the GitHub API using the GitHub App token to ensure the PR is currently open.
 3. Asserts that the live base SHA and head SHA match the dispatch payload byte-for-byte. If a contributor pushes a new commit while a dispatch is queued, the stale run immediately halts.
 
-### C. Self-Cancellation of Superseded Runs
+### C. Atomic Generation Reservation
+
+The central `repository-dispatch.yml` workflow serializes the full admission run
+by exact repository, pull request, and head SHA with `cancel-in-progress: false`.
+New heads use different groups and can proceed independently. While holding the
+exact-head lease, central validation reads every page of the raw `Review Yeti`
+check ledger from App ID `4385771`, validates every row before classification,
+and admits only an initial `a1` with no worker ledger or one recovery `a2` after
+exactly one completed, failed `a1` carrying an approved infrastructure/no-verdict
+title. Duplicate `a1` rows and inventories at the 1,000-run endpoint cap fail
+closed. `BLOCK` and `FIX_FIRST` remain terminal review verdicts and can never
+justify another generation on the same head.
+
+Workflow concurrency closes the check-before-dispatch race inside GitHub, but it
+is not durable generation storage. Every validated central request is forced to
+the DOKS App-gate backend. The service-owned repository/PR/head identity and
+database compare-and-swap own worker-attempt allocation. That DOKS CAS plus the
+central serial revalidation is the atomic reservation boundary; repository
+variables and local execution cannot weaken it.
+
+The receiver's validation token is restricted to the target repository plus
+`example-review-actions`, deduplicated for central self-review. That is the minimum
+repository scope needed to read both the target's exact-head ledger and the
+central workflow runs used for capacity admission.
+
+### D. Self-Cancellation of Superseded Runs
 If multiple commits are pushed in rapid succession, earlier in-flight central runs detect that `head_sha` has moved and self-cancel, avoiding wasted model tokens on outdated code.
