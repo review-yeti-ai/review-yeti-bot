@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://review-yeti.ai/schemas/review-yeti-event.v1.schema.json",
+  "title": "Review Yeti Event Envelope v1",
+  "description": "Closed, sanitized Review Yeti lifecycle and progress event envelope.",
+  "$comment": "Maintenance contract: update this language-neutral schema and src/events/reviewYetiEvent.ts together; tests/unit/reviewYetiEvent.test.ts is the executable semantic parity gate.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "event_id",
+    "event_kind",
+    "occurred_at",
+    "repository_id",
+    "pr_number",
+    "base_sha",
+    "head_sha",
+    "attempt_id",
+    "run_id",
+    "sequence",
+    "correlation_id",
+    "trace_id",
+    "visibility",
+    "data"
+  ],
+  "properties": {
+    "schema": { "const": "review-yeti-event.v1" },
+    "event_id": { "type": "string", "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+    "event_kind": {
+      "type": "string",
+      "pattern": "^review\\.(?:lifecycle|progress)\\.(?!v\\d(?:\\.|$))[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+    },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "repository_id": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "pr_number": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "base_sha": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+    "head_sha": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+    "attempt_id": { "$ref": "#/$defs/identifier" },
+    "run_id": { "$ref": "#/$defs/identifier" },
+    "sequence": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+    "correlation_id": { "$ref": "#/$defs/identifier" },
+    "trace_id": { "$ref": "#/$defs/identifier" },
+    "visibility": { "const": "internal" },
+    "data": {}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "event_kind": { "pattern": "^review\\.lifecycle\\." },
+        "data": { "$ref": "#/$defs/lifecycleData" }
+      }
+    },
+    {
+      "properties": {
+        "event_kind": { "pattern": "^review\\.progress\\." },
+        "data": { "$ref": "#/$defs/progressData" }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f\\s]+$"
+    },
+    "digest": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "queued_at": { "$ref": "#/$defs/timestamp" },
+        "started_at": { "$ref": "#/$defs/timestamp" },
+        "completed_at": { "$ref": "#/$defs/timestamp" },
+        "duration_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      }
+    },
+    "lifecycleData": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stage": { "$ref": "#/$defs/label128" },
+        "terminal_class": { "$ref": "#/$defs/label128" },
+        "result_digest": { "$ref": "#/$defs/digest" },
+        "policy_digest": { "$ref": "#/$defs/digest" },
+        "duration_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "retry_class": { "$ref": "#/$defs/label128" },
+        "evidence_pointers": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/identifier512" } },
+        "timing": { "$ref": "#/$defs/timing" }
+      }
+    },
+    "progressData": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "persona": { "$ref": "#/$defs/label128" },
+        "stage": { "$ref": "#/$defs/label128" },
+        "status": { "enum": ["pending", "in_progress", "completed", "failed"] },
+        "provider": { "$ref": "#/$defs/identifier" },
+        "model": { "$ref": "#/$defs/identifier" },
+        "prompt_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "completion_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "total_tokens": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "duration_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "latency_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "findings_count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "cost_usd": { "type": "number", "minimum": 0, "maximum": 9007199254740991 },
+        "message": {
+          "type": "string",
+          "maxLength": 2000,
+          "format": "review-yeti-progress-message-v1",
+          "$comment": "The custom format enforces this bound in Unicode code points, not UTF-16 code units.",
+          "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]*$"
+        },
+        "error_class": { "$ref": "#/$defs/label128" },
+        "verdict": { "$ref": "#/$defs/label128" },
+        "quorum_satisfied": { "type": "boolean" },
+        "distinct_providers": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/identifier" } },
+        "total_personas_executed": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "total_findings": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "total_duration_ms": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "total_cost_usd": { "type": "number", "minimum": 0, "maximum": 9007199254740991 }
+      }
+    },
+    "label128": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f\\s]+$"
+    },
+    "identifier512": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f\\s]+$"
+    }
+  }
+}

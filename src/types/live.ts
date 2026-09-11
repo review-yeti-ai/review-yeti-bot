@@ -115,6 +115,24 @@ export interface LiveStreamEvent {
   data: LiveStreamEventData;
 }
 
+/**
+ * The authoritative identity carried by a Review Yeti event envelope.  This
+ * is deliberately separate from LiveStreamEvent: the latter is a permissive,
+ * in-process compatibility API and its data map must never be serialized as a
+ * durable event without passing through the event sanitizer.
+ */
+export interface ReviewEventIdentity {
+  repositoryId: number;
+  prNumber: number;
+  baseSha: string;
+  headSha: string;
+  attemptId: string;
+  runId: string;
+  sequence: number;
+  correlationId: string;
+  traceId: string;
+}
+
 export type PersonaStatus =
   | 'PENDING'
   | 'IN PROGRESS'
