@@ -18,6 +18,7 @@ import { PostgresMergeGroupGateRepository } from './persistence/mergeGroupGateRe
 import { createMergeGroupGate } from './review/mergeGroupGate';
 import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
 import { createReviewCiRuntime } from './reviewCiRuntime';
+import { findReviewCiEnrollment } from './review/reviewCi';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -43,9 +44,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     config: authoritativeConfig, appId, privateKey, baseUrl,
     repository: new PostgresReviewGateRepository(pool, { completionResolutionTimeoutMs: 15_000,
       ...(ciConfig ? { onEligibleCompletion: async (client, gate, now) => {
-        const enrolled = ciConfig.repositories.find((r) => r.repositoryId === gate.coordinates.repositoryId
-          && r.owner === gate.coordinates.owner && r.repo === gate.coordinates.repo);
-        if (enrolled && ciConfig.expectedAppId === gate.expectedAppId) {
+        if (findReviewCiEnrollment(ciConfig,
+          { expectedAppId: gate.expectedAppId, repository: gate.coordinates })) {
           await enqueueReviewCiCompletionInTransaction(client, gate.coordinates.attemptId, now);
         }
       } } : {}),

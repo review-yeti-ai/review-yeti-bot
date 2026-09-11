@@ -41,6 +41,45 @@ const lanePlanFields = z.object({
 export const reviewCiLanePlanSchema = lanePlanFields.extend({ digest }).strict().refine((plan) =>
   plan.digest === sha256({ version: plan.version, lanes: [...plan.lanes].sort(), requiredJobs: [...plan.requiredJobs].sort() }));
 export type ReviewCiLanePlan = z.infer<typeof reviewCiLanePlanSchema>;
+export interface ReviewCiWorkflowConfig {
+  workflowId: number;
+  workflowPath: string;
+  workflowRef: string;
+  workflowSha: string;
+}
+export interface ReviewCiRepositoryConfig {
+  repositoryId: number;
+  ownerId: number;
+  owner: string;
+  repo: string;
+  relay: ReviewCiWorkflowConfig;
+  validation: ReviewCiWorkflowConfig;
+  lanePlan: ReviewCiLanePlan;
+}
+export interface ReviewCiServiceConfig {
+  expectedAppId: number;
+  admissionEnabled: boolean;
+  repositoryDispatchEnabled: boolean;
+  repositories: ReviewCiRepositoryConfig[];
+  tickMs: number;
+}
+export interface ReviewCiEnrollmentIdentity {
+  expectedAppId: number;
+  repository: { repositoryId: number; owner: string; repo: string };
+}
+/** Resolve one exact service-owned enrollment without depending on auth or
+ * environment parsing. Boundary callers retain their own error taxonomy. */
+export function findReviewCiEnrollment(config: ReviewCiServiceConfig,
+  identity: ReviewCiEnrollmentIdentity): ReviewCiRepositoryConfig | undefined {
+  const repository = config.repositories.find((candidate) =>
+    candidate.repositoryId === identity.repository.repositoryId);
+  return repository
+    && repository.owner === identity.repository.owner
+    && repository.repo === identity.repository.repo
+    && config.expectedAppId === identity.expectedAppId
+    ? repository
+    : undefined;
+}
 export function createReviewCiLanePlan(lanes: string[], requiredJobs: string[]): ReviewCiLanePlan {
   const plan = lanePlanFields.parse({ version: 'ReviewCiLanePlan.v1', lanes, requiredJobs });
   plan.lanes.sort(); plan.requiredJobs.sort();

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { AUTHORITATIVE_REVIEW_APP_ID, type AuthoritativeServiceConfig } from './authoritativeServiceConfig';
-import { reviewCiLanePlanSchema, reviewCiValidationBindingSchema, type StoredReviewCiRequest } from '../review/reviewCi';
+import { reviewCiLanePlanSchema, reviewCiValidationBindingSchema,
+  type ReviewCiServiceConfig } from '../review/reviewCi';
+export type { ReviewCiRepositoryConfig, ReviewCiServiceConfig } from '../review/reviewCi';
 
 const positive = z.number().int().positive().safe();
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
@@ -17,28 +19,6 @@ export const reviewCiRepositoryConfigSchema = z.object({
   lanePlan: reviewCiLanePlanSchema,
 }).strict().refine((v) => v.relay.workflowId !== v.validation.workflowId
   && v.relay.workflowPath !== v.validation.workflowPath);
-export type ReviewCiRepositoryConfig = z.infer<typeof reviewCiRepositoryConfigSchema>;
-export interface ReviewCiServiceConfig {
-  expectedAppId: number;
-  admissionEnabled: boolean;
-  repositoryDispatchEnabled: boolean;
-  repositories: ReviewCiRepositoryConfig[];
-  tickMs: number;
-}
-
-/** Resolve one exact service-owned enrollment. Callers retain their own
- * boundary-specific error classification, but not independent policy copies. */
-export function findReviewCiEnrollment(config: ReviewCiServiceConfig,
-  request: StoredReviewCiRequest): ReviewCiRepositoryConfig | undefined {
-  const repository = config.repositories.find((candidate) => candidate.repositoryId === request.review.repositoryId);
-  return repository
-    && repository.owner === request.review.owner
-    && repository.repo === request.review.repo
-    && config.expectedAppId === request.expectedAppId
-    ? repository
-    : undefined;
-}
-
 /** Disabled by default. Pausing admission does not disable reconciliation of
  * already admitted work. No request supplies workflow refs, lanes or App IDs. */
 export function reviewCiConfigFromEnv(env: Readonly<Record<string, string | undefined>>,

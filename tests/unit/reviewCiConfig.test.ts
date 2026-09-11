@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AuthoritativeServiceConfig } from '../../src/auth/authoritativeServiceConfig';
-import { findReviewCiEnrollment, reviewCiConfigFromEnv } from '../../src/auth/reviewCiConfig';
-import { createReviewCiLanePlan, type StoredReviewCiRequest } from '../../src/review/reviewCi';
+import { reviewCiConfigFromEnv } from '../../src/auth/reviewCiConfig';
+import { createReviewCiLanePlan, findReviewCiEnrollment, type StoredReviewCiRequest } from '../../src/review/reviewCi';
 
 const review: AuthoritativeServiceConfig = {
   expectedAppId: 4385771, admissionEnabled: false, repositoryIds: [123],
@@ -31,9 +31,12 @@ const request = (): StoredReviewCiRequest => ({
 describe('finite default-off CI deployment configuration', () => {
   it('owns one exact enrollment rule for service and runtime consumers', () => {
     const config = reviewCiConfigFromEnv(env(), review)!;
-    expect(findReviewCiEnrollment(config, request())).toEqual(repository);
-    expect(findReviewCiEnrollment(config, { ...request(), expectedAppId: 1 })).toBeUndefined();
-    expect(findReviewCiEnrollment(config, { ...request(), review: { ...request().review, owner: 'outside' } })).toBeUndefined();
+    expect(findReviewCiEnrollment(config,
+      { expectedAppId: request().expectedAppId, repository: request().review })).toEqual(repository);
+    expect(findReviewCiEnrollment(config,
+      { expectedAppId: 1, repository: request().review })).toBeUndefined();
+    expect(findReviewCiEnrollment(config,
+      { expectedAppId: request().expectedAppId, repository: { ...request().review, owner: 'outside' } })).toBeUndefined();
   });
   it('keeps existing admitted work drainable when both admission and delivery opt-ins are absent', () => {
     expect(reviewCiConfigFromEnv(env(), review)).toMatchObject({ admissionEnabled: false,
