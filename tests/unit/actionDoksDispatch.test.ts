@@ -63,8 +63,8 @@ describe('DOKS Action dispatch client', () => {
     expect(request.expectedGeneration).toBe(3);
   });
 
-  it.each(['', '0', '-1', '1.5', 'three'])(
-    'rejects missing or invalid expected generation %j for central app-gate dispatch',
+  it.each(['0', '-1', '1.5', 'three'])(
+    'rejects an invalid supplied expected generation %j for app-gate dispatch',
     async (expectedGeneration) => {
       const { buildDispatchRequest } = await import(modulePath);
       expect(() => buildDispatchRequest(environment({
@@ -74,6 +74,15 @@ describe('DOKS Action dispatch client', () => {
       }))).toThrow(/expected generation/i);
     },
   );
+
+  it('leaves a missing repository_dispatch generation for the verified service identity to enforce', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    expect(buildDispatchRequest(environment({
+      GITHUB_EVENT_NAME: 'repository_dispatch',
+      DOKS_PUBLISH_MODE: 'app-gate',
+      EXPECTED_GENERATION: '',
+    })).expectedGeneration).toBeUndefined();
+  });
 
   it('does not require an expected generation outside central app-gate admission', async () => {
     const { buildDispatchRequest } = await import(modulePath);

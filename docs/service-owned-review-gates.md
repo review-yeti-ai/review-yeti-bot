@@ -47,9 +47,10 @@ carry the required counter, so this contract needs no schema migration.
 It defaults to `false`: missing central app-gate generation remains temporarily
 compatible, but a supplied value still receives the transactional comparison
 above. When set to exactly `true`, a missing value receives the same safe,
-field-only HTTP 400 diagnostic used for an invalid supplied value, before OIDC
-verification or durable admission. Values other than exact `true` or `false`
-prevent service startup. Disabled and non-central execution paths are unchanged.
+field-only HTTP 400 diagnostic used for an invalid supplied value, after OIDC
+identity verification and before durable admission. Values other than exact
+`true` or `false` prevent service startup. Disabled and non-central execution
+paths are unchanged.
 
 Use this zero-downtime order:
 

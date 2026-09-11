@@ -352,6 +352,7 @@ personas:
         repositoryId: 123,
         installationId: 456,
         publicationMode: 'disabled',
+        centralActionDispatch: false,
         identity: {
           owner: 'calltelemetry',
           repo: 'cisco-cdr',
