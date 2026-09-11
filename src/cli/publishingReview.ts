@@ -526,6 +526,11 @@ export async function runPublishingReviewWorker(
       repositoryVisibility,
       client,
       jobId: identity.runId,
+      // The production Bifrost profile supports strict structured output. Keep
+      // publishing reviews on the same native JSON contract already exercised
+      // by full-panel qualification instead of relying on a model to reproduce
+      // plaintext nonce fences exactly.
+      requestPolicy: { responseFormat: { type: 'json_object' } },
     } as Parameters<typeof executePersonaPanel>[0]);
 
     const rawFindings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
