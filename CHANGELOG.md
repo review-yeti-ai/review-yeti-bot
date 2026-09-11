@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.55.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.55.1...v1.55.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** scope generation fence to verified central dispatch ([#708](https://github.com/review-yeti-ai/review-yeti-bot/issues/708)) ([5f9c5cf](https://github.com/review-yeti-ai/review-yeti-bot/commit/5f9c5cf1dd6dba5797d9351cbc1b343ee92cf120))
+
 ## [1.55.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.55.0...v1.55.1) (2026-09-11)
 
 
