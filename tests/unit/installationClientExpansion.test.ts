@@ -10,6 +10,20 @@ import { getGitHubAppRepositoryDispatchToken } from '../../src/github/appAuth';
 import { SCHEMA_VERSION_CI_REQUEST } from '../../src/github/reviewCIRequest';
 import crypto from 'node:crypto';
 
+function expectGitHubValidRefreshAction(actions: unknown): void {
+  expect(actions).toEqual([REVIEW_REFRESH_ACTION]);
+  if (!Array.isArray(actions) || actions.length !== 1) return;
+  const [action] = actions as Array<Record<string, unknown>>;
+  expect(Object.keys(action).sort()).toEqual(['description', 'identifier', 'label']);
+  expect(typeof action.label).toBe('string');
+  expect(typeof action.description).toBe('string');
+  expect(typeof action.identifier).toBe('string');
+  // GitHub's Check Runs API rejects actions over these field limits.
+  expect(String(action.label).length).toBeLessThanOrEqual(20);
+  expect(String(action.description).length).toBeLessThanOrEqual(40);
+  expect(String(action.identifier).length).toBeLessThanOrEqual(20);
+}
+
 describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispatch', () => {
   it('exports check context constants matching contracts', () => {
     expect(CHECK_CONTEXT_RAW_REVIEW).toBe('Review Yeti');
@@ -55,7 +69,7 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
 
     await client.completeCheck({ owner: 'owner', repo: 'repo', checkId: 1, conclusion: 'failure',
       title: 'Review Yeti: review did not complete', summary: 'worker failed' });
-    expect(capturedBody.actions).toEqual([REVIEW_REFRESH_ACTION]);
+    expectGitHubValidRefreshAction(capturedBody.actions);
 
     await client.completeCheck({ owner: 'owner', repo: 'repo', checkId: 1, conclusion: 'failure',
       title: 'Review Yeti: BLOCK', summary: 'policy finding' });

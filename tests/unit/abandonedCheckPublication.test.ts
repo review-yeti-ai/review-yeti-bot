@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { GitHubInstallationClient, REVIEW_REFRESH_ACTION } from '../../src/github/installationClient';
 import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
 import type {
   AbandonedCheckRecoveryOutcome,
@@ -37,6 +37,20 @@ function fixture(checks: unknown[] = [exactCheck], reread: unknown = exactCheck)
 const signal = () => AbortSignal.timeout(20_000);
 const persistedWindows = [900_000, 1_800_000, 2_700_000, 3_600_000];
 
+function expectGitHubValidRefreshAction(actions: unknown): void {
+  expect(actions).toEqual([REVIEW_REFRESH_ACTION]);
+  if (!Array.isArray(actions) || actions.length !== 1) return;
+  const [action] = actions as Array<Record<string, unknown>>;
+  expect(Object.keys(action).sort()).toEqual(['description', 'identifier', 'label']);
+  expect(typeof action.label).toBe('string');
+  expect(typeof action.description).toBe('string');
+  expect(typeof action.identifier).toBe('string');
+  // GitHub's Check Runs API rejects actions over these field limits.
+  expect(String(action.label).length).toBeLessThanOrEqual(20);
+  expect(String(action.description).length).toBeLessThanOrEqual(40);
+  expect(String(action.identifier).length).toBeLessThanOrEqual(20);
+}
+
 describe('abandoned check exact App/attempt failure publication', () => {
   it('recognizes only an exact App/run/attempt completed success as authoritative', async () => {
     const succeeded = { ...exactCheck, status: 'completed', conclusion: 'success' };
@@ -71,6 +85,14 @@ describe('abandoned check exact App/attempt failure publication', () => {
       expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
     },
   );
+
+  it('publishes a GitHub-valid refresh action while recovering an abandoned check', async () => {
+    const { client, fetchImplementation } = fixture([exactCheck], exactCheck);
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+    const writes = fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+    expect(writes).toHaveLength(1);
+    expectGitHubValidRefreshAction(JSON.parse(String(writes[0][1]?.body)).actions);
+  });
 
   it.each(persistedWindows)('publishes a valid persisted %i ms window independently of the current admission default', async (window) => {
     const persistedRun = { ...run, terminalDeadline: run.receivedAt + window };
