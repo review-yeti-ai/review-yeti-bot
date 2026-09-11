@@ -354,6 +354,21 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect((await dispatchState(client, retried.run.runId)).outbox.execution_attempt).toBe(1);
     });
 
+    it('does not allocate a fresh a1 when central admission already expects a later generation', async () => {
+      const { repository, client } = await createRepository();
+      const input = {
+        ...authoritativeAdmission('central-a2-without-durable-a1'),
+        eventName: 'repository_dispatch',
+        expectedGeneration: 2,
+      };
+
+      await expect(repository.admit(input))
+        .rejects.toThrow(/expected generation 2.*next durable generation is 1/i);
+      for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs', 'review_dispatch_outbox', 'review_gate_attempts']) {
+        expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
+      }
+    });
+
     it('does not let the legacy abandoned-run check creator own authoritative runs', async () => {
       const { repository } = await createRepository();
       await repository.admit(authoritativeAdmission());
