@@ -158,6 +158,17 @@ describe('abandoned check exact App/attempt failure publication', () => {
     expect(fetchImplementation.mock.calls).toHaveLength(2);
   });
 
+  it.each([
+    ['an unrecognized non-terminal status', { status: 'stale', conclusion: null }],
+    ['a completed status without a conclusion', { status: 'completed', conclusion: null }],
+  ])('refuses %s on the direct pre-write read without PATCH or POST', async (_label, state) => {
+    const { client, fetchImplementation } = fixture([exactCheck], { ...exactCheck, ...state });
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).rejects.toThrow();
+    expect(fetchImplementation.mock.calls).toHaveLength(2);
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+  });
+
   it('creates only a completed failure bound to the abandoned attempt when no check ever existed', async () => {
     const { client, fetchImplementation } = fixture([]);
     await client.failAbandonedCheck(run, 4385771, signal());
@@ -183,6 +194,34 @@ describe('abandoned check exact App/attempt failure publication', () => {
     expect(fetchImplementation).not.toHaveBeenCalled();
     fetchImplementation.mockRejectedValue(new Error('secret provider payload'));
     await expect(client.failAbandonedCheck(run, 4385771, signal())).rejects.not.toThrow('secret provider payload');
+  });
+
+  it('cancels promptly during visibility backoff without issuing another request', async () => {
+    const abort = new AbortController();
+    let enterBackoff = () => {};
+    const backoffStarted = new Promise<void>((resolve) => { enterBackoff = resolve; });
+    const sleep = vi.fn(async () => {
+      enterBackoff();
+      await new Promise<void>(() => undefined);
+    });
+    const fetchImplementation = vi.fn(async () => new Response(JSON.stringify({ check_runs: [] })));
+    const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation, sleep });
+    const publication = client.failAbandonedCheck(run, 4385771, abort.signal);
+    await backoffStarted;
+    const settled = new Promise<'resolved' | 'rejected' | 'timeout'>((resolve) => {
+      const timeout = setTimeout(() => resolve('timeout'), 100);
+      void publication.then(() => {
+        clearTimeout(timeout);
+        resolve('resolved');
+      }, () => {
+        clearTimeout(timeout);
+        resolve('rejected');
+      });
+    });
+    abort.abort(new Error('cancel during backoff'));
+    await expect(settled).resolves.toBe('rejected');
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+    expect(sleep).toHaveBeenCalledWith(250);
   });
 
   it('finds the genuine check beyond the first page and carries the same cancellation signal through every request', async () => {
