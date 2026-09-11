@@ -1134,6 +1134,11 @@ async function readStreamingResponse(
           : inactivityTimeoutError(),
         signalAbortPromise,
       );
+      // Reader cancellation can settle the active read as `{done:true}` before the abort
+      // rejection wins Promise.race. Never accept that cancellation EOF as a partial success.
+      if (signalAborted) {
+        throw signalAbortError || new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+      }
       if (totalDeadlineTriggered || totalDeadlineReached()) {
         throw totalDeadlineError();
       }
@@ -1384,6 +1389,10 @@ async function readSdkStreamingResponse(
         () => totalDeadlineNear() ? totalDeadlineError() : inactivityTimeoutError(),
         signalAbortPromise,
       );
+      // Cancellation may surface as terminal EOF before the abort promise wins the race.
+      if (signalAborted) {
+        throw signalAbortError || new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+      }
       if (done) break;
       if (value !== undefined) {
         if (collectSdkChunk(value, state)) {

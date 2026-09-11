@@ -830,7 +830,14 @@ describe('OpenRouterClient', () => {
     }
   });
 
-  it('does not wait indefinitely when a timed-out reader ignores cancellation', async () => {
+  it.each([
+    ['direct SSE', true],
+    ['SDK EventStream', false],
+  ])('does not wait indefinitely when a timed-out %s reader ignores cancellation', async (_transport, stream) => {
+    // Keep the deadline clock fixed so the request timer deterministically fires before the
+    // stream-local timer. Cancelling the reader then settles its active read as `{done:true}`;
+    // the stream must classify that terminal read from the aborted signal, not accept it as EOF.
+    const deadlineClock = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     let cancelCalled = false;
     let interval: ReturnType<typeof setInterval> | undefined;
     const activeStream = new ReadableStream({
@@ -858,12 +865,12 @@ describe('OpenRouterClient', () => {
       headers: { 'content-type': 'text/event-stream' },
     }));
     const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
-    const started = Date.now();
+    const started = performance.now();
 
     try {
       await expect(client.complete({
         ...request,
-        stream: true,
+        stream,
         timeoutMs: 35,
         ttftTimeoutMs: 20,
       })).rejects.toMatchObject({
@@ -871,9 +878,10 @@ describe('OpenRouterClient', () => {
         kind: 'total',
       });
       expect(cancelCalled).toBe(true);
-      expect(Date.now() - started).toBeLessThan(timeBudgetMs(500));
+      expect(performance.now() - started).toBeLessThan(timeBudgetMs(500));
     } finally {
       if (interval) clearInterval(interval);
+      deadlineClock.mockRestore();
     }
   });
 
