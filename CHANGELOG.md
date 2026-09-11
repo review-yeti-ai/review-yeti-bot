@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.7...v1.56.8) (2026-09-11)
+
+
+### Bug Fixes
+
+* **openrouter:** reject cancellation EOF race ([#730](https://github.com/review-yeti-ai/review-yeti-bot/issues/730)) ([08c3884](https://github.com/review-yeti-ai/review-yeti-bot/commit/08c3884ff0a448801cc1a25d7576908bd4954b32))
+
 ## [1.56.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.6...v1.56.7) (2026-09-11)
 
 
