@@ -30,6 +30,22 @@ function lifecycleEvent(id: string, sequence = 999): ReviewLifecycleEventInput {
   };
 }
 
+async function persistedEvents(pool: Pool, runId: string): Promise<Array<{
+  eventKind: string;
+  sequence: number;
+  data: Record<string, unknown>;
+}>> {
+  const result = await pool.query(
+    'SELECT event_kind, sequence, payload FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence',
+    [runId],
+  );
+  return result.rows.map((row) => ({
+    eventKind: String(row.event_kind),
+    sequence: Number(row.sequence),
+    data: row.payload.data as Record<string, unknown>,
+  }));
+}
+
 describeWithPostgres('Postgres review lifecycle event repository', () => {
   let pool: Pool;
   let schema: string;
@@ -81,6 +97,135 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     expect(unique.rows.map((row) => row.indexname).join(' ')).toMatch(/run.*sequence|event_id/iu);
   });
 
+  it('proves event defaults, checks, cascades, and run sequence uniqueness in PostgreSQL', async () => {
+    const columns = (await pool.query(`
+      SELECT table_name, column_name, column_default, is_nullable
+        FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND ((table_name = 'review_event_sequence_counters' AND column_name IN ('next_sequence', 'updated_at'))
+           OR (table_name = 'review_event_outbox' AND column_name IN ('state', 'attempt_count', 'next_attempt_at', 'created_at', 'updated_at')))
+    `)).rows;
+    const column = (tableName: string, columnName: string) => columns.find((row) =>
+      row.table_name === tableName && row.column_name === columnName);
+    expect(column('review_event_sequence_counters', 'next_sequence')).toMatchObject({
+      column_default: '0', is_nullable: 'NO',
+    });
+    expect(column('review_event_sequence_counters', 'updated_at')).toMatchObject({
+      column_default: 'CURRENT_TIMESTAMP', is_nullable: 'NO',
+    });
+    expect(column('review_event_outbox', 'state')).toMatchObject({
+      column_default: expect.stringContaining('pending'), is_nullable: 'NO',
+    });
+    expect(column('review_event_outbox', 'attempt_count')).toMatchObject({
+      column_default: '0', is_nullable: 'NO',
+    });
+    for (const name of ['next_attempt_at', 'created_at', 'updated_at']) {
+      expect(column('review_event_outbox', name)).toMatchObject({
+        column_default: 'CURRENT_TIMESTAMP', is_nullable: 'NO',
+      });
+    }
+
+    const checks = (await pool.query(`
+      SELECT table_class.relname AS table_name, pg_get_constraintdef(constraint_row.oid) AS definition
+        FROM pg_constraint AS constraint_row
+        JOIN pg_class AS table_class ON table_class.oid = constraint_row.conrelid
+        JOIN pg_namespace AS namespace_row ON namespace_row.oid = table_class.relnamespace
+       WHERE namespace_row.nspname = current_schema() AND constraint_row.contype = 'c'
+         AND table_class.relname IN ('review_event_sequence_counters', 'review_event_outbox')
+    `)).rows;
+    const hasCheck = (tableName: string, pattern: RegExp) => checks.some((row) =>
+      row.table_name === tableName && pattern.test(row.definition));
+    expect(hasCheck('review_event_sequence_counters', /next_sequence\s*>=\s*0/iu)).toBe(true);
+    expect(hasCheck('review_event_outbox', /sequence\s*>\s*0/iu)).toBe(true);
+    expect(hasCheck('review_event_outbox', /event_kind.*(?:LIKE|~~).*review\.lifecycle/iu)).toBe(true);
+    expect(hasCheck('review_event_outbox', /visibility\s*=\s*'internal'/iu)).toBe(true);
+    expect(hasCheck('review_event_outbox', /attempt_count\s*>=\s*0/iu)).toBe(true);
+
+    const foreignKeys = (await pool.query(`
+      SELECT child.relname AS child_table, parent.relname AS parent_table, constraint_row.confdeltype
+        FROM pg_constraint AS constraint_row
+        JOIN pg_class AS child ON child.oid = constraint_row.conrelid
+        JOIN pg_class AS parent ON parent.oid = constraint_row.confrelid
+        JOIN pg_namespace AS namespace_row ON namespace_row.oid = child.relnamespace
+       WHERE namespace_row.nspname = current_schema() AND constraint_row.contype = 'f'
+         AND child.relname IN ('review_event_sequence_counters', 'review_event_outbox')
+    `)).rows;
+    expect(foreignKeys).toEqual(expect.arrayContaining([
+      { child_table: 'review_event_sequence_counters', parent_table: 'review_runs', confdeltype: 'c' },
+      { child_table: 'review_event_outbox', parent_table: 'review_runs', confdeltype: 'c' },
+    ]));
+    const uniqueConstraints = (await pool.query(`
+      SELECT pg_get_constraintdef(constraint_row.oid) AS definition
+        FROM pg_constraint AS constraint_row
+        JOIN pg_class AS table_class ON table_class.oid = constraint_row.conrelid
+        JOIN pg_namespace AS namespace_row ON namespace_row.oid = table_class.relnamespace
+       WHERE namespace_row.nspname = current_schema() AND table_class.relname = 'review_event_outbox'
+         AND constraint_row.contype IN ('p', 'u')
+    `)).rows.map((row) => row.definition);
+    expect(uniqueConstraints).toContain('UNIQUE (run_id, sequence)');
+
+    const defaultsRun = 'run_00000000000000000000000000000001';
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [defaultsRun]);
+    await pool.query('INSERT INTO review_event_sequence_counters(run_id) VALUES ($1)', [defaultsRun]);
+    await pool.query(`INSERT INTO review_event_outbox (
+      event_id, run_id, attempt_id, repository_id, pr_number, base_sha, head_sha, sequence,
+      schema, event_kind, occurred_at, correlation_id, trace_id, visibility, payload
+    ) VALUES ($1, $2, $3, 123, 42, $4, $5, 1, 'review-yeti-event.v1', 'review.lifecycle.queued',
+      CURRENT_TIMESTAMP, 'correlation', 'trace', 'internal', $6)`, [
+      eventId(40), defaultsRun, `${defaultsRun}-g0-e1`, 'a'.repeat(40), 'b'.repeat(40), JSON.stringify({}),
+    ]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [defaultsRun])).rows[0])
+      .toEqual({ next_sequence: '0' });
+    expect((await pool.query(`SELECT state, attempt_count, next_attempt_at IS NOT NULL AS has_next_attempt,
+        created_at IS NOT NULL AS has_created, updated_at IS NOT NULL AS has_updated
+      FROM review_event_outbox WHERE event_id = $1`, [eventId(40)])).rows[0]).toEqual({
+      state: 'pending', attempt_count: 0, has_next_attempt: true, has_created: true, has_updated: true,
+    });
+
+    const invalidInsert = (id: string, sequence: number, eventKind: string, attemptCount: number) => pool.query(`
+      INSERT INTO review_event_outbox (
+        event_id, run_id, attempt_id, repository_id, pr_number, base_sha, head_sha, sequence,
+        schema, event_kind, occurred_at, correlation_id, trace_id, visibility, payload, attempt_count
+      ) VALUES ($1, $2, $3, 123, 42, $4, $5, $6, 'review-yeti-event.v1', $7,
+        CURRENT_TIMESTAMP, 'correlation', 'trace', 'internal', '{}'::jsonb, $8)`, [
+      id, defaultsRun, `${defaultsRun}-g0-e${sequence}`, 'a'.repeat(40), 'b'.repeat(40), sequence,
+      eventKind, attemptCount,
+    ]);
+    await expect(invalidInsert(eventId(41), 2, 'review.lifecycle.queued', -1)).rejects.toThrow();
+    await expect(invalidInsert(eventId(42), 3, 'review.not-a-lifecycle-event', 0)).rejects.toThrow();
+
+    const uniqueRun = 'run_00000000000000000000000000000002';
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [uniqueRun]);
+    await pool.query(`INSERT INTO review_event_outbox (
+      event_id, run_id, attempt_id, repository_id, pr_number, base_sha, head_sha, sequence,
+      schema, event_kind, occurred_at, correlation_id, trace_id, visibility, payload
+    ) VALUES ($1, $2, $3, 123, 42, $4, $5, 1, 'review-yeti-event.v1', 'review.lifecycle.queued',
+      CURRENT_TIMESTAMP, 'correlation', 'trace', 'internal', '{}'::jsonb)`, [
+      eventId(43), uniqueRun, `${uniqueRun}-g0-e1`, 'a'.repeat(40), 'b'.repeat(40),
+    ]);
+    await expect(pool.query(`INSERT INTO review_event_outbox (
+      event_id, run_id, attempt_id, repository_id, pr_number, base_sha, head_sha, sequence,
+      schema, event_kind, occurred_at, correlation_id, trace_id, visibility, payload
+    ) VALUES ($1, $2, $3, 123, 42, $4, $5, 1, 'review-yeti-event.v1', 'review.lifecycle.dispatched',
+      CURRENT_TIMESTAMP, 'correlation', 'trace', 'internal', '{}'::jsonb)`, [
+      eventId(44), uniqueRun, `${uniqueRun}-g0-e2`, 'a'.repeat(40), 'b'.repeat(40),
+    ])).rejects.toThrow();
+
+    const cascadeRun = 'run_00000000000000000000000000000003';
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [cascadeRun]);
+    await pool.query('INSERT INTO review_event_sequence_counters(run_id) VALUES ($1)', [cascadeRun]);
+    await pool.query(`INSERT INTO review_event_outbox (
+      event_id, run_id, attempt_id, repository_id, pr_number, base_sha, head_sha, sequence,
+      schema, event_kind, occurred_at, correlation_id, trace_id, visibility, payload
+    ) VALUES ($1, $2, $3, 123, 42, $4, $5, 1, 'review-yeti-event.v1', 'review.lifecycle.queued',
+      CURRENT_TIMESTAMP, 'correlation', 'trace', 'internal', '{}'::jsonb)`, [
+      eventId(45), cascadeRun, `${cascadeRun}-g0-e1`, 'a'.repeat(40), 'b'.repeat(40),
+    ]);
+    await pool.query('DELETE FROM review_runs WHERE run_id = $1', [cascadeRun]);
+    expect((await pool.query('SELECT 1 FROM review_event_sequence_counters WHERE run_id = $1', [cascadeRun])).rows).toEqual([]);
+    expect((await pool.query('SELECT 1 FROM review_event_outbox WHERE run_id = $1', [cascadeRun])).rows).toEqual([]);
+  });
+
   it('rolls back the authoritative transition and event intent together', async () => {
     await pool.query("INSERT INTO review_runs(run_id) VALUES ('run_00000000000000000000000000000000')");
     const client = await pool.connect();
@@ -119,6 +264,45 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     }
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(1);
     expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters')).rows[0].next_sequence).toBe('1');
+  });
+
+  it('rejects a same-event identity conflict without consuming a sequence', async () => {
+    const runId = 'run_00000000000000000000000000000000';
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [runId]);
+    const firstClient = await pool.connect();
+    try {
+      await firstClient.query('BEGIN');
+      await appendLifecycleEvent(firstClient, lifecycleEvent(eventId(11)));
+      await firstClient.query('COMMIT');
+    } finally {
+      firstClient.release();
+    }
+
+    const conflictClient = await pool.connect();
+    try {
+      await conflictClient.query('BEGIN');
+      await expect(appendLifecycleEvent(conflictClient, {
+        ...lifecycleEvent(eventId(11)), head_sha: 'c'.repeat(40), data: { stage: 'conflict' },
+      })).rejects.toThrow('identity conflict');
+      expect((await conflictClient.query('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [runId])).rows[0])
+        .toEqual({ next_sequence: '1' });
+      await conflictClient.query('ROLLBACK');
+    } finally {
+      conflictClient.release();
+    }
+
+    const nextClient = await pool.connect();
+    try {
+      await nextClient.query('BEGIN');
+      const next = await appendLifecycleEvent(nextClient, lifecycleEvent(eventId(12)));
+      expect(next.sequence).toBe(2);
+      await nextClient.query('COMMIT');
+    } finally {
+      nextClient.release();
+    }
+    expect(await persistedEvents(pool, runId)).toHaveLength(2);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [runId])).rows[0])
+      .toEqual({ next_sequence: '2' });
   });
 
   it('allocates unique contiguous sequences per run under concurrent callers', async () => {

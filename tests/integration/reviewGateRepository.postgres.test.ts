@@ -109,6 +109,22 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     ]);
   }
 
+  async function lifecycleEvents(runId: string): Promise<Array<{
+    eventKind: string;
+    sequence: number;
+    data: Record<string, unknown>;
+  }>> {
+    const result = await pool!.query(
+      'SELECT event_kind, sequence, payload FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence',
+      [runId],
+    );
+    return result.rows.map((row) => ({
+      eventKind: String(row.event_kind),
+      sequence: Number(row.sequence),
+      data: row.payload.data as Record<string, unknown>,
+    }));
+  }
+
   beforeAll(async () => {
     schemaName = `review_gate_test_${randomBytes(8).toString('hex')}`;
     if (!OWNED_SCHEMA.test(schemaName)) throw new Error('Generated schema is not owned by this test');
@@ -200,6 +216,56 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       expected_app_id: String(APP_ID),
       current_attempt: true,
     }]);
+  });
+
+  it('records the gate lifecycle transition matrix exactly once with unchanged authority returns', async () => {
+    const id = runId(7);
+    await insertRun(id);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
+    const reserved = await repository.reserve(id, APP_ID, RECEIVED_AT + 1_000);
+    expect(reserved).not.toBeNull();
+    const claim = (await repository.claimPublication('matrix-gate-worker', RECEIVED_AT + 2_000, 5_000))!;
+    expect(claim).not.toBeNull();
+    await expect(repository.publishLocked(claim, async (gate) => ({
+      id: 8080, name: REVIEW_GATE_CHECK_NAME, appId: gate.expectedAppId,
+      headSha: gate.coordinates.headSha, externalId: gate.externalId,
+      status: 'queued', conclusion: null,
+    }), () => RECEIVED_AT + 3_000)).resolves.toBe('published');
+    await pool!.query("UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1", [id]);
+    expect(await repository.advanceProjectedAttempts(RECEIVED_AT + 4_000)).toBe(1);
+    await pool!.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [id]);
+    expect(await repository.reapTerminalAttempts(RECEIVED_AT + 5_000)).toBe(1);
+    await pool!.query('UPDATE review_gate_attempts SET published_version = desired_version WHERE run_id = $1', [id]);
+
+    const retryId = runId(8);
+    await insertRun(retryId, 0, 0, 3210, 43);
+    const retryRepository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
+    await retryRepository.reserve(retryId, APP_ID, RECEIVED_AT + 6_000);
+    const retryClaim = (await retryRepository.claimPublication('matrix-retry-worker', RECEIVED_AT + 7_000, 5_000))!;
+    expect(await retryRepository.retryPublication(retryClaim, RECEIVED_AT + 8_000, 1_000, 'transport')).toBe(true);
+
+    expect(await lifecycleEvents(id)).toEqual([
+      { eventKind: 'review.lifecycle.gate_publication', sequence: 1,
+        data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'reserved' } },
+      { eventKind: 'review.lifecycle.gate_publication', sequence: 2,
+        data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'claimed' } },
+      { eventKind: 'review.lifecycle.gate_publication', sequence: 3,
+        data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'published' } },
+      { eventKind: 'review.lifecycle.started', sequence: 4,
+        data: { policy_digest: 'c'.repeat(64), stage: 'started' } },
+      { eventKind: 'review.lifecycle.terminal', sequence: 5,
+        data: { policy_digest: 'c'.repeat(64), stage: 'terminal', terminal_class: 'failure', retry_class: 'infrastructure-failure' } },
+    ]);
+    expect(await lifecycleEvents(retryId)).toEqual([
+      { eventKind: 'review.lifecycle.gate_publication', sequence: 1,
+        data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'reserved' } },
+      { eventKind: 'review.lifecycle.gate_publication', sequence: 2,
+        data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'claimed' } },
+      { eventKind: 'review.lifecycle.retrying', sequence: 3,
+        data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', retry_class: 'transport' } },
+    ]);
+    const rows = (await pool!.query('SELECT event_id FROM review_event_outbox ORDER BY event_id')).rows;
+    expect(new Set(rows.map((row) => row.event_id)).size).toBe(rows.length);
   });
 
   it('rolls back supersession when a different App identity conflicts', async () => {
