@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.3...v1.56.4) (2026-09-11)
+
+
+### Bug Fixes
+
+* **operator:** initialize controller-runtime logger ([#722](https://github.com/review-yeti-ai/review-yeti-bot/issues/722)) ([0ae5048](https://github.com/review-yeti-ai/review-yeti-bot/commit/0ae5048ac67b71cbe1f3a3466feb4b27b09bbf9b))
+
 ## [1.56.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.2...v1.56.3) (2026-09-11)
 
 
