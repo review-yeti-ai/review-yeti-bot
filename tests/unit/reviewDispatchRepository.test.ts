@@ -3,6 +3,7 @@ import {
   PostgresReviewDispatchRepository as DurablePostgresReviewDispatchRepository,
   type ReviewDispatchRepositoryOptions,
 } from '../../src/persistence/reviewDispatchRepository';
+import { buildLifecycleEvent } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
 import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
@@ -465,6 +466,132 @@ describe('PostgresReviewDispatchRepository', () => {
     }));
     expect(query).toHaveBeenCalledOnce();
     expect(await repository.heartbeat(row.run_id, 'dispatcher-a', claim!.claimAttempt, 2_000, 30_000)).toBe(true);
+  });
+
+  describe('lifecycle-enabled claim preflight', () => {
+    const claimRow = {
+      run_id: row.run_id,
+      delivery_id: input().deliveryId,
+      claim_attempt: 1,
+      execution_attempt: 1,
+      repository_id: 123,
+      installation_id: 456,
+      publication_mode: 'disabled',
+      authoritative_gate_app_id: null,
+      owner: identity.owner,
+      repo: identity.repo,
+      pr_number: identity.prNumber,
+      head_sha: identity.headSha,
+      base_sha: identity.baseSha,
+      received_at: new Date(1_000),
+      terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
+      effective_policy_digest: identity.configDigest,
+      effective_config_digest: identity.configDigest,
+      worker_token_digest: null,
+      lease_owner: 'dispatcher-a',
+      lease_expires_at: new Date(31_000),
+    };
+
+    function lifecycleEventRow() {
+      const event = buildLifecycleEvent({
+        eventKind: 'review.lifecycle.dispatched',
+        repositoryId: 123,
+        prNumber: identity.prNumber,
+        baseSha: identity.baseSha,
+        headSha: identity.headSha,
+        attemptId: `${row.run_id}-g0-e1`,
+        runId: row.run_id,
+        correlationId: row.run_id,
+        traceId: row.run_id,
+        data: { stage: 'dispatch' },
+        occurredAt: new Date(2_000).toISOString(),
+        eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      });
+      return {
+        event_id: event.event_id,
+        run_id: event.run_id,
+        attempt_id: event.attempt_id,
+        repository_id: event.repository_id,
+        pr_number: event.pr_number,
+        sequence: 1,
+        payload: event,
+        state: 'pending',
+        attempt_count: 0,
+        next_attempt_at: new Date(2_000),
+        created_at: new Date(2_000),
+        updated_at: new Date(2_000),
+      };
+    }
+
+    it('returns idle without checking out a transaction client', async () => {
+      const connect = vi.fn();
+      const probe = vi.fn(async () => ({ rows: [] }));
+      const repository = new DurablePostgresReviewDispatchRepository(
+        { connect, query: probe }, undefined, { lifecycleEvents: 'enabled' },
+      );
+
+      await expect(repository.claimNext('dispatcher-a', 2_000, 30_000)).resolves.toBeNull();
+      expect(probe).toHaveBeenCalledOnce();
+      expect(connect).not.toHaveBeenCalled();
+    });
+
+    it('keeps the positive candidate claim and lifecycle append on one transaction client', async () => {
+      const clientCalls: string[] = [];
+      const eventRow = lifecycleEventRow();
+      const clientQuery = vi.fn(async (sql: string) => {
+        clientCalls.push(sql);
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK'
+          || /pg_advisory_xact_lock/u.test(sql)
+          || /SELECT \* FROM review_event_outbox/u.test(sql)) return { rows: [] };
+        if (/WITH candidate/u.test(sql)) return { rows: [claimRow] };
+        if (/SELECT runs\.run_id/u.test(sql)) {
+          return { rows: [{ run_id: row.run_id, repository_id: 123, pr_number: 42,
+            base_sha: identity.baseSha, head_sha: identity.headSha, attempt: 0,
+            effective_policy_digest: identity.configDigest, execution_attempt: 1 }] };
+        }
+        if (/INSERT INTO review_event_sequence_counters/u.test(sql)) return { rows: [{ next_sequence: 1 }] };
+        if (/INSERT INTO review_event_outbox/u.test(sql)) return { rows: [eventRow] };
+        throw new Error(`unexpected lifecycle claim query: ${sql}`);
+      });
+      const client = { query: clientQuery, release: vi.fn() };
+      const connect = vi.fn(async () => client);
+      const probe = vi.fn(async () => ({ rows: [{}] }));
+      const repository = new DurablePostgresReviewDispatchRepository(
+        { connect, query: probe }, undefined, { lifecycleEvents: 'enabled' },
+      );
+
+      await expect(repository.claimNext('dispatcher-a', 2_000, 30_000)).resolves.toMatchObject({
+        runId: row.run_id, claimAttempt: 1,
+      });
+      expect(probe).toHaveBeenCalledOnce();
+      expect(connect).toHaveBeenCalledOnce();
+      expect(clientCalls[0]).toBe('BEGIN');
+      expect(clientCalls.some((sql) => /WITH candidate/u.test(sql))).toBe(true);
+      expect(clientCalls.some((sql) => /INSERT INTO review_event_outbox/u.test(sql))).toBe(true);
+      expect(clientCalls.at(-1)).toBe('COMMIT');
+      expect(client.release).toHaveBeenCalledOnce();
+    });
+
+    it('commits a safe empty transaction when a probed candidate is claimed by a race', async () => {
+      const clientCalls: string[] = [];
+      const clientQuery = vi.fn(async (sql: string) => {
+        clientCalls.push(sql);
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+        if (/WITH candidate/u.test(sql)) return { rows: [] };
+        throw new Error(`unexpected race query: ${sql}`);
+      });
+      const client = { query: clientQuery, release: vi.fn() };
+      const connect = vi.fn(async () => client);
+      const probe = vi.fn(async () => ({ rows: [{}] }));
+      const repository = new DurablePostgresReviewDispatchRepository(
+        { connect, query: probe }, undefined, { lifecycleEvents: 'enabled' },
+      );
+
+      await expect(repository.claimNext('dispatcher-a', 2_000, 30_000)).resolves.toBeNull();
+      expect(clientCalls).toEqual(['BEGIN', expect.stringContaining('WITH candidate'), 'COMMIT']);
+      expect(clientCalls.some((sql) => /review_event_outbox/u.test(sql))).toBe(false);
+      expect(client.release).toHaveBeenCalledOnce();
+    });
   });
 
   it('keeps active claims single-owner and stable across projection retries', async () => {

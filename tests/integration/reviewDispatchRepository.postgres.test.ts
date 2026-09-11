@@ -307,6 +307,68 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(allIds).toHaveLength(Array.from(expected.values()).reduce((total, events) => total + events.length, 0));
   });
 
+  it('records worker failure, abandoned publishing, reconciliation, and same-identity redelivery exactly once', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const input = sameHeadAdmission('matrix-worker-failure', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('matrix-worker', 1_001, 30_000))!;
+    const workerTokenDigest = 'a'.repeat(64);
+    expect(await repository.bindWorkerTokenDigest(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, workerTokenDigest, 1_002,
+    )).toBe(true);
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      failureClass: 'provider_error',
+    }, { workerTokenDigest }, 1_003)).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
+
+    const [abandoned] = await repository.claimAbandonedPublishingRuns('matrix-reaper', 2_000, 1);
+    expect(abandoned).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+    await expect(repository.reconcileAbandonedPublishingRun(abandoned, 'matrix-reaper', 2_001,
+      async () => 'failure-published')).resolves.toBe(true);
+
+    const redelivery = await repository.admit(sameHeadAdmission('matrix-worker-redelivery', 3_000));
+    expect(redelivery).toMatchObject({ status: 'accepted', run: {
+      runId: admitted.run.runId, attempt: 1, status: 'queued',
+    } });
+    const redeliveryClaim = await repository.claimNext('matrix-redelivery-worker', 3_001, 30_000);
+    expect(redeliveryClaim).toMatchObject({ runId: admitted.run.runId, executionAttempt: 2 });
+
+    const expected = [
+      { eventKind: 'review.lifecycle.admission', sequence: 1,
+        data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+      { eventKind: 'review.lifecycle.queued', sequence: 2,
+        data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+      { eventKind: 'review.lifecycle.dispatched', sequence: 3,
+        data: { policy_digest: 'e'.repeat(64), stage: 'dispatch' } },
+      { eventKind: 'review.lifecycle.terminal', sequence: 4,
+        data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'provider_error' } },
+      { eventKind: 'review.lifecycle.terminal', sequence: 5,
+        data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'publishing_deadline', retry_class: 'reaper' } },
+      { eventKind: 'review.lifecycle.terminal', sequence: 6,
+        data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'publishing_deadline_reconciled' } },
+      { eventKind: 'review.lifecycle.admission', sequence: 7,
+        data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+      { eventKind: 'review.lifecycle.queued', sequence: 8,
+        data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+      { eventKind: 'review.lifecycle.retrying', sequence: 9,
+        data: { policy_digest: 'e'.repeat(64), stage: 'admission', retry_class: 'same_identity_redelivery' } },
+      { eventKind: 'review.lifecycle.dispatched', sequence: 10,
+        data: { policy_digest: 'e'.repeat(64), stage: 'dispatch' } },
+    ];
+    expect(await lifecycleEvents(client, admitted.run.runId)).toEqual(expected);
+    const eventIds = (await client.query(
+      'SELECT event_id FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [admitted.run.runId],
+    )).rows.map((event) => event.event_id);
+    expect(new Set(eventIds).size).toBe(eventIds.length);
+    expect((await client.query(
+      'SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [admitted.run.runId],
+    )).rows[0].next_sequence).toBe('10');
+  });
+
   it.each([false, true])('isolates legacy reconciliation from authoritative enrollment=%s', async (authoritative) => {
     const { repository, client, gateRepository } = await createRepository();
     const input = authoritative ? authoritativeAdmission() : sameHeadAdmission('legacy', 1_000);

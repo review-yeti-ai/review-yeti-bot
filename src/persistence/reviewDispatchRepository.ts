@@ -39,6 +39,7 @@ interface TransactionClient extends Queryable {
 
 interface ConnectionPool {
   connect(): Promise<TransactionClient>;
+  query?(text: string, values?: unknown[]): Promise<QueryResult>;
 }
 
 /** Prefix for the bounded worker failure classification persisted in error_text. */
@@ -245,6 +246,23 @@ function validateClaimAttempt(claimAttempt: number): void {
   }
 }
 
+function dispatchClaimPredicate(timeParameter: string): string {
+  return `runs.status = 'queued'
+              AND (runs.authoritative_gate_app_id IS NULL OR EXISTS (
+                SELECT 1 FROM review_gate_attempts gate WHERE gate.run_id = runs.run_id
+                  AND gate.current_attempt AND gate.review_generation = runs.attempt
+                  AND gate.execution_attempt = outbox.execution_attempt + 1
+                  AND gate.expected_app_id = runs.authoritative_gate_app_id
+                  AND gate.creation_state = 'bound' AND gate.check_id IS NOT NULL
+                  AND gate.desired_state IN ('queued', 'in_progress')
+                  AND gate.published_version = gate.desired_version
+              ))
+              AND runs.terminal_deadline > to_timestamp(${timeParameter} / 1000.0)
+              AND outbox.available_at <= to_timestamp(${timeParameter} / 1000.0)
+              AND (outbox.status = 'pending'
+                OR (outbox.status = 'claimed' AND outbox.lease_expires_at <= to_timestamp(${timeParameter} / 1000.0)))`;
+}
+
 export class PostgresReviewDispatchRepository implements ReviewDispatchRepository {
   private readonly queryable: Queryable;
   private readonly admissionValidationTimeoutMs: number;
@@ -295,6 +313,22 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   ): Promise<void> {
     if (!this.lifecycleEventsEnabled) return;
     await appendLifecycleEventForRun(client, { runId, eventKind, occurredAt: now, data });
+  }
+
+  private async hasClaimableDispatch(now: number): Promise<boolean> {
+    const query = (this.pool as unknown as Partial<Queryable>).query;
+    if (typeof query !== 'function') {
+      throw new Error('Review dispatch lifecycle candidate probe requires the pool query interface');
+    }
+    const result = await query.call(this.pool,
+      `SELECT 1
+         FROM review_dispatch_outbox AS outbox
+         JOIN review_runs AS runs ON runs.run_id = outbox.run_id
+        WHERE ${dispatchClaimPredicate('$1')}
+        LIMIT 1`,
+      [now],
+    );
+    return result.rows.length > 0;
   }
 
   private async validateAuthoritativeAdmission(input: ReviewAdmissionInput): Promise<void> {
@@ -615,7 +649,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   async claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null> {
-    return this.inTransaction(async (client) => {
+    if (this.lifecycleEventsEnabled && !(await this.hasClaimableDispatch(now))) return null;
+    const claim = async (client: Queryable): Promise<ReviewDispatchClaim | null> => {
       const result = await client.query(
         `WITH candidate AS (
            SELECT outbox.run_id, runs.publication_mode, runs.authoritative_gate_app_id, runs.owner, runs.repo,
@@ -624,20 +659,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                   runs.effective_config_digest
              FROM review_dispatch_outbox AS outbox
              JOIN review_runs AS runs ON runs.run_id = outbox.run_id
-            WHERE runs.status = 'queued'
-              AND (runs.authoritative_gate_app_id IS NULL OR EXISTS (
-                SELECT 1 FROM review_gate_attempts gate WHERE gate.run_id = runs.run_id
-                  AND gate.current_attempt AND gate.review_generation = runs.attempt
-                  AND gate.execution_attempt = outbox.execution_attempt + 1
-                  AND gate.expected_app_id = runs.authoritative_gate_app_id
-                  AND gate.creation_state = 'bound' AND gate.check_id IS NOT NULL
-                  AND gate.desired_state IN ('queued', 'in_progress')
-                  AND gate.published_version = gate.desired_version
-              ))
-              AND runs.terminal_deadline > to_timestamp($2 / 1000.0)
-              AND outbox.available_at <= to_timestamp($2 / 1000.0)
-              AND (outbox.status = 'pending'
-                OR (outbox.status = 'claimed' AND outbox.lease_expires_at <= to_timestamp($2 / 1000.0)))
+            WHERE ${dispatchClaimPredicate('$2')}
             ORDER BY outbox.available_at, outbox.created_at
             FOR UPDATE OF outbox SKIP LOCKED
             LIMIT 1
@@ -686,7 +708,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         leaseOwner: row.lease_owner,
         leaseExpiresAt: milliseconds(row.lease_expires_at) || 0,
       };
-    });
+    };
+    if (!this.lifecycleEventsEnabled) return claim(this.queryable);
+    return this.inTransaction((client) => claim(client));
   }
 
   async claimAbandonedPublishingRuns(
