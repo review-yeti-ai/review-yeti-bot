@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.54.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.2...v1.54.3) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** bind dispatch to durable generation ([#703](https://github.com/review-yeti-ai/review-yeti-bot/issues/703)) ([8d1e46c](https://github.com/review-yeti-ai/review-yeti-bot/commit/8d1e46cd8bb01bcec5f8f849963b071f1b8fceac))
+
 ## [1.54.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.1...v1.54.2) (2026-09-11)
 
 
