@@ -26,7 +26,8 @@ function fixture(state: StoredReviewCiRequest['state'] = 'pending') {
     get: vi.fn(async () => structuredClone(request)), listPending: vi.fn().mockResolvedValue([]),
     admit: vi.fn(async (_id, nextBinding, validate) => { await validate(request, nextBinding); return 'recorded' as const; }),
     supersede: vi.fn().mockResolvedValue('recorded'), claimDelivery: vi.fn().mockResolvedValue(null),
-    acknowledgeRepositoryDispatch: vi.fn(), acknowledgeWorkflowDispatch: vi.fn(), markDeliveryUncertain: vi.fn(), retryUncertainDelivery: vi.fn(),
+    acknowledgeRepositoryDispatch: vi.fn(), acknowledgeWorkflowDispatch: vi.fn(), markDeliveryUncertain: vi.fn(),
+    rejectDelivery: vi.fn(), retryUncertainDelivery: vi.fn(),
     claimExecution: vi.fn(async (_execution, validate) => { await validate(request); return 'recorded' as const; }),
     recordTerminalReceipt: vi.fn(async (_receipt, validate) => { await validate(request); return 'recorded' as const; }),
   } satisfies ReviewCiRepository;
@@ -107,6 +108,16 @@ describe('event-driven CI service coordination', () => {
     expect(f.client.dispatchWorkflow).not.toHaveBeenCalled();
     expect(f.repository.retryUncertainDelivery).toHaveBeenCalledWith(expect.any(Object), {
       outcome: 'absent', requestId: id, epoch: 1, kind: 'workflow', observedAt: 1000 }, 1000, 5000);
+  });
+  it.each(['repository', 'workflow'] as const)('fails closed on a permanently rejected %s dispatch', async (kind) => {
+    const f = fixture(kind === 'repository' ? 'pending' : 'admitted');
+    f.repository.claimDelivery.mockResolvedValueOnce(kind === 'repository' ? f.delivery(kind) : null)
+      .mockResolvedValueOnce(kind === 'workflow' ? f.delivery(kind) : null);
+    if (kind === 'repository') f.client.dispatchRepository.mockResolvedValue({ status: 'rejected' });
+    else f.client.dispatchWorkflow.mockResolvedValue({ status: 'rejected' });
+    await f.service.runOnce();
+    expect(f.repository.rejectDelivery).toHaveBeenCalledWith(expect.objectContaining({ kind }), 1000);
+    expect(f.repository.markDeliveryUncertain).not.toHaveBeenCalled();
   });
   it('correlates late ACK to the exact run without another POST', async () => {
     const f = fixture('admitted'); f.client.correlateRun.mockResolvedValue({ runId: 100, runAttempt: 1 });

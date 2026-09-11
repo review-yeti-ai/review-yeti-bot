@@ -8,6 +8,7 @@ import {
   type ReviewCiStateTransition, type ReviewCiTransition, type ReviewCiValidationBinding,
   type StoredReviewCiRequest,
 } from '../review/reviewCi';
+import { reviewDispatchPrLockKey, storedReviewCiRequestFromRow } from './reviewCiPersistence';
 
 export type { ReviewCiQueryable, ReviewCiStateTransition, ReviewCiTransition } from '../review/reviewCi';
 interface Client extends ReviewCiQueryable { release(): void }
@@ -34,27 +35,8 @@ function clock(now: number): void {
 function id(value: string): void {
   if (typeof value !== 'string' || !UUID.test(value)) throw new Error('Invalid Review CI request identity');
 }
-function fromRow(row: any): StoredReviewCiRequest {
-  const review = reviewCiCoordinatesSchema.parse(row.review);
-  const binding = row.binding === null ? null : normalizeReviewCiBinding(row.binding);
-  const result: StoredReviewCiRequest = {
-    requestId: row.request_id, review, expectedAppId: Number(row.expected_app_id), state: row.state,
-    binding, identityDigest: row.identity_digest, workflowEpoch: Number(row.workflow_epoch),
-    execution: row.execution === null ? null : reviewCiExecutionSchema.parse(row.execution),
-    terminalReceipt: row.terminal_receipt === null ? null : reviewCiTerminalReceiptSchema.parse(row.terminal_receipt),
-  };
-  id(result.requestId);
-  if (!Number.isSafeInteger(result.expectedAppId) || result.expectedAppId <= 0
-    || row.attempt_id !== review.attemptId || Number(row.repository_id) !== review.repositoryId
-    || Number(row.pr_number) !== review.prNumber
-    || (binding && result.identityDigest !== reviewCiIdentityDigest({ ...result, binding }))
-    || (result.terminalReceipt && row.terminal_digest !== sha256(result.terminalReceipt))) {
-    throw new Error('Invalid stored Review CI identity');
-  }
-  return result;
-}
 async function prLock(client: ReviewCiQueryable, repositoryId: number, prNumber: number): Promise<void> {
-  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`review-dispatch:${repositoryId}:${prNumber}`]);
+  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [reviewDispatchPrLockKey(repositoryId, prNumber)]);
 }
 
 async function eligibleGate(client: ReviewCiQueryable, attempt: string, published: boolean): Promise<{
@@ -104,7 +86,8 @@ export async function enqueueReviewCiCompletionInTransaction(
     await client.query(`INSERT INTO review_ci_requests(request_id,attempt_id,repository_id,pr_number,expected_app_id,review,created_at,updated_at)
       VALUES($1,$2,$3,$4,$5,$6,to_timestamp($7/1000.0),to_timestamp($7/1000.0)) ON CONFLICT(attempt_id) DO NOTHING`,
     [randomUUID(), attemptId, gate.review.repositoryId, gate.review.prNumber, gate.expectedAppId, JSON.stringify(gate.review), now]);
-    const request = fromRow((await client.query('SELECT * FROM review_ci_requests WHERE attempt_id=$1 FOR UPDATE', [attemptId])).rows[0]);
+    const request = storedReviewCiRequestFromRow(
+      (await client.query('SELECT * FROM review_ci_requests WHERE attempt_id=$1 FOR UPDATE', [attemptId])).rows[0]);
     if (sha256(request.review) !== sha256(gate.review) || request.expectedAppId !== gate.expectedAppId) {
       throw new Error('Review CI completion identity conflict');
     }
@@ -152,18 +135,19 @@ export class PostgresReviewCiRepository implements ReviewCiRepository {
     if (!binding) return null;
     await prLock(client, Number(binding.repository_id), Number(binding.pr_number));
     const row = (await client.query('SELECT * FROM review_ci_requests WHERE request_id=$1 FOR UPDATE', [requestId])).rows[0];
-    return row ? fromRow(row) : null;
+    return row ? storedReviewCiRequestFromRow(row) : null;
   }
   private async notifyTransition(client: Client, requestId: string, transition: ReviewCiStateTransition, now: number): Promise<void> {
     if (!this.options.onTransition) return;
-    const request = fromRow((await client.query('SELECT * FROM review_ci_requests WHERE request_id=$1', [requestId])).rows[0]);
+    const request = storedReviewCiRequestFromRow(
+      (await client.query('SELECT * FROM review_ci_requests WHERE request_id=$1', [requestId])).rows[0]);
     await this.options.onTransition(client, request, transition, now);
   }
   async get(requestId: string): Promise<StoredReviewCiRequest | null> {
     id(requestId);
     return this.transaction(async (client) => {
       const row = (await client.query('SELECT * FROM review_ci_requests WHERE request_id=$1', [requestId])).rows[0];
-      return row ? fromRow(row) : null;
+      return row ? storedReviewCiRequestFromRow(row) : null;
     });
   }
   /** Service advances the last requestId cursor and wraps after an empty page.
@@ -173,7 +157,7 @@ export class PostgresReviewCiRepository implements ReviewCiRepository {
     if (afterRequestId !== undefined) id(afterRequestId);
     return this.transaction(async (client) => (await client.query(`SELECT * FROM review_ci_requests
       WHERE state IN ('pending','admitted','running') AND ($2::uuid IS NULL OR request_id > $2)
-      ORDER BY request_id LIMIT $1`, [limit, afterRequestId ?? null])).rows.map(fromRow));
+      ORDER BY request_id LIMIT $1`, [limit, afterRequestId ?? null])).rows.map(storedReviewCiRequestFromRow));
   }
   private async validateFresh(request: StoredReviewCiRequest, validate: (request: StoredReviewCiRequest) => Promise<void>): Promise<void> {
     if (typeof validate !== 'function') throw new Error('Review CI freshness validator is required');
@@ -316,6 +300,22 @@ export class PostgresReviewCiRepository implements ReviewCiRepository {
         lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,available_at=to_timestamp(($5::double precision+$6)/1000.0),updated_at=to_timestamp($5/1000.0)
         WHERE request_id=$1 AND kind=$2 AND epoch=$3`,
       [owned.request.requestId, claim.kind, claim.epoch, errorClass, now, delayMs]);
+      return 'recorded';
+    });
+  }
+  async rejectDelivery(claim: ReviewCiDeliveryClaim, now = Date.now()): Promise<ReviewCiTransition> {
+    clock(now);
+    return this.transaction(async (client) => {
+      const owned = await this.ownedDelivery(client, claim, now);
+      if (!owned) return 'stale';
+      if (owned.row.acknowledged_run !== null) return 'conflict';
+      await client.query(`UPDATE review_ci_deliveries SET state='terminal_error',last_error_class='rejected',
+        lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=to_timestamp($4/1000.0)
+        WHERE request_id=$1 AND kind=$2 AND epoch=$3`,
+      [owned.request.requestId, claim.kind, claim.epoch, now]);
+      await client.query(`UPDATE review_ci_requests SET state='delivery_error',updated_at=to_timestamp($2/1000.0)
+        WHERE request_id=$1`, [owned.request.requestId, now]);
+      await this.notifyTransition(client, owned.request.requestId, 'delivery_error', now);
       return 'recorded';
     });
   }

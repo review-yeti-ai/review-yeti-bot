@@ -41,7 +41,7 @@ export const REVIEW_CI_SCHEMA_SQL = `
     dispatch_started_at TIMESTAMPTZ,
     reconciliation JSONB,
     acknowledged_run JSONB,
-    last_error_class TEXT CHECK (last_error_class IN ('transport','timeout','delivery-exhausted')),
+    last_error_class TEXT CHECK (last_error_class IN ('transport','timeout','rejected','delivery-exhausted')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (request_id, kind, epoch),

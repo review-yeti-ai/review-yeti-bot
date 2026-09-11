@@ -9,6 +9,7 @@ import { evaluateReviewGate, type ReviewGateDecision, type ReviewGateEvidence } 
 import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationCallback,
   type GatePublicationTransition, type GatePublicationErrorClass, type ReviewGateRepository } from '../review/reviewGateContracts';
+import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationNotStarted } from '../review/reviewGateContracts';
 
@@ -83,7 +84,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         await client.query('COMMIT'); return binding ? 'unauthorized' : 'ignored';
       }
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-        `review-dispatch:${event.repositoryId}:${event.prNumber}`,
+        reviewDispatchPrLockKey(event.repositoryId, event.prNumber),
       ]);
       const result = await client.query(`SELECT gate.*, runs.status AS run_status,
           runs.attempt AS current_generation, runs.effective_config_digest, runs.received_at, runs.terminal_deadline,
@@ -202,7 +203,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       const lookup = await client.query('SELECT repository_id, pr_number FROM review_runs WHERE run_id = $1', [runId]);
       const key = lookup.rows[0];
       if (!key) return null;
-      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`review-dispatch:${key.repository_id}:${key.pr_number}`]);
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [reviewDispatchPrLockKey(Number(key.repository_id), Number(key.pr_number))]);
       const result = await client.query(`
         SELECT runs.*, outbox.execution_attempt + 1 AS worker_execution_attempt
           FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
@@ -285,7 +287,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         await client.query('BEGIN');
         await client.query("SET LOCAL lock_timeout = '5s'");
         const lock = await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired', [
-          `review-dispatch:${hint.repository_id}:${hint.pr_number}`,
+          reviewDispatchPrLockKey(Number(hint.repository_id), Number(hint.pr_number)),
         ]);
         if (!lock.rows[0]?.acquired) { await client.query('COMMIT'); continue; }
         const current = await client.query(`SELECT gate.*, runs.status AS run_status,
@@ -355,7 +357,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         await client.query('BEGIN');
         await client.query("SET LOCAL lock_timeout = '5s'");
         const lock = await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired', [
-          `review-dispatch:${hint.repository_id}:${hint.pr_number}`,
+          reviewDispatchPrLockKey(Number(hint.repository_id), Number(hint.pr_number)),
         ]);
         if (!lock.rows[0]?.acquired) { await client.query('COMMIT'); continue; }
         const updated = await client.query(`UPDATE review_gate_attempts gate
@@ -408,7 +410,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       await client.query('BEGIN');
       await client.query("SET LOCAL lock_timeout = '5s'");
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-        `review-dispatch:${claim.coordinates.repositoryId}:${claim.coordinates.prNumber}`,
+        reviewDispatchPrLockKey(claim.coordinates.repositoryId, claim.coordinates.prNumber),
       ]);
       const result = await client.query(`SELECT * FROM review_gate_attempts
         WHERE attempt_id = $1 AND lease_owner = $2 AND lease_token = $4

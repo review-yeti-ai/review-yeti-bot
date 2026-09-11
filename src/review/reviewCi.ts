@@ -214,6 +214,7 @@ export interface ReviewCiRepository {
   claimDelivery(kind: ReviewCiDeliveryKind, workerId: string, now?: number, leaseMs?: number): Promise<ReviewCiDeliveryClaim | null>;
   markDeliveryUncertain(claim: ReviewCiDeliveryClaim, errorClass: 'transport' | 'timeout', now?: number,
     delayMs?: number): Promise<ReviewCiTransition>;
+  rejectDelivery(claim: ReviewCiDeliveryClaim, now?: number): Promise<ReviewCiTransition>;
   acknowledgeRepositoryDispatch(claim: ReviewCiDeliveryClaim, now?: number): Promise<ReviewCiTransition>;
   acknowledgeWorkflowDispatch(claim: ReviewCiDeliveryClaim, input: unknown, now?: number,
     delayMs?: number): Promise<ReviewCiTransition>;
