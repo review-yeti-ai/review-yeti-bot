@@ -1,4 +1,8 @@
-import type { AbandonedPublishingRun, ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
+import type {
+  AbandonedCheckRecoveryOutcome,
+  AbandonedPublishingRun,
+  ReviewDispatchRepository,
+} from '../persistence/reviewDispatchRepository';
 import { logger } from '../utils/logger';
 
 /**
@@ -10,7 +14,7 @@ import { logger } from '../utils/logger';
  */
 export interface ReaperCheckClient {
   failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal):
-    Promise<'failed' | 'already-completed'>;
+    Promise<AbandonedCheckRecoveryOutcome>;
 }
 
 export interface AbandonedRunReaperOptions {
@@ -64,7 +68,8 @@ export class AbandonedRunReaper {
             const client = await this.options.checkClientFor(run, bounded);
             const outcome = await client.failAbandonedCheck(run, this.options.publisherAppId, bounded);
             bounded.throwIfAborted();
-            if (outcome === 'failed') published += 1;
+            if (outcome === 'failure-published') published += 1;
+            if (outcome === 'creation-unconfirmed') failed += 1;
             return outcome;
           },
         );
