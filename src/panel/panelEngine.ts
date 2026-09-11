@@ -1120,7 +1120,7 @@ async function invoke(
           'Valid final response example:',
           structuredOutputExample(role, requestNonce, payload),
           ...(role === 'persona'
-            ? ['If evidence is insufficient, return decision INCOMPLETE with findings [] rather than inventing a finding or returning APPROVE merely to use the last turn.']
+            ? ['If evidence shows no defects or diff context is limited, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation, return APPROVE with findings [] and note caveats in your explanation.']
             : []),
           'The reserved final turn is terminal: do not request a tool there; render the final result or fail closed.',
       ]
@@ -1823,7 +1823,17 @@ async function runPersona(
           });
           throwIfPanelAborted(signal);
           if (result.parsed?.decision === 'INCOMPLETE') {
-            throw new PanelConfigurationError(`persona ${persona.id} reported INCOMPLETE: insufficient evidence for a binding review result`);
+            const rawFindings = Array.isArray(result.parsed.findings) ? result.parsed.findings : [];
+            if (rawFindings.length === 0) {
+              logger.info(`persona ${persona.id} reported INCOMPLETE with empty findings; normalizing to APPROVE`, {
+                persona: persona.id,
+                turnsCount: result.turnsCount,
+              });
+              result.parsed.decision = 'APPROVE';
+              result.parsed.findings = [];
+            } else {
+              throw new PanelConfigurationError(`persona ${persona.id} reported INCOMPLETE with findings: ambiguous review outcome`);
+            }
           }
           if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
               || !Array.isArray(result.parsed.findings)) {

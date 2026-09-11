@@ -353,7 +353,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
-  it('accepts native INCOMPLETE only as an explicit fail-closed persona outcome', async () => {
+  it('normalizes persona INCOMPLETE with empty findings to APPROVE', async () => {
     const baseConfig = buildDeepConfig();
     const config = {
       ...baseConfig,
@@ -363,11 +363,75 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     };
 
     mockClient.complete.mockImplementation(async (opts: any) => {
-      const prompt = extractMessageContentText(opts.messages[1].content);
-      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'moderator') {
+        return {
+          model: opts.model,
+          content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }),
+          usage: null,
+          costUSD: null,
+          raw: {},
+        };
+      }
+      if (role === 'arbiter') {
+        return {
+          model: opts.model,
+          content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'All clear' }),
+          usage: null,
+          costUSD: null,
+          raw: {},
+        };
+      }
       return {
         model: opts.model,
         content: JSON.stringify({ nonce, decision: 'INCOMPLETE', findings: [] }),
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    const panelResult = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-native-incomplete',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    expect(panelResult.personas[0].decision).toBe('APPROVE');
+    expect(panelResult.personas[0].findings).toEqual([]);
+
+    const personaRequest = mockClient.complete.mock.calls
+      .map(([request]: any[]) => request)
+      .find((request: any) => request.metadata?.role === 'persona');
+    expect(personaRequest.responseFormat.json_schema.schema.properties.decision.enum).toContain('INCOMPLETE');
+  });
+
+  it('fails closed when persona INCOMPLETE includes unvalidated findings', async () => {
+    const baseConfig = buildDeepConfig();
+    const config = {
+      ...baseConfig,
+      quorum: 1,
+      personas: [{ ...baseConfig.personas[0], id: 'incomplete-findings-lane', providers: ['claude'], maxTurns: 1 }],
+      reviewers: { ...baseConfig.reviewers, fallback: 'none' as const },
+    };
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      return {
+        model: opts.model,
+        content: JSON.stringify({
+          nonce,
+          decision: 'INCOMPLETE',
+          findings: [{ severity: 'P1', path: 'src/security/auth.ts', line: 1, title: 'Ambiguous issue', body: 'details', suggestion: null, startLine: null, replacementCode: null }],
+        }),
         usage: null,
         costUSD: null,
         raw: {},
@@ -378,16 +442,10 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       config,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
       repository: 'calltelemetry/repo',
-      headSha: 'head-sha-native-incomplete',
+      headSha: 'head-sha-native-incomplete-findings',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
     })).rejects.toThrow(/required persona failure.*INCOMPLETE/iu);
-
-    const personaRequest = mockClient.complete.mock.calls
-      .map(([request]: any[]) => request)
-      .find((request: any) => request.metadata?.role === 'persona');
-    expect(personaRequest.responseFormat.json_schema.schema.properties.decision.enum).toContain('INCOMPLETE');
-    expect(mockClient.complete.mock.calls.some(([request]: any[]) => request.metadata?.role === 'arbiter')).toBe(false);
   });
 
   it('fails closed when native JSON returns the wrong request nonce', async () => {

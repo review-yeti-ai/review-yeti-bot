@@ -1094,7 +1094,7 @@ func TestPRReviewJobV1Alpha2ReconcilerCountsUnobservedWorkerAttemptAgainstCapaci
 				meta.SetStatusCondition(&candidate.Status.Conditions, metav1.Condition{
 					Type:               "WorkerCreationReserved",
 					Status:             metav1.ConditionTrue,
-					LastTransitionTime: metav1.NewTime(now),
+					LastTransitionTime: metav1.NewTime(now.Add(-time.Minute)),
 				})
 			},
 		},
