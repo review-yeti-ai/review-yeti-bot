@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.52.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.4...v1.52.5) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** enforce streaming deadlines and fair worker admission ([#680](https://github.com/review-yeti-ai/review-yeti-bot/issues/680)) ([cef7c64](https://github.com/review-yeti-ai/review-yeti-bot/commit/cef7c645b4acb0451082e000ff062ab990b903da))
+
 ## [1.52.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.52.3...v1.52.4) (2026-09-11)
 
 
