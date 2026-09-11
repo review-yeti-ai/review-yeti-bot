@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.54.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.54.0...v1.54.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **review:** reconcile abandoned runs when checks already exist on head SHA ([#700](https://github.com/review-yeti-ai/review-yeti-bot/issues/700)) ([889d271](https://github.com/review-yeti-ai/review-yeti-bot/commit/889d27111189f2eb407b0ef7e141ca3800daf5fc))
+
 ## [1.54.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.53.0...v1.54.0) (2026-09-11)
 
 
