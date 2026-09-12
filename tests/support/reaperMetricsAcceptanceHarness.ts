@@ -40,12 +40,72 @@ export interface ReaperBranchReceipt {
   outboxLeaseExpiresAt: string | null;
 }
 
+export interface ReaperLeasePrecondition {
+  branch: 'delivery_identity_mismatch' | 'superseded_attempt';
+  runId: string;
+  outboxStatus: 'projected';
+  outboxLeaseOwner: string;
+  outboxLeaseExpiresAt: string;
+  sweepAt: number;
+}
+
 export interface ReaperMetricsAcceptanceReceipt {
   baseline: ReaperMetricSample;
   samples: ReaperMetricSample[];
   branches: ReaperBranchReceipt[];
+  leasePreconditions: ReaperLeasePrecondition[];
   githubReadCount: number;
   githubWriteCount: number;
+}
+
+export interface ReaperMetricsAcceptanceCleanupFailure {
+  name: string;
+  error: unknown;
+}
+
+export interface ReaperMetricsAcceptanceCleanupStep {
+  name: string;
+  run(): Promise<void>;
+}
+
+export const REAPER_ACCEPTANCE_CLEANUP_FAILURES = Symbol(
+  'reaperAcceptanceCleanupFailures',
+);
+
+export async function runReaperMetricsAcceptanceCleanup(
+  steps: ReaperMetricsAcceptanceCleanupStep[],
+  primaryFailure?: { error: unknown },
+): Promise<void> {
+  const failures: ReaperMetricsAcceptanceCleanupFailure[] = [];
+  for (const step of steps) {
+    try {
+      await step.run();
+    } catch (error) {
+      failures.push({ name: step.name, error });
+    }
+  }
+
+  if (primaryFailure) {
+    const { error } = primaryFailure;
+    if (failures.length > 0 && (typeof error === 'object' && error !== null)) {
+      try {
+        Object.defineProperty(error, REAPER_ACCEPTANCE_CLEANUP_FAILURES, {
+          configurable: true,
+          value: failures,
+        });
+      } catch {
+        // A frozen error cannot carry diagnostics; preserving it is more important.
+      }
+    }
+    throw error;
+  }
+
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures.map(({ error }) => error),
+      `REL-817 acceptance cleanup failed: ${failures.map(({ name }) => name).join(', ')}`,
+    );
+  }
 }
 
 function assertDisposableLoopbackDatabase(databaseUrl: string): URL {
@@ -57,6 +117,11 @@ function assertDisposableLoopbackDatabase(databaseUrl: string): URL {
     || parsed.pathname !== '/postgres') {
     throw new Error(
       'REL-817 acceptance requires the postgres user and postgres database on a disposable loopback PostgreSQL service',
+    );
+  }
+  if (parsed.search !== '') {
+    throw new Error(
+      'REL-817 acceptance database URL must not include connection override parameters',
     );
   }
   return parsed;
@@ -130,6 +195,8 @@ export async function runReaperMetricsAcceptance(
   const previousDatabaseUrl = process.env.DATABASE_URL;
   let serverUrl: string | undefined;
   let schemaCreated = false;
+  let receipt: ReaperMetricsAcceptanceReceipt | undefined;
+  let operationFailure: { error: unknown } | undefined;
 
   try {
     await adminPool.query(`CREATE SCHEMA ${schema}`);
@@ -156,6 +223,8 @@ export async function runReaperMetricsAcceptance(
     });
     const githubRequests: Array<{ method: string; url: string }> = [];
     const sweepAt = Date.UTC(2026, 0, 2);
+    const expiredOutboxLeaseAt = sweepAt - 60_000;
+    const leasePreconditions: ReaperLeasePrecondition[] = [];
     const reaper = new AbandonedRunReaper({
       repository,
       publisherAppId: PUBLISHER_APP_ID,
@@ -216,8 +285,12 @@ export async function runReaperMetricsAcceptance(
         mismatchInput.receivedAt,
       ]);
       await pool.query(
-        "UPDATE review_dispatch_outbox SET delivery_id = $2, status = 'projected' WHERE run_id = $1",
-        [mismatchAdmission.run.runId, outboxDeliveryId],
+        `UPDATE review_dispatch_outbox
+            SET delivery_id = $2, status = 'projected', lease_owner = $3,
+                lease_expires_at = to_timestamp($4 / 1000.0)
+          WHERE run_id = $1`,
+        [mismatchAdmission.run.runId, outboxDeliveryId, `rel817-orphan-mismatch-${round}`,
+          expiredOutboxLeaseAt],
       );
       await pool.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [mismatchAdmission.run.runId]);
 
@@ -225,10 +298,56 @@ export async function runReaperMetricsAcceptance(
       const supersededAdmission = await repository.admit(supersededInput);
       if (supersededAdmission.status !== 'accepted') throw new Error('superseded acceptance admission was not accepted');
       await pool.query(
-        "UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1",
-        [supersededAdmission.run.runId],
+        `UPDATE review_dispatch_outbox
+            SET status = 'projected', lease_owner = $2,
+                lease_expires_at = to_timestamp($3 / 1000.0)
+          WHERE run_id = $1`,
+        [supersededAdmission.run.runId, `rel817-orphan-superseded-${round}`, expiredOutboxLeaseAt],
       );
       await pool.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [supersededAdmission.run.runId]);
+
+      const expectedLeases = [
+        {
+          branch: 'delivery_identity_mismatch' as const,
+          runId: mismatchAdmission.run.runId,
+          owner: `rel817-orphan-mismatch-${round}`,
+        },
+        {
+          branch: 'superseded_attempt' as const,
+          runId: supersededAdmission.run.runId,
+          owner: `rel817-orphan-superseded-${round}`,
+        },
+      ];
+      const seededLeases = await pool.query(
+        `SELECT run_id, status, lease_owner, lease_expires_at
+           FROM review_dispatch_outbox
+          WHERE run_id = ANY($1::text[])`,
+        [expectedLeases.map(({ runId }) => runId)],
+      );
+      if (seededLeases.rowCount !== expectedLeases.length) {
+        throw new Error('acceptance outbox lease precondition rows are incomplete');
+      }
+      const leaseRows = new Map<string, Record<string, unknown>>(
+        seededLeases.rows.map((row: Record<string, unknown>) => [String(row.run_id), row]),
+      );
+      for (const expected of expectedLeases) {
+        const row = leaseRows.get(expected.runId);
+        const leaseExpiresAt = nullableTimestamp(row?.lease_expires_at);
+        if (row?.status !== 'projected'
+          || row.lease_owner !== expected.owner
+          || leaseExpiresAt === null
+          || Date.parse(leaseExpiresAt) >= sweepAt) {
+          throw new Error(`acceptance outbox lease precondition failed for ${expected.runId}`);
+        }
+        leasePreconditions.push({
+          branch: expected.branch,
+          runId: expected.runId,
+          outboxStatus: 'projected',
+          outboxLeaseOwner: expected.owner,
+          outboxLeaseExpiresAt: leaseExpiresAt,
+          sweepAt,
+        });
+      }
 
       const outcome = await reaper.runOnce();
       if (outcome.swept !== 2 || outcome.quarantined !== 1 || outcome.superseded !== 1
@@ -291,22 +410,48 @@ export async function runReaperMetricsAcceptance(
       });
     }
 
-    return {
+    receipt = {
       baseline,
       samples,
       branches,
+      leasePreconditions,
       githubReadCount: githubRequests.filter(({ method }) => method === 'GET').length,
       githubWriteCount: githubRequests.filter(({ method }) => method !== 'GET').length,
     };
+  } catch (error) {
+    operationFailure = { error };
   } finally {
-    if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-    else process.env.DATABASE_URL = previousDatabaseUrl;
-    await closeDispatcherMetricsServer(metricsServer);
-    await store.close();
-    if (schemaCreated) {
-      if (!OWNED_SCHEMA.test(schema)) throw new Error('refusing to remove an unowned acceptance schema');
-      await adminPool.query(`DROP SCHEMA ${schema} CASCADE`);
-    }
-    await adminPool.end();
+    await runReaperMetricsAcceptanceCleanup([
+      {
+        name: 'DATABASE_URL restoration',
+        run: async () => {
+          if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+          else process.env.DATABASE_URL = previousDatabaseUrl;
+        },
+      },
+      {
+        name: 'metrics server',
+        run: async () => closeDispatcherMetricsServer(metricsServer),
+      },
+      {
+        name: 'store',
+        run: async () => store.close(),
+      },
+      {
+        name: 'schema',
+        run: async () => {
+          if (!schemaCreated) return;
+          if (!OWNED_SCHEMA.test(schema)) throw new Error('refusing to remove an unowned acceptance schema');
+          await adminPool.query(`DROP SCHEMA ${schema} CASCADE`);
+        },
+      },
+      {
+        name: 'admin pool',
+        run: async () => adminPool.end(),
+      },
+    ], operationFailure);
   }
+
+  if (!receipt) throw new Error('REL-817 acceptance completed without a receipt');
+  return receipt;
 }
