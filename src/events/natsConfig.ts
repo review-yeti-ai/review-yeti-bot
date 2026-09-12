@@ -27,6 +27,9 @@ const DEFAULTS = {
   pollIntervalMs: 1_000,
 } as const;
 
+export const NATS_MAX_RECONNECT_BACKOFF_DELAY_MS = 10_000;
+export const NATS_LEASE_COMPLETION_MARGIN_MS = 1_000;
+
 const SAFE_NAME = /^[A-Za-z0-9_.:-]{1,64}$/u;
 const SAFE_TOKEN = /^[^\u0000-\u001f\u007f]{1,4096}$/u;
 type NatsEnvironment = Readonly<Record<string, string | undefined>>;
@@ -82,6 +85,38 @@ function parseBoundedInteger(
     return invalid(`${key} is outside its allowed bound`);
   }
   return value;
+}
+
+function maximumConnectBudgetMs(
+  connectTimeoutMs: number,
+  maxReconnectAttempts: number,
+  reconnectBackoffMs: number,
+): number {
+  let budget = connectTimeoutMs * (maxReconnectAttempts + 1);
+  for (let retry = 0; retry < maxReconnectAttempts; retry += 1) {
+    budget += Math.min(
+      reconnectBackoffMs * (2 ** retry),
+      NATS_MAX_RECONNECT_BACKOFF_DELAY_MS,
+    );
+  }
+  return budget;
+}
+
+function assertLeaseCoversTransport(
+  leaseMs: number,
+  connectTimeoutMs: number,
+  publishAckTimeoutMs: number,
+  maxReconnectAttempts: number,
+  reconnectBackoffMs: number,
+): void {
+  const maximumTransportMs = maximumConnectBudgetMs(
+    connectTimeoutMs,
+    maxReconnectAttempts,
+    reconnectBackoffMs,
+  ) + publishAckTimeoutMs;
+  if (leaseMs <= maximumTransportMs + NATS_LEASE_COMPLETION_MARGIN_MS) {
+    invalid('lease must exceed the worst-case transport and completion budget');
+  }
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -172,18 +207,60 @@ export function natsConfigFromEnv(env: NatsEnvironment = process.env): NatsEvent
   }
 
   const transport = parseServerUrls(env[NATS_CONFIG_ENV.serverUrl]);
+  const connectTimeoutMs = parseBoundedInteger(
+    env,
+    NATS_CONFIG_ENV.connectTimeoutMs,
+    DEFAULTS.connectTimeoutMs,
+    100,
+    30_000,
+  );
+  const publishAckTimeoutMs = parseBoundedInteger(
+    env,
+    NATS_CONFIG_ENV.publishAckTimeoutMs,
+    DEFAULTS.publishAckTimeoutMs,
+    100,
+    30_000,
+  );
+  const maxReconnectAttempts = parseBoundedInteger(
+    env,
+    NATS_CONFIG_ENV.maxReconnectAttempts,
+    DEFAULTS.maxReconnectAttempts,
+    0,
+    5,
+  );
+  const reconnectBackoffMs = parseBoundedInteger(
+    env,
+    NATS_CONFIG_ENV.reconnectBackoffMs,
+    DEFAULTS.reconnectBackoffMs,
+    1,
+    NATS_MAX_RECONNECT_BACKOFF_DELAY_MS,
+  );
+  const leaseMs = parseBoundedInteger(
+    env,
+    NATS_CONFIG_ENV.leaseMs,
+    DEFAULTS.leaseMs,
+    100,
+    300_000,
+  );
+  assertLeaseCoversTransport(
+    leaseMs,
+    connectTimeoutMs,
+    publishAckTimeoutMs,
+    maxReconnectAttempts,
+    reconnectBackoffMs,
+  );
   return {
     enabled: true,
     ...transport,
     token: parseToken(env),
     name: parseName(env),
-    connectTimeoutMs: parseBoundedInteger(env, NATS_CONFIG_ENV.connectTimeoutMs, DEFAULTS.connectTimeoutMs, 100, 30_000),
-    publishAckTimeoutMs: parseBoundedInteger(env, NATS_CONFIG_ENV.publishAckTimeoutMs, DEFAULTS.publishAckTimeoutMs, 100, 30_000),
-    maxReconnectAttempts: parseBoundedInteger(env, NATS_CONFIG_ENV.maxReconnectAttempts, DEFAULTS.maxReconnectAttempts, 0, 5),
-    reconnectBackoffMs: parseBoundedInteger(env, NATS_CONFIG_ENV.reconnectBackoffMs, DEFAULTS.reconnectBackoffMs, 1, 10_000),
+    connectTimeoutMs,
+    publishAckTimeoutMs,
+    maxReconnectAttempts,
+    reconnectBackoffMs,
     drainTimeoutMs: parseBoundedInteger(env, NATS_CONFIG_ENV.drainTimeoutMs, DEFAULTS.drainTimeoutMs, 100, 30_000),
     batchSize: parseBoundedInteger(env, NATS_CONFIG_ENV.batchSize, DEFAULTS.batchSize, 1, 100),
-    leaseMs: parseBoundedInteger(env, NATS_CONFIG_ENV.leaseMs, DEFAULTS.leaseMs, 100, 300_000),
+    leaseMs,
     retryDelayMs: parseBoundedInteger(env, NATS_CONFIG_ENV.retryDelayMs, DEFAULTS.retryDelayMs, 100, 300_000),
     pollIntervalMs: parseBoundedInteger(env, NATS_CONFIG_ENV.pollIntervalMs, DEFAULTS.pollIntervalMs, 100, 60_000),
   };

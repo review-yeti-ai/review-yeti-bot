@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   NATS_CONFIG_ENV,
+  NATS_LEASE_COMPLETION_MARGIN_MS,
   natsConfigFromEnv,
   NatsConfigurationError,
 } from '../../src/events/natsConfig';
@@ -87,6 +88,59 @@ describe('nats event publisher configuration', () => {
     expect(config.drainTimeoutMs).toBeGreaterThan(0);
     expect(config.maxReconnectAttempts).toBeGreaterThanOrEqual(0);
     expect(config.batchSize).toBeGreaterThan(0);
+  });
+
+  it('rejects a lease that cannot cover the configured worst-case transport budget', () => {
+    const transportBudgetMs = 100 + 100;
+    const maximumUnsafeLeaseMs = transportBudgetMs + NATS_LEASE_COMPLETION_MARGIN_MS;
+    const baseEnv = {
+      [NATS_CONFIG_ENV.enabled]: 'true',
+      [NATS_CONFIG_ENV.serverUrl]: 'tls://private-nats.internal:4222',
+      [NATS_CONFIG_ENV.token]: 'private-token',
+      [NATS_CONFIG_ENV.connectTimeoutMs]: '100',
+      [NATS_CONFIG_ENV.publishAckTimeoutMs]: '100',
+      [NATS_CONFIG_ENV.maxReconnectAttempts]: '0',
+      [NATS_CONFIG_ENV.reconnectBackoffMs]: '1',
+    } as const;
+
+    for (const leaseMs of [maximumUnsafeLeaseMs - 1, maximumUnsafeLeaseMs]) {
+      expect(() => natsConfigFromEnv({
+        ...baseEnv,
+        [NATS_CONFIG_ENV.leaseMs]: String(leaseMs),
+      })).toThrow(/lease.*transport.*budget/iu);
+    }
+
+    expect(natsConfigFromEnv({
+      ...baseEnv,
+      [NATS_CONFIG_ENV.leaseMs]: String(maximumUnsafeLeaseMs + 1),
+    }).leaseMs).toBe(maximumUnsafeLeaseMs + 1);
+  });
+
+  it('includes every retry attempt and capped exponential wait in the lease budget', () => {
+    const baseEnv = {
+      [NATS_CONFIG_ENV.enabled]: 'true',
+      [NATS_CONFIG_ENV.serverUrl]: 'tls://private-nats.internal:4222',
+      [NATS_CONFIG_ENV.token]: 'private-token',
+      [NATS_CONFIG_ENV.connectTimeoutMs]: '100',
+      [NATS_CONFIG_ENV.publishAckTimeoutMs]: '100',
+      [NATS_CONFIG_ENV.maxReconnectAttempts]: '3',
+      [NATS_CONFIG_ENV.reconnectBackoffMs]: '4000',
+    } as const;
+    const connectAttemptsMs = 4 * 100;
+    const reconnectWaitsMs = 4_000 + 8_000 + 10_000;
+    const maximumUnsafeLeaseMs = connectAttemptsMs
+      + reconnectWaitsMs
+      + 100
+      + NATS_LEASE_COMPLETION_MARGIN_MS;
+
+    expect(() => natsConfigFromEnv({
+      ...baseEnv,
+      [NATS_CONFIG_ENV.leaseMs]: String(maximumUnsafeLeaseMs),
+    })).toThrow(/lease.*transport.*budget/iu);
+    expect(natsConfigFromEnv({
+      ...baseEnv,
+      [NATS_CONFIG_ENV.leaseMs]: String(maximumUnsafeLeaseMs + 1),
+    }).leaseMs).toBe(maximumUnsafeLeaseMs + 1);
   });
 
   it('permits plaintext only for loopback fixtures', () => {

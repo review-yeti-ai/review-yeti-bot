@@ -1,6 +1,9 @@
 import { Worker } from 'node:worker_threads';
 import type { Readable } from 'node:stream';
-import type { NatsEventPublisherConfig } from './natsConfig';
+import {
+  NATS_MAX_RECONNECT_BACKOFF_DELAY_MS,
+  type NatsEventPublisherConfig,
+} from './natsConfig';
 import {
   MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH,
   isReviewEventSubject,
@@ -534,7 +537,10 @@ export class JetStreamPublishClient implements ReviewEventPublishClient {
         this.lastErrorCode = code;
         if (attempt > this.config.maxReconnectAttempts) throw new JetStreamTransportError(code);
         await wait(
-          Math.min(this.config.reconnectBackoffMs * (2 ** (attempt - 1)), 10_000),
+          Math.min(
+            this.config.reconnectBackoffMs * (2 ** (attempt - 1)),
+            NATS_MAX_RECONNECT_BACKOFF_DELAY_MS,
+          ),
           this.shutdownController.signal,
         );
       }

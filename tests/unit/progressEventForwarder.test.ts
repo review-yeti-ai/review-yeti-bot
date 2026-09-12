@@ -4,6 +4,8 @@ import {
   type SanitizedProgressEvent,
 } from '../../src/events/reviewEventRedaction';
 import {
+  DEFAULT_PROGRESS_SINK_MAX_IN_FLIGHT,
+  MAX_PROGRESS_SINK_MAX_IN_FLIGHT,
   ProgressEventForwarder,
   type ProgressEventForwardingFailure,
   type ProgressEventSink,
@@ -115,11 +117,19 @@ describe('ProgressEventForwarder', () => {
       sink: target,
       identityProvider: () => identity,
       onFailure: (failure) => failures.push(failure),
+      maxInFlight: 1,
     });
 
     expect(() => forwarder.forward(liveEvent())).not.toThrow();
     expect(failures).toEqual([{ code: 'sink_publish_failed' }]);
     expect(target.publish).toHaveBeenCalledTimes(1);
+
+    forwarder.forward(liveEvent());
+    expect(target.publish).toHaveBeenCalledTimes(2);
+    expect(failures).toEqual([
+      { code: 'sink_publish_failed' },
+      { code: 'sink_publish_failed' },
+    ]);
   });
 
   it('maps an asynchronously rejected sink to a bounded forwarding failure', async () => {
@@ -130,10 +140,77 @@ describe('ProgressEventForwarder', () => {
       sink: target,
       identityProvider: () => identity,
       onFailure: (failure) => failures.push(failure),
+      maxInFlight: 1,
     });
 
     forwarder.forward(liveEvent());
 
     await vi.waitFor(() => expect(failures).toEqual([{ code: 'sink_publish_failed' }]));
+
+    target.publish.mockResolvedValueOnce(undefined);
+    forwarder.forward(liveEvent());
+    await vi.waitFor(() => expect(target.publish).toHaveBeenCalledTimes(2));
+  });
+
+  it('bounds stalled publications and drops new progress events with a bounded overload code', async () => {
+    const releases: Array<() => void> = [];
+    const target = sink();
+    target.publish.mockImplementation(() => new Promise<void>((resolve) => releases.push(resolve)));
+    const failures: ProgressEventForwardingFailure[] = [];
+    const forwarder = new ProgressEventForwarder({
+      sink: target,
+      identityProvider: () => identity,
+      onFailure: (failure) => failures.push(failure),
+      maxInFlight: 2,
+    });
+
+    for (let index = 0; index < 10; index += 1) forwarder.forward(liveEvent());
+
+    expect(target.publish).toHaveBeenCalledTimes(2);
+    expect(failures).toEqual(Array.from({ length: 8 }, () => ({ code: 'sink_overloaded' })));
+
+    releases.shift()?.();
+    await Promise.resolve();
+    forwarder.forward(liveEvent());
+    expect(target.publish).toHaveBeenCalledTimes(3);
+
+    for (const release of releases) release();
+    await Promise.resolve();
+  });
+
+  it('enforces the default in-flight bound under a stalled sink burst', async () => {
+    const releases: Array<() => void> = [];
+    const target = sink();
+    target.publish.mockImplementation(() => new Promise<void>((resolve) => releases.push(resolve)));
+    const failures: ProgressEventForwardingFailure[] = [];
+    const forwarder = new ProgressEventForwarder({
+      sink: target,
+      identityProvider: () => identity,
+      onFailure: (failure) => failures.push(failure),
+    });
+
+    for (let index = 0; index < DEFAULT_PROGRESS_SINK_MAX_IN_FLIGHT + 5; index += 1) {
+      forwarder.forward(liveEvent());
+    }
+
+    expect(target.publish).toHaveBeenCalledTimes(DEFAULT_PROGRESS_SINK_MAX_IN_FLIGHT);
+    expect(failures).toEqual(Array.from({ length: 5 }, () => ({ code: 'sink_overloaded' })));
+
+    for (const release of releases) release();
+    await Promise.resolve();
+  });
+
+  it.each([0, 1.5, MAX_PROGRESS_SINK_MAX_IN_FLIGHT + 1])(
+    'rejects an invalid max-in-flight bound of %s',
+    (maxInFlight) => {
+      expect(() => new ProgressEventForwarder({ maxInFlight })).toThrow(RangeError);
+    },
+  );
+
+  it('uses a finite default progress sink concurrency bound', () => {
+    expect(DEFAULT_PROGRESS_SINK_MAX_IN_FLIGHT).toBeGreaterThan(0);
+    expect(DEFAULT_PROGRESS_SINK_MAX_IN_FLIGHT).toBeLessThanOrEqual(
+      MAX_PROGRESS_SINK_MAX_IN_FLIGHT,
+    );
   });
 });
