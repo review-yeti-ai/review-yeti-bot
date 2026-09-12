@@ -159,7 +159,8 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     expect(mocks.loop).not.toHaveBeenCalled();
     expect(mocks.closeMetricsServer).toHaveBeenCalledExactlyOnceWith(mocks.metricsServer);
     expect(mocks.close).toHaveBeenCalledOnce();
-    expect(mocks.error).toHaveBeenCalledWith('Review Yeti review job dispatcher failed to start');
-    expect(JSON.stringify(mocks.error.mock.calls)).not.toContain('synthetic-sensitive-bind-error');
+    expect(mocks.error.mock.calls).toEqual([
+      ['Review Yeti review job dispatcher failed to start'],
+    ]);
   });
 });

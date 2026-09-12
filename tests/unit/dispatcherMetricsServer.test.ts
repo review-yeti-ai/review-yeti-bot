@@ -64,6 +64,8 @@ describe('review job dispatcher metrics server', () => {
   it('rejects a real bind failure and removes the stale listening handler', async () => {
     const blocker = createDispatcherMetricsServer();
     const candidate = createDispatcherMetricsServer();
+    const baselineListeningListeners = candidate.listeners('listening');
+    const baselineErrorListeners = candidate.listeners('error');
     await listenDispatcherMetricsServer(blocker, { host: '127.0.0.1', port: 0 });
     try {
       const address = blocker.address();
@@ -74,7 +76,8 @@ describe('review job dispatcher metrics server', () => {
         port: address.port,
       })).rejects.toMatchObject({ code: 'EADDRINUSE' });
       expect(candidate.listening).toBe(false);
-      expect(candidate.listeners('listening').some((listener) => listener.name === 'onListening')).toBe(false);
+      expect(candidate.listeners('listening')).toEqual(baselineListeningListeners);
+      expect(candidate.listeners('error')).toEqual(baselineErrorListeners);
     } finally {
       await closeDispatcherMetricsServer(candidate);
       await closeDispatcherMetricsServer(blocker);
