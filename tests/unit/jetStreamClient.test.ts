@@ -8,6 +8,7 @@ import { createServer as createTlsServer } from 'node:tls';
 import { describe, expect, it, vi } from 'vitest';
 import {
   JetStreamPublishClient,
+  MAX_PUBLISH_PAYLOAD_BYTES,
   type JetStreamConnectionLike,
   type NatsEventPublisherConfig,
 } from '../../src/events/jetStreamClient';
@@ -1032,6 +1033,57 @@ describe('JetStream publish client', () => {
       { messageId: 'bad id' },
     )).rejects.toMatchObject({ code: 'invalid_message_id' });
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('rejects a safe subject whose total suffix exceeds the shared bound before touching NATS', async () => {
+    const publish = vi.fn();
+    const client = new JetStreamPublishClient(
+      config(),
+      vi.fn().mockResolvedValue(connection(publish)),
+    );
+
+    await expect(client.publish(
+      `ct.review.progress.v1.${'a'.repeat(65)}`,
+      new Uint8Array([1]),
+      { messageId: eventId },
+    )).rejects.toMatchObject({ code: 'invalid_subject' });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['empty', new Uint8Array(0)],
+    ['over the maximum', new Uint8Array(MAX_PUBLISH_PAYLOAD_BYTES + 1)],
+  ])('rejects a %s payload before touching NATS', async (_label, payload) => {
+    const publish = vi.fn();
+    const connect = vi.fn().mockResolvedValue(connection(publish));
+    const client = new JetStreamPublishClient(config(), connect);
+
+    await expect(client.publish(
+      'ct.review.progress.v1.repo-123.pr-42',
+      payload,
+      { messageId: eventId },
+    )).rejects.toMatchObject({ code: 'invalid_payload' });
+    expect(connect).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('accepts a payload exactly at the transport byte bound', async () => {
+    const publish = vi.fn().mockResolvedValue({
+      duplicate: false,
+      stream: 'CT_REVIEW_EVENTS',
+      seq: 17,
+    });
+    const client = new JetStreamPublishClient(
+      config(),
+      vi.fn().mockResolvedValue(connection(publish)),
+    );
+
+    await expect(client.publish(
+      'ct.review.progress.v1.repo-123.pr-42',
+      new Uint8Array(MAX_PUBLISH_PAYLOAD_BYTES),
+      { messageId: eventId },
+    )).resolves.toMatchObject({ acknowledged: true, sequence: 17 });
+    expect(publish).toHaveBeenCalledTimes(1);
   });
 
   it('gracefully drains a healthy verified TLS connection and exits zero after worker cleanup', async () => {

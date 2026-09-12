@@ -8,10 +8,18 @@ import {
 import {
   JetStreamProgressSink,
   JetStreamProgressSinkError,
+  progressSubjectFor,
   REVIEW_PROGRESS_SUBJECT_PREFIX,
   type ProgressPublisher,
 } from '../../src/events/jetStreamProgressSink';
-import { PROGRESS_SUBJECT_PREFIX } from '../../src/events/jetStreamClient';
+import {
+  assertReviewEventSubject,
+  PROGRESS_SUBJECT_PREFIX,
+} from '../../src/events/jetStreamClient';
+import {
+  isReviewEventSubject,
+  MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH,
+} from '../../src/events/reviewEventSubjects';
 import type { ReviewEventIdentity } from '../../src/types/live';
 
 const identity: ReviewEventIdentity = {
@@ -26,6 +34,12 @@ const identity: ReviewEventIdentity = {
   traceId: '9f000000000000000000000000000000',
 };
 
+const maximumSafeNumericIdentity: ReviewEventIdentity = {
+  ...identity,
+  repositoryId: Number.MAX_SAFE_INTEGER,
+  prNumber: Number.MAX_SAFE_INTEGER,
+};
+
 function liveEvent(data: Record<string, unknown> = {}) {
   return {
     jobId: 'legacy-job-42',
@@ -36,8 +50,11 @@ function liveEvent(data: Record<string, unknown> = {}) {
   };
 }
 
-function sanitizedEvent(): SanitizedProgressEvent {
-  const result = sanitizeProgressEvent(liveEvent({ provider: 'openrouter', findingsCount: 2 }), identity);
+function sanitizedEvent(eventIdentity: ReviewEventIdentity = identity): SanitizedProgressEvent {
+  const result = sanitizeProgressEvent(
+    liveEvent({ provider: 'openrouter', findingsCount: 2 }),
+    eventIdentity,
+  );
   expect(result).not.toBeInstanceOf(ReviewEventRejection);
   return result as SanitizedProgressEvent;
 }
@@ -63,10 +80,42 @@ describe('JetStreamProgressSink', () => {
     });
     expect(REVIEW_PROGRESS_SUBJECT_PREFIX).toBe(PROGRESS_SUBJECT_PREFIX);
     expect(subject).toBe(expectedSubject);
-    expect(subject.length).toBeLessThanOrEqual(64);
     expect(subject).not.toContain(identity.runId);
     expect(options).toEqual({ messageId: event.event_id });
     expect(JSON.parse(new TextDecoder().decode(payload))).toEqual(event);
+  });
+
+  it.each([
+    ['normal', identity],
+    ['maximum safe numeric identities', maximumSafeNumericIdentity],
+  ] as const)('emits a %s progress subject accepted by the JetStream client contract', async (_label, eventIdentity) => {
+    const target = publisher();
+    target.publish.mockImplementation(async (subject: string) => {
+      assertReviewEventSubject(subject);
+    });
+    const event = sanitizedEvent(eventIdentity);
+    const sink = new JetStreamProgressSink({ enabled: true, publisher: target });
+
+    const result = await sink.publish(event);
+    const [subject] = target.publish.mock.calls[0] as [string];
+
+    expect(result).toMatchObject({ published: true, subject });
+    expect(subject).toBe(progressSubjectFor(event));
+    expect(isReviewEventSubject(subject)).toBe(true);
+    expect(subject.slice(`${PROGRESS_SUBJECT_PREFIX}.`.length).length)
+      .toBeLessThanOrEqual(MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH);
+  });
+
+  it.each([
+    ['overlong total suffix', `${PROGRESS_SUBJECT_PREFIX}.${'a'.repeat(MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH + 1)}`],
+    ['wildcard token', `${PROGRESS_SUBJECT_PREFIX}.repo-123.*`],
+    ['empty token', `${PROGRESS_SUBJECT_PREFIX}.repo-123..pr-42`],
+    ['unsafe token', `${PROGRESS_SUBJECT_PREFIX}.repo-123.pr-42!`],
+  ])('rejects %s through the shared subject validator', (_label, subject) => {
+    expect(isReviewEventSubject(subject)).toBe(false);
+    expect(() => assertReviewEventSubject(subject)).toThrowError(
+      expect.objectContaining({ code: 'invalid_subject' }),
+    );
   });
 
   it('publishes a transitively immutable clone after nested source and envelope mutation attempts', async () => {

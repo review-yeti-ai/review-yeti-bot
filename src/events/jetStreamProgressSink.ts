@@ -2,14 +2,18 @@ import {
   isSanitizedProgressEvent,
   type SanitizedProgressEvent,
 } from './reviewEventRedaction';
-import { REVIEW_EVENT_MAX_BYTES } from './reviewYetiEvent';
-import { PROGRESS_SUBJECT_PREFIX } from './reviewEventSubjects';
+import {
+  isReviewEventSubject,
+  MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH,
+  PROGRESS_SUBJECT_PREFIX,
+} from './reviewEventSubjects';
 
 export {
   PROGRESS_SUBJECT_PREFIX,
   PROGRESS_SUBJECT_PREFIX as REVIEW_PROGRESS_SUBJECT_PREFIX,
 } from './reviewEventSubjects';
-export const REVIEW_PROGRESS_SUBJECT_MAX_LENGTH = 64;
+/** @deprecated Retained for consumers; subject validation uses the shared predicate. */
+export const REVIEW_PROGRESS_SUBJECT_MAX_LENGTH = MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH;
 
 /**
  * Minimal transport seam for this lane. The NATS client adapter is injected by
@@ -24,7 +28,6 @@ export type JetStreamProgressSinkErrorCode =
   | 'not_configured'
   | 'invalid_envelope'
   | 'not_serializable'
-  | 'payload_too_large'
   | 'publish_failed';
 
 export class JetStreamProgressSinkError extends Error {
@@ -48,6 +51,12 @@ export function progressSubjectFor(event: SanitizedProgressEvent): string {
   return `${PROGRESS_SUBJECT_PREFIX}.repo-${event.repository_id}.pr-${event.pr_number}`;
 }
 
+/**
+ * SanitizedProgressEvent is an immutable snapshot produced only after the
+ * sanitizer's 16 KiB check. The JetStream client repeats that bound at its
+ * transport seam, so this sink intentionally keeps serialization failure
+ * handling without duplicating a payload-size branch.
+ */
 function encode(event: SanitizedProgressEvent): Uint8Array {
   let serialized: string | undefined;
   try {
@@ -57,11 +66,7 @@ function encode(event: SanitizedProgressEvent): Uint8Array {
   }
   if (serialized === undefined) throw new JetStreamProgressSinkError('not_serializable');
 
-  const payload = Buffer.from(serialized, 'utf8');
-  if (payload.byteLength > REVIEW_EVENT_MAX_BYTES) {
-    throw new JetStreamProgressSinkError('payload_too_large');
-  }
-  return payload;
+  return Buffer.from(serialized, 'utf8');
 }
 
 export class JetStreamProgressSink {
@@ -81,7 +86,7 @@ export class JetStreamProgressSink {
     if (!this.publisher) throw new JetStreamProgressSinkError('not_configured');
 
     const subject = progressSubjectFor(event);
-    if (subject.length > REVIEW_PROGRESS_SUBJECT_MAX_LENGTH) {
+    if (!isReviewEventSubject(subject)) {
       throw new JetStreamProgressSinkError('invalid_envelope');
     }
     const payload = encode(event);
