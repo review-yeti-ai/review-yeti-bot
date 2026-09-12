@@ -121,13 +121,22 @@ describe('self-review workflow migration', () => {
       EXPECTED_HEAD_SHA: headSha,
       REQUEST_ID: `review-yeti-bot:762:${headSha}:12345:1`,
     };
-    const fakeGh = 'gh() { printf \'%s\\n\' "$LIVE_COORDINATES"; }\nexport -f gh';
+    const fakeGh = [
+      'gh() {',
+      '  printf \'__ARGS__%s\\n\' "$*" >&2',
+      '  printf \'%s\\n\' "$LIVE_COORDINATES"',
+      '}',
+      'export -f gh',
+    ].join('\n');
 
     const current = runBash(validationScript, {
       ...env,
       LIVE_COORDINATES: `open\t${baseSha}\t${headSha}`,
     }, fakeGh);
     expect(current.status, current.stderr).toBe(0);
+    expect(current.stderr).toContain(
+      '__ARGS__api repos/review-yeti-ai/review-yeti-bot/pulls/762 --jq [.state, .base.sha, .head.sha] | @tsv',
+    );
 
     for (const staleCoordinates of [
       `closed\t${baseSha}\t${headSha}`,
