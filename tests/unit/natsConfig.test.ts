@@ -5,6 +5,24 @@ import {
   NatsConfigurationError,
 } from '../../src/events/natsConfig';
 
+const numericNatsBounds = [
+  { key: NATS_CONFIG_ENV.connectTimeoutMs, minimum: 100, maximum: 30_000 },
+  { key: NATS_CONFIG_ENV.publishAckTimeoutMs, minimum: 100, maximum: 30_000 },
+  { key: NATS_CONFIG_ENV.maxReconnectAttempts, minimum: 0, maximum: 5 },
+  { key: NATS_CONFIG_ENV.reconnectBackoffMs, minimum: 1, maximum: 10_000 },
+  { key: NATS_CONFIG_ENV.drainTimeoutMs, minimum: 100, maximum: 30_000 },
+  { key: NATS_CONFIG_ENV.batchSize, minimum: 1, maximum: 100 },
+  { key: NATS_CONFIG_ENV.leaseMs, minimum: 100, maximum: 300_000 },
+  { key: NATS_CONFIG_ENV.retryDelayMs, minimum: 100, maximum: 300_000 },
+  { key: NATS_CONFIG_ENV.pollIntervalMs, minimum: 100, maximum: 60_000 },
+] as const;
+
+const invalidNumericNatsValues = numericNatsBounds.flatMap(({ key, minimum, maximum }) => [
+  { key, kind: 'non-integer', value: minimum + 0.5 },
+  { key, kind: 'below minimum', value: minimum - 1 },
+  { key, kind: 'above maximum', value: maximum + 1 },
+]);
+
 describe('nats event publisher configuration', () => {
   it('is disabled by default without requiring any NATS settings', () => {
     const config = natsConfigFromEnv({});
@@ -107,4 +125,16 @@ describe('nats event publisher configuration', () => {
       [NATS_CONFIG_ENV.enabled]: 'yes',
     })).toThrow(/enabled|boolean|configuration/iu);
   });
+
+  it.each(invalidNumericNatsValues)(
+    'rejects $kind value for $key',
+    ({ key, value }) => {
+      expect(() => natsConfigFromEnv({
+        [NATS_CONFIG_ENV.enabled]: 'true',
+        [NATS_CONFIG_ENV.serverUrl]: 'tls://private-nats.internal:4222',
+        [NATS_CONFIG_ENV.token]: 'private-token',
+        [key]: String(value),
+      })).toThrow(NatsConfigurationError);
+    },
+  );
 });
