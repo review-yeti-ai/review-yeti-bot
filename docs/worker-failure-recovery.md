@@ -98,6 +98,13 @@ Secret identity. An old execution's callback cannot fail or approve the new
 one. A failure before check creation can omit `checkId`; the check is useful
 evidence but is not the callback's authority.
 
+The deterministic non-production reaper acceptance harness attempts every
+cleanup step even when the primary operation already failed. It preserves the
+exact primary thrown value. When that value is an extensible object, the harness
+attaches cleanup diagnostics; primitive or frozen values cannot carry those
+diagnostics and are rethrown unchanged after cleanup. Unit coverage fixes this
+identity-preservation boundary explicitly.
+
 The service stores the latest failure in `review_runs.failure_diagnostics` as a
 redacted JSON object with `failureClass`, `reason`, `providerStatus` (when the
 provider supplied a valid HTTP status), `logTail`, and `executionAttempt`.
