@@ -193,7 +193,7 @@ describe('native GitHub App webhook admission', () => {
     }));
   });
 
-  it('refuses native rerequest when no authoritative current-candidate reader owns the repository', async () => {
+  it('refuses native rerequest when the authoritative current-candidate service is unavailable', async () => {
     const f = fixture();
     const body = rerequestPayload();
     const onEvent = createGitHubWebhookAdmissionHandler({
@@ -207,6 +207,29 @@ describe('native GitHub App webhook admission', () => {
       status: 'ignored', reason: 'native_rerequest_requires_authoritative_identity',
     });
     expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('refuses native rerequest when the configured authoritative service does not own the repository', async () => {
+    const body = rerequestPayload();
+    const resolve = vi.fn();
+    const admit = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true,
+        repositoryIds: [999], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'native-legacy-enrollment',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'native_rerequest_requires_authoritative_identity',
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
   });
 
   it('fails closed before admission when current GitHub PR identity no longer matches the native rerequest', async () => {
