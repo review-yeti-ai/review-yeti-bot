@@ -60,6 +60,17 @@ export function dispatcherMetricsConfigFromEnv(
 export function createDispatcherMetricsServer(options: DispatcherMetricsServerOptions = {}): Server {
   const collectMetrics = options.collectMetrics || getPrometheusMetrics;
   const collectionTimeoutMs = metricsCollectionTimeoutMs(options.collectionTimeoutMs);
+  let inFlightCollection: Promise<string> | undefined;
+  const collectMetricsSingleFlight = (): Promise<string> => {
+    if (inFlightCollection) return inFlightCollection;
+    const collection = Promise.resolve().then(() => collectMetrics());
+    inFlightCollection = collection;
+    const clear = () => {
+      if (inFlightCollection === collection) inFlightCollection = undefined;
+    };
+    void collection.then(clear, clear);
+    return collection;
+  };
   const server = createServer(async (request, response) => {
     if (request.method !== 'GET') {
       response.writeHead(405, { Allow: 'GET', 'Content-Type': 'text/plain; charset=utf-8' });
@@ -77,7 +88,7 @@ export function createDispatcherMetricsServer(options: DispatcherMetricsServerOp
       return;
     }
     try {
-      const metrics = await collectMetricsWithinTimeout(collectMetrics, collectionTimeoutMs);
+      const metrics = await collectMetricsWithinTimeout(collectMetricsSingleFlight, collectionTimeoutMs);
       response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8; version=0.0.4' });
       response.end(metrics);
     } catch {
@@ -108,7 +119,13 @@ export async function listenDispatcherMetricsServer(
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    server.listen(config.port, config.host);
+    try {
+      server.listen(config.port, config.host);
+    } catch (error) {
+      server.off('error', onError);
+      server.off('listening', onListening);
+      reject(error);
+    }
   });
 }
 
