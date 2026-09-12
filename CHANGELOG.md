@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.58.1...v1.58.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **reaper:** retire audited legacy empty-id check ([#751](https://github.com/review-yeti-ai/review-yeti-bot/issues/751)) ([b9eb8d1](https://github.com/review-yeti-ai/review-yeti-bot/commit/b9eb8d1166b37ae52cb2cfce6121095093efb2dc))
+
 ## [1.58.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.58.0...v1.58.1) (2026-09-12)
 
 
