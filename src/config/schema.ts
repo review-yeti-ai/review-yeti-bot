@@ -172,7 +172,10 @@ export const personaSchema = z.preprocess(
     dual_model: z.boolean().optional(),
     adversarial_model: z.string().optional(),
     customPrompt: z.string().optional(),
-  }).superRefine((persona, ctx) => {
+    skills: z.union([z.array(z.string()), z.record(z.unknown())]).optional(),
+    knowledge: z.union([z.array(z.string()), z.record(z.unknown())]).optional(),
+    tools: z.array(z.string()).optional(),
+  }).passthrough().superRefine((persona, ctx) => {
     if (persona.charter.startsWith('builtin:') && !BuiltinCharterEnum.safeParse(persona.charter).success) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['charter'], message: `unknown built-in charter ${persona.charter}` });
     }
@@ -205,20 +208,20 @@ export const reviewsSchema = z.object({
     path: z.string(),
     instructions: z.string(),
   })).default([]),
-}).default({});
+}).passthrough().default({});
 
 export const chatSchema = z.object({
   auto_reply: z.boolean().default(true),
   max_context_turns: z.number().int().positive().default(10),
   art_mascot_response: z.boolean().default(true),
-}).default({});
+}).passthrough().default({});
 
 export const knowledgeBaseSchema = z.object({
   learnings: z.boolean().default(true),
   issues: z.boolean().default(true),
   pull_requests: z.boolean().default(true),
   custom_instructions: z.array(z.string()).default([]),
-}).default({});
+}).passthrough().default({});
 
 export const pathFiltersSchema = z.array(z.string()).default([]);
 
@@ -230,13 +233,13 @@ export const autoReviewSchema = z.object({
   labels: z.array(z.string()).default([]),
   ignore_patterns: z.array(z.string()).default([]),
   drafts: z.boolean().default(false),
-}).default({});
+}).passthrough().default({});
 
 export const enforcementPolicySchema = z.object({
   require_all_reviews: z.boolean().default(true),
   failure_action: z.enum(['fail_closed', 'fail_open', 'quarantine']).default('fail_closed'),
   require_ticket_link: z.boolean().default(false),
-}).default({});
+}).passthrough().default({});
 
 export const dialsSchema = z.object({
   memory_engine: z.boolean().default(true),
@@ -245,7 +248,7 @@ export const dialsSchema = z.object({
   confidence_threshold: z.number().min(0).max(100).default(70),
   ticket_enforcement: z.boolean().default(false),
   persona_model: z.string().optional(),
-}).default({});
+}).passthrough().default({});
 
 export const mcpItemSchema = z.object({
   name: z.string().min(1),
@@ -320,6 +323,12 @@ const ctReviewConfigV3ObjectSchema = z.object({
     scope: z.array(z.string()).default(['**']),
     severity: z.enum(['P0', 'P1', 'P2']).default('P1'),
   })).default([]),
+  skills: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
+  knowledge: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
+  metrics: z.union([z.string(), z.record(z.unknown())]).optional(),
+  telemetry: z.union([z.string(), z.record(z.unknown())]).optional(),
+  retry_analysis: z.union([z.string(), z.record(z.unknown())]).optional(),
+  retro_analysis: z.union([z.string(), z.record(z.unknown())]).optional(),
 }).passthrough();
 
 function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {

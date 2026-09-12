@@ -320,6 +320,7 @@ npx review-yeti install-hook
 - 📦 **[Examples Gallery](examples/README.md)** — Copy-pasteable GitHub Actions workflows, configuration profiles, and custom persona charters.
 - 🔐 **[GitHub App Setup](docs/GITHUB_APP_SETUP.md)** — Step-by-step GitHub App registration and permissions matrix.
 - ☸️ **[Kubernetes & DOKS Mode](docs/KUBERNETES_MODE.md)** — Offloading reviews to Kubernetes worker pods.
+- ⚓ **[DOKS Operations & Observability](docs/DOKS_REVIEW_OPERATIONS.md)** — Managing DOKS clusters, VictoriaMetrics, OpenTelemetry, and worker digests.
 - 🏛️ **[Architecture Specification](docs/ARCHITECTURE.md)** — Pipeline design, arbitration engine, and trust boundaries.
 - ⚙️ **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — Complete schema for `.ct-review.yaml`.
 - 💻 **[Running Locally via CLI](docs/RUNNING_LOCALLY.md)** — Testing reviews and benchmarks in your terminal.

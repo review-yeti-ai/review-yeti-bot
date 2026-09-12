@@ -117,10 +117,67 @@ export function buildDispatchRequest(environment) {
   const maxInvestigationTurns = maxInvestigationTurnsRaw ? Number(maxInvestigationTurnsRaw) : undefined;
   const laneCallBudget = laneCallBudgetRaw ? Number(laneCallBudgetRaw) : undefined;
 
-  const policy = (personas || maxInvestigationTurns || laneCallBudget) ? {
+  let extraPolicy = {};
+  if (environment.POLICY_JSON && String(environment.POLICY_JSON).trim()) {
+    try {
+      const parsed = JSON.parse(String(environment.POLICY_JSON).trim());
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('policy-json must be a valid JSON object');
+      }
+      extraPolicy = parsed;
+      const ALLOWED_POLICY_KEYS = new Set([
+        'personas',
+        'maxInvestigationTurns',
+        'laneCallBudget',
+        'skills',
+        'knowledge',
+        'metrics',
+        'telemetry',
+        'retryAnalysis',
+        'retroAnalysis',
+      ]);
+      for (const key of Object.keys(extraPolicy)) {
+        if (!ALLOWED_POLICY_KEYS.has(key)) {
+          throw new Error(`policy-json contains unauthorized key '${key}'. Allowed keys: ${Array.from(ALLOWED_POLICY_KEYS).join(', ')}`);
+        }
+      }
+    } catch (err) {
+      throw new Error(`Invalid policy-json: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  const parseJsonOrString = (val, fieldName, allowArray = true) => {
+    if (!val) return undefined;
+    const trimmed = String(val).trim();
+    if (!trimmed) return undefined;
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      let parsed;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch (err) {
+        throw new Error(`Invalid JSON in ${fieldName}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!allowArray && Array.isArray(parsed)) {
+        throw new Error(`${fieldName} cannot be a JSON array`);
+      }
+      return parsed;
+    }
+    return trimmed;
+  };
+
+  const skills = parseJsonOrString(environment.SKILLS || environment.POLICY_SKILLS, 'skills', true);
+  const knowledge = parseJsonOrString(environment.KNOWLEDGE || environment.POLICY_KNOWLEDGE, 'knowledge', true);
+  const metrics = parseJsonOrString(environment.METRICS || environment.POLICY_METRICS, 'metrics', false);
+  const retryAnalysis = parseJsonOrString(environment.RETRY_ANALYSIS || environment.POLICY_RETRY_ANALYSIS, 'retryAnalysis', false);
+
+  const policy = (personas || maxInvestigationTurns || laneCallBudget || skills || knowledge || metrics || retryAnalysis || Object.keys(extraPolicy).length > 0) ? {
+    ...extraPolicy,
     ...(personas ? { personas } : {}),
     ...(maxInvestigationTurns && Number.isSafeInteger(maxInvestigationTurns) && maxInvestigationTurns > 0 ? { maxInvestigationTurns } : {}),
     ...(laneCallBudget && Number.isSafeInteger(laneCallBudget) && laneCallBudget > 0 ? { laneCallBudget } : {}),
+    ...(skills !== undefined ? { skills } : {}),
+    ...(knowledge !== undefined ? { knowledge } : {}),
+    ...(metrics !== undefined ? { metrics } : {}),
+    ...(retryAnalysis !== undefined ? { retryAnalysis } : {}),
   } : undefined;
 
   return {
