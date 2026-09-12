@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.59.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.58.2...v1.59.0) (2026-09-12)
+
+
+### Features
+
+* **telemetry:** expose dispatcher reaper metrics ([#750](https://github.com/review-yeti-ai/review-yeti-bot/issues/750)) ([dd0c6c0](https://github.com/review-yeti-ai/review-yeti-bot/commit/dd0c6c078b3c48aec096f0d7a2e3781d9b226ae7))
+
 ## [1.58.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.58.1...v1.58.2) (2026-09-12)
 
 
