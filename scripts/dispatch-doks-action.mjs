@@ -129,20 +129,24 @@ export function buildDispatchRequest(environment) {
       throw new Error(`Invalid policy-json: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  const parseJsonOrString = (val) => {
+  const parseJsonOrString = (val, fieldName) => {
     if (!val) return undefined;
     const trimmed = String(val).trim();
     if (!trimmed) return undefined;
     if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-      try { return JSON.parse(trimmed); } catch { return trimmed; }
+      try {
+        return JSON.parse(trimmed);
+      } catch (err) {
+        throw new Error(`Invalid JSON in ${fieldName}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     return trimmed;
   };
 
-  const skills = parseJsonOrString(environment.SKILLS || environment.POLICY_SKILLS);
-  const knowledge = parseJsonOrString(environment.KNOWLEDGE || environment.POLICY_KNOWLEDGE);
-  const metrics = parseJsonOrString(environment.METRICS || environment.POLICY_METRICS);
-  const retryAnalysis = parseJsonOrString(environment.RETRY_ANALYSIS || environment.POLICY_RETRY_ANALYSIS);
+  const skills = parseJsonOrString(environment.SKILLS || environment.POLICY_SKILLS, 'skills');
+  const knowledge = parseJsonOrString(environment.KNOWLEDGE || environment.POLICY_KNOWLEDGE, 'knowledge');
+  const metrics = parseJsonOrString(environment.METRICS || environment.POLICY_METRICS, 'metrics');
+  const retryAnalysis = parseJsonOrString(environment.RETRY_ANALYSIS || environment.POLICY_RETRY_ANALYSIS, 'retryAnalysis');
 
   const policy = (personas || maxInvestigationTurns || laneCallBudget || skills || knowledge || metrics || retryAnalysis || Object.keys(extraPolicy).length > 0) ? {
     ...extraPolicy,

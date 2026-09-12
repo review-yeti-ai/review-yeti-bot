@@ -130,6 +130,7 @@ reviewers:
         knowledge: { adr: ['0564', '0541'] },
         metrics: { telemetryEnabled: true },
         retryAnalysis: { enableQuarantine: true },
+        customKey: 'customVal',
       },
     };
 
@@ -139,7 +140,15 @@ reviewers:
       expect(parsed.data.policy?.skills).toEqual(['ast-parser', 'db-migration-verifier']);
       expect((parsed.data.policy as any)?.knowledge).toEqual({ adr: ['0564', '0541'] });
       expect((parsed.data.policy as any)?.metrics).toEqual({ telemetryEnabled: true });
+      expect((parsed.data.policy as any)?.customKey).toBe('customVal');
     }
+
+    // Must reject config and expectedAppId authority overrides
+    const configOverride = actionDispatchRequestSchema.safeParse({ ...request, policy: { config: {} } });
+    expect(configOverride.success).toBe(false);
+
+    const appIdOverride = actionDispatchRequestSchema.safeParse({ ...request, policy: { expectedAppId: 1 } });
+    expect(appIdOverride.success).toBe(false);
   });
 
   it('buildDispatchRequest passes through skills, knowledge, metrics, and retryAnalysis from environment', () => {
@@ -248,6 +257,13 @@ reviewers:
 
     // 3. Throws on JSON array
     expect(() => buildDispatchRequest({ ...baseEnv, POLICY_JSON: '[1, 2, 3]' })).toThrow(/must be a valid JSON object/);
+
+    // 4. Throws on malformed JSON in SKILLS
+    expect(() => buildDispatchRequest({ ...baseEnv, SKILLS: '{"a": 1,}' })).toThrow(/Invalid JSON in skills/);
+
+    // 5. Plain strings remain strings
+    const plain = buildDispatchRequest({ ...baseEnv, SKILLS: 'cisco-xcc' });
+    expect(plain.policy?.skills).toBe('cisco-xcc');
   });
 
   it('buildDispatchRequest sets policy to undefined when no policy inputs are supplied', () => {
