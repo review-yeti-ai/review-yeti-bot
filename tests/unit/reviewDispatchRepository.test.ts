@@ -1088,7 +1088,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
       headSha: swept.head_sha, deliveryId: 'run-delivery', executionAttempt: swept.execution_attempt,
       receivedAt: 1_000, terminalDeadline: 901_000, deliveryIdentityMismatch: true,
-    }, 'reaper-a', 902_000, publish)).resolves.toBe(true);
+    }, 'reaper-a', 902_000, publish)).resolves.toEqual({ reconciled: true, outcome: 'quarantined' });
 
     expect(publish).not.toHaveBeenCalled();
     expect(transactionQuery.mock.calls.some(([sql]) => /SET status = 'terminal'/u.test(String(sql)))).toBe(true);
@@ -1114,7 +1114,9 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
       headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
       receivedAt: 1_000, terminalDeadline: 901_000,
-    }, 'reaper-a', 902_000, async () => 'failure-published')).resolves.toBe(true);
+    }, 'reaper-a', 902_000, async () => 'failure-published')).resolves.toEqual({
+      reconciled: true, outcome: 'failure-published',
+    });
     const select = String(transactionQuery.mock.calls.find(([sql]) => /SELECT runs\.run_id/u.test(String(sql)))?.[0]);
     expect(select).toMatch(/runs\.received_at >= to_timestamp\(\$10 \/ 1000\.0\)/u);
     expect(select).toMatch(/runs\.received_at < to_timestamp\(\(\$10::double precision \+ 1\) \/ 1000\.0\)/u);
@@ -1134,7 +1136,9 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
       headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
       receivedAt: 1_000, terminalDeadline: 901_000, recoveryOnly: false,
-    }, 'reaper-a', 902_000, async () => 'creation-unconfirmed' as const)).resolves.toBe(true);
+    }, 'reaper-a', 902_000, async () => 'creation-unconfirmed' as const)).resolves.toEqual({
+      reconciled: true, outcome: 'creation-unconfirmed',
+    });
     const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
     expect(update?.[1]).toEqual([
       swept.run_id, 902_000, 'creation-unconfirmed',
@@ -1158,7 +1162,9 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
       headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
       receivedAt: 1_000, terminalDeadline: 901_000,
-    }, 'reaper-a', 902_000, async () => 'authoritative-success')).resolves.toBe(true);
+    }, 'reaper-a', 902_000, async () => 'authoritative-success')).resolves.toEqual({
+      reconciled: true, outcome: 'authoritative-success',
+    });
     const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
     expect(String(update?.[0])).toMatch(/status = CASE WHEN \$3 = 'authoritative-success' THEN 'succeeded'/u);
     expect(String(update?.[0])).toMatch(/stage = CASE WHEN \$3 = 'authoritative-success' THEN 'complete'/u);

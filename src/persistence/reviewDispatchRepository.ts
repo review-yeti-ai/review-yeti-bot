@@ -228,6 +228,17 @@ function isAbandonedCheckRecoveryOutcome(value: unknown): value is AbandonedChec
     && ABANDONED_CHECK_RECOVERY_OUTCOME_SET.has(value);
 }
 
+export type AbandonedRunReconciliationOutcome = AbandonedCheckRecoveryOutcome | 'quarantined';
+
+/**
+ * Explicit result of reconciling one claimed abandoned attempt. A stale claim
+ * is not acknowledged; a reconciled claim reports whether it published a
+ * recovery outcome or was quarantined without publication.
+ */
+export type AbandonedRunReconciliation =
+  | { reconciled: false }
+  | { reconciled: true; outcome: AbandonedRunReconciliationOutcome };
+
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null>;
@@ -242,7 +253,7 @@ export interface ReviewDispatchRepository {
   /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<boolean>;
+    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<AbandonedRunReconciliation>;
 }
 
 export interface WorkerFailureTransition {
@@ -830,9 +841,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   /** Hold the exact attempt's row locks through bounded GitHub publication.
    * Same-head admission cannot advance the delivery while its check is patched.
    * A crash/HTTP error rolls back the acknowledgement, not the failure itself.
+   * The result explicitly distinguishes a stale claim, published recovery, and
+   * a delivery-identity quarantine.
    */
   async reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<boolean> {
+    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<AbandonedRunReconciliation> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -862,7 +875,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       );
       if (current.rows.length === 0) {
         await client.query('COMMIT');
-        return false;
+        return { reconciled: false };
       }
       const currentRow = current.rows[0] as Record<string, unknown>;
       const runDeliveryId = currentRow.run_delivery_id == null ? null : String(currentRow.run_delivery_id);
@@ -935,7 +948,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           runDeliveryDigest,
           outboxDeliveryDigest,
         });
-        return true;
+        return { reconciled: true, outcome: 'quarantined' };
       }
       const outcome: unknown = await publish();
       if (!isAbandonedCheckRecoveryOutcome(outcome)) {
@@ -985,7 +998,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           { stage: 'gate_publication', retry_class: 'creation_unconfirmed' });
       }
       await client.query('COMMIT');
-      return true;
+      return { reconciled: true, outcome };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw error;

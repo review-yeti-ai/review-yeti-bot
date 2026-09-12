@@ -1,6 +1,7 @@
 import type {
   AbandonedCheckRecoveryOutcome,
   AbandonedPublishingRun,
+  AbandonedRunReconciliation,
   ReviewDispatchRepository,
 } from '../persistence/reviewDispatchRepository';
 import { logger } from '../utils/logger';
@@ -60,8 +61,7 @@ export class AbandonedRunReaper {
     for (const run of runs) {
       if (signal?.aborted) break;
       try {
-        let outcome: AbandonedCheckRecoveryOutcome | undefined;
-        const reconciled = await this.options.repository.reconcileAbandonedPublishingRun(
+        const reconciliation: AbandonedRunReconciliation = await this.options.repository.reconcileAbandonedPublishingRun(
           run, this.options.workerId, this.now(), async () => {
             // Started after acquiring the lock, and below the 60-second claim
             // lease. Shutdown aborts fetch and the transaction drains before DB
@@ -70,18 +70,14 @@ export class AbandonedRunReaper {
             const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
             bounded.throwIfAborted();
             const client = await this.options.checkClientFor(run, bounded);
-            outcome = await client.failAbandonedCheck(run, this.options.publisherAppId, bounded);
+            const outcome = await client.failAbandonedCheck(run, this.options.publisherAppId, bounded);
             bounded.throwIfAborted();
             return outcome;
           },
         );
-        if (!reconciled) continue;
-        // The repository only returns true for a mismatch after atomically
-        // retiring the outbox and run, without invoking the publish callback.
-        // If a concurrent same-head admission repaired the row before this
-        // lock, the callback supplies a normal recovery outcome and this is
-        // deliberately not counted as a quarantine.
-        if (run.deliveryIdentityMismatch && outcome === undefined) quarantined += 1;
+        if (!reconciliation.reconciled) continue;
+        const outcome = reconciliation.outcome;
+        if (outcome === 'quarantined') quarantined += 1;
         if (outcome === 'failure-published') published += 1;
         if (outcome === 'creation-unconfirmed') failed += 1;
       } catch {
