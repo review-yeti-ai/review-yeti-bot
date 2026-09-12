@@ -154,8 +154,58 @@ describe('native GitHub App webhook admission', () => {
     }));
   });
 
+  it('rejects a requested_action whose matching full_name contradicts compact repository identity', async () => {
+    const f = fixture();
+    const original = refreshPayload();
+    const body = refreshPayload({
+      check_run: {
+        ...original.check_run,
+        pull_requests: [{
+          ...original.check_run.pull_requests[0],
+          head: {
+            sha: HEAD,
+            repo: {
+              full_name: 'calltelemetry/dashboard',
+              id: 999,
+              name: 'dashboard',
+              url: 'https://api.github.com/repos/calltelemetry/dashboard',
+            },
+          },
+        }],
+      },
+    });
+    const auth = signed(body, 'delivery-refresh-mixed-repository');
+    const response = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ignored', reason: 'not_enrolled' });
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
   it('admits a native rerequest of the exact current authoritative failed check', async () => {
-    const body = rerequestPayload();
+    const original = rerequestPayload();
+    const liveRepositoryReference = {
+      id: 614653796,
+      url: 'https://api.github.com/repos/calltelemetry/dashboard',
+      name: 'dashboard',
+    };
+    const body = rerequestPayload({
+      check_run: {
+        ...original.check_run,
+        // Recorded check_run.rerequested deliveries omit full_name here and
+        // identify each associated repository with id, API URL, and name.
+        pull_requests: [{
+          number: 42,
+          head: { sha: HEAD, repo: liveRepositoryReference },
+          base: { sha: BASE, repo: liveRepositoryReference },
+        }],
+      },
+    });
     const identity = buildReviewRunIdentity({
       owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: BASE,
@@ -306,6 +356,14 @@ describe('native GitHub App webhook admission', () => {
     ['foreign PR repository', { check_run: { ...rerequestPayload().check_run,
       pull_requests: [{ ...rerequestPayload().check_run.pull_requests[0],
         head: { sha: HEAD, repo: { full_name: 'attacker/dashboard' } } }] } }],
+    ['foreign compact PR repository URL', { check_run: { ...rerequestPayload().check_run,
+      pull_requests: [{ ...rerequestPayload().check_run.pull_requests[0],
+        head: { sha: HEAD, repo: { id: 614653796, name: 'dashboard',
+          url: 'https://api.github.com/repos/attacker/dashboard' } } }] } }],
+    ['mixed PR repository identity', { check_run: { ...rerequestPayload().check_run,
+      pull_requests: [{ ...rerequestPayload().check_run.pull_requests[0],
+        head: { sha: HEAD, repo: { full_name: 'calltelemetry/dashboard', id: 999,
+          name: 'dashboard', url: 'https://api.github.com/repos/calltelemetry/dashboard' } } }] } }],
   ])('rejects native rerequest with %s', async (_label, overrides) => {
     const body = rerequestPayload(overrides);
     const resolve = vi.fn();
