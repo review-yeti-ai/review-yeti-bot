@@ -31,6 +31,24 @@ refuse to activate a deployment. Neither script has -- nor is meant to have
 -- a path to move the worker image forward once a dispatcher is already
 serving production traffic.
 
+### Dispatcher health and reaper metrics
+
+The review-job dispatcher serves `GET /health` and Prometheus `GET /metrics`
+from the same process that owns dispatch, completion delivery, and abandoned
+run reaping. The listener binds to `0.0.0.0:9090` by default; operators may set
+`REVIEW_JOB_METRICS_HOST` and `REVIEW_JOB_METRICS_PORT` only when a deployment
+needs a different internal address. Invalid ports fail startup before the
+dispatcher begins processing work.
+
+Treat this listener as cluster-internal operational telemetry. Expose it with
+a dedicated `ClusterIP` Service, permit ingress only from the observability
+namespace and its Prometheus-compatible scraper with a NetworkPolicy, and add
+the service DNS name to the scraper configuration. Do not create an Ingress,
+public load balancer, NodePort, or broad namespace allowlist for it. Verify both
+the target health and the owning process's reaper counters after rollout;
+scraping another Review Yeti process can show the same metric names at zero
+without proving that reaper activity is observable.
+
 ---
 
 ## 🔁 Advancing the Production Worker Digest
