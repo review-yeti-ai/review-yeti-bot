@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.60.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.59.3...v1.60.0) (2026-09-12)
+
+
+### Features
+
+* **config:** support passthrough of skills, knowledge, metrics, and retry analysis ([#757](https://github.com/review-yeti-ai/review-yeti-bot/issues/757)) ([d692b8d](https://github.com/review-yeti-ai/review-yeti-bot/commit/d692b8d18ec9e08c2d4a4eada4c1f12fbbbb52d9))
+
 ## [1.59.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.59.2...v1.59.3) (2026-09-12)
 
 
