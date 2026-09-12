@@ -69,7 +69,6 @@ export interface ReviewGateCheckMetadata {
   detailsUrl?: string;
   title?: string;
   summary?: string;
-  text?: string;
 }
 
 export interface ReviewGateCreateRequest extends ReviewGateCheckMetadata {
@@ -148,7 +147,6 @@ function validateMetadata(metadata: ReviewGateCheckMetadata): ReviewGateCheckMet
   if (metadata.detailsUrl !== undefined) result.detailsUrl = requiredText(metadata.detailsUrl, 'details URL', 2_000);
   if (metadata.title !== undefined) result.title = validateCheckRunTitle(metadata.title);
   if (metadata.summary !== undefined) result.summary = requiredText(metadata.summary, 'check summary', 65_000);
-  if (metadata.text !== undefined) result.text = requiredText(metadata.text, 'check text', 65_000);
   return result;
 }
 
@@ -156,7 +154,14 @@ function outputFor(metadata: ReviewGateCheckMetadata, defaultTitle: string, defa
   return {
     title: metadata.title ?? defaultTitle,
     summary: metadata.summary ?? defaultSummary,
-    ...(metadata.text !== undefined ? { text: metadata.text } : {}),
+  };
+}
+
+function successfulGateOutput(metadata: ReviewGateCheckMetadata): Record<string, string> {
+  return {
+    title: metadata.title ?? 'Review Yeti Gate: Approved (SHIP)',
+    summary: metadata.summary ?? 'Review Yeti completed this attempt and the policy eligibility gate passed.',
+    text: 'Terminal conclusion: success.',
   };
 }
 
@@ -554,9 +559,11 @@ export class GitHubReviewGateClient {
       status: terminal ? 'completed' : desired.status,
       ...(terminal ? { conclusion: desired.conclusion, completed_at: new Date().toISOString() } : {}),
       ...(metadata.detailsUrl ? { details_url: metadata.detailsUrl } : {}),
-      ...(metadata.title !== undefined || metadata.summary !== undefined || metadata.text !== undefined
-        ? { output: outputFor(metadata, this.checkName, 'Review Yeti gate state updated.') }
-        : {}),
+      ...(terminal && this.checkName === REVIEW_GATE_CHECK_NAME && desired.conclusion === 'success'
+        ? { output: successfulGateOutput(metadata) }
+        : metadata.title !== undefined || metadata.summary !== undefined
+          ? { output: outputFor(metadata, this.checkName, 'Review Yeti gate state updated.') }
+          : {}),
     };
     const updated = assertExactIdentity(
       await this.request<unknown>(
