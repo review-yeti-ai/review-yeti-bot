@@ -562,9 +562,128 @@ function hasCredentialAssignment(value: string): boolean {
   return false;
 }
 
+function isBareAuthorityPrefixBoundary(code: number): boolean {
+  return isUrlSpanDelimiter(code)
+    || code === 34
+    || code === 60
+    || code === 62
+    || code === 96
+    || code === 123
+    || code === 125
+    || isUrlAuthoritySeparator(code)
+    || code === 63
+    || code === 35;
+}
+
+function isBareAuthorityHostBoundary(code: number): boolean {
+  return isBareAuthorityPrefixBoundary(code)
+    || code === 44
+    || code === 59
+    || code === 61;
+}
+
+function hasRootOwnedExplicitUrl(value: string, spanStart: number, spanEnd: number): boolean {
+  let searchStart = spanStart;
+  let candidates = 0;
+  while (searchStart < spanEnd) {
+    const candidate = findUrlCandidateStart(value, searchStart, spanStart, spanEnd);
+    if (!candidate) return false;
+
+    candidates += 1;
+    if (candidates > URL_CANDIDATE_LIMIT) return false;
+
+    if (candidate.requiresParse) {
+      const inspection = inspectParsedUrl(
+        value.slice(candidate.index, spanEnd),
+        candidate.schemeRelative,
+        candidate.canonicalCustomAuthority,
+      );
+      if (
+        inspection?.ownsComponents
+        && (
+          candidate.nextIndex >= spanEnd
+          || !isAmbiguousAuthorityStart(value.charCodeAt(candidate.nextIndex))
+        )
+        && isRootOrLabelPrefixedCandidate(value, candidate.index, spanStart)
+      ) {
+        return true;
+      }
+    }
+
+    searchStart = Math.max(candidate.nextIndex, candidate.index + 1);
+  }
+  return false;
+}
+
+/**
+ * Reject a scheme-less `username:password@host` authority without turning
+ * ordinary email addresses or model revisions into credential findings.
+ * Explicit URLs are handled by hasUrlAuthorityUserinfo(), whose parsed owner
+ * semantics intentionally keep path and query content opaque to this check.
+ */
+function hasBareAuthorityUserinfo(value: string): boolean {
+  if (value.indexOf('@') < 0 || value.indexOf(':') < 0) return false;
+
+  let whitespaceSpanStart = 0;
+  while (whitespaceSpanStart < value.length) {
+    while (
+      whitespaceSpanStart < value.length
+      && isUrlSpanDelimiter(value.charCodeAt(whitespaceSpanStart))
+    ) {
+      whitespaceSpanStart += 1;
+    }
+    if (whitespaceSpanStart >= value.length) break;
+
+    let whitespaceSpanEnd = whitespaceSpanStart;
+    while (
+      whitespaceSpanEnd < value.length
+      && !isUrlSpanDelimiter(value.charCodeAt(whitespaceSpanEnd))
+    ) {
+      whitespaceSpanEnd += 1;
+    }
+
+    if (!hasRootOwnedExplicitUrl(value, whitespaceSpanStart, whitespaceSpanEnd)) {
+      let candidateStart = whitespaceSpanStart;
+      let passwordSeparator = -1;
+      for (let index = whitespaceSpanStart; index < whitespaceSpanEnd; index += 1) {
+        const code = value.charCodeAt(index);
+        if (isBareAuthorityPrefixBoundary(code)) {
+          candidateStart = index + 1;
+          passwordSeparator = -1;
+          continue;
+        }
+        if (code === 58 && passwordSeparator < candidateStart) {
+          passwordSeparator = index;
+          continue;
+        }
+        if (
+          code === 64
+          && passwordSeparator >= candidateStart
+          && (
+            candidateStart < passwordSeparator
+            || passwordSeparator + 1 < index
+          )
+          && index + 1 < whitespaceSpanEnd
+          && !isBareAuthorityHostBoundary(value.charCodeAt(index + 1))
+        ) {
+          return true;
+        }
+        if (code === 64) {
+          candidateStart = index + 1;
+          passwordSeparator = -1;
+        }
+      }
+    }
+    whitespaceSpanStart = whitespaceSpanEnd + 1;
+  }
+  return false;
+}
+
 function containsCredentialLikeValue(value: string): boolean {
   if (value.length > INERT_MAX_STRING_CODE_UNITS) return true;
-  return hasUrlAuthorityUserinfo(value) || hasCredentialAssignment(value);
+  return hasUrlAuthorityUserinfo(value)
+    || hasBareAuthorityUserinfo(value)
+    || hasCredentialAssignment(value);
 }
 
 function isInertJsonObject(value: InertJsonValue): value is InertJsonObject {
