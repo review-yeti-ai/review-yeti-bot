@@ -4,6 +4,7 @@ import {
   CHECK_CONTEXT_RAW_REVIEW,
   CHECK_CONTEXT_GATE,
   CHECK_CONTEXT_CI,
+  MAX_CHECK_RUN_TITLE_CHARACTERS,
   REVIEW_REFRESH_ACTION,
 } from '../../src/github/installationClient';
 import { getGitHubAppRepositoryDispatchToken } from '../../src/github/appAuth';
@@ -137,6 +138,48 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
     expect(capturedBody.status).toBe('completed');
     expect(capturedBody.conclusion).toBe('failure');
   });
+
+  it.each(['publishGateCheck', 'publishValidationCheck', 'completeCheck'] as const)(
+    'accepts a 140-character title and rejects a 141-character title for %s',
+    async (method) => {
+      let capturedBody: any = null;
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        capturedBody = JSON.parse(String(init?.body || '{}'));
+        return {
+          ok: true,
+          status: 201,
+          text: async () => JSON.stringify({ id: 3003 }),
+        };
+      });
+      const client = new GitHubInstallationClient({
+        token: 'ghs_dummytoken',
+        fetchImplementation: fetchMock as any,
+      });
+      const acceptedTitle = 't'.repeat(MAX_CHECK_RUN_TITLE_CHARACTERS);
+      const publish = (title: string): Promise<number | void> => {
+        if (method === 'publishGateCheck') {
+          return client.publishGateCheck('owner', 'repo', 'a'.repeat(40), {
+            conclusion: 'success', title, summary: 'summary',
+          });
+        }
+        if (method === 'publishValidationCheck') {
+          return client.publishValidationCheck('owner', 'repo', 'a'.repeat(40), {
+            conclusion: 'success', title, summary: 'summary',
+          });
+        }
+        return client.completeCheck({
+          owner: 'owner', repo: 'repo', checkId: 3003, conclusion: 'success', title, summary: 'summary',
+        });
+      };
+
+      await expect(publish(acceptedTitle)).resolves.toBe(method === 'completeCheck' ? undefined : 3003);
+      expect(capturedBody.output.title).toBe(acceptedTitle);
+
+      fetchMock.mockClear();
+      await expect(publish(`${acceptedTitle}t`)).rejects.toThrow(/title/u);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('emitRepositoryDispatch posts to /repos/{owner}/{repo}/dispatches with event_type and client_payload', async () => {
     let capturedUrl = '';
