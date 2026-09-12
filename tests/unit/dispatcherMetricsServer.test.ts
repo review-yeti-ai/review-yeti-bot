@@ -25,6 +25,13 @@ describe('review job dispatcher metrics server', () => {
     }
   });
 
+  it('rejects an unbounded or invalid collection timeout', () => {
+    for (const collectionTimeoutMs of [0, -1, 1.5, Number.NaN, 30_001]) {
+      expect(() => createDispatcherMetricsServer({ collectionTimeoutMs }))
+        .toThrow('dispatcher metrics collection timeout must be 1-30000 ms');
+    }
+  });
+
   it('serves health and only the two internal GET routes', async () => {
     const server = createDispatcherMetricsServer({ collectMetrics: async () => 'metric 1\n' });
     expect(server.requestTimeout).toBe(5_000);
@@ -89,5 +96,16 @@ describe('review job dispatcher metrics server', () => {
       throw new Error('synthetic-sensitive-collector-error');
     } });
     await request(server).get('/metrics').expect(500, '# Error generating metrics\n');
+  });
+
+  it('bounds a never-resolving collector and lets shutdown complete', async () => {
+    const server = createDispatcherMetricsServer({
+      collectionTimeoutMs: 10,
+      collectMetrics: () => new Promise<string>(() => undefined),
+    });
+    const response = await request(server).get('/metrics')
+      .expect(500, '# Error generating metrics\n');
+    expect(response.text).not.toContain('synthetic-sensitive');
+    expect(server.listening).toBe(false);
   });
 });
