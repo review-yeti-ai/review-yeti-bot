@@ -292,6 +292,116 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
   });
 
+  it.each(['failure-existing', 'failure-published'] as const)(
+    'acknowledges %s reconciliation at a modern epoch without integer overflow',
+    async (outcome) => {
+      const { repository, client } = await createRepository();
+      const now = 1_789_173_058_456;
+      const input = sameHeadAdmission(`modern-epoch-${outcome}`, now - 10_000);
+      const admitted = await repository.admit(input);
+      const claim = (await repository.claimNext('dispatcher', now - 9_000, 30_000))!;
+      const workerTokenDigest = '9'.repeat(64);
+      await expect(repository.markProjected(
+        claim.runId,
+        claim.leaseOwner,
+        claim.claimAttempt,
+        'worker-a1',
+        now - 8_000,
+        workerTokenDigest,
+      )).resolves.toBe(true);
+      await expect(repository.markWorkerFailure({
+        version: 'WorkerTerminalFailure.v1',
+        runId: admitted.run.runId,
+        owner: input.identity.owner,
+        repo: input.identity.repo,
+        prNumber: input.identity.prNumber,
+        headSha: input.identity.headSha,
+        baseSha: input.identity.baseSha,
+        repositoryId: input.repositoryId,
+        policyDigest: input.effectivePolicyDigest!,
+        configDigest: input.identity.configDigest,
+        executionAttempt: claim.executionAttempt,
+        failureClass: 'internal_error',
+      }, { workerTokenDigest }, now - 7_000)).resolves.toMatchObject({ status: 'failed' });
+
+      const [failed] = await repository.claimAbandonedPublishingRuns('reaper-a', now - 6_000, 1);
+      expect(failed).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+      await expect(repository.reconcileAbandonedPublishingRun(
+        failed,
+        'reaper-a',
+        now,
+        async () => outcome,
+      )).resolves.toBe(true);
+
+      expect(await dispatchState(client, admitted.run.runId)).toMatchObject({
+        run: {
+          status: 'terminal',
+          error_text: 'worker terminal failure: internal_error',
+          lease_owner: null,
+          lease_expires_at: null,
+        },
+        outbox: {
+          status: 'terminal',
+          lease_owner: null,
+          lease_expires_at: null,
+        },
+      });
+    },
+  );
+
+  it('retains lost-create recovery with a bounded lease at a modern epoch', async () => {
+    const { repository, client } = await createRepository();
+    const now = 1_789_173_058_456;
+    const input = sameHeadAdmission('modern-epoch-creation-unconfirmed', now - 10_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', now - 9_000, 30_000))!;
+    const workerTokenDigest = '9'.repeat(64);
+    await repository.markProjected(
+      claim.runId,
+      claim.leaseOwner,
+      claim.claimAttempt,
+      'worker-a1',
+      now - 8_000,
+      workerTokenDigest,
+    );
+    await repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1',
+      runId: admitted.run.runId,
+      owner: input.identity.owner,
+      repo: input.identity.repo,
+      prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha,
+      baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId,
+      policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest,
+      executionAttempt: claim.executionAttempt,
+      failureClass: 'internal_error',
+    }, { workerTokenDigest }, now - 7_000);
+
+    const [failed] = await repository.claimAbandonedPublishingRuns('reaper-a', now - 6_000, 1);
+    await expect(repository.reconcileAbandonedPublishingRun(
+      failed,
+      'reaper-a',
+      now,
+      async () => 'creation-unconfirmed',
+    )).resolves.toBe(true);
+
+    expect(await dispatchState(client, admitted.run.runId)).toMatchObject({
+      run: {
+        status: 'terminal',
+        error_text: 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+        lease_owner: null,
+        lease_expires_at: new Date(now + 60_000),
+      },
+      outbox: {
+        status: 'projected',
+        lease_owner: null,
+        lease_expires_at: null,
+      },
+    });
+  });
+
   it('reconciles a durable internal failure with a visible orphan check before the deadline', async () => {
     const { repository, client } = await createRepository();
     const input = sameHeadAdmission('live-orphan-check', 1_000);
