@@ -72,7 +72,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     logger.warn('No GitHub App credentials: publishing (app-gate) reviews will be refused');
   }
 
-  const repository = new PostgresReviewDispatchRepository(store.getPool());
+  const repository = new PostgresReviewDispatchRepository(store.getPool(), undefined, { lifecycleEvents: 'enabled' });
   const engine = new ReviewJobDispatchEngine({
     repository,
     projector: new KubernetesReviewJobProjector(customObjects),
@@ -93,7 +93,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     },
   });
 
-  const completionRepository = new PostgresReviewCompletionRepository(store.getPool());
+  const completionRepository = new PostgresReviewCompletionRepository(store.getPool(), { lifecycleEvents: 'enabled' });
   const completionEngine = appId && privateKey
     ? new ReviewCompletionDeliveryEngine({
         repository: completionRepository,

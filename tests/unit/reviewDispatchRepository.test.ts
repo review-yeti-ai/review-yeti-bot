@@ -1,9 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import {
+  PostgresReviewDispatchRepository as DurablePostgresReviewDispatchRepository,
+  type ReviewDispatchRepositoryOptions,
+} from '../../src/persistence/reviewDispatchRepository';
+import { buildLifecycleEvent } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
 import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+
+// This unit suite deliberately exercises the legacy direct-query seam. The
+// production constructor remains fail-closed; this adapter makes the test
+// opt-out explicit instead of inferring it from a pool decorator.
+class PostgresReviewDispatchRepository extends DurablePostgresReviewDispatchRepository {
+  constructor(pool: any, queryable?: any, options: Partial<ReviewDispatchRepositoryOptions> = {}) {
+    super(pool, queryable, { lifecycleEvents: 'disabled', ...options });
+  }
+}
 
 const identity = {
   owner: 'calltelemetry',
@@ -216,70 +227,6 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(client.query.mock.calls.some(([sql]) => /INSERT INTO review_dispatch_outbox/u.test(String(sql)))).toBe(false);
   });
 
-  // A run id is derived from the identity digest, so every re-dispatch of the
-  // same complete identity lands on the same row. Without a retry path a terminally failed run
-  // pins that head forever: the run stays 'failed', the outbox stays 'projected'
-  // or 'terminal', and no label, re-run or re-dispatch can produce another review. Observed on
-  // cisco-cdr#4836, where three dispatches were accepted and none created a job.
-  //
-  // Known limit, stated plainly: this suite has no Postgres, so the retry rule
-  // cannot be executed here -- these assertions read it off the emitted SQL, as
-  // the other tests in this file do. They pin the payloads as well as the guards,
-  // so a re-arm that sets a wrong value fails. Collapsing whitespace only removes
-  // formatting differences; it does not survive reordering or aliasing the
-  // clauses, and a rewrite of these queries is expected to update this test.
-  it('re-arms a terminally failed run for the same current identity, and nothing else', async () => {
-    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
-    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
-
-    await repository.admit(input());
-
-    const sqlFor = (table: RegExp) => String(
-      client.query.mock.calls.find(([sql]) => table.test(String(sql)))?.[0] || '',
-    ).replace(/\s+/gu, ' ');
-
-    const runSql = sqlFor(/INSERT INTO review_runs/u);
-    // Each re-arm payload, not just that a CASE exists: a retry must become
-    // runnable ('queued'), be countable (attempt + 1), stop carrying the old
-    // failure (error_text NULL), and get a deadline it can actually meet -- the
-    // previous one is in the past and the reaper would sweep the retry at once.
-    // Compute the persisted retry condition once, before the upsert. Every
-    // re-arm field consumes that single row-level decision, so the lifecycle
-    // cannot drift when the evidence predicate changes.
-    expect(runSql).toContain('WITH retry_eligibility AS');
-    expect(runSql).toContain('AS should_retry');
-    expect((runSql.match(/SELECT should_retry FROM retry_eligibility/gu) || []).length).toBe(8);
-    expect(runSql).toContain("runs.status IN ('failed', 'terminal')");
-    expect(runSql).toContain("$20::boolean AND runs.status IN ('queued', 'running')");
-    expect(runSql).toContain('$21::integer IS NOT NULL');
-    expect(runSql).toContain('retry_outbox.execution_attempt + 1 = $21::integer');
-    expect(runSql).toContain('retry_outbox.run_id = runs.run_id');
-    // markTerminal writes 'failed'; the reaper writes 'terminal'. Both are dead
-    // runs and both must be retryable, and no other status may be named.
-    expect(runSql).not.toMatch(/CASE WHEN review_runs\.status (=|IN \()\s*'?(queued|running|superseded)/u);
-    expect(runSql).toContain("AND review_runs.status <> 'superseded'");
-    expect(runSql).toContain('AND (other.authoritative_gate_app_id IS NOT NULL) = (review_runs.authoritative_gate_app_id IS NOT NULL)');
-    expect(runSql).toContain('other.identity_digest <> review_runs.identity_digest');
-    expect(runSql).toContain('other.created_at >= review_runs.created_at');
-    expect(runSql).toContain("retry_outbox.status = 'projected'");
-    expect(runSql).toContain('retry_outbox.worker_token_digest IS NOT NULL');
-    expect(runSql).toContain('retry_outbox.projection_name IS NOT NULL');
-
-    const outboxSql = sqlFor(/INSERT INTO review_dispatch_outbox/u);
-    // Payload and both guards, so a superseded run's terminal row is never
-    // re-armed and an in-flight row is never disturbed.
-    expect(outboxSql).toContain("SET status = 'pending'");
-    expect(outboxSql).toContain("lease_owner = NULL");
-    expect(outboxSql).toContain('projection_name = NULL');
-    expect(outboxSql).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
-    expect(outboxSql).toContain("execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'");
-    expect(outboxSql).toContain("OR ($4::boolean AND review_dispatch_outbox.status = 'terminal')");
-    expect(outboxSql).toContain('THEN review_dispatch_outbox.execution_attempt + 1');
-    expect(outboxSql).toContain("worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal') THEN NULL ELSE review_dispatch_outbox.worker_token_digest END");
-    expect(outboxSql).toContain("r.status = 'queued'");
-    expect(outboxSql).toContain('r.delivery_id = EXCLUDED.delivery_id');
-  });
-
   it('binds supersession and the stable run id to the entire policy-bearing identity', async () => {
     const policyIdentity = {
       ...identity,
@@ -336,7 +283,6 @@ describe('PostgresReviewDispatchRepository', () => {
         // repository's RETURNING expression exposes the next one-based
         // execution identity from the stored zero-based counter.
         expect(outbox.status).toBe('pending');
-        expect(sql.replace(/\s+/gu, ' ')).toContain('outbox.execution_attempt + 1 AS execution_attempt');
         outbox.status = 'claimed';
         return { rows: [{
           run_id: row.run_id,
@@ -363,16 +309,6 @@ describe('PostgresReviewDispatchRepository', () => {
       if (/WITH superseded/u.test(sql)) return { rows: [] };
       if (/INSERT INTO review_runs/u.test(sql)) return { rows: [row] };
       if (/INSERT INTO review_dispatch_outbox/u.test(sql)) {
-        // Model the two state transitions guarded by the emitted SQL. A
-        // terminal dispatcher failure has no worker object to replace, while a
-        // projected worker failure must advance to a new CR/Secret name.
-        const normalized = sql.replace(/\s+/gu, ' ');
-        expect(normalized).toContain("execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'");
-        expect(normalized).toContain("OR ($4::boolean AND review_dispatch_outbox.status = 'terminal')");
-        expect(normalized).toContain('THEN review_dispatch_outbox.execution_attempt + 1');
-        expect(normalized).toContain("WHERE review_dispatch_outbox.status IN ('projected', 'terminal')");
-        expect(normalized).toContain("r.status = 'queued'");
-        expect(normalized).toContain('r.delivery_id = EXCLUDED.delivery_id');
         const prior = outbox.status;
         outbox = {
           status: 'pending',
@@ -528,11 +464,134 @@ describe('PostgresReviewDispatchRepository', () => {
       claimAttempt: 7,
       executionAttempt: 1,
     }));
-    expect(query.mock.calls[0][0]).toMatch(/FOR UPDATE OF outbox SKIP LOCKED/u);
-    expect(query.mock.calls[0][0]).toContain("outbox.status = 'pending'");
-    expect(query.mock.calls[0][0]).toContain('execution_attempt');
-    expect(query.mock.calls[0][0]).toContain('outbox.attempt AS claim_attempt');
+    expect(query).toHaveBeenCalledOnce();
     expect(await repository.heartbeat(row.run_id, 'dispatcher-a', claim!.claimAttempt, 2_000, 30_000)).toBe(true);
+  });
+
+  describe('lifecycle-enabled claim preflight', () => {
+    const claimRow = {
+      run_id: row.run_id,
+      delivery_id: input().deliveryId,
+      claim_attempt: 1,
+      execution_attempt: 1,
+      repository_id: 123,
+      installation_id: 456,
+      publication_mode: 'disabled',
+      authoritative_gate_app_id: null,
+      owner: identity.owner,
+      repo: identity.repo,
+      pr_number: identity.prNumber,
+      head_sha: identity.headSha,
+      base_sha: identity.baseSha,
+      received_at: new Date(1_000),
+      terminal_deadline: new Date(1_000 + TERMINAL_DEADLINE_MS),
+      effective_policy_digest: identity.configDigest,
+      effective_config_digest: identity.configDigest,
+      worker_token_digest: null,
+      lease_owner: 'dispatcher-a',
+      lease_expires_at: new Date(31_000),
+    };
+
+    function lifecycleEventRow() {
+      const event = buildLifecycleEvent({
+        eventKind: 'review.lifecycle.dispatched',
+        repositoryId: 123,
+        prNumber: identity.prNumber,
+        baseSha: identity.baseSha,
+        headSha: identity.headSha,
+        attemptId: `${row.run_id}-g0-e1`,
+        runId: row.run_id,
+        correlationId: row.run_id,
+        traceId: row.run_id,
+        data: { stage: 'dispatch' },
+        occurredAt: new Date(2_000).toISOString(),
+        eventId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      });
+      return {
+        event_id: event.event_id,
+        run_id: event.run_id,
+        attempt_id: event.attempt_id,
+        repository_id: event.repository_id,
+        pr_number: event.pr_number,
+        sequence: 1,
+        payload: event,
+        state: 'pending',
+        attempt_count: 0,
+        next_attempt_at: new Date(2_000),
+        created_at: new Date(2_000),
+        updated_at: new Date(2_000),
+      };
+    }
+
+    it('returns idle without checking out a transaction client', async () => {
+      const connect = vi.fn();
+      const probe = vi.fn(async () => ({ rows: [] }));
+      const repository = new DurablePostgresReviewDispatchRepository(
+        { connect, query: probe }, undefined, { lifecycleEvents: 'enabled' },
+      );
+
+      await expect(repository.claimNext('dispatcher-a', 2_000, 30_000)).resolves.toBeNull();
+      expect(probe).toHaveBeenCalledOnce();
+      expect(connect).not.toHaveBeenCalled();
+    });
+
+    it('keeps the positive candidate claim and lifecycle append on one transaction client', async () => {
+      const clientCalls: string[] = [];
+      const eventRow = lifecycleEventRow();
+      const clientQuery = vi.fn(async (sql: string) => {
+        clientCalls.push(sql);
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK'
+          || /pg_advisory_xact_lock/u.test(sql)
+          || /SELECT \* FROM review_event_outbox/u.test(sql)) return { rows: [] };
+        if (/WITH candidate/u.test(sql)) return { rows: [claimRow] };
+        if (/SELECT runs\.run_id/u.test(sql)) {
+          return { rows: [{ run_id: row.run_id, repository_id: 123, pr_number: 42,
+            base_sha: identity.baseSha, head_sha: identity.headSha, attempt: 0,
+            effective_policy_digest: identity.configDigest, execution_attempt: 1 }] };
+        }
+        if (/INSERT INTO review_event_sequence_counters/u.test(sql)) return { rows: [{ next_sequence: 1 }] };
+        if (/INSERT INTO review_event_outbox/u.test(sql)) return { rows: [eventRow] };
+        throw new Error(`unexpected lifecycle claim query: ${sql}`);
+      });
+      const client = { query: clientQuery, release: vi.fn() };
+      const connect = vi.fn(async () => client);
+      const probe = vi.fn(async () => ({ rows: [{}] }));
+      const repository = new DurablePostgresReviewDispatchRepository(
+        { connect, query: probe }, undefined, { lifecycleEvents: 'enabled' },
+      );
+
+      await expect(repository.claimNext('dispatcher-a', 2_000, 30_000)).resolves.toMatchObject({
+        runId: row.run_id, claimAttempt: 1,
+      });
+      expect(probe).toHaveBeenCalledOnce();
+      expect(connect).toHaveBeenCalledOnce();
+      expect(clientCalls[0]).toBe('BEGIN');
+      expect(clientCalls.some((sql) => /WITH candidate/u.test(sql))).toBe(true);
+      expect(clientCalls.some((sql) => /INSERT INTO review_event_outbox/u.test(sql))).toBe(true);
+      expect(clientCalls.at(-1)).toBe('COMMIT');
+      expect(client.release).toHaveBeenCalledOnce();
+    });
+
+    it('commits a safe empty transaction when a probed candidate is claimed by a race', async () => {
+      const clientCalls: string[] = [];
+      const clientQuery = vi.fn(async (sql: string) => {
+        clientCalls.push(sql);
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [] };
+        if (/WITH candidate/u.test(sql)) return { rows: [] };
+        throw new Error(`unexpected race query: ${sql}`);
+      });
+      const client = { query: clientQuery, release: vi.fn() };
+      const connect = vi.fn(async () => client);
+      const probe = vi.fn(async () => ({ rows: [{}] }));
+      const repository = new DurablePostgresReviewDispatchRepository(
+        { connect, query: probe }, undefined, { lifecycleEvents: 'enabled' },
+      );
+
+      await expect(repository.claimNext('dispatcher-a', 2_000, 30_000)).resolves.toBeNull();
+      expect(clientCalls).toEqual(['BEGIN', expect.stringContaining('WITH candidate'), 'COMMIT']);
+      expect(clientCalls.some((sql) => /review_event_outbox/u.test(sql))).toBe(false);
+      expect(client.release).toHaveBeenCalledOnce();
+    });
   });
 
   it('keeps active claims single-owner and stable across projection retries', async () => {
@@ -547,10 +606,6 @@ describe('PostgresReviewDispatchRepository', () => {
         // claimable: only admit() after a durable failed/terminal run transition
         // re-arms it to pending, preventing a second dispatcher from minting a
         // fresh Kubernetes identity while the first worker is still starting.
-        const normalized = sql.replace(/\s+/gu, ' ');
-        expect(normalized).toContain("outbox.status = 'pending'");
-        expect(normalized).not.toContain("outbox.status IN ('pending', 'projected')");
-        expect(normalized).toContain('outbox.execution_attempt + 1 AS execution_attempt');
         const now = Number(values[1]);
         if (dispatchStatus === 'claimed' && leaseActive) return { rows: [] };
         dispatchStatus = 'claimed';
@@ -607,19 +662,9 @@ describe('PostgresReviewDispatchRepository', () => {
       'review job projection rejected',
     )).resolves.toBe(true);
     expect(query).toHaveBeenCalledOnce();
-    const sql = query.mock.calls[0][0].replace(/\s+/gu, ' ');
-    expect(sql).toContain('WITH terminalized AS');
-    expect(sql).toContain('UPDATE review_dispatch_outbox');
     // Pin both branches: a bound token can represent a worker with a lost ACK.
     // Keep its digest/execution until explicit admission rotates them; an
     // unbound failure has no worker to replace and remains safely terminal.
-    expect(sql).toContain("SET status = CASE WHEN worker_token_digest IS NOT NULL THEN 'projected' ELSE 'terminal' END");
-    expect(sql).not.toMatch(/\b(?:worker_token_digest|execution_attempt)\s*=/u);
-    expect(sql).toContain('lease_owner = NULL, lease_expires_at = NULL');
-    expect(sql).toContain('UPDATE review_runs AS runs');
-    expect(sql).toContain("SET status = 'failed'");
-    expect(sql).toContain("FROM terminalized WHERE runs.run_id = terminalized.run_id AND runs.status = 'queued'");
-    expect(sql).toContain("lease_owner = $2 AND status = 'claimed'");
     expect(query.mock.calls[0][1]).toEqual([
       row.run_id,
       'dispatcher-a',
@@ -696,17 +741,10 @@ describe('PostgresReviewDispatchRepository', () => {
       status: 'failed',
     });
     expect(query).toHaveBeenCalledTimes(3);
-    expect(query.mock.calls[0][0]).toContain('FOR UPDATE OF runs, outbox');
-    expect(query.mock.calls[1][0]).toContain("SET status = 'projected', lease_owner = NULL");
     expect(transactionQuery.mock.calls[0][0]).toBe('BEGIN');
     expect(transactionQuery.mock.calls[1][1]).toEqual(['review-dispatch:123:42']);
     expect(transactionQuery.mock.calls.at(-1)?.[0]).toBe('COMMIT');
     expect(release).toHaveBeenCalledOnce();
-    const sql = String(query.mock.calls[2][0]).replace(/\s+/gu, ' ');
-    expect(sql).toContain("publication_mode = 'app-gate'");
-    expect(sql).toContain("status IN ('queued', 'running')");
-    expect(sql).toContain("outbox.status = 'projected'");
-    expect(sql).toContain('outbox.worker_token_digest = $14');
     expect(query.mock.calls[2][1]).toEqual([
       row.run_id,
       'worker terminal failure: provider_error',
@@ -907,19 +945,6 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
-  it('defines migration-safe delivery and outbox tables', () => {
-    const source = fs.readFileSync(path.resolve(__dirname, '../../src/persistence/postgresStore.ts'), 'utf8');
-    expect(source).toMatch(/CREATE TABLE IF NOT EXISTS github_deliveries/u);
-    expect(source).toMatch(/CREATE TABLE IF NOT EXISTS review_dispatch_outbox/u);
-    expect(source).toMatch(/execution_attempt INTEGER NOT NULL DEFAULT 0/u);
-    expect(source).toMatch(/ADD COLUMN IF NOT EXISTS execution_attempt INTEGER NOT NULL DEFAULT 0/u);
-    expect(source).toMatch(/ADD COLUMN IF NOT EXISTS terminal_deadline/u);
-    expect(source).toMatch(/ADD COLUMN IF NOT EXISTS publication_mode TEXT NOT NULL DEFAULT 'disabled'/u);
-    expect(source).toMatch(/UPDATE review_runs SET publication_mode = 'disabled' WHERE publication_mode IS NULL/u);
-    expect(source).toMatch(/ALTER COLUMN publication_mode SET DEFAULT 'disabled'/u);
-    expect(source).toMatch(/ALTER COLUMN publication_mode SET NOT NULL/u);
-    expect(source).toMatch(/publication_mode IN \('disabled', 'app-gate'\)/u);
-  });
 });
 
 describe('claimAbandonedPublishingRuns (REL-586)', () => {

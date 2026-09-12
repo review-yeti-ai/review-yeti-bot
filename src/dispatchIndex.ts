@@ -44,7 +44,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const pool = store.getPool();
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
-    repository: new PostgresReviewGateRepository(pool, { completionResolutionTimeoutMs: 15_000,
+    repository: new PostgresReviewGateRepository(pool, { lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
       ...(ciConfig ? { onEligibleCompletion: async (client, gate, now) => {
         if (findReviewCiEnrollment(ciConfig,
           { expectedAppId: gate.expectedAppId, repository: gate.coordinates })) {
@@ -59,7 +59,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     config: ciConfig, pool, appId, privateKey, baseUrl, resolver: authoritative.resolver,
     workerId: `review-ci-${environment.HOSTNAME || 'local'}`,
   }) : undefined;
-  const repository = new PostgresReviewDispatchRepository(pool, undefined, {
+  const repository = new PostgresReviewDispatchRepository(pool, undefined, { lifecycleEvents: 'enabled',
     ...(authoritative ? { validateAuthoritativeAdmission: authoritative.validateAdmission } : {}),
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
   });

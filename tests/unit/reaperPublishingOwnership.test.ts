@@ -5,6 +5,8 @@ const state = vi.hoisted(() => ({
   credentials: undefined as Record<string, unknown> | undefined,
   reaperOptions: undefined as Record<string, any> | undefined,
   events: [] as string[],
+  poolQuery: vi.fn(async () => ({ rows: [] })),
+  poolConnect: vi.fn(async () => ({ query: vi.fn(), release: vi.fn() })),
   identity: vi.fn(async () => ({ id: 4385771 })),
   mint: vi.fn(async () => ({ token: 'ghs_offline' })),
   close: vi.fn(async () => {}),
@@ -16,7 +18,7 @@ vi.mock('@kubernetes/client-node', () => ({ CustomObjectsApi: class {}, CoreV1Ap
 } }));
 vi.mock('../../src/github/appAuth', () => ({ getGitHubAppIdentity: state.identity, getGitHubAppRepositoryPublishToken: state.mint }));
 vi.mock('../../src/persistence/postgresStore', () => ({ PostgresStore: class {
-  async initialize() {} getPool() { return {}; } close = state.close;
+  async initialize() {} getPool() { return { query: state.poolQuery, connect: state.poolConnect }; } close = state.close;
 } }));
 vi.mock('../../src/k8s/kubernetesRunSecretProvisioner', () => ({ KubernetesRunSecretProvisioner: class {
   constructor(options: Record<string, unknown>) { state.credentials = options; }
@@ -38,6 +40,8 @@ beforeEach(() => {
   state.events.length = 0;
   state.credentials = undefined;
   state.reaperOptions = undefined;
+  state.poolQuery.mockReset().mockResolvedValue({ rows: [] });
+  state.poolConnect.mockReset().mockImplementation(async () => ({ query: state.poolQuery, release: vi.fn() }));
   state.loop.mockReset().mockImplementation(async (engine) => { await engine.runOnce(); });
   state.reap.mockReset().mockImplementation(async (signal) => {
     state.events.push('reconcile');
@@ -54,6 +58,14 @@ beforeEach(() => {
 
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); process.exitCode = 0; });
 
+function expectIdleCompletionPool(): void {
+  expect(state.poolQuery).toHaveBeenCalledExactlyOnceWith(
+    expect.stringContaining('FROM review_completion_outbox AS outbox'),
+    [expect.any(Number)],
+  );
+  expect(state.poolConnect).not.toHaveBeenCalled();
+}
+
 describe('dispatcher publishing ownership composition', () => {
   it('uses the same authenticated App for worker secrets and reaping, and awaits reaping before dispatch/DB close', async () => {
     // Do not install real process signal handlers from a service entrypoint.
@@ -66,6 +78,7 @@ describe('dispatcher publishing ownership composition', () => {
     expect(state.mint).toHaveBeenCalledWith({ appId: '4385771', privateKey: 'offline-key',
       owner: 'calltelemetry', repo: 'ct-release', signal: expect.any(AbortSignal) });
     expect(state.events).toEqual(['reconcile', 'dispatch', 'close']);
+    expectIdleCompletionPool();
   });
 
   it.each(['SIGTERM', 'SIGINT'] as const)('passes loop options and drains reaping before close after captured %s', async (shutdown) => {
@@ -113,6 +126,7 @@ describe('dispatcher publishing ownership composition', () => {
     expect(state.events).toEqual([
       'reconcile-live', 'dispatch', 'reconcile-aborted-start', 'reconcile-aborted-finish', 'close',
     ]);
+    expectIdleCompletionPool();
     expect(process.exitCode || 0).toBe(0);
   });
 });
