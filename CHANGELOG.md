@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.8...v1.56.9) (2026-09-12)
+
+
+### Bug Fixes
+
+* **review:** bound refresh action description ([#733](https://github.com/review-yeti-ai/review-yeti-bot/issues/733)) ([8642b28](https://github.com/review-yeti-ai/review-yeti-bot/commit/8642b28b40726079d3092a08825bab3ae81aadca))
+
 ## [1.56.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.7...v1.56.8) (2026-09-11)
 
 
