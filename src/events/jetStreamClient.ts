@@ -1,15 +1,28 @@
 import { Worker } from 'node:worker_threads';
 import type { Readable } from 'node:stream';
 import type { NatsEventPublisherConfig } from './natsConfig';
+import {
+  LIFECYCLE_SUBJECT_PREFIX,
+  PROGRESS_SUBJECT_PREFIX,
+} from './reviewEventSubjects';
 
 export type { NatsEventPublisherConfig } from './natsConfig';
+export {
+  LIFECYCLE_SUBJECT_PREFIX,
+  PROGRESS_SUBJECT_PREFIX,
+} from './reviewEventSubjects';
 
-export const LIFECYCLE_SUBJECT_PREFIX = 'ct.review.lifecycle.v1';
-export const PROGRESS_SUBJECT_PREFIX = 'ct.review.progress.v1';
 export const MAX_SUBJECT_SUFFIX_LENGTH = 64;
 export const MAX_PUBLISH_PAYLOAD_BYTES = 16 * 1024;
 
-const SUBJECT_PATTERN = /^(?:ct\.review\.(?:lifecycle|progress)\.v1)\.[a-z0-9][a-z0-9_-]{0,63}$/u;
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const SUBJECT_PATTERN = new RegExp(
+  `^(?:${escapeRegExp(LIFECYCLE_SUBJECT_PREFIX)}|${escapeRegExp(PROGRESS_SUBJECT_PREFIX)})\\.[a-z0-9][a-z0-9_-]{0,63}$`,
+  'u',
+);
 const MESSAGE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/u;
 const STREAM_NAME_PATTERN = /^[^\s.*>\/\\\u0000-\u001f\u007f]{1,255}$/u;
 const TERMINATE_OWNED_TRANSPORT = Symbol('terminateOwnedTransport');
