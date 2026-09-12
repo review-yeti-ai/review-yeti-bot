@@ -32,6 +32,14 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(metrics.queuedJobs).toBeDefined();
   });
 
+  it('exposes an untouched reaper quarantine counter with a zero baseline', async () => {
+    const prometheusText = await getPrometheusMetrics();
+
+    expect(prometheusText).toContain('# HELP ct_review_reaper_delivery_identity_mismatch_total Abandoned review runs quarantined because run and outbox delivery identities differed.');
+    expect(prometheusText).toContain('# TYPE ct_review_reaper_delivery_identity_mismatch_total counter');
+    expect(prometheusText).toContain('ct_review_reaper_delivery_identity_mismatch_total 0');
+  });
+
   it('records metrics and serializes to Prometheus format via getPrometheusMetrics()', async () => {
     const metrics = getMetrics();
     metrics.tokensPrompt.add(150, { persona: 'security', provider: 'anthropic', model: 'claude-3-5-sonnet' });
