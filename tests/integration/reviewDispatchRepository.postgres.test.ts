@@ -2344,6 +2344,93 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect((await repository.claimNext('dispatcher-b', 3_000, 30_000))?.executionAttempt).toBe(2);
   });
 
+  it('admits one native rerequest delivery as exactly the next governed execution and deduplicates its replay', async () => {
+    const { repository, client, gateRepository } = await createRepository();
+    const input = authoritativeAdmission('native-rerequest-source', 1_000);
+    const first = await repository.admit(input);
+    await bindPendingGate(gateRepository);
+    const firstClaim = (await repository.claimNext('dispatcher-a', 1_001, 30_000))!;
+    await repository.bindWorkerTokenDigest(
+      first.run.runId, firstClaim.leaseOwner, firstClaim.claimAttempt, 'a'.repeat(64), 1_002,
+    );
+    await repository.markProjected(
+      first.run.runId, firstClaim.leaseOwner, firstClaim.claimAttempt,
+      'review-worker-a1', 1_003, 'a'.repeat(64),
+    );
+
+    const fullName = `${input.identity.owner}/${input.identity.repo}`;
+    const body = {
+      action: 'rerequested',
+      installation: { id: input.installationId },
+      repository: {
+        id: input.repositoryId, name: input.identity.repo, full_name: fullName,
+        owner: { id: 57884877, login: input.identity.owner },
+      },
+      check_run: {
+        id: 103522087645, name: 'Review Yeti', head_sha: input.identity.headSha,
+        status: 'completed', conclusion: 'failure', external_id: `${first.run.runId}:a1`,
+        app: { id: 4385771, slug: 'ct-review-bot' },
+        output: { title: 'Review Yeti: review did not complete' },
+        pull_requests: [{
+          number: input.identity.prNumber,
+          head: { sha: input.identity.headSha, repo: { full_name: fullName } },
+          base: { sha: input.identity.baseSha, repo: { full_name: fullName } },
+        }],
+      },
+    };
+    const rawBody = Buffer.from(JSON.stringify(body));
+    const resolve = vi.fn(async () => ({
+      current: {
+        repositoryId: input.repositoryId, owner: input.identity.owner, repo: input.identity.repo,
+        prNumber: input.identity.prNumber, headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+        open: true, draft: false,
+      },
+      identity: input.identity,
+      prepared: input.authoritativeGate.prepared,
+    }));
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: {
+        secret: 'test-webhook-secret', admissionEnabled: true,
+        repositoryIds: new Set([String(input.repositoryId)]), ownerIds: new Set(['57884877']),
+      },
+      admission: repository,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true,
+        repositoryIds: [input.repositoryId], resolver: { resolve },
+      },
+      now: () => 2_000,
+    });
+    const event = { eventName: 'check_run', deliveryId: 'native-rerequest', rawBody, body };
+
+    await expect(onEvent(event)).resolves.toMatchObject({
+      status: 'accepted', reason: 'refresh_requested', prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha,
+    });
+    const once = await dispatchState(client, first.run.runId);
+    expect(once.run).toMatchObject({
+      run_id: first.run.runId, status: 'queued', attempt: 1,
+      delivery_id: 'github-webhook:native-rerequest',
+    });
+    expect(once.outbox).toMatchObject({
+      status: 'pending', execution_attempt: 1,
+      delivery_id: 'github-webhook:native-rerequest',
+      projection_name: null, worker_token_digest: null,
+    });
+
+    await expect(onEvent(event)).resolves.toMatchObject({ status: 'duplicate', reason: 'refresh_requested' });
+    expect(await dispatchState(client, first.run.runId)).toEqual(once);
+    expect((await client.query(
+      "SELECT count(*)::integer AS count FROM github_deliveries WHERE delivery_id = 'github-webhook:native-rerequest'",
+    )).rows[0]?.count).toBe(1);
+    expect((await client.query(`SELECT review_generation, execution_attempt, current_attempt, check_id
+      FROM review_gate_attempts ORDER BY review_generation`)).rows).toEqual([
+      { review_generation: 0, execution_attempt: 1, current_attempt: false, check_id: '1001' },
+      { review_generation: 1, execution_attempt: 2, current_attempt: true, check_id: null },
+    ]);
+    await expect(repository.claimNext('dispatcher-b', 2_001, 30_000)).resolves.toBeNull();
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
   it('leaves an active claimed execution untouched when refresh has no projected-worker evidence', async () => {
     const { repository, client } = await createRepository();
     const identity = {
