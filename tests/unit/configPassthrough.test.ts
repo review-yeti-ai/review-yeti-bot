@@ -42,6 +42,9 @@ personas:
     knowledge: ["knowledge/security/"]
     tools: ["ct-impact", "context7"]
     custom_eval_flag: true
+reviews:
+  request_changes_workflow: true
+  custom_gate: true
 reviewers:
   execution: personas
   fallback: ordered
@@ -55,6 +58,15 @@ reviewers:
       arbiter_timeout_s: 60
   arbiter:
     order: [synthetic]
+chat:
+  auto_reply: true
+  custom_flag: true
+auto_review:
+  enabled: true
+  custom_label: "x"
+enforcement_policy:
+  mode: warn
+  custom_control: true
 `;
     const config = parseAndValidateConfig(yaml) as any;
     expect(config.version).toBe(3);
@@ -67,6 +79,10 @@ reviewers:
     expect(config.retry_analysis.max_retries).toBe(2);
     expect(config.knowledge_base.custom_sources).toEqual(['knowledge/review-learnings/']);
     expect(config.dials.retro_triage_enabled).toBe(true);
+    expect(config.reviews.custom_gate).toBe(true);
+    expect(config.chat.custom_flag).toBe(true);
+    expect(config.auto_review.custom_label).toBe('x');
+    expect(config.enforcement_policy.custom_control).toBe(true);
 
     const sec = config.personas.find((p: any) => p.id === 'sec-lane');
     expect(sec.skills).toEqual(['owasp-top-10', 'k8s-rbac-audit']);

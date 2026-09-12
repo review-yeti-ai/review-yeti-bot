@@ -133,19 +133,17 @@ export function buildDispatchRequest(environment) {
     if (!val) return undefined;
     const trimmed = String(val).trim();
     if (!trimmed) return undefined;
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (allowArray && trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      let parsed;
       try {
-        const parsed = JSON.parse(trimmed);
-        if (!allowArray && Array.isArray(parsed)) {
-          throw new Error(`${fieldName} cannot be a JSON array`);
-        }
-        return parsed;
+        parsed = JSON.parse(trimmed);
       } catch (err) {
         throw new Error(`Invalid JSON in ${fieldName}: ${err instanceof Error ? err.message : String(err)}`);
       }
-    }
-    if (!allowArray && trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      throw new Error(`${fieldName} cannot be a JSON array`);
+      if (!allowArray && Array.isArray(parsed)) {
+        throw new Error(`${fieldName} cannot be a JSON array`);
+      }
+      return parsed;
     }
     return trimmed;
   };
