@@ -148,7 +148,8 @@ describe('createReviewCiRuntime actual composition', () => {
     expect(runtime.routes.verifier).toEqual({ verify: mocks.verify });
     expect(mocks.verifierConstructor).toHaveBeenCalledExactlyOnceWith({ repositories: f.config.repositories });
     expect(mocks.coreConstructor).toHaveBeenCalledExactlyOnceWith(f.options.pool, {
-      admissionTimeoutMs: 15_000, onTransition: expect.any(Function), assertPendingPublished: expect.any(Function),
+      lifecycleEvents: 'enabled', admissionTimeoutMs: 15_000,
+      onTransition: expect.any(Function), assertPendingPublished: expect.any(Function),
     });
     expect(mocks.checkRepositoryConstructor).toHaveBeenCalledExactlyOnceWith(f.options.pool);
     expect(serviceOptions()).toMatchObject({ config: f.config, workerId: f.options.workerId, repository: { tag: 'core-repository' } });

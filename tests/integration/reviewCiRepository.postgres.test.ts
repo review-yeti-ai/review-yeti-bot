@@ -3,6 +3,7 @@ import { Pool, type PoolClient } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
+import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { enqueueReviewCiCompletionInTransaction, PostgresReviewCiRepository, type ReviewCiRepositoryOptions } from '../../src/persistence/reviewCiRepository';
 import {
   createReviewCiLanePlan, reviewCiRequestEvent, reviewCiRunName,
@@ -18,7 +19,7 @@ const APP = 4385771;
 const validCurrent = async () => undefined;
 // Explicit trusted test seam. Real CI-check identity/publication SQL belongs
 // to the independent check repository's integration tests.
-const publicationReady: ReviewCiRepositoryOptions = { assertPendingPublished: async () => undefined };
+const publicationReady: ReviewCiRepositoryOptions = { lifecycleEvents: 'enabled', assertPendingPublished: async () => undefined };
 
 function binding(): ReviewCiValidationBinding {
   return { candidateSha: 'd'.repeat(40), workflowId: 3211,
@@ -57,12 +58,13 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
       run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id), status TEXT NOT NULL, execution_attempt INTEGER NOT NULL
     );`);
     await pool.query(REVIEW_GATE_SCHEMA_SQL);
+    await pool.query(REVIEW_EVENT_SCHEMA_SQL);
     await pool.query(REVIEW_CI_SCHEMA_SQL);
     await pool.query('CREATE TABLE review_ci_hook_test_events(request_id UUID, transition TEXT, snapshot JSONB, clock BIGINT)');
     repository = new PostgresReviewCiRepository(pool, publicationReady);
   });
   afterEach(async () => {
-    if (pool) await pool.query('TRUNCATE review_ci_hook_test_events,review_ci_deliveries,review_ci_requests,review_gate_attempts,review_dispatch_outbox,review_runs');
+    if (pool) await pool.query('TRUNCATE review_event_outbox,review_event_sequence_counters,review_ci_hook_test_events,review_ci_deliveries,review_ci_requests,review_gate_attempts,review_dispatch_outbox,review_runs CASCADE');
   });
   afterAll(async () => {
     if (!pool) return;
@@ -138,10 +140,27 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
     return (await repository.claimDelivery(claim.kind, 'reconciler', NOW + 2, 1000))!;
   }
 
+  it('records the CI admission lifecycle intent exactly once with its authoritative return states', async () => {
+    const review = await fixture();
+    const request = await complete(review);
+    await published(review);
+    await repositoryIntent(request.requestId);
+
+    expect(await repository.admit(request.requestId, binding(), validCurrent, NOW)).toBe('recorded');
+    expect(await repository.admit(request.requestId, binding(), validCurrent, NOW + 1)).toBe('duplicate');
+    expect((await pool.query(`SELECT event_kind, sequence, payload->'data' AS data
+      FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence`, [review.runId])).rows).toEqual([{
+      event_kind: 'review.lifecycle.ci_admission', sequence: '1',
+      data: { policy_digest: 'c'.repeat(64), stage: 'ci_admission', terminal_class: 'admitted' },
+    }]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [review.runId])).rows[0])
+      .toEqual({ next_sequence: '1' });
+  });
+
   it('installs additively/idempotently and constructor never queries', async () => {
     await pool.query(REVIEW_CI_SCHEMA_SQL);
     const fake = { query: vi.fn(), connect: vi.fn() };
-    new PostgresReviewCiRepository(fake);
+    new PostgresReviewCiRepository(fake, { lifecycleEvents: 'disabled' });
     expect(fake.query).not.toHaveBeenCalled(); expect(fake.connect).not.toHaveBeenCalled();
     expect((await pool.query('SHOW search_path')).rows[0].search_path).toBe(schema);
   });
@@ -269,7 +288,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
   it('bounds a hung freshness read and releases the lock for a subsequent admission', async () => {
     const review = await fixture(); const request = await complete(review); await published(review);
     await repositoryIntent(request.requestId);
-    const bounded = new PostgresReviewCiRepository(pool, { admissionTimeoutMs: 50 });
+    const bounded = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', admissionTimeoutMs: 50 });
     await expect(bounded.admit(request.requestId, binding(), () => new Promise(() => undefined), NOW)).rejects.toThrow('persistence operation failed');
     expect(await repository.admit(request.requestId, binding(), validCurrent, NOW)).toBe('recorded');
   });
@@ -352,7 +371,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
     const request = await admitted();
     let pendingCheckPublished = false;
     const proof = vi.fn(async () => { if (!pendingCheckPublished) throw new Error('pending check not yet published'); });
-    const guarded = new PostgresReviewCiRepository(pool, { assertPendingPublished: proof });
+    const guarded = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', assertPendingPublished: proof });
     expect(await guarded.claimDelivery('workflow', 'worker', NOW, 1000)).toBeNull();
     const pending = (await pool.query("SELECT * FROM review_ci_deliveries WHERE kind='workflow'")).rows[0];
     expect(pending).toMatchObject({ state: 'pending', epoch: 1, dispatch_count: 0,
@@ -368,7 +387,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
   });
   it('missing publication hook fails closed before first workflow POST but does not block uncertain reconciliation', async () => {
     const request = await admitted();
-    const unconfigured = new PostgresReviewCiRepository(pool);
+    const unconfigured = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled' });
     expect(await unconfigured.claimDelivery('workflow', 'worker', NOW, 1000)).toBeNull();
     expect((await pool.query("SELECT state,dispatch_count,lease_token FROM review_ci_deliveries WHERE kind='workflow'")).rows[0])
       .toEqual({ state: 'pending', dispatch_count: 0, lease_token: null });
@@ -389,7 +408,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
       }
       throw new Error('not ready');
     });
-    const guarded = new PostgresReviewCiRepository(pool, { assertPendingPublished: proof });
+    const guarded = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', assertPendingPublished: proof });
     const claim = (await guarded.claimDelivery('workflow', 'worker', NOW, 1000))!;
     expect(claim.request.requestId).toBe(requests[1].requestId); expect(claim.mode).toBe('dispatch');
     expect(proof).toHaveBeenCalledTimes(2);
@@ -399,7 +418,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
   });
   it('checks publication under PR lock before committing any workflow POST authority', async () => {
     const request = await admitted();
-    const guarded = new PostgresReviewCiRepository(pool, { assertPendingPublished: async (client, current, now) => {
+    const guarded = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', assertPendingPublished: async (client, current, now) => {
       expect(current).toEqual(request); expect(now).toBe(NOW);
       expect((await pool.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS acquired',
         [`review-dispatch:${current.review.repositoryId}:${current.review.prNumber}`])).rows[0].acquired).toBe(false);
@@ -414,7 +433,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
     for (let n = 1; n <= 26; n++) await admitted(n, 100 + n);
     const requests = await repository.listPending(100);
     const last = requests.at(-1)!;
-    const guarded = new PostgresReviewCiRepository(pool, { assertPendingPublished: async (_client, request) => {
+    const guarded = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', assertPendingPublished: async (_client, request) => {
       if (request.requestId !== last.requestId) throw new Error('not ready');
     } });
     expect(await guarded.claimDelivery('workflow', 'worker', NOW, 1000)).toBeNull();
@@ -513,7 +532,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
   });
   it('bounded dispatch exhaustion remains non-success and rejects late execution', async () => {
     const first = await delivery(); const retry = await uncertain(first);
-    const bounded = new PostgresReviewCiRepository(pool, { maxDispatchAttempts: 1 });
+    const bounded = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', maxDispatchAttempts: 1 });
     expect(await bounded.retryUncertainDelivery(retry, absent(retry), NOW + 10, 0)).toBe('exhausted');
     expect((await repository.get(first.request.requestId))!.state).toBe('delivery_error');
     expect(await repository.claimExecution(execution(first.request), validCurrent, NOW + 11)).toBe('stale');
@@ -696,13 +715,13 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
     it('requires a published-pending proof and rolls back a rejected proof before execution is consumed', async () => {
       const { requestId, invoke } = await prepare('running');
       const before = await repository.get(requestId);
-      await expect(invoke(new PostgresReviewCiRepository(pool))).rejects.toThrow('persistence operation failed');
+      await expect(invoke(new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled' }))).rejects.toThrow('persistence operation failed');
       const proof = vi.fn<NonNullable<ReviewCiRepositoryOptions['assertPendingPublished']>>(async (client, request, now) => {
         expect(request).toEqual(before); expect(now).toBe(NOW + 10);
         await client.query('INSERT INTO review_ci_hook_test_events VALUES($1,$2,$3,$4)', [requestId, 'predicate', JSON.stringify(request), now]);
         throw new Error('CI check unbound, unpublished, wrong identity or terminal');
       });
-      await expect(invoke(new PostgresReviewCiRepository(pool, { assertPendingPublished: proof }))).rejects.toThrow('persistence operation failed');
+      await expect(invoke(new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', assertPendingPublished: proof }))).rejects.toThrow('persistence operation failed');
       expect(proof).toHaveBeenCalledTimes(1);
       expect(await repository.get(requestId)).toEqual(before);
       expect((await pool.query('SELECT * FROM review_ci_hook_test_events')).rows).toEqual([]);
@@ -718,7 +737,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
         expect(probe.rows[0].acquired).toBe(false);
         request.review.headSha = 'f'.repeat(40);
       });
-      const hooked = new PostgresReviewCiRepository(pool, { assertPendingPublished: proof, onTransition: hook });
+      const hooked = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', assertPendingPublished: proof, onTransition: hook });
       expect(await invoke(hooked)).toBe('recorded');
       expect(await invoke(hooked)).toBe('duplicate');
       expect(proof).toHaveBeenCalledTimes(1); expect(hook).toHaveBeenCalledTimes(1);
