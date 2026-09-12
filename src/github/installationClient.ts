@@ -566,15 +566,15 @@ export class GitHubInstallationClient {
         if (candidates.length === 1) return reconcileCandidate(candidates[0]);
         const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
         const exactHistoricalRun = matchesHistoricalEmptyIdentityRun(run, publisherAppId);
-        const historicalCandidates = checks.filter((check) => check?.id === receipt.checkId
-          || (exactHistoricalRun
-            && check?.name === receipt.checkName
-            && check?.head_sha === receipt.headSha
-            && check?.app?.id === receipt.publisherAppId
-            && check?.external_id === ''));
-        if (historicalCandidates.length > 0) {
-          if (!exactHistoricalRun || historicalCandidates.length !== 1
-            || !matchesHistoricalEmptyIdentityCheck(historicalCandidates[0])) {
+        const historicalReceiptIdMatches = checks.filter((check) => check?.id === receipt.checkId);
+        // A legacy empty-ID check is only eligible through the immutable receipt.
+        // Other same-head empty-ID rows may be visible because GitHub retains old
+        // checks, but they must not turn a unique audited receipt into an
+        // ambiguity. Conversely, a missing or duplicated receipt remains refused.
+        const historicalCandidates = checks.filter(matchesHistoricalEmptyIdentityCheck);
+        if (exactHistoricalRun || historicalReceiptIdMatches.length > 0) {
+          if (!exactHistoricalRun || historicalReceiptIdMatches.length !== 1
+            || historicalCandidates.length !== 1) {
             throw new Error('historical empty-identity receipt mismatch');
           }
           const current = await request(`${base}/check-runs/${receipt.checkId}`);

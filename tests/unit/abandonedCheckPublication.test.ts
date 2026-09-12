@@ -335,6 +335,69 @@ describe('abandoned check exact App/attempt failure publication', () => {
       .toBe(true);
   });
 
+  it('selects the exact audited receipt when older same-head empty-identity checks are also visible', async () => {
+    const unrelatedHistoricalCheck = {
+      ...historicalEmptyIdentityCheck,
+      id: 102735106479,
+      started_at: '2026-09-10T03:35:24Z',
+      completed_at: '2026-09-10T03:35:55Z',
+    };
+    const { client, fetchImplementation } = fixture(
+      [unrelatedHistoricalCheck, historicalEmptyIdentityCheck],
+      historicalEmptyIdentityCheck,
+    );
+
+    await expect(client.failAbandonedCheck(
+      historicalEmptyIdentityRun,
+      4385771,
+      signal(),
+    )).resolves.toBe('superseded');
+
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(fetchImplementation.mock.calls[1][0]).toBe(
+      'https://api.github.com/repos/calltelemetry/cisco-cdr/check-runs/102735106478',
+    );
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+  });
+
+  it('refuses when only a same-head empty-identity check remains but the audited receipt is missing', async () => {
+    const missingReceipt = {
+      ...historicalEmptyIdentityCheck,
+      id: 102735106479,
+    };
+    const { client, fetchImplementation } = fixture([missingReceipt], missingReceipt);
+
+    await expect(client.failAbandonedCheck(
+      historicalEmptyIdentityRun,
+      4385771,
+      signal(),
+    )).rejects.toThrow();
+
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+  });
+
+  it('refuses when the exact historical receipt is absent and no historical shape is visible', async () => {
+    const unrelatedCheck = {
+      ...check,
+      id: 102735106479,
+      head_sha: historicalEmptyIdentityRun.headSha,
+      app: { id: 4435435, slug: 'ct-pr-operator' },
+      external_id: null,
+    };
+    const { client, fetchImplementation } = fixture([unrelatedCheck], unrelatedCheck);
+
+    await expect(client.failAbandonedCheck(
+      historicalEmptyIdentityRun,
+      4385771,
+      signal(),
+    )).rejects.toThrow();
+
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+  });
+
   it.each([
     ['successful different run', `run_${'a'.repeat(32)}:a1`, 'success'],
     ['failed newer execution', `${run.runId}:a2`, 'failure'],
