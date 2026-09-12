@@ -564,12 +564,6 @@ function hasCredentialAssignment(value: string): boolean {
 
 function isBareAuthorityPrefixBoundary(code: number): boolean {
   return isUrlSpanDelimiter(code)
-    || code === 34
-    || code === 60
-    || code === 62
-    || code === 96
-    || code === 123
-    || code === 125
     || isUrlAuthoritySeparator(code)
     || code === 63
     || code === 35;
