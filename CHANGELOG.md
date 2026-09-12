@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.59.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.59.2...v1.59.3) (2026-09-12)
+
+
+### Bug Fixes
+
+* **reaper:** retire the exact audited legacy receipt ([#760](https://github.com/review-yeti-ai/review-yeti-bot/issues/760)) ([c495d65](https://github.com/review-yeti-ai/review-yeti-bot/commit/c495d650afe28edf1a90e15f30cdde128fd52120))
+
 ## [1.59.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.59.1...v1.59.2) (2026-09-12)
 
 
