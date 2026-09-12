@@ -1,5 +1,13 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter } from 'events';
 import { Response } from 'express';
+import {
+  ReviewEventRejection,
+  sanitizeProgressEvent,
+  type ReviewEventRejectionCode,
+  type ReviewEventIdentityInput,
+  type SanitizedProgressEvent,
+} from '../events/reviewEventRedaction';
 import { logger } from '../utils/logger';
 import type {
   LiveStreamEventType,
@@ -30,23 +38,78 @@ export interface LiveQueueMetrics {
   maxConcurrentJobs: number;
 }
 
+export interface LiveStreamProgressSink {
+  publish(event: SanitizedProgressEvent): Promise<unknown> | unknown;
+}
+
+export type LiveStreamProgressIdentityProvider = (
+  event: LiveStreamEvent,
+) => ReviewEventIdentityInput | undefined;
+
+export type LiveStreamProgressFailureCode =
+  | 'identity_resolution_failed'
+  | 'sanitization_failed'
+  | 'sanitization_rejected'
+  | 'sink_publish_failed';
+
+export interface LiveStreamProgressFailure {
+  readonly name: 'LiveStreamProgressFailure';
+  readonly code: LiveStreamProgressFailureCode;
+  readonly rejectionCode?: ReviewEventRejectionCode;
+}
+
+export type LiveStreamProgressErrorHandler = (
+  failure: LiveStreamProgressFailure,
+) => unknown;
+
+export interface LiveStreamBusOptions {
+  progressSink?: LiveStreamProgressSink;
+  progressIdentityProvider?: LiveStreamProgressIdentityProvider;
+  onProgressSinkError?: LiveStreamProgressErrorHandler;
+}
+
 export class LiveStreamBus extends EventEmitter {
   private static instance: LiveStreamBus;
   private clients: Map<string, Set<Response>> = new Map();
   private eventHistory: Map<string, LiveStreamEvent[]> = new Map();
   private pingIntervals: Map<Response, NodeJS.Timeout> = new Map();
   private jobs: Map<string, LiveJobSummary> = new Map();
+  private progressSink?: LiveStreamProgressSink;
+  private progressIdentityProvider?: LiveStreamProgressIdentityProvider;
+  private onProgressSinkError?: LiveStreamProgressErrorHandler;
+  private readonly progressObserverContext = new AsyncLocalStorage<boolean>();
 
-  private constructor() {
+  private constructor(options: LiveStreamBusOptions = {}) {
     super();
     this.setMaxListeners(100);
+    this.setProgressSink(options.progressSink, options.progressIdentityProvider, options.onProgressSinkError);
   }
 
-  public static getInstance(): LiveStreamBus {
+  public static getInstance(options?: LiveStreamBusOptions): LiveStreamBus {
     if (!LiveStreamBus.instance) {
-      LiveStreamBus.instance = new LiveStreamBus();
+      LiveStreamBus.instance = new LiveStreamBus(options);
+    } else if (options) {
+      LiveStreamBus.instance.setProgressSink(
+        options.progressSink,
+        options.progressIdentityProvider,
+        options.onProgressSinkError,
+      );
     }
     return LiveStreamBus.instance;
+  }
+
+  /**
+   * Injects an optional observation sink. Existing callers remain entirely
+   * in-memory unless both a sink and an identity provider are supplied.
+   */
+  public setProgressSink(
+    sink?: LiveStreamProgressSink,
+    identityProvider?: LiveStreamProgressIdentityProvider,
+    onError?: LiveStreamProgressErrorHandler,
+  ): void {
+    this.progressSink = sink;
+    this.progressIdentityProvider = identityProvider;
+    this.onProgressSinkError = onError;
   }
 
   /**
@@ -97,6 +160,71 @@ export class LiveStreamBus extends EventEmitter {
 
     this.emit('event', event);
     this.emit(`job:${event.jobId}`, event);
+    this.forwardProgressEvent(event);
+  }
+
+  private forwardProgressEvent(event: LiveStreamEvent): void {
+    if (this.progressObserverContext.getStore() === true) return;
+    const sink = this.progressSink;
+    const identityProvider = this.progressIdentityProvider;
+    if (!sink || !identityProvider) return;
+
+    let identity: ReviewEventIdentityInput | undefined;
+    try {
+      identity = identityProvider(event);
+    } catch {
+      this.reportProgressFailure('identity_resolution_failed');
+      return;
+    }
+    if (!identity) return;
+
+    let sanitized: SanitizedProgressEvent | ReviewEventRejection;
+    try {
+      sanitized = sanitizeProgressEvent(event, identity);
+    } catch {
+      this.reportProgressFailure('sanitization_failed');
+      return;
+    }
+    if (sanitized instanceof ReviewEventRejection) {
+      this.reportProgressFailure('sanitization_rejected', sanitized.code);
+      return;
+    }
+
+    try {
+      Promise.resolve(sink.publish(sanitized)).catch(() => {
+        this.reportProgressFailure('sink_publish_failed');
+      });
+    } catch {
+      this.reportProgressFailure('sink_publish_failed');
+    }
+  }
+
+  private containProgressObserver(observer: () => unknown): void {
+    this.progressObserverContext.run(true, () => {
+      try {
+        void Promise.resolve(observer()).catch(() => undefined);
+      } catch {
+        // Observation failure must not alter the live bus state.
+      }
+    });
+  }
+
+  private reportProgressFailure(
+    code: LiveStreamProgressFailureCode,
+    rejectionCode?: ReviewEventRejectionCode,
+  ): void {
+    const failure: LiveStreamProgressFailure = Object.freeze({
+      name: 'LiveStreamProgressFailure',
+      code,
+      ...(rejectionCode ? { rejectionCode } : {}),
+    });
+
+    if (this.onProgressSinkError) {
+      this.containProgressObserver(() => this.onProgressSinkError?.(failure));
+    }
+    for (const listener of this.rawListeners('progress:error')) {
+      this.containProgressObserver(() => listener.call(this, failure));
+    }
   }
 
   /**
