@@ -55,6 +55,10 @@ If the dispatcher is ever scaled above one, replace static targeting with pod or
 endpoints discovery (or a headless Service with per-pod targets) so counter
 ownership and reset semantics remain attributable.
 
+Do not fabricate reaper anomalies on this production deployment to make either
+counter non-zero. The deterministic non-production acceptance procedure is
+documented in [Durable worker failure recovery](worker-failure-recovery.md#deterministic-reaper-counter-acceptance).
+
 ---
 
 ## 🔁 Advancing the Production Worker Digest
