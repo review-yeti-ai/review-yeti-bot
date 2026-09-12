@@ -18,8 +18,7 @@ jobs:
   review:
     name: Review Yeti
     if: github.event.pull_request.draft == false
-    # v1 is the protected, fail-closed promotion branch required by the central
-    # caller contract. It is not a floating release tag or a consumer-selected
-    # dependency; promotion requires exact-head central validation receipts.
-    uses: calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1
+    # Immutable pin verified from the protected, fail-closed promoted v1 branch.
+    # v1 provenance: calltelemetry/ct-review-actions@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff
+    uses: calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff
     secrets: inherit

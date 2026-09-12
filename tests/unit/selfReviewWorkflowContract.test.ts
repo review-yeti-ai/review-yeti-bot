@@ -6,6 +6,7 @@ import yaml from 'js-yaml';
 const root = process.cwd();
 const callerPath = path.join(root, '.github/workflows/ct-review-bot.yml');
 const legacyPath = path.join(root, '.github/workflows/review-bot.yaml');
+const centralReviewSha = '54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff';
 
 type Workflow = {
   name?: string;
@@ -18,7 +19,7 @@ function loadWorkflow(file: string): Workflow {
   // GitHub Actions uses YAML 1.2, where `on` is a string rather than the YAML
   // 1.1 boolean alias. Select that schema explicitly so this contract cannot
   // drift with a parser-default change.
-  return yaml.load(fs.readFileSync(file, 'utf8'), { schema: yaml.JSON_SCHEMA }) as Workflow;
+  return yaml.load(fs.readFileSync(file, 'utf8'), { schema: yaml.CORE_SCHEMA }) as Workflow;
 }
 
 describe('self-review workflow migration', () => {
@@ -43,9 +44,13 @@ describe('self-review workflow migration', () => {
     expect(review).toEqual({
       name: 'Review Yeti',
       if: 'github.event.pull_request.draft == false',
-      uses: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+      uses: `calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@${centralReviewSha}`,
       secrets: 'inherit',
     });
+
+    const source = fs.readFileSync(callerPath, 'utf8');
+    expect(source).toContain(`v1 provenance: calltelemetry/ct-review-actions@${centralReviewSha}`);
+    expect(source).not.toContain('review-yeti.yml@v1');
   });
 
   it('keeps the legacy direct self-review check during phase one', () => {
