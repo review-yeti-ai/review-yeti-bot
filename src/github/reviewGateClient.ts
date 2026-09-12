@@ -150,18 +150,16 @@ function validateMetadata(metadata: ReviewGateCheckMetadata): ReviewGateCheckMet
   return result;
 }
 
-function outputFor(metadata: ReviewGateCheckMetadata, defaultTitle: string, defaultSummary: string): Record<string, string> {
+function outputFor(
+  metadata: ReviewGateCheckMetadata,
+  defaultTitle: string,
+  defaultSummary: string,
+  defaultText?: string,
+): Record<string, string> {
   return {
     title: metadata.title ?? defaultTitle,
     summary: metadata.summary ?? defaultSummary,
-  };
-}
-
-function successfulGateOutput(metadata: ReviewGateCheckMetadata): Record<string, string> {
-  return {
-    title: metadata.title ?? 'Review Yeti Gate: Approved (SHIP)',
-    summary: metadata.summary ?? 'Review Yeti completed this attempt and the policy eligibility gate passed.',
-    text: 'Terminal conclusion: success.',
+    ...(defaultText !== undefined ? { text: defaultText } : {}),
   };
 }
 
@@ -560,7 +558,12 @@ export class GitHubReviewGateClient {
       ...(terminal ? { conclusion: desired.conclusion, completed_at: new Date().toISOString() } : {}),
       ...(metadata.detailsUrl ? { details_url: metadata.detailsUrl } : {}),
       ...(terminal && this.checkName === REVIEW_GATE_CHECK_NAME && desired.conclusion === 'success'
-        ? { output: successfulGateOutput(metadata) }
+        ? { output: outputFor(
+          metadata,
+          'Review Yeti Gate: Approved (SHIP)',
+          'Review Yeti completed this attempt and the policy eligibility gate passed.',
+          'Terminal conclusion: success.',
+        ) }
         : metadata.title !== undefined || metadata.summary !== undefined
           ? { output: outputFor(metadata, this.checkName, 'Review Yeti gate state updated.') }
           : {}),
