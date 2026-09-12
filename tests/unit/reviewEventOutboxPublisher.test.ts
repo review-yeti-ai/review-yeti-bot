@@ -730,6 +730,52 @@ describe('ReviewEventOutboxPublisher', () => {
     expect(outcome).toMatchObject({ status: 'retry', published: 0, leaseLost: 1 });
   });
 
+  it('releases a claimed event when aborted before publish and stops the batch', async () => {
+    const controller = new AbortController();
+    const repository: ReviewEventOutboxRepository = {
+      claimNext: vi.fn()
+        .mockImplementationOnce(() => Promise.resolve(claim()).then((claimed) => {
+          controller.abort();
+          return claimed;
+        }))
+        .mockResolvedValueOnce(null),
+      markPublished: vi.fn().mockResolvedValue(true),
+      releaseForRetry: vi.fn().mockResolvedValue(true),
+    };
+    const client = clientFor();
+    const now = vi.fn()
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(1_100);
+    const publisher = new ReviewEventOutboxPublisher({
+      enabled: true,
+      repository,
+      client,
+      workerId: 'publisher-a',
+      batchSize: 2,
+      leaseMs: 5_000,
+      retryDelayMs: 2_000,
+      now,
+    });
+
+    const outcome = await publisher.runOnce(controller.signal);
+
+    expect(repository.claimNext).toHaveBeenCalledWith('publisher-a', 1_000, 5_000);
+    expect(repository.releaseForRetry).toHaveBeenCalledWith(eventId, 'publisher-a', 1_100, 2_000);
+    expect(outcome).toMatchObject({
+      status: 'retry',
+      errorCode: 'aborted',
+      claimed: 1,
+      released: 1,
+      published: 0,
+      failed: 0,
+      leaseLost: 0,
+    });
+    expect(client.publish).not.toHaveBeenCalled();
+    expect(repository.markPublished).not.toHaveBeenCalled();
+    expect(repository.claimNext).toHaveBeenCalledTimes(1);
+    expect(now).toHaveBeenCalledTimes(2);
+  });
+
   it('propagates cancellation and performs no subsequent claim after abort during publish', async () => {
     const repository = repositoryFor(claim());
     const client = clientFor();
