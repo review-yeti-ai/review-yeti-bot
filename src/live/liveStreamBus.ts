@@ -1,5 +1,13 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter } from 'events';
 import { Response } from 'express';
+import {
+  ProgressEventForwarder,
+  type ProgressEventForwardingFailure,
+  type ProgressEventForwardingFailureCode,
+  type ProgressEventIdentityProvider,
+  type ProgressEventSink,
+} from '../events/progressEventForwarder';
 import { logger } from '../utils/logger';
 import type {
   LiveStreamEventType,
@@ -30,23 +38,69 @@ export interface LiveQueueMetrics {
   maxConcurrentJobs: number;
 }
 
+export interface LiveStreamProgressSink extends ProgressEventSink {}
+
+export type LiveStreamProgressIdentityProvider = ProgressEventIdentityProvider;
+
+export type LiveStreamProgressFailureCode = ProgressEventForwardingFailureCode;
+
+export interface LiveStreamProgressFailure extends ProgressEventForwardingFailure {
+  readonly name: 'LiveStreamProgressFailure';
+}
+
+export type LiveStreamProgressErrorHandler = (
+  failure: LiveStreamProgressFailure,
+) => unknown;
+
+export interface LiveStreamBusOptions {
+  progressSink?: LiveStreamProgressSink;
+  progressIdentityProvider?: LiveStreamProgressIdentityProvider;
+  onProgressSinkError?: LiveStreamProgressErrorHandler;
+}
+
 export class LiveStreamBus extends EventEmitter {
   private static instance: LiveStreamBus;
   private clients: Map<string, Set<Response>> = new Map();
   private eventHistory: Map<string, LiveStreamEvent[]> = new Map();
   private pingIntervals: Map<Response, NodeJS.Timeout> = new Map();
   private jobs: Map<string, LiveJobSummary> = new Map();
+  private readonly progressForwarder: ProgressEventForwarder;
+  private onProgressSinkError?: LiveStreamProgressErrorHandler;
+  private readonly progressObserverContext = new AsyncLocalStorage<boolean>();
 
-  private constructor() {
+  private constructor(options: LiveStreamBusOptions = {}) {
     super();
     this.setMaxListeners(100);
+    this.progressForwarder = new ProgressEventForwarder({
+      onFailure: (failure) => this.reportProgressFailure(failure.code, failure.rejectionCode),
+    });
+    this.setProgressSink(options.progressSink, options.progressIdentityProvider, options.onProgressSinkError);
   }
 
-  public static getInstance(): LiveStreamBus {
+  public static getInstance(options?: LiveStreamBusOptions): LiveStreamBus {
     if (!LiveStreamBus.instance) {
-      LiveStreamBus.instance = new LiveStreamBus();
+      LiveStreamBus.instance = new LiveStreamBus(options);
+    } else if (options) {
+      LiveStreamBus.instance.setProgressSink(
+        options.progressSink,
+        options.progressIdentityProvider,
+        options.onProgressSinkError,
+      );
     }
     return LiveStreamBus.instance;
+  }
+
+  /**
+   * Injects an optional observation sink. Existing callers remain entirely
+   * in-memory unless both a sink and an identity provider are supplied.
+   */
+  public setProgressSink(
+    sink?: LiveStreamProgressSink,
+    identityProvider?: LiveStreamProgressIdentityProvider,
+    onError?: LiveStreamProgressErrorHandler,
+  ): void {
+    this.progressForwarder.setProgressSink(sink, identityProvider);
+    this.onProgressSinkError = onError;
   }
 
   /**
@@ -97,6 +151,40 @@ export class LiveStreamBus extends EventEmitter {
 
     this.emit('event', event);
     this.emit(`job:${event.jobId}`, event);
+    this.forwardProgressEvent(event);
+  }
+
+  private forwardProgressEvent(event: LiveStreamEvent): void {
+    if (this.progressObserverContext.getStore() === true) return;
+    this.progressForwarder.forward(event);
+  }
+
+  private containProgressObserver(observer: () => unknown): void {
+    this.progressObserverContext.run(true, () => {
+      try {
+        void Promise.resolve(observer()).catch(() => undefined);
+      } catch {
+        // Observation failure must not alter the live bus state.
+      }
+    });
+  }
+
+  private reportProgressFailure(
+    code: LiveStreamProgressFailureCode,
+    rejectionCode?: ProgressEventForwardingFailure['rejectionCode'],
+  ): void {
+    const failure: LiveStreamProgressFailure = Object.freeze({
+      name: 'LiveStreamProgressFailure',
+      code,
+      ...(rejectionCode ? { rejectionCode } : {}),
+    });
+
+    if (this.onProgressSinkError) {
+      this.containProgressObserver(() => this.onProgressSinkError?.(failure));
+    }
+    for (const listener of this.rawListeners('progress:error')) {
+      this.containProgressObserver(() => listener.call(this, failure));
+    }
   }
 
   /**

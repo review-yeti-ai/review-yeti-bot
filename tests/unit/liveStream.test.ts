@@ -1,18 +1,338 @@
+import { spawnSync } from 'node:child_process';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'http';
 import express, { Response } from 'express';
 import request from 'supertest';
 import { EventEmitter } from 'events';
-import { LiveStreamBus, LiveStreamEvent } from '../../src/live/liveStreamBus';
+import {
+  LiveStreamBus,
+  LiveStreamEvent,
+  type LiveStreamProgressFailure,
+  type LiveStreamProgressSink,
+} from '../../src/live/liveStreamBus';
 import { createLiveRouter } from '../../src/api/liveApi';
 import { CommentPublisher } from '../../src/github/commentPublisher';
+import type { ReviewEventIdentity } from '../../src/types/live';
 
 describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
   let bus: LiveStreamBus;
 
   beforeEach(() => {
     bus = LiveStreamBus.getInstance();
+    bus.setProgressSink(undefined);
+    bus.removeAllListeners('progress:error');
     bus.clearHistory();
+  });
+
+  function trackedRejectedPromise(secret: string) {
+    let rejectPromise!: (reason: Error) => void;
+    let catchAttached = false;
+    const promise = new Promise<void>((_resolve, reject) => {
+      rejectPromise = reject;
+    });
+    const nativeCatch = promise.catch.bind(promise);
+    promise.catch = ((onRejected) => {
+      catchAttached = true;
+      return nativeCatch(onRejected);
+    }) as typeof promise.catch;
+
+    return {
+      promise,
+      reject: () => rejectPromise(new Error(secret)),
+      catchAttached: () => catchAttached,
+      containForCleanup: () => {
+        if (!catchAttached) void nativeCatch(() => undefined);
+      },
+    };
+  }
+
+  const progressIdentity: ReviewEventIdentity = {
+    repositoryId: 123,
+    prNumber: 42,
+    baseSha: 'a'.repeat(40),
+    headSha: 'b'.repeat(40),
+    attemptId: 'review-attempt-42-1',
+    runId: 'review-run-42-1',
+    sequence: 3,
+    correlationId: 'validation-42-1',
+    traceId: '9f000000000000000000000000000000',
+  };
+
+  it('keeps the default in-memory behavior when no progress sink is injected', () => {
+    const event: LiveStreamEvent = {
+      jobId: 'job_default_sink',
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'security',
+      data: { findingsCount: 1 },
+    };
+
+    expect(() => bus.publishEvent(event)).not.toThrow();
+    expect(bus.getHistory(event.jobId)).toEqual([event]);
+  });
+
+  it('injects only sanitized progress envelopes while preserving synchronous bus behavior', async () => {
+    const publish = vi.fn().mockResolvedValue(undefined);
+    const sink: LiveStreamProgressSink = { publish };
+    const event: LiveStreamEvent = {
+      jobId: 'job_injected_sink',
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'security',
+      data: { findingsCount: 1 },
+    };
+
+    bus.setProgressSink(sink, () => progressIdentity);
+    bus.publishEvent(event);
+
+    expect(bus.getHistory(event.jobId)).toEqual([event]);
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+    const [sanitized] = publish.mock.calls[0];
+    expect(sanitized).toMatchObject({
+      event_kind: 'review.progress.persona_completed',
+      data: { findings_count: 1, message: 'Persona review completed' },
+    });
+    expect(sanitized).not.toHaveProperty('data.jobId');
+  });
+
+  it('isolates injected sink failure from history and exposes a bounded error callback', async () => {
+    const failure = new Error('nats://review:super-secret@nats.internal:4222 refused connection');
+    const publish = vi.fn().mockRejectedValue(failure);
+    const errors: unknown[] = [];
+    const sink: LiveStreamProgressSink = { publish };
+    const event: LiveStreamEvent = {
+      jobId: 'job_failed_sink',
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'security',
+      data: { findingsCount: 1 },
+    };
+
+    bus.setProgressSink(sink, () => progressIdentity, (error) => errors.push(error));
+
+    expect(() => bus.publishEvent(event)).not.toThrow();
+    expect(bus.getHistory(event.jobId)).toEqual([event]);
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+    expect(String(errors[0])).not.toContain('super-secret');
+    expect(String(errors[0])).not.toContain('nats.internal');
+  });
+
+  it('contains an asynchronously rejected progress error callback', async () => {
+    const observer = trackedRejectedPromise('callback-synthetic-secret');
+    const publish = vi.fn().mockRejectedValue(new Error('sink-synthetic-secret'));
+    const event: LiveStreamEvent = {
+      jobId: 'job_async_callback_failure',
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'security',
+      data: { findingsCount: 1 },
+    };
+
+    bus.setProgressSink({ publish }, () => progressIdentity, () => observer.promise);
+
+    try {
+      expect(() => bus.publishEvent(event)).not.toThrow();
+      await vi.waitFor(() => expect(observer.catchAttached()).toBe(true), { timeout: 100 });
+      observer.reject();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(bus.getHistory(event.jobId)).toEqual([event]);
+    } finally {
+      observer.containForCleanup();
+      observer.reject();
+    }
+  });
+
+  it('contains an asynchronously rejected progress:error listener', async () => {
+    const observer = trackedRejectedPromise('listener-synthetic-secret');
+    const publish = vi.fn().mockRejectedValue(new Error('sink-synthetic-secret'));
+    const event: LiveStreamEvent = {
+      jobId: 'job_async_listener_failure',
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'security',
+      data: { findingsCount: 1 },
+    };
+    bus.on('progress:error', () => observer.promise);
+    bus.setProgressSink({ publish }, () => progressIdentity);
+
+    try {
+      expect(() => bus.publishEvent(event)).not.toThrow();
+      await vi.waitFor(() => expect(observer.catchAttached()).toBe(true), { timeout: 100 });
+      observer.reject();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(bus.getHistory(event.jobId)).toEqual([event]);
+    } finally {
+      observer.containForCleanup();
+      observer.reject();
+    }
+  });
+
+  it('reports sanitizer rejection with only bounded trusted labels', async () => {
+    const secretField = `synthetic-secret-${'x'.repeat(20_000)}`;
+    const callbackFailures: LiveStreamProgressFailure[] = [];
+    const listenerFailures: LiveStreamProgressFailure[] = [];
+    const event: LiveStreamEvent = {
+      jobId: 'job_attacker_field',
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'security',
+      data: { [secretField]: 'attacker-controlled-value' },
+    };
+    bus.on('progress:error', (failure: LiveStreamProgressFailure) => listenerFailures.push(failure));
+
+    bus.setProgressSink(
+      { publish: vi.fn().mockResolvedValue(undefined) },
+      () => progressIdentity,
+      (failure) => callbackFailures.push(failure),
+    );
+
+    expect(() => bus.publishEvent(event)).not.toThrow();
+    await vi.waitFor(() => {
+      expect(callbackFailures).toHaveLength(1);
+      expect(listenerFailures).toHaveLength(1);
+    });
+    for (const failure of [callbackFailures[0], listenerFailures[0]]) {
+      expect(failure).toEqual({
+        name: 'LiveStreamProgressFailure',
+        code: 'sanitization_rejected',
+        rejectionCode: 'unknown_field',
+      });
+      const serialized = JSON.stringify(failure);
+      expect(serialized.length).toBeLessThan(160);
+      expect(serialized).not.toContain('synthetic-secret');
+      expect(serialized).not.toContain('attacker-controlled-value');
+    }
+    expect(bus.getHistory(event.jobId)).toEqual([event]);
+  });
+
+  it('prevents an async error observer from recursively amplifying sink failures', async () => {
+    const publish = vi.fn().mockRejectedValue(new Error('sink-synthetic-secret'));
+    let reports = 0;
+    const jobId = 'job_recursive_observer';
+    bus.setProgressSink({ publish }, () => progressIdentity, async () => {
+      reports += 1;
+      if (reports < 6) {
+        await Promise.resolve();
+        bus.publishEvent({
+          jobId,
+          timestamp: new Date().toISOString(),
+          type: 'persona:complete',
+          persona: 'security',
+          data: { findingsCount: reports },
+        });
+      }
+    });
+
+    bus.publishEvent({
+      jobId,
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'security',
+      data: { findingsCount: 1 },
+    });
+
+    await vi.waitFor(() => expect(bus.getHistory(jobId)).toHaveLength(2));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(reports).toBe(1);
+    expect(bus.getHistory(jobId)).toHaveLength(2);
+  });
+
+  it('does not globally suppress unrelated progress while an observer context is pending', async () => {
+    let releaseObserver!: () => void;
+    let observerEntered!: () => void;
+    const release = new Promise<void>((resolve) => { releaseObserver = resolve; });
+    const entered = new Promise<void>((resolve) => { observerEntered = resolve; });
+    const publish = vi.fn().mockImplementation(async () => {
+      if (publish.mock.calls.length === 1) throw new Error('initial-sink-failure');
+    });
+    const nestedJobId = 'job_observer_nested';
+    let reports = 0;
+    bus.setProgressSink({ publish }, () => progressIdentity, async () => {
+      reports += 1;
+      observerEntered();
+      await release;
+      bus.publishEvent({
+        jobId: nestedJobId,
+        timestamp: new Date().toISOString(),
+        type: 'persona:complete',
+        persona: 'security',
+        data: { findingsCount: 1 },
+      });
+    });
+
+    bus.publishEvent({
+      jobId: 'job_initial_failure',
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'security',
+      data: { findingsCount: 1 },
+    });
+    await entered;
+
+    bus.publishEvent({
+      jobId: 'job_unrelated_progress',
+      timestamp: new Date().toISOString(),
+      type: 'persona:complete',
+      persona: 'quality',
+      data: { findingsCount: 2 },
+    });
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(2));
+
+    releaseObserver();
+    await vi.waitFor(() => expect(bus.getHistory(nestedJobId)).toHaveLength(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(reports).toBe(1);
+  });
+
+  it('contains rejecting callback and listener promises under strict unhandled-rejection mode', () => {
+    const script = `
+      const { LiveStreamBus } = require('./src/live/liveStreamBus.ts');
+      const bus = LiveStreamBus.getInstance();
+      bus.clearHistory();
+      bus.removeAllListeners('progress:error');
+      const identity = {
+        repositoryId: 123,
+        prNumber: 42,
+        baseSha: 'a'.repeat(40),
+        headSha: 'b'.repeat(40),
+        attemptId: 'strict-attempt',
+        runId: 'strict-run',
+        sequence: 1,
+        correlationId: 'strict-correlation',
+        traceId: 'strict-trace',
+      };
+      bus.on('progress:error', async () => {
+        throw new Error('listener-synthetic-secret');
+      });
+      bus.setProgressSink({
+        publish: async () => { throw new Error('sink-synthetic-secret'); },
+      }, () => identity, async () => {
+        throw new Error('callback-synthetic-secret');
+      });
+      bus.publishEvent({
+        jobId: 'strict-observer-job',
+        timestamp: '2026-09-11T12:00:00.000Z',
+        type: 'persona:complete',
+        persona: 'security',
+        data: { findingsCount: 1 },
+      });
+      setTimeout(() => process.stdout.write(JSON.stringify({
+        history: bus.getHistory('strict-observer-job').length,
+      })), 25);
+    `;
+
+    const probe = spawnSync(
+      process.execPath,
+      ['--unhandled-rejections=strict', '-r', 'ts-node/register/transpile-only', '-e', script],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000 },
+    );
+
+    expect(probe.status).toBe(0);
+    expect(probe.signal).toBeNull();
+    expect(probe.stdout).toBe('{"history":1}');
+    expect(probe.stderr).not.toContain('synthetic-secret');
   });
 
   describe('Singleton & Event History Isolation', () => {
