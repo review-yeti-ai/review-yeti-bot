@@ -1,8 +1,14 @@
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   ReviewEventRejection,
+  isSanitizedProgressEvent,
   sanitizeProgressEvent,
 } from '../../src/events/reviewEventRedaction';
+import {
+  ReviewEventValidationError,
+  parseReviewYetiEventV1,
+} from '../../src/events/reviewYetiEvent';
 import type { ReviewEventIdentity } from '../../src/types/live';
 
 const identity: ReviewEventIdentity = {
@@ -26,6 +32,264 @@ function liveEvent(data: Record<string, unknown>, type: string = 'persona:comple
     data,
   } as any;
 }
+
+type CredentialLeakFixture = {
+  event: ReturnType<typeof liveEvent>;
+  identity: ReviewEventIdentity;
+};
+
+const credentialStringLocations: Array<{
+  label: string;
+  field: string;
+  inject: (value: string) => CredentialLeakFixture;
+}> = [
+  {
+    label: 'persona',
+    field: 'persona',
+    inject: (value) => {
+      const event = liveEvent({});
+      event.persona = value;
+      return { event, identity };
+    },
+  },
+  {
+    label: 'personaId',
+    field: 'persona',
+    inject: (value) => {
+      const event = liveEvent({ personaId: value });
+      event.persona = '';
+      return { event, identity };
+    },
+  },
+  {
+    label: 'stage',
+    field: 'stage',
+    inject: (value) => ({ event: liveEvent({ stage: value }), identity }),
+  },
+  {
+    label: 'provider',
+    field: 'provider',
+    inject: (value) => ({ event: liveEvent({ provider: value }), identity }),
+  },
+  {
+    label: 'model',
+    field: 'model',
+    inject: (value) => ({ event: liveEvent({ model: value }), identity }),
+  },
+  {
+    label: 'requestedModel',
+    field: 'model',
+    inject: (value) => ({ event: liveEvent({ requestedModel: value }), identity }),
+  },
+  {
+    label: 'resolvedModel',
+    field: 'model',
+    inject: (value) => ({ event: liveEvent({ resolvedModel: value }), identity }),
+  },
+  {
+    label: 'errorClass',
+    field: 'error_class',
+    inject: (value) => ({ event: liveEvent({ errorClass: value }), identity }),
+  },
+  {
+    label: 'verdict',
+    field: 'verdict',
+    inject: (value) => ({ event: liveEvent({ verdict: value }), identity }),
+  },
+  {
+    label: 'distinctProviders',
+    field: 'distinct_providers',
+    inject: (value) => ({ event: liveEvent({ distinctProviders: [value] }), identity }),
+  },
+  {
+    label: 'attemptId',
+    field: 'attempt_id',
+    inject: (value) => ({ event: liveEvent({}), identity: { ...identity, attemptId: value } }),
+  },
+  {
+    label: 'runId',
+    field: 'run_id',
+    inject: (value) => ({ event: liveEvent({}), identity: { ...identity, runId: value } }),
+  },
+  {
+    label: 'correlationId',
+    field: 'correlation_id',
+    inject: (value) => ({ event: liveEvent({}), identity: { ...identity, correlationId: value } }),
+  },
+  {
+    label: 'traceId',
+    field: 'trace_id',
+    inject: (value) => ({ event: liveEvent({}), identity: { ...identity, traceId: value } }),
+  },
+];
+
+const credentialLeakFamilies: Array<{ label: string; values: string[] }> = [
+  {
+    label: 'single-slash URL authority',
+    values: ['https:/review:matrix-synthetic-secret@private.test'],
+  },
+  {
+    label: 'backslash or mixed URL authority',
+    values: [
+      String.raw`https:\review:matrix-synthetic-secret@private.test`,
+      String.raw`https:\\review:matrix-synthetic-secret@private.test`,
+      String.raw`https:/\review:matrix-synthetic-secret@private.test`,
+      String.raw`https:\/review:matrix-synthetic-secret@private.test`,
+    ],
+  },
+  {
+    label: 'quoted api_key assignment',
+    values: ['{"api_key":"matrix-synthetic-secret"}'],
+  },
+  {
+    label: 'quoted accessToken assignment',
+    values: ['{"accessToken":"matrix-synthetic-secret"}'],
+  },
+];
+
+const credentialLeakMatrix = credentialStringLocations.flatMap((location) => (
+  credentialLeakFamilies.map((family) => [
+    `${location.label} / ${family.label}`,
+    location,
+    family.values,
+  ] as const)
+));
+
+const reviewerCredentialUrlLeaks = [
+  'https://u:s,e@host.test',
+  'https://u:s;e@host.test',
+  'https://u:s"e@host.test',
+  "https://u:s'e@host.test",
+  'https://u:s`e@host.test',
+  'https://u:s<e@host.test',
+  'https://u:s>e@host.test',
+  'https://u:s[e]@host.test',
+  'https://u:s{e}@host.test',
+  'https://u:s@[::1]',
+  'https:u:s@host.test',
+  'HTTP:u:s@host.test',
+  'http:u:s@host.test',
+  'ftp:u:s@host.test',
+  'ws:u:s@host.test',
+  'wss:u:s@host.test',
+  'https:u@host.test',
+  'https::s@host.test',
+  'ftp::s@host.test',
+] as const;
+
+const reviewerBenignUrlValues = [
+  'https://host.test/path,//u@host.test',
+  'https://host.test/path;//u@host.test',
+  'https://host.test/path"//u@host.test',
+  "https://host.test/path'//u@host.test",
+  'https://host.test/path`//u@host.test',
+  'https://host.test/path<//u@host.test',
+  'https://host.test/path>//u@host.test',
+  'https://host.test/path[//u@host.test]',
+  'https://host.test/path{//u@host.test}',
+  'https://host.test/path},//u@host.test',
+  'nats:/u@host.test',
+  'nats:////u@host.test',
+  'tls:/u@host.test',
+  'tls:////u@host.test',
+  String.raw`nats:\\u@host.test`,
+  String.raw`nats:/\/u@host.test`,
+  String.raw`tls:\\u@host.test`,
+  String.raw`tls:/\/u@host.test`,
+  'nats:/u@host.test,https://safe.test/path/user@example.com',
+  'https://safe.test/path/user@example.com,nats:/u@host.test',
+] as const;
+
+const maskedCredentialUrlValues = [
+  'nats:/u@host.test,https://u:p@host.test',
+  'note:https://u:p@host.test',
+] as const;
+
+const maskedCredentialUrlControls = [
+  'nats:/u@host.test,https://safe.test/path/user@example.com',
+  'note:https://safe.test/path/user@example.com',
+] as const;
+
+const wrappedOrAdjacentCredentialUrlValues = [
+  '<https://u:p@host.test>',
+  '[https://u:p@[::1]]',
+  'https://u:p@host.test:4222,https://safe.test',
+] as const;
+
+const safeFirstWrappedListCredentialUrlValues = [
+  '["https://safe.test/","https://u:p@host.test"]',
+  '<https://safe.test/>;<https://u:p@host.test>',
+  '{"primary":"https://safe.test/","fallback":"https://u:p@host.test"}',
+  '[<https://safe.test/>];<https://u:p@host.test>',
+] as const;
+
+const closingWrapperAdjacentCredentialUrlValues = [
+  '(https://safe.test/)https://u:p@host.test',
+  '[https://safe.test/]https://u:p@host.test',
+  '{nats://safe.test/}nats://u:p@host.test',
+  '(https://safe.test/)//u:p@host.test',
+  '[https://safe.test/]//u:p@host.test',
+  '(https://safe.test/),//u:p@host.test',
+  '[https://safe.test/];//u:p@host.test',
+  '"https://safe.test/"https://u:p@host.test',
+  '"https://safe.test/"//u:p@host.test',
+  "'https://safe.test/'https://u:p@host.test",
+  "'https://safe.test/'//u:p@host.test",
+  '`https://safe.test/`https://u:p@host.test',
+  '`https://safe.test/`//u:p@host.test',
+  '(https://safe.test/)=https://u:p@host.test',
+  '(https://safe.test/)=//u:p@host.test',
+  '[https://safe.test/]:https://u:p@host.test',
+  '[https://safe.test/]://u:p@host.test',
+  '(https://safe.test/)=(https://u:p@host.test)',
+  '(https://safe.test/)=(//u:p@host.test)',
+  '[https://safe.test/]:[https://u:p@host.test]',
+  '[https://safe.test/]:[//u:p@host.test]',
+  '(https://safe.test/)=((//u:p@host.test))',
+  '[https://safe.test/]:[[//u:p@host.test]]',
+  '(https://safe.test/)=([{<https:/u:p@host.test>}])',
+  `(https://safe.test/)=${'('.repeat(65)}//u:p@host.test${')'.repeat(65)}`,
+] as const;
+
+const wrappedSchemeRelativeCredentialUrlValues = [
+  '["https://safe.test/","//u:p@host.test"]',
+  '<https://safe.test/>;<//u:p@host.test>',
+] as const;
+
+const canonicalCustomAuthorityQueryControls = [
+  'nats://host.test/path?next=https://u:p@host.test',
+  'tls://[::1]/path?next=//u@host.test',
+  'https://host.test/path?next=(https://u:p@host.test)',
+  'nats://host.test/path?next=[https://u:p@host.test]',
+  'https://host.test/path?next=(safe)//u:p@host.test',
+  'nats://host.test/path?next=[safe]//u:p@host.test',
+  'https://host.test/path?next="safe"//u:p@host.test',
+  'nats://host.test/path?next=`safe`//u:p@host.test',
+  'https://host.test/path?next=//u:p@host.test',
+  'nats://host.test/path?next:https://u:p@host.test',
+  'https://host.test/path?next=(//u:p@host.test)',
+  'nats://host.test/path?next:[https://u:p@host.test]',
+  'https://host.test/path?next=((//u:p@host.test))',
+  'nats://host.test/path?next:[[https:/u:p@host.test]]',
+] as const;
+
+const canonicalCustomAuthorityCredentialValues = [
+  'nats://u:p@host.test',
+  'tls://u:p@host.test',
+] as const;
+
+const decoyMaskedCredentialUrlValues = [
+  'note:https://[invalid],https://u:p@host.test',
+  'note:https://host.test:bad,https://u:p@host.test',
+  'note:https:,https://u:p@host.test',
+  'note:https:=https://u:p@host.test',
+  'note:https::https://u:p@host.test',
+  'note:https:=(//u:p@host.test)',
+  'note:https:://u:p@host.test',
+  '//[invalid],https://u:p@host.test',
+  'note:nats://u:p@host.test',
+  'note:label:tls://u:p@host.test',
+] as const;
 
 function rejectionOf(result: unknown): ReviewEventRejection {
   expect(result).toBeInstanceOf(ReviewEventRejection);
@@ -427,16 +691,343 @@ describe('progress event redaction boundary', () => {
   it.each([
     ['authorization', 'credential-shaped key'],
     ['apiKey', 'credential-shaped key'],
+    ['authHeaders', 'credential-shaped key'],
+    ['headers', 'credential-shaped key'],
     ['promptSnippet', 'prompt'],
+    ['prompt', 'prompt'],
     ['diff', 'diff'],
+    ['diffBody', 'diff'],
+    ['sourceBody', 'source body'],
     ['token', 'raw token'],
+    ['tokenText', 'raw token'],
     ['chunk', 'raw model output'],
+    ['rawModelOutput', 'raw model output'],
+    ['filePath', 'repository-relative path'],
     ['error', 'unbounded error'],
     ['stack', 'unbounded error'],
   ])('rejects %s (%s) at the sanitizer boundary', (field) => {
     const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ [field]: 'must not cross' }), identity));
     expect(rejection.code).toBe('forbidden_field');
     expect(rejection.field).toBe(field);
+  });
+
+  it.each([
+    ['provider', 'nats://review:super-secret@nats.internal:4222'],
+    ['model', 'https://review:super-secret@example.internal/model'],
+  ])('rejects credential material in known %s values without echoing it', (field, value) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ [field]: value }), identity));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe(field);
+    expect(rejection.message).not.toContain('super-secret');
+    expect(rejection.message).not.toContain('nats.internal');
+    expect(rejection.message).not.toContain('example.internal');
+  });
+
+  it.each([
+    ['provider', { provider: 'tls://review:synthetic-secret@private.test:4222' }, 'provider'],
+    ['model', { model: 'tls://review:synthetic-secret@private.test:4222' }, 'model'],
+    [
+      'distinctProviders',
+      { distinctProviders: ['openrouter', 'tls://review:synthetic-secret@private.test:4222'] },
+      'distinct_providers',
+    ],
+  ])('rejects scheme-independent credentials in %s', (_label, data, expectedField) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent(data), identity));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe(expectedField);
+    expect(rejection.message).not.toContain('synthetic-secret');
+    expect(rejection.message).not.toContain('private.test');
+  });
+
+  it.each([
+    ['provider password-only userinfo', { provider: 'tls://:synthetic-secret@private.test:4222' }, 'provider'],
+    ['provider username-only userinfo', { provider: 'nats://synthetic-secret@private.test:4222' }, 'provider'],
+    ['model password-only userinfo', { model: 'tls://:synthetic-secret@private.test:4222' }, 'model'],
+    ['model username-only userinfo', { model: 'nats://synthetic-secret@private.test:4222' }, 'model'],
+    [
+      'distinctProviders password-only userinfo',
+      { distinctProviders: ['tls://:synthetic-secret@private.test:4222'] },
+      'distinct_providers',
+    ],
+    [
+      'distinctProviders username-only userinfo',
+      { distinctProviders: ['nats://synthetic-secret@private.test:4222'] },
+      'distinct_providers',
+    ],
+  ])('rejects %s without echoing it', (_label, data, expectedField) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent(data), identity));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe(expectedField);
+    expect(rejection.message).not.toContain('synthetic-secret');
+    expect(rejection.message).not.toContain('private.test');
+  });
+
+  it.each([
+    ['scheme-relative username/password', { provider: '//review:synthetic-secret@private.test:4222' }, 'provider'],
+    ['scheme-relative username-only', { model: '//synthetic-secret@private.test:4222' }, 'model'],
+    [
+      'scheme-relative password-only',
+      { distinctProviders: ['//:synthetic-secret@private.test:4222'] },
+      'distinct_providers',
+    ],
+    ['slash-obfuscated authority', { provider: 'https:////review:synthetic-secret@private.test' }, 'provider'],
+  ])('rejects %s URL authority credentials in progress data', (_label, data, expectedField) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent(data), identity));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe(expectedField);
+    expect(rejection.message).not.toContain('synthetic-secret');
+    expect(rejection.message).not.toContain('private.test');
+  });
+
+  it.each([
+    ['attemptId', 'attempt_id', '//review:synthetic-secret@private.test'],
+    ['runId', 'run_id', '//synthetic-secret@private.test'],
+    ['correlationId', 'correlation_id', '//:synthetic-secret@private.test'],
+    ['traceId', 'trace_id', 'https:////review:synthetic-secret@private.test'],
+  ] as const)('rejects scheme-relative or obfuscated URL credentials in identity %s', (
+    inputField,
+    envelopeField,
+    value,
+  ) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({}), {
+      ...identity,
+      [inputField]: value,
+    }));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe(envelopeField);
+    expect(rejection.message).not.toContain('synthetic-secret');
+    expect(rejection.message).not.toContain('private.test');
+  });
+
+  it.each([
+    ['api-key', 'api-key=synthetic-secret'],
+    ['api_key', 'api_key=synthetic-secret'],
+    ['apiKey', 'apiKey=synthetic-secret'],
+    ['access-token', 'access-token=synthetic-secret'],
+    ['access_token', 'access_token=synthetic-secret'],
+    ['accessToken', 'accessToken=synthetic-secret'],
+    ['refresh-token', 'refresh-token=synthetic-secret'],
+    ['refresh_token', 'refresh_token=synthetic-secret'],
+    ['refreshToken', 'refreshToken=synthetic-secret'],
+    ['client-secret', 'client-secret=synthetic-secret'],
+    ['client_secret', 'client_secret=synthetic-secret'],
+    ['clientSecret', 'clientSecret=synthetic-secret'],
+    ['proxy_authorization', 'proxy_authorization=synthetic-secret'],
+    ['proxyAuthorization', 'proxyAuthorization=synthetic-secret'],
+    ['x_api_key', 'x_api_key=synthetic-secret'],
+    ['xApiKey', 'xApiKey=synthetic-secret'],
+    ['private_key', 'private_key=synthetic-secret'],
+    ['privateKey', 'privateKey=synthetic-secret'],
+  ])('rejects %s credential assignment spelling in progress data', (_label, provider) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ provider }), identity));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe('provider');
+    expect(rejection.message).not.toContain('synthetic-secret');
+  });
+
+  it.each([
+    ['attemptId', 'attempt_id', 'api_key=synthetic-secret'],
+    ['runId', 'run_id', 'accessToken=synthetic-secret'],
+    ['correlationId', 'correlation_id', 'refresh_token=synthetic-secret'],
+    ['traceId', 'trace_id', 'clientSecret=synthetic-secret'],
+  ] as const)('rejects credential assignment spelling in identity %s', (inputField, envelopeField, value) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({}), {
+      ...identity,
+      [inputField]: value,
+    }));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe(envelopeField);
+    expect(rejection.message).not.toContain('synthetic-secret');
+  });
+
+  it.each([
+    ['attemptId', 'attempt_id'],
+    ['runId', 'run_id'],
+    ['correlationId', 'correlation_id'],
+    ['traceId', 'trace_id'],
+  ] as const)('rejects credential-bearing URL userinfo in identity %s', (inputField, envelopeField) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({}), {
+      ...identity,
+      [inputField]: 'nats://synthetic-secret@private.test:4222',
+    }));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe(envelopeField);
+    expect(rejection.message).not.toContain('synthetic-secret');
+    expect(rejection.message).not.toContain('private.test');
+  });
+
+  it.each(credentialLeakMatrix)('rejects credential leak matrix case %s', (_label, location, values) => {
+    const results = values.map((value) => {
+      const fixture = location.inject(value);
+      return sanitizeProgressEvent(fixture.event, fixture.identity);
+    });
+
+    expect(results.every((result) => result instanceof ReviewEventRejection)).toBe(true);
+    for (const result of results as ReviewEventRejection[]) {
+      expect(result.code).toBe('forbidden_field');
+      expect(result.field).toBe(location.field);
+      expect(result.message).not.toContain('matrix-synthetic-secret');
+      expect(result.message).not.toContain('private.test');
+    }
+  });
+
+  it.each(credentialStringLocations)(
+    'rejects all 19 punctuation and slashless URL credential cases in $label',
+    (location) => {
+      const results = reviewerCredentialUrlLeaks.map((value) => {
+        const fixture = location.inject(value);
+        return sanitizeProgressEvent(fixture.event, fixture.identity);
+      });
+
+      expect(results).toHaveLength(19);
+      for (const result of results) {
+        const rejection = rejectionOf(result);
+        expect(rejection.code).toBe('forbidden_field');
+        expect(rejection.field).toBe(location.field);
+        expect(rejection.message).not.toContain('host.test');
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'accepts all 20 path, non-special-scheme, mixed-delimiter, and multiple-span controls in $label',
+    (location) => {
+      const results = reviewerBenignUrlValues.map((value) => {
+        const fixture = location.inject(value);
+        return sanitizeProgressEvent(fixture.event, fixture.identity);
+      });
+
+      expect(results).toHaveLength(20);
+      for (const result of results) expect(result).not.toBeInstanceOf(ReviewEventRejection);
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'rejects a credential-bearing special URL after a non-special prefix in $label',
+    (location) => {
+      for (const value of maskedCredentialUrlValues) {
+        const fixture = location.inject(value);
+        const rejection = rejectionOf(sanitizeProgressEvent(fixture.event, fixture.identity));
+        expect(rejection.code).toBe('forbidden_field');
+        expect(rejection.field).toBe(location.field);
+        expect(rejection.message).not.toContain('host.test');
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'accepts benign special URLs after a non-special prefix in $label',
+    (location) => {
+      for (const value of maskedCredentialUrlControls) {
+        const fixture = location.inject(value);
+        expect(sanitizeProgressEvent(fixture.event, fixture.identity))
+          .not.toBeInstanceOf(ReviewEventRejection);
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'rejects wrapped or compact-adjacent credential URLs in $label',
+    (location) => {
+      for (const value of wrappedOrAdjacentCredentialUrlValues) {
+        const fixture = location.inject(value);
+        const rejection = rejectionOf(sanitizeProgressEvent(fixture.event, fixture.identity));
+        expect(rejection.code).toBe('forbidden_field');
+        expect(rejection.field).toBe(location.field);
+        expect(rejection.message).not.toContain('host.test');
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'rejects safe-first wrapped or list credential URLs in $label',
+    (location) => {
+      for (const value of safeFirstWrappedListCredentialUrlValues) {
+        const fixture = location.inject(value);
+        const rejection = rejectionOf(sanitizeProgressEvent(fixture.event, fixture.identity));
+        expect(rejection.code).toBe('forbidden_field');
+        expect(rejection.field).toBe(location.field);
+        expect(rejection.message).not.toContain('host.test');
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'rejects closing-wrapper and wrapped scheme-relative credential URLs in $label',
+    (location) => {
+      for (const value of [
+        ...closingWrapperAdjacentCredentialUrlValues,
+        ...wrappedSchemeRelativeCredentialUrlValues,
+      ]) {
+        const fixture = location.inject(value);
+        const rejection = rejectionOf(sanitizeProgressEvent(fixture.event, fixture.identity));
+        expect(rejection.code).toBe('forbidden_field');
+        expect(rejection.field).toBe(location.field);
+        expect(rejection.message).not.toContain('host.test');
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'owns canonical custom authority path and query content in $label',
+    (location) => {
+      for (const value of canonicalCustomAuthorityQueryControls) {
+        const fixture = location.inject(value);
+        expect(sanitizeProgressEvent(fixture.event, fixture.identity))
+          .not.toBeInstanceOf(ReviewEventRejection);
+      }
+
+      for (const value of canonicalCustomAuthorityCredentialValues) {
+        const fixture = location.inject(value);
+        const rejection = rejectionOf(sanitizeProgressEvent(fixture.event, fixture.identity));
+        expect(rejection.code).toBe('forbidden_field');
+        expect(rejection.field).toBe(location.field);
+        expect(rejection.message).not.toContain('host.test');
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'rejects credential URLs after malformed or nested decoys in $label',
+    (location) => {
+      for (const value of decoyMaskedCredentialUrlValues) {
+        const fixture = location.inject(value);
+        const rejection = rejectionOf(sanitizeProgressEvent(fixture.event, fixture.identity));
+        expect(rejection.code).toBe('forbidden_field');
+        expect(rejection.field).toBe(location.field);
+        expect(rejection.message).not.toContain('host.test');
+      }
+    },
+  );
+
+  it('fails closed when the bounded URL candidate budget is exhausted', () => {
+    const provider = `${'n:'.repeat(65)}user@example.com`;
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ provider }), identity));
+
+    expect(rejection.code).toBe('forbidden_field');
+    expect(rejection.field).toBe('provider');
+    expect(rejection.message).not.toContain('user@example.com');
+  });
+
+  it.each([
+    ['authority-free path email', 'https://private.test/path/user@example.com'],
+    ['double-slash URL path email', 'https://host.test/path//user@example.com'],
+    ['double-slash URL query email', 'https://host.test/path?next=//user@example.com'],
+    ['model revision', 'provider/model@stable'],
+    ['ordinary email text', 'contact-user@example.com'],
+  ])('does not misclassify @ in %s as URL authority userinfo', (_label, provider) => {
+    const result = sanitizeProgressEvent(liveEvent({ provider }), identity);
+
+    expect(result).not.toBeInstanceOf(ReviewEventRejection);
+    expect(result).toHaveProperty('data.provider', provider);
   });
 
   it.each([
@@ -494,5 +1085,475 @@ describe('progress event redaction boundary', () => {
       expect(rejection.code).toBe('forbidden_field');
       expect(rejection.field).toBe('type');
     }
+  });
+
+  it('marks only sanitizer output with the opaque progress provenance', () => {
+    const result = sanitizeProgressEvent(liveEvent({ provider: 'openrouter' }), identity);
+
+    expect(result).not.toBeInstanceOf(ReviewEventRejection);
+    expect(isSanitizedProgressEvent(result)).toBe(true);
+    expect(isSanitizedProgressEvent({ ...result as object })).toBe(false);
+  });
+
+  it('maps cyclic input to a typed non-secret rejection', () => {
+    const event = liveEvent({});
+    (event.data as Record<string, unknown>).cycle = event;
+
+    const rejection = rejectionOf(sanitizeProgressEvent(event, identity));
+
+    expect(rejection.code).toBe('not_serializable');
+    expect(rejection.message).not.toContain('cycle');
+    expect(rejection.message).not.toContain('legacy-job-42');
+  });
+
+  it('maps undefined input to a typed non-secret rejection', () => {
+    const rejection = rejectionOf(sanitizeProgressEvent(undefined as any, identity));
+
+    expect(rejection.code).toBe('invalid_live_event');
+    expect(rejection.message).not.toContain('undefined');
+  });
+
+  it('maps BigInt input to a typed non-secret not-serializable rejection', () => {
+    const rejection = rejectionOf(sanitizeProgressEvent(liveEvent({ totalTokens: BigInt(12) }), identity));
+
+    expect(rejection.code).toBe('not_serializable');
+    expect(rejection.message).not.toContain('12');
+  });
+
+  it('rejects a revoked top-level event proxy without allowing Array.isArray to throw', () => {
+    const revocable = Proxy.revocable(liveEvent({}), {});
+    revocable.revoke();
+
+    const rejection = rejectionOf(sanitizeProgressEvent(revocable.proxy, identity));
+
+    expect(rejection.code).toBe('not_serializable');
+  });
+
+  it('rejects a revoked identity proxy without allowing Array.isArray to throw', () => {
+    const revocable = Proxy.revocable({ ...identity }, {});
+    revocable.revoke();
+
+    const rejection = rejectionOf(sanitizeProgressEvent(
+      liveEvent({}),
+      revocable.proxy as ReviewEventIdentity,
+    ));
+
+    expect(rejection.code).toBe('not_serializable');
+  });
+
+  it('rejects a revoked nested proxy without allowing a guard trap to escape', () => {
+    const revocable = Proxy.revocable({ provider: 'openrouter' }, {});
+    revocable.revoke();
+    const event = liveEvent({});
+    event.data = revocable.proxy;
+
+    const rejection = rejectionOf(sanitizeProgressEvent(event, identity));
+
+    expect(rejection.code).toBe('not_serializable');
+  });
+
+  it.each([
+    ['getter', () => {
+      let calls = 0;
+      const data: Record<string, unknown> = {};
+      Object.defineProperty(data, 'provider', {
+        enumerable: true,
+        get: () => {
+          calls += 1;
+          return 'openrouter';
+        },
+      });
+      return { event: liveEvent(data), calls: () => calls };
+    }],
+    ['setter', () => {
+      let calls = 0;
+      const data: Record<string, unknown> = {};
+      Object.defineProperty(data, 'provider', {
+        enumerable: true,
+        set: () => { calls += 1; },
+      });
+      return { event: liveEvent(data), calls: () => calls };
+    }],
+    ['custom prototype', () => {
+      let calls = 0;
+      const data = Object.create({
+        toJSON: () => {
+          calls += 1;
+          return { provider: 'openrouter' };
+        },
+      }) as Record<string, unknown>;
+      data.provider = 'openrouter';
+      return { event: liveEvent(data), calls: () => calls };
+    }],
+    ['custom array prototype', () => {
+      const distinctProviders = ['openrouter'];
+      Object.setPrototypeOf(distinctProviders, Object.create(null));
+      return { event: liveEvent({ distinctProviders }), calls: () => 0 };
+    }],
+    ['proxy', () => {
+      let calls = 0;
+      const data = new Proxy({ provider: 'openrouter' }, {
+        ownKeys: (target) => {
+          calls += 1;
+          return Reflect.ownKeys(target);
+        },
+      });
+      return { event: liveEvent(data), calls: () => calls };
+    }],
+    ['function value', () => ({
+      event: liveEvent({ provider: () => 'synthetic-secret' }),
+      calls: () => 0,
+    })],
+  ])('rejects an inert-boundary %s without executing input code', (_label, makeCase) => {
+    const testCase = makeCase();
+    const rejection = rejectionOf(sanitizeProgressEvent(testCase.event, identity));
+
+    expect(rejection.code).toBe('not_serializable');
+    expect(rejection.field).toBeUndefined();
+    expect(testCase.calls()).toBe(0);
+  });
+
+  it('ignores non-enumerable and symbol data without invoking a hidden getter', () => {
+    let calls = 0;
+    const data: Record<PropertyKey, unknown> = { findingsCount: 1 };
+    Object.defineProperty(data, 'provider', {
+      enumerable: false,
+      get: () => {
+        calls += 1;
+        return 'nats://review:synthetic-secret@private.test';
+      },
+    });
+    data[Symbol('hidden')] = 'symbol-synthetic-secret';
+
+    const result = sanitizeProgressEvent(liveEvent(data as Record<string, unknown>), identity);
+
+    expect(result).not.toBeInstanceOf(ReviewEventRejection);
+    expect(result).toMatchObject({ data: { findings_count: 1 } });
+    expect(result).not.toHaveProperty('data.provider');
+    expect(JSON.stringify(result)).not.toContain('synthetic-secret');
+    expect(calls).toBe(0);
+  });
+
+  it.each([
+    ['depth', (() => {
+      let value: Record<string, unknown> = {};
+      for (let index = 0; index < 10; index += 1) value = { nested: value };
+      return liveEvent({ tokensUsed: value }, 'llm:token');
+    })()],
+    ['object cardinality', liveEvent(Object.fromEntries(
+      Array.from({ length: 65 }, (_, index) => [`unknown-${index}`, index]),
+    ))],
+    ['array cardinality', liveEvent({
+      distinctProviders: Array.from({ length: 65 }, (_, index) => `provider-${index}`),
+    })],
+    ['string length', liveEvent({ provider: 'x'.repeat(32_769) })],
+  ])('rejects inert input beyond the %s bound', (_label, event) => {
+    const rejection = rejectionOf(sanitizeProgressEvent(event, identity));
+
+    expect(rejection.code).toBe('not_serializable');
+    expect(rejection.field).toBeUndefined();
+  });
+
+  it('does not invoke a rejecting async toJSON hook under strict unhandled-rejection mode', () => {
+    const script = `
+      const { ReviewEventRejection, sanitizeProgressEvent } = require('./src/events/reviewEventRedaction.ts');
+      const identity = {
+        repositoryId: 123,
+        prNumber: 42,
+        baseSha: 'a'.repeat(40),
+        headSha: 'b'.repeat(40),
+        attemptId: 'strict-attempt',
+        runId: 'strict-run',
+        sequence: 1,
+        correlationId: 'strict-correlation',
+        traceId: 'strict-trace',
+      };
+      let calls = 0;
+      const prompt = {
+        toJSON() {
+          calls += 1;
+          return Promise.reject(new Error('tojson-synthetic-secret'));
+        },
+      };
+      const result = sanitizeProgressEvent({
+        jobId: 'strict-job',
+        timestamp: '2026-09-11T12:00:00.000Z',
+        type: 'persona:complete',
+        persona: 'security',
+        data: { prompt },
+      }, identity);
+      setImmediate(() => process.stdout.write(JSON.stringify({
+        code: result instanceof ReviewEventRejection ? result.code : 'accepted',
+        calls,
+      })));
+    `;
+
+    const probe = spawnSync(
+      process.execPath,
+      ['--unhandled-rejections=strict', '-r', 'ts-node/register/transpile-only', '-e', script],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000 },
+    );
+
+    expect(probe.status).toBe(0);
+    expect(probe.signal).toBeNull();
+    expect(probe.stdout).toBe('{"code":"not_serializable","calls":0}');
+    expect(probe.stderr).not.toContain('tojson-synthetic-secret');
+  });
+
+  it('rejects one million enumerable properties under a 128 MB heap without aborting', () => {
+    const script = `
+      const { ReviewEventRejection, sanitizeProgressEvent } = require('./src/events/reviewEventRedaction.ts');
+      const identity = {
+        repositoryId: 123,
+        prNumber: 42,
+        baseSha: 'a'.repeat(40),
+        headSha: 'b'.repeat(40),
+        attemptId: 'bounded-attempt',
+        runId: 'bounded-run',
+        sequence: 1,
+        correlationId: 'bounded-correlation',
+        traceId: 'bounded-trace',
+      };
+      const data = Object.create(null);
+      for (let index = 0; index < 1_048_576; index += 1) data[index] = 0;
+      const result = sanitizeProgressEvent({
+        jobId: 'bounded-job',
+        timestamp: '2026-09-11T12:00:00.000Z',
+        type: 'persona:complete',
+        persona: 'security',
+        data,
+      }, identity);
+      process.stdout.write(JSON.stringify({
+        code: result instanceof ReviewEventRejection ? result.code : 'accepted',
+      }));
+    `;
+
+    const probe = spawnSync(
+      process.execPath,
+      [
+        '--max-old-space-size=128',
+        '--unhandled-rejections=strict',
+        '-r',
+        'ts-node/register/transpile-only',
+        '-e',
+        script,
+      ],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 20_000 },
+    );
+
+    expect(probe.status).toBe(0);
+    expect(probe.signal).toBeNull();
+    expect(probe.stdout).toBe('{"code":"not_serializable"}');
+    expect(probe.stderr).not.toMatch(/heap|fatal|abort/iu);
+  });
+
+  it.each([
+    ['numeric', ''],
+    ['named', 'hidden_'],
+  ] as const)('ignores one million non-enumerable %s properties under a 128 MB heap', (_label, prefix) => {
+    const script = `
+      const { ReviewEventRejection, sanitizeProgressEvent } = require('./src/events/reviewEventRedaction.ts');
+      const { JetStreamProgressSink } = require('./src/events/jetStreamProgressSink.ts');
+      const identity = {
+        repositoryId: 123,
+        prNumber: 42,
+        baseSha: 'a'.repeat(40),
+        headSha: 'b'.repeat(40),
+        attemptId: 'hidden-attempt',
+        runId: 'hidden-run',
+        sequence: 1,
+        correlationId: 'hidden-correlation',
+        traceId: 'hidden-trace',
+      };
+      const data = Object.create(null);
+      Object.defineProperty(data, 'provider', {
+        value: 'nats://review:hidden-synthetic-secret@private.test',
+        enumerable: false,
+      });
+      for (let index = 0; index < 1_048_575; index += 1) {
+        Object.defineProperty(data, ${JSON.stringify(prefix)} + index, { value: 0, enumerable: false });
+      }
+      const event = {
+        jobId: 'hidden-job',
+        timestamp: '2026-09-11T12:00:00.000Z',
+        type: 'persona:complete',
+        persona: 'security',
+        data,
+      };
+      const payloads = [];
+      const sink = new JetStreamProgressSink({
+        enabled: true,
+        publisher: {
+          publish: async (_subject, payload) => payloads.push(new TextDecoder().decode(payload)),
+        },
+      });
+      (async () => {
+        const result = sanitizeProgressEvent(event, identity);
+        if (!(result instanceof ReviewEventRejection)) await sink.publish(result);
+        const payload = payloads[0] || '';
+        const published = payload ? JSON.parse(payload) : undefined;
+        process.stdout.write(JSON.stringify({
+          code: result instanceof ReviewEventRejection ? result.code : 'accepted',
+          publishCalls: payloads.length,
+          leaked: payload.includes('hidden-synthetic-secret') || payload.includes('private.test'),
+          hasProvider: Boolean(published && Object.prototype.hasOwnProperty.call(published.data, 'provider')),
+        }));
+      })().catch(() => { process.exitCode = 1; });
+    `;
+
+    const probe = spawnSync(
+      process.execPath,
+      [
+        '--max-old-space-size=128',
+        '--unhandled-rejections=strict',
+        '-r',
+        'ts-node/register/transpile-only',
+        '-e',
+        script,
+      ],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 30_000 },
+    );
+
+    expect(probe.status).toBe(0);
+    expect(probe.signal).toBeNull();
+    expect(probe.stdout).toBe('{"code":"accepted","publishCalls":1,"leaked":false,"hasProvider":false}');
+    expect(probe.stderr).not.toMatch(/heap|fatal|abort|hidden-synthetic-secret|private\.test/iu);
+  }, 40_000);
+
+  it('bounds credential scanning time for a maximum-length missing-userinfo URL', () => {
+    const script = `
+      const { sanitizeProgressEvent } = require('./src/events/reviewEventRedaction.ts');
+      const identity = {
+        repositoryId: 123,
+        prNumber: 42,
+        baseSha: 'a'.repeat(40),
+        headSha: 'b'.repeat(40),
+        attemptId: 'bounded-attempt',
+        runId: 'bounded-run',
+        sequence: 1,
+        correlationId: 'bounded-correlation',
+        traceId: 'bounded-trace',
+      };
+      const event = {
+        jobId: 'bounded-job',
+        timestamp: '2026-09-11T12:00:00.000Z',
+        type: 'persona:complete',
+        persona: 'security',
+        data: { provider: 'a://' + 'x'.repeat(32_764) },
+      };
+      const started = performance.now();
+      for (let index = 0; index < 4_000; index += 1) sanitizeProgressEvent(event, identity);
+      process.stdout.write(JSON.stringify({ elapsed: performance.now() - started }));
+    `;
+
+    const probe = spawnSync(
+      process.execPath,
+      ['-r', 'ts-node/register/transpile-only', '-e', script],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000 },
+    );
+
+    expect(probe.status).toBe(0);
+    expect(probe.signal).toBeNull();
+    expect((JSON.parse(probe.stdout) as { elapsed: number }).elapsed).toBeLessThan(1_500);
+  });
+
+  it('bounds component scanning across repeated URL-path authority lookalikes', () => {
+    const script = `
+      const { sanitizeProgressEvent } = require('./src/events/reviewEventRedaction.ts');
+      const identity = {
+        repositoryId: 123,
+        prNumber: 42,
+        baseSha: 'a'.repeat(40),
+        headSha: 'b'.repeat(40),
+        attemptId: 'bounded-attempt',
+        runId: 'bounded-run',
+        sequence: 1,
+        correlationId: 'bounded-correlation',
+        traceId: 'bounded-trace',
+      };
+      const event = {
+        jobId: 'bounded-job',
+        timestamp: '2026-09-11T12:00:00.000Z',
+        type: 'persona:complete',
+        persona: 'security',
+        data: {
+          provider: 'https://host.test/path' + '//user@example.com'.repeat(1_800),
+        },
+      };
+      const started = performance.now();
+      let result;
+      for (let index = 0; index < 1_000; index += 1) {
+        result = sanitizeProgressEvent(event, identity);
+      }
+      process.stdout.write(JSON.stringify({
+        code: result && result.code,
+        elapsed: performance.now() - started,
+      }));
+    `;
+
+    const probe = spawnSync(
+      process.execPath,
+      ['-r', 'ts-node/register/transpile-only', '-e', script],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 10_000 },
+    );
+
+    expect(probe.status).toBe(0);
+    expect(probe.signal).toBeNull();
+    const output = JSON.parse(probe.stdout) as { code: string; elapsed: number };
+    expect(output.code).toBe('invalid_field');
+    expect(output.elapsed).toBeLessThan(1_500);
+  });
+
+  it('terminates credential scanning for an overlong assignment label', () => {
+    const script = `
+      const { sanitizeProgressEvent } = require('./src/events/reviewEventRedaction.ts');
+      const identity = {
+        repositoryId: 123,
+        prNumber: 42,
+        baseSha: 'a'.repeat(40),
+        headSha: 'b'.repeat(40),
+        attemptId: 'bounded-attempt',
+        runId: 'bounded-run',
+        sequence: 1,
+        correlationId: 'bounded-correlation',
+        traceId: 'bounded-trace',
+      };
+      sanitizeProgressEvent({
+        jobId: 'bounded-job',
+        timestamp: '2026-09-11T12:00:00.000Z',
+        type: 'persona:complete',
+        persona: 'security',
+        data: { provider: 'x'.repeat(65) + ':value' },
+      }, identity);
+      process.stdout.write('completed');
+    `;
+
+    const probe = spawnSync(
+      process.execPath,
+      ['-r', 'ts-node/register/transpile-only', '-e', script],
+      { cwd: process.cwd(), encoding: 'utf8', timeout: 5_000 },
+    );
+
+    expect(probe.status).toBe(0);
+    expect(probe.signal).toBeNull();
+    expect(probe.stdout).toBe('completed');
+  }, 10_000);
+
+  it.each([
+    ['cyclic', (() => { const value: Record<string, unknown> = {}; value.self = value; return value; })()],
+    ['undefined', undefined],
+    ['BigInt', BigInt(42)],
+  ])('maps direct parser %s input to a typed static not_serializable error', (_label, value) => {
+    let rejection: unknown;
+    try {
+      parseReviewYetiEventV1(value);
+    } catch (error) {
+      rejection = error;
+    }
+
+    expect(rejection).toBeInstanceOf(ReviewEventValidationError);
+    expect(rejection).toMatchObject({ code: 'not_serializable' });
+    expect(String(rejection)).not.toContain('self');
+    expect(String(rejection)).not.toContain('42');
   });
 });
