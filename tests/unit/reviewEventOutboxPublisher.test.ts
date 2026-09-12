@@ -483,6 +483,47 @@ describe('ReviewEventOutboxPublisher', () => {
     expect(JSON.stringify(outcome)).not.toMatch(/secret|customer|payload|nats:\/\//iu);
   });
 
+  it('reports retry release failure after publication failure without marking the event published', async () => {
+    const repository = repositoryFor(claim());
+    const client = clientFor();
+    const calls: string[] = [];
+    vi.mocked(client.publish).mockImplementation(async () => {
+      calls.push('publish');
+      throw new Error('transport unavailable');
+    });
+    vi.mocked(repository.releaseForRetry).mockImplementation(async () => {
+      calls.push('release');
+      throw new Error('database retry release failed');
+    });
+    const publisher = new ReviewEventOutboxPublisher({
+      enabled: true,
+      repository,
+      client,
+      workerId: 'publisher-a',
+      batchSize: 1,
+      leaseMs: 5_000,
+      retryDelayMs: 2_000,
+      now: () => 2_000,
+    });
+
+    const outcome = await publisher.runOnce();
+
+    expect(calls).toEqual(['publish', 'release']);
+    expect(repository.claimNext).toHaveBeenCalledTimes(1);
+    expect(client.publish).toHaveBeenCalledTimes(1);
+    expect(repository.releaseForRetry).toHaveBeenCalledWith(eventId, 'publisher-a', 2_000, 2_000);
+    expect(repository.markPublished).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({
+      status: 'retry',
+      claimed: 1,
+      published: 0,
+      failed: 1,
+      released: 0,
+      leaseLost: 0,
+      errorCode: 'retry_release_failed',
+    });
+  });
+
   it('does not mark the outbox published when the transport receives a non-string PubAck stream', async () => {
     const repository = repositoryFor(claim());
     const transport = new JetStreamPublishClient({
