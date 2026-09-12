@@ -400,6 +400,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     const staleClaim = (await repository.claimPublication('worker-a', 1_000, 5_000))!;
     await repository.reserve(currentRun, APP_ID, 2_000);
 
+    const beforeStalePublication = await pool!.query(`
+      SELECT COUNT(*)::int AS event_count,
+             (SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1) AS next_sequence
+        FROM review_event_outbox WHERE run_id = $1
+    `, [staleRun]);
+
     let publisherCalled = false;
     await expect(repository.publishLocked(staleClaim, async () => {
       publisherCalled = true;
@@ -417,6 +423,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       check_id: null,
       lease_owner: 'worker-a',
     });
+    const afterStalePublication = await pool!.query(`
+      SELECT COUNT(*)::int AS event_count,
+             (SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1) AS next_sequence
+        FROM review_event_outbox WHERE run_id = $1
+    `, [staleRun]);
+    expect(afterStalePublication.rows).toEqual(beforeStalePublication.rows);
   });
 
   it('leases one publication under real concurrency and never grants create again after expiry or retry', async () => {
@@ -638,6 +650,14 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       expect(recovered).toMatchObject({ creation_state: 'reserved', check_id: null,
         desired_version: 0, published_version: -1, lease_owner: null, lease_token: null, lease_expires_at: null,
         last_error_class: 'client-preparation' });
+      expect(await lifecycleEvents(f.id)).toEqual([
+        { eventKind: 'review.lifecycle.gate_publication', sequence: 1,
+          data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'reserved' } },
+        { eventKind: 'review.lifecycle.gate_publication', sequence: 2,
+          data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'claimed' } },
+        { eventKind: 'review.lifecycle.retrying', sequence: 3,
+          data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', retry_class: 'client_preparation' } },
+      ]);
       expect(Date.parse(recovered.available_at)).toBe(f.clock() + 1_000);
       expect(f.client.createPending).not.toHaveBeenCalled();
       f.advance(999);
@@ -1140,6 +1160,41 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
       },
     );
+
+    it.each([
+      ['success', 'success'] as const,
+      ['failure', 'failure'] as const,
+    ])('persists exact terminal lifecycle data and sequence ordering for %s worker results', async (scenario, terminalClass) => {
+      const { id, repository, event, resolve } = await completionFixture();
+      if (scenario === 'failure') {
+        event.result.personas[0].decision = 'ERROR';
+        event.result.personas[0].errorClass = 'timeout';
+        event.result.failureDiagnostics = { reason: 'provider_rate_limited', providerStatus: 429, logTail: 'bounded failure' };
+      }
+      const resultDigest = workerReviewCompletionDigest(event);
+      await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+
+      expect(await lifecycleEvents(id)).toEqual([
+        { eventKind: 'review.lifecycle.gate_publication', sequence: 1,
+          data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'reserved' } },
+        { eventKind: 'review.lifecycle.gate_publication', sequence: 2,
+          data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'claimed' } },
+        { eventKind: 'review.lifecycle.gate_publication', sequence: 3,
+          data: { policy_digest: 'c'.repeat(64), stage: 'gate_publication', terminal_class: 'published' } },
+        { eventKind: 'review.lifecycle.terminal', sequence: 4,
+          data: {
+            policy_digest: 'c'.repeat(64), stage: 'terminal', terminal_class: terminalClass,
+            result_digest: resultDigest,
+          } },
+      ]);
+      expect((await pool!.query('SELECT sequence, event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [id])).rows)
+        .toEqual([
+          { sequence: '1', event_kind: 'review.lifecycle.gate_publication' },
+          { sequence: '2', event_kind: 'review.lifecycle.gate_publication' },
+          { sequence: '3', event_kind: 'review.lifecycle.gate_publication' },
+          { sequence: '4', event_kind: 'review.lifecycle.terminal' },
+        ]);
+    });
 
     it.each(['missing', 'reserved', 'creating', 'superseded'] as const)(
       'requires a current bound gate and ignores a %s gate', async (state) => {
