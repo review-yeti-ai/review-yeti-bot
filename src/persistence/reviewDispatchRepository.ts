@@ -774,7 +774,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await client.query(
         `UPDATE review_runs SET lease_owner = NULL,
            lease_expires_at = CASE WHEN $3 = 'creation-unconfirmed'
-             THEN to_timestamp(($2 + ${ABANDONED_RECOVERY_LEASE_MS}) / 1000.0) ELSE NULL END,
+             THEN to_timestamp(($2::double precision + ${ABANDONED_RECOVERY_LEASE_MS}) / 1000.0) ELSE NULL END,
            status = CASE WHEN $3 = 'authoritative-success' THEN 'succeeded' ELSE status END,
            stage = CASE WHEN $3 = 'authoritative-success' THEN 'complete' ELSE stage END,
            error_text = CASE
