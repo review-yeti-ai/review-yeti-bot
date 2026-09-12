@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sha256 } from './reviewCore';
 
 const runId = z.string().regex(/^run_[a-f0-9]{32}$/u);
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -59,6 +60,30 @@ export const workerTerminalFailureSchema = z.object({
 
 export type WorkerTerminalFailure = z.infer<typeof workerTerminalFailureSchema>;
 
+/** A legacy publishing worker may report success only after its exact GitHub
+ * check has been completed successfully. Unlike the authoritative completion
+ * contract, this records lifecycle state; it does not re-arbitrate the verdict. */
+export const workerTerminalSuccessSchema = z.object({
+  version: z.literal('WorkerTerminalSuccess.v1'),
+  runId,
+  repositoryId: positiveInteger,
+  owner: z.string().regex(/^[A-Za-z0-9_.-]+$/u),
+  repo: z.string().regex(/^[A-Za-z0-9_.-]+$/u),
+  prNumber: positiveInteger,
+  headSha: sha,
+  baseSha: sha,
+  policyDigest: digest,
+  configDigest: digest,
+  executionAttempt: positiveInteger,
+  checkId: positiveInteger,
+}).strict();
+
+export type WorkerTerminalSuccess = z.infer<typeof workerTerminalSuccessSchema>;
+
+export function workerTerminalSuccessDigest(input: unknown): string {
+  return sha256(workerTerminalSuccessSchema.parse(input));
+}
+
 /** The dispatch service derives this only from the bearer; it is never sent by the worker. */
 export interface WorkerCompletionProof {
   workerTokenDigest: string;
@@ -66,6 +91,7 @@ export interface WorkerCompletionProof {
 
 export interface WorkerCompletionAdapter {
   reportTerminalFailure(event: WorkerTerminalFailure): Promise<void>;
+  reportTerminalSuccess(event: WorkerTerminalSuccess): Promise<void>;
 }
 
 const SECRET_TOKEN_PATTERN = /(?:gh[pousr]_[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]{8,})/giu;
@@ -219,6 +245,14 @@ export class HttpWorkerCompletionAdapter implements WorkerCompletionAdapter {
   }
 
   async reportTerminalFailure(event: WorkerTerminalFailure): Promise<void> {
+    await this.report(event);
+  }
+
+  async reportTerminalSuccess(event: WorkerTerminalSuccess): Promise<void> {
+    await this.report(event);
+  }
+
+  private async report(event: WorkerTerminalFailure | WorkerTerminalSuccess): Promise<void> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     timer.unref?.();

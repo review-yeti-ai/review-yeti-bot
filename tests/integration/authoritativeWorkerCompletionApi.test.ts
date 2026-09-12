@@ -45,6 +45,7 @@ function fixture({ authoritative = true, legacy = true } = {}) {
   const resolve = vi.fn<CompletionHandler['resolve']>();
   const legacyVerify = vi.fn<WorkerCompletionVerifier['verify']>().mockResolvedValue(proof);
   const markWorkerFailure = vi.fn().mockResolvedValue({ runId: event().runId, status: 'failed' });
+  const markWorkerSuccess = vi.fn().mockResolvedValue({ runId: event().runId, status: 'succeeded' });
   const oidcVerify = vi.fn();
   const admit = vi.fn();
   const resolveInstallationId = vi.fn();
@@ -56,9 +57,9 @@ function fixture({ authoritative = true, legacy = true } = {}) {
   app.use('/api/dispatch', createActionDispatchRouter({
     verifier: { verify: oidcVerify }, admission: { admit }, resolveInstallationId, now,
     authoritativeWorkerCompletion: authoritative ? { verifier: { verify }, repository: { recordWorkerResult }, resolve } : undefined,
-    workerCompletion: legacy ? { verifier: { verify: legacyVerify }, repository: { markWorkerFailure } } : undefined,
+    workerCompletion: legacy ? { verifier: { verify: legacyVerify }, repository: { markWorkerFailure, markWorkerSuccess } } : undefined,
   }));
-  return { app, proof, verify, recordWorkerResult, resolve, now, legacyVerify, markWorkerFailure,
+  return { app, proof, verify, recordWorkerResult, resolve, now, legacyVerify, markWorkerFailure, markWorkerSuccess,
     oidcVerify, admit, resolveInstallationId, errorLog, warnLog };
 }
 

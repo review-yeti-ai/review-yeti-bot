@@ -189,7 +189,10 @@ describe('authoritative prepared publishing worker', () => {
     if (variant === 'missing flag') delete f.env.REVIEW_AUTHORITATIVE_GATE;
     if (variant === 'missing URL') delete f.env.REVIEW_COMPLETION_URL;
     if (variant === 'missing adapter') delete f.deps.reviewCompletion;
-    if (variant === 'legacy adapter') f.deps.completion = { reportTerminalFailure: f.legacyFailure };
+    if (variant === 'legacy adapter') f.deps.completion = {
+      reportTerminalFailure: f.legacyFailure,
+      reportTerminalSuccess: vi.fn(async () => undefined),
+    };
     if (variant === 'check ID') f.env.REVIEW_CHECK_ID = '4242';
     await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toThrow('publishing review worker contract is invalid');
     expectNoReview(f);
@@ -314,7 +317,10 @@ describe('authoritative prepared publishing worker', () => {
     delete f.env.REVIEW_AUTHORITATIVE_GATE;
     delete f.env.REVIEW_PREPARED_CONFIG_JSON;
     delete f.deps.reviewCompletion;
-    f.deps.completion = { reportTerminalFailure: f.legacyFailure };
+    f.deps.completion = {
+      reportTerminalFailure: f.legacyFailure,
+      reportTerminalSuccess: vi.fn(async () => undefined),
+    };
     f.env.REVIEW_PERSONAS = 'licensing';
     f.env.MAX_INVESTIGATION_TURNS = '3';
     await runPublishingReviewWorker(f.env, f.deps);

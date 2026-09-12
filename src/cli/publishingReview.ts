@@ -42,7 +42,7 @@ import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import {
   buildWorkerFailureDiagnostics, validateWorkerCompletionEndpoint,
-  type WorkerCompletionAdapter, type WorkerTerminalFailure,
+  type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '../pipeline/domainIndex';
@@ -431,6 +431,7 @@ export async function runPublishingReviewWorker(
   const panelRunner = deps.panelRunner || executePersonaPanel;
   let preparedPersonaIds: string[] = [];
   let authoritativeCompletionAttempted = false;
+  let legacySuccessCompletionAttempted = false;
   const reportReviewResult = async (result: WorkerReviewResult): Promise<void> => {
     if (!authoritative || !deps.reviewCompletion) return;
     const event = parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
@@ -445,6 +446,10 @@ export async function runPublishingReviewWorker(
   };
 
   const reportTerminalFailure = async (error: unknown, failedCheckId?: number): Promise<void> => {
+    // A success callback may have committed even when its acknowledgement was
+    // lost. Never replace that immutable body or its already-green check with a
+    // contradictory terminal failure.
+    if (legacySuccessCompletionAttempted) return;
     const failureClass = classifyFailure(error);
     const diagnostics = buildWorkerFailureDiagnostics(error, failureClass);
     if (authoritative && !authoritativeCompletionAttempted) {
@@ -738,6 +743,26 @@ export async function runPublishingReviewWorker(
           coverageComplete: unreadable.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true },
       }).result;
       await reportReviewResult(result);
+    }
+    if (!authoritative && conclusion === 'success' && deps.completion) {
+      const event: WorkerTerminalSuccess = {
+        version: 'WorkerTerminalSuccess.v1',
+        runId: identity.runId,
+        repositoryId: identity.repositoryId,
+        owner: identity.owner,
+        repo: identity.repoName,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        baseSha: identity.baseSha,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
+        configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+        executionAttempt: identity.executionAttempt,
+        checkId,
+      };
+      // Set before awaiting: an HTTP timeout cannot prove the service failed to
+      // commit, so the catch path must not emit a different terminal body.
+      legacySuccessCompletionAttempted = true;
+      await deps.completion.reportTerminalSuccess(event);
     }
     return {
       version: 'ReviewYetiPublishingReview.v1',

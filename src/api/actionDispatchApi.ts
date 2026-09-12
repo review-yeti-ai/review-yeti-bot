@@ -6,8 +6,10 @@ import {
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
 import {
   workerTerminalFailureSchema,
+  workerTerminalSuccessSchema,
   type WorkerCompletionProof,
   type WorkerTerminalFailure,
+  type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { buildReviewRunIdentity } from '../review/reviewAdmission';
 import {
@@ -44,7 +46,7 @@ export interface ActionDispatchRouterOptions {
   authoritativePublishing?: AuthoritativeReviewAdmission;
   workerCompletion?: {
     verifier: WorkerCompletionVerifier;
-    repository: Pick<ReviewDispatchRepository, 'markWorkerFailure'>;
+    repository: Pick<ReviewDispatchRepository, 'markWorkerFailure' | 'markWorkerSuccess'>;
   };
   authoritativeWorkerCompletion?: AuthoritativeReviewCompletion;
   now?: () => number;
@@ -217,6 +219,39 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       } catch {
         logger.error('Failed to persist authoritative worker completion', { reason: 'persistence_unavailable', runId: event.runId });
         return response.status(503).json({ error: 'Worker review completion could not be persisted' });
+      }
+    }
+    if (request.body?.version === 'WorkerTerminalSuccess.v1') {
+      const parsed = workerTerminalSuccessSchema.safeParse(request.body);
+      if (!parsed.success) return response.status(400).json({ error: 'Invalid worker terminal success' });
+      const event: WorkerTerminalSuccess = parsed.data;
+      const completion = options.workerCompletion;
+      if (!completion) return response.status(503).json({ error: 'Worker completion is not configured' });
+      let proof: WorkerCompletionProof;
+      try { proof = await completion.verifier.verify(token, event); }
+      catch { return response.status(403).json({ error: 'Worker completion is not authorized' }); }
+      try {
+        const transition = await completion.repository.markWorkerSuccess(event, proof, now());
+        if (transition.status === 'unauthorized') {
+          return response.status(403).json({ error: 'Worker completion is not authorized' });
+        }
+        if (transition.status === 'conflict') {
+          return response.status(409).json({ error: 'Worker completion conflicts with recorded evidence' });
+        }
+        if (transition.status === 'ignored') {
+          return response.status(409).json({ error: 'Worker completion conflicts with durable state' });
+        }
+        return response.status(200).json({
+          version: 'WorkerTerminalSuccessAccepted.v1',
+          runId: transition.runId,
+          status: transition.status,
+        });
+      } catch {
+        logger.error('Failed to persist worker terminal success callback', {
+          reason: 'persistence_unavailable',
+          runId: event.runId,
+        });
+        return response.status(503).json({ error: 'Worker terminal success could not be persisted' });
       }
     }
     const parsed = workerTerminalFailureSchema.safeParse(request.body);
