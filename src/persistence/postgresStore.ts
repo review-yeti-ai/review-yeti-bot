@@ -470,7 +470,10 @@ export class PostgresStore {
       if (client) {
         await client.query('ROLLBACK').catch(() => {});
       }
-      logger.error('[PostgresStore] Failed to initialize PostgreSQL database schema', { error: String(err) });
+      logger.error(
+        '[PostgresStore] PostgreSQL database schema initialization failed',
+        { code: 'postgres_initialization_failed' },
+      );
       throw err;
     } finally {
       if (client) {
