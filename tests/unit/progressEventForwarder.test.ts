@@ -90,6 +90,38 @@ describe('ProgressEventForwarder', () => {
     expect(target.publish).not.toHaveBeenCalled();
   });
 
+  it('contains an unexpected sanitizer failure without forwarding', () => {
+    const target = sink();
+    const failures: ProgressEventForwardingFailure[] = [];
+    const forwarder = new ProgressEventForwarder({
+      sink: target,
+      identityProvider: () => identity,
+      sanitize: () => { throw new Error('sanitizer-internal-detail'); },
+      onFailure: (failure) => failures.push(failure),
+    });
+
+    expect(() => forwarder.forward(liveEvent())).not.toThrow();
+    expect(failures).toEqual([{ code: 'sanitization_failed' }]);
+    expect(target.publish).not.toHaveBeenCalled();
+  });
+
+  it('maps a synchronously thrown sink to a bounded forwarding failure', () => {
+    const target = sink();
+    target.publish.mockImplementation(() => {
+      throw new Error('nats://review:synchronous-secret@private.test:4222 refused');
+    });
+    const failures: ProgressEventForwardingFailure[] = [];
+    const forwarder = new ProgressEventForwarder({
+      sink: target,
+      identityProvider: () => identity,
+      onFailure: (failure) => failures.push(failure),
+    });
+
+    expect(() => forwarder.forward(liveEvent())).not.toThrow();
+    expect(failures).toEqual([{ code: 'sink_publish_failed' }]);
+    expect(target.publish).toHaveBeenCalledTimes(1);
+  });
+
   it('maps an asynchronously rejected sink to a bounded forwarding failure', async () => {
     const target = sink();
     target.publish.mockRejectedValue(new Error('nats://review:sink-secret@private.test:4222 refused'));
