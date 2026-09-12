@@ -1,0 +1,22 @@
+name: Review Yeti
+
+# Phase 1 of the self-review migration. Review implementation and policy live
+# in the base-owned central repository. Keep review-bot.yaml active until this
+# caller has produced a live exact-head Review Yeti result on a later PR.
+on:
+  pull_request_target:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  review:
+    name: Review Yeti
+    if: github.event.pull_request.draft == false
+    uses: calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1
+    secrets: inherit
