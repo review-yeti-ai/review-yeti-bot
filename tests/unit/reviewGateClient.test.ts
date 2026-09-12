@@ -126,6 +126,12 @@ describe('GitHubReviewGateClient', () => {
     expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
+  it.each(['', 'title\u0000with-control'])('rejects an invalid title before create for %j', async (title) => {
+    const fetchImplementation = vi.fn<typeof fetch>();
+    await expect(client(fetchImplementation).createPending(coordinates, { title })).rejects.toThrow(/title/u);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
   it('propagates a lost POST acknowledgement without retry, then reconciles the exact App check later', async () => {
     const fetchImplementation = vi.fn<typeof fetch>()
       .mockRejectedValueOnce(new Error(`token=${token} raw provider response`))

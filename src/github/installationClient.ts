@@ -128,6 +128,28 @@ export interface ValidationCheckOptions {
   detailsUrl?: string;
 }
 
+export interface CheckRunAnnotation {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: 'notice' | 'warning' | 'failure';
+  message: string;
+  /** Optional annotation label; distinct from the required Check Run title. */
+  title?: string;
+}
+
+export interface CompleteCheckOptions {
+  owner: string;
+  repo: string;
+  checkId: number;
+  conclusion: 'success' | 'failure' | 'cancelled';
+  /** Required GitHub Check Run output.title, bounded by validateCheckRunTitle. */
+  title: string;
+  summary: string;
+  text?: string;
+  annotations?: CheckRunAnnotation[];
+}
+
 class GitHubApiResponseError extends Error {
   readonly name = 'GitHubApiResponseError';
 
@@ -546,23 +568,7 @@ export class GitHubInstallationClient {
    *
    * GitHub accepts at most 50 annotations per request, so callers must batch.
    */
-  async completeCheck(options: {
-    owner: string;
-    repo: string;
-    checkId: number;
-    conclusion: 'success' | 'failure' | 'cancelled';
-    title: string;
-    summary: string;
-    text?: string;
-    annotations?: Array<{
-      path: string;
-      start_line: number;
-      end_line: number;
-      annotation_level: 'notice' | 'warning' | 'failure';
-      message: string;
-      title?: string;
-    }>;
-  }): Promise<void> {
+  async completeCheck(options: CompleteCheckOptions): Promise<void> {
     const title = validateCheckRunTitle(options.title);
     const output: Record<string, unknown> = {
       title,
