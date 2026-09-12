@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.59.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.59.1...v1.59.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **reaper:** release exact legacy receipt selection ([#759](https://github.com/review-yeti-ai/review-yeti-bot/issues/759)) ([10d9497](https://github.com/review-yeti-ai/review-yeti-bot/commit/10d949734808f2e2ec438a824462480196377516))
+
 ## [1.59.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.59.0...v1.59.1) (2026-09-12)
 
 
