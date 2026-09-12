@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.9...v1.56.10) (2026-09-12)
+
+
+### Bug Fixes
+
+* **review:** enforce GitHub Check Run title limit ([#735](https://github.com/review-yeti-ai/review-yeti-bot/issues/735)) ([5023b9b](https://github.com/review-yeti-ai/review-yeti-bot/commit/5023b9bba651d344bb404e50bebd885ee0016e5a))
+
 ## [1.56.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.8...v1.56.9) (2026-09-12)
 
 
