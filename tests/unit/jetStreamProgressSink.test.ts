@@ -195,6 +195,14 @@ describe('JetStreamProgressSink', () => {
     expect(target.publish).not.toHaveBeenCalled();
   });
 
+  it('fails closed when enabled without a configured publisher', async () => {
+    const sink = new JetStreamProgressSink({ enabled: true });
+
+    await expect(sink.publish(sanitizedEvent())).rejects.toMatchObject({
+      code: 'not_configured',
+    });
+  });
+
   it('still rejects an untrusted envelope when disabled', async () => {
     const sink = new JetStreamProgressSink();
 
