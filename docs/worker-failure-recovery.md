@@ -129,6 +129,19 @@ unset, and records `superseded_publisher_owned_check` diagnostics plus a
 non-terminal, foreign-App, or otherwise ambiguous identities remain fail
 closed and retryable.
 
+One pre-attempt-identity check is covered by an audited compatibility receipt:
+run `run_b7c5c8f6d4e2fdfaa52f27d3f96bb5ce` for
+`calltelemetry/cisco-cdr#4972` at
+`01cc3c3070ae025c9a9bb8176c92106c30488151`, paired only with publisher-App
+check `102735106478`. The receipt pins the durable run, repository, pull
+request, head, execution attempt, admission/deadline timestamps, publisher App,
+check name, and check start/completion timestamps. It accepts only that unique,
+completed-success check with an exactly empty `external_id`, rereads the check
+by immutable ID, and never patches it. Recovery-only runs and every field
+mismatch remain fail closed. This is a one-row historical migration boundary,
+not a generic empty-identity fallback; another legacy row requires a separate
+independently reviewed receipt.
+
 This change does not implement success callbacks, replace raw check publishers,
 alter required checks, or establish event-driven consumer CI. Those lifecycle
 and rollout requirements have separate acceptance evidence. A merged source PR

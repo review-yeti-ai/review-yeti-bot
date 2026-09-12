@@ -25,6 +25,64 @@ export {
   validateCheckRunTitle,
 } from '../review/reviewCheckIdentity';
 
+/**
+ * Audited one-shot compatibility receipt for the only known publisher-App
+ * check created before attempt-bound external identities were mandatory.
+ *
+ * Empty external identities are otherwise ambiguous: they cannot prove that a
+ * completed check belongs to a distinct attempt rather than the abandoned
+ * attempt itself. Keep every durable and GitHub field exact so this receipt
+ * cannot become a generic legacy fallback. Additional historical rows require
+ * their own independently reviewed immutable receipt.
+ */
+const HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT = {
+  runId: 'run_b7c5c8f6d4e2fdfaa52f27d3f96bb5ce',
+  owner: 'calltelemetry',
+  repo: 'cisco-cdr',
+  prNumber: 4972,
+  headSha: '01cc3c3070ae025c9a9bb8176c92106c30488151',
+  executionAttempt: 1,
+  receivedAt: Date.parse('2026-09-10T03:36:01.099Z'),
+  terminalDeadline: Date.parse('2026-09-10T04:06:11.099Z'),
+  checkId: 102735106478,
+  publisherAppId: 4385771,
+  publisherAppSlug: 'ct-review-bot',
+  checkName: 'Review Yeti',
+  startedAt: '2026-09-10T03:36:24Z',
+  completedAt: '2026-09-10T03:38:15Z',
+} as const;
+
+function matchesHistoricalEmptyIdentityRun(
+  run: AbandonedPublishingRun,
+  publisherAppId: number,
+): boolean {
+  const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+  return run.runId === receipt.runId
+    && run.owner === receipt.owner
+    && run.repo === receipt.repo
+    && run.prNumber === receipt.prNumber
+    && run.headSha === receipt.headSha
+    && run.executionAttempt === receipt.executionAttempt
+    && run.receivedAt === receipt.receivedAt
+    && run.terminalDeadline === receipt.terminalDeadline
+    && publisherAppId === receipt.publisherAppId
+    && run.recoveryOnly !== true;
+}
+
+function matchesHistoricalEmptyIdentityCheck(check: any): boolean {
+  const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+  return check?.id === receipt.checkId
+    && check.name === receipt.checkName
+    && check.head_sha === receipt.headSha
+    && check.app?.id === receipt.publisherAppId
+    && check.app?.slug === receipt.publisherAppSlug
+    && check.external_id === ''
+    && check.status === 'completed'
+    && check.conclusion === 'success'
+    && check.started_at === receipt.startedAt
+    && check.completed_at === receipt.completedAt;
+}
+
 export interface PullRequestSnapshot {
   headSha: string;
   baseSha: string;
@@ -506,6 +564,25 @@ export class GitHubInstallationClient {
         const candidates = checks.filter(exactAttempt);
         if (candidates.length > 1) throw new Error('ambiguous abandoned check');
         if (candidates.length === 1) return reconcileCandidate(candidates[0]);
+        const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+        const exactHistoricalRun = matchesHistoricalEmptyIdentityRun(run, publisherAppId);
+        const historicalCandidates = checks.filter((check) => check?.id === receipt.checkId
+          || (exactHistoricalRun
+            && check?.name === receipt.checkName
+            && check?.head_sha === receipt.headSha
+            && check?.app?.id === receipt.publisherAppId
+            && check?.external_id === ''));
+        if (historicalCandidates.length > 0) {
+          if (!exactHistoricalRun || historicalCandidates.length !== 1
+            || !matchesHistoricalEmptyIdentityCheck(historicalCandidates[0])) {
+            throw new Error('historical empty-identity receipt mismatch');
+          }
+          const current = await request(`${base}/check-runs/${receipt.checkId}`);
+          if (!matchesHistoricalEmptyIdentityCheck(current)) {
+            throw new Error('historical empty-identity check changed');
+          }
+          return 'superseded';
+        }
         if (checks.some(supersedesAttempt)) return 'superseded';
         if (checks.some(conflictsWithAttempt)) throw new Error('conflicting publisher-owned check');
         return undefined;
