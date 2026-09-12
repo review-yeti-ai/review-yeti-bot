@@ -67,7 +67,14 @@ export class ReviewGatePublisher {
           checkId: check.id,
           update: isGateProgressState(gate.desiredState)
             ? { status: gate.desiredState }
-            : { conclusion: gate.desiredState },
+            : gate.desiredState === 'success'
+              ? {
+                conclusion: 'success',
+                title: 'Review Yeti Gate: Approved (SHIP)',
+                summary: 'Review Yeti completed this attempt and the policy eligibility gate passed.',
+                text: 'Terminal conclusion: success.',
+              }
+              : { conclusion: gate.desiredState },
         });
       }, this.now);
       if (status === 'stale-claim') {

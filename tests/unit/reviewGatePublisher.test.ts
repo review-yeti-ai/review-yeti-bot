@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { ReviewGatePublisher } from '../../src/review/reviewGatePublisher';
-import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME, type ReviewGateCheck } from '../../src/github/reviewGateClient';
+import { ReviewGatePublisher, type ReviewGatePublisherOptions } from '../../src/review/reviewGatePublisher';
+import { deriveReviewGateExternalId, GitHubReviewGateClient, REVIEW_GATE_CHECK_NAME,
+  type ReviewGateCheck } from '../../src/github/reviewGateClient';
 import type { GatePublicationClaim, ReviewGateRepository } from '../../src/review/reviewGateContracts';
 
 const coordinates = { owner: 'example', repo: 'repo', repositoryId: 123, prNumber: 42,
@@ -30,7 +31,7 @@ function fixture(overrides: Partial<GatePublicationClaim> = {}) {
     createPending: vi.fn(async () => check), reconcile: vi.fn(async () => check as typeof check | null),
     updateExisting: vi.fn(async () => check),
   };
-  const clientFor = vi.fn(async () => client);
+  const clientFor = vi.fn<ReviewGatePublisherOptions['clientFor']>(async () => client);
   const publisher = new ReviewGatePublisher({ repository, clientFor, workerId: 'test-publisher', now: () => 1_000 });
   return { repository, client, clientFor, notStarted, publisher };
 }
@@ -118,6 +119,33 @@ describe('durable service gate publisher', () => {
     expect(f.client.createPending).not.toHaveBeenCalled();
     expect(f.client.reconcile).not.toHaveBeenCalled();
     expect(f.client.updateExisting).toHaveBeenCalledWith({ coordinates, checkId: 1234, update: { conclusion: 'failure' } });
+  });
+  it('publishes terminal success and matching presentation in one GitHub PATCH', async () => {
+    const f = fixture({ mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'success' });
+    const observed = { id: 1234, name: REVIEW_GATE_CHECK_NAME, app: { id: 4385771 },
+      head_sha: coordinates.headSha, external_id: claim.externalId };
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...observed, status: 'queued', conclusion: null }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...observed, status: 'completed', conclusion: 'success' }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }));
+    f.clientFor.mockResolvedValue(new GitHubReviewGateClient({
+      token: 'ghs_test-token', expectedAppId: 4385771, baseUrl: 'https://github.test/api/v3', fetchImplementation,
+    }));
+
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body))).toMatchObject({
+      status: 'completed',
+      conclusion: 'success',
+      output: {
+        title: 'Review Yeti Gate: Approved (SHIP)',
+        summary: 'Review Yeti completed this attempt and the policy eligibility gate passed.',
+        text: 'Terminal conclusion: success.',
+      },
+    });
   });
   it('records a bound-check transport failure without creating or reconciling another check', async () => {
     const f = fixture({ mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'success' });
