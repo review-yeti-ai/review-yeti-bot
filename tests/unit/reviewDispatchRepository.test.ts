@@ -7,6 +7,7 @@ import { buildLifecycleEvent } from '../../src/persistence/reviewEventRepository
 import { sha256 } from '../../src/review/reviewCore';
 import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { getMetrics } from '../../src/telemetry/metrics';
+import { logger } from '../../src/utils/logger';
 
 // This unit suite deliberately exercises the legacy direct-query seam. The
 // production constructor remains fail-closed; this adapter makes the test
@@ -1141,6 +1142,103 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     }, 'reaper-a', 902_000, publish)).rejects.toThrow(errorText);
 
     expect(publish).not.toHaveBeenCalled();
+    expect(transactionQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(transactionQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('atomically retires a superseded abandoned attempt without recording success', async () => {
+    const transactionQuery = vi.fn(async (sql: string, _values?: unknown[]) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{
+        run_id: swept.run_id,
+        run_delivery_id: swept.delivery_id,
+        outbox_delivery_id: swept.delivery_id,
+      }] };
+      if (/UPDATE review_dispatch_outbox/u.test(sql) || /UPDATE review_runs/u.test(sql)) {
+        return { rows: [{ run_id: swept.run_id }] };
+      }
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release }),
+    } as never);
+    const metrics = getMetrics();
+    const supersededMetric = vi.spyOn(metrics.reviewReaperSupersededAttempts, 'add');
+    const unrelatedMetric = vi.spyOn(metrics.reviewReaperDeliveryIdentityMismatches, 'add');
+    const log = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(repository.reconcileAbandonedPublishingRun({
+        runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+        headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+        receivedAt: 1_000, terminalDeadline: 901_000,
+      }, 'reaper-a', 902_000, async () => 'superseded')).resolves.toEqual({
+        reconciled: true, outcome: 'superseded',
+      });
+      expect(supersededMetric).toHaveBeenCalledOnce();
+      expect(supersededMetric).toHaveBeenCalledWith(1);
+      expect(unrelatedMetric).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith('Retired abandoned review superseded by a newer App check', {
+        runId: swept.run_id,
+        repo: `${swept.owner}/${swept.repo}`,
+        headSha: swept.head_sha,
+        executionAttempt: swept.execution_attempt,
+      });
+    } finally {
+      supersededMetric.mockRestore();
+      unrelatedMetric.mockRestore();
+      log.mockRestore();
+    }
+
+    const outboxUpdate = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_dispatch_outbox/u.test(String(sql)));
+    expect(String(outboxUpdate?.[0])).toMatch(/status = 'terminal'[\s\S]*execution_attempt \+ 1 = \$4/u);
+    const runUpdate = transactionQuery.mock.calls.find(([sql]) => /failure_diagnostics = \$3::jsonb/u.test(String(sql)));
+    expect(String(runUpdate?.[0])).toMatch(/status = 'terminal', stage = 'terminal'/u);
+    expect(String(runUpdate?.[0])).not.toMatch(/status = 'succeeded'/u);
+    expect(runUpdate?.[1]).toEqual([
+      swept.run_id,
+      'publishing run superseded by a newer publisher-owned same-head check; retired by reaper',
+      expect.stringContaining('superseded_publisher_owned_check'),
+      swept.delivery_id,
+      'reaper-a',
+      902_000,
+      swept.execution_attempt,
+    ]);
+    expect(transactionQuery).toHaveBeenCalledWith('COMMIT');
+    expect(transactionQuery).not.toHaveBeenCalledWith('ROLLBACK');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['outbox', 'superseded outbox retirement lost its exact attempt'],
+    ['run', 'superseded run retirement lost its lease'],
+  ] as const)('rolls back when the superseded %s retirement loses its exact fence', async (lost, errorText) => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{
+        run_id: swept.run_id,
+        run_delivery_id: swept.delivery_id,
+        outbox_delivery_id: swept.delivery_id,
+      }] };
+      if (/UPDATE review_dispatch_outbox/u.test(sql)) {
+        return lost === 'outbox' ? { rows: [] } : { rows: [{ run_id: swept.run_id }] };
+      }
+      if (/UPDATE review_runs/u.test(sql)) {
+        return lost === 'run' ? { rows: [] } : { rows: [{ run_id: swept.run_id }] };
+      }
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release }),
+    } as never);
+
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000,
+    }, 'reaper-a', 902_000, async () => 'superseded')).rejects.toThrow(errorText);
+
     expect(transactionQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(transactionQuery).not.toHaveBeenCalledWith('COMMIT');
     expect(release).toHaveBeenCalledOnce();

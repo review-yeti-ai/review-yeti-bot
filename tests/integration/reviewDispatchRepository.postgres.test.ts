@@ -754,6 +754,74 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       });
   });
 
+  it('lets one reaper atomically retire a superseded projected attempt and prevents every later reclaim', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const peerRepository = new PostgresReviewDispatchRepository(pool!, undefined, { lifecycleEvents: 'enabled' });
+    const input = sameHeadAdmission('superseded-projected-run', 1_000);
+    const admitted = await repository.admit(input);
+    await client.query(`UPDATE review_dispatch_outbox
+      SET status = 'projected', execution_attempt = 0, attempt = 9
+      WHERE run_id = $1`, [admitted.run.runId]);
+
+    const sweepAt = input.terminalDeadline + 1;
+    const claims = await Promise.all([
+      repository.claimAbandonedPublishingRuns('superseded-reaper-a', sweepAt, 1),
+      peerRepository.claimAbandonedPublishingRuns('superseded-reaper-b', sweepAt, 1),
+    ]);
+    expect(claims.filter((value) => value.length === 1)).toHaveLength(1);
+    expect(claims.filter((value) => value.length === 0)).toHaveLength(1);
+    const winnerIndex = claims[0].length === 1 ? 0 : 1;
+    const winner = winnerIndex === 0 ? repository : peerRepository;
+    const workerId = `superseded-reaper-${winnerIndex === 0 ? 'a' : 'b'}`;
+    const claimed = claims[winnerIndex][0];
+    expect(claimed).toMatchObject({
+      runId: admitted.run.runId,
+      deliveryId: input.deliveryId,
+      executionAttempt: 1,
+    });
+
+    await expect(winner.reconcileAbandonedPublishingRun(
+      claimed, workerId, sweepAt + 1, async () => 'superseded',
+    )).resolves.toEqual({ reconciled: true, outcome: 'superseded' });
+
+    const state = (await client.query(`SELECT runs.status, runs.stage, runs.error_text,
+      runs.result_digest, runs.lease_owner, runs.lease_expires_at, runs.failure_diagnostics,
+      outbox.status AS outbox_status, outbox.execution_attempt,
+      outbox.lease_owner AS outbox_lease_owner, outbox.lease_expires_at AS outbox_lease_expires_at
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId])).rows[0];
+    expect(state).toMatchObject({
+      status: 'terminal',
+      stage: 'terminal',
+      error_text: 'publishing run superseded by a newer publisher-owned same-head check; retired by reaper',
+      result_digest: null,
+      lease_owner: null,
+      lease_expires_at: null,
+      outbox_status: 'terminal',
+      execution_attempt: 0,
+      outbox_lease_owner: null,
+      outbox_lease_expires_at: null,
+      failure_diagnostics: {
+        failureClass: 'internal_error',
+        reason: 'superseded_publisher_owned_check',
+        executionAttempt: 1,
+      },
+    });
+    expect(await lifecycleEvents(client, admitted.run.runId)).toContainEqual({
+      eventKind: 'review.lifecycle.terminal',
+      sequence: 4,
+      data: {
+        policy_digest: 'e'.repeat(64),
+        stage: 'terminal',
+        terminal_class: 'superseded_by_newer_check',
+        retry_class: 'reaper_retired',
+      },
+    });
+    await expect(repository.claimAbandonedPublishingRuns(
+      'superseded-reaper-later', sweepAt + 120_000, 1,
+    )).resolves.toEqual([]);
+  });
+
   it('appends no lifecycle rows across dispatch and recovery mutations when explicitly disabled', async () => {
     const { repository, client } = await createRepository({ lifecycleEvents: 'disabled' }, true);
     const input = sameHeadAdmission('disabled-lifecycle-mutations', 1_000);
