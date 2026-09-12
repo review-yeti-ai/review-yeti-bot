@@ -189,6 +189,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
     ['ambiguous exact checks', [exactCheck, { ...exactCheck, id: 2 }], 4385771],
     ['newer in-progress execution', [{ ...check, external_id: `${run.runId}:a2`, started_at: '2026-09-09T17:38:00Z' }], 4385771],
     ['newer completed check with non-verdict conclusion', [{ ...check, external_id: `${run.runId}:a2`, started_at: '2026-09-09T17:38:00Z', status: 'completed', conclusion: 'neutral' }], 4385771],
+    ['same-second completed check', [{ ...check, external_id: `${run.runId}:a2`, started_at: '2026-09-09T17:21:31Z', status: 'completed', conclusion: 'success' }], 4385771],
     ['malformed newer attempt identity', [{ ...check, external_id: 'not-a-review-run', started_at: '2026-09-09T17:38:00Z' }], 4385771],
     ['legacy check without exact attempt identity', [check], 4385771],
   ])('refuses %s without writing any check', async (_label, checks, appId) => {
@@ -254,7 +255,8 @@ describe('abandoned check exact App/attempt failure publication', () => {
   });
 
   it('does not let a foreign App success suppress the exact publisher-owned failure', async () => {
-    const foreign = { ...exactCheck, app: { id: 4435435 }, status: 'completed', conclusion: 'success' };
+    const foreign = { ...exactCheck, app: { id: 4435435 }, status: 'completed', conclusion: 'success',
+      external_id: `run_${'b'.repeat(32)}:a1`, started_at: '2026-09-09T17:38:00Z' };
     const created = { ...exactCheck, id: 77, status: 'completed', conclusion: 'failure' };
     const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       if (init?.method === 'POST') return new Response(JSON.stringify(created));
