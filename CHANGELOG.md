@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.57.2...v1.58.0) (2026-09-12)
+
+
+### Features
+
+* **telemetry:** expose OpenTelemetry Prometheus metrics on action dispatch service ([#746](https://github.com/review-yeti-ai/review-yeti-bot/issues/746)) ([71ac940](https://github.com/review-yeti-ai/review-yeti-bot/commit/71ac940e25b7f2a93b38fcbdd76944fc838297c0))
+
 ## [1.57.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.57.1...v1.57.2) (2026-09-12)
 
 
