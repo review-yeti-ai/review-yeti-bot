@@ -1,11 +1,11 @@
 # Durable worker failure recovery
 
-Publishing workers can report a typed `WorkerTerminalFailure.v1` or
-`WorkerReviewCompletion.v1` to the Action dispatch service at
-`/api/dispatch/completion`. The callback carries only immutable attempt
-coordinates, a bounded failure class, and a redacted diagnostic (`reason`,
-optional `providerStatus`, and a UTF-8 bounded `logTail`), never provider
-response text. It cannot approve a review or change a provider.
+Publishing workers can report a typed `WorkerTerminalFailure.v1`,
+`WorkerTerminalSuccess.v1`, or `WorkerReviewCompletion.v1` to the Action
+dispatch service at `/api/dispatch/completion`. A failure callback carries only
+immutable attempt coordinates, a bounded failure class, and a redacted
+diagnostic (`reason`, optional `providerStatus`, and a UTF-8 bounded `logTail`),
+never provider response text. It cannot approve a review or change a provider.
 
 ## Activation and compatibility
 
@@ -26,12 +26,16 @@ Secret suffix, with an unsuffixed Secret meaning attempt `1`. Keep that legacy
 fallback until all pre-schema CRs have expired; an explicit field and a
 mismatched Secret name fail closed.
 
-An unset URL preserves the legacy worker path during a mixed-version rollout.
+An unset URL preserves the callback-disabled worker path during a mixed-version rollout.
 An explicitly invalid URL is an error, not an instruction to disable reporting.
 URLs with credentials or fragments are rejected; redirects are not followed.
 Each HTTP callback has a bounded timeout. A delivery failure preserves the
 original worker failure; it does not turn the review green. Existing deadline
 recovery remains available when a process dies without making a callback.
+Deploy the success-capable service before the success-capable worker. Old
+workers continue sending only the failure event. A new worker treats an old
+service's rejected success event as an execution failure, so version skew cannot
+silently claim durable completion.
 
 ## Trusted binding and split-write recovery
 
@@ -104,6 +108,32 @@ both redact known token/key/prompt fields and cap the tail at 2,048 UTF-8 bytes
 before persistence. A same-head retry preserves the previous diagnostic until
 its replacement attempt reports a new one.
 
+## Legacy success semantics
+
+`WorkerTerminalSuccess.v1` is deliberately narrower than the authoritative
+review-result contract. It contains the same immutable repository, pull
+request, head/base, policy/config and execution coordinates as a failure, plus
+the required ID of the green check the worker just completed. It does not carry
+an approval field, findings, provider output, or a worker-selected digest.
+
+The worker sends the event only after GitHub accepts the successful check
+completion. The service validates the event and derives `result_digest` from
+its canonical body. Under the same repository/PR lock used by admission, the
+repository verifies the exact per-execution token digest and every persisted
+coordinate, then atomically marks the run `succeeded` at stage `complete` and
+the dispatch outbox `terminal`. It clears both leases and old failure details.
+The token digest remains as non-secret authentication evidence for an exact
+idempotent callback retry; a different check ID produces a conflict rather than
+rewriting the recorded result.
+Missing or non-current durable state is not acknowledged as success: the API
+returns a conflict so the worker fails and deadline recovery remains active.
+
+The worker marks a success body as attempted before awaiting its HTTP response.
+If the service commits but its acknowledgement is lost, the worker does not
+replace the green check or callback with contradictory failure evidence. If no
+success reaches durable storage, the existing deadline reaper remains the
+fail-closed recovery path.
+
 For legacy abandoned-run recovery, `review_runs.delivery_id` and the matching
 `review_dispatch_outbox.delivery_id` are a one-exact-attempt invariant. The
 reaper locks both rows and never publishes when those identities diverge. It
@@ -144,10 +174,10 @@ Recovery-only runs and every pinned-field mismatch remain fail closed. This is
 a one-row historical migration boundary, not a generic empty-identity fallback;
 another legacy row requires a separate independently reviewed receipt.
 
-This change does not implement success callbacks, replace raw check publishers,
-alter required checks, or establish event-driven consumer CI. Those lifecycle
-and rollout requirements have separate acceptance evidence. A merged source PR
-and passing local tests do not establish deployed recovery.
+This change does not replace raw check publishers, alter required checks, or
+establish event-driven consumer CI. Those lifecycle and rollout requirements
+have separate acceptance evidence. A merged source PR and passing local tests
+do not establish deployed recovery.
 
 ## Focused verification
 
