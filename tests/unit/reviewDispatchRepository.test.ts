@@ -6,6 +6,7 @@ import {
 import { buildLifecycleEvent } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
 import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import { getMetrics } from '../../src/telemetry/metrics';
 
 // This unit suite deliberately exercises the legacy direct-query seam. The
 // production constructor remains fail-closed; this adapter makes the test
@@ -1083,12 +1084,23 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       connect: async () => ({ query: transactionQuery, release }),
     } as never);
     const publish = vi.fn(async () => 'failure-published' as const);
+    const metrics = getMetrics();
+    const quarantineMetric = vi.spyOn(metrics.reviewReaperDeliveryIdentityMismatches, 'add');
+    const unrelatedMetric = vi.spyOn(metrics.jobsDispatched, 'add');
 
-    await expect(repository.reconcileAbandonedPublishingRun({
-      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
-      headSha: swept.head_sha, deliveryId: 'run-delivery', executionAttempt: swept.execution_attempt,
-      receivedAt: 1_000, terminalDeadline: 901_000, deliveryIdentityMismatch: true,
-    }, 'reaper-a', 902_000, publish)).resolves.toEqual({ reconciled: true, outcome: 'quarantined' });
+    try {
+      await expect(repository.reconcileAbandonedPublishingRun({
+        runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+        headSha: swept.head_sha, deliveryId: 'run-delivery', executionAttempt: swept.execution_attempt,
+        receivedAt: 1_000, terminalDeadline: 901_000, deliveryIdentityMismatch: true,
+      }, 'reaper-a', 902_000, publish)).resolves.toEqual({ reconciled: true, outcome: 'quarantined' });
+      expect(quarantineMetric).toHaveBeenCalledTimes(1);
+      expect(quarantineMetric).toHaveBeenCalledWith(1);
+      expect(unrelatedMetric).not.toHaveBeenCalled();
+    } finally {
+      quarantineMetric.mockRestore();
+      unrelatedMetric.mockRestore();
+    }
 
     expect(publish).not.toHaveBeenCalled();
     expect(transactionQuery.mock.calls.some(([sql]) => /SET status = 'terminal'/u.test(String(sql)))).toBe(true);
