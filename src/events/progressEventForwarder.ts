@@ -19,6 +19,7 @@ export type ProgressEventForwardingFailureCode =
   | 'identity_resolution_failed'
   | 'sanitization_failed'
   | 'sanitization_rejected'
+  | 'sink_overloaded'
   | 'sink_publish_failed';
 
 export interface ProgressEventForwardingFailure {
@@ -37,7 +38,11 @@ export interface ProgressEventForwarderOptions {
   identityProvider?: ProgressEventIdentityProvider;
   onFailure?: ProgressEventForwardingErrorHandler;
   sanitize?: ProgressEventSanitizer;
+  maxInFlight?: number;
 }
+
+export const DEFAULT_PROGRESS_SINK_MAX_IN_FLIGHT = 32;
+export const MAX_PROGRESS_SINK_MAX_IN_FLIGHT = 1_024;
 
 /**
  * Bridges permissive in-process live events to an optional progress sink.
@@ -50,10 +55,19 @@ export class ProgressEventForwarder {
   private identityProvider?: ProgressEventIdentityProvider;
   private readonly onFailure?: ProgressEventForwardingErrorHandler;
   private readonly sanitize: ProgressEventSanitizer;
+  private readonly maxInFlight: number;
+  private inFlight = 0;
 
   constructor(options: ProgressEventForwarderOptions = {}) {
+    const maxInFlight = options.maxInFlight ?? DEFAULT_PROGRESS_SINK_MAX_IN_FLIGHT;
+    if (!Number.isSafeInteger(maxInFlight)
+      || maxInFlight < 1
+      || maxInFlight > MAX_PROGRESS_SINK_MAX_IN_FLIGHT) {
+      throw new RangeError('Progress sink maxInFlight is outside its allowed bound');
+    }
     this.onFailure = options.onFailure;
     this.sanitize = options.sanitize || sanitizeProgressEvent;
+    this.maxInFlight = maxInFlight;
     this.setProgressSink(options.sink, options.identityProvider);
   }
 
@@ -69,6 +83,10 @@ export class ProgressEventForwarder {
     const sink = this.sink;
     const identityProvider = this.identityProvider;
     if (!sink || !identityProvider) return;
+    if (this.inFlight >= this.maxInFlight) {
+      this.reportFailure('sink_overloaded');
+      return;
+    }
 
     let identity: ReviewEventIdentityInput | undefined;
     try {
@@ -91,11 +109,17 @@ export class ProgressEventForwarder {
       return;
     }
 
+    this.inFlight += 1;
     try {
-      Promise.resolve(sink.publish(sanitized)).catch(() => {
-        this.reportFailure('sink_publish_failed');
-      });
+      Promise.resolve(sink.publish(sanitized)).then(
+        () => { this.inFlight -= 1; },
+        () => {
+          this.inFlight -= 1;
+          this.reportFailure('sink_publish_failed');
+        },
+      );
     } catch {
+      this.inFlight -= 1;
       this.reportFailure('sink_publish_failed');
     }
   }

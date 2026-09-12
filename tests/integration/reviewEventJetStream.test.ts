@@ -156,6 +156,16 @@ describeWithJetStream('Review event JetStream transport', () => {
       const electedLeader = await waitForLeaderChange(manager, streamName, previousLeader!);
       expect(electedLeader).not.toBe(previousLeader);
 
+      const replayAfterElection = await client.publish(subject, payload, { messageId });
+      expect(replayAfterElection).toMatchObject({
+        acknowledged: true,
+        duplicate: true,
+        stream: streamName,
+        sequence: 1,
+      });
+      await waitForCurrentReplicas(manager, streamName);
+      expect((await manager.streams.info(streamName)).state.messages).toBe(1);
+
       const postElection = await client.publish(subject, payload, {
         messageId: postElectionMessageId,
       });
