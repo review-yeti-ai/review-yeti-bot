@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.57.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.57.0...v1.57.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **reaper:** quarantine mismatched delivery rows [no-linear] ([#740](https://github.com/review-yeti-ai/review-yeti-bot/issues/740)) ([4dd6a6d](https://github.com/review-yeti-ai/review-yeti-bot/commit/4dd6a6dbcff07b2d83bf40450d3be3349ae221d0))
+
 ## [1.57.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.11...v1.57.0) (2026-09-12)
 
 
