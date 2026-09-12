@@ -12,7 +12,8 @@ import {
 } from '../review/reviewRun';
 import {
   buildDurableWorkerFailureDiagnostics,
-  type WorkerCompletionProof, type WorkerFailureDiagnostics, type WorkerTerminalFailure,
+  workerTerminalSuccessDigest,
+  type WorkerCompletionProof, type WorkerFailureDiagnostics, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { buildAuthoritativeReviewIdentity } from '../review/authoritativeReviewIdentity';
 import { savePreparedPublishingPolicy } from './preparedReviewRepository';
@@ -256,6 +257,8 @@ export interface ReviewDispatchRepository {
     diagnostics?: WorkerFailureDiagnostics): Promise<boolean>;
   /** Persist a worker's fail-closed terminal outcome without approving the head. */
   markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
+  /** Terminalize a legacy run only after its worker published a green check. */
+  markWorkerSuccess(input: WorkerTerminalSuccess, proof: WorkerCompletionProof, now?: number): Promise<WorkerSuccessTransition>;
   /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
@@ -265,6 +268,11 @@ export interface ReviewDispatchRepository {
 export interface WorkerFailureTransition {
   runId: string;
   status: 'failed' | 'already_failed' | 'ignored' | 'unauthorized';
+}
+
+export interface WorkerSuccessTransition {
+  runId: string;
+  status: 'succeeded' | 'already_succeeded' | 'conflict' | 'ignored' | 'unauthorized';
 }
 
 function validateClaimAttempt(claimAttempt: number): void {
@@ -1224,6 +1232,132 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     } finally {
       client.release();
     }
+  }
+
+  async markWorkerSuccess(input: WorkerTerminalSuccess, proof: WorkerCompletionProof, now = Date.now()): Promise<WorkerSuccessTransition> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        reviewDispatchPrLockKey(input.repositoryId, input.prNumber),
+      ]);
+      const result = await this.persistWorkerSuccess(client, input, proof, now);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async persistWorkerSuccess(
+    client: Queryable,
+    input: WorkerTerminalSuccess,
+    proof: WorkerCompletionProof,
+    now: number,
+  ): Promise<WorkerSuccessTransition> {
+    const resultDigest = workerTerminalSuccessDigest(input);
+    const current = await client.query(
+      `SELECT runs.status, runs.result_digest, runs.repository_id, runs.owner, runs.repo, runs.pr_number,
+              runs.head_sha, runs.base_sha, runs.effective_policy_digest,
+              runs.effective_config_digest, runs.publication_mode, runs.authoritative_gate_app_id,
+              outbox.status AS outbox_status, outbox.execution_attempt,
+              outbox.worker_token_digest
+         FROM review_runs AS runs
+         JOIN review_dispatch_outbox AS outbox ON outbox.run_id = runs.run_id
+        WHERE runs.run_id = $1
+        FOR UPDATE OF runs, outbox`,
+      [input.runId],
+    );
+    const row = current.rows[0] as Record<string, unknown> | undefined;
+    if (!row) return { runId: input.runId, status: 'ignored' };
+
+    if (!constantTimeDigestEqual(row.worker_token_digest, proof.workerTokenDigest)) {
+      return { runId: input.runId, status: 'unauthorized' };
+    }
+    const metadataMatches = Number(row.repository_id) === input.repositoryId
+      && String(row.owner) === input.owner
+      && String(row.repo) === input.repo
+      && Number(row.pr_number) === input.prNumber
+      && String(row.head_sha) === input.headSha
+      && String(row.base_sha) === input.baseSha
+      && String(row.effective_policy_digest) === input.policyDigest
+      && String(row.effective_config_digest) === input.configDigest
+      && String(row.publication_mode) === 'app-gate'
+      && row.authoritative_gate_app_id == null
+      && Number(row.execution_attempt) + 1 === input.executionAttempt;
+    if (!metadataMatches) return { runId: input.runId, status: 'unauthorized' };
+
+    const status = String(row.status || '');
+    if (status === 'succeeded') {
+      return { runId: input.runId, status: row.result_digest === resultDigest ? 'already_succeeded' : 'conflict' };
+    }
+    if (['failed', 'terminal', 'cancelled', 'superseded'].includes(status)) {
+      return { runId: input.runId, status: 'conflict' };
+    }
+    if (!['queued', 'running'].includes(status)
+      || !['pending', 'claimed', 'projected'].includes(String(row.outbox_status))) {
+      return { runId: input.runId, status: 'ignored' };
+    }
+
+    const retired = await client.query(
+      `UPDATE review_dispatch_outbox
+          SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+              updated_at = to_timestamp($2 / 1000.0)
+        WHERE run_id = $1
+          AND status IN ('pending', 'claimed', 'projected')
+          AND execution_attempt + 1 = $3
+          AND worker_token_digest = $4
+      RETURNING run_id`,
+      [input.runId, now, input.executionAttempt, proof.workerTokenDigest],
+    );
+    if (retired.rows.length !== 1) throw new Error('worker success retirement lost its locked identity');
+    const transitioned = await client.query(
+      `UPDATE review_runs AS runs
+          SET status = 'succeeded', stage = 'complete', result_digest = $2,
+              error_text = NULL, failure_diagnostics = '{}'::jsonb,
+              lease_owner = NULL, lease_expires_at = NULL,
+              updated_at = to_timestamp($3 / 1000.0)
+        FROM review_dispatch_outbox AS outbox
+        WHERE runs.run_id = $1
+          AND outbox.run_id = runs.run_id
+          AND runs.owner = $4
+          AND runs.repo = $5
+          AND runs.pr_number = $6
+          AND runs.head_sha = $7
+          AND runs.base_sha = $8
+          AND runs.repository_id = $9
+          AND runs.effective_policy_digest = $10
+          AND runs.effective_config_digest = $11
+          AND runs.publication_mode = 'app-gate'
+          AND runs.authoritative_gate_app_id IS NULL
+          AND runs.status IN ('queued', 'running')
+          AND outbox.status = 'terminal'
+          AND outbox.execution_attempt + 1 = $12
+          AND outbox.worker_token_digest = $13
+        RETURNING runs.run_id`,
+      [
+        input.runId,
+        resultDigest,
+        now,
+        input.owner,
+        input.repo,
+        input.prNumber,
+        input.headSha,
+        input.baseSha,
+        input.repositoryId,
+        input.policyDigest,
+        input.configDigest,
+        input.executionAttempt,
+        proof.workerTokenDigest,
+      ],
+    );
+    if (transitioned.rows.length !== 1) throw new Error('worker success transition lost its locked identity');
+    await this.appendLifecycle(client, input.runId, 'review.lifecycle.terminal', now,
+      { stage: 'terminal', terminal_class: 'success', result_digest: resultDigest });
+    return { runId: input.runId, status: 'succeeded' };
   }
 
   private async persistWorkerFailure(
