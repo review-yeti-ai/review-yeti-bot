@@ -1062,6 +1062,67 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     ]);
   });
 
+  it('marks a delivery identity mismatch as a terminal quarantine without invoking publication', async () => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) {
+        return {
+          rows: [{
+            run_id: swept.run_id,
+            run_delivery_id: 'run-delivery',
+            outbox_delivery_id: 'outbox-delivery',
+          }],
+        };
+      }
+      if (/UPDATE review_dispatch_outbox/u.test(sql) || /UPDATE review_runs/u.test(sql)) {
+        return { rows: [{ run_id: swept.run_id }] };
+      }
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release }),
+    } as never);
+    const publish = vi.fn(async () => 'failure-published' as const);
+
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: 'run-delivery', executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000, deliveryIdentityMismatch: true,
+    }, 'reaper-a', 902_000, publish)).resolves.toBe(true);
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(transactionQuery.mock.calls.some(([sql]) => /SET status = 'terminal'/u.test(String(sql)))).toBe(true);
+    expect(transactionQuery.mock.calls.some(([sql]) => /failure_diagnostics = \$3::jsonb/u.test(String(sql)))).toBe(true);
+    expect(transactionQuery).toHaveBeenCalledWith('COMMIT');
+    expect(transactionQuery).not.toHaveBeenCalledWith('ROLLBACK');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('uses millisecond timestamp buckets while retaining identity fences for matching rows', async () => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{
+        run_id: swept.run_id,
+        run_delivery_id: swept.delivery_id,
+        outbox_delivery_id: swept.delivery_id,
+      }] };
+      return { rows: [] };
+    });
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release: vi.fn() }),
+    } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000,
+    }, 'reaper-a', 902_000, async () => 'failure-published')).resolves.toBe(true);
+    const select = String(transactionQuery.mock.calls.find(([sql]) => /SELECT runs\.run_id/u.test(String(sql)))?.[0]);
+    expect(select).toMatch(/runs\.received_at >= to_timestamp\(\$10 \/ 1000\.0\)/u);
+    expect(select).toMatch(/runs\.received_at < to_timestamp\(\(\$10::double precision \+ 1\) \/ 1000\.0\)/u);
+    expect(select).toMatch(/runs\.terminal_deadline >= to_timestamp\(\$11 \/ 1000\.0\)/u);
+    expect(select).toMatch(/runs\.terminal_deadline < to_timestamp\(\(\$11::double precision \+ 1\) \/ 1000\.0\)/u);
+    expect(select).toMatch(/runs\.delivery_id IS NOT DISTINCT FROM \$2::text/u);
+  });
+
   it('persists an unconfirmed create with a bounded lease instead of acknowledging or retrying creation', async () => {
     const transactionQuery = vi.fn(async (sql: string, _values?: unknown[]) => {
       if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };

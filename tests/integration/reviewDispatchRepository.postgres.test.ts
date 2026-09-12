@@ -479,6 +479,118 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     )).rows[0].next_sequence).toBe('3');
   });
 
+  it('quarantines mismatched legacy delivery rows atomically without publishing or reclaiming them', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const input = sameHeadAdmission('mismatch-run-delivery', 1_000);
+    const admitted = await repository.admit(input);
+    const outboxDeliveryId = 'mismatch-outbox-delivery';
+    await client.query(`INSERT INTO github_deliveries
+      (delivery_id, event_name, repository_id, installation_id, payload_digest, received_at)
+      VALUES ($1, 'pull_request', $2, $3, $4, to_timestamp($5 / 1000.0))`,
+    [outboxDeliveryId, input.repositoryId, input.installationId, sha256(outboxDeliveryId), input.receivedAt]);
+    // Reproduce the legacy split-brain row: the run retains the admission
+    // delivery while its outbox points at a different durable delivery.
+    await client.query(`UPDATE review_dispatch_outbox
+      SET delivery_id = $2, status = 'projected' WHERE run_id = $1`, [admitted.run.runId, outboxDeliveryId]);
+    await client.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [admitted.run.runId]);
+
+    const [abandoned] = await repository.claimAbandonedPublishingRuns(
+      'mismatch-reaper', input.terminalDeadline + 1, 1,
+    );
+    expect(abandoned).toMatchObject({
+      runId: admitted.run.runId,
+      deliveryId: input.deliveryId,
+      deliveryIdentityMismatch: true,
+      executionAttempt: 1,
+    });
+    const publish = vi.fn(async () => 'failure-published' as const);
+    await expect(repository.reconcileAbandonedPublishingRun(
+      abandoned, 'mismatch-reaper', input.terminalDeadline + 2, publish,
+    )).resolves.toBe(true);
+    expect(publish).not.toHaveBeenCalled();
+
+    const state = (await client.query(`SELECT runs.status, runs.stage, runs.error_text,
+      runs.result_digest, runs.delivery_id, runs.lease_owner, runs.lease_expires_at,
+      runs.failure_diagnostics, outbox.status AS outbox_status, outbox.delivery_id AS outbox_delivery_id,
+      outbox.lease_owner AS outbox_lease_owner, outbox.lease_expires_at AS outbox_lease_expires_at
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId])).rows[0];
+    expect(state).toMatchObject({
+      status: 'terminal',
+      stage: 'terminal',
+      error_text: 'publishing run delivery identity mismatch; quarantined by reaper',
+      result_digest: null,
+      delivery_id: input.deliveryId,
+      lease_owner: null,
+      lease_expires_at: null,
+      outbox_status: 'terminal',
+      outbox_delivery_id: outboxDeliveryId,
+      outbox_lease_owner: null,
+      outbox_lease_expires_at: null,
+      failure_diagnostics: {
+        failureClass: 'internal_error',
+        reason: 'dispatch_delivery_identity_mismatch',
+        executionAttempt: 1,
+        runDeliveryDigest: sha256(input.deliveryId),
+        outboxDeliveryDigest: sha256(outboxDeliveryId),
+      },
+    });
+    expect(await lifecycleEvents(client, admitted.run.runId)).toEqual([
+      { eventKind: 'review.lifecycle.admission', sequence: 1,
+        data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+      { eventKind: 'review.lifecycle.queued', sequence: 2,
+        data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+      { eventKind: 'review.lifecycle.terminal', sequence: 3,
+        data: { policy_digest: 'e'.repeat(64), stage: 'terminal',
+          terminal_class: 'publishing_deadline', retry_class: 'reaper' } },
+      { eventKind: 'review.lifecycle.terminal', sequence: 4,
+        data: {
+          policy_digest: 'e'.repeat(64),
+          stage: 'terminal',
+          terminal_class: 'delivery_identity_mismatch',
+          retry_class: 'reaper_quarantine',
+          evidence_pointers: [
+            `run_delivery_sha256:${sha256(input.deliveryId)}`,
+            `outbox_delivery_sha256:${sha256(outboxDeliveryId)}`,
+          ],
+        } },
+    ]);
+    await expect(repository.claimAbandonedPublishingRuns(
+      'later-reaper', input.terminalDeadline + 120_000, 1,
+    )).resolves.toEqual([]);
+  });
+
+  it('reconciles a matching sub-millisecond timestamp row through the normal fenced publication path', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const input = sameHeadAdmission('matching-sub-ms', 1_000);
+    const admitted = await repository.admit(input);
+    // The reaper maps PostgreSQL timestamps to integer milliseconds. Keep the
+    // stored values just inside those millisecond buckets to model the live
+    // row that previously failed exact `=` comparisons.
+    await client.query(`UPDATE review_runs
+      SET received_at = received_at + interval '456 microseconds',
+          terminal_deadline = terminal_deadline + interval '456 microseconds'
+      WHERE run_id = $1`, [admitted.run.runId]);
+
+    const [abandoned] = await repository.claimAbandonedPublishingRuns(
+      'matching-reaper', input.terminalDeadline + 1, 1,
+    );
+    expect(abandoned).toMatchObject({
+      runId: admitted.run.runId,
+      deliveryId: input.deliveryId,
+      executionAttempt: 1,
+    });
+    expect(abandoned.deliveryIdentityMismatch).toBeUndefined();
+    const publish = vi.fn(async () => 'failure-published' as const);
+    await expect(repository.reconcileAbandonedPublishingRun(
+      abandoned, 'matching-reaper', input.terminalDeadline + 2, publish,
+    )).resolves.toBe(true);
+    expect(publish).toHaveBeenCalledOnce();
+    await expect(repository.claimAbandonedPublishingRuns(
+      'later-matching-reaper', input.terminalDeadline + 120_000, 1,
+    )).resolves.toEqual([]);
+  });
+
   it('appends no lifecycle rows across dispatch and recovery mutations when explicitly disabled', async () => {
     const { repository, client } = await createRepository({ lifecycleEvents: 'disabled' }, true);
     const input = sameHeadAdmission('disabled-lifecycle-mutations', 1_000);

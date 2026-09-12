@@ -44,6 +44,16 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal));
   });
 
+  it('reports a delivery-identity quarantine without minting a publisher or counting publication', async () => {
+    const { subject, repository, checkClientFor } = fixture();
+    const mismatched = { ...run, deliveryIdentityMismatch: true };
+    repository.claimAbandonedPublishingRuns.mockResolvedValue([mismatched]);
+    repository.reconcileAbandonedPublishingRun.mockImplementationOnce(async () => true);
+
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 0, quarantined: 1 });
+    expect(checkClientFor).not.toHaveBeenCalled();
+  });
+
   it('reconciles already-completed check runs without re-publishing failure', async () => {
     const { subject, client, repository } = fixture();
     client.failAbandonedCheck.mockResolvedValueOnce('authoritative-success');

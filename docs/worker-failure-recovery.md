@@ -104,6 +104,16 @@ both redact known token/key/prompt fields and cap the tail at 2,048 UTF-8 bytes
 before persistence. A same-head retry preserves the previous diagnostic until
 its replacement attempt reports a new one.
 
+For legacy abandoned-run recovery, `review_runs.delivery_id` and the matching
+`review_dispatch_outbox.delivery_id` are a one-exact-attempt invariant. The
+reaper locks both rows and never publishes when those identities diverge. It
+instead atomically terminalizes the outbox, clears both leases, records a
+bounded `dispatch_delivery_identity_mismatch` diagnostic containing only
+delivery digests, and appends a `delivery_identity_mismatch` lifecycle event.
+The run remains without a result or success verdict, is counted by
+`ct_review_reaper_delivery_identity_mismatch_total`, and is not eligible for
+another legacy sweep.
+
 This change does not implement success callbacks, replace raw check publishers,
 alter required checks, or establish event-driven consumer CI. Those lifecycle
 and rollout requirements have separate acceptance evidence. A merged source PR
