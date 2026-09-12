@@ -15,7 +15,10 @@ type Workflow = {
 };
 
 function loadWorkflow(file: string): Workflow {
-  return yaml.load(fs.readFileSync(file, 'utf8')) as Workflow;
+  // GitHub Actions uses YAML 1.2, where `on` is a string rather than the YAML
+  // 1.1 boolean alias. Select that schema explicitly so this contract cannot
+  // drift with a parser-default change.
+  return yaml.load(fs.readFileSync(file, 'utf8'), { schema: yaml.JSON_SCHEMA }) as Workflow;
 }
 
 describe('self-review workflow migration', () => {
