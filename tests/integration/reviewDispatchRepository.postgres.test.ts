@@ -679,6 +679,36 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it('rejects a stale fence when stored timestamp precision is one and a half milliseconds newer', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const input = sameHeadAdmission('matching-fractional-beyond-bucket', 1_000);
+    const admitted = await repository.admit(input);
+    // Date.getTime() truncates this value to +1 ms in the claim, but the
+    // durable PostgreSQL timestamp remains +1.5 ms. That value must not pass
+    // a stale +0 ms fence or get mistaken for the claimed attempt.
+    await client.query(`UPDATE review_runs
+      SET received_at = received_at + interval '1.5 milliseconds',
+          terminal_deadline = terminal_deadline + interval '1.5 milliseconds'
+      WHERE run_id = $1`, [admitted.run.runId]);
+
+    const [abandoned] = await repository.claimAbandonedPublishingRuns(
+      'fractional-beyond-bucket-reaper', input.terminalDeadline + 2, 1,
+    );
+    expect(abandoned).toMatchObject({
+      runId: admitted.run.runId,
+      deliveryId: input.deliveryId,
+      receivedAt: input.receivedAt + 1,
+      terminalDeadline: input.terminalDeadline + 1,
+      executionAttempt: 1,
+    });
+    const publish = vi.fn(async () => 'failure-published' as const);
+    await expect(repository.reconcileAbandonedPublishingRun(
+      { ...abandoned, receivedAt: input.receivedAt, terminalDeadline: input.terminalDeadline },
+      'fractional-beyond-bucket-reaper', input.terminalDeadline + 3, publish,
+    )).resolves.toEqual({ reconciled: false });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it('lets only one concurrent reaper claim a mismatched delivery before quarantine', async () => {
     const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
     const peerRepository = new PostgresReviewDispatchRepository(pool!, undefined, { lifecycleEvents: 'enabled' });
