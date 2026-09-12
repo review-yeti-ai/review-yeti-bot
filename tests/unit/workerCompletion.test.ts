@@ -7,6 +7,8 @@ import {
   validateWorkerCompletionEndpoint,
   workerFailureDiagnosticsSchema,
   workerTerminalFailureSchema,
+  workerTerminalSuccessDigest,
+  workerTerminalSuccessSchema,
 } from '../../src/review/workerCompletion';
 
 const event = {
@@ -23,6 +25,21 @@ const event = {
   executionAttempt: 1,
   checkId: 4242,
   failureClass: 'provider_error' as const,
+};
+
+const successEvent = {
+  version: 'WorkerTerminalSuccess.v1' as const,
+  runId: event.runId,
+  repositoryId: event.repositoryId,
+  owner: event.owner,
+  repo: event.repo,
+  prNumber: event.prNumber,
+  headSha: event.headSha,
+  baseSha: event.baseSha,
+  policyDigest: event.policyDigest,
+  configDigest: event.configDigest,
+  executionAttempt: event.executionAttempt,
+  checkId: event.checkId,
 };
 
 describe('HttpWorkerCompletionAdapter', () => {
@@ -123,6 +140,27 @@ describe('HttpWorkerCompletionAdapter', () => {
     );
   });
 
+  it('posts the strict terminal-success event through the same authenticated endpoint', async () => {
+    const fetchImplementation = vi.fn(async () => new Response('', { status: 200 }));
+    const adapter = new HttpWorkerCompletionAdapter({
+      token: 'ghs_test',
+      endpoint: 'https://dispatch.example.invalid/api/dispatch/completion',
+      fetchImplementation,
+    });
+
+    await adapter.reportTerminalSuccess(successEvent);
+
+    expect(fetchImplementation).toHaveBeenCalledWith(
+      'https://dispatch.example.invalid/api/dispatch/completion',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: 'Bearer ghs_test' }),
+        body: JSON.stringify(successEvent),
+        redirect: 'error',
+      }),
+    );
+  });
+
   it('disables redirects on the callback request', async () => {
     const fetchImplementation = vi.fn(async () => new Response(null, { status: 204 }));
     const adapter = new HttpWorkerCompletionAdapter({
@@ -175,6 +213,38 @@ describe('HttpWorkerCompletionAdapter', () => {
   ])('rejects unsafe callback endpoint %s', (endpoint) => {
     expect(() => new HttpWorkerCompletionAdapter({ token: 'ghs_test', endpoint }))
       .toThrow(/HTTPS URL without userinfo or fragments/u);
+  });
+});
+
+describe('workerTerminalSuccessSchema', () => {
+  it('accepts only the exact success identity with a required check ID', () => {
+    expect(workerTerminalSuccessSchema.parse(successEvent)).toEqual(successEvent);
+    expect(workerTerminalSuccessSchema.safeParse({ ...successEvent, checkId: undefined }).success).toBe(false);
+    expect(workerTerminalSuccessSchema.safeParse({ ...successEvent, conclusion: 'success' }).success).toBe(false);
+  });
+
+  it('derives a stable digest from the canonical validated event', () => {
+    expect(workerTerminalSuccessDigest(successEvent)).toMatch(/^[a-f0-9]{64}$/u);
+    expect(workerTerminalSuccessDigest({ ...successEvent })).toBe(workerTerminalSuccessDigest(successEvent));
+    expect(workerTerminalSuccessDigest({ ...successEvent, checkId: 4243 }))
+      .not.toBe(workerTerminalSuccessDigest(successEvent));
+  });
+
+  it.each([
+    ['version', 'WorkerTerminalSuccess.v2'],
+    ['runId', `run_${'a'.repeat(31)}`],
+    ['repositoryId', 0],
+    ['owner', 'owner/another'],
+    ['repo', 'repo with spaces'],
+    ['prNumber', 0],
+    ['headSha', 'b'.repeat(39)],
+    ['baseSha', 'C'.repeat(40)],
+    ['policyDigest', 'd'.repeat(63)],
+    ['configDigest', 'E'.repeat(64)],
+    ['executionAttempt', 0],
+    ['checkId', 0],
+  ])('rejects invalid %s', (field, invalid) => {
+    expect(workerTerminalSuccessSchema.safeParse({ ...successEvent, [field]: invalid }).success).toBe(false);
   });
 });
 

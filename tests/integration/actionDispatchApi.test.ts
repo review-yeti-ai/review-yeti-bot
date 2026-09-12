@@ -109,6 +109,21 @@ const terminalFailure = {
   failureClass: 'rate_limit',
 } as const;
 
+const terminalSuccess = {
+  version: 'WorkerTerminalSuccess.v1',
+  runId: terminalFailure.runId,
+  repositoryId: terminalFailure.repositoryId,
+  owner: terminalFailure.owner,
+  repo: terminalFailure.repo,
+  prNumber: terminalFailure.prNumber,
+  headSha: terminalFailure.headSha,
+  baseSha: terminalFailure.baseSha,
+  policyDigest: terminalFailure.policyDigest,
+  configDigest: terminalFailure.configDigest,
+  executionAttempt: terminalFailure.executionAttempt,
+  checkId: terminalFailure.checkId,
+} as const;
+
 function completionApp(overrides: Record<string, any> = {}) {
   const verifier = {
     verify: vi.fn(async () => ({ workerTokenDigest: 'f'.repeat(64) })),
@@ -116,6 +131,7 @@ function completionApp(overrides: Record<string, any> = {}) {
   };
   const repository = {
     markWorkerFailure: vi.fn(async (event: typeof terminalFailure) => ({ runId: event.runId, status: 'failed' as const })),
+    markWorkerSuccess: vi.fn(async (event: typeof terminalSuccess) => ({ runId: event.runId, status: 'succeeded' as const })),
     ...(overrides.repository || {}),
   };
   const instance = express();
@@ -1205,6 +1221,76 @@ describe('POST /api/dispatch/completion', () => {
       expect.any(Number),
     );
     expect(JSON.stringify(response.body)).not.toMatch(/success|ship|approve/iu);
+  });
+
+  it('persists a typed terminal success through the legacy token-bound repository', async () => {
+    const fixture = completionApp();
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send(terminalSuccess);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      version: 'WorkerTerminalSuccessAccepted.v1',
+      runId: terminalSuccess.runId,
+      status: 'succeeded',
+    });
+    expect(fixture.repository.markWorkerSuccess).toHaveBeenCalledWith(
+      terminalSuccess,
+      expect.objectContaining({ workerTokenDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) }),
+      expect.any(Number),
+    );
+    expect(fixture.repository.markWorkerFailure).not.toHaveBeenCalled();
+  });
+
+  it('rejects conflicting terminal-success evidence without exposing persistence details', async () => {
+    const fixture = completionApp({ repository: {
+      markWorkerSuccess: vi.fn(async () => ({ runId: terminalSuccess.runId, status: 'conflict' as const })),
+    } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send(terminalSuccess);
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({ error: 'Worker completion conflicts with recorded evidence' });
+    expect(fixture.repository.markWorkerFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not acknowledge an ignored terminal success as durably recorded', async () => {
+    const fixture = completionApp({ repository: {
+      markWorkerSuccess: vi.fn(async () => ({ runId: terminalSuccess.runId, status: 'ignored' as const })),
+    } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send(terminalSuccess);
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({ error: 'Worker completion conflicts with durable state' });
+  });
+
+  it('rejects an unbound terminal-success token before reporting acceptance', async () => {
+    const fixture = completionApp({ repository: {
+      markWorkerSuccess: vi.fn(async () => ({ runId: terminalSuccess.runId, status: 'unauthorized' as const })),
+    } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_wrong_worker_token')
+      .send(terminalSuccess);
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'Worker completion is not authorized' });
+  });
+
+  it('keeps terminal success unavailable when the legacy completion service is not configured', async () => {
+    const fixture = app();
+    const response = await request(fixture.instance).post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token').send(terminalSuccess);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Worker completion is not configured' });
+    expect(fixture.verifier.verify).not.toHaveBeenCalled();
   });
 
   it('rejects missing or invalid worker authentication before touching durable state', async () => {

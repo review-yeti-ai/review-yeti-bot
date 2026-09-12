@@ -470,10 +470,52 @@ describe('runPublishingReviewWorker', () => {
     }));
   });
 
-  it('does not report completion for a successful review', async () => {
-    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
-    const d = deps({ completion });
-    await runPublishingReviewWorker(env(), d as never);
+  it('reports the exact terminal success only after publishing the green check', async () => {
+    const order: string[] = [];
+    const completion = {
+      reportTerminalFailure: vi.fn(async () => {}),
+      reportTerminalSuccess: vi.fn(async () => { order.push('callback'); }),
+    };
+    const cc = checkClient();
+    cc.completeCheck.mockImplementation(async () => { order.push('check'); });
+    const d = deps({ completion, checkClient: cc });
+
+    await runPublishingReviewWorker(env({ REVIEW_EXECUTION_ATTEMPT: '2' }), d as never);
+
+    expect(order).toEqual(['check', 'callback']);
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+    expect(completion.reportTerminalSuccess).toHaveBeenCalledExactlyOnceWith({
+      version: 'WorkerTerminalSuccess.v1',
+      runId: env().REVIEW_RUN_ID,
+      repositoryId: 1339040553,
+      owner: 'calltelemetry',
+      repo: 'ct-meta',
+      prNumber: 2795,
+      headSha: HEAD,
+      baseSha: BASE,
+      policyDigest: 'c'.repeat(64),
+      configDigest: 'd'.repeat(64),
+      executionAttempt: 2,
+      checkId: 4242,
+    });
+  });
+
+  it('does not publish contradictory failure evidence when the success acknowledgement is uncertain', async () => {
+    const callbackError = new Error('success callback acknowledgement lost');
+    const completion = {
+      reportTerminalFailure: vi.fn(async () => {}),
+      reportTerminalSuccess: vi.fn().mockRejectedValue(callbackError),
+    };
+    const cc = checkClient();
+
+    await expect(runPublishingReviewWorker(env(), deps({ completion, checkClient: cc }) as never))
+      .rejects.toBe(callbackError);
+
+    expect(cc.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      checkId: 4242,
+      conclusion: 'success',
+    }));
+    expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
 

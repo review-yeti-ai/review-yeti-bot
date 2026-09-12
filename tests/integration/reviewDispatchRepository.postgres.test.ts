@@ -18,6 +18,7 @@ import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { buildRunSecretName } from '../../src/k8s/reviewJobProjection';
 import type { WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
+import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
 
 function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000) {
   const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
@@ -367,6 +368,112 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect((await client.query(
       'SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [admitted.run.runId],
     )).rows[0].next_sequence).toBe('10');
+  });
+
+  it('terminalizes an exact legacy worker success and accepts only an identical retry', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const input = sameHeadAdmission('legacy-worker-success', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('legacy-success-worker', 1_001, 30_000))!;
+    const workerTokenDigest = 'a'.repeat(64);
+    expect(await repository.bindWorkerTokenDigest(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, workerTokenDigest, 1_002,
+    )).toBe(true);
+    expect(await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'legacy-success-projection', 1_003, workerTokenDigest,
+    )).toBe(true);
+    const success = {
+      version: 'WorkerTerminalSuccess.v1' as const,
+      runId: admitted.run.runId,
+      owner: input.identity.owner,
+      repo: input.identity.repo,
+      prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha,
+      baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId,
+      policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest,
+      executionAttempt: claim.executionAttempt,
+      checkId: 4242,
+    };
+
+    await expect(repository.markWorkerSuccess(success, { workerTokenDigest }, 1_004))
+      .resolves.toEqual({ runId: admitted.run.runId, status: 'succeeded' });
+    const state = await dispatchState(client, admitted.run.runId);
+    expect(state.run).toMatchObject({
+      status: 'succeeded',
+      stage: 'complete',
+      result_digest: workerTerminalSuccessDigest(success),
+      error_text: null,
+      failure_diagnostics: {},
+      lease_owner: null,
+      lease_expires_at: null,
+    });
+    expect(state.outbox).toMatchObject({
+      status: 'terminal',
+      execution_attempt: 0,
+      worker_token_digest: workerTokenDigest,
+      lease_owner: null,
+      lease_expires_at: null,
+    });
+    await expect(repository.markWorkerSuccess(success, { workerTokenDigest }, 1_005))
+      .resolves.toEqual({ runId: admitted.run.runId, status: 'already_succeeded' });
+    await expect(repository.markWorkerSuccess({ ...success, checkId: 4243 }, { workerTokenDigest }, 1_006))
+      .resolves.toEqual({ runId: admitted.run.runId, status: 'conflict' });
+    await expect(repository.claimAbandonedPublishingRuns('legacy-success-reaper', input.terminalDeadline + 1, 1))
+      .resolves.toEqual([]);
+    expect(await lifecycleEvents(client, admitted.run.runId)).toEqual([
+      { eventKind: 'review.lifecycle.admission', sequence: 1,
+        data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+      { eventKind: 'review.lifecycle.queued', sequence: 2,
+        data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+      { eventKind: 'review.lifecycle.dispatched', sequence: 3,
+        data: { policy_digest: 'e'.repeat(64), stage: 'dispatch' } },
+      { eventKind: 'review.lifecycle.started', sequence: 4,
+        data: { policy_digest: 'e'.repeat(64), stage: 'started' } },
+      { eventKind: 'review.lifecycle.terminal', sequence: 5,
+        data: { policy_digest: 'e'.repeat(64), result_digest: workerTerminalSuccessDigest(success),
+          stage: 'terminal', terminal_class: 'success' } },
+    ]);
+  });
+
+  it('rolls back outbox retirement when the legacy success run transition fails', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('legacy-worker-success-rollback', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('legacy-success-worker', 1_001, 30_000))!;
+    const workerTokenDigest = 'a'.repeat(64);
+    expect(await repository.bindWorkerTokenDigest(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, workerTokenDigest, 1_002,
+    )).toBe(true);
+    const success = {
+      version: 'WorkerTerminalSuccess.v1' as const,
+      runId: admitted.run.runId,
+      owner: input.identity.owner,
+      repo: input.identity.repo,
+      prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha,
+      baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId,
+      policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest,
+      executionAttempt: claim.executionAttempt,
+      checkId: 4242,
+    };
+    const failingRepository = new PostgresReviewDispatchRepository({ connect: async () => ({
+      release: () => undefined,
+      query: async (sql: string, values?: unknown[]) => {
+        if (/UPDATE review_runs AS runs/u.test(sql)) throw new Error('injected success run-write failure');
+        return client.query(sql, values);
+      },
+    }) }, undefined, { lifecycleEvents: 'disabled' });
+
+    await expect(failingRepository.markWorkerSuccess(success, { workerTokenDigest }, 1_003))
+      .rejects.toThrow('injected success run-write failure');
+    expect(await dispatchState(client, admitted.run.runId)).toMatchObject({
+      run: { status: 'queued', result_digest: null },
+      outbox: { status: 'claimed', worker_token_digest: workerTokenDigest },
+    });
   });
 
   it.each([
