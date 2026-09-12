@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.57.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.11...v1.57.0) (2026-09-12)
+
+
+### Features
+
+* persist Review Yeti lifecycle outbox ([#717](https://github.com/review-yeti-ai/review-yeti-bot/issues/717)) ([3789c7a](https://github.com/review-yeti-ai/review-yeti-bot/commit/3789c7a115533098f0d9cebc2982f6b52fefd77c))
+
 ## [1.56.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.10...v1.56.11) (2026-09-12)
 
 
