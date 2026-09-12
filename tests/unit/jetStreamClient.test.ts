@@ -194,13 +194,24 @@ async function runShutdownOrderingProbe(
         second,
         new Promise((_, reject) => setTimeout(() => reject(new Error('shutdown ordering timeout')), 2000)),
       ]);
+      const firstSettledWhenSecondSettled = firstSettled;
+      await first;
+      const socketsAwaitingPeerClose = Array.from(sockets);
+      if (socketsAwaitingPeerClose.length > 0) {
+        await Promise.race([
+          Promise.all(socketsAwaitingPeerClose.map((socket) => once(socket, 'close'))),
+          new Promise((_, reject) => setTimeout(
+            () => reject(new Error('shutdown peer socket close timeout')),
+            1000,
+          )),
+        ]);
+      }
       const result = {
-        firstSettled,
+        firstSettled: firstSettledWhenSecondSettled,
         messagePorts: activeMessagePortCount() - baselineMessagePorts,
         sockets: sockets.size,
         state: client.health().state,
       };
-      await first;
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve) => server.close(resolve));
       process.stdout.write('SHUTDOWN_ORDER_RESULT ' + JSON.stringify(result) + '\\n');
