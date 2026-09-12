@@ -10,6 +10,7 @@ import { getPrometheusMetrics } from './telemetry/metrics';
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
   rateLimiter?: RequestHandler;
+  metricsAuthToken?: string;
   ci?: ReviewCiRouterOptions;
   githubWebhook?: {
     secret: string;
@@ -64,10 +65,19 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
     }
   });
 
-  app.get('/metrics', async (_request: Request, response: Response) => {
+  const metricsAuth: RequestHandler = (request: Request, response: Response, next: NextFunction) => {
+    if (!options.metricsAuthToken) return next();
+    const auth = request.headers.authorization;
+    if (!auth || auth !== `Bearer ${options.metricsAuthToken}`) {
+      return response.status(401).json({ error: 'Unauthorized' });
+    }
+    return next();
+  };
+
+  app.get('/metrics', limiter, metricsAuth, async (_request: Request, response: Response) => {
     try {
       const text = await getPrometheusMetrics();
-      response.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+      response.setHeader('Content-Type', 'text/plain; charset=utf-8; version=0.0.4');
       return response.status(200).send(text);
     } catch {
       return response.status(500).send('# Error generating metrics\n');

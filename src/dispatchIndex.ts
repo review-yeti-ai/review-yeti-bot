@@ -102,6 +102,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       repo,
       baseUrl,
     }),
+    metricsAuthToken: environment.ACTION_DISPATCH_METRICS_TOKEN?.trim() || undefined,
     ...(githubWebhook ? { githubWebhook } : {}),
   });
   // Admission credentials may belong to a different App. Only the worker-token
