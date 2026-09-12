@@ -65,82 +65,117 @@ export async function main(
   }
 
   const dependencies = { ...DEFAULT_DEPENDENCIES, ...overrides };
-  const store = dependencies.createStore();
-  await store.initialize();
-  const client = dependencies.createClient(config);
-  const publisher = new ReviewEventOutboxPublisher({
-    enabled: config.enabled,
-    repository: dependencies.createRepository(store.getPool()),
-    client,
-    workerId: createReviewEventPublisherWorkerId(config.name),
-    batchSize: config.batchSize,
-    leaseMs: config.leaseMs,
-    retryDelayMs: config.retryDelayMs,
-  });
-  const controller = new AbortController();
+  let store: ReviewEventPublisherStore | undefined;
+  let client: ReviewEventPublishClient | undefined;
+  let publisher: ReviewEventOutboxPublisher | undefined;
   let cancelForcedExit: (() => void) | undefined;
-  const stop = (signal: 'SIGTERM' | 'SIGINT') => {
-    if (controller.signal.aborted) return;
-    logger.info('Stopping Review Yeti lifecycle event publisher', { signal });
-    cancelForcedExit = dependencies.scheduleForcedExit(config.drainTimeoutMs);
-    controller.abort();
-  };
-  const onSigterm = () => stop('SIGTERM');
-  const onSigint = () => stop('SIGINT');
-  process.once('SIGTERM', onSigterm);
-  process.once('SIGINT', onSigint);
+  let onSigterm: (() => void) | undefined;
+  let onSigint: (() => void) | undefined;
 
+  let startupFailed = false;
+  let startupError: unknown;
   let runFailed = false;
   let shutdownFailed = false;
+  let publisherShutdown = false;
   try {
-    logger.info('Review Yeti lifecycle event publisher started', {
-      enabled: true,
-      serverCount: config.servers.length,
+    const initializedStore = dependencies.createStore();
+    store = initializedStore;
+    await initializedStore.initialize();
+
+    const initializedClient = dependencies.createClient(config);
+    client = initializedClient;
+    const repository = dependencies.createRepository(initializedStore.getPool());
+    publisher = new ReviewEventOutboxPublisher({
+      enabled: config.enabled,
+      repository,
+      client: initializedClient,
+      workerId: createReviewEventPublisherWorkerId(config.name),
       batchSize: config.batchSize,
+      leaseMs: config.leaseMs,
+      retryDelayMs: config.retryDelayMs,
     });
-    await runReviewEventPublisherLoop(publisher, {
-      signal: controller.signal,
-      pollIntervalMs: config.pollIntervalMs,
-      onOutcome: (outcome) => {
-        if (outcome.status !== 'idle') logger.info('Review Yeti lifecycle publication cycle completed', {
-          status: outcome.status,
-          claimed: outcome.claimed,
-          published: outcome.published,
-          failed: outcome.failed,
-          released: outcome.released,
-          leaseLost: outcome.leaseLost,
-          errorCode: outcome.errorCode,
-        });
-      },
-    });
-  } catch {
-    runFailed = true;
+
+    const controller = new AbortController();
+    const stop = (signal: 'SIGTERM' | 'SIGINT') => {
+      if (controller.signal.aborted) return;
+      logger.info('Stopping Review Yeti lifecycle event publisher', { signal });
+      cancelForcedExit = dependencies.scheduleForcedExit(config.drainTimeoutMs);
+      controller.abort();
+    };
+    onSigterm = () => stop('SIGTERM');
+    onSigint = () => stop('SIGINT');
+    process.once('SIGTERM', onSigterm);
+    process.once('SIGINT', onSigint);
+
+    try {
+      logger.info('Review Yeti lifecycle event publisher started', {
+        enabled: true,
+        serverCount: config.servers.length,
+        batchSize: config.batchSize,
+      });
+      await runReviewEventPublisherLoop(publisher, {
+        signal: controller.signal,
+        pollIntervalMs: config.pollIntervalMs,
+        onOutcome: (outcome) => {
+          if (outcome.status !== 'idle') logger.info('Review Yeti lifecycle publication cycle completed', {
+            status: outcome.status,
+            claimed: outcome.claimed,
+            published: outcome.published,
+            failed: outcome.failed,
+            released: outcome.released,
+            leaseLost: outcome.leaseLost,
+            errorCode: outcome.errorCode,
+          });
+        },
+      });
+    } catch {
+      runFailed = true;
+    }
+  } catch (error) {
+    startupFailed = true;
+    startupError = error;
   } finally {
     try {
-      try {
-        await publisher.shutdown();
-      } catch {
-        shutdownFailed = true;
-        logger.error('Review Yeti lifecycle event publisher transport shutdown failed');
+      if (publisher) {
+        try {
+          await publisher.shutdown();
+          publisherShutdown = true;
+        } catch {
+          shutdownFailed = true;
+          logger.error('Review Yeti lifecycle event publisher transport shutdown failed');
+        }
+      }
+
+      if (client && !publisherShutdown) {
         try {
           await client.close();
         } catch {
+          shutdownFailed = true;
           logger.error('Review Yeti lifecycle event publisher transport close failed');
         }
       }
-      try {
-        await store.close();
-      } catch {
-        shutdownFailed = true;
-        logger.error('Review Yeti lifecycle event publisher store shutdown failed');
+
+      if (store) {
+        try {
+          await store.close();
+        } catch {
+          shutdownFailed = true;
+          logger.error('Review Yeti lifecycle event publisher store shutdown failed');
+        }
       }
     } finally {
-      cancelForcedExit?.();
-      process.removeListener('SIGTERM', onSigterm);
-      process.removeListener('SIGINT', onSigint);
+      try {
+        cancelForcedExit?.();
+      } catch {
+        shutdownFailed = true;
+        logger.error('Review Yeti lifecycle event publisher watchdog cancellation failed');
+      }
+      if (onSigterm) process.removeListener('SIGTERM', onSigterm);
+      if (onSigint) process.removeListener('SIGINT', onSigint);
     }
   }
 
+  if (startupFailed) throw startupError;
   if (runFailed || shutdownFailed) {
     process.exitCode = 1;
     throw new Error('Review event publisher shutdown failed');

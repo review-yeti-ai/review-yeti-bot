@@ -708,6 +708,33 @@ describe('ReviewEventOutboxPublisher', () => {
     expect(client.drain).toHaveBeenCalledTimes(1);
   });
 
+  it('closes initialized resources when repository construction fails during startup', async () => {
+    const failure = new Error('repository construction failed');
+    const store = {
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getPool: vi.fn(() => ({}) as never),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const client = clientFor();
+
+    await expect(main({
+      NODE_ENV: 'test',
+      CT_REVIEW_EVENTS_ENABLED: 'true',
+      CT_REVIEW_EVENTS_NATS_URL: 'tls://127.0.0.1:4222',
+      CT_REVIEW_EVENTS_NATS_TOKEN: 'synthetic-main-token',
+    }, {
+      createStore: () => store,
+      createClient: () => client,
+      createRepository: () => { throw failure; },
+    })).rejects.toBe(failure);
+
+    expect(store.initialize).toHaveBeenCalledTimes(1);
+    expect(store.getPool).toHaveBeenCalledTimes(1);
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(client.drain).not.toHaveBeenCalled();
+    expect(store.close).toHaveBeenCalledTimes(1);
+  });
+
   it('always cancels the watchdog and removes signal listeners when store close rejects', async () => {
     const sigtermBefore = process.rawListeners('SIGTERM');
     const sigintBefore = process.rawListeners('SIGINT');
