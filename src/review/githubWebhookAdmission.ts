@@ -110,10 +110,18 @@ function checkRunRepositoryMatches(
   reference: z.infer<typeof checkRunRepositoryReference>,
   repository: z.infer<typeof githubWebhookRepositorySchema>,
 ): boolean {
-  if ('full_name' in reference) return reference.full_name === repository.full_name;
-  return reference.id === repository.id
-    && reference.name === repository.name
-    && reference.url === `https://api.github.com/repos/${repository.full_name}`;
+  const fields = reference as Record<string, unknown>;
+  const expected = {
+    full_name: repository.full_name,
+    id: repository.id,
+    name: repository.name,
+    url: `https://api.github.com/repos/${repository.full_name}`,
+  } as const;
+  for (const [key, value] of Object.entries(expected)) {
+    if (Object.hasOwn(fields, key) && fields[key] !== value) return false;
+  }
+  return fields.full_name === expected.full_name
+    || (fields.id === expected.id && fields.name === expected.name && fields.url === expected.url);
 }
 
 /** Admit signed, allowlisted GitHub App review events directly. */
