@@ -38,40 +38,46 @@ const REFRESH_ACTION_IDENTIFIER = REVIEW_REFRESH_ACTION.identifier;
 const refreshExternalId = z.string()
   .regex(/^run_[a-f0-9]{32}:a[1-9][0-9]*$/u)
   .refine((value) => Number.isSafeInteger(Number(value.slice(value.lastIndexOf(':a') + 2))));
-const refreshCheckRunWebhook = z.object({
+const recoverableCheckRun = z.object({
+  id: positiveInteger,
+  name: z.literal(AUTHORITATIVE_REVIEW_CHECK_NAME),
+  head_sha: sha,
+  status: z.literal('completed'),
+  conclusion: z.literal('failure'),
+  external_id: refreshExternalId,
+  app: z.object({
+    id: z.literal(AUTHORITATIVE_REVIEW_APP_ID),
+    slug: z.literal(AUTHORITATIVE_REVIEW_APP_SLUG),
+  }).passthrough(),
+  output: z.object({
+    title: z.string().refine((value) => RECOVERABLE_FAILURE_TITLES.has(value)),
+  }).passthrough(),
+  // GitHub leaves this array empty for fork pushes. Refuse to guess the PR
+  // coordinates in that case: refresh is only valid for a single exact head.
+  pull_requests: z.array(z.object({
+    number: positiveInteger,
+    head: z.object({
+      sha,
+      repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough(),
+    }).passthrough(),
+    base: z.object({
+      sha,
+      repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough(),
+    }).passthrough(),
+  }).passthrough()).length(1),
+}).passthrough();
+const refreshCheckRunWebhook = z.discriminatedUnion('action', [z.object({
   action: z.literal('requested_action'),
   installation: z.object({ id: positiveInteger }).passthrough(),
   repository: githubWebhookRepositorySchema,
   requested_action: z.object({ identifier: z.literal(REFRESH_ACTION_IDENTIFIER) }).passthrough(),
-  check_run: z.object({
-    id: positiveInteger,
-    name: z.literal(AUTHORITATIVE_REVIEW_CHECK_NAME),
-    head_sha: sha,
-    status: z.literal('completed'),
-    conclusion: z.literal('failure'),
-    external_id: refreshExternalId,
-    app: z.object({
-      id: z.literal(AUTHORITATIVE_REVIEW_APP_ID),
-      slug: z.literal(AUTHORITATIVE_REVIEW_APP_SLUG),
-    }).passthrough(),
-    output: z.object({
-      title: z.string().refine((value) => RECOVERABLE_FAILURE_TITLES.has(value)),
-    }).passthrough(),
-    // GitHub leaves this array empty for fork pushes. Refuse to guess the PR
-    // coordinates in that case: refresh is only valid for a single exact head.
-    pull_requests: z.array(z.object({
-      number: positiveInteger,
-      head: z.object({
-        sha,
-        repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough(),
-      }).passthrough(),
-      base: z.object({
-        sha,
-        repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough(),
-      }).passthrough(),
-    }).passthrough()).length(1),
-  }).passthrough(),
-}).passthrough();
+  check_run: recoverableCheckRun,
+}).passthrough(), z.object({
+  action: z.literal('rerequested'),
+  installation: z.object({ id: positiveInteger }).passthrough(),
+  repository: githubWebhookRepositorySchema,
+  check_run: recoverableCheckRun,
+}).passthrough()]);
 
 export interface GitHubWebhookAdmissionOptions {
   config: GitHubWebhookConfig;
@@ -141,11 +147,20 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const runId = payload.check_run.external_id.slice(0, attemptSeparator);
       const retryAfterExecutionAttempt = Number(payload.check_run.external_id.slice(attemptSeparator + 2));
       const authoritative = options.authoritativePublishing;
-      const authoritativeIds = new Set(authoritative?.repositoryIds || []);
+      const hasAuthoritativeIdentity = authoritative !== undefined
+        && authoritative.expectedAppId === payload.check_run.app.id
+        && authoritativeIds.has(payload.repository.id);
+      // GitHub's native re-request action carries no separately named action
+      // identifier. Admit it only where the service can re-read and bind the
+      // exact current candidate/policy; legacy enrollment must keep using the
+      // explicit Review Yeti refresh button instead.
+      if (payload.action === 'rerequested' && !hasAuthoritativeIdentity) {
+        return { status: 'ignored', reason: 'native_rerequest_requires_authoritative_identity' };
+      }
       if (authoritative?.acceptNewRequests === false && authoritativeIds.has(payload.repository.id)) {
         return { status: 'ignored', reason: 'authoritative_admission_paused' };
       }
-      const resolved = authoritative && authoritativeIds.has(payload.repository.id)
+      const resolved = authoritative && hasAuthoritativeIdentity
         ? await authoritative.resolver.resolve(requested) : undefined;
       const expectedIdentity = resolved?.identity || legacyIdentity;
       const expectedRunId = deriveReviewRunId(expectedIdentity);
