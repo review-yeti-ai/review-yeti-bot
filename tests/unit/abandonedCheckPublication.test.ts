@@ -22,6 +22,30 @@ const check = {
 const externalId = `${run.runId}:a${run.executionAttempt}`;
 const exactCheck = { ...check, external_id: externalId };
 
+const historicalEmptyIdentityRun: AbandonedPublishingRun = {
+  runId: 'run_b7c5c8f6d4e2fdfaa52f27d3f96bb5ce',
+  owner: 'calltelemetry',
+  repo: 'cisco-cdr',
+  prNumber: 4972,
+  headSha: '01cc3c3070ae025c9a9bb8176c92106c30488151',
+  executionAttempt: 1,
+  receivedAt: Date.parse('2026-09-10T03:36:01.099Z'),
+  terminalDeadline: Date.parse('2026-09-10T04:06:11.099Z'),
+};
+const historicalEmptyIdentityCheck = {
+  id: 102735106478,
+  name: 'Review Yeti',
+  head_sha: historicalEmptyIdentityRun.headSha,
+  app: { id: 4385771, slug: 'ct-review-bot' },
+  status: 'completed',
+  conclusion: 'success',
+  started_at: '2026-09-10T03:36:24Z',
+  completed_at: '2026-09-10T03:38:15Z',
+  external_id: '',
+  output: { title: 'Review Yeti: SHIP' },
+  pull_requests: [],
+};
+
 function fixture(checks: unknown[] = [exactCheck], reread: unknown = exactCheck) {
   const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url);
@@ -196,6 +220,98 @@ describe('abandoned check exact App/attempt failure publication', () => {
     const { client, fetchImplementation } = fixture(checks as unknown[]);
     await expect(client.failAbandonedCheck(run, appId as number, signal())).rejects.toThrow();
     expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
+  });
+
+  it.each([
+    ['run ID', { runId: `run_${'a'.repeat(32)}` }],
+    ['owner', { owner: 'review-yeti-ai' }],
+    ['repository', { repo: 'ai-workspace' }],
+    ['pull request', { prNumber: 4973 }],
+    ['head', { headSha: 'f'.repeat(40) }],
+    ['execution attempt', { executionAttempt: 2 }],
+    ['received timestamp', {
+      receivedAt: historicalEmptyIdentityRun.receivedAt + 1,
+      terminalDeadline: historicalEmptyIdentityRun.terminalDeadline + 1,
+    }],
+    ['terminal deadline', { terminalDeadline: historicalEmptyIdentityRun.terminalDeadline + 1 }],
+    ['recovery-only state', { recoveryOnly: true }],
+  ])('rejects the historical compatibility check when the durable %s does not match the audited receipt',
+    async (_label, mismatch) => {
+      const { client, fetchImplementation } = fixture(
+        [historicalEmptyIdentityCheck],
+        historicalEmptyIdentityCheck,
+      );
+
+      await expect(client.failAbandonedCheck(
+        { ...historicalEmptyIdentityRun, ...mismatch },
+        4385771,
+        signal(),
+      )).rejects.toThrow();
+
+      expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+        .toBe(true);
+    });
+
+  it.each([
+    ['check ID', { id: 102735106479 }],
+    ['publisher App', { app: { id: 4435435, slug: 'ct-pr-operator' } }],
+    ['check name', { name: 'Review Yeti Gate' }],
+    ['head', { head_sha: 'f'.repeat(40) }],
+    ['null external identity', { external_id: null }],
+    ['malformed nonempty external identity', { external_id: 'not-a-review-run' }],
+    ['nonterminal status', { status: 'in_progress', conclusion: null }],
+    ['non-success conclusion', { conclusion: 'failure' }],
+    ['same-second start timestamp', { started_at: '2026-09-10T03:36:01Z' }],
+    ['older start timestamp', { started_at: '2026-09-10T03:36:00Z' }],
+    ['malformed start timestamp', { started_at: 'not-a-timestamp' }],
+    ['completed timestamp', { completed_at: '2026-09-10T03:38:16Z' }],
+    ['malformed completed timestamp', { completed_at: 'not-a-timestamp' }],
+  ])('rejects the historical compatibility check when its immutable %s does not match the audited receipt',
+    async (_label, mismatch) => {
+      const mismatchedCheck = { ...historicalEmptyIdentityCheck, ...mismatch };
+      const { client, fetchImplementation } = fixture([mismatchedCheck], mismatchedCheck);
+
+      await expect(client.failAbandonedCheck(
+        historicalEmptyIdentityRun,
+        4385771,
+        signal(),
+      )).rejects.toThrow();
+
+      expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+        .toBe(true);
+    });
+
+  it('rejects the historical compatibility check when the authenticated publisher App does not match the receipt',
+    async () => {
+      const { client, fetchImplementation } = fixture(
+        [historicalEmptyIdentityCheck],
+        historicalEmptyIdentityCheck,
+      );
+
+      await expect(client.failAbandonedCheck(
+        historicalEmptyIdentityRun,
+        4435435,
+        signal(),
+      )).rejects.toThrow();
+
+      expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+        .toBe(true);
+    });
+
+  it('rejects ambiguous duplicate historical compatibility candidates without changing either check', async () => {
+    const { client, fetchImplementation } = fixture(
+      [historicalEmptyIdentityCheck, { ...historicalEmptyIdentityCheck }],
+      historicalEmptyIdentityCheck,
+    );
+
+    await expect(client.failAbandonedCheck(
+      historicalEmptyIdentityRun,
+      4385771,
+      signal(),
+    )).rejects.toThrow();
+
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
   });
 
   it.each([
@@ -561,6 +677,49 @@ describe('abandoned check exact App/attempt failure publication', () => {
 });
 
 describe('abandoned reaper with the actual GitHub publication adapter', () => {
+  it('retires the exact audited historical empty-identity check once without changing the newer check', async () => {
+    const { client, fetchImplementation } = fixture(
+      [historicalEmptyIdentityCheck],
+      historicalEmptyIdentityCheck,
+    );
+    let pending = true;
+    const outcomes: AbandonedCheckRecoveryOutcome[] = [];
+    const repository = {
+      claimAbandonedPublishingRuns: async () => pending ? [historicalEmptyIdentityRun] : [],
+      reconcileAbandonedPublishingRun: async (
+        claimed: AbandonedPublishingRun, _worker: string, _now: number,
+        publish: () => Promise<AbandonedCheckRecoveryOutcome>,
+      ) => {
+        expect(claimed).toEqual(historicalEmptyIdentityRun);
+        const outcome = await publish();
+        outcomes.push(outcome);
+        pending = false;
+        return { reconciled: true, outcome };
+      },
+    };
+    const reaper = new AbandonedRunReaper({
+      repository,
+      checkClientFor: async () => client,
+      publisherAppId: 4385771,
+      workerId: 'offline-reaper',
+      now: () => historicalEmptyIdentityRun.terminalDeadline + 1,
+    });
+
+    await expect(reaper.runOnce()).resolves.toEqual({
+      swept: 1, published: 0, failed: 0, superseded: 1,
+    });
+    expect(outcomes).toEqual(['superseded']);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(fetchImplementation.mock.calls[1][0]).toBe(
+      'https://api.github.com/repos/calltelemetry/cisco-cdr/check-runs/102735106478',
+    );
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+
+    await expect(reaper.runOnce()).resolves.toEqual({ swept: 0, published: 0, failed: 0 });
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+  });
+
   it.each(persistedWindows.flatMap((window) =>
     (['existing', 'absent', 'completed'] as const).map((state) => ({ window, state })),
   ))('reconciles a persisted $window ms / $state check once before its terminal deadline', async ({ window, state }) => {
