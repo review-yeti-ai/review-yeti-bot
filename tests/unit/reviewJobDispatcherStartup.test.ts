@@ -7,6 +7,8 @@ import { sha256 } from '../../src/review/reviewCore';
 
 const mocks = vi.hoisted(() => ({
   pool: { query: vi.fn() }, initialize: vi.fn(), close: vi.fn(), engine: vi.fn(),
+  dispatchRepository: vi.fn(function () { return {}; }),
+  completionRepository: vi.fn(function () { return {}; }),
   loop: vi.fn(), error: vi.fn(), loadFromCluster: vi.fn(),
 }));
 vi.mock('@kubernetes/client-node', () => ({
@@ -16,6 +18,12 @@ vi.mock('@kubernetes/client-node', () => ({
 vi.mock('../../src/persistence/postgresStore', () => ({ PostgresStore: class {
   initialize = mocks.initialize; close = mocks.close; getPool = () => mocks.pool;
 } }));
+vi.mock('../../src/persistence/reviewDispatchRepository', () => ({
+  PostgresReviewDispatchRepository: mocks.dispatchRepository,
+}));
+vi.mock('../../src/persistence/reviewCompletionRepository', () => ({
+  PostgresReviewCompletionRepository: mocks.completionRepository,
+}));
 vi.mock('../../src/k8s/kubernetesReviewJobProjector', () => ({ KubernetesReviewJobProjector: class {} }));
 vi.mock('../../src/k8s/reviewJobDispatchEngine', () => ({
   ReviewJobDispatchEngine: vi.fn(function (options) { mocks.engine(options); }),
@@ -74,6 +82,12 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     await vi.dynamicImportSettled();
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.engine).toHaveBeenCalledOnce();
+    expect(mocks.dispatchRepository).toHaveBeenCalledExactlyOnceWith(
+      mocks.pool, undefined, { lifecycleEvents: 'enabled' },
+    );
+    expect(mocks.completionRepository).toHaveBeenCalledExactlyOnceWith(
+      mocks.pool, { lifecycleEvents: 'enabled' },
+    );
     expect(mocks.close).toHaveBeenCalledOnce();
     const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
     expect(options.preparedReviewFor).toEqual(expect.any(Function));

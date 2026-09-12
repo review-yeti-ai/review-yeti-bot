@@ -174,6 +174,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
       baseUrl: baseUrl ? 'https://api.example.invalid/api/v3' : 'https://api.github.com',
     });
     expect(mocks.repository).toHaveBeenCalledWith(mocks.pool, undefined, {
+      lifecycleEvents: 'enabled',
       requireExpectedGeneration: false,
     });
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
@@ -194,6 +195,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
 
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.repository).toHaveBeenCalledExactlyOnceWith(mocks.pool, undefined, {
+      lifecycleEvents: 'enabled',
       requireExpectedGeneration: true,
     });
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
@@ -249,7 +251,9 @@ describe('Action dispatch startup transport and admission wiring', () => {
     mocks.serviceConfig.mockReturnValue(config);
     await start();
     expect(mocks.error).not.toHaveBeenCalled();
-    expect(mocks.gateRepository).toHaveBeenCalledExactlyOnceWith(mocks.pool, { completionResolutionTimeoutMs: 15_000 });
+    expect(mocks.gateRepository).toHaveBeenCalledExactlyOnceWith(mocks.pool, {
+      lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
+    });
     expect(mocks.authoritative).toHaveBeenCalledExactlyOnceWith({
       config, repository: mocks.gateStorage, getStoredPrepared: expect.any(Function), appId: '4385771',
       privateKey: 'synthetic-startup-private-key', baseUrl: 'https://api.github.com',
@@ -264,6 +268,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.initialize.mock.invocationCallOrder[0]).toBeLessThan(mocks.gateRepository.mock.invocationCallOrder[0]);
     expect(mocks.gateRepository.mock.invocationCallOrder[0]).toBeLessThan(mocks.authoritative.mock.invocationCallOrder[0]);
     expect(mocks.repository).toHaveBeenCalledExactlyOnceWith(mocks.pool, undefined, {
+      lifecycleEvents: 'enabled',
       validateAuthoritativeAdmission: mocks.validateAdmission,
       requireExpectedGeneration: false,
     });
@@ -319,7 +324,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     const { repository } = enableCi(); await start();
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.gateRepository).toHaveBeenCalledExactlyOnceWith(mocks.pool, {
-      completionResolutionTimeoutMs: 15_000, onEligibleCompletion: expect.any(Function),
+      lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000, onEligibleCompletion: expect.any(Function),
     });
     const serviceOptions = mocks.authoritative.mock.calls[0][0];
     expect(serviceOptions.repository).toBe(mocks.gateStorage);
