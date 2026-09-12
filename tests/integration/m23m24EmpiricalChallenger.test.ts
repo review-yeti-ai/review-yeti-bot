@@ -119,7 +119,7 @@ describe('Milestone 23 & 24: Empirical Challenger Test Suite', () => {
       expect(text).toMatch(/# TYPE ct_review_tokens_prompt_total counter/);
       expect(text).toMatch(/# HELP ct_review_duration_seconds .+/);
       expect(text).toMatch(/# TYPE ct_review_duration_seconds histogram/);
-      expect(text).toContain('ct_review_duration_seconds_bucket{le="+Inf"}');
+      expect(text).toMatch(/^ct_review_duration_seconds_bucket\{[^}]*le="\+Inf"[^}]*\} \d+(?:\.\d+)?$/m);
       expect(text).toContain('ct_review_duration_seconds_sum');
       expect(text).toContain('ct_review_duration_seconds_count');
     });
