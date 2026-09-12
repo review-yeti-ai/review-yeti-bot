@@ -20,6 +20,7 @@ import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
 import { createReviewCiRuntime } from './reviewCiRuntime';
 import { findReviewCiEnrollment } from './review/reviewCi';
 import { actionDispatchConfigFromEnv } from './config/actionDispatchConfig';
+import { initTelemetry } from './telemetry';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -31,6 +32,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   if (environment.ACTION_DISPATCH_ENABLED !== 'true') {
     throw new Error('ACTION_DISPATCH_ENABLED must be true for the dedicated Action dispatch service');
   }
+  initTelemetry('ct-review-action-dispatch');
   const dispatchConfig = actionDispatchConfigFromEnv(environment);
   const policy = githubActionsOidcPolicyFromEnv(environment);
   const appId = required(environment, 'GITHUB_APP_ID');
@@ -100,6 +102,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       repo,
       baseUrl,
     }),
+    metricsAuthToken: environment.ACTION_DISPATCH_METRICS_TOKEN?.trim() || undefined,
     ...(githubWebhook ? { githubWebhook } : {}),
   });
   // Admission credentials may belong to a different App. Only the worker-token
