@@ -125,6 +125,22 @@ export function buildDispatchRequest(environment) {
         throw new Error('policy-json must be a valid JSON object');
       }
       extraPolicy = parsed;
+      const ALLOWED_POLICY_KEYS = new Set([
+        'personas',
+        'maxInvestigationTurns',
+        'laneCallBudget',
+        'skills',
+        'knowledge',
+        'metrics',
+        'telemetry',
+        'retryAnalysis',
+        'retroAnalysis',
+      ]);
+      for (const key of Object.keys(extraPolicy)) {
+        if (!ALLOWED_POLICY_KEYS.has(key)) {
+          throw new Error(`policy-json contains unauthorized key '${key}'. Allowed keys: ${Array.from(ALLOWED_POLICY_KEYS).join(', ')}`);
+        }
+      }
     } catch (err) {
       throw new Error(`Invalid policy-json: ${err instanceof Error ? err.message : String(err)}`);
     }

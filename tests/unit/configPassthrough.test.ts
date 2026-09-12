@@ -272,11 +272,11 @@ reviewers:
     // 1. Valid object parsed and explicit input overrides POLICY_JSON key
     const valid = buildDispatchRequest({
       ...baseEnv,
-      POLICY_JSON: JSON.stringify({ customKey: 'customVal', personas: 'overridden-persona' }),
+      POLICY_JSON: JSON.stringify({ skills: ['ast-parser'], personas: 'overridden-persona' }),
       PERSONAS: 'authoritative-persona',
     });
     expect(valid.policy).toBeDefined();
-    expect((valid.policy as any)?.customKey).toBe('customVal');
+    expect((valid.policy as any)?.skills).toEqual(['ast-parser']);
     expect(valid.policy?.personas).toBe('authoritative-persona');
 
     // 2. Throws on malformed JSON
@@ -292,8 +292,12 @@ reviewers:
     const plain = buildDispatchRequest({ ...baseEnv, SKILLS: 'cisco-xcc' });
     expect(plain.policy?.skills).toBe('cisco-xcc');
 
-    // 6. Throws when JSON array is passed to metrics
+    // 6. Throws when JSON array is passed to metrics or retryAnalysis
     expect(() => buildDispatchRequest({ ...baseEnv, METRICS: '[1, 2]' })).toThrow(/metrics cannot be a JSON array/);
+    expect(() => buildDispatchRequest({ ...baseEnv, RETRY_ANALYSIS: '[1, 2]' })).toThrow(/retryAnalysis cannot be a JSON array/);
+
+    // 7. Throws on unauthorized key in POLICY_JSON
+    expect(() => buildDispatchRequest({ ...baseEnv, POLICY_JSON: '{"unauthorizedKey": true}' })).toThrow(/policy-json contains unauthorized key 'unauthorizedKey'/);
   });
 
   it('buildDispatchRequest sets policy to undefined when no policy inputs are supplied', () => {

@@ -275,7 +275,7 @@ inputs:
     required: false
     default: ''
   policy-json:
-    description: 'Optional raw JSON string of policy overrides passed directly to DOKS dispatch.'
+    description: 'Optional raw JSON string of policy overrides passed to DOKS dispatch (allowed keys: personas, maxInvestigationTurns, laneCallBudget, skills, knowledge, metrics, telemetry, retryAnalysis, retroAnalysis).'
     required: false
     default: ''
   # Deprecated compatibility inputs retained for callers on the pre-v1 contract. The central
