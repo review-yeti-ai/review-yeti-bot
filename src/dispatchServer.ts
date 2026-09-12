@@ -5,6 +5,7 @@ import { createRateLimiter } from './security/rateLimiter';
 import { createWebhookRouter, type RequestWithRawBody } from './github/webhookServer';
 import type { GitHubWebhookAdmissionEvent } from './review/githubWebhookAdmission';
 import { createReviewCiRouter, type ReviewCiRouterOptions } from './api/reviewCiApi';
+import { getPrometheusMetrics } from './telemetry/metrics';
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
@@ -60,6 +61,16 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
       });
     } catch {
       return response.status(503).json({ status: 'not_ready', databaseReady: false });
+    }
+  });
+
+  app.get('/metrics', async (_request: Request, response: Response) => {
+    try {
+      const text = await getPrometheusMetrics();
+      response.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+      return response.status(200).send(text);
+    } catch {
+      return response.status(500).send('# Error generating metrics\n');
     }
   });
 
