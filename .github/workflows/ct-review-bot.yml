@@ -18,7 +18,11 @@ jobs:
   review:
     name: Review Yeti
     if: github.event.pull_request.draft == false
-    # Immutable pin verified from the protected, fail-closed promoted v1 branch.
-    # v1 provenance: calltelemetry/ct-review-actions@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff
-    uses: calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff
-    secrets: inherit
+    # Immutable pin verified from the protected, fail-closed promoted v1 branch
+    # after promotion run 34698121866.
+    # v1 provenance: calltelemetry/ct-review-actions@d0f54d0dc80b6501d1652f73461f62983da0fe3b
+    uses: calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@d0f54d0dc80b6501d1652f73461f62983da0fe3b
+    secrets:
+      CT_REVIEW_BOT_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+      CT_REVIEW_BOT_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+      OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}

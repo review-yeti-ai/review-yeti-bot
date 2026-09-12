@@ -6,7 +6,7 @@ import yaml from 'js-yaml';
 const root = process.cwd();
 const callerPath = path.join(root, '.github/workflows/ct-review-bot.yml');
 const legacyPath = path.join(root, '.github/workflows/review-bot.yaml');
-const centralReviewSha = '54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff';
+const centralReviewSha = 'd0f54d0dc80b6501d1652f73461f62983da0fe3b';
 
 type Workflow = {
   name?: string;
@@ -45,12 +45,17 @@ describe('self-review workflow migration', () => {
       name: 'Review Yeti',
       if: 'github.event.pull_request.draft == false',
       uses: `calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@${centralReviewSha}`,
-      secrets: 'inherit',
+      secrets: {
+        CT_REVIEW_BOT_APP_ID: '${{ secrets.CT_REVIEW_BOT_APP_ID }}',
+        CT_REVIEW_BOT_APP_PRIVATE_KEY: '${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}',
+        OPENROUTER_REVIEW_FLEET_KEY: '${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}',
+      },
     });
 
     const source = fs.readFileSync(callerPath, 'utf8');
     expect(source).toContain(`v1 provenance: calltelemetry/ct-review-actions@${centralReviewSha}`);
     expect(source).not.toContain('review-yeti.yml@v1');
+    expect(source).not.toMatch(/^\s*secrets:\s*inherit\s*$/mu);
   });
 
   it('keeps the legacy direct self-review check during phase one', () => {
