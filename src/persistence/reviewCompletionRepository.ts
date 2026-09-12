@@ -1,5 +1,8 @@
 import {
+  appendLifecycleEventsForRuns,
   appendLifecycleEventForRun,
+  REVIEW_LIFECYCLE_EVENT_BATCH_MAX,
+  ReviewLifecycleBatchLockUnavailableError,
   requireLifecycleEventsMode,
   type ReviewLifecycleEventsOptions,
 } from './reviewEventRepository';
@@ -111,6 +114,8 @@ interface ConnectionPool {
 
 export type ReviewCompletionRepositoryOptions = ReviewLifecycleEventsOptions;
 
+const REVIEW_LIFECYCLE_BATCH_TRANSACTION_ATTEMPTS = 5;
+
 function milliseconds(value: unknown): number | undefined {
   if (value === null || value === undefined) return undefined;
   const time = value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
@@ -206,6 +211,28 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     await appendLifecycleEventForRun(client, { runId, eventKind, occurredAt: now, data });
   }
 
+  private async appendLifecycleBatch(
+    client: Queryable,
+    inputs: Array<{
+      runId: string;
+      eventKind: string;
+      occurredAt: number;
+      orderingKey: string;
+      data: Record<string, unknown>;
+    }>,
+  ): Promise<void> {
+    if (!this.lifecycleEventsEnabled || inputs.length === 0) return;
+    await appendLifecycleEventsForRuns(client, inputs);
+  }
+
+  private assertLifecycleBatchSize(size: number): void {
+    if (this.lifecycleEventsEnabled && size > REVIEW_LIFECYCLE_EVENT_BATCH_MAX) {
+      throw new Error(
+        `Review lifecycle event batch exceeds maximum of ${REVIEW_LIFECYCLE_EVENT_BATCH_MAX}`,
+      );
+    }
+  }
+
   private async hasClaimableCompletion(now: number): Promise<boolean> {
     const query = (this.pool as Queryable).query;
     if (typeof query !== 'function') {
@@ -230,18 +257,27 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
       }
       return operation({ query: (text, values) => (pool as Queryable).query(text, values), release: () => undefined });
     }
-    const client = await (pool as ConnectionPool).connect();
-    try {
-      await client.query('BEGIN');
-      const result = await operation(client);
-      await client.query('COMMIT');
-      return result;
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
+    for (let attempt = 1; attempt <= REVIEW_LIFECYCLE_BATCH_TRANSACTION_ATTEMPTS; attempt += 1) {
+      const client = await (pool as ConnectionPool).connect();
+      try {
+        await client.query('BEGIN');
+        const result = await operation(client);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        if (!(error instanceof ReviewLifecycleBatchLockUnavailableError)
+          || attempt === REVIEW_LIFECYCLE_BATCH_TRANSACTION_ATTEMPTS) {
+          throw error;
+        }
+      } finally {
+        client.release();
+      }
+      // Release every partially acquired transaction lock before yielding to
+      // the single writer, then retry the authoritative mutation from BEGIN.
+      await new Promise<void>((resolve) => setTimeout(resolve, 2 ** (attempt - 1)));
     }
+    throw new Error('Review lifecycle batch transaction retry exhausted');
   }
 
   async recordCompletion(input: ReviewCompletionRecordInput): Promise<ReviewCompletionRecord> {
@@ -500,21 +536,53 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     now: number,
   ): Promise<number> {
     const result = await this.mutate(async (client) => {
-      const result = await client.query(
-      `UPDATE review_completion_outbox
-          SET draft_deferred = FALSE,
-              updated_at = to_timestamp($4 / 1000.0)
-        WHERE repository_id = $1
-          AND pr_number = $2
-          AND head_sha = $3
-          AND draft_deferred = TRUE
-       RETURNING completion_id, run_id`,
-      [repositoryId, prNumber, headSha, now],
-      );
-      for (const row of result.rows) {
-        if (row.run_id) await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.queued', now,
-          { stage: 'completion' });
+      let result: QueryResult;
+      if (this.lifecycleEventsEnabled) {
+        const candidates = await client.query(
+          `SELECT completion_id
+             FROM review_completion_outbox
+            WHERE repository_id = $1
+              AND pr_number = $2
+              AND head_sha = $3
+              AND draft_deferred = TRUE
+            ORDER BY completion_id
+            FOR UPDATE
+            LIMIT $4`,
+          [repositoryId, prNumber, headSha, REVIEW_LIFECYCLE_EVENT_BATCH_MAX + 1],
+        );
+        this.assertLifecycleBatchSize(candidates.rows.length);
+        const completionIds = candidates.rows.map((row) => String(row.completion_id));
+        result = completionIds.length === 0
+          ? { rows: [] }
+          : await client.query(
+            `UPDATE review_completion_outbox
+                SET draft_deferred = FALSE,
+                    updated_at = to_timestamp($2 / 1000.0)
+              WHERE completion_id = ANY($1::text[])
+                AND repository_id = $3
+                AND pr_number = $4
+                AND head_sha = $5
+                AND draft_deferred = TRUE
+             RETURNING completion_id, run_id`,
+            [completionIds, now, repositoryId, prNumber, headSha],
+          );
+      } else {
+        result = await client.query(
+          `UPDATE review_completion_outbox
+              SET draft_deferred = FALSE,
+                  updated_at = to_timestamp($4 / 1000.0)
+            WHERE repository_id = $1
+              AND pr_number = $2
+              AND head_sha = $3
+              AND draft_deferred = TRUE
+           RETURNING completion_id, run_id`,
+          [repositoryId, prNumber, headSha, now],
+        );
       }
+      await this.appendLifecycleBatch(client, result.rows
+        .filter((row) => row.run_id)
+        .map((row) => ({ runId: String(row.run_id), eventKind: 'review.lifecycle.queued', occurredAt: now,
+          orderingKey: String(row.completion_id), data: { stage: 'completion' } })));
       return result;
     });
     return result.rows.length;
@@ -527,23 +595,57 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
     now: number,
   ): Promise<number> {
     const result = await this.mutate(async (client) => {
-      const result = await client.query(
-      `UPDATE review_completion_outbox
-          SET status = 'superseded',
-              lease_owner = NULL,
-              lease_expires_at = NULL,
-              updated_at = to_timestamp($4 / 1000.0)
-        WHERE repository_id = $1
-          AND pr_number = $2
-          AND head_sha <> $3
-          AND status IN ('pending', 'claimed')
-       RETURNING completion_id, run_id`,
-      [repositoryId, prNumber, currentHeadSha, now],
-      );
-      for (const row of result.rows) {
-        if (row.run_id) await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.superseded', now,
-          { stage: 'superseded', terminal_class: 'candidate_superseded' });
+      let result: QueryResult;
+      if (this.lifecycleEventsEnabled) {
+        const candidates = await client.query(
+          `SELECT completion_id
+             FROM review_completion_outbox
+            WHERE repository_id = $1
+              AND pr_number = $2
+              AND head_sha <> $3
+              AND status IN ('pending', 'claimed')
+            ORDER BY completion_id
+            FOR UPDATE
+            LIMIT $4`,
+          [repositoryId, prNumber, currentHeadSha, REVIEW_LIFECYCLE_EVENT_BATCH_MAX + 1],
+        );
+        this.assertLifecycleBatchSize(candidates.rows.length);
+        const completionIds = candidates.rows.map((row) => String(row.completion_id));
+        result = completionIds.length === 0
+          ? { rows: [] }
+          : await client.query(
+            `UPDATE review_completion_outbox
+                SET status = 'superseded',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = to_timestamp($2 / 1000.0)
+              WHERE completion_id = ANY($1::text[])
+                AND repository_id = $3
+                AND pr_number = $4
+                AND head_sha <> $5
+                AND status IN ('pending', 'claimed')
+             RETURNING completion_id, run_id`,
+            [completionIds, now, repositoryId, prNumber, currentHeadSha],
+          );
+      } else {
+        result = await client.query(
+          `UPDATE review_completion_outbox
+              SET status = 'superseded',
+                  lease_owner = NULL,
+                  lease_expires_at = NULL,
+                  updated_at = to_timestamp($4 / 1000.0)
+            WHERE repository_id = $1
+              AND pr_number = $2
+              AND head_sha <> $3
+              AND status IN ('pending', 'claimed')
+           RETURNING completion_id, run_id`,
+          [repositoryId, prNumber, currentHeadSha, now],
+        );
       }
+      await this.appendLifecycleBatch(client, result.rows
+        .filter((row) => row.run_id)
+        .map((row) => ({ runId: String(row.run_id), eventKind: 'review.lifecycle.superseded', occurredAt: now,
+          orderingKey: String(row.completion_id), data: { stage: 'superseded', terminal_class: 'candidate_superseded' } })));
       return result;
     });
     return result.rows.length;

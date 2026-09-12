@@ -13,7 +13,11 @@ import {
   ReviewCompletionDeliveryEngine,
   CIRequestClient,
 } from '../../src/k8s/reviewCompletionDeliveryEngine';
-import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
+import {
+  REVIEW_EVENT_SCHEMA_SQL,
+  ReviewLifecycleBatchLockUnavailableError,
+  appendLifecycleEventForRun,
+} from '../../src/persistence/reviewEventRepository';
 
 const TEST_SCHEMA = 'test_challenger_m2';
 const DATABASE_URL = process.env.REVIEW_YETI_TEST_DATABASE_URL || 'postgres://localhost/postgres';
@@ -243,6 +247,38 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
       expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters WHERE run_id = $1', [conflictingRunId])).rows[0].count).toBe(0);
     });
 
+    it('fails closed and rolls back when completion_id collides with a different validation request', async () => {
+      const originalRunId = 'run_completion_id_collision_original';
+      const conflictingRunId = 'run_completion_id_collision_conflict';
+      await insertLifecycleRun(originalRunId);
+      await insertLifecycleRun(conflictingRunId, 456, 43);
+
+      const original = await lifecycleRepository.recordCompletion(lifecycleInput(originalRunId, {
+        completionId: 'cpl_exact_collision',
+        validationRequestId: 'validation-completion-original',
+      }));
+
+      await expect(lifecycleRepository.recordCompletion(lifecycleInput(conflictingRunId, {
+        completionId: original.completionId,
+        repositoryId: 456,
+        prNumber: 43,
+        baseSha: 'd'.repeat(40),
+        headSha: 'e'.repeat(40),
+        validationRequestId: 'validation-completion-conflict',
+      }))).rejects.toThrow(/duplicate|unique|conflict/i);
+
+      expect((await lifecycleQuery('SELECT completion_id, validation_request_id, run_id FROM review_completion_outbox'))
+        .rows).toEqual([{
+          completion_id: 'cpl_exact_collision',
+          validation_request_id: 'validation-completion-original',
+          run_id: originalRunId,
+        }]);
+      expect((await lifecycleQuery('SELECT run_id, event_kind, sequence FROM review_event_outbox ORDER BY sequence')).rows)
+        .toEqual([{ run_id: originalRunId, event_kind: 'review.lifecycle.queued', sequence: '1' }]);
+      expect((await lifecycleQuery('SELECT run_id, next_sequence FROM review_event_sequence_counters ORDER BY run_id')).rows)
+        .toEqual([{ run_id: originalRunId, next_sequence: '1' }]);
+    });
+
     it('rolls back completion state, event intent, and sequence when run metadata is incomplete', async () => {
       const runId = 'run_lifecycle_missing_metadata';
       await insertLifecycleRun(runId, null);
@@ -334,7 +370,618 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
         .toEqual([
           { event_kind: 'review.lifecycle.queued' },
           { event_kind: 'review.lifecycle.superseded' },
+      ]);
+    });
+
+    it('uses a bounded set-oriented lifecycle append shape for multi-row readiness and supersession', async () => {
+      const queryLog: string[] = [];
+      const countedPool = {
+        connect: async () => {
+          const client = await pool.connect();
+          await client.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+          return {
+            query: async (text: string, values?: unknown[]) => {
+              queryLog.push(text.trim());
+              return client.query(text, values);
+            },
+            release: () => client.release(),
+          };
+        },
+        query: async (text: string, values?: unknown[]) => {
+          queryLog.push(text.trim());
+          return lifecycleQuery(text, values);
+        },
+      };
+      const countedRepository = new PostgresReviewCompletionRepository(countedPool, { lifecycleEvents: 'enabled' });
+
+      for (const [index, headSha] of [['ready-a', 'b'.repeat(40)], ['ready-b', 'b'.repeat(40)], ['ready-c', 'b'.repeat(40)]] as const) {
+        const runId = `run_shape_ready_${index}`;
+        await insertLifecycleRun(runId);
+        await repository.recordCompletion(lifecycleInput(runId, {
+          headSha, draftDeferred: true, validationRequestId: `validation-shape-ready-${index}`,
+        }));
+      }
+      queryLog.length = 0;
+      await expect(countedRepository.markReady(123, 42, 'b'.repeat(40), 2_000)).resolves.toBe(3);
+      expect(queryLog.length).toBeLessThanOrEqual(8);
+
+      queryLog.length = 0;
+      for (const [index, headSha] of [['old-a', 'c'.repeat(40)], ['old-b', 'c'.repeat(40)], ['old-c', 'c'.repeat(40)]] as const) {
+        const runId = `run_shape_old_${index}`;
+        await insertLifecycleRun(runId);
+        await repository.recordCompletion(lifecycleInput(runId, {
+          headSha, validationRequestId: `validation-shape-old-${index}`,
+        }));
+      }
+      queryLog.length = 0;
+      await expect(countedRepository.supersedeOlderHeads(123, 42, 'b'.repeat(40), 3_000)).resolves.toBe(3);
+      expect(queryLog.length).toBeLessThanOrEqual(8);
+    });
+
+    it('avoids the concurrent single B-then-A versus batch A-then-B counter deadlock', async () => {
+      const runA = 'run_batch_deadlock_a';
+      const runB = 'run_batch_deadlock_b';
+      await insertLifecycleRun(runA);
+      await insertLifecycleRun(runB);
+      await repository.recordCompletion(lifecycleInput(runA, {
+        completionId: 'cpl_batch_deadlock_a',
+        validationRequestId: 'validation-batch-deadlock-a',
+        draftDeferred: true,
+      }));
+      await repository.recordCompletion(lifecycleInput(runB, {
+        completionId: 'cpl_batch_deadlock_b',
+        validationRequestId: 'validation-batch-deadlock-b',
+        draftDeferred: true,
+      }));
+
+      const nonBlockingAttempt = Promise.withResolvers<void>();
+      const releaseNonBlockingAttempt = Promise.withResolvers<void>();
+      const firstRollback = Promise.withResolvers<void>();
+      const allowRetry = Promise.withResolvers<void>();
+      let connectCount = 0;
+      const batchPool = {
+        connect: async () => {
+          connectCount += 1;
+          const attempt = connectCount;
+          const client = await pool.connect();
+          await client.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+          await client.query("SET deadlock_timeout = '500ms'");
+          return {
+            query: async (text: string, values?: unknown[]) => {
+              if (attempt === 1 && /pg_try_advisory_xact_lock/iu.test(text)) {
+                const result = await client.query(text, values);
+                nonBlockingAttempt.resolve();
+                await releaseNonBlockingAttempt.promise;
+                return result;
+              }
+              if (attempt === 1 && text.trim() === 'ROLLBACK') {
+                const result = await client.query(text, values);
+                firstRollback.resolve();
+                await allowRetry.promise;
+                return result;
+              }
+              return client.query(text, values);
+            },
+            release: () => client.release(),
+          };
+        },
+      };
+      const batchRepository = new PostgresReviewCompletionRepository(batchPool, { lifecycleEvents: 'enabled' });
+      const singleClient = await pool.connect();
+      let batchMutation: Promise<number> | undefined;
+      let singleAppend: Promise<unknown> | undefined;
+      try {
+        await singleClient.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+        await singleClient.query("SET deadlock_timeout = '500ms'");
+        await singleClient.query('BEGIN');
+        await appendLifecycleEventForRun(singleClient, {
+          runId: runB,
+          eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4A1',
+          eventKind: 'review.lifecycle.queued',
+          occurredAt: 1_000,
+          data: { stage: 'single-b' },
+        });
+
+        batchMutation = batchRepository.markReady(123, 42, 'b'.repeat(40), 2_000);
+        await nonBlockingAttempt.promise;
+
+        const singlePid = (await singleClient.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+        singleAppend = appendLifecycleEventForRun(singleClient, {
+          runId: runA,
+          eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4A2',
+          eventKind: 'review.lifecycle.queued',
+          occurredAt: 1_001,
+          data: { stage: 'single-a' },
+        }).then(async (record) => {
+          await singleClient.query('COMMIT');
+          return record;
+        });
+        await vi.waitFor(async () => {
+          const activity = await pool.query(
+            'SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1',
+            [singlePid],
+          );
+          expect(activity.rows[0]?.wait_event_type).toBe('Lock');
+        }, { timeout: 1_000, interval: 10 });
+
+        releaseNonBlockingAttempt.resolve();
+        await firstRollback.promise;
+        const appendedA = await singleAppend;
+        allowRetry.resolve();
+        const markedReady = await batchMutation;
+        expect(markedReady).toBe(2);
+        expect(appendedA).toMatchObject({ runId: runA, sequence: 1 });
+        expect(connectCount).toBe(2);
+      } finally {
+        releaseNonBlockingAttempt.resolve();
+        allowRetry.resolve();
+        await singleClient.query('ROLLBACK').catch(() => undefined);
+        await Promise.allSettled([batchMutation, singleAppend].filter(Boolean) as Promise<unknown>[]);
+        singleClient.release();
+      }
+
+      expect((await lifecycleQuery(`SELECT run_id, sequence FROM review_event_outbox
+        WHERE run_id = ANY($1::text[]) ORDER BY run_id, sequence`, [[runA, runB]])).rows).toEqual([
+        { run_id: runA, sequence: '1' },
+        { run_id: runA, sequence: '2' },
+        { run_id: runB, sequence: '1' },
+        { run_id: runB, sequence: '2' },
+      ]);
+      expect((await lifecycleQuery(`SELECT run_id, next_sequence FROM review_event_sequence_counters
+        WHERE run_id = ANY($1::text[]) ORDER BY run_id`, [[runA, runB]])).rows).toEqual([
+        { run_id: runA, next_sequence: '2' },
+        { run_id: runB, next_sequence: '2' },
+      ]);
+      expect((await lifecycleQuery(`SELECT COUNT(*)::int AS count,
+        COUNT(DISTINCT event_id)::int AS distinct_count FROM review_event_outbox
+        WHERE run_id = ANY($1::text[])`, [[runA, runB]])).rows[0]).toEqual({
+        count: 4,
+        distinct_count: 4,
+      });
+      expect((await lifecycleQuery(`SELECT completion_id, draft_deferred
+        FROM review_completion_outbox ORDER BY completion_id`)).rows).toEqual([
+        { completion_id: 'cpl_batch_deadlock_a', draft_deferred: false },
+        { completion_id: 'cpl_batch_deadlock_b', draft_deferred: false },
+      ]);
+    }, 10_000);
+
+    it('fails fast and retries the combined B/A review-run reference-lock schedule', async () => {
+      const runA = 'run_batch_combined_reference_a';
+      const runB = 'run_batch_combined_reference_b';
+      const parallelRun = 'run_batch_combined_reference_parallel';
+      await insertLifecycleRun(runA);
+      await insertLifecycleRun(runB);
+      await insertLifecycleRun(parallelRun, 456, 43);
+      await repository.recordCompletion(lifecycleInput(runA, {
+        completionId: 'cpl_batch_combined_reference_a',
+        validationRequestId: 'validation-batch-combined-reference-a',
+        draftDeferred: true,
+      }));
+      await repository.recordCompletion(lifecycleInput(runB, {
+        completionId: 'cpl_batch_combined_reference_b',
+        validationRequestId: 'validation-batch-combined-reference-b',
+        draftDeferred: true,
+      }));
+
+      const firstReferenceAttempt = Promise.withResolvers<number>();
+      const firstRollback = Promise.withResolvers<void>();
+      const allowRetry = Promise.withResolvers<void>();
+      let connectCount = 0;
+      const batchPool = {
+        connect: async () => {
+          connectCount += 1;
+          const attempt = connectCount;
+          const client = await pool.connect();
+          await client.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+          await client.query("SET deadlock_timeout = '500ms'");
+          const pid = (await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+          return {
+            query: async (text: string, values?: unknown[]) => {
+              if (attempt === 1 && /FOR KEY SHARE OF runs/iu.test(text)) {
+                firstReferenceAttempt.resolve(pid);
+              }
+              if (attempt === 1 && text.trim() === 'ROLLBACK') {
+                const result = await client.query(text, values);
+                firstRollback.resolve();
+                await allowRetry.promise;
+                return result;
+              }
+              return client.query(text, values);
+            },
+            release: () => client.release(),
+          };
+        },
+      };
+      const batchRepository = new PostgresReviewCompletionRepository(batchPool, { lifecycleEvents: 'enabled' });
+      const singleWriter = await pool.connect();
+      let batchMutation: Promise<number> | undefined;
+      let writerAppendA: Promise<unknown> | undefined;
+      try {
+        await singleWriter.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+        await singleWriter.query("SET deadlock_timeout = '500ms'");
+        await singleWriter.query('BEGIN');
+        await singleWriter.query('SELECT run_id FROM review_runs WHERE run_id = $1 FOR UPDATE', [runB]);
+        const appendedB = await appendLifecycleEventForRun(singleWriter, {
+          runId: runB,
+          eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4B1',
+          eventKind: 'review.lifecycle.queued',
+          occurredAt: 1_000,
+          data: { stage: 'single-b' },
+        });
+        expect(appendedB).toMatchObject({ runId: runB, sequence: 1 });
+
+        batchMutation = batchRepository.markReady(123, 42, 'b'.repeat(40), 2_000);
+        const batchPid = await firstReferenceAttempt.promise;
+        const firstPath = await Promise.race([
+          firstRollback.promise.then(() => 'rolled-back' as const),
+          vi.waitFor(async () => {
+            const activity = await pool.query(
+              'SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1',
+              [batchPid],
+            );
+            expect(activity.rows[0]?.wait_event_type).toBe('Lock');
+          }, { timeout: 1_000, interval: 10 }).then(() => 'blocked' as const),
         ]);
+
+        const parallelClient = await pool.connect();
+        try {
+          await parallelClient.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+          await parallelClient.query('BEGIN');
+          const parallel = await appendLifecycleEventForRun(parallelClient, {
+            runId: parallelRun,
+            eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4B2',
+            eventKind: 'review.lifecycle.queued',
+            occurredAt: 1_001,
+            data: { stage: 'parallel' },
+          });
+          await parallelClient.query('COMMIT');
+          expect(parallel).toMatchObject({ runId: parallelRun, sequence: 1 });
+        } finally {
+          await parallelClient.query('ROLLBACK').catch(() => undefined);
+          parallelClient.release();
+        }
+
+        writerAppendA = (async () => {
+          await singleWriter.query('SELECT run_id FROM review_runs WHERE run_id = $1 FOR UPDATE', [runA]);
+          const record = await appendLifecycleEventForRun(singleWriter, {
+            runId: runA,
+            eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4B3',
+            eventKind: 'review.lifecycle.queued',
+            occurredAt: 1_002,
+            data: { stage: 'single-a' },
+          });
+          await singleWriter.query('COMMIT');
+          return record;
+        })();
+        const appendedA = await writerAppendA;
+        allowRetry.resolve();
+        const markedReady = await batchMutation;
+
+        expect(firstPath).toBe('rolled-back');
+        expect(appendedA).toMatchObject({ runId: runA, sequence: 1 });
+        expect(markedReady).toBe(2);
+        expect(connectCount).toBe(2);
+      } finally {
+        allowRetry.resolve();
+        await singleWriter.query('ROLLBACK').catch(() => undefined);
+        await Promise.allSettled([batchMutation, writerAppendA].filter(Boolean) as Promise<unknown>[]);
+        singleWriter.release();
+      }
+
+      expect((await lifecycleQuery(`SELECT run_id, sequence FROM review_event_outbox
+        WHERE run_id = ANY($1::text[]) ORDER BY run_id, sequence`, [[runA, runB, parallelRun]])).rows).toEqual([
+        { run_id: runA, sequence: '1' },
+        { run_id: runA, sequence: '2' },
+        { run_id: runB, sequence: '1' },
+        { run_id: runB, sequence: '2' },
+        { run_id: parallelRun, sequence: '1' },
+      ]);
+      expect((await lifecycleQuery(`SELECT run_id, next_sequence FROM review_event_sequence_counters
+        WHERE run_id = ANY($1::text[]) ORDER BY run_id`, [[runA, runB, parallelRun]])).rows).toEqual([
+        { run_id: runA, next_sequence: '2' },
+        { run_id: runB, next_sequence: '2' },
+        { run_id: parallelRun, next_sequence: '1' },
+      ]);
+      expect((await lifecycleQuery(`SELECT completion_id, draft_deferred
+        FROM review_completion_outbox ORDER BY completion_id`)).rows).toEqual([
+        { completion_id: 'cpl_batch_combined_reference_a', draft_deferred: false },
+        { completion_id: 'cpl_batch_combined_reference_b', draft_deferred: false },
+      ]);
+      expect((await lifecycleQuery(`SELECT COUNT(*)::int AS count,
+        COUNT(DISTINCT event_id)::int AS distinct_count FROM review_event_outbox`)).rows[0]).toEqual({
+        count: 5,
+        distinct_count: 5,
+      });
+    }, 10_000);
+
+    it('bounds persistent review-run reference contention to five rolled-back attempts', async () => {
+      const runId = 'run_batch_reference_retry_bound';
+      await insertLifecycleRun(runId);
+      await repository.recordCompletion(lifecycleInput(runId, {
+        completionId: 'cpl_batch_reference_retry_bound',
+        validationRequestId: 'validation-batch-reference-retry-bound',
+        draftDeferred: true,
+      }));
+      const holder = await pool.connect();
+      let connectCount = 0;
+      try {
+        await holder.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+        await holder.query('BEGIN');
+        await holder.query('SELECT run_id FROM review_runs WHERE run_id = $1 FOR UPDATE', [runId]);
+        const retryPool = {
+          connect: async () => {
+            connectCount += 1;
+            const client = await pool.connect();
+            await client.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+            await client.query("SET lock_timeout = '50ms'");
+            return client;
+          },
+        };
+        const retryRepository = new PostgresReviewCompletionRepository(retryPool, { lifecycleEvents: 'enabled' });
+
+        await expect(retryRepository.markReady(123, 42, 'b'.repeat(40), 2_000))
+          .rejects.toBeInstanceOf(ReviewLifecycleBatchLockUnavailableError);
+        expect(connectCount).toBe(5);
+        expect((await lifecycleQuery(`SELECT draft_deferred FROM review_completion_outbox
+          WHERE completion_id = 'cpl_batch_reference_retry_bound'`)).rows[0]).toEqual({ draft_deferred: true });
+        expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
+        expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+      }
+    });
+
+    it('fails fast before an advisory lock when a review-run reference is unavailable', async () => {
+      const lockedRun = 'run_batch_row_lock_deadlock';
+      const parallelRun = 'run_batch_row_lock_parallel';
+      await insertLifecycleRun(lockedRun);
+      await insertLifecycleRun(parallelRun, 456, 43);
+      await repository.recordCompletion(lifecycleInput(lockedRun, {
+        completionId: 'cpl_batch_row_lock_deadlock',
+        validationRequestId: 'validation-batch-row-lock-deadlock',
+        draftDeferred: true,
+      }));
+
+      const firstRollback = Promise.withResolvers<void>();
+      const allowRetry = Promise.withResolvers<void>();
+      let connectCount = 0;
+      const batchPool = {
+        connect: async () => {
+          connectCount += 1;
+          const attempt = connectCount;
+          const client = await pool.connect();
+          await client.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+          return {
+            query: async (text: string, values?: unknown[]) => {
+              if (attempt === 1 && text.trim() === 'ROLLBACK') {
+                const result = await client.query(text, values);
+                firstRollback.resolve();
+                await allowRetry.promise;
+                return result;
+              }
+              return client.query(text, values);
+            },
+            release: () => client.release(),
+          };
+        },
+      };
+      const batchRepository = new PostgresReviewCompletionRepository(batchPool, { lifecycleEvents: 'enabled' });
+      const rowLockWriter = await pool.connect();
+      let batchMutation: Promise<number> | undefined;
+      let writerAppend: Promise<unknown> | undefined;
+      try {
+        await rowLockWriter.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+        await rowLockWriter.query('BEGIN');
+        await rowLockWriter.query('SELECT run_id FROM review_runs WHERE run_id = $1 FOR UPDATE', [lockedRun]);
+
+        batchMutation = batchRepository.markReady(123, 42, 'b'.repeat(40), 2_000);
+        await firstRollback.promise;
+
+        const parallelClient = await pool.connect();
+        try {
+          await parallelClient.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+          await parallelClient.query('BEGIN');
+          const parallel = await appendLifecycleEventForRun(parallelClient, {
+            runId: parallelRun,
+            eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4A4',
+            eventKind: 'review.lifecycle.queued',
+            occurredAt: 1_000,
+            data: { stage: 'parallel' },
+          });
+          await parallelClient.query('COMMIT');
+          expect(parallel).toMatchObject({ runId: parallelRun, sequence: 1 });
+        } finally {
+          await parallelClient.query('ROLLBACK').catch(() => undefined);
+          parallelClient.release();
+        }
+
+        writerAppend = appendLifecycleEventForRun(rowLockWriter, {
+          runId: lockedRun,
+          eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4A5',
+          eventKind: 'review.lifecycle.queued',
+          occurredAt: 1_001,
+          data: { stage: 'row-lock-writer' },
+        }).then(async (record) => {
+          await rowLockWriter.query('COMMIT');
+          return record;
+        });
+
+        const appended = await writerAppend;
+        allowRetry.resolve();
+        const markedReady = await batchMutation;
+        expect(markedReady).toBe(1);
+        expect(appended).toMatchObject({ runId: lockedRun, sequence: 1 });
+        expect(connectCount).toBe(2);
+      } finally {
+        allowRetry.resolve();
+        await rowLockWriter.query('ROLLBACK').catch(() => undefined);
+        await Promise.allSettled([batchMutation, writerAppend].filter(Boolean) as Promise<unknown>[]);
+        rowLockWriter.release();
+      }
+
+      expect((await lifecycleQuery(`SELECT run_id, sequence FROM review_event_outbox
+        WHERE run_id = ANY($1::text[]) ORDER BY run_id, sequence`, [[lockedRun, parallelRun]])).rows).toEqual([
+        { run_id: lockedRun, sequence: '1' },
+        { run_id: lockedRun, sequence: '2' },
+        { run_id: parallelRun, sequence: '1' },
+      ]);
+      expect((await lifecycleQuery(`SELECT run_id, next_sequence FROM review_event_sequence_counters
+        WHERE run_id = ANY($1::text[]) ORDER BY run_id`, [[lockedRun, parallelRun]])).rows).toEqual([
+        { run_id: lockedRun, next_sequence: '2' },
+        { run_id: parallelRun, next_sequence: '1' },
+      ]);
+      expect((await lifecycleQuery(`SELECT draft_deferred FROM review_completion_outbox
+        WHERE completion_id = 'cpl_batch_row_lock_deadlock'`)).rows[0]).toEqual({ draft_deferred: false });
+      expect((await lifecycleQuery(`SELECT COUNT(*)::int AS count,
+        COUNT(DISTINCT event_id)::int AS distinct_count FROM review_event_outbox`)).rows[0]).toEqual({
+        count: 3,
+        distinct_count: 3,
+      });
+    }, 10_000);
+
+    it('bounds unavailable run-lock retries and rolls back every attempted readiness mutation', async () => {
+      const runId = 'run_batch_lock_retry_bound';
+      await insertLifecycleRun(runId);
+      await repository.recordCompletion(lifecycleInput(runId, {
+        completionId: 'cpl_batch_lock_retry_bound',
+        validationRequestId: 'validation-batch-lock-retry-bound',
+        draftDeferred: true,
+      }));
+      const holder = await pool.connect();
+      let connectCount = 0;
+      try {
+        await holder.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+        await holder.query('BEGIN');
+        await appendLifecycleEventForRun(holder, {
+          runId,
+          eventId: '01J8Z5M6V7Q8R9S0T1V2W3X4A3',
+          eventKind: 'review.lifecycle.queued',
+          occurredAt: 1_000,
+          data: { stage: 'lock-holder' },
+        });
+        const retryPool = {
+          connect: async () => {
+            connectCount += 1;
+            const client = await pool.connect();
+            await client.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+            return client;
+          },
+        };
+        const retryRepository = new PostgresReviewCompletionRepository(retryPool, { lifecycleEvents: 'enabled' });
+
+        await expect(retryRepository.markReady(123, 42, 'b'.repeat(40), 2_000))
+          .rejects.toThrow(/batch lock is temporarily unavailable/i);
+        expect(connectCount).toBe(5);
+        expect((await lifecycleQuery(`SELECT draft_deferred FROM review_completion_outbox
+          WHERE completion_id = 'cpl_batch_lock_retry_bound'`)).rows[0]).toEqual({ draft_deferred: true });
+        expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
+        expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        holder.release();
+      }
+    });
+
+    it.each(['markReady', 'supersedeOlderHeads'] as const)(
+      'fails %s closed and atomically when more than 256 lifecycle events would be appended',
+      async (operation) => {
+        const runPrefix = operation === 'markReady' ? 'run_batch_cap_ready_' : 'run_batch_cap_supersede_';
+        const completionPrefix = operation === 'markReady' ? 'cpl_batch_cap_ready_' : 'cpl_batch_cap_supersede_';
+        const headSha = operation === 'markReady' ? 'b'.repeat(40) : 'd'.repeat(40);
+        const draftDeferred = operation === 'markReady';
+        await lifecycleQuery(`INSERT INTO review_runs
+          (run_id, repository_id, pr_number, base_sha, head_sha, attempt, effective_policy_digest)
+          SELECT $1 || LPAD(value::text, 3, '0'), 123, 42, $2, $3, 0, $4
+            FROM generate_series(1, 257) AS value`,
+        [runPrefix, 'a'.repeat(40), headSha, 'c'.repeat(64)]);
+        await lifecycleQuery(`INSERT INTO review_completion_outbox
+          (completion_id, run_id, repository_id, repository, pr_number, base_sha, head_sha,
+           attempt_id, policy_digest, validation_request_id, status, draft_deferred, available_at)
+          SELECT $1 || LPAD(value::text, 3, '0'), $2 || LPAD(value::text, 3, '0'),
+                 123, 'calltelemetry/dashboard', 42, $3, $4,
+                 'attempt-' || value, $5, 'validation-batch-cap-' || $6 || '-' || value,
+                 'pending', $7, to_timestamp(1)
+            FROM generate_series(1, 257) AS value`,
+        [completionPrefix, runPrefix, 'a'.repeat(40), headSha, 'c'.repeat(64), operation, draftDeferred]);
+
+        const mutation = operation === 'markReady'
+          ? lifecycleRepository.markReady(123, 42, 'b'.repeat(40), 3_000)
+          : lifecycleRepository.supersedeOlderHeads(123, 42, 'b'.repeat(40), 3_000);
+        await expect(mutation).rejects.toThrow(/batch.*maximum.*256/i);
+
+        expect((await lifecycleQuery(`SELECT COUNT(*)::int AS count FROM review_completion_outbox
+          WHERE status = 'pending' AND draft_deferred = $1`, [draftDeferred])).rows[0].count).toBe(257);
+        expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
+        expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
+      },
+      10_000,
+    );
+
+    it('commits exactly 256 readiness events at the bounded batch limit', async () => {
+      const runPrefix = 'run_batch_cap_exact_';
+      const completionPrefix = 'cpl_batch_cap_exact_';
+      await lifecycleQuery(`INSERT INTO review_runs
+        (run_id, repository_id, pr_number, base_sha, head_sha, attempt, effective_policy_digest)
+        SELECT $1 || LPAD(value::text, 3, '0'), 123, 42, $2, $3, 0, $4
+          FROM generate_series(1, 256) AS value`,
+      [runPrefix, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64)]);
+      await lifecycleQuery(`INSERT INTO review_completion_outbox
+        (completion_id, run_id, repository_id, repository, pr_number, base_sha, head_sha,
+         attempt_id, policy_digest, validation_request_id, status, draft_deferred, available_at)
+        SELECT $1 || LPAD(value::text, 3, '0'), $2 || LPAD(value::text, 3, '0'),
+               123, 'calltelemetry/dashboard', 42, $3, $4,
+               'attempt-' || value, $5, 'validation-batch-cap-exact-' || value,
+               'pending', TRUE, to_timestamp(1)
+          FROM generate_series(1, 256) AS value`,
+      [completionPrefix, runPrefix, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64)]);
+
+      await expect(lifecycleRepository.markReady(123, 42, 'b'.repeat(40), 3_000)).resolves.toBe(256);
+      expect((await lifecycleQuery(`SELECT COUNT(*)::int AS count FROM review_completion_outbox
+        WHERE draft_deferred = FALSE`)).rows[0].count).toBe(256);
+      expect((await lifecycleQuery(`SELECT COUNT(*)::int AS count,
+        COUNT(DISTINCT event_id)::int AS distinct_count FROM review_event_outbox`)).rows[0]).toEqual({
+        count: 256,
+        distinct_count: 256,
+      });
+      expect((await lifecycleQuery(`SELECT COUNT(*)::int AS count,
+        MIN(next_sequence)::int AS minimum, MAX(next_sequence)::int AS maximum
+        FROM review_event_sequence_counters`)).rows[0]).toEqual({
+        count: 256,
+        minimum: 1,
+        maximum: 1,
+      });
+    }, 10_000);
+
+    it('allocates deterministic per-run sequences and rolls back the entire set append on metadata failure', async () => {
+      const sameRun = 'run_shape_same_run';
+      await insertLifecycleRun(sameRun);
+      await repository.recordCompletion(lifecycleInput(sameRun, {
+        completionId: 'cpl_shape_same_a', validationRequestId: 'validation-shape-same-a', draftDeferred: true,
+      }));
+      await repository.recordCompletion(lifecycleInput(sameRun, {
+        completionId: 'cpl_shape_same_b', validationRequestId: 'validation-shape-same-b', draftDeferred: true,
+      }));
+
+      await expect(lifecycleRepository.markReady(123, 42, 'b'.repeat(40), 4_000)).resolves.toBe(2);
+      expect((await lifecycleQuery(`SELECT event_kind, sequence, payload->'data' AS data
+        FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence`, [sameRun])).rows).toEqual([
+        { event_kind: 'review.lifecycle.queued', sequence: '1', data: { policy_digest: 'c'.repeat(64), stage: 'completion' } },
+        { event_kind: 'review.lifecycle.queued', sequence: '2', data: { policy_digest: 'c'.repeat(64), stage: 'completion' } },
+      ]);
+      expect((await lifecycleQuery('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [sameRun])).rows[0])
+        .toEqual({ next_sequence: '2' });
+
+      const invalidRun = 'run_shape_invalid_metadata';
+      await insertLifecycleRun(invalidRun, null);
+      await repository.recordCompletion(lifecycleInput(invalidRun, {
+        completionId: 'cpl_shape_invalid', validationRequestId: 'validation-shape-invalid', draftDeferred: true,
+      }));
+      await expect(lifecycleRepository.markReady(123, 42, 'b'.repeat(40), 5_000)).rejects.toThrow(/metadata/i);
+      expect((await lifecycleQuery('SELECT draft_deferred FROM review_completion_outbox WHERE completion_id = $1', ['cpl_shape_invalid'])).rows[0])
+        .toEqual({ draft_deferred: true });
+      expect((await lifecycleQuery('SELECT 1 FROM review_event_outbox WHERE run_id = $1', [invalidRun])).rows).toEqual([]);
+      expect((await lifecycleQuery('SELECT 1 FROM review_event_sequence_counters WHERE run_id = $1', [invalidRun])).rows).toEqual([]);
     });
   });
 
