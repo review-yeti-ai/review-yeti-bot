@@ -38,6 +38,7 @@ vi.mock('../../src/auth/githubActionsOidc', () => ({
   GitHubActionsOidcVerifier: class {},
 }));
 vi.mock('../../src/dispatchServer', () => ({ createActionDispatchApp: mocks.createApp }));
+vi.mock('../../src/telemetry', () => ({ initTelemetry: vi.fn() }));
 vi.mock('../../src/api/actionDispatchApi', () => ({ createWorkerCompletionVerifier: vi.fn() }));
 vi.mock('../../src/persistence/postgresStore', () => ({
   PostgresStore: class { initialize = mocks.initialize; getPool = () => mocks.pool; close = vi.fn(); },
