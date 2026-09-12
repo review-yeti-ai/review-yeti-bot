@@ -194,12 +194,20 @@ repository transactions and abandoned-run reaper, and serves metrics from the
 real dispatcher HTTP metrics server. Only GitHub transport is replaced: a
 read-only fake response supplies the strictly newer, completed, same-head App
 check needed by the superseded branch. The harness rejects GitHub writes.
+The database URL must contain only its validated authority and path: all query
+parameters are rejected before a PostgreSQL pool is constructed so libpq/pg
+connection overrides cannot redirect the harness to another host, role, port,
+database, service, or option set.
 
 Each branch runs twice in one process lifetime. The acceptance receipt verifies
-the durable reason and lifecycle terminal class, an unset result digest,
-terminal run/outbox state, and cleared leases. Four HTTP scrapes prove both
-counters are positive, retain their values across an unchanged scrape, increase
-after the second pair, and remain monotonic on a final scrape.
+that each projected outbox row first carries a non-null expired lease, then
+verifies the durable reason and lifecycle terminal class, an unset result
+digest, terminal run/outbox state, and cleared leases after the real reaper.
+Four HTTP scrapes prove both counters are positive, retain their values across
+an unchanged scrape, increase after the second pair, and remain monotonic on a
+final scrape. Teardown attempts every owned resource independently, including
+the final admin-pool close; cleanup failures are aggregated after success and
+cannot replace an earlier operation failure.
 
 Run it only against an owned disposable PostgreSQL service. The harness rejects
 non-loopback hosts and requires the disposable `postgres` user/database shape:
