@@ -1,29 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import {
   runReaperMetricsAcceptance,
-  type ReaperMetricSample,
 } from '../support/reaperMetricsAcceptanceHarness';
 
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 const acceptanceEnabled = process.env.REVIEW_YETI_REAPER_ACCEPTANCE === '1';
 const describeAcceptance = acceptanceEnabled ? describe : describe.skip;
 
-function values(
-  samples: ReaperMetricSample[],
-  key: keyof ReaperMetricSample,
-): number[] {
-  return samples.map((sample) => sample[key]);
-}
-
 describeAcceptance('REL-817 deterministic reaper metric acceptance', () => {
-  it('terminalizes both anomaly branches and exports cumulative same-process counters', async () => {
+  it('attributes each cumulative counter increment to one isolated anomaly sweep', async () => {
     expect(databaseUrl, 'REVIEW_YETI_TEST_DATABASE_URL must select an owned disposable PostgreSQL service')
       .toBeTruthy();
     const receipt = await runReaperMetricsAcceptance(databaseUrl!);
 
     expect(receipt.githubReadCount).toBeGreaterThan(0);
     expect(receipt.githubWriteCount).toBe(0);
-    expect(receipt.branches).toHaveLength(4);
+    expect(receipt.transitions.map(({ branch }) => branch)).toEqual([
+      'delivery_identity_mismatch',
+      'superseded_attempt',
+      'delivery_identity_mismatch',
+      'superseded_attempt',
+    ]);
+    expect(receipt.branches.map(({ runId }) => runId)).toEqual(
+      receipt.transitions.map(({ runId }) => runId),
+    );
 
     const { leasePreconditions } = receipt;
     expect(leasePreconditions).toHaveLength(4);
@@ -64,26 +64,37 @@ describeAcceptance('REL-817 deterministic reaper metric acceptance', () => {
       });
     }
 
-    expect(receipt.samples).toHaveLength(4);
-    const mismatchValues = values(receipt.samples, 'deliveryIdentityMismatch');
-    const supersededValues = values(receipt.samples, 'supersededAttempt');
-    expect(mismatchValues).toEqual([
-      receipt.baseline.deliveryIdentityMismatch + 1,
-      receipt.baseline.deliveryIdentityMismatch + 1,
-      receipt.baseline.deliveryIdentityMismatch + 2,
-      receipt.baseline.deliveryIdentityMismatch + 2,
-    ]);
-    expect(supersededValues).toEqual([
-      receipt.baseline.supersededAttempt + 1,
-      receipt.baseline.supersededAttempt + 1,
-      receipt.baseline.supersededAttempt + 2,
-      receipt.baseline.supersededAttempt + 2,
-    ]);
-    expect(mismatchValues.every((value, index) => index === 0 || value >= mismatchValues[index - 1]))
-      .toBe(true);
-    expect(supersededValues.every((value, index) => index === 0 || value >= supersededValues[index - 1]))
-      .toBe(true);
-    expect(mismatchValues.every((value) => value > 0)).toBe(true);
-    expect(supersededValues.every((value) => value > 0)).toBe(true);
+    let expectedBefore = receipt.baseline;
+    for (const transition of receipt.transitions) {
+      expect(transition.before).toEqual(expectedBefore);
+      expect(transition.retained).toEqual(transition.after);
+      expect(transition.outcome).toMatchObject({
+        swept: 1,
+        published: 0,
+        failed: 0,
+      });
+
+      if (transition.branch === 'delivery_identity_mismatch') {
+        expect(transition.outcome).toMatchObject({ quarantined: 1, superseded: 0 });
+        expect(transition.after).toEqual({
+          deliveryIdentityMismatch: transition.before.deliveryIdentityMismatch + 1,
+          supersededAttempt: transition.before.supersededAttempt,
+        });
+      } else {
+        expect(transition.outcome).toMatchObject({ quarantined: 0, superseded: 1 });
+        expect(transition.after).toEqual({
+          deliveryIdentityMismatch: transition.before.deliveryIdentityMismatch,
+          supersededAttempt: transition.before.supersededAttempt + 1,
+        });
+      }
+      expectedBefore = transition.retained;
+    }
+
+    expect(expectedBefore).toEqual({
+      deliveryIdentityMismatch: receipt.baseline.deliveryIdentityMismatch + 2,
+      supersededAttempt: receipt.baseline.supersededAttempt + 2,
+    });
+    expect(expectedBefore.deliveryIdentityMismatch).toBeGreaterThan(0);
+    expect(expectedBefore.supersededAttempt).toBeGreaterThan(0);
   });
 });

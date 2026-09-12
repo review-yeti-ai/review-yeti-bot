@@ -26,8 +26,26 @@ export interface ReaperMetricSample {
   supersededAttempt: number;
 }
 
+export type ReaperAcceptanceBranch = 'delivery_identity_mismatch' | 'superseded_attempt';
+
+export interface ReaperMetricTransition {
+  branch: ReaperAcceptanceBranch;
+  runId: string;
+  before: ReaperMetricSample;
+  after: ReaperMetricSample;
+  retained: ReaperMetricSample;
+  outcome: {
+    swept: number;
+    published: number;
+    failed: number;
+    quarantined: number;
+    superseded: number;
+  };
+}
+
 export interface ReaperBranchReceipt {
-  branch: 'delivery_identity_mismatch' | 'superseded_attempt';
+  branch: ReaperAcceptanceBranch;
+  runId: string;
   status: string;
   stage: string;
   resultDigest: string | null;
@@ -41,7 +59,7 @@ export interface ReaperBranchReceipt {
 }
 
 export interface ReaperLeasePrecondition {
-  branch: 'delivery_identity_mismatch' | 'superseded_attempt';
+  branch: ReaperAcceptanceBranch;
   runId: string;
   outboxStatus: 'projected';
   outboxLeaseOwner: string;
@@ -51,7 +69,7 @@ export interface ReaperLeasePrecondition {
 
 export interface ReaperMetricsAcceptanceReceipt {
   baseline: ReaperMetricSample;
-  samples: ReaperMetricSample[];
+  transitions: ReaperMetricTransition[];
   branches: ReaperBranchReceipt[];
   leasePreconditions: ReaperLeasePrecondition[];
   githubReadCount: number;
@@ -270,98 +288,105 @@ export async function runReaperMetricsAcceptance(
       };
     };
 
-    const seedPair = async (round: number): Promise<string[]> => {
-      const mismatchInput = admission(round, 'mismatch');
-      const mismatchAdmission = await repository.admit(mismatchInput);
-      if (mismatchAdmission.status !== 'accepted') throw new Error('mismatch acceptance admission was not accepted');
-      const outboxDeliveryId = `${mismatchInput.deliveryId}-outbox`;
-      await pool.query(`INSERT INTO github_deliveries
-        (delivery_id, event_name, repository_id, installation_id, payload_digest, received_at)
-        VALUES ($1, 'pull_request', $2, $3, $4, to_timestamp($5 / 1000.0))`, [
-        outboxDeliveryId,
-        mismatchInput.repositoryId,
-        mismatchInput.installationId,
-        sha256(outboxDeliveryId),
-        mismatchInput.receivedAt,
-      ]);
-      await pool.query(
-        `UPDATE review_dispatch_outbox
-            SET delivery_id = $2, status = 'projected', lease_owner = $3,
-                lease_expires_at = to_timestamp($4 / 1000.0)
-          WHERE run_id = $1`,
-        [mismatchAdmission.run.runId, outboxDeliveryId, `rel817-orphan-mismatch-${round}`,
-          expiredOutboxLeaseAt],
-      );
-      await pool.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [mismatchAdmission.run.runId]);
+    const seedBranch = async (round: number, branch: ReaperAcceptanceBranch): Promise<string> => {
+      const shortBranch = branch === 'delivery_identity_mismatch' ? 'mismatch' : 'superseded';
+      const input = admission(round, shortBranch);
+      const admitted = await repository.admit(input);
+      if (admitted.status !== 'accepted') {
+        throw new Error(`${shortBranch} acceptance admission was not accepted`);
+      }
+      const runId = admitted.run.runId;
+      const owner = `rel817-orphan-${shortBranch}-${round}`;
 
-      const supersededInput = admission(round, 'superseded');
-      const supersededAdmission = await repository.admit(supersededInput);
-      if (supersededAdmission.status !== 'accepted') throw new Error('superseded acceptance admission was not accepted');
-      await pool.query(
-        `UPDATE review_dispatch_outbox
-            SET status = 'projected', lease_owner = $2,
-                lease_expires_at = to_timestamp($3 / 1000.0)
-          WHERE run_id = $1`,
-        [supersededAdmission.run.runId, `rel817-orphan-superseded-${round}`, expiredOutboxLeaseAt],
-      );
-      await pool.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [supersededAdmission.run.runId]);
+      if (branch === 'delivery_identity_mismatch') {
+        const outboxDeliveryId = `${input.deliveryId}-outbox`;
+        await pool.query(`INSERT INTO github_deliveries
+          (delivery_id, event_name, repository_id, installation_id, payload_digest, received_at)
+          VALUES ($1, 'pull_request', $2, $3, $4, to_timestamp($5 / 1000.0))`, [
+          outboxDeliveryId,
+          input.repositoryId,
+          input.installationId,
+          sha256(outboxDeliveryId),
+          input.receivedAt,
+        ]);
+        await pool.query(
+          `UPDATE review_dispatch_outbox
+              SET delivery_id = $2, status = 'projected', lease_owner = $3,
+                  lease_expires_at = to_timestamp($4 / 1000.0)
+            WHERE run_id = $1`,
+          [runId, outboxDeliveryId, owner, expiredOutboxLeaseAt],
+        );
+      } else {
+        await pool.query(
+          `UPDATE review_dispatch_outbox
+              SET status = 'projected', lease_owner = $2,
+                  lease_expires_at = to_timestamp($3 / 1000.0)
+            WHERE run_id = $1`,
+          [runId, owner, expiredOutboxLeaseAt],
+        );
+      }
+      await pool.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [runId]);
 
-      const expectedLeases = [
-        {
-          branch: 'delivery_identity_mismatch' as const,
-          runId: mismatchAdmission.run.runId,
-          owner: `rel817-orphan-mismatch-${round}`,
-        },
-        {
-          branch: 'superseded_attempt' as const,
-          runId: supersededAdmission.run.runId,
-          owner: `rel817-orphan-superseded-${round}`,
-        },
-      ];
       const seededLeases = await pool.query(
         `SELECT run_id, status, lease_owner, lease_expires_at
            FROM review_dispatch_outbox
-          WHERE run_id = ANY($1::text[])`,
-        [expectedLeases.map(({ runId }) => runId)],
+          WHERE run_id = $1`,
+        [runId],
       );
-      if (seededLeases.rowCount !== expectedLeases.length) {
-        throw new Error('acceptance outbox lease precondition rows are incomplete');
+      if (seededLeases.rowCount !== 1) {
+        throw new Error('acceptance outbox lease precondition row is missing');
       }
-      const leaseRows = new Map<string, Record<string, unknown>>(
-        seededLeases.rows.map((row: Record<string, unknown>) => [String(row.run_id), row]),
-      );
-      for (const expected of expectedLeases) {
-        const row = leaseRows.get(expected.runId);
-        const leaseExpiresAt = nullableTimestamp(row?.lease_expires_at);
-        if (row?.status !== 'projected'
-          || row.lease_owner !== expected.owner
-          || leaseExpiresAt === null
-          || Date.parse(leaseExpiresAt) >= sweepAt) {
-          throw new Error(`acceptance outbox lease precondition failed for ${expected.runId}`);
-        }
-        leasePreconditions.push({
-          branch: expected.branch,
-          runId: expected.runId,
-          outboxStatus: 'projected',
-          outboxLeaseOwner: expected.owner,
-          outboxLeaseExpiresAt: leaseExpiresAt,
-          sweepAt,
-        });
+      const row = seededLeases.rows[0] as Record<string, unknown>;
+      const leaseExpiresAt = nullableTimestamp(row.lease_expires_at);
+      if (row.status !== 'projected'
+        || row.lease_owner !== owner
+        || leaseExpiresAt === null
+        || Date.parse(leaseExpiresAt) >= sweepAt) {
+        throw new Error(`acceptance outbox lease precondition failed for ${runId}`);
       }
-
-      const outcome = await reaper.runOnce();
-      if (outcome.swept !== 2 || outcome.quarantined !== 1 || outcome.superseded !== 1
-        || outcome.published !== 0 || outcome.failed !== 0) {
-        throw new Error(`unexpected acceptance reaper outcome ${JSON.stringify(outcome)}`);
-      }
-      return [mismatchAdmission.run.runId, supersededAdmission.run.runId];
+      leasePreconditions.push({
+        branch,
+        runId,
+        outboxStatus: 'projected',
+        outboxLeaseOwner: owner,
+        outboxLeaseExpiresAt: leaseExpiresAt,
+        sweepAt,
+      });
+      return runId;
     };
 
     const baseline = await scrape();
-    const runIds = await seedPair(1);
-    const samples = [await scrape(), await scrape()];
-    runIds.push(...await seedPair(2));
-    samples.push(await scrape(), await scrape());
+    const scenarios: Array<{ round: number; branch: ReaperAcceptanceBranch }> = [
+      { round: 1, branch: 'delivery_identity_mismatch' },
+      { round: 1, branch: 'superseded_attempt' },
+      { round: 2, branch: 'delivery_identity_mismatch' },
+      { round: 2, branch: 'superseded_attempt' },
+    ];
+    const transitions: ReaperMetricTransition[] = [];
+    const runIds: string[] = [];
+    let before = baseline;
+    for (const scenario of scenarios) {
+      const runId = await seedBranch(scenario.round, scenario.branch);
+      runIds.push(runId);
+      const rawOutcome = await reaper.runOnce();
+      const after = await scrape();
+      const retained = await scrape();
+      transitions.push({
+        branch: scenario.branch,
+        runId,
+        before,
+        after,
+        retained,
+        outcome: {
+          swept: rawOutcome.swept,
+          published: rawOutcome.published,
+          failed: rawOutcome.failed,
+          quarantined: rawOutcome.quarantined ?? 0,
+          superseded: rawOutcome.superseded ?? 0,
+        },
+      });
+      before = retained;
+    }
 
     const branches: ReaperBranchReceipt[] = [];
     for (const runId of runIds) {
@@ -394,6 +419,7 @@ export async function runReaperMetricsAcceptance(
       const row = result.rows[0];
       const terminalClass = String(row.terminal_class);
       branches.push({
+        runId,
         branch: terminalClass === 'delivery_identity_mismatch'
           ? 'delivery_identity_mismatch'
           : 'superseded_attempt',
@@ -412,7 +438,7 @@ export async function runReaperMetricsAcceptance(
 
     receipt = {
       baseline,
-      samples,
+      transitions,
       branches,
       leasePreconditions,
       githubReadCount: githubRequests.filter(({ method }) => method === 'GET').length,
