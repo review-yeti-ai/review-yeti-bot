@@ -512,9 +512,9 @@ describe('abandoned reaper with the actual GitHub publication adapter', () => {
         publish: () => Promise<AbandonedCheckRecoveryOutcome>,
       ) => {
         expect(claimed).toEqual(persistedRun);
-        await publish();
+        const outcome = await publish();
         pending = false;
-        return true;
+        return { reconciled: true, outcome };
       },
     };
     const reaperNow = persistedRun.receivedAt + 2_000;

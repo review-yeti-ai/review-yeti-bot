@@ -110,7 +110,9 @@ reaper locks both rows and never publishes when those identities diverge. It
 instead atomically terminalizes the outbox, clears both leases, records a
 bounded `dispatch_delivery_identity_mismatch` diagnostic containing only
 delivery digests, and appends a `delivery_identity_mismatch` lifecycle event.
-The run remains without a result or success verdict, is counted by
+The repository returns this quarantine explicitly to the reaper (rather than
+requiring it to infer the outcome from a missing publication callback). The run
+remains without a result or success verdict, is counted by
 `ct_review_reaper_delivery_identity_mismatch_total`, and is not eligible for
 another legacy sweep.
 
