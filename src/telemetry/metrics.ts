@@ -218,6 +218,7 @@ export async function getPrometheusMetrics(): Promise<string> {
     { name: 'ct_arbiter_verdicts_total', desc: 'Arbiter final verdict count.', type: 'counter' },
     { name: 'ct_queue_jobs_queued_total', desc: 'Total queue jobs queued.', type: 'counter' },
     { name: 'ct_queue_jobs_dispatched_total', desc: 'Total queue jobs dispatched.', type: 'counter' },
+    { name: 'ct_review_reaper_delivery_identity_mismatch_total', desc: 'Abandoned review runs quarantined because run and outbox delivery identities differed.', type: 'counter' },
     { name: 'ct_queue_active_jobs', desc: 'Current active review jobs.', type: 'gauge' },
     { name: 'ct_queue_queued_jobs', desc: 'Current queued review jobs.', type: 'gauge' },
   ];
