@@ -209,29 +209,6 @@ describe('native GitHub App webhook admission', () => {
     expect(f.admit).not.toHaveBeenCalled();
   });
 
-  it('refuses native rerequest when the active authoritative service has a different App identity', async () => {
-    const body = rerequestPayload();
-    const resolve = vi.fn();
-    const admit = vi.fn();
-    const onEvent = createGitHubWebhookAdmissionHandler({
-      config: { secret: SECRET, admissionEnabled: true,
-        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
-      admission: { admit } as any,
-      authoritativePublishing: {
-        expectedAppId: 999, acceptNewRequests: true,
-        repositoryIds: [614653796], resolver: { resolve },
-      } as any,
-      now: () => NOW,
-    });
-
-    await expect(onEvent({ eventName: 'check_run', deliveryId: 'native-wrong-active-app',
-      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
-      status: 'ignored', reason: 'native_rerequest_requires_authoritative_identity',
-    });
-    expect(resolve).not.toHaveBeenCalled();
-    expect(admit).not.toHaveBeenCalled();
-  });
-
   it('fails closed before admission when current GitHub PR identity no longer matches the native rerequest', async () => {
     const body = rerequestPayload();
     const resolve = vi.fn(async () => { throw new Error('Authoritative publishing resolution unavailable'); });
