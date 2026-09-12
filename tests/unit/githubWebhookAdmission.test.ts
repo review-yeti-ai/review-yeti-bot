@@ -56,6 +56,11 @@ function refreshPayload(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function rerequestPayload(overrides: Record<string, unknown> = {}) {
+  const { requested_action: _requestedAction, ...body } = refreshPayload();
+  return { ...body, action: 'rerequested', ...overrides };
+}
+
 function fixture(admissionEnabled = true) {
   const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: `run_${'1'.repeat(32)}` } }));
   const onEvent = createGitHubWebhookAdmissionHandler({
@@ -147,6 +152,179 @@ describe('native GitHub App webhook admission', () => {
       retryRequested: true,
       retryAfterExecutionAttempt: 2,
     }));
+  });
+
+  it('admits a native rerequest of the exact current authoritative failed check', async () => {
+    const body = rerequestPayload();
+    const identity = buildReviewRunIdentity({
+      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      headSha: HEAD, baseSha: BASE,
+    });
+    const prepared = { policy: { effectivePolicyDigest: identity.configDigest } };
+    const resolve = vi.fn(async () => ({ identity, prepared }));
+    const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: deriveReviewRunId(identity) } }));
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true,
+        repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+
+    await expect(onEvent({
+      eventName: 'check_run', deliveryId: 'delivery-native-rerequest',
+      rawBody: Buffer.from(JSON.stringify(body)), body,
+    })).resolves.toEqual({
+      status: 'accepted', deliveryId: 'delivery-native-rerequest', prNumber: 42,
+      headSha: HEAD, reason: 'refresh_requested',
+    });
+    expect(resolve).toHaveBeenCalledExactlyOnceWith({
+      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      headSha: HEAD, baseSha: BASE,
+    });
+    expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      deliveryId: 'github-webhook:delivery-native-rerequest', eventName: 'check_run',
+      retryRequested: true, retryAfterExecutionAttempt: 1,
+      identity, effectivePolicyDigest: prepared.policy.effectivePolicyDigest,
+      authoritativeGate: { expectedAppId: 4385771, prepared },
+    }));
+  });
+
+  it('refuses native rerequest when no authoritative current-candidate reader owns the repository', async () => {
+    const f = fixture();
+    const body = rerequestPayload();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit: f.admit } as any,
+      now: () => NOW,
+    });
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'native-without-authority',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'native_rerequest_requires_authoritative_identity',
+    });
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('refuses native rerequest when the active authoritative service has a different App identity', async () => {
+    const body = rerequestPayload();
+    const resolve = vi.fn();
+    const admit = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 999, acceptNewRequests: true,
+        repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'native-wrong-active-app',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'native_rerequest_requires_authoritative_identity',
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before admission when current GitHub PR identity no longer matches the native rerequest', async () => {
+    const body = rerequestPayload();
+    const resolve = vi.fn(async () => { throw new Error('Authoritative publishing resolution unavailable'); });
+    const admit = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true,
+        repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'native-stale-head',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).rejects.toThrow('Authoritative publishing resolution unavailable');
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a canonical native rerequest external id for a different governed run', async () => {
+    const original = rerequestPayload();
+    const body = rerequestPayload({
+      check_run: { ...original.check_run, external_id: `run_${'f'.repeat(32)}:a1` },
+    });
+    const identity = buildReviewRunIdentity({
+      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      headSha: HEAD, baseSha: BASE,
+    });
+    const prepared = { policy: { effectivePolicyDigest: identity.configDigest } };
+    const resolve = vi.fn(async () => ({ identity, prepared }));
+    const admit = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true,
+        repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+
+    await expect(onEvent({ eventName: 'check_run', deliveryId: 'native-wrong-run',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'refresh_identity_mismatch',
+    });
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['foreign publisher App', { check_run: { ...rerequestPayload().check_run,
+      app: { id: 1, slug: 'ct-review-bot' } } }],
+    ['foreign publisher slug', { check_run: { ...rerequestPayload().check_run,
+      app: { id: 4385771, slug: 'foreign-app' } } }],
+    ['foreign check name', { check_run: { ...rerequestPayload().check_run, name: 'Foreign Check' } }],
+    ['empty external id', { check_run: { ...rerequestPayload().check_run, external_id: '' } }],
+    ['malformed external id', { check_run: { ...rerequestPayload().check_run, external_id: 'run_bad:a1' } }],
+    ['nonterminal status', { check_run: { ...rerequestPayload().check_run,
+      status: 'in_progress', conclusion: null } }],
+    ['successful verdict', { check_run: { ...rerequestPayload().check_run, conclusion: 'success' } }],
+    ['finding verdict', { check_run: { ...rerequestPayload().check_run,
+      output: { title: 'Review Yeti: REQUEST CHANGES' } } }],
+    ['missing PR association', { check_run: { ...rerequestPayload().check_run, pull_requests: [] } }],
+    ['ambiguous PR associations', { check_run: { ...rerequestPayload().check_run,
+      pull_requests: [rerequestPayload().check_run.pull_requests[0],
+        rerequestPayload().check_run.pull_requests[0]] } }],
+    ['mismatched PR head', { check_run: { ...rerequestPayload().check_run,
+      pull_requests: [{ ...rerequestPayload().check_run.pull_requests[0],
+        head: { sha: 'd'.repeat(40), repo: { full_name: 'calltelemetry/dashboard' } } }] } }],
+    ['foreign PR repository', { check_run: { ...rerequestPayload().check_run,
+      pull_requests: [{ ...rerequestPayload().check_run.pull_requests[0],
+        head: { sha: HEAD, repo: { full_name: 'attacker/dashboard' } } }] } }],
+  ])('rejects native rerequest with %s', async (_label, overrides) => {
+    const body = rerequestPayload(overrides);
+    const resolve = vi.fn();
+    const admit = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: {
+        expectedAppId: 4385771, acceptNewRequests: true,
+        repositoryIds: [614653796], resolver: { resolve },
+      } as any,
+      now: () => NOW,
+    });
+
+    await expect(onEvent({ eventName: 'check_run', deliveryId: `invalid-native-${_label}`,
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toMatchObject({ status: 'ignored' });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
   });
 
   it('rejects a refresh whose external id is not the persisted exact-head identity', async () => {
