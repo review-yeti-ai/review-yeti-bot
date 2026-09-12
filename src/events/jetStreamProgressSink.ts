@@ -3,8 +3,12 @@ import {
   type SanitizedProgressEvent,
 } from './reviewEventRedaction';
 import { REVIEW_EVENT_MAX_BYTES } from './reviewYetiEvent';
+import { PROGRESS_SUBJECT_PREFIX } from './reviewEventSubjects';
 
-export const REVIEW_PROGRESS_SUBJECT_PREFIX = 'ct.review.progress.v1';
+export {
+  PROGRESS_SUBJECT_PREFIX,
+  PROGRESS_SUBJECT_PREFIX as REVIEW_PROGRESS_SUBJECT_PREFIX,
+} from './reviewEventSubjects';
 export const REVIEW_PROGRESS_SUBJECT_MAX_LENGTH = 64;
 
 /**
@@ -41,7 +45,7 @@ export type JetStreamProgressPublishResult =
   | { published: false; reason: 'disabled' };
 
 export function progressSubjectFor(event: SanitizedProgressEvent): string {
-  return `${REVIEW_PROGRESS_SUBJECT_PREFIX}.repo-${event.repository_id}.pr-${event.pr_number}`;
+  return `${PROGRESS_SUBJECT_PREFIX}.repo-${event.repository_id}.pr-${event.pr_number}`;
 }
 
 function encode(event: SanitizedProgressEvent): Uint8Array {

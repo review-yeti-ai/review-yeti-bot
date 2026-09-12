@@ -8,8 +8,10 @@ import {
 import {
   JetStreamProgressSink,
   JetStreamProgressSinkError,
+  REVIEW_PROGRESS_SUBJECT_PREFIX,
   type ProgressPublisher,
 } from '../../src/events/jetStreamProgressSink';
+import { PROGRESS_SUBJECT_PREFIX } from '../../src/events/jetStreamClient';
 import type { ReviewEventIdentity } from '../../src/types/live';
 
 const identity: ReviewEventIdentity = {
@@ -52,13 +54,15 @@ describe('JetStreamProgressSink', () => {
 
     const result = await sink.publish(event);
     const [subject, payload, options] = target.publish.mock.calls[0];
+    const expectedSubject = `${PROGRESS_SUBJECT_PREFIX}.repo-123.pr-42`;
 
     expect(result).toEqual({
       published: true,
-      subject: 'ct.review.progress.v1.repo-123.pr-42',
+      subject: expectedSubject,
       messageId: event.event_id,
     });
-    expect(subject).toBe('ct.review.progress.v1.repo-123.pr-42');
+    expect(REVIEW_PROGRESS_SUBJECT_PREFIX).toBe(PROGRESS_SUBJECT_PREFIX);
+    expect(subject).toBe(expectedSubject);
     expect(subject.length).toBeLessThanOrEqual(64);
     expect(subject).not.toContain(identity.runId);
     expect(options).toEqual({ messageId: event.event_id });
