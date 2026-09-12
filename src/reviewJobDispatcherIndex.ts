@@ -19,9 +19,18 @@ import { logger } from './utils/logger';
 import { getGitHubAppIdentity, getGitHubAppRepositoryPublishToken } from './github/appAuth';
 import { GitHubInstallationClient } from './github/installationClient';
 import { AbandonedRunReaper } from './review/abandonedRunReaper';
+import { initTelemetry } from './telemetry';
+import {
+  closeDispatcherMetricsServer,
+  createDispatcherMetricsServer,
+  dispatcherMetricsConfigFromEnv,
+  listenDispatcherMetricsServer,
+} from './dispatcherMetricsServer';
 
 async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+  initTelemetry('ct-review-job-dispatcher');
   const config = reviewJobDispatcherConfigFromEnv(environment);
+  const metricsConfig = dispatcherMetricsConfigFromEnv(environment);
   // Exactly the credentials used to provision worker publish tokens. Admission
   // has no publishing ownership, even when it runs under another installed App.
   const appId = String(environment.GITHUB_APP_ID || '').trim();
@@ -123,11 +132,15 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   process.once('SIGTERM', () => stop('SIGTERM'));
   process.once('SIGINT', () => stop('SIGINT'));
 
-  logger.info('Review Yeti review job dispatcher started', {
-    workerId: config.workerId,
-    namespace: config.namespace,
-  });
+  const metricsServer = createDispatcherMetricsServer();
   try {
+    await listenDispatcherMetricsServer(metricsServer, metricsConfig);
+    logger.info('Review Yeti review job dispatcher started', {
+      workerId: config.workerId,
+      namespace: config.namespace,
+      metricsHost: metricsConfig.host,
+      metricsPort: metricsConfig.port,
+    });
     // Serial with dispatch and awaited through shutdown: no detached sweep may
     // publish after the DB pool closes. Failed publications retain a 60s lease.
     await runReviewJobDispatcherLoop({ runOnce: async () => {
@@ -162,7 +175,11 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       ),
     });
   } finally {
-    await store.close();
+    try {
+      await closeDispatcherMetricsServer(metricsServer);
+    } finally {
+      await store.close();
+    }
   }
 }
 
