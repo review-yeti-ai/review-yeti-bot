@@ -698,6 +698,30 @@ describe('abandoned check exact App/attempt failure publication', () => {
 });
 
 describe('abandoned reaper with the actual GitHub publication adapter', () => {
+  it('selects the exact audited empty-identity receipt when older empty-identity checks share the head', async () => {
+    const olderEmptyIdentityCheck = {
+      ...historicalEmptyIdentityCheck,
+      id: 102734474590,
+      status: 'completed',
+      conclusion: 'failure',
+      started_at: '2026-09-10T03:33:03Z',
+      completed_at: '2026-09-10T03:35:08Z',
+    };
+    const { client, fetchImplementation } = fixture(
+      [olderEmptyIdentityCheck, historicalEmptyIdentityCheck],
+      historicalEmptyIdentityCheck,
+    );
+
+    await expect(client.failAbandonedCheck(historicalEmptyIdentityRun, 4385771, signal()))
+      .resolves.toBe('superseded');
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(fetchImplementation.mock.calls[1][0]).toBe(
+      'https://api.github.com/repos/calltelemetry/cisco-cdr/check-runs/102735106478',
+    );
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+  });
+
   it('retires the exact audited historical empty-identity check once without changing the newer check', async () => {
     const { client, fetchImplementation } = fixture(
       [historicalEmptyIdentityCheck],
