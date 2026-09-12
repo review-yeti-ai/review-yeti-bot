@@ -136,4 +136,102 @@ reviewers:
     expect(request.policy?.metrics).toBe('{"promPort": 3000}');
     expect(request.policy?.retryAnalysis).toBe('{"maxRetries": 1}');
   });
+
+  it('buildDispatchRequest resolves fallback POLICY_* environment variables', () => {
+    const env = {
+      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY_ID: '12345',
+      PR_NUMBER: '5006',
+      HEAD_SHA: 'a'.repeat(40),
+      BASE_SHA: 'b'.repeat(40),
+      ACTION_SHA: 'c'.repeat(40),
+      GITHUB_RUN_ID: '987654',
+      GITHUB_RUN_ATTEMPT: '1',
+      GITHUB_EVENT_NAME: 'pull_request_target',
+      DOKS_PUBLISH_MODE: 'app-gate',
+      POLICY_SKILLS: 'fallback-skill',
+      POLICY_KNOWLEDGE: 'fallback-knowledge',
+      POLICY_METRICS: 'fallback-metrics',
+      POLICY_RETRY_ANALYSIS: 'fallback-retry',
+    };
+
+    const request = buildDispatchRequest(env);
+    expect(request.policy).toBeDefined();
+    expect(request.policy?.skills).toBe('fallback-skill');
+    expect(request.policy?.knowledge).toBe('fallback-knowledge');
+    expect(request.policy?.metrics).toBe('fallback-metrics');
+    expect(request.policy?.retryAnalysis).toBe('fallback-retry');
+  });
+
+  it('buildDispatchRequest ensures primary inputs override fallback POLICY_* variables', () => {
+    const env = {
+      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY_ID: '12345',
+      PR_NUMBER: '5006',
+      HEAD_SHA: 'a'.repeat(40),
+      BASE_SHA: 'b'.repeat(40),
+      ACTION_SHA: 'c'.repeat(40),
+      GITHUB_RUN_ID: '987654',
+      GITHUB_RUN_ATTEMPT: '1',
+      GITHUB_EVENT_NAME: 'pull_request_target',
+      DOKS_PUBLISH_MODE: 'app-gate',
+      SKILLS: 'primary-skill',
+      POLICY_SKILLS: 'fallback-skill',
+      KNOWLEDGE: 'primary-knowledge',
+      POLICY_KNOWLEDGE: 'fallback-knowledge',
+    };
+
+    const request = buildDispatchRequest(env);
+    expect(request.policy?.skills).toBe('primary-skill');
+    expect(request.policy?.knowledge).toBe('primary-knowledge');
+  });
+
+  it('buildDispatchRequest handles POLICY_JSON parsing, merging, and precedence', () => {
+    const baseEnv = {
+      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY_ID: '12345',
+      PR_NUMBER: '5006',
+      HEAD_SHA: 'a'.repeat(40),
+      BASE_SHA: 'b'.repeat(40),
+      ACTION_SHA: 'c'.repeat(40),
+      GITHUB_RUN_ID: '987654',
+      GITHUB_RUN_ATTEMPT: '1',
+      GITHUB_EVENT_NAME: 'pull_request_target',
+      DOKS_PUBLISH_MODE: 'app-gate',
+    };
+
+    // 1. Valid object parsed and explicit input overrides POLICY_JSON key
+    const valid = buildDispatchRequest({
+      ...baseEnv,
+      POLICY_JSON: JSON.stringify({ customKey: 'customVal', personas: 'overridden-persona' }),
+      PERSONAS: 'authoritative-persona',
+    });
+    expect(valid.policy).toBeDefined();
+    expect(valid.policy?.customKey).toBe('customVal');
+    expect(valid.policy?.personas).toBe('authoritative-persona');
+
+    // 2. Throws on malformed JSON
+    expect(() => buildDispatchRequest({ ...baseEnv, POLICY_JSON: '{invalid-json' })).toThrow(/Invalid policy-json/);
+
+    // 3. Throws on JSON array
+    expect(() => buildDispatchRequest({ ...baseEnv, POLICY_JSON: '[1, 2, 3]' })).toThrow(/must be a valid JSON object/);
+  });
+
+  it('buildDispatchRequest sets policy to undefined when no policy inputs are supplied', () => {
+    const env = {
+      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY_ID: '12345',
+      PR_NUMBER: '5006',
+      HEAD_SHA: 'a'.repeat(40),
+      BASE_SHA: 'b'.repeat(40),
+      ACTION_SHA: 'c'.repeat(40),
+      GITHUB_RUN_ID: '987654',
+      GITHUB_RUN_ATTEMPT: '1',
+      GITHUB_EVENT_NAME: 'pull_request_target',
+      DOKS_PUBLISH_MODE: 'app-gate',
+    };
+
+    const request = buildDispatchRequest(env);
+    expect(request.policy).toBeUndefined();
+  });
 });

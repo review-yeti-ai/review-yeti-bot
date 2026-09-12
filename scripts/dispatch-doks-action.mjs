@@ -118,14 +118,15 @@ export function buildDispatchRequest(environment) {
   const laneCallBudget = laneCallBudgetRaw ? Number(laneCallBudgetRaw) : undefined;
 
   let extraPolicy = {};
-  if (environment.POLICY_JSON) {
+  if (environment.POLICY_JSON && String(environment.POLICY_JSON).trim()) {
     try {
-      const parsed = JSON.parse(environment.POLICY_JSON);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        extraPolicy = parsed;
+      const parsed = JSON.parse(String(environment.POLICY_JSON).trim());
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('policy-json must be a valid JSON object');
       }
-    } catch {
-      // ignore malformed custom policy json
+      extraPolicy = parsed;
+    } catch (err) {
+      throw new Error(`Invalid policy-json: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   const skills = String(environment.SKILLS || environment.POLICY_SKILLS || '').trim();
