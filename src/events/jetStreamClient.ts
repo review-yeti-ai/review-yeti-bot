@@ -2,29 +2,23 @@ import { Worker } from 'node:worker_threads';
 import type { Readable } from 'node:stream';
 import type { NatsEventPublisherConfig } from './natsConfig';
 import {
-  LIFECYCLE_SUBJECT_PREFIX,
-  PROGRESS_SUBJECT_PREFIX,
+  MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH,
+  isReviewEventSubject,
 } from './reviewEventSubjects';
 
 export type { NatsEventPublisherConfig } from './natsConfig';
 export {
   LIFECYCLE_SUBJECT_PREFIX,
+  MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH,
   PROGRESS_SUBJECT_PREFIX,
 } from './reviewEventSubjects';
 
-export const MAX_SUBJECT_SUFFIX_LENGTH = 64;
+export const MAX_SUBJECT_SUFFIX_LENGTH = MAX_REVIEW_EVENT_SUBJECT_SUFFIX_LENGTH;
 export const MAX_PUBLISH_PAYLOAD_BYTES = 16 * 1024;
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-const SUBJECT_PATTERN = new RegExp(
-  `^(?:${escapeRegExp(LIFECYCLE_SUBJECT_PREFIX)}|${escapeRegExp(PROGRESS_SUBJECT_PREFIX)})\\.[a-z0-9][a-z0-9_-]{0,63}$`,
-  'u',
-);
 const MESSAGE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/u;
-const STREAM_NAME_PATTERN = /^[^\s.*>\/\\\u0000-\u001f\u007f]{1,255}$/u;
+const STREAM_NAME_PATTERN_SOURCE = String.raw`[^\s.*>\/\\\u0000-\u001f\u007f]{1,255}`;
+const STREAM_NAME_PATTERN = new RegExp(`^${STREAM_NAME_PATTERN_SOURCE}$`, 'u');
 const TERMINATE_OWNED_TRANSPORT = Symbol('terminateOwnedTransport');
 
 export interface JetStreamPublishAck {
@@ -111,7 +105,7 @@ export interface ReviewEventPublishClient {
 }
 
 export function assertReviewEventSubject(subject: string): void {
-  if (!SUBJECT_PATTERN.test(subject)) throw new JetStreamTransportError('invalid_subject');
+  if (!isReviewEventSubject(subject)) throw new JetStreamTransportError('invalid_subject');
 }
 
 function assertMessageId(messageId: string): void {
@@ -197,6 +191,8 @@ const TRANSPORT_WORKER_SOURCE = String.raw`
   const { parentPort } = require('node:worker_threads');
   const { connect } = require('@nats-io/transport-node');
   const { jetstream } = require('@nats-io/jetstream');
+  const STREAM_NAME_PATTERN_SOURCE = ${JSON.stringify(STREAM_NAME_PATTERN_SOURCE)};
+  const STREAM_NAME_PATTERN = new RegExp('^' + STREAM_NAME_PATTERN_SOURCE + '$', 'u');
 
   let connection;
   let client;
@@ -220,7 +216,7 @@ const TRANSPORT_WORKER_SOURCE = String.raw`
           const raw = JSON.parse(new TextDecoder().decode(message.data));
           if (!raw || typeof raw !== 'object' || (!raw.error && (
             typeof raw.stream !== 'string'
-            || !/^[^\s.*>\/\\\u0000-\u001f\u007f]{1,255}$/u.test(raw.stream)
+            || !STREAM_NAME_PATTERN.test(raw.stream)
             || !Number.isSafeInteger(raw.seq)
             || raw.seq <= 0
             || (Object.prototype.hasOwnProperty.call(raw, 'duplicate')
