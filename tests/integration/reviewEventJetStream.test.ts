@@ -51,9 +51,24 @@ async function waitForCurrentReplicas(manager: JetStreamManager, streamName: str
   throw new Error('JetStream replicas did not become current within the bounded fixture deadline');
 }
 
+async function waitForLeaderChange(
+  manager: JetStreamManager,
+  streamName: string,
+  previousLeader: string,
+): Promise<string> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const leader = (await manager.streams.info(streamName)).cluster?.leader;
+    if (leader && leader !== previousLeader) return leader;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('JetStream did not elect a different stream leader within the bounded fixture deadline');
+}
+
 describeWithJetStream('Review event JetStream transport', () => {
   let controlConnection: NatsConnection;
   let manager: JetStreamManager;
+  let streamCreated = false;
   const streamName = `RY_TASK4_${randomBytes(8).toString('hex').toUpperCase()}`;
   const subject = `ct.review.lifecycle.v1.${randomBytes(12).toString('hex')}`;
 
@@ -79,17 +94,32 @@ describeWithJetStream('Review event JetStream transport', () => {
       max_bytes: 1024 * 1024,
       duplicate_window: 120_000_000_000,
     });
+    streamCreated = true;
     await waitForCurrentReplicas(manager, streamName);
   }, 10_000);
 
   afterAll(async () => {
-    if (manager) await manager.streams.delete(streamName).catch(() => false);
-    if (controlConnection) await controlConnection.drain().catch(() => undefined);
+    const cleanupFailures: unknown[] = [];
+    try {
+      if (manager && streamCreated) {
+        const deleted = await manager.streams.delete(streamName);
+        if (!deleted) throw new Error('JetStream fixture stream deletion was not acknowledged');
+      }
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    try {
+      if (controlConnection) await controlConnection.drain();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+    if (cleanupFailures.length > 0) throw cleanupFailures[0];
   });
 
-  it('persists one R=3 message and acknowledges an exact message-ID replay as duplicate', async () => {
+  it('deduplicates an R=3 message and publishes after a bounded stream-leader election', async () => {
     const client = new JetStreamPublishClient(publisherConfig());
     const messageId = '01J8Z5M6V7Q8R9S0T1V2W3X4Y7';
+    const postElectionMessageId = '01J8Z5M6V7Q8R9S0T1V2W3X4Y8';
     const payload = new TextEncoder().encode('{"schema":"review-yeti-event.v1","proof":"task4"}');
     try {
       const first = await client.publish(subject, payload, { messageId });
@@ -113,7 +143,35 @@ describeWithJetStream('Review event JetStream transport', () => {
       expect(info.state.messages).toBe(1);
       expect(info.config.storage).toBe(StorageType.File);
       expect(info.config.num_replicas).toBe(3);
-      expect(info.cluster?.leader).toBeTruthy();
+      const previousLeader = info.cluster?.leader;
+      expect(previousLeader).toBeTruthy();
+
+      const stepdownReply = await controlConnection.request(
+        `$JS.API.STREAM.LEADER.STEPDOWN.${streamName}`,
+        new Uint8Array(),
+        { timeout: 2_000 },
+      );
+      expect(JSON.parse(new TextDecoder().decode(stepdownReply.data))).toMatchObject({ success: true });
+
+      const electedLeader = await waitForLeaderChange(manager, streamName, previousLeader!);
+      expect(electedLeader).not.toBe(previousLeader);
+
+      const postElection = await client.publish(subject, payload, {
+        messageId: postElectionMessageId,
+      });
+      expect(postElection).toMatchObject({
+        acknowledged: true,
+        duplicate: false,
+        stream: streamName,
+        sequence: 2,
+      });
+
+      await waitForCurrentReplicas(manager, streamName);
+      const postElectionInfo = await manager.streams.info(streamName);
+      expect(postElectionInfo.cluster?.leader).toBe(electedLeader);
+      expect(postElectionInfo.cluster?.replicas).toHaveLength(2);
+      expect(postElectionInfo.cluster?.replicas?.every((replica) => replica.current)).toBe(true);
+      expect(postElectionInfo.state.messages).toBe(2);
     } finally {
       await client.drain();
     }
