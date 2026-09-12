@@ -8,6 +8,7 @@ import { sha256 } from '../../src/review/reviewCore';
 import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { getMetrics } from '../../src/telemetry/metrics';
 import { logger } from '../../src/utils/logger';
+import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
 
 // This unit suite deliberately exercises the legacy direct-query seam. The
 // production constructor remains fail-closed; this adapter makes the test
@@ -82,6 +83,24 @@ function workerFailureRepository(query: (sql: string, values?: unknown[]) => Pro
     repository: new PostgresReviewDispatchRepository({ connect: async () => ({ query: transactionQuery, release }) }),
     transactionQuery,
     release,
+  };
+}
+
+function terminalSuccess(overrides: Record<string, unknown> = {}) {
+  return {
+    version: 'WorkerTerminalSuccess.v1' as const,
+    runId: row.run_id,
+    owner: identity.owner,
+    repo: identity.repo,
+    prNumber: identity.prNumber,
+    headSha: identity.headSha,
+    baseSha: identity.baseSha,
+    repositoryId: 123,
+    policyDigest: identity.configDigest,
+    configDigest: identity.configDigest,
+    executionAttempt: 1,
+    checkId: 4242,
+    ...overrides,
   };
 }
 
@@ -706,6 +725,95 @@ describe('PostgresReviewDispatchRepository', () => {
         logTail: diagnostics.logTail,
       }),
     ]);
+  });
+
+  it.each(['projected', 'claimed', 'pending'])('atomically records a matching success from a %s execution', async (outboxStatus) => {
+    const tokenDigest = 'a'.repeat(64);
+    const success = terminalSuccess();
+    const resultDigest = workerTerminalSuccessDigest(success);
+    const query = vi.fn(async (sql: string, _values?: unknown[]) => /SELECT runs\.status/u.test(sql)
+      ? { rows: [{
+        ...row,
+        repository_id: 123,
+        publication_mode: 'app-gate',
+        status: 'running',
+        outbox_status: outboxStatus,
+        execution_attempt: 0,
+        worker_token_digest: tokenDigest,
+        result_digest: null,
+      }] }
+      : { rows: [{ run_id: row.run_id }] });
+    const { repository, transactionQuery, release } = workerFailureRepository(query);
+
+    await expect(repository.markWorkerSuccess(success, { workerTokenDigest: tokenDigest }, 4_000)).resolves.toEqual({
+      runId: row.run_id,
+      status: 'succeeded',
+    });
+
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(transactionQuery.mock.calls[0][0]).toBe('BEGIN');
+    expect(transactionQuery.mock.calls[1][1]).toEqual(['review-dispatch:123:42']);
+    expect(transactionQuery.mock.calls.at(-1)?.[0]).toBe('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
+    expect(query.mock.calls[2][1]).toEqual([
+      row.run_id,
+      resultDigest,
+      4_000,
+      identity.owner,
+      identity.repo,
+      identity.prNumber,
+      identity.headSha,
+      identity.baseSha,
+      123,
+      identity.configDigest,
+      identity.configDigest,
+      1,
+      tokenDigest,
+    ]);
+  });
+
+  it('accepts an exact duplicate success but rejects different terminal evidence', async () => {
+    const tokenDigest = 'a'.repeat(64);
+    const success = terminalSuccess();
+    const resultDigest = workerTerminalSuccessDigest(success);
+    const stored = (digest: string) => ({
+      ...row,
+      repository_id: 123,
+      publication_mode: 'app-gate',
+      status: 'succeeded',
+      outbox_status: 'terminal',
+      execution_attempt: 0,
+      worker_token_digest: tokenDigest,
+      result_digest: digest,
+    });
+    const duplicateRepository = workerFailureRepository(vi.fn(async () => ({ rows: [stored(resultDigest)] }))).repository;
+    await expect(duplicateRepository.markWorkerSuccess(success, { workerTokenDigest: tokenDigest }, 4_100))
+      .resolves.toEqual({ runId: row.run_id, status: 'already_succeeded' });
+
+    const conflictRepository = workerFailureRepository(vi.fn(async () => ({ rows: [stored(resultDigest)] }))).repository;
+    await expect(conflictRepository.markWorkerSuccess(
+      terminalSuccess({ checkId: 4243 }), { workerTokenDigest: tokenDigest }, 4_200,
+    )).resolves.toEqual({ runId: row.run_id, status: 'conflict' });
+  });
+
+  it('rejects a stale success identity before changing durable state', async () => {
+    const tokenDigest = 'a'.repeat(64);
+    const query = vi.fn(async () => ({ rows: [{
+      ...row,
+      repository_id: 123,
+      publication_mode: 'app-gate',
+      status: 'running',
+      outbox_status: 'projected',
+      execution_attempt: 1,
+      worker_token_digest: tokenDigest,
+      result_digest: null,
+    }] }));
+    const { repository, transactionQuery } = workerFailureRepository(query);
+
+    await expect(repository.markWorkerSuccess(terminalSuccess(), { workerTokenDigest: tokenDigest }, 4_300))
+      .resolves.toEqual({ runId: row.run_id, status: 'unauthorized' });
+    expect(query).toHaveBeenCalledOnce();
+    expect(transactionQuery.mock.calls.some(([sql]) => /\bUPDATE\s+(?:review_runs|review_dispatch_outbox)/u.test(sql))).toBe(false);
   });
 
   it.each(['projected', 'claimed', 'pending'])('atomically records a matching failure from a %s execution', async (outboxStatus) => {
