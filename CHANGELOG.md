@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.56.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.10...v1.56.11) (2026-09-12)
+
+
+### Bug Fixes
+
+* **reaper:** type epoch lease arithmetic ([#737](https://github.com/review-yeti-ai/review-yeti-bot/issues/737)) ([5373631](https://github.com/review-yeti-ai/review-yeti-bot/commit/5373631e38acea5127bd10f58fb775054060a63f))
+
 ## [1.56.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.56.9...v1.56.10) (2026-09-12)
 
 
