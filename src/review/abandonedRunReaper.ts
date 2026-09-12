@@ -35,6 +35,8 @@ export interface AbandonedRunReaperOutcome {
   failed: number;
   /** Rows retired without publication because their delivery identities diverged. */
   quarantined?: number;
+  /** Obsolete rows retired because a completed newer App check owns the same head. */
+  superseded?: number;
 }
 
 export class AbandonedRunReaper {
@@ -57,6 +59,7 @@ export class AbandonedRunReaper {
     let published = 0;
     let failed = 0;
     let quarantined = 0;
+    let superseded = 0;
 
     for (const run of runs) {
       if (signal?.aborted) break;
@@ -78,6 +81,7 @@ export class AbandonedRunReaper {
         if (!reconciliation.reconciled) continue;
         const outcome = reconciliation.outcome;
         if (outcome === 'quarantined') quarantined += 1;
+        if (outcome === 'superseded') superseded += 1;
         if (outcome === 'failure-published') published += 1;
         if (outcome === 'creation-unconfirmed') failed += 1;
       } catch {
@@ -99,10 +103,15 @@ export class AbandonedRunReaper {
         published,
         failed,
         quarantined,
+        superseded,
       });
     }
-    return quarantined > 0
-      ? { swept: runs.length, published, failed, quarantined }
-      : { swept: runs.length, published, failed };
+    return {
+      swept: runs.length,
+      published,
+      failed,
+      ...(quarantined > 0 ? { quarantined } : {}),
+      ...(superseded > 0 ? { superseded } : {}),
+    };
   }
 }

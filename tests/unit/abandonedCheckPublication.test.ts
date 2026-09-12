@@ -187,13 +187,54 @@ describe('abandoned check exact App/attempt failure publication', () => {
 
   it.each([
     ['ambiguous exact checks', [exactCheck, { ...exactCheck, id: 2 }], 4385771],
-    ['newer execution', [{ ...check, external_id: `${run.runId}:a2`, started_at: '2026-09-09T17:38:00Z' }], 4385771],
-    ['same-head different bound run', [{ ...check, external_id: `run_${'a'.repeat(32)}:a1` }], 4385771],
+    ['newer in-progress execution', [{ ...check, external_id: `${run.runId}:a2`, started_at: '2026-09-09T17:38:00Z' }], 4385771],
+    ['newer completed check with non-verdict conclusion', [{ ...check, external_id: `${run.runId}:a2`, started_at: '2026-09-09T17:38:00Z', status: 'completed', conclusion: 'neutral' }], 4385771],
+    ['malformed newer attempt identity', [{ ...check, external_id: 'not-a-review-run', started_at: '2026-09-09T17:38:00Z' }], 4385771],
     ['legacy check without exact attempt identity', [check], 4385771],
   ])('refuses %s without writing any check', async (_label, checks, appId) => {
     const { client, fetchImplementation } = fixture(checks as unknown[]);
     await expect(client.failAbandonedCheck(run, appId as number, signal())).rejects.toThrow();
     expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || ''))).toBe(true);
+  });
+
+  it.each([
+    ['successful different run', `run_${'a'.repeat(32)}:a1`, 'success'],
+    ['failed newer execution', `${run.runId}:a2`, 'failure'],
+  ] as const)('retires the abandoned attempt behind a completed newer %s without writing a check',
+    async (_label, newerExternalId, conclusion) => {
+      const newer = {
+        ...check,
+        id: 102575533973,
+        external_id: newerExternalId,
+        started_at: '2026-09-09T17:38:00Z',
+        status: 'completed',
+        conclusion,
+      };
+      const { client, fetchImplementation } = fixture([newer], newer);
+
+      await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('superseded');
+
+      expect(fetchImplementation).toHaveBeenCalledOnce();
+      expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+        .toBe(true);
+    });
+
+  it('still reconciles the exact abandoned attempt when a completed newer check also exists', async () => {
+    const newer = {
+      ...exactCheck,
+      id: 102575533973,
+      external_id: `${run.runId}:a2`,
+      started_at: '2026-09-09T17:38:00Z',
+      status: 'completed',
+      conclusion: 'success',
+    };
+    const { client, fetchImplementation } = fixture([exactCheck, newer], exactCheck);
+
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+
+    const writes = fetchImplementation.mock.calls.filter(([, init]) => ['PATCH', 'POST'].includes(init?.method || ''));
+    expect(writes).toHaveLength(1);
+    expect(writes[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
   });
 
   it('allows an older previous-attempt check while creating failure for the current exact attempt', async () => {
