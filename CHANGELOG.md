@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.59.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.59.0...v1.59.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **webhooks:** handle native Review Yeti rerequests ([#753](https://github.com/review-yeti-ai/review-yeti-bot/issues/753)) ([f70894a](https://github.com/review-yeti-ai/review-yeti-bot/commit/f70894a0d138a3978d76cd2bb36b94ea83e05d4d))
+
 ## [1.59.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.58.2...v1.59.0) (2026-09-12)
 
 
