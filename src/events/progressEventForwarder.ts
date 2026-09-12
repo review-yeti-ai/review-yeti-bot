@@ -30,10 +30,13 @@ export type ProgressEventForwardingErrorHandler = (
   failure: ProgressEventForwardingFailure,
 ) => unknown;
 
+export type ProgressEventSanitizer = typeof sanitizeProgressEvent;
+
 export interface ProgressEventForwarderOptions {
   sink?: ProgressEventSink;
   identityProvider?: ProgressEventIdentityProvider;
   onFailure?: ProgressEventForwardingErrorHandler;
+  sanitize?: ProgressEventSanitizer;
 }
 
 /**
@@ -46,9 +49,11 @@ export class ProgressEventForwarder {
   private sink?: ProgressEventSink;
   private identityProvider?: ProgressEventIdentityProvider;
   private readonly onFailure?: ProgressEventForwardingErrorHandler;
+  private readonly sanitize: ProgressEventSanitizer;
 
   constructor(options: ProgressEventForwarderOptions = {}) {
     this.onFailure = options.onFailure;
+    this.sanitize = options.sanitize || sanitizeProgressEvent;
     this.setProgressSink(options.sink, options.identityProvider);
   }
 
@@ -76,7 +81,7 @@ export class ProgressEventForwarder {
 
     let sanitized: SanitizedProgressEvent | ReviewEventRejection;
     try {
-      sanitized = sanitizeProgressEvent(event, identity);
+      sanitized = this.sanitize(event, identity);
     } catch {
       this.reportFailure('sanitization_failed');
       return;
