@@ -385,6 +385,81 @@ describe('ReviewEventOutboxPublisher', () => {
     expect(repository.markPublished).toHaveBeenCalledWith(eventId, 'publisher-a', 2_000, 'duplicate');
   });
 
+  it('reports lease loss when an acknowledged publish cannot be marked published', async () => {
+    const repository = repositoryFor(claim());
+    const client = clientFor();
+    const calls: string[] = [];
+    vi.mocked(client.publish).mockImplementation(async () => {
+      calls.push('publish');
+      return { acknowledged: true, duplicate: false, stream: 'CT_REVIEW_EVENTS', sequence: 17 };
+    });
+    vi.mocked(repository.markPublished).mockImplementation(async () => {
+      calls.push('mark');
+      return false;
+    });
+    const publisher = new ReviewEventOutboxPublisher({
+      enabled: true,
+      repository,
+      client,
+      workerId: 'publisher-a',
+      batchSize: 1,
+      leaseMs: 5_000,
+      retryDelayMs: 2_000,
+      now: () => 2_000,
+    });
+
+    const outcome = await publisher.runOnce();
+
+    expect(calls).toEqual(['publish', 'mark']);
+    expect(repository.markPublished).toHaveBeenCalledWith(eventId, 'publisher-a', 2_000, 'acknowledged');
+    expect(outcome).toMatchObject({
+      status: 'retry',
+      claimed: 1,
+      published: 0,
+      failed: 0,
+      released: 0,
+      leaseLost: 1,
+    });
+  });
+
+  it('reports mark failure after an acknowledged publish without counting it as published', async () => {
+    const repository = repositoryFor(claim());
+    const client = clientFor();
+    const calls: string[] = [];
+    vi.mocked(client.publish).mockImplementation(async () => {
+      calls.push('publish');
+      return { acknowledged: true, duplicate: false, stream: 'CT_REVIEW_EVENTS', sequence: 17 };
+    });
+    vi.mocked(repository.markPublished).mockImplementation(async () => {
+      calls.push('mark');
+      throw new Error('database mark failed');
+    });
+    const publisher = new ReviewEventOutboxPublisher({
+      enabled: true,
+      repository,
+      client,
+      workerId: 'publisher-a',
+      batchSize: 1,
+      leaseMs: 5_000,
+      retryDelayMs: 2_000,
+      now: () => 2_000,
+    });
+
+    const outcome = await publisher.runOnce();
+
+    expect(calls).toEqual(['publish', 'mark']);
+    expect(repository.markPublished).toHaveBeenCalledWith(eventId, 'publisher-a', 2_000, 'acknowledged');
+    expect(outcome).toMatchObject({
+      status: 'retry',
+      claimed: 1,
+      published: 0,
+      failed: 1,
+      released: 0,
+      leaseLost: 0,
+      errorCode: 'mark_published_failed',
+    });
+  });
+
   it('releases the PostgreSQL claim for bounded retry on NATS failure and never marks it published', async () => {
     const repository = repositoryFor(claim());
     const client = clientFor();
