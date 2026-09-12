@@ -57,6 +57,29 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(checkClientFor).not.toHaveBeenCalled();
   });
 
+  it('reports durable retirement when a newer authoritative check supersedes the abandoned attempt', async () => {
+    const { subject, client, repository } = fixture();
+    client.failAbandonedCheck.mockResolvedValueOnce('superseded');
+    repository.reconcileAbandonedPublishingRun.mockImplementationOnce(async (_run, _worker, _now, publish) => ({
+      reconciled: true, outcome: await publish(),
+    }));
+    const warning = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(subject.runOnce()).resolves.toEqual({
+        swept: 1, published: 0, failed: 0, superseded: 1,
+      });
+      expect(warning).toHaveBeenCalledWith('Reaped publishing runs that never produced a verdict', {
+        swept: 1, published: 0, failed: 0, quarantined: 0, superseded: 1,
+      });
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('reconciles already-completed check runs without re-publishing failure', async () => {
     const { subject, client, repository } = fixture();
     client.failAbandonedCheck.mockResolvedValueOnce('authoritative-success');
