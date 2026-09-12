@@ -3,6 +3,7 @@ import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
 import type {
   AbandonedCheckRecoveryOutcome,
   AbandonedPublishingRun,
+  AbandonedRunReconciliation,
 } from '../../src/persistence/reviewDispatchRepository';
 import { logger } from '../../src/utils/logger';
 
@@ -25,7 +26,7 @@ function fixture() {
     reconcileAbandonedPublishingRun: vi.fn(async (
       _run: AbandonedPublishingRun, _worker: string, _now: number,
       publish: () => Promise<AbandonedCheckRecoveryOutcome>,
-    ) => { await publish(); return true; }),
+    ): Promise<AbandonedRunReconciliation> => ({ reconciled: true, outcome: await publish() })),
   };
   const checkClientFor = vi.fn(async (_run: AbandonedPublishingRun, _signal: AbortSignal) => client);
   const subject = new AbandonedRunReaper({
@@ -44,13 +45,25 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal));
   });
 
+  it('reports a delivery-identity quarantine without minting a publisher or counting publication', async () => {
+    const { subject, repository, checkClientFor } = fixture();
+    const mismatched = { ...run, deliveryIdentityMismatch: true };
+    repository.claimAbandonedPublishingRuns.mockResolvedValue([mismatched]);
+    repository.reconcileAbandonedPublishingRun.mockImplementationOnce(async () => ({
+      reconciled: true, outcome: 'quarantined',
+    }));
+
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 0, quarantined: 1 });
+    expect(checkClientFor).not.toHaveBeenCalled();
+  });
+
   it('reconciles already-completed check runs without re-publishing failure', async () => {
     const { subject, client, repository } = fixture();
     client.failAbandonedCheck.mockResolvedValueOnce('authoritative-success');
     let capturedOutcome: unknown;
     repository.reconcileAbandonedPublishingRun.mockImplementationOnce(async (_run, _worker, _now, publish) => {
       capturedOutcome = await publish();
-      return true;
+      return { reconciled: true, outcome: capturedOutcome as AbandonedCheckRecoveryOutcome };
     });
     await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 0 });
     expect(capturedOutcome).toBe('authoritative-success');
@@ -58,7 +71,7 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
 
   it('does not mint or publish if re-admission invalidated the claimed delivery', async () => {
     const { subject, repository, checkClientFor } = fixture();
-    repository.reconcileAbandonedPublishingRun.mockResolvedValue(false);
+    repository.reconcileAbandonedPublishingRun.mockResolvedValue({ reconciled: false });
     await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 0 });
     expect(checkClientFor).not.toHaveBeenCalled();
   });
@@ -99,7 +112,7 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     repository.reconcileAbandonedPublishingRun.mockImplementation(async (_run, _worker, _now, publish) => {
       await publish();
       acknowledged = true;
-      return true;
+      return { reconciled: true, outcome: 'failure-published' };
     });
     client.failAbandonedCheck.mockImplementation(async (_run, _appId, signal) => {
       controller.abort();

@@ -24,6 +24,8 @@ import {
   type ReviewEventQueryable,
   type ReviewLifecycleEventsOptions,
 } from './reviewEventRepository';
+import { getMetrics } from '../telemetry/metrics';
+import { logger } from '../utils/logger';
 
 interface QueryResult {
   rows: any[];
@@ -48,6 +50,11 @@ export const WORKER_TERMINAL_FAILURE_PREFIX = 'worker terminal failure: ';
 /** Marker for a check create whose response was lost; recovery may only look up the exact attempt. */
 export const RECOVERY_UNCONFIRMED_ERROR_TEXT =
   'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed';
+
+/** A legacy row with incoherent delivery identities cannot be published safely. */
+export const DELIVERY_IDENTITY_MISMATCH_ERROR_TEXT =
+  'publishing run delivery identity mismatch; quarantined by reaper';
+export const DELIVERY_IDENTITY_MISMATCH_REASON = 'dispatch_delivery_identity_mismatch';
 
 /** Lease cadence for lookup-only recovery after a check-create response is lost. */
 export const ABANDONED_RECOVERY_LEASE_MS = 60_000;
@@ -189,12 +196,15 @@ export interface AbandonedPublishingRun {
   repo: string;
   prNumber: number;
   headSha: string;
-  deliveryId: string;
+  /** The run-side delivery identity. Legacy rows may have no run-side binding. */
+  deliveryId?: string;
   executionAttempt: number;
   receivedAt: number;
   terminalDeadline: number;
   /** A prior create response was lost. Recovery may observe, but never recreate, that exact attempt. */
   recoveryOnly?: boolean;
+  /** Claim-time evidence that the run and outbox point at different deliveries. */
+  deliveryIdentityMismatch?: boolean;
 }
 
 const ABANDONED_CHECK_RECOVERY_OUTCOMES = [
@@ -218,6 +228,17 @@ function isAbandonedCheckRecoveryOutcome(value: unknown): value is AbandonedChec
     && ABANDONED_CHECK_RECOVERY_OUTCOME_SET.has(value);
 }
 
+export type AbandonedRunReconciliationOutcome = AbandonedCheckRecoveryOutcome | 'quarantined';
+
+/**
+ * Explicit result of reconciling one claimed abandoned attempt. A stale claim
+ * is not acknowledged; a reconciled claim reports whether it published a
+ * recovery outcome or was quarantined without publication.
+ */
+export type AbandonedRunReconciliation =
+  | { reconciled: false }
+  | { reconciled: true; outcome: AbandonedRunReconciliationOutcome };
+
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null>;
@@ -232,7 +253,7 @@ export interface ReviewDispatchRepository {
   /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<boolean>;
+    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<AbandonedRunReconciliation>;
 }
 
 export interface WorkerFailureTransition {
@@ -726,7 +747,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         `WITH candidate AS (
          SELECT runs.run_id,
                 runs.error_text = $4::text
-                  AS recovery_only
+                  AS recovery_only,
+                runs.delivery_id IS DISTINCT FROM outbox.delivery_id
+                  AS delivery_identity_mismatch
            FROM review_runs runs
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
           WHERE (
@@ -773,7 +796,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 lease_owner = NULL, lease_expires_at = NULL,
                 updated_at = to_timestamp($2 / 1000.0)
            FROM candidate WHERE outbox.run_id = candidate.run_id
-         RETURNING outbox.run_id, outbox.execution_attempt, candidate.recovery_only
+         RETURNING outbox.run_id, outbox.execution_attempt, candidate.recovery_only,
+                   candidate.delivery_identity_mismatch
        )
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
@@ -789,7 +813,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         WHERE runs.run_id = retired.run_id
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
                  runs.delivery_id, runs.received_at, runs.terminal_deadline,
-                 retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only`,
+                 retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only,
+                 retired.delivery_identity_mismatch`,
       [workerId, now, limit, RECOVERY_UNCONFIRMED_ERROR_TEXT,
         ABANDONED_PUBLISHING_ERROR_TEXT.reapedPrefix],
     );
@@ -803,11 +828,12 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         repo: String(row.repo),
         prNumber: Number(row.pr_number),
         headSha: String(row.head_sha),
-        deliveryId: String(row.delivery_id),
+        ...(row.delivery_id == null ? {} : { deliveryId: String(row.delivery_id) }),
         executionAttempt: Number(row.execution_attempt),
         receivedAt: milliseconds(row.received_at) || 0,
         terminalDeadline: milliseconds(row.terminal_deadline) || 0,
         recoveryOnly: row.recovery_only === true,
+        ...(row.delivery_identity_mismatch === true ? { deliveryIdentityMismatch: true } : {}),
       }));
     });
   }
@@ -815,32 +841,114 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   /** Hold the exact attempt's row locks through bounded GitHub publication.
    * Same-head admission cannot advance the delivery while its check is patched.
    * A crash/HTTP error rolls back the acknowledgement, not the failure itself.
+   * The result explicitly distinguishes a stale claim, published recovery, and
+   * a delivery-identity quarantine.
    */
   async reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
-    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<boolean> {
+    publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<AbandonedRunReconciliation> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       const current = await client.query(
-        `SELECT runs.run_id FROM review_runs runs
+        `SELECT runs.run_id, runs.delivery_id AS run_delivery_id,
+                outbox.delivery_id AS outbox_delivery_id
+           FROM review_runs runs
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
-          WHERE runs.run_id = $1 AND runs.delivery_id = $2
-            AND outbox.delivery_id = $2
+          WHERE runs.run_id = $1 AND runs.delivery_id IS NOT DISTINCT FROM $2::text
             AND runs.status = 'terminal' AND runs.publication_mode = 'app-gate'
             AND runs.authoritative_gate_app_id IS NULL
             AND runs.result_digest IS NULL AND runs.lease_owner = $3
             AND runs.lease_expires_at > to_timestamp($4 / 1000.0)
             AND outbox.execution_attempt + 1 = $5
             AND runs.owner = $6 AND runs.repo = $7 AND runs.pr_number = $8 AND runs.head_sha = $9
-            AND runs.received_at = to_timestamp($10 / 1000.0)
-            AND runs.terminal_deadline = to_timestamp($11 / 1000.0)
+            -- PostgreSQL retains microseconds while the reaper contract carries
+            -- millisecond timestamps. Fence each value to the exact claimed
+            -- millisecond bucket; using a one-sided equality would strand a
+            -- legitimate row whose stored timestamp has sub-ms precision.
+            AND runs.received_at >= to_timestamp($10 / 1000.0)
+            AND runs.received_at < to_timestamp(($10::double precision + 1) / 1000.0)
+            AND runs.terminal_deadline >= to_timestamp($11 / 1000.0)
+            AND runs.terminal_deadline < to_timestamp(($11::double precision + 1) / 1000.0)
           FOR UPDATE OF runs, outbox`,
         [run.runId, run.deliveryId, workerId, now, run.executionAttempt,
           run.owner, run.repo, run.prNumber, run.headSha, run.receivedAt, run.terminalDeadline],
       );
       if (current.rows.length === 0) {
         await client.query('COMMIT');
-        return false;
+        return { reconciled: false };
+      }
+      const currentRow = current.rows[0] as Record<string, unknown>;
+      const runDeliveryId = currentRow.run_delivery_id == null ? null : String(currentRow.run_delivery_id);
+      const outboxDeliveryId = currentRow.outbox_delivery_id == null ? null : String(currentRow.outbox_delivery_id);
+      if (runDeliveryId !== outboxDeliveryId) {
+        // A legacy row can retain a run-side delivery binding that no longer
+        // agrees with the outbox delivery. Publishing against either side
+        // would lose the exact-attempt fence, so retire both records without
+        // creating or inferring a GitHub check. Digests make the incident
+        // diagnosable without persisting or logging raw delivery identifiers.
+        const runDeliveryDigest = sha256(runDeliveryId || '');
+        const outboxDeliveryDigest = sha256(outboxDeliveryId || '');
+        const diagnostics = buildDurableWorkerFailureDiagnostics('internal_error', {
+          reason: DELIVERY_IDENTITY_MISMATCH_REASON,
+          logTail: 'run and outbox delivery identities differ; publication quarantined',
+        }, run.executionAttempt);
+        const durableDiagnostics = {
+          ...diagnostics,
+          runDeliveryDigest,
+          outboxDeliveryDigest,
+        };
+        const retiredOutbox = await client.query(
+          `UPDATE review_dispatch_outbox
+              SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($2 / 1000.0)
+            WHERE run_id = $1 AND delivery_id = $3::text
+              AND execution_attempt + 1 = $4
+          RETURNING run_id`,
+          [run.runId, now, outboxDeliveryId, run.executionAttempt],
+        );
+        if (retiredOutbox.rows.length !== 1) {
+          throw new Error('delivery identity mismatch outbox retirement lost its exact attempt');
+        }
+        const retiredRun = await client.query(
+          `UPDATE review_runs
+              SET status = 'terminal', stage = 'terminal',
+                  error_text = $2::text, failure_diagnostics = $3::jsonb,
+                  lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($6 / 1000.0)
+            WHERE run_id = $1
+              AND delivery_id IS NOT DISTINCT FROM $4::text
+              AND status = 'terminal' AND publication_mode = 'app-gate'
+              AND authoritative_gate_app_id IS NULL AND result_digest IS NULL
+              AND lease_owner = $5::text
+              AND lease_expires_at > to_timestamp($6 / 1000.0)
+          RETURNING run_id`,
+          [run.runId, DELIVERY_IDENTITY_MISMATCH_ERROR_TEXT, JSON.stringify(durableDiagnostics),
+            runDeliveryId, workerId, now],
+        );
+        if (retiredRun.rows.length !== 1) {
+          throw new Error('delivery identity mismatch run retirement lost its lease');
+        }
+        await this.appendLifecycle(client, run.runId, 'review.lifecycle.terminal', now, {
+          stage: 'terminal',
+          terminal_class: 'delivery_identity_mismatch',
+          retry_class: 'reaper_quarantine',
+          evidence_pointers: [
+            `run_delivery_sha256:${runDeliveryDigest}`,
+            `outbox_delivery_sha256:${outboxDeliveryDigest}`,
+          ],
+        });
+        await client.query('COMMIT');
+        getMetrics().reviewReaperDeliveryIdentityMismatches.add(1);
+        logger.warn('Quarantined abandoned review with mismatched delivery identity', {
+          runId: run.runId,
+          repo: `${run.owner}/${run.repo}`,
+          headSha: run.headSha,
+          executionAttempt: run.executionAttempt,
+          deliveryIdentityMismatch: true,
+          runDeliveryDigest,
+          outboxDeliveryDigest,
+        });
+        return { reconciled: true, outcome: 'quarantined' };
       }
       const outcome: unknown = await publish();
       if (!isAbandonedCheckRecoveryOutcome(outcome)) {
@@ -890,7 +998,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           { stage: 'gate_publication', retry_class: 'creation_unconfirmed' });
       }
       await client.query('COMMIT');
-      return true;
+      return { reconciled: true, outcome };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw error;
