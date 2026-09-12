@@ -1051,6 +1051,7 @@ describe('progress event redaction boundary', () => {
         `review:@sha256:${'a'.repeat(64)}`,
         `review:synthetic-secret@sha256:${'a'.repeat(64)}`,
         `registry/team/review:synthetic-secret@sha256:${'a'.repeat(64)}`,
+        'mailto:alice@example.com,review:synthetic-secret@private.test',
         '{review:synthetic-secret@private.test}',
         'review:synthetic-secret@private.test,https://safe.test',
         '["https://safe.test","review:synthetic-secret@private.test"]',
@@ -1062,6 +1063,22 @@ describe('progress event redaction boundary', () => {
         expect(rejection.field).toBe(location.field);
         expect(rejection.message).not.toContain('synthetic-secret');
         expect(rejection.message).not.toContain('private.test');
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'accepts benign bare email and revision controls in $label',
+    (location) => {
+      for (const value of [
+        'alice@example.com',
+        'mailto:alice@example.com',
+        'a@b:c',
+        'provider/model@stable',
+      ]) {
+        const fixture = location.inject(value);
+        expect(sanitizeProgressEvent(fixture.event, fixture.identity), value)
+          .not.toBeInstanceOf(ReviewEventRejection);
       }
     },
   );
