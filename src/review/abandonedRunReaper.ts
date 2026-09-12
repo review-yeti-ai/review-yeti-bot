@@ -32,6 +32,8 @@ export interface AbandonedRunReaperOutcome {
   swept: number;
   published: number;
   failed: number;
+  /** Rows retired without publication because their delivery identities diverged. */
+  quarantined?: number;
 }
 
 export class AbandonedRunReaper {
@@ -53,6 +55,7 @@ export class AbandonedRunReaper {
     const runs = await this.options.repository.claimAbandonedPublishingRuns(this.options.workerId, now, this.limit);
     let published = 0;
     let failed = 0;
+    let quarantined = 0;
 
     for (const run of runs) {
       if (signal?.aborted) break;
@@ -73,6 +76,12 @@ export class AbandonedRunReaper {
           },
         );
         if (!reconciled) continue;
+        // The repository only returns true for a mismatch after atomically
+        // retiring the outbox and run, without invoking the publish callback.
+        // If a concurrent same-head admission repaired the row before this
+        // lock, the callback supplies a normal recovery outcome and this is
+        // deliberately not counted as a quarantine.
+        if (run.deliveryIdentityMismatch && outcome === undefined) quarantined += 1;
         if (outcome === 'failure-published') published += 1;
         if (outcome === 'creation-unconfirmed') failed += 1;
       } catch {
@@ -93,8 +102,11 @@ export class AbandonedRunReaper {
         swept: runs.length,
         published,
         failed,
+        quarantined,
       });
     }
-    return { swept: runs.length, published, failed };
+    return quarantined > 0
+      ? { swept: runs.length, published, failed, quarantined }
+      : { swept: runs.length, published, failed };
   }
 }
