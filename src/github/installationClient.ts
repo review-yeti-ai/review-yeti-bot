@@ -567,10 +567,10 @@ export class GitHubInstallationClient {
         const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
         const exactHistoricalRun = matchesHistoricalEmptyIdentityRun(run, publisherAppId);
         const historicalReceiptIdMatches = checks.filter((check) => check?.id === receipt.checkId);
-        // A legacy empty-ID check is only eligible through the immutable receipt.
-        // Other same-head empty-ID rows may be visible because GitHub retains old
-        // checks, but they must not turn a unique audited receipt into an
-        // ambiguity. Conversely, a missing or duplicated receipt remains refused.
+        // The live head contains several publisher-owned checks from before
+        // external identities were populated. Only the immutable receipt is
+        // eligible; legitimate siblings must not make it ambiguous, while an
+        // exact historical run with a missing receipt remains fail closed.
         const historicalCandidates = checks.filter(matchesHistoricalEmptyIdentityCheck);
         if (exactHistoricalRun || historicalReceiptIdMatches.length > 0) {
           if (!exactHistoricalRun || historicalReceiptIdMatches.length !== 1
