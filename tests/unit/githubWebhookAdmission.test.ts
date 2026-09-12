@@ -380,7 +380,10 @@ describe('native GitHub App webhook admission', () => {
     expect(f.admit).not.toHaveBeenCalled();
   });
 
-  it('pauses an authoritative refresh without resolving policy or admitting work', async () => {
+  it.each([
+    ['requested action', refreshPayload()],
+    ['native rerequest', rerequestPayload()],
+  ])('pauses an authoritative %s without resolving policy or admitting work', async (_label, body) => {
     const admit = vi.fn();
     const resolve = vi.fn();
     const onEvent = createGitHubWebhookAdmissionHandler({
@@ -392,7 +395,6 @@ describe('native GitHub App webhook admission', () => {
       } as any,
       now: () => NOW,
     });
-    const body = refreshPayload();
     await expect(onEvent({ eventName: 'check_run', deliveryId: 'authoritative-refresh-paused',
       rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
       status: 'ignored', reason: 'authoritative_admission_paused',
