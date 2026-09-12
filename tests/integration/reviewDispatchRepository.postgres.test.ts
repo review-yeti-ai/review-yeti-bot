@@ -349,7 +349,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       { eventKind: 'review.lifecycle.terminal', sequence: 5,
         data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'publishing_deadline', retry_class: 'reaper' } },
       { eventKind: 'review.lifecycle.terminal', sequence: 6,
-        data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'publishing_deadline_reconciled' } },
+        data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'failure_published' } },
       { eventKind: 'review.lifecycle.admission', sequence: 7,
         data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
       { eventKind: 'review.lifecycle.queued', sequence: 8,
@@ -367,6 +367,142 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect((await client.query(
       'SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [admitted.run.runId],
     )).rows[0].next_sequence).toBe('10');
+  });
+
+  it.each([
+    {
+      outcome: 'authoritative-success' as const,
+      expectedRun: { status: 'succeeded', stage: 'complete', error_text: null },
+      expectedEvent: { eventKind: 'review.lifecycle.terminal', sequence: 4,
+        data: { policy_digest: 'e'.repeat(64), stage: 'complete', terminal_class: 'authoritative_success' } },
+      retryLease: false,
+    },
+    {
+      outcome: 'failure-existing' as const,
+      expectedRun: { status: 'terminal', stage: 'admission',
+        error_text: 'publishing run reached its terminal deadline without a verdict; failure reconciled' },
+      expectedEvent: { eventKind: 'review.lifecycle.terminal', sequence: 4,
+        data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'failure_existing' } },
+      retryLease: false,
+    },
+    {
+      outcome: 'failure-published' as const,
+      expectedRun: { status: 'terminal', stage: 'admission',
+        error_text: 'publishing run reached its terminal deadline without a verdict; failure reconciled' },
+      expectedEvent: { eventKind: 'review.lifecycle.terminal', sequence: 4,
+        data: { policy_digest: 'e'.repeat(64), stage: 'terminal', terminal_class: 'failure_published' } },
+      retryLease: false,
+    },
+    {
+      outcome: 'creation-unconfirmed' as const,
+      expectedRun: { status: 'terminal', stage: 'admission',
+        error_text: 'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed' },
+      expectedEvent: { eventKind: 'review.lifecycle.retrying', sequence: 4,
+        data: { policy_digest: 'e'.repeat(64), stage: 'gate_publication', retry_class: 'creation_unconfirmed' } },
+      retryLease: true,
+    },
+  ])('records the exact $outcome reconciliation lifecycle intent and state', async ({
+    outcome, expectedRun, expectedEvent, retryLease,
+  }) => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const input = sameHeadAdmission(`reconciliation-${outcome}`, 1_000);
+    const admitted = await repository.admit(input);
+    const sweepAt = input.terminalDeadline + 1;
+    const [sweep] = await repository.claimAbandonedPublishingRuns('outcome-reaper', sweepAt, 1);
+    const reconcileAt = sweepAt + 1;
+
+    await expect(repository.reconcileAbandonedPublishingRun(
+      sweep, 'outcome-reaper', reconcileAt, async () => outcome,
+    )).resolves.toBe(true);
+
+    const state = (await client.query(`SELECT runs.status, runs.stage, runs.error_text,
+      runs.lease_owner, runs.lease_expires_at, outbox.status AS outbox_status,
+      outbox.lease_owner AS outbox_lease_owner, outbox.lease_expires_at AS outbox_lease_expires_at
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId])).rows[0];
+    expect(state).toMatchObject({
+      ...expectedRun,
+      lease_owner: null,
+      lease_expires_at: retryLease ? new Date(reconcileAt + 60_000) : null,
+      outbox_status: 'terminal',
+      outbox_lease_owner: null,
+      outbox_lease_expires_at: null,
+    });
+
+    const events = await lifecycleEvents(client, admitted.run.runId);
+    expect(events).toEqual([
+      { eventKind: 'review.lifecycle.admission', sequence: 1,
+        data: { policy_digest: 'e'.repeat(64), stage: 'admission' } },
+      { eventKind: 'review.lifecycle.queued', sequence: 2,
+        data: { policy_digest: 'e'.repeat(64), stage: 'queued' } },
+      { eventKind: 'review.lifecycle.terminal', sequence: 3,
+        data: { policy_digest: 'e'.repeat(64), stage: 'terminal',
+          terminal_class: 'publishing_deadline', retry_class: 'reaper' } },
+      expectedEvent,
+    ]);
+    expect(events.some((event) => event.data.terminal_class === 'publishing_deadline_reconciled')).toBe(false);
+    expect((await client.query(
+      'SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [admitted.run.runId],
+    )).rows[0].next_sequence).toBe('4');
+
+    if (retryLease) {
+      await expect(repository.claimAbandonedPublishingRuns('too-early', reconcileAt + 59_999, 1))
+        .resolves.toEqual([]);
+      await expect(repository.claimAbandonedPublishingRuns('recovery-reaper', reconcileAt + 60_000, 1))
+        .resolves.toMatchObject([{ runId: admitted.run.runId, executionAttempt: 1, recoveryOnly: true }]);
+    } else {
+      await expect(repository.claimAbandonedPublishingRuns('later-reaper', reconcileAt + 120_000, 1))
+        .resolves.toEqual([]);
+    }
+  });
+
+  it('rolls authoritative success state back when its lifecycle intent cannot append', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const input = sameHeadAdmission('reconciliation-atomicity', 1_000);
+    const admitted = await repository.admit(input);
+    const sweepAt = input.terminalDeadline + 1;
+    const [sweep] = await repository.claimAbandonedPublishingRuns('atomic-reaper', sweepAt, 1);
+    const beforeState = await dispatchState(client, admitted.run.runId);
+    const beforeEvents = await lifecycleEvents(client, admitted.run.runId);
+    await client.query(`ALTER TABLE review_event_outbox
+      ADD CONSTRAINT reject_authoritative_success_lifecycle
+      CHECK (COALESCE(payload->'data'->>'terminal_class', '') <> 'authoritative_success')`);
+
+    await expect(repository.reconcileAbandonedPublishingRun(
+      sweep, 'atomic-reaper', sweepAt + 1, async () => 'authoritative-success',
+    )).rejects.toThrow(/reject_authoritative_success_lifecycle/u);
+
+    expect(await dispatchState(client, admitted.run.runId)).toEqual(beforeState);
+    expect(await lifecycleEvents(client, admitted.run.runId)).toEqual(beforeEvents);
+    expect((await client.query(
+      'SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [admitted.run.runId],
+    )).rows[0].next_sequence).toBe('3');
+  });
+
+  it('appends no lifecycle rows across dispatch and recovery mutations when explicitly disabled', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'disabled' }, true);
+    const input = sameHeadAdmission('disabled-lifecycle-mutations', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('disabled-worker', 1_001, 30_000))!;
+    const workerTokenDigest = '9'.repeat(64);
+    expect(await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'disabled-projection', 1_002, workerTokenDigest,
+    )).toBe(true);
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      failureClass: 'provider_error',
+    }, { workerTokenDigest }, 1_003)).resolves.toMatchObject({ status: 'failed' });
+    const [abandoned] = await repository.claimAbandonedPublishingRuns('disabled-reaper', 2_000, 1);
+    await expect(repository.reconcileAbandonedPublishingRun(
+      abandoned, 'disabled-reaper', 2_001, async () => 'failure-existing',
+    )).resolves.toBe(true);
+
+    expect((await client.query('SELECT count(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
   });
 
   it.each([false, true])('isolates legacy reconciliation from authoritative enrollment=%s', async (authoritative) => {
@@ -849,7 +985,9 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
   describe('atomic authoritative admission', () => {
     it('commits prepared policy, run, outbox and gate together; dispatch waits for durable check binding', async () => {
-      const { repository, client, gateRepository } = await createRepository();
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'enabled', validateAuthoritativeAdmission: async () => undefined,
+      }, true);
       const input = authoritativeAdmission();
       const admission = await repository.admit(input);
       expect(admission.run.authoritativeGateAppId).toBe(4385771);
@@ -863,6 +1001,18 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         configDigest: input.authoritativeGate.prepared.policy.effectiveConfigDigest,
         policyDigest: input.authoritativeGate.prepared.policy.effectivePolicyDigest, executionAttempt: 1 });
       expect(gate.coordinates.runId).toBe(admission.run.runId);
+      expect(await lifecycleEvents(client, admission.run.runId)).toEqual([
+        { eventKind: 'review.lifecycle.admission', sequence: 1,
+          data: { policy_digest: input.effectivePolicyDigest, stage: 'admission' } },
+        { eventKind: 'review.lifecycle.queued', sequence: 2,
+          data: { policy_digest: input.effectivePolicyDigest, stage: 'queued' } },
+        { eventKind: 'review.lifecycle.gate_publication', sequence: 3,
+          data: { policy_digest: input.effectivePolicyDigest, stage: 'gate_publication', terminal_class: 'claimed' } },
+        { eventKind: 'review.lifecycle.gate_publication', sequence: 4,
+          data: { policy_digest: input.effectivePolicyDigest, stage: 'gate_publication', terminal_class: 'published' } },
+        { eventKind: 'review.lifecycle.dispatched', sequence: 5,
+          data: { policy_digest: input.effectivePolicyDigest, stage: 'dispatch' } },
+      ]);
     });
 
     it('rolls every admission write back when gate reservation fails', async () => {
@@ -875,6 +1025,24 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       }) }, undefined, trustedValidation);
       await expect(failing.admit(authoritativeAdmission())).rejects.toThrow('injected reservation failure');
       for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs', 'review_dispatch_outbox', 'review_gate_attempts']) {
+        expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
+      }
+    });
+
+    it('rolls gate reservation and the first lifecycle intent back when queued intent persistence fails', async () => {
+      const { repository, client } = await createRepository({
+        lifecycleEvents: 'enabled', validateAuthoritativeAdmission: async () => undefined,
+      }, true);
+      await client.query(`ALTER TABLE review_event_outbox
+        ADD CONSTRAINT reject_queued_lifecycle_intent
+        CHECK (event_kind <> 'review.lifecycle.queued')`);
+
+      await expect(repository.admit(authoritativeAdmission('lifecycle-rollback')))
+        .rejects.toThrow(/reject_queued_lifecycle_intent/u);
+
+      for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs',
+        'review_dispatch_outbox', 'review_gate_attempts', 'review_event_outbox',
+        'review_event_sequence_counters']) {
         expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
       }
     });
