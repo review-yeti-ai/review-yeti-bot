@@ -649,6 +649,81 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     )).resolves.toEqual([]);
   });
 
+  it('rejects reconciliation at the exact one-millisecond timestamp bucket upper boundary', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const input = sameHeadAdmission('matching-one-ms-upper-boundary', 1_000);
+    const admitted = await repository.admit(input);
+    // PostgreSQL keeps sub-millisecond precision while the reaper's durable
+    // claim contract carries integer milliseconds. The upper edge must remain
+    // exclusive so a newer stored timestamp cannot pass a stale fence.
+    await client.query(`UPDATE review_runs
+      SET received_at = received_at + interval '1 millisecond',
+          terminal_deadline = terminal_deadline + interval '1 millisecond'
+      WHERE run_id = $1`, [admitted.run.runId]);
+
+    const [abandoned] = await repository.claimAbandonedPublishingRuns(
+      'upper-boundary-reaper', input.terminalDeadline + 1, 1,
+    );
+    expect(abandoned).toMatchObject({
+      runId: admitted.run.runId,
+      deliveryId: input.deliveryId,
+      receivedAt: input.receivedAt + 1,
+      terminalDeadline: input.terminalDeadline + 1,
+      executionAttempt: 1,
+    });
+    const publish = vi.fn(async () => 'failure-published' as const);
+    await expect(repository.reconcileAbandonedPublishingRun(
+      { ...abandoned, receivedAt: input.receivedAt, terminalDeadline: input.terminalDeadline },
+      'upper-boundary-reaper', input.terminalDeadline + 2, publish,
+    )).resolves.toEqual({ reconciled: false });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('lets only one concurrent reaper claim a mismatched delivery before quarantine', async () => {
+    const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+    const peerRepository = new PostgresReviewDispatchRepository(pool!, undefined, { lifecycleEvents: 'enabled' });
+    const input = sameHeadAdmission('concurrent-mismatch-run', 1_000);
+    const admitted = await repository.admit(input);
+    const outboxDeliveryId = 'concurrent-mismatch-outbox';
+    await client.query(`INSERT INTO github_deliveries
+      (delivery_id, event_name, repository_id, installation_id, payload_digest, received_at)
+      VALUES ($1, 'pull_request', $2, $3, $4, to_timestamp($5 / 1000.0))`,
+    [outboxDeliveryId, input.repositoryId, input.installationId, sha256(outboxDeliveryId), input.receivedAt]);
+    await client.query(`UPDATE review_dispatch_outbox
+      SET delivery_id = $2, status = 'projected' WHERE run_id = $1`, [admitted.run.runId, outboxDeliveryId]);
+    await client.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [admitted.run.runId]);
+
+    const sweepAt = input.terminalDeadline + 1;
+    const claims = await Promise.all([
+      repository.claimAbandonedPublishingRuns('concurrent-mismatch-reaper-a', sweepAt, 1),
+      peerRepository.claimAbandonedPublishingRuns('concurrent-mismatch-reaper-b', sweepAt, 1),
+    ]);
+    expect(claims.filter((value) => value.length === 1)).toHaveLength(1);
+    expect(claims.filter((value) => value.length === 0)).toHaveLength(1);
+    const winnerIndex = claims[0].length === 1 ? 0 : 1;
+    const winner = winnerIndex === 0 ? repository : peerRepository;
+    const claimed = claims[winnerIndex][0];
+    expect(claimed).toMatchObject({
+      runId: admitted.run.runId,
+      deliveryIdentityMismatch: true,
+      executionAttempt: 1,
+    });
+    const publish = vi.fn(async () => 'failure-published' as const);
+    await expect(winner.reconcileAbandonedPublishingRun(
+      claimed, `concurrent-mismatch-reaper-${winnerIndex === 0 ? 'a' : 'b'}`, sweepAt + 1, publish,
+    )).resolves.toEqual({ reconciled: true, outcome: 'quarantined' });
+    expect(publish).not.toHaveBeenCalled();
+    await expect(repository.claimAbandonedPublishingRuns('concurrent-mismatch-later', sweepAt + 120_000, 1))
+      .resolves.toEqual([]);
+    expect((await client.query(`SELECT status, stage, error_text, result_digest,
+      lease_owner, lease_expires_at FROM review_runs WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+      .toMatchObject({
+        status: 'terminal', stage: 'terminal',
+        error_text: 'publishing run delivery identity mismatch; quarantined by reaper',
+        result_digest: null, lease_owner: null, lease_expires_at: null,
+      });
+  });
+
   it('appends no lifecycle rows across dispatch and recovery mutations when explicitly disabled', async () => {
     const { repository, client } = await createRepository({ lifecycleEvents: 'disabled' }, true);
     const input = sameHeadAdmission('disabled-lifecycle-mutations', 1_000);
