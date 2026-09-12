@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import {
@@ -6,6 +6,7 @@ import {
   PostgresReviewEventRepository,
   appendLifecycleEvent,
   appendLifecycleEventForRun,
+  appendLifecycleEventsForRuns,
   type ReviewLifecycleEventInput,
 } from '../../src/persistence/reviewEventRepository';
 
@@ -85,6 +86,39 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
       await pool.end();
     }
   });
+
+  async function insertCompleteRun(runId: string): Promise<void> {
+    await pool.query(`INSERT INTO review_runs
+      (run_id, repository_id, pr_number, base_sha, head_sha, attempt, effective_policy_digest)
+      VALUES ($1, 123, 42, $2, $3, 0, $4)`,
+    [runId, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64)]);
+  }
+
+  function batchInput(runId: string, id: string, stage = 'completion') {
+    return {
+      runId,
+      eventId: id,
+      eventKind: 'review.lifecycle.queued',
+      occurredAt: Date.parse('2026-09-11T12:00:00.000Z'),
+      orderingKey: id,
+      data: { stage },
+    };
+  }
+
+  async function appendBatchAndCommit(inputs: Parameters<typeof appendLifecycleEventsForRuns>[1]) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const records = await appendLifecycleEventsForRuns(client, inputs);
+      await client.query('COMMIT');
+      return records;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 
   it('initializes idempotently with the outbox and sequence counter', async () => {
     const tables = (await pool.query(`SELECT table_name FROM information_schema.tables
@@ -226,6 +260,59 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     expect((await pool.query('SELECT 1 FROM review_event_outbox WHERE run_id = $1', [cascadeRun])).rows).toEqual([]);
   });
 
+  it('uses the partial retention index for a bounded oldest-first selection over a large backlog', async () => {
+    const runId = 'run_retention_index_plan';
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [runId]);
+    await pool.query(`INSERT INTO review_event_outbox (
+      event_id, run_id, attempt_id, repository_id, pr_number, base_sha, head_sha, sequence,
+      schema, event_kind, occurred_at, correlation_id, trace_id, visibility, payload,
+      state, publish_acknowledged_at
+    )
+    SELECT 'retention-plan-' || LPAD(value::text, 5, '0'), $1, 'retention-plan-attempt',
+           123, 42, $2, $3, value, 'review-yeti-event.v1', 'review.lifecycle.queued',
+           to_timestamp(value), 'retention-plan-correlation', 'retention-plan-trace',
+           'internal', '{}'::jsonb, 'published', to_timestamp(value)
+      FROM generate_series(1, 49998) AS value`,
+    [runId, 'a'.repeat(40), 'b'.repeat(40)]);
+    await pool.query('ANALYZE review_event_outbox');
+
+    const indexes = (await pool.query(`SELECT indexname, indexdef
+      FROM pg_indexes
+      WHERE schemaname = current_schema() AND tablename = 'review_event_outbox'
+        AND indexname = 'review_event_retention_idx'`)).rows;
+    expect(indexes).toHaveLength(1);
+    expect(indexes[0].indexdef).toMatch(/USING btree \(publish_acknowledged_at, event_id\)/iu);
+    expect(indexes[0].indexdef).toMatch(/WHERE .*state = 'published'::text.*publish_acknowledged_at IS NOT NULL/iu);
+
+    const explained = await pool.query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+      SELECT event_id
+        FROM review_event_outbox
+       WHERE state = 'published'
+         AND publish_acknowledged_at IS NOT NULL
+         AND publish_acknowledged_at <= to_timestamp(100000)
+       ORDER BY publish_acknowledged_at, event_id
+       FOR UPDATE SKIP LOCKED
+       LIMIT 2`);
+    const document = explained.rows[0]['QUERY PLAN'] as Array<{ Plan: Record<string, unknown> }>;
+    const root = document[0].Plan;
+    const nodes: Array<Record<string, unknown>> = [];
+    const visit = (node: Record<string, unknown>): void => {
+      nodes.push(node);
+      const children = node.Plans;
+      if (Array.isArray(children)) {
+        for (const child of children) visit(child as Record<string, unknown>);
+      }
+    };
+    visit(root);
+
+    expect(root['Actual Rows']).toBe(2);
+    expect(Number(root['Shared Hit Blocks'] || 0) + Number(root['Shared Read Blocks'] || 0)).toBeLessThan(100);
+    expect(nodes.some((node) => node['Node Type'] === 'Index Scan'
+      && node['Index Name'] === 'review_event_retention_idx')).toBe(true);
+    expect(nodes.some((node) => node['Node Type'] === 'Seq Scan')).toBe(false);
+    expect(nodes.some((node) => node['Node Type'] === 'Sort')).toBe(false);
+  }, 20_000);
+
   it('rolls back the authoritative transition and event intent together', async () => {
     await pool.query("INSERT INTO review_runs(run_id) VALUES ('run_00000000000000000000000000000000')");
     const client = await pool.connect();
@@ -339,6 +426,141 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters')).rows[0].next_sequence).toBe('1');
   });
 
+  it('replays a lifecycle batch sequentially without consuming another sequence', async () => {
+    const runId = 'run_batch_replay_sequential';
+    const input = batchInput(runId, eventId(22));
+    await insertCompleteRun(runId);
+
+    const first = await appendBatchAndCommit([input]);
+    const replay = await appendBatchAndCommit([input]);
+
+    expect(first.map((record) => record.sequence)).toEqual([1]);
+    expect(replay.map((record) => record.sequence)).toEqual([1]);
+    expect((await pool.query('SELECT event_id, sequence FROM review_event_outbox')).rows)
+      .toEqual([{ event_id: eventId(22), sequence: '1' }]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters')).rows)
+      .toEqual([{ next_sequence: '1' }]);
+  });
+
+  it('normalizes JSON-safe optional omissions for exact batch replay identity', async () => {
+    const runId = 'run_batch_replay_json_normalized';
+    const id = eventId(26);
+    await insertCompleteRun(runId);
+
+    const first = await appendBatchAndCommit([{
+      ...batchInput(runId, id),
+      data: { stage: 'completion', retry_class: undefined },
+    }]);
+    const replay = await appendBatchAndCommit([{
+      ...batchInput(runId, id),
+      data: { retry_class: undefined, stage: 'completion' },
+    }]);
+
+    expect(first.map((record) => record.sequence)).toEqual([1]);
+    expect(replay.map((record) => record.sequence)).toEqual([1]);
+    expect((await pool.query(`SELECT event_id, sequence, payload->'data' AS data
+      FROM review_event_outbox WHERE run_id = $1`, [runId])).rows).toEqual([{
+      event_id: id,
+      sequence: '1',
+      data: { policy_digest: 'c'.repeat(64), stage: 'completion' },
+    }]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [runId])).rows)
+      .toEqual([{ next_sequence: '1' }]);
+  });
+
+  it('rejects unserializable batch data before event or sequence writes', async () => {
+    const runId = 'run_batch_unserializable';
+    const circular: Record<string, unknown> = {};
+    circular.timing = circular;
+    await insertCompleteRun(runId);
+
+    await expect(appendBatchAndCommit([{
+      ...batchInput(runId, eventId(27)),
+      data: circular,
+    }])).rejects.toThrow(/JSON-serializable/i);
+    expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
+    expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
+  });
+
+  it('deduplicates exact event ids within one batch and rejects conflicting identities before allocation', async () => {
+    const runId = 'run_batch_duplicate_identity';
+    const input = batchInput(runId, eventId(23));
+    await insertCompleteRun(runId);
+
+    const exactDuplicates = await appendBatchAndCommit([input, input]);
+    expect(exactDuplicates.map((record) => record.sequence)).toEqual([1, 1]);
+    expect((await pool.query('SELECT event_id, sequence FROM review_event_outbox')).rows)
+      .toEqual([{ event_id: eventId(23), sequence: '1' }]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters')).rows)
+      .toEqual([{ next_sequence: '1' }]);
+
+    await expect(appendBatchAndCommit([
+      batchInput(runId, eventId(24)),
+      batchInput(runId, eventId(24), 'conflict'),
+    ])).rejects.toThrow(/identity conflict/i);
+    expect((await pool.query('SELECT event_id, sequence FROM review_event_outbox')).rows)
+      .toEqual([{ event_id: eventId(23), sequence: '1' }]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters')).rows)
+      .toEqual([{ next_sequence: '1' }]);
+  });
+
+  it('serializes a batch-first concurrent single replay without counter drift or duplicate events', async () => {
+    const runId = 'run_batch_replay_concurrent';
+    const input = batchInput(runId, eventId(25));
+    await insertCompleteRun(runId);
+    const batchClient = await pool.connect();
+    const singleClient = await pool.connect();
+    const batchInserted = Promise.withResolvers<void>();
+    const releaseBatch = Promise.withResolvers<void>();
+    let batchAppend: Promise<unknown> | undefined;
+    let singleAppend: Promise<unknown> | undefined;
+    try {
+      await batchClient.query('BEGIN');
+      const pausedBatchClient = {
+        query: async (text: string, values?: unknown[]) => {
+          const result = await batchClient.query(text, values);
+          if (/INSERT INTO review_event_outbox/iu.test(text) && /jsonb_to_recordset/iu.test(text)) {
+            batchInserted.resolve();
+            await releaseBatch.promise;
+          }
+          return { rows: result.rows, rowCount: result.rowCount ?? undefined };
+        },
+      };
+      batchAppend = appendLifecycleEventsForRuns(pausedBatchClient, [input]).then(async (records) => {
+        await batchClient.query('COMMIT');
+        return records;
+      });
+      await batchInserted.promise;
+
+      await singleClient.query('BEGIN');
+      const singlePid = (await singleClient.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      singleAppend = appendLifecycleEventForRun(singleClient, input).then(async (record) => {
+        await singleClient.query('COMMIT');
+        return record;
+      });
+      await vi.waitFor(async () => {
+        const activity = await pool.query('SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1', [singlePid]);
+        expect(activity.rows[0]?.wait_event_type).toBe('Lock');
+      }, { timeout: 1_000, interval: 10 });
+
+      releaseBatch.resolve();
+      const [batchRecords, singleRecord] = await Promise.all([batchAppend, singleAppend]);
+      expect((batchRecords as Array<{ sequence: number }>).map((record) => record.sequence)).toEqual([1]);
+      expect(singleRecord).toMatchObject({ eventId: eventId(25), sequence: 1 });
+    } finally {
+      releaseBatch.resolve();
+      await Promise.allSettled([batchAppend, singleAppend].filter(Boolean) as Promise<unknown>[]);
+      await batchClient.query('ROLLBACK').catch(() => undefined);
+      await singleClient.query('ROLLBACK').catch(() => undefined);
+      batchClient.release();
+      singleClient.release();
+    }
+    expect((await pool.query('SELECT event_id, sequence FROM review_event_outbox')).rows)
+      .toEqual([{ event_id: eventId(25), sequence: '1' }]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters')).rows)
+      .toEqual([{ next_sequence: '1' }]);
+  });
+
   it('rejects incomplete run metadata before allocating an event sequence', async () => {
     await pool.query(`INSERT INTO review_runs
       (run_id, pr_number, base_sha, head_sha, attempt, effective_policy_digest)
@@ -355,6 +577,14 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     } finally {
       client.release();
     }
+    expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
+    expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
+  });
+
+  it('keeps a missing batch run as a fail-closed metadata error without writes', async () => {
+    await expect(appendBatchAndCommit([
+      batchInput('run_batch_missing_metadata', eventId(28)),
+    ])).rejects.toThrow(/run metadata is unavailable.*run_batch_missing_metadata/i);
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
   });
@@ -445,5 +675,136 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     await expect(repository.claimNext('before-heartbeat-expiry', occurredAt + 10_001, 10_000)).resolves.toBeNull();
     const reclaimed = await repository.claimNext('after-heartbeat-expiry', occurredAt + 15_001, 10_000);
     expect(reclaimed).toMatchObject({ eventId: eventId(33), attemptCount: 2, leaseOwner: 'after-heartbeat-expiry' });
+  });
+
+  it('does not prune acknowledged published rows when retention is omitted', async () => {
+    const runId = 'run_00000000000000000000000000000000';
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [runId]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await appendLifecycleEvent(client, lifecycleEvent(eventId(50)));
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+    await pool.query(`UPDATE review_event_outbox
+      SET state = 'published', publish_acknowledged_at = to_timestamp(1 / 1000.0)
+      WHERE event_id = $1`, [eventId(50)]);
+
+    const repository = new PostgresReviewEventRepository(pool);
+    await expect(repository.pruneAcknowledgedPublished(20_000)).resolves.toBe(0);
+    expect((await pool.query('SELECT event_id FROM review_event_outbox')).rows).toEqual([{ event_id: eventId(50) }]);
+  });
+
+  it('prunes only acknowledged published rows in bounded transactions and preserves the sequence counter', async () => {
+    const runId = 'run_00000000000000000000000000000000';
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [runId]);
+    const append = async (id: string) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const record = await appendLifecycleEvent(client, lifecycleEvent(id));
+        await client.query('COMMIT');
+        return record;
+      } finally {
+        client.release();
+      }
+    };
+    await Promise.all([51, 52, 53, 54, 55, 56].map((index) => append(eventId(index))));
+    await pool.query(`UPDATE review_event_outbox
+      SET state = 'published', publish_acknowledged_at = to_timestamp($2 / 1000.0)
+      WHERE event_id = $1`, [eventId(51), 1_000]);
+    await pool.query(`UPDATE review_event_outbox
+      SET state = 'published', publish_acknowledged_at = to_timestamp($2 / 1000.0)
+      WHERE event_id = $1`, [eventId(52), 2_000]);
+    await pool.query(`UPDATE review_event_outbox
+      SET state = 'published', publish_acknowledged_at = to_timestamp($2 / 1000.0)
+      WHERE event_id = $1`, [eventId(53), 3_000]);
+    await pool.query(`UPDATE review_event_outbox
+      SET state = 'claimed', lease_owner = 'live-worker', lease_expires_at = to_timestamp(30_000 / 1000.0),
+          publish_acknowledged_at = to_timestamp(1_000 / 1000.0)
+      WHERE event_id = $1`, [eventId(54)]);
+    await pool.query(`UPDATE review_event_outbox
+      SET state = 'pending', publish_acknowledged_at = to_timestamp(1_000 / 1000.0)
+      WHERE event_id = $1`, [eventId(55)]);
+    await pool.query(`UPDATE review_event_outbox
+      SET state = 'published', publish_acknowledged_at = to_timestamp(9_500 / 1000.0)
+      WHERE event_id = $1`, [eventId(56)]);
+
+    const repository = new PostgresReviewEventRepository(pool, {
+      retention: { enabled: true, maxAgeMs: 1_000, batchSize: 2 },
+    });
+    await expect(repository.pruneAcknowledgedPublished(10_000)).resolves.toBe(2);
+    const afterFirstPrune = (await pool.query('SELECT event_id FROM review_event_outbox')).rows.map((row) => row.event_id);
+    expect(afterFirstPrune).toHaveLength(4);
+    expect(afterFirstPrune).toEqual(expect.arrayContaining([eventId(53), eventId(54), eventId(55), eventId(56)]));
+
+    const [prunedAgain, appended] = await Promise.all([
+      repository.pruneAcknowledgedPublished(10_000),
+      append(eventId(57)),
+    ]);
+    expect(prunedAgain).toBe(1);
+    expect(appended.sequence).toBe(7);
+    const afterConcurrentPrune = (await pool.query('SELECT event_id FROM review_event_outbox')).rows.map((row) => row.event_id);
+    expect(afterConcurrentPrune).toHaveLength(4);
+    expect(afterConcurrentPrune).toEqual(expect.arrayContaining([eventId(54), eventId(55), eventId(56), eventId(57)]));
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [runId])).rows[0])
+      .toEqual({ next_sequence: '7' });
+    expect((await pool.query('SELECT state, lease_owner FROM review_event_outbox WHERE event_id = $1', [eventId(54)])).rows[0])
+      .toEqual({ state: 'claimed', lease_owner: 'live-worker' });
+    expect((await pool.query('SELECT state, publish_acknowledged_at FROM review_event_outbox WHERE event_id = $1', [eventId(55)])).rows[0])
+      .toMatchObject({ state: 'pending', publish_acknowledged_at: expect.any(Date) });
+    await expect(repository.pruneAcknowledgedPublished(10_000)).resolves.toBe(0);
+  });
+
+  it('rolls back a failed bounded prune without deleting rows or advancing the counter', async () => {
+    const runId = 'run_00000000000000000000000000000000';
+    await pool.query('INSERT INTO review_runs(run_id) VALUES ($1)', [runId]);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await appendLifecycleEvent(client, lifecycleEvent(eventId(58)));
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+    await pool.query(`UPDATE review_event_outbox
+      SET state = 'published', publish_acknowledged_at = to_timestamp(1 / 1000.0)
+      WHERE event_id = $1`, [eventId(58)]);
+
+    let injected = false;
+    const failingPool = {
+      connect: async () => {
+        const raw = await pool.connect();
+        return {
+          query: async (sql: string, values?: unknown[]) => {
+            const result = await raw.query(sql, values);
+            if (!injected && /DELETE FROM review_event_outbox/isu.test(sql)) {
+              injected = true;
+              throw new Error('synthetic prune failure');
+            }
+            return { rows: result.rows, rowCount: result.rowCount ?? undefined };
+          },
+          release: () => raw.release(),
+        };
+      },
+    };
+    const repository = new PostgresReviewEventRepository(failingPool, {
+      retention: { enabled: true, maxAgeMs: 1_000, batchSize: 10 },
+    });
+    await expect(repository.pruneAcknowledgedPublished(10_000)).rejects.toThrow('synthetic prune failure');
+    expect((await pool.query('SELECT event_id FROM review_event_outbox')).rows).toEqual([{ event_id: eventId(58) }]);
+    expect((await pool.query('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [runId])).rows[0])
+      .toEqual({ next_sequence: '1' });
+  });
+
+  it.each([
+    { maxAgeMs: -1, batchSize: 1 },
+    { maxAgeMs: 1_000, batchSize: 0 },
+    { maxAgeMs: 1_000, batchSize: 1_001 },
+  ])('rejects unbounded retention configuration %j', async (retention) => {
+    const repository = new PostgresReviewEventRepository(pool, { retention: { enabled: true, ...retention } });
+    await expect(repository.pruneAcknowledgedPublished(10_000)).rejects.toThrow(/retention bounds/i);
   });
 });
