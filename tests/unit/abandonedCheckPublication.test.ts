@@ -298,6 +298,27 @@ describe('abandoned check exact App/attempt failure publication', () => {
         .toBe(true);
     });
 
+  it('rejects when the historical check changes between the list and immutable-ID reread', async () => {
+    const changedReread = {
+      ...historicalEmptyIdentityCheck,
+      completed_at: '2026-09-10T03:38:16Z',
+    };
+    const { client, fetchImplementation } = fixture(
+      [historicalEmptyIdentityCheck],
+      changedReread,
+    );
+
+    await expect(client.failAbandonedCheck(
+      historicalEmptyIdentityRun,
+      4385771,
+      signal(),
+    )).rejects.toThrow();
+
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+  });
+
   it('rejects ambiguous duplicate historical compatibility candidates without changing either check', async () => {
     const { client, fetchImplementation } = fixture(
       [historicalEmptyIdentityCheck, { ...historicalEmptyIdentityCheck }],
