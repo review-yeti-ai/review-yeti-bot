@@ -38,6 +38,18 @@ const REFRESH_ACTION_IDENTIFIER = REVIEW_REFRESH_ACTION.identifier;
 const refreshExternalId = z.string()
   .regex(/^run_[a-f0-9]{32}:a[1-9][0-9]*$/u)
   .refine((value) => Number.isSafeInteger(Number(value.slice(value.lastIndexOf(':a') + 2))));
+const checkRunRepositoryReference = z.union([
+  z.object({
+    full_name: z.string().min(3).max(201),
+  }).passthrough(),
+  // GitHub's live check_run.rerequested payload uses this compact repository
+  // shape for associated pull requests. It does not include full_name.
+  z.object({
+    id: positiveInteger,
+    url: z.string().url(),
+    name: z.string().min(1).max(100),
+  }).passthrough(),
+]);
 const recoverableCheckRun = z.object({
   id: positiveInteger,
   name: z.literal(AUTHORITATIVE_REVIEW_CHECK_NAME),
@@ -58,11 +70,11 @@ const recoverableCheckRun = z.object({
     number: positiveInteger,
     head: z.object({
       sha,
-      repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough(),
+      repo: checkRunRepositoryReference,
     }).passthrough(),
     base: z.object({
       sha,
-      repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough(),
+      repo: checkRunRepositoryReference,
     }).passthrough(),
   }).passthrough()).length(1),
 }).passthrough();
@@ -92,6 +104,16 @@ export interface GitHubWebhookAdmissionEvent {
   deliveryId: string;
   rawBody: Buffer;
   body: unknown;
+}
+
+function checkRunRepositoryMatches(
+  reference: z.infer<typeof checkRunRepositoryReference>,
+  repository: z.infer<typeof githubWebhookRepositorySchema>,
+): boolean {
+  if ('full_name' in reference) return reference.full_name === repository.full_name;
+  return reference.id === repository.id
+    && reference.name === repository.name
+    && reference.url === `https://api.github.com/repos/${repository.full_name}`;
 }
 
 /** Admit signed, allowlisted GitHub App review events directly. */
@@ -133,8 +155,8 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const pr = payload.check_run.pull_requests[0];
       const { owner, repo } = enrolled;
       if (payload.repository.full_name !== `${owner}/${repo}`
-        || pr.head.repo.full_name !== payload.repository.full_name
-        || pr.base.repo.full_name !== payload.repository.full_name
+        || !checkRunRepositoryMatches(pr.head.repo, payload.repository)
+        || !checkRunRepositoryMatches(pr.base.repo, payload.repository)
         || pr.head.sha !== payload.check_run.head_sha) {
         return { status: 'ignored', reason: 'not_enrolled' };
       }
