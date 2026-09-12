@@ -34,7 +34,11 @@ export const actionDispatchRequestSchema = z.object({
     personas: z.string().optional(),
     maxInvestigationTurns: z.number().int().positive().optional(),
     laneCallBudget: z.number().int().positive().optional(),
-  }).strict().optional(),
+    skills: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
+    knowledge: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
+    metrics: z.union([z.string(), z.record(z.unknown())]).optional(),
+    retryAnalysis: z.union([z.string(), z.record(z.unknown())]).optional(),
+  }).passthrough().optional(),
 }).strict().superRefine((request, context) => {
   if (request.refreshRequested === true && request.refreshExecutionAttempt === undefined) {
     context.addIssue({ code: z.ZodIssueCode.custom,

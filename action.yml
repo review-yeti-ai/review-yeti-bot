@@ -258,6 +258,26 @@ inputs:
     description: 'JSON string containing MCP server fleet configuration (transports, stdio scripts, and permissions).'
     required: false
     default: ''
+  skills:
+    description: 'Optional passthrough skills configuration (JSON array, YAML string, or comma-separated names).'
+    required: false
+    default: ''
+  knowledge:
+    description: 'Optional passthrough knowledge configuration (JSON object, YAML string, or comma-separated paths).'
+    required: false
+    default: ''
+  metrics:
+    description: 'Optional passthrough metrics/telemetry configuration (JSON object or string).'
+    required: false
+    default: ''
+  retry-analysis:
+    description: 'Optional passthrough retry and failure analysis policy (JSON object or string).'
+    required: false
+    default: ''
+  policy-json:
+    description: 'Optional raw JSON string of policy overrides passed directly to DOKS dispatch.'
+    required: false
+    default: ''
   # Deprecated compatibility inputs retained for callers on the pre-v1 contract. The central
   # workflow now passes the supported policy/transport inputs above; these are intentionally
   # accepted and ignored so an older caller can finish its migration without changing review
@@ -454,6 +474,11 @@ runs:
         PERSONAS: ${{ inputs.personas }}
         MAX_INVESTIGATION_TURNS: ${{ inputs.max-investigation-turns }}
         LANE_CALL_BUDGET: ${{ inputs.lane-call-budget }}
+        SKILLS: ${{ inputs.skills }}
+        KNOWLEDGE: ${{ inputs.knowledge }}
+        METRICS: ${{ inputs.metrics }}
+        RETRY_ANALYSIS: ${{ inputs.retry-analysis }}
+        POLICY_JSON: ${{ inputs.policy-json }}
       run: |
         set -euo pipefail
         node "$GITHUB_ACTION_PATH/scripts/dispatch-doks-action.mjs"

@@ -117,10 +117,31 @@ export function buildDispatchRequest(environment) {
   const maxInvestigationTurns = maxInvestigationTurnsRaw ? Number(maxInvestigationTurnsRaw) : undefined;
   const laneCallBudget = laneCallBudgetRaw ? Number(laneCallBudgetRaw) : undefined;
 
-  const policy = (personas || maxInvestigationTurns || laneCallBudget) ? {
+  let extraPolicy = {};
+  if (environment.POLICY_JSON) {
+    try {
+      const parsed = JSON.parse(environment.POLICY_JSON);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        extraPolicy = parsed;
+      }
+    } catch {
+      // ignore malformed custom policy json
+    }
+  }
+  const skills = String(environment.SKILLS || environment.POLICY_SKILLS || '').trim();
+  const knowledge = String(environment.KNOWLEDGE || environment.POLICY_KNOWLEDGE || '').trim();
+  const metrics = String(environment.METRICS || environment.POLICY_METRICS || '').trim();
+  const retryAnalysis = String(environment.RETRY_ANALYSIS || environment.POLICY_RETRY_ANALYSIS || '').trim();
+
+  const policy = (personas || maxInvestigationTurns || laneCallBudget || skills || knowledge || metrics || retryAnalysis || Object.keys(extraPolicy).length > 0) ? {
+    ...extraPolicy,
     ...(personas ? { personas } : {}),
     ...(maxInvestigationTurns && Number.isSafeInteger(maxInvestigationTurns) && maxInvestigationTurns > 0 ? { maxInvestigationTurns } : {}),
     ...(laneCallBudget && Number.isSafeInteger(laneCallBudget) && laneCallBudget > 0 ? { laneCallBudget } : {}),
+    ...(skills ? { skills } : {}),
+    ...(knowledge ? { knowledge } : {}),
+    ...(metrics ? { metrics } : {}),
+    ...(retryAnalysis ? { retryAnalysis } : {}),
   } : undefined;
 
   return {
