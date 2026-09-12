@@ -9,7 +9,7 @@ export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
 /** GitHub Check Run action used for a persisted same-head recovery request. */
 export const REVIEW_REFRESH_ACTION = Object.freeze({
   label: 'Refresh review',
-  description: 'Retry the failed Review Yeti check for this exact head.',
+  description: 'Retry failed review for this exact head.',
   identifier: 'review-yeti/refresh',
 });
 

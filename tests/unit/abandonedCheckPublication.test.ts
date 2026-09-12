@@ -72,6 +72,55 @@ describe('abandoned check exact App/attempt failure publication', () => {
     },
   );
 
+  it('sends the live-shaped exact-attempt failure PATCH with a GitHub-compatible refresh action', async () => {
+    const liveRun = {
+      ...run,
+      runId: 'run_29094e318827437672e3f2bff3c59004',
+      owner: 'calltelemetry',
+      repo: 'ct-review-actions',
+      prNumber: 303,
+      headSha: 'e33fffa1cb2973c2dc972de6b00bd99bb0521908',
+      receivedAt: Date.parse('2026-09-11T23:05:46.000Z'),
+      terminalDeadline: Date.parse('2026-09-11T23:20:46.000Z'),
+      executionAttempt: 2,
+    };
+    const liveCheck = {
+      id: 103450628829,
+      name: 'Review Yeti',
+      head_sha: liveRun.headSha,
+      app: { id: 4385771, slug: 'ct-review-bot' },
+      status: 'in_progress',
+      conclusion: null,
+      started_at: '2026-09-11T23:05:46Z',
+      external_id: `${liveRun.runId}:a${liveRun.executionAttempt}`,
+    };
+    const { client, fetchImplementation } = fixture([liveCheck], liveCheck);
+
+    await expect(client.failAbandonedCheck(liveRun, 4385771, signal())).resolves.toBe('failure-published');
+
+    const patches = fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+    expect(patches).toHaveLength(1);
+    expect(patches[0][0]).toBe(
+      'https://api.github.com/repos/calltelemetry/ct-review-actions/check-runs/103450628829',
+    );
+    expect(JSON.parse(String(patches[0][1]?.body))).toEqual({
+      status: 'completed',
+      conclusion: 'failure',
+      completed_at: expect.any(String),
+      actions: [{
+        label: 'Refresh review',
+        description: 'Retry failed review for this exact head.',
+        identifier: 'review-yeti/refresh',
+      }],
+      output: {
+        title: 'Review Yeti: review did not complete',
+        summary: `No durable verdict was recorded for \`${liveRun.headSha}\` before its terminal deadline.\n\n`
+          + 'The worker may have started; this is a failed review rather than an approval.\n\n'
+          + 'Re-run the governed review workflow to request a fresh attempt.',
+      },
+    });
+  });
+
   it.each(persistedWindows)('publishes a valid persisted %i ms window independently of the current admission default', async (window) => {
     const persistedRun = { ...run, terminalDeadline: run.receivedAt + window };
     const { client, fetchImplementation } = fixture();
