@@ -89,6 +89,28 @@ describe('REL-817 acceptance resource cleanup', () => {
     ]);
   });
 
+  it.each([
+    ['primitive', 'reaper acceptance primitive failure' as unknown],
+    ['frozen object', Object.freeze(new Error('reaper acceptance frozen failure')) as unknown],
+  ])('attempts every cleanup and preserves an exact %s operation failure', async (_label, originalFailure) => {
+    const calls: string[] = [];
+    let thrown: unknown;
+
+    try {
+      await runReaperMetricsAcceptanceCleanup([
+        { name: 'metrics server', run: async () => { calls.push('metrics'); throw new Error('metrics close failed'); } },
+        { name: 'store', run: async () => { calls.push('store'); } },
+        { name: 'schema', run: async () => { calls.push('schema'); throw new Error('schema drop failed'); } },
+        { name: 'admin pool', run: async () => { calls.push('admin'); } },
+      ], { error: originalFailure });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(calls).toEqual(['metrics', 'store', 'schema', 'admin']);
+    expect(thrown).toBe(originalFailure);
+  });
+
   it('attempts every cleanup and aggregates failures when the operation succeeded', async () => {
     const calls: string[] = [];
     const metricsFailure = new Error('metrics close failed');
