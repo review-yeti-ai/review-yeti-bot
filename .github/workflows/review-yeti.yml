@@ -48,6 +48,31 @@ on:
         required: false
         default: ''
         type: string
+      skills:
+        description: Optional passthrough custom reviewer skills (JSON array or string).
+        required: false
+        default: ''
+        type: string
+      knowledge:
+        description: Optional passthrough domain knowledge references (JSON array/object or string).
+        required: false
+        default: ''
+        type: string
+      metrics:
+        description: Optional passthrough metrics/telemetry configuration (JSON object or string).
+        required: false
+        default: ''
+        type: string
+      retry_analysis:
+        description: Optional passthrough retry and failure analysis policy (JSON object or string).
+        required: false
+        default: ''
+        type: string
+      policy_json:
+        description: Optional raw JSON string of policy overrides passed to DOKS dispatch.
+        required: false
+        default: ''
+        type: string
     secrets:
       CT_REVIEW_BOT_APP_ID:
         description: GitHub App id used for target validation and check publication.
@@ -463,13 +488,12 @@ jobs:
           honcho-recall-peers: ${{ vars.HONCHO_RECALL_PEERS || 'review-yeti,codex' }}
           honcho-recall-distance: ${{ vars.HONCHO_RECALL_DISTANCE || '0.35' }}
           memory-provider: 'composite'
-          # Library-documentation evidence tool (review-yeti-bot#101). The
-          # action forwards this to CONTEXT7_API_KEY in the panel env; the
-          # model never sees the key and cannot control the request target —
-          # it supplies only a library name and topic, and the URL is built
-          # server-side. Absent secret degrades the tool to unavailable
-          # rather than failing the review.
           context7-api-key: ${{ secrets.CONTEXT7_API_KEY }}
+          skills: ${{ steps.policy.outputs.skills || inputs.skills }}
+          knowledge: ${{ steps.policy.outputs.knowledge || inputs.knowledge }}
+          metrics: ${{ steps.policy.outputs.metrics || inputs.metrics }}
+          retry-analysis: ${{ steps.policy.outputs.retry_analysis || inputs.retry_analysis }}
+          policy-json: ${{ steps.policy.outputs.policy_json || inputs.policy_json }}
 
       # Loud, not silent: a degraded run must be visibly degraded on the PR, not just in Action
       # logs an operator has to go dig for.

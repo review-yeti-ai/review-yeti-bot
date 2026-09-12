@@ -320,6 +320,10 @@ const outputs = {
   exclude: review.exclude,
   passthrough: isPassthroughRepository(targetRepository) ? 'true' : 'false',
   mcp_config_json: JSON.stringify({ servers: validateMcpServers(review.mcp_servers) }),
+  metrics: review.telemetry ? (typeof review.telemetry === 'string' ? review.telemetry : JSON.stringify(review.telemetry)) : '',
+  retry_analysis: review.retry_analysis ? (typeof review.retry_analysis === 'string' ? review.retry_analysis : JSON.stringify(review.retry_analysis)) : '',
+  skills: review.skills ? (typeof review.skills === 'string' ? review.skills : JSON.stringify(review.skills)) : '',
+  knowledge: review.knowledge ? (typeof review.knowledge === 'string' ? review.knowledge : JSON.stringify(review.knowledge)) : '',
 };
 
 export function validateMcpServers(servers) {

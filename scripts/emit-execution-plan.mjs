@@ -34,6 +34,8 @@ const ALLOWED_REVIEW_KEYS = [
   'max_passes',
   'exclude',
   'mcp_servers',
+  'telemetry',
+  'retry_analysis',
 ];
 const ALLOWED_INCREMENTAL_KEYS = ['repositories', 'max_incremental_chain'];
 const ALLOWED_BUDGET_KEYS = [
