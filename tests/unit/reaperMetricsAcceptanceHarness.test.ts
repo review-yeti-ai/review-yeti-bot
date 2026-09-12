@@ -54,6 +54,25 @@ describe('REL-817 acceptance database isolation', () => {
       message: 'REL-817 acceptance database URL must not include connection override parameters',
     }));
   });
+
+  it.each([
+    ['non-PostgreSQL protocol', 'https://postgres:postgres@127.0.0.1:5432/postgres'],
+    ['non-loopback host', 'postgresql://postgres:postgres@10.0.0.5:5432/postgres'],
+    ['non-postgres user', 'postgresql://app:postgres@127.0.0.1:5432/postgres'],
+    ['non-postgres database', 'postgresql://postgres:postgres@127.0.0.1:5432/production'],
+  ])('rejects a %s before constructing a PostgreSQL pool', async (_label, databaseUrl) => {
+    let thrown: unknown;
+    try {
+      await runReaperMetricsAcceptance(databaseUrl);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(pgMocks.poolConstructor).not.toHaveBeenCalled();
+    expect(thrown).toEqual(expect.objectContaining({
+      message: 'REL-817 acceptance requires the postgres user and postgres database on a disposable loopback PostgreSQL service',
+    }));
+  });
 });
 
 describe('REL-817 acceptance resource cleanup', () => {
