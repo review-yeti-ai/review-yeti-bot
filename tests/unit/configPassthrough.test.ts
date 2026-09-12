@@ -249,7 +249,7 @@ reviewers:
       PERSONAS: 'authoritative-persona',
     });
     expect(valid.policy).toBeDefined();
-    expect(valid.policy?.customKey).toBe('customVal');
+    expect((valid.policy as any)?.customKey).toBe('customVal');
     expect(valid.policy?.personas).toBe('authoritative-persona');
 
     // 2. Throws on malformed JSON
