@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CHECK_RUN_PAGE_SIZE,
+  MAX_CHECK_RUN_TITLE_CHARACTERS,
   MAX_CHECK_RUN_PAGES,
   MAX_GATE_RESPONSE_BYTES,
   GitHubReviewGateClient,
@@ -108,6 +109,27 @@ describe('GitHubReviewGateClient', () => {
       external_id: deriveReviewGateExternalId(coordinates),
       status: 'queued',
     });
+  });
+
+  it('accepts a 140-character title and rejects a 141-character title before create', async () => {
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(response(exactCheck()));
+    const gate = client(fetchImplementation);
+    const acceptedTitle = 't'.repeat(MAX_CHECK_RUN_TITLE_CHARACTERS);
+
+    await expect(gate.createPending(coordinates, { title: acceptedTitle })).resolves.toMatchObject({ id: 9876 });
+    expect(JSON.parse(String(fetchImplementation.mock.calls[0][1]?.body))).toMatchObject({
+      output: { title: acceptedTitle },
+    });
+
+    fetchImplementation.mockClear();
+    await expect(gate.createPending(coordinates, { title: `${acceptedTitle}t` })).rejects.toThrow(/title/u);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it.each(['', 'title\u0000with-control'])('rejects an invalid title before create for %j', async (title) => {
+    const fetchImplementation = vi.fn<typeof fetch>();
+    await expect(client(fetchImplementation).createPending(coordinates, { title })).rejects.toThrow(/title/u);
+    expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
   it('propagates a lost POST acknowledgement without retry, then reconciles the exact App check later', async () => {
@@ -223,6 +245,27 @@ describe('GitHubReviewGateClient', () => {
     expect(fetchImplementation.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'PATCH', redirect: 'error' }));
     const body = JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body));
     expect(body).toMatchObject({ status: 'completed', conclusion: 'timed_out' });
+  });
+
+  it('accepts a 140-character title and rejects a 141-character title before update', async () => {
+    const acceptedTitle = 't'.repeat(MAX_CHECK_RUN_TITLE_CHARACTERS);
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(exactCheck()))
+      .mockResolvedValueOnce(response(exactCheck({ status: 'completed', conclusion: 'success' })));
+    const gate = client(fetchImplementation);
+
+    await expect(gate.updateExisting(coordinates, 9876, { conclusion: 'success', title: acceptedTitle }))
+      .resolves.toMatchObject({ id: 9876, status: 'completed', conclusion: 'success' });
+    expect(JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body))).toMatchObject({
+      output: { title: acceptedTitle },
+    });
+
+    const rejectedFetch = vi.fn<typeof fetch>();
+    await expect(client(rejectedFetch).updateExisting(coordinates, 9876, {
+      conclusion: 'success',
+      title: `${acceptedTitle}t`,
+    })).rejects.toThrow(/title/u);
+    expect(rejectedFetch).not.toHaveBeenCalled();
   });
 
   it('rejects a wrong-identity update and never recreates on a missing check', async () => {
