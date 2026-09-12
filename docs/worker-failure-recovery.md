@@ -179,6 +179,47 @@ establish event-driven consumer CI. Those lifecycle and rollout requirements
 have separate acceptance evidence. A merged source PR and passing local tests
 do not establish deployed recovery.
 
+## Deterministic reaper counter acceptance
+
+Never manufacture either reaper anomaly in production. A delivery-identity
+mismatch is durable split-brain state between `review_runs` and
+`review_dispatch_outbox`; creating it requires corrupting production data. A
+superseded attempt is an abnormal abandoned-attempt recovery case; forcing it
+requires stranding a live attempt or manipulating GitHub checks. Neither is an
+acceptable observability probe.
+
+REL-817 therefore uses a sanctioned integration harness instead. It creates a
+random, owned schema in a disposable loopback PostgreSQL service, runs the real
+repository transactions and abandoned-run reaper, and serves metrics from the
+real dispatcher HTTP metrics server. Only GitHub transport is replaced: a
+read-only fake response supplies the strictly newer, completed, same-head App
+check needed by the superseded branch. The harness rejects GitHub writes.
+
+Each branch runs twice in one process lifetime. The acceptance receipt verifies
+the durable reason and lifecycle terminal class, an unset result digest,
+terminal run/outbox state, and cleared leases. Four HTTP scrapes prove both
+counters are positive, retain their values across an unchanged scrape, increase
+after the second pair, and remain monotonic on a final scrape.
+
+Run it only against an owned disposable PostgreSQL service. The harness rejects
+non-loopback hosts and requires the disposable `postgres` user/database shape:
+
+```bash
+docker run --rm -d --name review-yeti-rel817-postgres \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres \
+  -p 127.0.0.1:55432:5432 postgres:17-alpine
+
+REVIEW_YETI_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/postgres \
+  npm run test:acceptance:reaper
+
+docker stop review-yeti-rel817-postgres
+```
+
+Do not substitute a production database, a production database port-forward,
+production Kubernetes access, or a live GitHub token. Protected CI runs the
+same command against its ephemeral PostgreSQL 17 service after the full test
+suite.
+
 ## Focused verification
 
 Run the worker, admission, dispatch repository and Secret-provisioner unit/API

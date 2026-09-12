@@ -39,6 +39,7 @@
     "test:unit": "vitest run tests/unit",
     "test:release-contract": "vitest run --config vitest.release.config.ts",
     "test:integration": "vitest run tests/integration",
+    "test:acceptance:reaper": "REVIEW_YETI_REAPER_ACCEPTANCE=1 vitest run tests/integration/reaperMetricsAcceptance.postgres.test.ts --maxWorkers=1 --no-file-parallelism",
     "test:generational": "vitest run tests/unit/reviewCoreDifferential.test.ts tests/unit/reviewGenerationContracts.test.ts tests/unit/reviewAdmission.test.ts tests/unit/piRunState.test.ts tests/unit/actionPolicyContract.test.ts",
     "test:e2e": "vitest run tests/e2e",
     "test:replay": "vitest run tests/unit/cassetteReplay.test.ts tests/unit/openRouterClient.test.ts tests/integration/reviewReplay.test.ts tests/integration/openRouterFleetReplay.test.ts",
