@@ -1098,6 +1098,42 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ['outbox', 'delivery identity mismatch outbox retirement lost its exact attempt'],
+    ['run', 'delivery identity mismatch run retirement lost its lease'],
+  ] as const)('rolls back when the mismatched %s retirement loses its exact fence', async (lost, errorText) => {
+    const transactionQuery = vi.fn(async (sql: string) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{
+        run_id: swept.run_id,
+        run_delivery_id: 'run-delivery',
+        outbox_delivery_id: 'outbox-delivery',
+      }] };
+      if (/UPDATE review_dispatch_outbox/u.test(sql)) {
+        return lost === 'outbox' ? { rows: [] } : { rows: [{ run_id: swept.run_id }] };
+      }
+      if (/UPDATE review_runs/u.test(sql)) {
+        return lost === 'run' ? { rows: [] } : { rows: [{ run_id: swept.run_id }] };
+      }
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release }),
+    } as never);
+    const publish = vi.fn(async () => 'failure-published' as const);
+
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: 'run-delivery', executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000, deliveryIdentityMismatch: true,
+    }, 'reaper-a', 902_000, publish)).rejects.toThrow(errorText);
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(transactionQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(transactionQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('uses millisecond timestamp buckets while retaining identity fences for matching rows', async () => {
     const transactionQuery = vi.fn(async (sql: string) => {
       if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{
