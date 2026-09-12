@@ -98,6 +98,13 @@ Secret identity. An old execution's callback cannot fail or approve the new
 one. A failure before check creation can omit `checkId`; the check is useful
 evidence but is not the callback's authority.
 
+The deterministic non-production reaper acceptance harness attempts every
+cleanup step even when the primary operation already failed. It preserves the
+exact primary thrown value. When that value is an extensible object, the harness
+attaches cleanup diagnostics; primitive or frozen values cannot carry those
+diagnostics and are rethrown unchanged after cleanup. Unit coverage fixes this
+identity-preservation boundary explicitly.
+
 The service stores the latest failure in `review_runs.failure_diagnostics` as a
 redacted JSON object with `failureClass`, `reason`, `providerStatus` (when the
 provider supplied a valid HTTP status), `logTail`, and `executionAttempt`.
@@ -178,6 +185,57 @@ This change does not replace raw check publishers, alter required checks, or
 establish event-driven consumer CI. Those lifecycle and rollout requirements
 have separate acceptance evidence. A merged source PR and passing local tests
 do not establish deployed recovery.
+
+## Deterministic reaper counter acceptance
+
+Never manufacture either reaper anomaly in production. A delivery-identity
+mismatch is durable split-brain state between `review_runs` and
+`review_dispatch_outbox`; creating it requires corrupting production data. A
+superseded attempt is an abnormal abandoned-attempt recovery case; forcing it
+requires stranding a live attempt or manipulating GitHub checks. Neither is an
+acceptable observability probe.
+
+REL-817 therefore uses a sanctioned integration harness instead. It creates a
+random, owned schema in a disposable loopback PostgreSQL service, runs the real
+repository transactions and abandoned-run reaper, and serves metrics from the
+real dispatcher HTTP metrics server. Only GitHub transport is replaced: a
+read-only fake response supplies the strictly newer, completed, same-head App
+check needed by the superseded branch. The harness rejects GitHub writes.
+The database URL must contain only its validated authority and path: all query
+parameters are rejected before a PostgreSQL pool is constructed so libpq/pg
+connection overrides cannot redirect the harness to another host, role, port,
+database, service, or option set.
+
+Each branch runs twice in one process lifetime, but every reaper invocation has
+exactly one seeded candidate. The acceptance receipt binds that run ID to its
+projected outbox lease, durable terminal record, reaper outcome, and metric
+transition. A scrape before and two scrapes after each isolated sweep prove
+that only the branch-specific counter increments, the other counter remains
+unchanged, and both values persist across an unchanged scrape. The receipt also
+verifies the durable reason and lifecycle terminal class, an unset result
+digest, terminal run/outbox state, and cleared leases after the real reaper.
+Teardown attempts every owned resource independently, including the final
+admin-pool close; cleanup failures are aggregated after success and cannot
+replace an earlier operation failure.
+
+Run it only against an owned disposable PostgreSQL service. The harness rejects
+non-loopback hosts and requires the disposable `postgres` user/database shape:
+
+```bash
+docker run --rm -d --name review-yeti-rel817-postgres \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres \
+  -p 127.0.0.1:55432:5432 postgres:17-alpine
+
+REVIEW_YETI_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55432/postgres \
+  npm run test:acceptance:reaper
+
+docker stop review-yeti-rel817-postgres
+```
+
+Do not substitute a production database, a production database port-forward,
+production Kubernetes access, or a live GitHub token. Protected CI runs the
+same command against its ephemeral PostgreSQL 17 service after the full test
+suite.
 
 ## Focused verification
 
