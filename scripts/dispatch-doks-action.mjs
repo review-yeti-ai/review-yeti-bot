@@ -129,24 +129,31 @@ export function buildDispatchRequest(environment) {
       throw new Error(`Invalid policy-json: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  const parseJsonOrString = (val, fieldName) => {
+  const parseJsonOrString = (val, fieldName, allowArray = true) => {
     if (!val) return undefined;
     const trimmed = String(val).trim();
     if (!trimmed) return undefined;
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (allowArray && trimmed.startsWith('[') && trimmed.endsWith(']'))) {
       try {
-        return JSON.parse(trimmed);
+        const parsed = JSON.parse(trimmed);
+        if (!allowArray && Array.isArray(parsed)) {
+          throw new Error(`${fieldName} cannot be a JSON array`);
+        }
+        return parsed;
       } catch (err) {
         throw new Error(`Invalid JSON in ${fieldName}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    if (!allowArray && trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      throw new Error(`${fieldName} cannot be a JSON array`);
+    }
     return trimmed;
   };
 
-  const skills = parseJsonOrString(environment.SKILLS || environment.POLICY_SKILLS, 'skills');
-  const knowledge = parseJsonOrString(environment.KNOWLEDGE || environment.POLICY_KNOWLEDGE, 'knowledge');
-  const metrics = parseJsonOrString(environment.METRICS || environment.POLICY_METRICS, 'metrics');
-  const retryAnalysis = parseJsonOrString(environment.RETRY_ANALYSIS || environment.POLICY_RETRY_ANALYSIS, 'retryAnalysis');
+  const skills = parseJsonOrString(environment.SKILLS || environment.POLICY_SKILLS, 'skills', true);
+  const knowledge = parseJsonOrString(environment.KNOWLEDGE || environment.POLICY_KNOWLEDGE, 'knowledge', true);
+  const metrics = parseJsonOrString(environment.METRICS || environment.POLICY_METRICS, 'metrics', false);
+  const retryAnalysis = parseJsonOrString(environment.RETRY_ANALYSIS || environment.POLICY_RETRY_ANALYSIS, 'retryAnalysis', false);
 
   const policy = (personas || maxInvestigationTurns || laneCallBudget || skills || knowledge || metrics || retryAnalysis || Object.keys(extraPolicy).length > 0) ? {
     ...extraPolicy,

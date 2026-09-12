@@ -349,7 +349,7 @@ VictoriaMetrics (`vmsingle`) monitors all cluster platform components, applicati
 - `ct-review-action-dispatch` (`:3000`)
 - `otel-collector` (`:8889`)
 - `review-yeti-operator` (`:8080`)
-- `ct-llm-gateway` (Bifrost `:8080`)
+- `bifrost-gateway` (Bifrost `:8080`)
 - Cluster infrastructure (`kubelet-cadvisor`, `node-exporter`, `kube-state-metrics`, `alertmanager`, `coredns`, etc.)
 
 ### 4. Essential PromQL Operational Queries

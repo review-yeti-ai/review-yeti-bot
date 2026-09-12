@@ -41,6 +41,7 @@ personas:
     skills: ["owasp-top-10", "k8s-rbac-audit"]
     knowledge: ["knowledge/security/"]
     tools: ["ct-impact", "context7"]
+    custom_eval_flag: true
 reviewers:
   execution: personas
   fallback: ordered
@@ -71,6 +72,7 @@ reviewers:
     expect(sec.skills).toEqual(['owasp-top-10', 'k8s-rbac-audit']);
     expect(sec.knowledge).toEqual(['knowledge/security/']);
     expect(sec.tools).toEqual(['ct-impact', 'context7']);
+    expect((sec as any).custom_eval_flag).toBe(true);
   });
 
   it('accepts string and alias forms for telemetry and retro_analysis in YAML', () => {
@@ -84,6 +86,7 @@ personas:
   - id: sec
     required: true
     charter: builtin:security
+    custom_persona_hook: "pre-eval"
 reviewers:
   execution: personas
   fallback: ordered
@@ -102,9 +105,10 @@ reviewers:
     expect(config.telemetry).toBe('http://localhost:8428');
     expect(config.retro_analysis).toBe('automated');
     expect(config.metrics).toBe('prometheus');
+    expect(config.personas[0].custom_persona_hook).toBe('pre-eval');
   });
 
-  it('validates actionDispatchRequestSchema with passthrough policy options', () => {
+  it('validates actionDispatchRequestSchema with passthrough policy options and rejects unknown keys', () => {
     const request = {
       version: 'ActionDispatch.v1',
       deliveryId: 'actions:12345:1:4385771:100:e'.padEnd(48, '0'),
@@ -129,8 +133,9 @@ reviewers:
         skills: ['ast-parser', 'db-migration-verifier'],
         knowledge: { adr: ['0564', '0541'] },
         metrics: { telemetryEnabled: true },
+        telemetry: { collector: 'otel' },
         retryAnalysis: { enableQuarantine: true },
-        customKey: 'customVal',
+        retroAnalysis: { autoFeedback: true },
       },
     };
 
@@ -140,8 +145,14 @@ reviewers:
       expect(parsed.data.policy?.skills).toEqual(['ast-parser', 'db-migration-verifier']);
       expect((parsed.data.policy as any)?.knowledge).toEqual({ adr: ['0564', '0541'] });
       expect((parsed.data.policy as any)?.metrics).toEqual({ telemetryEnabled: true });
-      expect((parsed.data.policy as any)?.customKey).toBe('customVal');
+      expect((parsed.data.policy as any)?.telemetry).toEqual({ collector: 'otel' });
+      expect((parsed.data.policy as any)?.retryAnalysis).toEqual({ enableQuarantine: true });
+      expect((parsed.data.policy as any)?.retroAnalysis).toEqual({ autoFeedback: true });
     }
+
+    // Must reject unknown keys at the strict schema boundary
+    const unknownKey = actionDispatchRequestSchema.safeParse({ ...request, policy: { ...request.policy, customKey: 'customVal' } });
+    expect(unknownKey.success).toBe(false);
 
     // Must reject config and expectedAppId authority overrides
     const configOverride = actionDispatchRequestSchema.safeParse({ ...request, policy: { config: {} } });
@@ -264,6 +275,9 @@ reviewers:
     // 5. Plain strings remain strings
     const plain = buildDispatchRequest({ ...baseEnv, SKILLS: 'cisco-xcc' });
     expect(plain.policy?.skills).toBe('cisco-xcc');
+
+    // 6. Throws when JSON array is passed to metrics
+    expect(() => buildDispatchRequest({ ...baseEnv, METRICS: '[1, 2]' })).toThrow(/metrics cannot be a JSON array/);
   });
 
   it('buildDispatchRequest sets policy to undefined when no policy inputs are supplied', () => {

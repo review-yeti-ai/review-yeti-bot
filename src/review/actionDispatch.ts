@@ -37,15 +37,10 @@ export const actionDispatchRequestSchema = z.object({
     skills: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
     knowledge: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
     metrics: z.union([z.string(), z.record(z.unknown())]).optional(),
+    telemetry: z.union([z.string(), z.record(z.unknown())]).optional(),
     retryAnalysis: z.union([z.string(), z.record(z.unknown())]).optional(),
-  }).passthrough().superRefine((val, ctx) => {
-    if ('config' in val) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'policy.config override forbidden', path: ['config'] });
-    }
-    if ('expectedAppId' in val) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'policy.expectedAppId override forbidden', path: ['expectedAppId'] });
-    }
-  }).optional(),
+    retroAnalysis: z.union([z.string(), z.record(z.unknown())]).optional(),
+  }).strict().optional(),
 }).strict().superRefine((request, context) => {
   if (request.refreshRequested === true && request.refreshExecutionAttempt === undefined) {
     context.addIssue({ code: z.ZodIssueCode.custom,
