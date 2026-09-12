@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.60.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.60.0...v1.60.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **telemetry:** keep Prometheus counters cumulative (REL-817) ([#766](https://github.com/review-yeti-ai/review-yeti-bot/issues/766)) ([f4ffca4](https://github.com/review-yeti-ai/review-yeti-bot/commit/f4ffca4b58446f86f0037f2281664956352c1d6f))
+
 ## [1.60.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.59.3...v1.60.0) (2026-09-12)
 
 
