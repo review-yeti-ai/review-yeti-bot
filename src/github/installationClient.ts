@@ -12,9 +12,18 @@ import type {
   AbandonedCheckRecoveryOutcome,
   AbandonedPublishingRun,
 } from '../persistence/reviewDispatchRepository';
-import { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from '../review/reviewCheckIdentity';
+import {
+  RECOVERABLE_FAILURE_TITLES,
+  REVIEW_REFRESH_ACTION,
+  validateCheckRunTitle,
+} from '../review/reviewCheckIdentity';
 
-export { RECOVERABLE_FAILURE_TITLES, REVIEW_REFRESH_ACTION } from '../review/reviewCheckIdentity';
+export {
+  MAX_CHECK_RUN_TITLE_CHARACTERS,
+  RECOVERABLE_FAILURE_TITLES,
+  REVIEW_REFRESH_ACTION,
+  validateCheckRunTitle,
+} from '../review/reviewCheckIdentity';
 
 export interface PullRequestSnapshot {
   headSha: string;
@@ -318,6 +327,7 @@ export class GitHubInstallationClient {
     headSha: string,
     options: GateCheckOptions,
   ): Promise<number> {
+    const title = validateCheckRunTitle(options.title);
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
@@ -327,7 +337,7 @@ export class GitHubInstallationClient {
         conclusion: options.conclusion,
         completed_at: new Date(this.now()).toISOString(),
         output: {
-          title: options.title,
+          title,
           summary: options.summary.slice(0, 65_000),
           ...(options.text ? { text: options.text.slice(0, 65_000) } : {}),
         },
@@ -343,6 +353,7 @@ export class GitHubInstallationClient {
     headSha: string,
     options: ValidationCheckOptions,
   ): Promise<number> {
+    const title = validateCheckRunTitle(options.title);
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
@@ -352,7 +363,7 @@ export class GitHubInstallationClient {
         conclusion: options.conclusion,
         completed_at: new Date(this.now()).toISOString(),
         output: {
-          title: options.title,
+          title,
           summary: options.summary.slice(0, 65_000),
           ...(options.text ? { text: options.text.slice(0, 65_000) } : {}),
         },
@@ -552,8 +563,9 @@ export class GitHubInstallationClient {
       title?: string;
     }>;
   }): Promise<void> {
+    const title = validateCheckRunTitle(options.title);
     const output: Record<string, unknown> = {
-      title: options.title,
+      title,
       summary: options.summary.slice(0, 65_000),
     };
     if (options.text) output.text = options.text.slice(0, 65_000);
