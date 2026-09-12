@@ -48,6 +48,37 @@ on:
         required: false
         default: ''
         type: string
+    secrets:
+      CT_REVIEW_BOT_APP_ID:
+        description: GitHub App id used for target validation and check publication.
+        required: true
+      CT_REVIEW_BOT_APP_PRIVATE_KEY:
+        description: GitHub App private key used to mint repository-scoped installation tokens.
+        required: true
+      REVIEW_YETI_BIFROST_API_KEY:
+        description: Optional Bifrost provider credential.
+        required: false
+      OPENROUTER_REVIEW_FLEET_KEY:
+        description: Optional OpenRouter provider credential.
+        required: false
+      GEMINI_API_KEY:
+        description: Optional Gemini provider credential.
+        required: false
+      OLLAMA_PR_REVIEW_API_KEY:
+        description: Optional Ollama provider credential.
+        required: false
+      SYNTHETIC_API_KEY:
+        description: Optional synthetic provider credential.
+        required: false
+      HONCHO_BASE_URL:
+        description: Optional Honcho endpoint override.
+        required: false
+      HONCHO_API_KEY:
+        description: Optional Honcho memory credential.
+        required: false
+      CONTEXT7_API_KEY:
+        description: Optional Context7 documentation credential.
+        required: false
 
 permissions:
   actions: read
@@ -76,8 +107,8 @@ jobs:
       EXPECTED_HEAD_SHA: ${{ inputs.central_execution && inputs.head_sha || github.event.pull_request.head.sha }}
       REVIEW_REQUEST_ID: ${{ inputs.central_execution && inputs.request_id || format('{0}-{1}', github.run_id, github.run_attempt) }}
       # Same-repository central PRs run the immutable PR-head policy so a policy change is
-      # actually exercised. Fork PRs stay on trusted main to avoid executing fork code with
-      # inherited provider secrets. Consumer repositories always run the promoted v1 line.
+      # actually exercised. Every other path executes the exact reusable-workflow SHA
+      # captured below; no consumer checkout races a floating release ref.
       CENTRAL_REF: ${{ inputs.central_execution && 'v1' || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
       # Resolve once so policy, execution and publication agree. Preserve existing
       # qualified central inputs; consumer override admission remains separately guarded.
@@ -151,11 +182,39 @@ jobs:
           permission-actions: read
           permission-contents: read
 
+      # job.workflow_sha is the immutable commit GitHub selected when it
+      # admitted this reusable workflow invocation. Capture it in trusted
+      # inline code before checking out any central repository content. The
+      # sole exception preserves the existing same-repository PR-head policy;
+      # forks and external callers can never select their PR head here.
+      - name: Resolve immutable central tooling source
+        id: central_source
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          CENTRAL_EXECUTION: ${{ inputs.central_execution && 'true' || 'false' }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          set -euo pipefail
+          sha_re='^[0-9a-f]{40}$'
+          source_sha="${WORKFLOW_SHA}"
+          if [[ "${CENTRAL_EXECUTION}" != 'true' &&
+                "${CALLER_REPOSITORY}" == 'exampleorg/example-review-actions' &&
+                "${PR_HEAD_REPOSITORY}" == "${CALLER_REPOSITORY}" ]]; then
+            source_sha="${PR_HEAD_SHA}"
+          fi
+          if [[ ! "${source_sha}" =~ ${sha_re} ]]; then
+            echo "::error::resolved central tooling source is not a full commit SHA"
+            exit 1
+          fi
+          echo "sha=${source_sha}" >> "${GITHUB_OUTPUT}"
+
       - name: Checkout central workflow tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           repository: exampleorg/example-review-actions
-          ref: ${{ inputs.central_execution && 'v1' || github.repository == 'exampleorg/example-review-actions' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
+          ref: ${{ steps.central_source.outputs.sha }}
           path: .exampleorg-review-actions
           token: ${{ steps.central_token.outputs.token || steps.ry_token.outputs.token }}
           persist-credentials: false

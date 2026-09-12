@@ -74,8 +74,51 @@ or ambient `github.token` fallback crosses this boundary.
 Activating the external route requires the `ct-review-bot` App to be installed
 on the selected `review-yeti-ai/review-yeti-bot` repository and the existing
 `CT_REVIEW_BOT_APP_ID` and `CT_REVIEW_BOT_APP_PRIVATE_KEY` Actions secrets to
-be available to each trusted workflow that mints a token. Provider credentials
-remain central and are never copied to the target caller.
+be available to each trusted workflow that mints a token. External self-review
+provider credentials cross the reusable-workflow boundary only through the
+explicit allowlist below; broad secret inheritance is forbidden.
+
+That existing central-dispatch admission validates the legacy
+`.github/workflows/review-bot.yaml` receiver. The direct reusable self-review
+caller below is a separate, base-owned `.github/workflows/ct-review-bot.yml`
+contract.
+
+The Review Yeti self-review caller is deliberately stricter than existing
+`exampleorg/*` callers. Its base-owned `.github/workflows/ct-review-bot.yml`
+must call this reusable workflow at one full 40-character commit SHA reachable
+from the promoted `v1` history. It may contain only that reusable-workflow job,
+may not pass `with:` overrides, and must use an explicit secret map; `@v1`,
+`secrets: inherit`, local runner steps, and PR-head checkout are rejected.
+
+The called workflow requires only the App identity pair:
+
+- `CT_REVIEW_BOT_APP_ID`
+- `CT_REVIEW_BOT_APP_PRIVATE_KEY`
+
+Provider and enrichment secrets are optional individually because deployments
+may operate different transports, although at least one enabled provider must
+be available for a non-passthrough review. The external caller may additionally
+map `REVIEW_YETI_BIFROST_API_KEY`, `OPENROUTER_REVIEW_FLEET_KEY`,
+`GEMINI_API_KEY`, `OLLAMA_PR_REVIEW_API_KEY`, `SYNTHETIC_API_KEY`,
+`HONCHO_BASE_URL`, `HONCHO_API_KEY`, and `CONTEXT7_API_KEY`. Each destination
+maps from the same-named repository secret except the deliberately role-scoped
+OpenRouter binding:
+
+```yaml
+jobs:
+  review:
+    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@<PROMOTED_40_HEX_SHA>
+    secrets:
+      CT_REVIEW_BOT_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+      CT_REVIEW_BOT_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+      OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+```
+
+At runtime the reusable workflow captures GitHub's immutable
+`job.workflow_sha` before any central checkout and checks out that exact commit.
+The existing same-repository `example-review-actions` PR-head policy remains the sole
+exception; external and fork callers can never select their PR head as central
+tooling.
 
 ### Step 2: Add the Trigger Workflow
 Add `.github/workflows/review-yeti.yml` to your repository:

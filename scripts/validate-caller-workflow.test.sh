@@ -23,7 +23,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$endpoint" in
-  repos/exampleorg/example/contents/*|repos/exampleorg/example-review-actions/contents/*)
+  repos/exampleorg/example/contents/*|repos/exampleorg/example-review-actions/contents/*|repos/review-yeti-ai/review-yeti-bot/contents/*)
     ref="${endpoint##*ref=}"
     if [[ "$ref" != "$EXPECTED_BASE_SHA" ]]; then
       echo "unexpected ref requested: $ref" >&2
@@ -66,6 +66,97 @@ grep -Fxq '          GH_TOKEN: ${{ steps.ry_token.outputs.token }}' <<<"$pin_ste
   echo 'immutable caller validation must bind only the already-minted App token' >&2
   exit 1
 }
+
+# The called workflow is its own immutable trust root. Consumer calls must
+# capture job.workflow_sha before any repository checkout and use that exact
+# value. The only PR-head exception is the already-governed same-repository
+# example-review-actions path; fork and external consumers remain on workflow_sha.
+source_step="$(sed -n '/      - name: Resolve immutable central tooling source/,/      - name: Checkout central workflow tooling/p' "$repo_root/.github/workflows/review-yeti.yml")"
+source_script="$(
+  sed -n '/        run: |/,$p' <<<"$source_step" |
+    sed '1d;$d;s/^          //'
+)"
+[[ -n "$source_script" ]] || {
+  echo 'missing trusted pre-checkout central tooling source resolver' >&2
+  exit 1
+}
+# shellcheck disable=SC2016 # Match the literal GitHub expression.
+grep -Fxq '          WORKFLOW_SHA: ${{ job.workflow_sha }}' <<<"$source_step" || {
+  echo 'central tooling source resolver must bind job.workflow_sha directly' >&2
+  exit 1
+}
+checkout_step="$(sed -n '/      - name: Checkout central workflow tooling/,/      - name: Set up Node 24/p' "$repo_root/.github/workflows/review-yeti.yml")"
+# shellcheck disable=SC2016 # Match the literal GitHub expression.
+grep -Fxq '          ref: ${{ steps.central_source.outputs.sha }}' <<<"$checkout_step" || {
+  echo 'central tooling checkout must use the trusted resolver output' >&2
+  exit 1
+}
+if grep -Eq 'ref:.*(v1|main)' <<<"$checkout_step"; then
+  echo 'central tooling checkout must not use a mutable ref' >&2
+  exit 1
+fi
+
+workflow_sha='54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff'
+same_repo_head='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+run_source_resolver() {
+  local repository="$1"
+  local head_repository="$2"
+  local head_sha="$3"
+  local central_execution="${4:-false}"
+  local output_file="$tmp_dir/source-output"
+  : >"$output_file"
+  GITHUB_OUTPUT="$output_file" \
+    WORKFLOW_SHA="$workflow_sha" \
+    CENTRAL_EXECUTION="$central_execution" \
+    CALLER_REPOSITORY="$repository" \
+    PR_HEAD_REPOSITORY="$head_repository" \
+    PR_HEAD_SHA="$head_sha" \
+    bash -c "$source_script"
+  sed -n 's/^sha=//p' "$output_file"
+}
+
+[[ "$(run_source_resolver review-yeti-ai/review-yeti-bot review-yeti-ai/review-yeti-bot "$same_repo_head")" == "$workflow_sha" ]] || {
+  echo 'external self-review must execute central tooling at job.workflow_sha' >&2
+  exit 1
+}
+[[ "$(run_source_resolver exampleorg/example-review-actions exampleorg/example-review-actions "$same_repo_head")" == "$same_repo_head" ]] || {
+  echo 'governed same-repository central PRs must retain PR-head policy execution' >&2
+  exit 1
+}
+[[ "$(run_source_resolver exampleorg/example-review-actions untrusted/fork "$same_repo_head")" == "$workflow_sha" ]] || {
+  echo 'forked central PRs must execute central tooling at job.workflow_sha' >&2
+  exit 1
+}
+[[ "$(run_source_resolver exampleorg/example-review-actions exampleorg/example-review-actions "$same_repo_head" true)" == "$workflow_sha" ]] || {
+  echo 'central dispatch must retain precedence over same-repository PR-head execution' >&2
+  exit 1
+}
+
+# Every secret reference must be declared by workflow_call. App identity is
+# mandatory; providers and optional enrichments remain optional so callers can
+# expose only the transports they operate.
+secret_interface="$(sed -n '/^  workflow_call:/,/^permissions:/p' "$repo_root/.github/workflows/review-yeti.yml")"
+referenced_secrets="$(grep -Eo 'secrets\.[A-Z0-9_]+' "$repo_root/.github/workflows/review-yeti.yml" | sed 's/^secrets\.//' | sort -u)"
+while IFS= read -r secret_name; do
+  grep -Eq "^      ${secret_name}:$" <<<"$secret_interface" || {
+    echo "workflow_call secret interface is missing ${secret_name}" >&2
+    exit 1
+  }
+done <<<"$referenced_secrets"
+for required_secret in CT_REVIEW_BOT_APP_ID CT_REVIEW_BOT_APP_PRIVATE_KEY; do
+  declaration="$(sed -n "/^      ${required_secret}:$/,/^      [A-Z0-9_]*:$/p" <<<"$secret_interface")"
+  grep -Fxq '        required: true' <<<"$declaration" || {
+    echo "${required_secret} must be a required workflow_call secret" >&2
+    exit 1
+  }
+done
+for optional_secret in CONTEXT7_API_KEY GEMINI_API_KEY HONCHO_API_KEY HONCHO_BASE_URL OLLAMA_PR_REVIEW_API_KEY OPENROUTER_REVIEW_FLEET_KEY REVIEW_YETI_BIFROST_API_KEY SYNTHETIC_API_KEY; do
+  declaration="$(sed -n "/^      ${optional_secret}:$/,/^      [A-Z0-9_]*:$/p" <<<"$secret_interface")"
+  grep -Fxq '        required: false' <<<"$declaration" || {
+    echo "${optional_secret} must remain an optional workflow_call secret" >&2
+    exit 1
+  }
+done
 
 # The ambient consumer token can read its own base caller but cannot compare
 # private central history. Only the App token works; lack of it is fail-closed.
@@ -161,5 +252,103 @@ if output="$({
   exit 1
 fi
 grep -Fq "central-ref must be a platform-owned major release ref such as v1" <<<"$output"
+
+# The sole admitted external self-review caller has a stricter ABI than legacy
+# exampleorg consumers: one reachable full SHA and explicit secret mappings
+# from a closed destination/source-pair allowlist. It may not inherit every repository secret
+# or carry any runner/checkout path capable of executing its PR head.
+external_workflow=$'name: Review Yeti\non:\n  pull_request_target:\njobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff\n    secrets:\n      CT_REVIEW_BOT_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}\n      CT_REVIEW_BOT_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}\n      REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}\n      OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}\n'
+PATH="$tmp_dir/bin:$PATH" \
+  GH_TOKEN=test REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+  FAKE_WORKFLOW_CONTENT="$external_workflow" \
+  "$repo_root/scripts/validate-caller-workflow.sh"
+
+external_floating="${external_workflow/@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff/@v1}"
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_floating" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected the external self-review caller floating v1 ref to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review caller must use one full immutable central SHA' <<<"$output"
+
+external_inherit=$'jobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff\n    secrets: inherit\n'
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_inherit" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected external secrets inheritance to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review caller must map secrets explicitly' <<<"$output"
+
+external_extra_secret="${external_workflow}"$'      UNRELATED_SECRET: ${{ secrets.UNRELATED_SECRET }}\n'
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_extra_secret" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected an unallowlisted external secret mapping to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review caller maps unapproved secret UNRELATED_SECRET' <<<"$output"
+
+external_missing_identity="$(grep -v 'CT_REVIEW_BOT_APP_PRIVATE_KEY:' <<<"$external_workflow")"
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_missing_identity" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected a missing mandatory App identity mapping to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review caller must map CT_REVIEW_BOT_APP_PRIVATE_KEY explicitly' <<<"$output"
+
+external_pr_head_job="${external_workflow}"$'  unsafe:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n'
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_pr_head_job" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected external PR-head execution to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review caller must contain only the reusable review job' <<<"$output"
+
+external_duplicate_uses="${external_workflow/    secrets:/    uses: attacker\/untrusted\/.github\/workflows\/review.yml@main$'\n'    secrets:}"
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_duplicate_uses" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected a duplicate reusable-workflow target to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review caller must contain exactly one central uses binding' <<<"$output"
+
+external_with_override="${external_workflow/    secrets:/$'    with:\n      central_execution: true\n    secrets:'}"
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_with_override" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected external reusable-workflow input overrides to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review caller may not override reusable-workflow inputs' <<<"$output"
+
+external_duplicate_secrets="${external_workflow}"$'    secrets:\n      CT_REVIEW_BOT_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}\n      CT_REVIEW_BOT_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}\n'
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_duplicate_secrets" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected duplicate YAML secret mappings to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review caller job property secrets is duplicated' <<<"$output"
 
 echo "validate-caller-workflow contract passed"
