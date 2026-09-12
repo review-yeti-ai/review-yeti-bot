@@ -24,6 +24,7 @@ export interface MetricCounters {
   jobsQueued: ReturnType<any>;
   jobsDispatched: ReturnType<any>;
   reviewReaperDeliveryIdentityMismatches: ReturnType<any>;
+  reviewReaperSupersededAttempts: ReturnType<any>;
   activeJobs: ReturnType<any>;
   queuedJobs: ReturnType<any>;
 }
@@ -103,6 +104,9 @@ export function initMetrics(): MetricCounters {
     }),
     reviewReaperDeliveryIdentityMismatches: meter.createCounter('ct_review_reaper_delivery_identity_mismatch_total', {
       description: 'Abandoned review runs quarantined because run and outbox delivery identities differed.',
+    }),
+    reviewReaperSupersededAttempts: meter.createCounter('ct_review_reaper_superseded_attempt_total', {
+      description: 'Abandoned review attempts retired because a completed newer same-head App check already exists.',
     }),
     activeJobs: meter.createUpDownCounter('ct_queue_active_jobs', {
       description: 'Current active review jobs.',
@@ -219,6 +223,7 @@ export async function getPrometheusMetrics(): Promise<string> {
     { name: 'ct_queue_jobs_queued_total', desc: 'Total queue jobs queued.', type: 'counter' },
     { name: 'ct_queue_jobs_dispatched_total', desc: 'Total queue jobs dispatched.', type: 'counter' },
     { name: 'ct_review_reaper_delivery_identity_mismatch_total', desc: 'Abandoned review runs quarantined because run and outbox delivery identities differed.', type: 'counter' },
+    { name: 'ct_review_reaper_superseded_attempt_total', desc: 'Abandoned review attempts retired because a completed newer same-head App check already exists.', type: 'counter' },
     { name: 'ct_queue_active_jobs', desc: 'Current active review jobs.', type: 'gauge' },
     { name: 'ct_queue_queued_jobs', desc: 'Current queued review jobs.', type: 'gauge' },
   ];

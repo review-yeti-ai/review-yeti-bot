@@ -28,6 +28,7 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(metrics.jobsQueued).toBeDefined();
     expect(metrics.jobsDispatched).toBeDefined();
     expect(metrics.reviewReaperDeliveryIdentityMismatches).toBeDefined();
+    expect(metrics.reviewReaperSupersededAttempts).toBeDefined();
     expect(metrics.activeJobs).toBeDefined();
     expect(metrics.queuedJobs).toBeDefined();
   });
@@ -38,6 +39,9 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(prometheusText).toContain('# HELP ct_review_reaper_delivery_identity_mismatch_total Abandoned review runs quarantined because run and outbox delivery identities differed.');
     expect(prometheusText).toContain('# TYPE ct_review_reaper_delivery_identity_mismatch_total counter');
     expect(prometheusText).toContain('ct_review_reaper_delivery_identity_mismatch_total 0');
+    expect(prometheusText).toContain('# HELP ct_review_reaper_superseded_attempt_total Abandoned review attempts retired because a completed newer same-head App check already exists.');
+    expect(prometheusText).toContain('# TYPE ct_review_reaper_superseded_attempt_total counter');
+    expect(prometheusText).toContain('ct_review_reaper_superseded_attempt_total 0');
   });
 
   it('records metrics and serializes to Prometheus format via getPrometheusMetrics()', async () => {
@@ -51,6 +55,7 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     metrics.jobsQueued.add(5, { repository: 'owner/repo' });
     metrics.jobsDispatched.add(3, { repository: 'owner/repo' });
     metrics.reviewReaperDeliveryIdentityMismatches.add(1);
+    metrics.reviewReaperSupersededAttempts.add(1);
     metrics.activeJobs.add(2, { repository: 'owner/repo' });
     metrics.queuedJobs.add(2, { repository: 'owner/repo' });
 
@@ -64,6 +69,7 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(prometheusText).toContain('ct_queue_jobs_queued_total');
     expect(prometheusText).toContain('ct_queue_jobs_dispatched_total');
     expect(prometheusText).toContain('ct_review_reaper_delivery_identity_mismatch_total');
+    expect(prometheusText).toContain('ct_review_reaper_superseded_attempt_total');
     expect(prometheusText).toContain('ct_queue_active_jobs');
     expect(prometheusText).toContain('ct_queue_queued_jobs');
   });

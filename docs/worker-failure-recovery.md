@@ -116,6 +116,19 @@ remains without a result or success verdict, is counted by
 `ct_review_reaper_delivery_identity_mismatch_total`, and is not eligible for
 another legacy sweep.
 
+A completed newer successful or failed `Review Yeti` check from the authenticated publisher App can
+also make an abandoned attempt obsolete on the same head. This is recognized
+only when the newer check has a valid `run_<id>:a<attempt>` external identity
+and began in a strictly later GitHub timestamp second. The reaper never copies
+that check's success or failure onto the old run and never patches the newer
+check. While holding the old attempt's run and outbox locks, it instead
+atomically terminalizes the outbox, clears both leases, leaves `result_digest`
+unset, and records `superseded_publisher_owned_check` diagnostics plus a
+`superseded_by_newer_check` lifecycle event. The one-shot retirement increments
+`ct_review_reaper_superseded_attempt_total`; malformed, same-second,
+non-terminal, foreign-App, or otherwise ambiguous identities remain fail
+closed and retryable.
+
 This change does not implement success callbacks, replace raw check publishers,
 alter required checks, or establish event-driven consumer CI. Those lifecycle
 and rollout requirements have separate acceptance evidence. A merged source PR
