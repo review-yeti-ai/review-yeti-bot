@@ -30,6 +30,10 @@ describe('review job dispatcher metrics server', () => {
       expect(() => createDispatcherMetricsServer({ collectionTimeoutMs }))
         .toThrow('dispatcher metrics collection timeout must be 1-30000 ms');
     }
+    for (const collectionTimeoutMs of [1, 30_000]) {
+      const server = createDispatcherMetricsServer({ collectionTimeoutMs });
+      expect(server.listening).toBe(false);
+    }
   });
 
   it('serves health and only the two internal GET routes', async () => {
