@@ -6,15 +6,15 @@ import { resolve } from 'node:path';
 import { isEntrypoint } from './entrypoint-guard.mjs';
 export const CENTRAL_REPOSITORY = 'exampleorg/example-review-actions';
 // Repositories admitted to the central dispatch boundary. ADR 0519 replaced the
-// fixed three-repository list with an owner check plus a per-repository
-// concurrency cap: admission is earned by landing the base-owned caller on the
-// target's default branch, which already requires write plus review there, and
-// the shared Ollama lane is protected by the cap rather than by list
-// membership. ADR 0490 still governs the lane itself.
+// fixed exampleorg repository list with an owner check plus a per-repository
+// concurrency cap. The self-hosting route below is the one explicit external
+// exception and carries its own exact caller path and installation boundary.
+// ADR 0490 still governs the shared lane itself.
 export const TARGET_OWNER = 'exampleorg';
 // A GitHub repository name: no slashes, no leading dot, no path traversal.
 const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/u;
 export const TARGET_REPOSITORY = 'exampleorg/example-api';
+export const REVIEW_YETI_REPOSITORY = 'review-yeti-ai/review-yeti-bot';
 
 // Peak observed central concurrency over a 17.4h / 100-run sample was 4 global,
 // and 4 / 3 / 2 for example-release / example-meta / example-api. Six is above every
@@ -59,6 +59,35 @@ export function globalConcurrencyCap(env = process.env) {
   );
 }
 
+export const DISPATCH_EVENT_TYPE = 'review-yeti-request';
+export const CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
+export const REVIEW_YETI_CALLER_WORKFLOW_PATH = '.github/workflows/review-bot.yaml';
+
+export function resolveAdmittedTarget(repository) {
+  if (typeof repository !== 'string') throw new Error('repository must be a string');
+  const [owner, name, ...rest] = repository.split('/');
+  if (owner === TARGET_OWNER && rest.length === 0 && REPOSITORY_NAME_PATTERN.test(name ?? '')) {
+    return {
+      owner,
+      name,
+      repository,
+      callerWorkflowPath: CALLER_WORKFLOW_PATH,
+    };
+  }
+  if (repository === REVIEW_YETI_REPOSITORY) {
+    return {
+      owner: 'review-yeti-ai',
+      name: 'review-yeti-bot',
+      repository,
+      callerWorkflowPath: REVIEW_YETI_CALLER_WORKFLOW_PATH,
+    };
+  }
+  throw new Error(
+    `repository is not admitted; repository must be a ${TARGET_OWNER}/<repo> repository `
+    + `or exactly ${REVIEW_YETI_REPOSITORY}, got '${repository}'`,
+  );
+}
+
 export function assertAdmittedRepository(repository) {
   if (typeof repository !== 'string') throw new Error('repository must be a string');
   const [owner, name, ...rest] = repository.split('/');
@@ -67,8 +96,6 @@ export function assertAdmittedRepository(repository) {
   }
   return name;
 }
-export const DISPATCH_EVENT_TYPE = 'review-yeti-request';
-export const CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
 export const REQUIRED_REVIEW_CONTEXT = 'Review Yeti';
 export const REQUIRED_REVIEW_APP_ID = 4385771;
 export const REQUIRED_REVIEW_APP_SLUG = 'ct-review-bot';
@@ -118,7 +145,7 @@ export function validateDispatchPayload(payload) {
   if (Object.hasOwn(payload, 'refresh_requested') && typeof payload.refresh_requested !== 'boolean') {
     throw new Error('refresh_requested must be a boolean');
   }
-  assertAdmittedRepository(payload.repository);
+  const admittedTarget = resolveAdmittedTarget(payload.repository);
   if (!Number.isSafeInteger(payload.pr_number) || payload.pr_number < 1) {
     throw new Error('pr_number must be a positive safe integer');
   }
@@ -130,7 +157,7 @@ export function validateDispatchPayload(payload) {
     throw new Error('request_id must be <repo-name>:<pr_number>:<head_sha>:<github.run_id>:<github.run_attempt>');
   }
   const requestRepoName = requestIdentity[1];
-  if (payload.repository !== `exampleorg/${requestRepoName}`) {
+  if (admittedTarget.name !== requestRepoName) {
     throw new Error('request_id repo-name must match the payload repository');
   }
   if (Number(requestIdentity[2]) !== payload.pr_number || requestIdentity[3] !== payload.head_sha) {
@@ -188,6 +215,32 @@ async function githubJson(url, token, fetchImpl) {
   });
   if (!response?.ok) throw new Error(`GitHub target lookup failed with HTTP ${response?.status ?? 'unknown'}`);
   return response.json();
+}
+
+async function assertInstallationTokenScope({ token, owner, repositories, label, fetchImpl }) {
+  const installation = await githubJson('https://api.github.com/installation', token, fetchImpl);
+  assertPlainObject(installation, `${label} installation`);
+  assertPlainObject(installation.account, `${label} installation account`);
+  if (installation.account.login !== owner) {
+    throw new Error(`${label} installation owner must be exactly ${owner}`);
+  }
+
+  const scope = await githubJson(
+    'https://api.github.com/installation/repositories?per_page=100',
+    token,
+    fetchImpl,
+  );
+  assertPlainObject(scope, `${label} installation repository scope`);
+  if (!Number.isSafeInteger(scope.total_count) || scope.total_count < 0 || !Array.isArray(scope.repositories)) {
+    throw new Error(`${label} installation repository scope is invalid`);
+  }
+  const actual = scope.repositories.map((repository) => repository?.full_name);
+  if (actual.some((repository) => typeof repository !== 'string')
+      || scope.total_count !== actual.length
+      || new Set(actual).size !== actual.length
+      || JSON.stringify([...actual].sort()) !== JSON.stringify([...repositories].sort())) {
+    throw new Error(`${label} installation repository scope must be exactly ${repositories.join(', ')}`);
+  }
 }
 
 function assertNullableString(value, label) {
@@ -526,8 +579,40 @@ export async function assertRepositoryCapacity({
   return { cap, globalCap, inFlight, globalInFlight };
 }
 
-export async function validateCentralDispatch({ payload, token, fetchImpl = globalThis.fetch }) {
+export async function validateCentralDispatch({
+  payload,
+  token,
+  targetToken = token,
+  centralToken = token,
+  fetchImpl = globalThis.fetch,
+}) {
   const request = validateDispatchPayload(payload);
+  const admittedTarget = resolveAdmittedTarget(request.repository);
+  if (admittedTarget.owner !== TARGET_OWNER) {
+    if (typeof targetToken !== 'string' || targetToken.length === 0) {
+      throw new Error('a target-owner Review Yeti App token is required for central target access');
+    }
+    if (typeof centralToken !== 'string' || centralToken.length === 0) {
+      throw new Error('a central App token is required for central repository access');
+    }
+    if (targetToken === centralToken) {
+      throw new Error('cross-owner validation requires distinct installation tokens');
+    }
+    await assertInstallationTokenScope({
+      token: targetToken,
+      owner: admittedTarget.owner,
+      repositories: [admittedTarget.repository],
+      label: 'target',
+      fetchImpl,
+    });
+    await assertInstallationTokenScope({
+      token: centralToken,
+      owner: TARGET_OWNER,
+      repositories: [CENTRAL_REPOSITORY],
+      label: 'central',
+      fetchImpl,
+    });
+  }
   const [, , , , callerRunIdText, callerRunAttemptText] = REQUEST_ID_PATTERN.exec(request.request_id);
   const callerRunId = Number(callerRunIdText);
   const callerRunAttempt = Number(callerRunAttemptText);
@@ -535,16 +620,16 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
     throw new Error('request_id run identity exceeds the safe integer range');
   }
   const apiBase = `https://api.github.com/repos/${request.repository}`;
-  const pull = await githubJson(`${apiBase}/pulls/${request.pr_number}`, token, fetchImpl);
+  const pull = await githubJson(`${apiBase}/pulls/${request.pr_number}`, targetToken, fetchImpl);
   if (pull?.base?.repo?.full_name !== request.repository) throw new Error('PR repository identity changed');
   if (pull?.state !== 'open') throw new Error('PR is not open');
   if (pull?.base?.sha !== request.base_sha) throw new Error('PR base SHA changed');
   if (pull?.head?.sha !== request.head_sha) throw new Error('PR head SHA changed');
 
-  const callerRun = await githubJson(`${apiBase}/actions/runs/${callerRunId}`, token, fetchImpl);
+  const callerRun = await githubJson(`${apiBase}/actions/runs/${callerRunId}`, targetToken, fetchImpl);
   if (callerRun?.repository?.full_name !== request.repository) throw new Error('caller run repository identity changed');
   if (callerRun?.event !== 'pull_request_target') throw new Error('caller run must use pull_request_target');
-  if (callerRun?.path !== CALLER_WORKFLOW_PATH) throw new Error('caller run workflow path changed');
+  if (callerRun?.path !== admittedTarget.callerWorkflowPath) throw new Error('caller run workflow path changed');
   // A pull_request_target run reports the PR *head* as head_sha and the PR source branch as
   // head_branch (the base-owned workflow code is what executes, but the run identity is the PR).
   // Bind the caller run to the exact requested PR head; the base-owned workflow bytes are read
@@ -562,8 +647,8 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
   // Capacity is checked only after identity is proven, so an invalid request
   // reports the validation failure rather than a misleading capacity message.
   const capacity = await assertRepositoryCapacity({
-    repositoryName: assertAdmittedRepository(request.repository),
-    token,
+    repositoryName: admittedTarget.name,
+    token: centralToken,
     fetchImpl,
   });
   // repository-dispatch.yml serializes this exact repository/PR/head for the
@@ -573,7 +658,7 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
   const reviewInventory = await listExactHeadReviewChecks({
     repository: request.repository,
     headSha: request.head_sha,
-    token,
+    token: targetToken,
     fetchImpl,
   });
   const generation = assertReviewGeneration({
@@ -588,8 +673,8 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
   // the caller from the default branch so the contract checks the bytes that actually ran.
   const defaultBranch = pull?.base?.repo?.default_branch;
   if (typeof defaultBranch !== 'string' || defaultBranch.length === 0) throw new Error('repository default branch is missing');
-  const workflowUrl = `${apiBase}/contents/${CALLER_WORKFLOW_PATH}?ref=${encodeURIComponent(defaultBranch)}`;
-  const workflow = await githubJson(workflowUrl, token, fetchImpl);
+  const workflowUrl = `${apiBase}/contents/${admittedTarget.callerWorkflowPath}?ref=${encodeURIComponent(defaultBranch)}`;
+  const workflow = await githubJson(workflowUrl, targetToken, fetchImpl);
   if (workflow?.encoding !== 'base64' || typeof workflow.content !== 'string') {
     throw new Error('base-owned caller workflow response is invalid');
   }
@@ -604,6 +689,7 @@ export async function validateCentralDispatch({ payload, token, fetchImpl = glob
     ...request,
     caller_run_id: callerRunId,
     caller_run_attempt: callerRunAttempt,
+    caller_workflow_path: admittedTarget.callerWorkflowPath,
     caller_workflow_sha256: callerWorkflowSha256,
     ...generation,
   };
@@ -630,7 +716,8 @@ async function main() {
   }
   const result = await validateCentralDispatch({
     payload,
-    token: process.env.GH_TOKEN,
+    targetToken: process.env.GH_TARGET_TOKEN,
+    centralToken: process.env.GH_CENTRAL_TOKEN,
   });
   writeOutputs(result, process.env.GITHUB_OUTPUT);
   console.log(`Validated central Review Yeti request ${result.request_id} for ${result.repository}#${result.pr_number} at exact head ${result.head_sha}.`);

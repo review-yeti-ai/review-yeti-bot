@@ -10,6 +10,7 @@ import {
   DEFAULT_REPOSITORY_CONCURRENCY_CAP,
   CAPACITY_RUN_STATUSES,
   DISPATCH_EVENT_TYPE,
+  REVIEW_YETI_REPOSITORY,
   TARGET_REPOSITORY,
   assertAdmittedRepository,
   assertRepositoryCapacity,
@@ -50,7 +51,7 @@ function resolveValidationTokenScope(targetRepository) {
   const directory = mkdtempSync(`${tmpdir()}/review-yeti-token-scope-`);
   const outputPath = `${directory}/github-output`;
   try {
-    const result = spawnSync('bash', ['-c', workflowStepRun(receiverWorkflow, 'Resolve target repository name')], {
+    const result = spawnSync('bash', ['-c', workflowStepRun(receiverWorkflow, 'Resolve target repository scope')], {
       encoding: 'utf8',
       env: { ...process.env, GITHUB_OUTPUT: outputPath, TARGET_REPOSITORY: targetRepository },
     });
@@ -350,7 +351,7 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   // REL-540 / ADR 0511: the receiver's validate job runs as the ct-review-bot App, never the PAT.
   assert.match(receiver, /create-github-app-token@[0-9a-f]{40}/u);
   assert.match(receiver, /app-id: \$\{\{ secrets\.CT_REVIEW_BOT_APP_ID \}\}/u);
-  const validationTokenStep = receiver.match(/- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Validate payload)/u)?.[0] ?? '';
+  const validationTokenStep = receiver.match(/- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Mint Review Yeti App token for central validation)/u)?.[0] ?? '';
   const scopedPermissions = [...validationTokenStep.matchAll(/^\s+permission-([a-z-]+):\s*(\w+)\s*$/gmu)]
     .map((match) => `${match[1]}:${match[2]}`).sort();
   assert.deepEqual(scopedPermissions, [
@@ -362,9 +363,12 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.doesNotMatch(receiver, /secrets\.CROSS_REPO_TOKEN/u);
   assert.doesNotMatch(receiver, /OLLAMA_PR_REVIEW_API_KEY/u);
   assert.match(reusable, /OLLAMA_PR_REVIEW_API_KEY:\s*\$\{\{ secrets\.OLLAMA_PR_REVIEW_API_KEY \}\}/u);
-  // REL-519: GitHub-surface auth moved to the ct-review-bot App installation
-  // token (own rate bucket); github.token remains the non-central fallback.
-  assert.match(reusable, /GH_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \|\| github\.token \}\}/u);
+  // GitHub-surface auth is fail-closed on the owner-scoped App token. Central
+  // validation receives a separate token when the target owner differs.
+  assert.match(reusable, /GH_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \}\}/u);
+  assert.match(reusable, /GH_TARGET_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \}\}/u);
+  assert.match(reusable, /GH_CENTRAL_TOKEN:\s*\$\{\{ steps\.central_token\.outputs\.token \|\| steps\.ry_token\.outputs\.token \}\}/u);
+  assert.doesNotMatch(reusable, /steps\.ry_token\.outputs\.token \|\| github\.token/u);
   assert.match(reusable, /REVIEW_YETI_DOKS_PUBLISH_MODE:\s*\$\{\{ inputs\.central_execution && 'app-gate' \|\| vars\.REVIEW_YETI_DOKS_PUBLISH_MODE \|\| 'disabled' \}\}/u);
   assert.match(reusable, /expected_generation:\s*[\s\S]*?default:\s*1[\s\S]*?type:\s*number/u);
   assert.match(reusable, /expected-generation:\s*\$\{\{ inputs\.expected_generation \}\}/u);
@@ -379,21 +383,40 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.equal((reusable.match(/^\s+max-file-diff-chars:/gmu) || []).length, 1);
 });
 
-test('receiver validation token covers target and central capacity repositories without duplicates', () => {
+test('receiver scopes App tokens to one owner while preserving exampleorg coverage', () => {
   assert.deepEqual(resolveValidationTokenScope('exampleorg/example-api'), {
+    owner: 'exampleorg',
     name: 'example-api',
     repositories: 'example-api,example-review-actions',
+    caller_workflow_path: '.github/workflows/ct-review-bot.yml',
+    needs_central_token: 'false',
   });
   assert.deepEqual(resolveValidationTokenScope(CENTRAL_REPOSITORY), {
+    owner: 'exampleorg',
     name: 'example-review-actions',
     repositories: 'example-review-actions',
+    caller_workflow_path: '.github/workflows/ct-review-bot.yml',
+    needs_central_token: 'false',
+  });
+  assert.deepEqual(resolveValidationTokenScope(REVIEW_YETI_REPOSITORY), {
+    owner: 'review-yeti-ai',
+    name: 'review-yeti-bot',
+    repositories: 'review-yeti-bot',
+    caller_workflow_path: '.github/workflows/review-bot.yaml',
+    needs_central_token: 'true',
   });
 
   const validationTokenStep = receiverWorkflow.match(
-    /- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Validate payload)/u,
+    /- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Mint Review Yeti App token for central validation)/u,
   )?.[0] ?? '';
+  assert.match(validationTokenStep, /owner:\s*\$\{\{ steps\.target\.outputs\.owner \}\}/u);
   assert.match(validationTokenStep, /repositories:\s*\$\{\{ steps\.target\.outputs\.repositories \}\}/u);
-  assert.doesNotMatch(validationTokenStep, /repositories:\s*\$\{\{ steps\.target\.outputs\.name \}\}/u);
+  const centralTokenStep = receiverWorkflow.match(
+    /- name: Mint Review Yeti App token for central validation[\s\S]*?(?=\n\s+- name: Validate payload)/u,
+  )?.[0] ?? '';
+  assert.match(centralTokenStep, /owner:\s*exampleorg/u);
+  assert.match(centralTokenStep, /repositories:\s*example-review-actions/u);
+  assert.match(centralTokenStep, /if:\s*\$\{\{ steps\.target\.outputs\.needs_central_token == 'true' \}\}/u);
 });
 
 
@@ -426,7 +449,7 @@ jobs:
 
 // ADR 0519: admission is by owner plus a valid base-owned caller, not a fixed
 // repository list, and the shared lane is bounded by a per-repository cap.
-test('admits any exampleorg repository and rejects everything else', () => {
+test('admits any exampleorg repository while rejecting every unlisted external target', () => {
   for (const name of ['example-api', 'example-release', 'example-meta', 'example-workspace', 'example-ui']) {
     assert.equal(assertAdmittedRepository(`exampleorg/${name}`), name);
   }

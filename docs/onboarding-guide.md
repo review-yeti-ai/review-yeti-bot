@@ -30,6 +30,16 @@ Review Yeti supports two consumer workflow patterns depending on your organizati
 > review check. Placeholder `my-org`, `@v1`, secret names, and the generic
 > `review-yeti.yml` filename below are not qualification evidence.
 
+The governed central receiver preserves `exampleorg/*` callers at
+`.github/workflows/ct-review-bot.yml` and has one exact cross-owner admission:
+`review-yeti-ai/review-yeti-bot` at `.github/workflows/review-bot.yaml`. That
+route requires separate App installation tokens for the `review-yeti-ai`
+target and the `exampleorg/example-review-actions` hub; a repository list cannot
+span owners. The App must be installed on both selected repositories, and the
+trusted caller must have access to the existing `CT_REVIEW_BOT_APP_ID` and
+`CT_REVIEW_BOT_APP_PRIVATE_KEY` Actions secrets. There is no PAT or ambient
+workflow-token fallback.
+
 ---
 
 ## Option A: Direct Reusable Workflow
@@ -66,6 +76,9 @@ jobs:
 To avoid burning runner minutes while AI personas review code, use the async dispatch shim. This runs for ~5 seconds, dispatches to the central repository, and exits immediately. The central system reports the result back via the GitHub Checks API.
 
 Create `.github/workflows/review-yeti.yml` in your repository:
+
+This illustrative snippet assumes the target and central repository share the
+same owner. A cross-owner caller must mint one token per owner installation.
 
 ```yaml
 name: Review Yeti
@@ -105,7 +118,7 @@ jobs:
           app-id: ${{ secrets.REVIEW_BOT_APP_ID }}
           private-key: ${{ secrets.REVIEW_BOT_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: "${{ env.CENTRAL_REPOSITORY }},${{ env.TARGET_REPOSITORY }}"
+          repositories: "${{ github.event.repository.name }},review-actions"
 
       - name: Validate PR coordinates
         env:

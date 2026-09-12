@@ -26,8 +26,9 @@ When creating the GitHub App, configure the following repository-level permissio
 | :--- | :--- | :--- |
 | **Checks** | **Read & write** | Allows the app to create and update `Review Yeti` Check Runs directly on pull request head commits. |
 | **Pull requests** | **Read & write** | Reads PR metadata, diffs, changed files, and posts review comments / inline feedback threads. |
-| **Contents** | **Read-only** | Reads repository files and git commit history to validate base and head commit SHAs. |
+| **Contents** | **Read & write** | Reads repository files and git history; write access supports the existing repository-dispatch caller contract. |
 | **Issues** | **Read & write** | Posts high-level review summaries, notifications, or diagnostic comments on pull request conversations. |
+| **Actions** | **Read-only** | Reads originating workflow runs for immutable caller validation. |
 | **Metadata** | **Read-only** | Mandatory default for all GitHub Apps to query repository identifiers. |
 
 > [!NOTE]
@@ -53,8 +54,9 @@ You can run the provided script in `tools/create-review-dispatch-app.sh` or crea
   "description": "Review Yeti automated AI code review identity",
   "public": false,
   "default_permissions": {
+    "actions": "read",
     "checks": "write",
-    "contents": "read",
+    "contents": "write",
     "pull_requests": "write",
     "issues": "write",
     "metadata": "read"
@@ -87,9 +89,10 @@ If you prefer using the GitHub web interface:
 3. **Configure Permissions**:
    * Repository Permissions:
      * `Checks`: **Read and write**
-     * `Contents`: **Read-only**
+     * `Contents`: **Read and write**
      * `Issues`: **Read and write**
      * `Pull requests`: **Read and write**
+     * `Actions`: **Read-only**
      * `Metadata`: **Read-only**
 4. **Create & Generate Private Key**:
    * Click **Create GitHub App**.
@@ -108,6 +111,29 @@ If you prefer using the GitHub web interface:
    * Add the **Central Review Repository** (e.g., `my-org/review-actions`).
    * Add all **Consumer Repositories** where Review Yeti will review pull requests.
 4. Click **Install**.
+
+### Cross-owner installations
+
+An installation token belongs to one account owner. The `repositories` input
+contains repository names under that owner; it does not accept a mixture of
+`owner/repository` values from different organizations. Install the same App
+separately for each owner and mint a separate token for each installation.
+
+The governed self-hosting route is deliberately narrower than the generic
+setup above:
+
+* target installation: owner `review-yeti-ai`, repository exactly
+  `review-yeti-bot`;
+* central installation: owner `exampleorg`, repository exactly
+  `example-review-actions`;
+* caller workflow: exactly `.github/workflows/review-bot.yaml` in the target's
+  default branch.
+
+The trusted workflows consume `CT_REVIEW_BOT_APP_ID` and
+`CT_REVIEW_BOT_APP_PRIVATE_KEY` only in pinned
+`actions/create-github-app-token` steps. There is no PAT or `github.token`
+fallback. A missing installation, unavailable secret, or insufficient App
+permission stops the workflow before review execution.
 
 ---
 

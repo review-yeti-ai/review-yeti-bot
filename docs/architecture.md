@@ -89,7 +89,11 @@ No inline prompts, custom model parameters, or configuration overrides are permi
 
 ### B. Fail-Closed Target Verification
 Before executing any review step, the central dispatch validator (`scripts/validate-central-dispatch.mjs`):
-1. Verifies that the requested repository belongs to the authorized organization.
+1. Admits either an existing `exampleorg/*` repository with
+   `.github/workflows/ct-review-bot.yml`, or exactly
+   `review-yeti-ai/review-yeti-bot` with
+   `.github/workflows/review-bot.yaml`. No other external owner, repository, or
+   caller path is accepted.
 2. Calls the GitHub API using the GitHub App token to ensure the PR is currently open.
 3. Asserts that the live base SHA and head SHA match the dispatch payload byte-for-byte. If a contributor pushes a new commit while a dispatch is queued, the stale run immediately halts.
 
@@ -125,10 +129,15 @@ so central derives `a2` or `a3` from the contiguous worker identities instead of
 trusting the label run's attempt number. Rerunning the original caller remains
 supported; neither route can replace active or terminal results or exceed `a3`.
 
-The receiver's validation token is restricted to the target repository plus
-`example-review-actions`, deduplicated for central self-review. That is the minimum
-repository scope needed to read both the target's exact-head ledger and the
-central workflow runs used for capacity admission.
+For a exampleorg target, the receiver's validation token remains restricted
+to that target plus `example-review-actions`, deduplicated for central self-review.
+For the exact `review-yeti-ai/review-yeti-bot` route, the receiver instead mints
+two owner-bound installation tokens: the `review-yeti-ai` token can read only
+the target repository, while the `exampleorg` token can read only
+`example-review-actions` capacity state. The reusable review workflow applies the
+same split to target access/check publication and central tooling. Missing,
+swapped, or reused cross-owner credentials fail closed; no PAT or ambient
+workflow-token fallback is accepted.
 
 ### D. Self-Cancellation of Superseded Runs
 If multiple commits are pushed in rapid succession, earlier in-flight central runs detect that `head_sha` has moved and self-cancel, avoiding wasted model tokens on outdated code.

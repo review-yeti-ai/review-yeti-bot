@@ -73,14 +73,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      # The validator reads the target PR, caller run, and check ledger on the
-      # consumer plus central workflow runs for capacity admission. Run it as
-      # the ct-review-bot App (its own rate bucket, ADR 0511): a PAT here shares
-      # the operator's 5,000 req/hr bucket, and on
-      # 2026-09-03 that bucket was exhausted by unrelated tooling and every
-      # central review was rejected with HTTP 403. No fallback: a missing App
-      # secret or permission fails this job loudly.
-      - name: Resolve target repository name
+      # The validator reads target state with the App installation belonging to
+      # that owner. Cross-owner targets get a second, repository-scoped token
+      # for central capacity reads; an installation token never spans owners.
+      - name: Resolve target repository scope
         id: target
         env:
           TARGET_REPOSITORY: ${{ github.event.client_payload.repository || inputs.repository }}
@@ -89,16 +85,32 @@ jobs:
           case "${TARGET_REPOSITORY}" in
             exampleorg/*)
               target_name="${TARGET_REPOSITORY#exampleorg/}"
+              if [[ ! "${target_name}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]]; then
+                echo "::error::invalid exampleorg repository name '${target_name}'"
+                exit 1
+              fi
               repositories="${target_name}"
               if [[ "${target_name}" != "example-review-actions" ]]; then
                 repositories="${target_name},example-review-actions"
               fi
               {
+                echo "owner=exampleorg"
                 echo "name=${target_name}"
                 echo "repositories=${repositories}"
+                echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
+                echo "needs_central_token=false"
               } >> "$GITHUB_OUTPUT"
               ;;
-            *) echo "::error::target repository must be a exampleorg repository, got '${TARGET_REPOSITORY}'"; exit 1 ;;
+            review-yeti-ai/review-yeti-bot)
+              {
+                echo "owner=review-yeti-ai"
+                echo "name=review-yeti-bot"
+                echo "repositories=review-yeti-bot"
+                echo "caller_workflow_path=.github/workflows/review-bot.yaml"
+                echo "needs_central_token=true"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::target repository is not admitted: '${TARGET_REPOSITORY}'"; exit 1 ;;
           esac
 
       - name: Mint Review Yeti App token for target validation
@@ -107,18 +119,31 @@ jobs:
         with:
           app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
           private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
-          owner: exampleorg
+          owner: ${{ steps.target.outputs.owner }}
           repositories: ${{ steps.target.outputs.repositories }}
           permission-actions: read
           permission-checks: read
           permission-contents: read
           permission-pull-requests: read
 
+      - name: Mint Review Yeti App token for central validation
+        id: central_token
+        if: ${{ steps.target.outputs.needs_central_token == 'true' }}
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
+        with:
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: example-review-actions
+          permission-actions: read
+          permission-contents: read
+
       - name: Validate payload, current PR, and immutable caller
         id: request
         working-directory: .exampleorg-review-actions
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TARGET_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token || steps.ry_token.outputs.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
           CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload || inputs) }}
         run: node scripts/validate-central-dispatch.mjs

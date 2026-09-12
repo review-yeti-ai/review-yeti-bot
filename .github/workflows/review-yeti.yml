@@ -85,41 +85,71 @@ jobs:
       # variable or reusable-workflow input cannot downgrade them to local mode.
       TRUSTED_EXECUTION_BACKEND: ${{ inputs.central_execution && 'doks' || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
     steps:
-      # REL-519: mint the ct-review-bot App installation token once, up front,
-      # and use it for every GitHub surface in this workflow. App installation
-      # tokens carry their own rate bucket (user 57885211's PAT-based
-      # CROSS_REPO_TOKEN shares its 5,000 req/hr bucket with interactive use,
-      # which 403'd CI and the operator simultaneously on 2026-09-02).
-      #
-      # TEMPORARY fail-open (2026-09-03): added when the App secrets were not
-      # yet provisioned, so
-      # create-github-app-token hard-fails here and EVERY central review dies
-      # before checkout — observed live on main (runs 33704115643, 33704265666,
-      # 33704210453). This step degrades to a loud warning and empty output;
-      # every downstream surface already falls back to github.token via
-      # `steps.ry_token.outputs.token || github.token`. Remove this guard when
-      # the operator provisions the App secrets.
-      - name: Detect Review Yeti App secret presence
-        id: ry_app_presence
+      # Resolve only the existing exampleorg owner admission or the one
+      # explicitly admitted external repository. The trusted reusable workflow
+      # performs this before exposing the App private key to token minting.
+      - name: Resolve target repository scope
+        id: target
         env:
-          APP_ID_PRESENT: ${{ secrets.CT_REVIEW_BOT_APP_ID != '' }}
-          APP_KEY_PRESENT: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY != '' }}
+          TARGET_REPOSITORY: ${{ inputs.central_execution && inputs.repository || github.repository }}
         run: |
-          if [ "${APP_ID_PRESENT}" = "true" ] && [ "${APP_KEY_PRESENT}" = "true" ]; then
-            echo "provisioned=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "provisioned=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::CT_REVIEW_BOT_APP_ID / _PRIVATE_KEY are not readable here - Review Yeti falls back to github.token, which is not the App identity and loses the dedicated rate bucket (REL-519)."
-          fi
+          set -euo pipefail
+          case "${TARGET_REPOSITORY}" in
+            exampleorg/*)
+              target_name="${TARGET_REPOSITORY#exampleorg/}"
+              if [[ ! "${target_name}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]]; then
+                echo "::error::invalid exampleorg repository name '${target_name}'"
+                exit 1
+              fi
+              repositories="${target_name}"
+              if [[ "${target_name}" != "example-review-actions" ]]; then
+                repositories="${target_name},example-review-actions"
+              fi
+              {
+                echo "owner=exampleorg"
+                echo "name=${target_name}"
+                echo "repositories=${repositories}"
+                echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
+                echo "needs_central_token=false"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            review-yeti-ai/review-yeti-bot)
+              {
+                echo "owner=review-yeti-ai"
+                echo "name=review-yeti-bot"
+                echo "repositories=review-yeti-bot"
+                echo "caller_workflow_path=.github/workflows/review-bot.yaml"
+                echo "needs_central_token=true"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::target repository is not admitted: '${TARGET_REPOSITORY}'"; exit 1 ;;
+          esac
 
       - name: Mint Review Yeti App token
         id: ry_token
-        if: ${{ steps.ry_app_presence.outputs.provisioned == 'true' }}
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
+        with:
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repositories }}
+          permission-actions: read
+          permission-checks: write
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Mint Review Yeti App token for central tooling
+        id: central_token
+        if: ${{ steps.target.outputs.needs_central_token == 'true' }}
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
         with:
           app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
           private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
           owner: exampleorg
+          repositories: example-review-actions
+          permission-actions: read
+          permission-contents: read
 
       - name: Checkout central workflow tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -127,7 +157,7 @@ jobs:
           repository: exampleorg/example-review-actions
           ref: ${{ inputs.central_execution && 'v1' || github.repository == 'exampleorg/example-review-actions' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.sha || github.repository == 'exampleorg/example-review-actions' && 'main' || 'v1' }}
           path: .exampleorg-review-actions
-          token: ${{ steps.ry_token.outputs.token || github.token }}
+          token: ${{ steps.central_token.outputs.token || steps.ry_token.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
 
@@ -153,7 +183,8 @@ jobs:
         id: central_validation
         if: ${{ inputs.central_execution }}
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
+          GH_TARGET_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token || steps.ry_token.outputs.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
           CENTRAL_DISPATCH_PAYLOAD: >-
             {"request_id":"${{ inputs.request_id }}","repository":"${{ inputs.repository }}","pr_number":${{ inputs.pr_number }},"base_sha":"${{ inputs.base_sha }}","head_sha":"${{ inputs.head_sha }}","refresh_requested":${{ inputs.refresh_requested && 'true' || 'false' }}}
@@ -161,7 +192,7 @@ jobs:
 
       - name: Validate immutable review request
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
         run: .exampleorg-review-actions/scripts/validate-review-request.sh
 
       - name: Load central Review Yeti policy
@@ -215,7 +246,7 @@ jobs:
         id: resolved
         if: steps.policy.outputs.passthrough != 'true'
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
           REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
         run: .exampleorg-review-actions/scripts/resolve-release-channel.sh
@@ -227,14 +258,14 @@ jobs:
           repository: ${{ steps.policy.outputs.repository }}
           ref: ${{ steps.resolved.outputs.sha }}
           path: .review-yeti-bot
-          token: ${{ steps.ry_token.outputs.token || github.token }}
+          token: ${{ steps.ry_token.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
 
       - name: Validate Review Yeti release provenance
         if: steps.policy.outputs.passthrough != 'true'
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
           REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
           RESOLVED_SHA: ${{ steps.resolved.outputs.sha }}
@@ -331,7 +362,7 @@ jobs:
           MCP_CONFIG_JSON: ${{ steps.policy.outputs.mcp_config_json }}
         with:
           check-id: ${{ env.TRUSTED_EXECUTION_BACKEND != 'doks' && steps.init_check.outputs.check_id || '' }}
-          github-token: ${{ steps.ry_token.outputs.token || github.token }}
+          github-token: ${{ steps.ry_token.outputs.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
           pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
           expected-generation: ${{ inputs.expected_generation }}
@@ -395,7 +426,7 @@ jobs:
         id: passthrough
         if: always() && steps.policy.outputs.passthrough == 'true'
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
           TARGET_REPO: ${{ inputs.central_execution && inputs.repository || github.repository }}
           PR_NUMBER: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.central_execution && inputs.head_sha || github.event.pull_request.head.sha }}
@@ -476,7 +507,7 @@ jobs:
       - name: Enforce exact-head Review Yeti verdict
         if: always()
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token || github.token }}
+          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
           REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
           GATE_DECISION: ${{ steps.passthrough.outputs.gate-decision || steps.review.outputs.gate-decision }}
           MERGE_ELIGIBLE: ${{ steps.passthrough.outputs.merge-eligible || steps.review.outputs.merge-eligible }}

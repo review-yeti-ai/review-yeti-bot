@@ -62,6 +62,21 @@ Ensure the **Review Yeti GitHub App** is installed on both the central review re
 
 See the [GitHub App Setup & Permissions Guide](docs/github-app-setup.md) for full instructions.
 
+The governed receiver preserves its existing `exampleorg/*` admission at
+`.github/workflows/ct-review-bot.yml` and additionally admits exactly
+`review-yeti-ai/review-yeti-bot` at `.github/workflows/review-bot.yaml`. For
+that cross-owner route, trusted central workflows mint one installation token
+for `review-yeti-ai/review-yeti-bot` target reads and check publication and a
+separate `exampleorg/example-review-actions` token for central reads. GitHub App
+installation tokens are owner-bound; no token, PAT, wildcard owner/repository,
+or ambient `github.token` fallback crosses this boundary.
+
+Activating the external route requires the `ct-review-bot` App to be installed
+on the selected `review-yeti-ai/review-yeti-bot` repository and the existing
+`CT_REVIEW_BOT_APP_ID` and `CT_REVIEW_BOT_APP_PRIVATE_KEY` Actions secrets to
+be available to each trusted workflow that mints a token. Provider credentials
+remain central and are never copied to the target caller.
+
 ### Step 2: Add the Trigger Workflow
 Add `.github/workflows/review-yeti.yml` to your repository:
 
@@ -73,6 +88,10 @@ Add `.github/workflows/review-yeti.yml` to your repository:
 > Keep this caller dispatch-only: it must not wait for, adopt, or publish a
 > review check. Do not treat the placeholder `my-org`, `@v1`, secret names, or
 > `review-yeti.yml` filename below as qualification evidence.
+
+The example below is same-owner only: `my-org/review-actions` and the target
+repository must belong to the same installation owner. Cross-owner consumers
+must mint one owner-scoped token per installation as described above.
 
 The central `example-review-actions` repository follows the same rule for its own
 pull requests: its base-owned `.github/workflows/ct-review-bot.yml` dispatches
@@ -120,7 +139,7 @@ jobs:
           app-id: ${{ secrets.REVIEW_BOT_APP_ID }}
           private-key: ${{ secrets.REVIEW_BOT_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          repositories: "${{ env.CENTRAL_REPOSITORY }},${{ env.TARGET_REPOSITORY }}"
+          repositories: "${{ github.event.repository.name }},review-actions"
 
       - name: Validate PR Coordinates
         env:
