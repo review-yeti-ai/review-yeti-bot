@@ -566,15 +566,15 @@ export class GitHubInstallationClient {
         if (candidates.length === 1) return reconcileCandidate(candidates[0]);
         const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
         const exactHistoricalRun = matchesHistoricalEmptyIdentityRun(run, publisherAppId);
+        const historicalReceiptIdMatches = checks.filter((check) => check?.id === receipt.checkId);
         // The live head contains several publisher-owned checks from before
-        // external identities were populated. The immutable receipt identifies
-        // exactly one of them by check id; broad empty-identity matching makes
-        // those legitimate siblings look ambiguous and strands the run in the
-        // reaper forever.
-        const historicalCandidates = checks.filter((check) => check?.id === receipt.checkId);
-        if (historicalCandidates.length > 0) {
-          if (!exactHistoricalRun || historicalCandidates.length !== 1
-            || !matchesHistoricalEmptyIdentityCheck(historicalCandidates[0])) {
+        // external identities were populated. Only the immutable receipt is
+        // eligible; legitimate siblings must not make it ambiguous, while an
+        // exact historical run with a missing receipt remains fail closed.
+        const historicalCandidates = checks.filter(matchesHistoricalEmptyIdentityCheck);
+        if (exactHistoricalRun || historicalReceiptIdMatches.length > 0) {
+          if (!exactHistoricalRun || historicalReceiptIdMatches.length !== 1
+            || historicalCandidates.length !== 1) {
             throw new Error('historical empty-identity receipt mismatch');
           }
           const current = await request(`${base}/check-runs/${receipt.checkId}`);
