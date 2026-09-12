@@ -137,10 +137,12 @@ check `102735106478`. The receipt pins the durable run, repository, pull
 request, head, execution attempt, admission/deadline timestamps, publisher App,
 check name, and check start/completion timestamps. It accepts only that unique,
 completed-success check with an exactly empty `external_id`, rereads the check
-by immutable ID, and never patches it. Recovery-only runs and every field
-mismatch remain fail closed. This is a one-row historical migration boundary,
-not a generic empty-identity fallback; another legacy row requires a separate
-independently reviewed receipt.
+by immutable ID, and never patches it. Other empty-identity checks on the same
+head are expected historical siblings and are not receipt candidates; selecting
+them by shared App/name/head fields would make the pinned receipt ambiguous.
+Recovery-only runs and every pinned-field mismatch remain fail closed. This is
+a one-row historical migration boundary, not a generic empty-identity fallback;
+another legacy row requires a separate independently reviewed receipt.
 
 This change does not implement success callbacks, replace raw check publishers,
 alter required checks, or establish event-driven consumer CI. Those lifecycle
