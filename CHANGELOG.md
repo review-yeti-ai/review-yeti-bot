@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.58.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.58.0...v1.58.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **reaper:** retire superseded abandoned attempts ([#748](https://github.com/review-yeti-ai/review-yeti-bot/issues/748)) ([939ce6e](https://github.com/review-yeti-ai/review-yeti-bot/commit/939ce6e64aef4bcfd0de38ef58aa7aa1b24ee01a))
+
 ## [1.58.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.57.2...v1.58.0) (2026-09-12)
 
 
