@@ -876,8 +876,19 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [run.runId, now, outcome, RECOVERY_UNCONFIRMED_ERROR_TEXT,
           ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled],
       );
-      await this.appendLifecycle(client, run.runId, 'review.lifecycle.terminal', now,
-        { stage: 'terminal', terminal_class: 'publishing_deadline_reconciled' });
+      if (outcome === 'authoritative-success') {
+        await this.appendLifecycle(client, run.runId, 'review.lifecycle.terminal', now,
+          { stage: 'complete', terminal_class: 'authoritative_success' });
+      } else if (outcome === 'failure-existing') {
+        await this.appendLifecycle(client, run.runId, 'review.lifecycle.terminal', now,
+          { stage: 'terminal', terminal_class: 'failure_existing' });
+      } else if (outcome === 'failure-published') {
+        await this.appendLifecycle(client, run.runId, 'review.lifecycle.terminal', now,
+          { stage: 'terminal', terminal_class: 'failure_published' });
+      } else {
+        await this.appendLifecycle(client, run.runId, 'review.lifecycle.retrying', now,
+          { stage: 'gate_publication', retry_class: 'creation_unconfirmed' });
+      }
       await client.query('COMMIT');
       return true;
     } catch (error) {
