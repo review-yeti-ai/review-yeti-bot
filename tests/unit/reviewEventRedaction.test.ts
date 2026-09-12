@@ -1030,6 +1030,71 @@ describe('progress event redaction boundary', () => {
     expect(result).toHaveProperty('data.provider', provider);
   });
 
+  it.each(credentialStringLocations)(
+    'rejects bare username/password authorities in $label',
+    (location) => {
+      for (const value of [
+        'review:synthetic-secret@private.test:4222',
+        'review:@private.test:4222',
+        ':synthetic-secret@private.test:4222',
+        'review:synthetic-secret@nats',
+        'review:synthetic-secret@[::1]:4222',
+        'review:synthetic:secret@private.test',
+        'review:synthetic,secret@private.test',
+        'review:synthetic;secret@private.test',
+        'review:synthetic=secret@private.test',
+        "review:synthetic'part@private.test",
+        'review:synthetic(part)@private.test',
+        'review:synthetic!$&*+part@private.test',
+        'review:synthetic%2Fpart@private.test',
+        'review:synthetic<secret@private.test',
+        'review:synthetic>secret@private.test',
+        'review:synthetic`secret@private.test',
+        'review:synthetic{secret@private.test',
+        'review:synthetic}secret@private.test',
+        'review:synthetic"secret@private.test',
+        `:synthetic-secret@sha256:${'a'.repeat(64)}`,
+        `review:@sha256:${'a'.repeat(64)}`,
+        `review:synthetic-secret@sha256:${'a'.repeat(64)}`,
+        `registry/team/review:synthetic-secret@sha256:${'a'.repeat(64)}`,
+        'mailto:@private.test',
+        'mailto:review:synthetic-secret@private.test',
+        'mailto:alice@example.com,review:synthetic-secret@private.test',
+        '{review:synthetic-secret@private.test}',
+        'review:synthetic-secret@private.test,https://safe.test',
+        '["https://safe.test","review:synthetic-secret@private.test"]',
+      ]) {
+        const fixture = location.inject(value);
+        const rejection = rejectionOf(sanitizeProgressEvent(fixture.event, fixture.identity));
+
+        expect(rejection.code).toBe('forbidden_field');
+        expect(rejection.field).toBe(location.field);
+        expect(rejection.message).not.toContain('synthetic-secret');
+        expect(rejection.message).not.toContain('private.test');
+      }
+    },
+  );
+
+  it.each(credentialStringLocations)(
+    'accepts benign bare email and revision controls in $label',
+    (location) => {
+      for (const value of [
+        'alice@example.com',
+        'mailto:alice@example.com',
+        'a@b:c',
+        'provider/model@stable',
+        'review:synthetic-secret@',
+        'review:synthetic-secret@,',
+        'review:synthetic-secret@=',
+        'mailto:review@',
+      ]) {
+        const fixture = location.inject(value);
+        expect(sanitizeProgressEvent(fixture.event, fixture.identity), value)
+          .not.toBeInstanceOf(ReviewEventRejection);
+      }
+    },
+  );
+
   it.each([
     ['customer data', 'Customer ACME account 0042 reported private tenant data'],
     ['source code', 'export const customerSecret = process.env.CUSTOMER_SECRET;'],

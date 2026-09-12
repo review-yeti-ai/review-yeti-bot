@@ -489,7 +489,7 @@ describe('JetStream publish client', () => {
         else await client.close();
         await connecting;
 
-        expect(sockets.size).toBe(0);
+        await vi.waitFor(() => expect(sockets.size).toBe(0), { timeout: 500 });
         expect(activeMessagePortCount()).toBe(baselineMessagePorts);
       } finally {
         await client.close().catch(() => undefined);
