@@ -23,6 +23,7 @@ export interface MetricCounters {
   arbiterVerdicts: ReturnType<any>;
   jobsQueued: ReturnType<any>;
   jobsDispatched: ReturnType<any>;
+  reviewReaperDeliveryIdentityMismatches: ReturnType<any>;
   activeJobs: ReturnType<any>;
   queuedJobs: ReturnType<any>;
 }
@@ -99,6 +100,9 @@ export function initMetrics(): MetricCounters {
     }),
     jobsDispatched: meter.createCounter('ct_queue_jobs_dispatched_total', {
       description: 'Total queue jobs dispatched.',
+    }),
+    reviewReaperDeliveryIdentityMismatches: meter.createCounter('ct_review_reaper_delivery_identity_mismatch_total', {
+      description: 'Abandoned review runs quarantined because run and outbox delivery identities differed.',
     }),
     activeJobs: meter.createUpDownCounter('ct_queue_active_jobs', {
       description: 'Current active review jobs.',

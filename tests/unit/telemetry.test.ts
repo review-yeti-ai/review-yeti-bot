@@ -27,6 +27,7 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(metrics.reviewDuration).toBeDefined();
     expect(metrics.jobsQueued).toBeDefined();
     expect(metrics.jobsDispatched).toBeDefined();
+    expect(metrics.reviewReaperDeliveryIdentityMismatches).toBeDefined();
     expect(metrics.activeJobs).toBeDefined();
     expect(metrics.queuedJobs).toBeDefined();
   });
@@ -41,6 +42,7 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     metrics.indexerFilesIndexed.add(3, { language: 'typescript' });
     metrics.jobsQueued.add(5, { repository: 'owner/repo' });
     metrics.jobsDispatched.add(3, { repository: 'owner/repo' });
+    metrics.reviewReaperDeliveryIdentityMismatches.add(1);
     metrics.activeJobs.add(2, { repository: 'owner/repo' });
     metrics.queuedJobs.add(2, { repository: 'owner/repo' });
 
@@ -53,6 +55,7 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(prometheusText).toContain('ct_indexer_ast_duration_seconds');
     expect(prometheusText).toContain('ct_queue_jobs_queued_total');
     expect(prometheusText).toContain('ct_queue_jobs_dispatched_total');
+    expect(prometheusText).toContain('ct_review_reaper_delivery_identity_mismatch_total');
     expect(prometheusText).toContain('ct_queue_active_jobs');
     expect(prometheusText).toContain('ct_queue_queued_jobs');
   });
