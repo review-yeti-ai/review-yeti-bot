@@ -61,6 +61,26 @@ describe('review job dispatcher metrics server', () => {
     expect(server.listening).toBe(false);
   });
 
+  it('rejects a real bind failure and removes the stale listening handler', async () => {
+    const blocker = createDispatcherMetricsServer();
+    const candidate = createDispatcherMetricsServer();
+    await listenDispatcherMetricsServer(blocker, { host: '127.0.0.1', port: 0 });
+    try {
+      const address = blocker.address();
+      if (!address || typeof address === 'string') throw new Error('missing blocker TCP address');
+
+      await expect(listenDispatcherMetricsServer(candidate, {
+        host: '127.0.0.1',
+        port: address.port,
+      })).rejects.toMatchObject({ code: 'EADDRINUSE' });
+      expect(candidate.listening).toBe(false);
+      expect(candidate.listeners('listening').some((listener) => listener.name === 'onListening')).toBe(false);
+    } finally {
+      await closeDispatcherMetricsServer(candidate);
+      await closeDispatcherMetricsServer(blocker);
+    }
+  });
+
   it('fails closed without leaking collector errors', async () => {
     const server = createDispatcherMetricsServer({ collectMetrics: async () => {
       throw new Error('synthetic-sensitive-collector-error');
