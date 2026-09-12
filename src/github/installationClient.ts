@@ -458,6 +458,15 @@ export class GitHubInstallationClient {
         && check.external_id !== externalId
         && (!Number.isFinite(Date.parse(check.started_at))
           || Date.parse(check.started_at) >= Math.floor(run.receivedAt / 1_000) * 1_000);
+      const supersedesAttempt = (check: any) => exactHead(check) && check.app?.id === publisherAppId
+        && check.external_id !== externalId
+        && /^run_[a-f0-9]{32}:a[1-9][0-9]*$/u.test(check.external_id)
+        && check.status === 'completed'
+        && (check.conclusion === 'success' || check.conclusion === 'failure')
+        && Number.isFinite(Date.parse(check.started_at))
+        // GitHub timestamps have second precision. Require a strictly later
+        // second so an ambiguous same-second check remains fail closed.
+        && Date.parse(check.started_at) > Math.floor(run.receivedAt / 1_000) * 1_000;
       const listChecks = async () => {
         const checks: any[] = [];
         for (let page = 1; ; page += 1) {
@@ -497,6 +506,7 @@ export class GitHubInstallationClient {
         const candidates = checks.filter(exactAttempt);
         if (candidates.length > 1) throw new Error('ambiguous abandoned check');
         if (candidates.length === 1) return reconcileCandidate(candidates[0]);
+        if (checks.some(supersedesAttempt)) return 'superseded';
         if (checks.some(conflictsWithAttempt)) throw new Error('conflicting publisher-owned check');
         return undefined;
       };

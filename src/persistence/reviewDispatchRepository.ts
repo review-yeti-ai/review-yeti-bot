@@ -56,6 +56,11 @@ export const DELIVERY_IDENTITY_MISMATCH_ERROR_TEXT =
   'publishing run delivery identity mismatch; quarantined by reaper';
 export const DELIVERY_IDENTITY_MISMATCH_REASON = 'dispatch_delivery_identity_mismatch';
 
+/** A completed newer App-owned same-head check makes this old attempt obsolete, not successful. */
+export const SUPERSEDED_PUBLISHING_ERROR_TEXT =
+  'publishing run superseded by a newer publisher-owned same-head check; retired by reaper';
+export const SUPERSEDED_PUBLISHING_REASON = 'superseded_publisher_owned_check';
+
 /** Lease cadence for lookup-only recovery after a check-create response is lost. */
 export const ABANDONED_RECOVERY_LEASE_MS = 60_000;
 
@@ -212,6 +217,7 @@ const ABANDONED_CHECK_RECOVERY_OUTCOMES = [
   'failure-existing',
   'failure-published',
   'creation-unconfirmed',
+  'superseded',
 ] as const;
 
 export type AbandonedCheckRecoveryOutcome = typeof ABANDONED_CHECK_RECOVERY_OUTCOMES[number];
@@ -953,6 +959,64 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       const outcome: unknown = await publish();
       if (!isAbandonedCheckRecoveryOutcome(outcome)) {
         throw new Error('invalid abandoned check recovery outcome');
+      }
+      if (outcome === 'superseded') {
+        // A newer exact Review Yeti App identity on this head proves only that
+        // this abandoned attempt is obsolete. It does not prove this run's
+        // verdict, so retire both durable records without touching GitHub or
+        // synthesizing success.
+        const diagnostics = buildDurableWorkerFailureDiagnostics('internal_error', {
+          reason: SUPERSEDED_PUBLISHING_REASON,
+          logTail: 'newer publisher-owned same-head check exists; abandoned attempt retired',
+        }, run.executionAttempt);
+        const retiredOutbox = await client.query(
+          `UPDATE review_dispatch_outbox
+              SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($2 / 1000.0)
+            WHERE run_id = $1 AND delivery_id IS NOT DISTINCT FROM $3::text
+              AND execution_attempt + 1 = $4
+          RETURNING run_id`,
+          [run.runId, now, run.deliveryId ?? null, run.executionAttempt],
+        );
+        if (retiredOutbox.rows.length !== 1) {
+          throw new Error('superseded outbox retirement lost its exact attempt');
+        }
+        const retiredRun = await client.query(
+          `UPDATE review_runs
+              SET status = 'terminal', stage = 'terminal',
+                  error_text = $2::text, failure_diagnostics = $3::jsonb,
+                  lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($6 / 1000.0)
+            WHERE run_id = $1
+              AND delivery_id IS NOT DISTINCT FROM $4::text
+              AND status = 'terminal' AND publication_mode = 'app-gate'
+              AND authoritative_gate_app_id IS NULL AND result_digest IS NULL
+              AND lease_owner = $5::text
+              AND lease_expires_at > to_timestamp($6 / 1000.0)
+              AND EXISTS (SELECT 1 FROM review_dispatch_outbox outbox
+                WHERE outbox.run_id = review_runs.run_id
+                  AND outbox.execution_attempt + 1 = $7)
+          RETURNING run_id`,
+          [run.runId, SUPERSEDED_PUBLISHING_ERROR_TEXT, JSON.stringify(diagnostics),
+            run.deliveryId ?? null, workerId, now, run.executionAttempt],
+        );
+        if (retiredRun.rows.length !== 1) {
+          throw new Error('superseded run retirement lost its lease');
+        }
+        await this.appendLifecycle(client, run.runId, 'review.lifecycle.terminal', now, {
+          stage: 'terminal',
+          terminal_class: 'superseded_by_newer_check',
+          retry_class: 'reaper_retired',
+        });
+        await client.query('COMMIT');
+        getMetrics().reviewReaperSupersededAttempts.add(1);
+        logger.warn('Retired abandoned review superseded by a newer App check', {
+          runId: run.runId,
+          repo: `${run.owner}/${run.repo}`,
+          headSha: run.headSha,
+          executionAttempt: run.executionAttempt,
+        });
+        return { reconciled: true, outcome };
       }
       // Successful publication consumes this outbox delivery. Retain the
       // worker token as durable evidence for an explicit same-head retry, but
