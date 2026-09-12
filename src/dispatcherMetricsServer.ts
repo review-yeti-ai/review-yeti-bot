@@ -8,6 +8,33 @@ export interface DispatcherMetricsConfig {
 
 export interface DispatcherMetricsServerOptions {
   collectMetrics?: () => Promise<string>;
+  collectionTimeoutMs?: number;
+}
+
+const DEFAULT_COLLECTION_TIMEOUT_MS = 2_000;
+
+function metricsCollectionTimeoutMs(value: number | undefined): number {
+  const timeoutMs = value ?? DEFAULT_COLLECTION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+    throw new Error('dispatcher metrics collection timeout must be 1-30000 ms');
+  }
+  return timeoutMs;
+}
+
+async function collectMetricsWithinTimeout(
+  collectMetrics: () => Promise<string>,
+  timeoutMs: number,
+): Promise<string> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const collection = Promise.resolve().then(() => collectMetrics());
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('dispatcher metrics collection timed out')), timeoutMs);
+    });
+    return await Promise.race([collection, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export interface DispatcherMetricsEnvironment {
@@ -32,6 +59,18 @@ export function dispatcherMetricsConfigFromEnv(
 
 export function createDispatcherMetricsServer(options: DispatcherMetricsServerOptions = {}): Server {
   const collectMetrics = options.collectMetrics || getPrometheusMetrics;
+  const collectionTimeoutMs = metricsCollectionTimeoutMs(options.collectionTimeoutMs);
+  let inFlightCollection: Promise<string> | undefined;
+  const collectMetricsSingleFlight = (): Promise<string> => {
+    if (inFlightCollection) return inFlightCollection;
+    const collection = Promise.resolve().then(() => collectMetrics());
+    inFlightCollection = collection;
+    const clear = () => {
+      if (inFlightCollection === collection) inFlightCollection = undefined;
+    };
+    void collection.then(clear, clear);
+    return collection;
+  };
   const server = createServer(async (request, response) => {
     if (request.method !== 'GET') {
       response.writeHead(405, { Allow: 'GET', 'Content-Type': 'text/plain; charset=utf-8' });
@@ -49,7 +88,7 @@ export function createDispatcherMetricsServer(options: DispatcherMetricsServerOp
       return;
     }
     try {
-      const metrics = await collectMetrics();
+      const metrics = await collectMetricsWithinTimeout(collectMetricsSingleFlight, collectionTimeoutMs);
       response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8; version=0.0.4' });
       response.end(metrics);
     } catch {
@@ -80,7 +119,13 @@ export async function listenDispatcherMetricsServer(
     };
     server.once('error', onError);
     server.once('listening', onListening);
-    server.listen(config.port, config.host);
+    try {
+      server.listen(config.port, config.host);
+    } catch (error) {
+      server.off('error', onError);
+      server.off('listening', onListening);
+      reject(error);
+    }
   });
 }
 
