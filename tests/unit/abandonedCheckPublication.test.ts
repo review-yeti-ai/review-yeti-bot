@@ -783,8 +783,18 @@ describe('abandoned check exact App/attempt failure publication', () => {
 
 describe('abandoned reaper with the actual GitHub publication adapter', () => {
   it('retires the exact audited historical empty-identity check once without changing the newer check', async () => {
+    const newerOfficialCheck = {
+      ...check,
+      id: 102735106479,
+      head_sha: historicalEmptyIdentityRun.headSha,
+      external_id: `run_${'a'.repeat(32)}:a1`,
+      status: 'completed',
+      conclusion: 'success',
+      started_at: '2026-09-10T03:39:00Z',
+      completed_at: '2026-09-10T03:40:00Z',
+    };
     const { client, fetchImplementation } = fixture(
-      [historicalEmptyIdentityCheck],
+      [historicalEmptyIdentityCheck, newerOfficialCheck],
       historicalEmptyIdentityCheck,
     );
     let pending = true;

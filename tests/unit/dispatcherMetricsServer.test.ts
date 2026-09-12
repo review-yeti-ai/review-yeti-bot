@@ -95,6 +95,21 @@ describe('review job dispatcher metrics server', () => {
     }
   });
 
+  it('removes temporary handlers after a synchronous repeated-listen failure', async () => {
+    const server = createDispatcherMetricsServer();
+    await listenDispatcherMetricsServer(server, { host: '127.0.0.1', port: 0 });
+    const baselineListeningListeners = server.listeners('listening');
+    const baselineErrorListeners = server.listeners('error');
+    try {
+      await expect(listenDispatcherMetricsServer(server, { host: '127.0.0.1', port: 0 }))
+        .rejects.toMatchObject({ code: 'ERR_SERVER_ALREADY_LISTEN' });
+      expect(server.listeners('listening')).toEqual(baselineListeningListeners);
+      expect(server.listeners('error')).toEqual(baselineErrorListeners);
+    } finally {
+      await closeDispatcherMetricsServer(server);
+    }
+  });
+
   it('fails closed without leaking collector errors', async () => {
     const server = createDispatcherMetricsServer({ collectMetrics: async () => {
       throw new Error('synthetic-sensitive-collector-error');
@@ -103,13 +118,30 @@ describe('review job dispatcher metrics server', () => {
   });
 
   it('bounds a never-resolving collector and lets shutdown complete', async () => {
+    let collectionCalls = 0;
     const server = createDispatcherMetricsServer({
       collectionTimeoutMs: 10,
-      collectMetrics: () => new Promise<string>(() => undefined),
+      collectMetrics: () => {
+        collectionCalls += 1;
+        return new Promise<string>(() => undefined);
+      },
     });
-    const response = await request(server).get('/metrics')
-      .expect(500, '# Error generating metrics\n');
-    expect(response.text).not.toContain('synthetic-sensitive');
+    await listenDispatcherMetricsServer(server, { host: '127.0.0.1', port: 0 });
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('missing metrics TCP address');
+      const target = `http://127.0.0.1:${address.port}`;
+      const responses = await Promise.all([
+        fetch(`${target}/metrics`),
+        fetch(`${target}/metrics`),
+      ]);
+      expect(responses.map((response) => response.status)).toEqual([500, 500]);
+      expect(await Promise.all(responses.map((response) => response.text())))
+        .toEqual(['# Error generating metrics\n', '# Error generating metrics\n']);
+      expect(collectionCalls).toBe(1);
+    } finally {
+      await closeDispatcherMetricsServer(server);
+    }
     expect(server.listening).toBe(false);
   });
 });
