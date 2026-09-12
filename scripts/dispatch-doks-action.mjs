@@ -129,20 +129,30 @@ export function buildDispatchRequest(environment) {
       throw new Error(`Invalid policy-json: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  const skills = String(environment.SKILLS || environment.POLICY_SKILLS || '').trim();
-  const knowledge = String(environment.KNOWLEDGE || environment.POLICY_KNOWLEDGE || '').trim();
-  const metrics = String(environment.METRICS || environment.POLICY_METRICS || '').trim();
-  const retryAnalysis = String(environment.RETRY_ANALYSIS || environment.POLICY_RETRY_ANALYSIS || '').trim();
+  const parseJsonOrString = (val) => {
+    if (!val) return undefined;
+    const trimmed = String(val).trim();
+    if (!trimmed) return undefined;
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+      try { return JSON.parse(trimmed); } catch { return trimmed; }
+    }
+    return trimmed;
+  };
+
+  const skills = parseJsonOrString(environment.SKILLS || environment.POLICY_SKILLS);
+  const knowledge = parseJsonOrString(environment.KNOWLEDGE || environment.POLICY_KNOWLEDGE);
+  const metrics = parseJsonOrString(environment.METRICS || environment.POLICY_METRICS);
+  const retryAnalysis = parseJsonOrString(environment.RETRY_ANALYSIS || environment.POLICY_RETRY_ANALYSIS);
 
   const policy = (personas || maxInvestigationTurns || laneCallBudget || skills || knowledge || metrics || retryAnalysis || Object.keys(extraPolicy).length > 0) ? {
     ...extraPolicy,
     ...(personas ? { personas } : {}),
     ...(maxInvestigationTurns && Number.isSafeInteger(maxInvestigationTurns) && maxInvestigationTurns > 0 ? { maxInvestigationTurns } : {}),
     ...(laneCallBudget && Number.isSafeInteger(laneCallBudget) && laneCallBudget > 0 ? { laneCallBudget } : {}),
-    ...(skills ? { skills } : {}),
-    ...(knowledge ? { knowledge } : {}),
-    ...(metrics ? { metrics } : {}),
-    ...(retryAnalysis ? { retryAnalysis } : {}),
+    ...(skills !== undefined ? { skills } : {}),
+    ...(knowledge !== undefined ? { knowledge } : {}),
+    ...(metrics !== undefined ? { metrics } : {}),
+    ...(retryAnalysis !== undefined ? { retryAnalysis } : {}),
   } : undefined;
 
   return {

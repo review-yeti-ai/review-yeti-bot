@@ -323,12 +323,12 @@ const ctReviewConfigV3ObjectSchema = z.object({
     scope: z.array(z.string()).default(['**']),
     severity: z.enum(['P0', 'P1', 'P2']).default('P1'),
   })).default([]),
-  skills: z.union([z.array(z.unknown()), z.record(z.unknown())]).optional(),
-  knowledge: z.union([z.array(z.unknown()), z.record(z.unknown())]).optional(),
-  metrics: z.record(z.unknown()).optional(),
-  telemetry: z.record(z.unknown()).optional(),
-  retry_analysis: z.record(z.unknown()).optional(),
-  retro_analysis: z.record(z.unknown()).optional(),
+  skills: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
+  knowledge: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
+  metrics: z.union([z.string(), z.record(z.unknown())]).optional(),
+  telemetry: z.union([z.string(), z.record(z.unknown())]).optional(),
+  retry_analysis: z.union([z.string(), z.record(z.unknown())]).optional(),
+  retro_analysis: z.union([z.string(), z.record(z.unknown())]).optional(),
 }).passthrough();
 
 function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {

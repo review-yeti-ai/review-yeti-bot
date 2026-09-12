@@ -73,6 +73,37 @@ reviewers:
     expect(sec.tools).toEqual(['ct-impact', 'context7']);
   });
 
+  it('accepts string and alias forms for telemetry and retro_analysis in YAML', () => {
+    const yaml = `
+version: 3
+quorum: 1
+telemetry: "http://localhost:8428"
+retro_analysis: "automated"
+metrics: "prometheus"
+personas:
+  - id: sec
+    required: true
+    charter: builtin:security
+reviewers:
+  execution: personas
+  fallback: ordered
+  overall_timeout_s: 300
+  providers:
+    - id: synthetic
+      enabled: true
+      model: deepseek/deepseek-v4-flash-0731:low
+      effort: low
+      review_timeout_s: 60
+      arbiter_timeout_s: 60
+  arbiter:
+    order: [synthetic]
+`;
+    const config = parseAndValidateConfig(yaml) as any;
+    expect(config.telemetry).toBe('http://localhost:8428');
+    expect(config.retro_analysis).toBe('automated');
+    expect(config.metrics).toBe('prometheus');
+  });
+
   it('validates actionDispatchRequestSchema with passthrough policy options', () => {
     const request = {
       version: 'ActionDispatch.v1',
@@ -133,10 +164,10 @@ reviewers:
     const request = buildDispatchRequest(env);
     expect(request.policy).toBeDefined();
     expect(request.policy?.personas).toBe('security,performance');
-    expect(request.policy?.skills).toBe('["cisco-xcc", "jtapi-expert"]');
+    expect(request.policy?.skills).toEqual(['cisco-xcc', 'jtapi-expert']);
     expect(request.policy?.knowledge).toBe('knowledge/review-learnings/');
-    expect(request.policy?.metrics).toBe('{"promPort": 3000}');
-    expect(request.policy?.retryAnalysis).toBe('{"maxRetries": 1}');
+    expect(request.policy?.metrics).toEqual({ promPort: 3000 });
+    expect(request.policy?.retryAnalysis).toEqual({ maxRetries: 1 });
   });
 
   it('buildDispatchRequest resolves fallback POLICY_* environment variables', () => {
