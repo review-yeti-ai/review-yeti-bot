@@ -2,6 +2,7 @@ import {
   deriveReviewCheckExternalId,
   REVIEW_CI_CHECK_NAME,
   REVIEW_GATE_CHECK_NAME,
+  validateCheckRunTitle,
   validateReviewCheckCoordinates,
   type ReviewCheckCoordinates,
   type ReviewCheckName,
@@ -18,8 +19,10 @@ export type { ReviewGateCoordinates } from '../review/reviewGateContracts';
 export {
   deriveReviewCiCheckExternalId,
   deriveReviewGateExternalId,
+  MAX_CHECK_RUN_TITLE_CHARACTERS,
   REVIEW_CI_CHECK_NAME,
   REVIEW_GATE_CHECK_NAME,
+  validateCheckRunTitle,
 } from '../review/reviewCheckIdentity';
 export type {
   ReviewCheckCoordinates,
@@ -142,7 +145,7 @@ function validateBaseUrl(value: string): string {
 function validateMetadata(metadata: ReviewGateCheckMetadata): ReviewGateCheckMetadata {
   const result: ReviewGateCheckMetadata = {};
   if (metadata.detailsUrl !== undefined) result.detailsUrl = requiredText(metadata.detailsUrl, 'details URL', 2_000);
-  if (metadata.title !== undefined) result.title = requiredText(metadata.title, 'check title', 1_000);
+  if (metadata.title !== undefined) result.title = validateCheckRunTitle(metadata.title);
   if (metadata.summary !== undefined) result.summary = requiredText(metadata.summary, 'check summary', 65_000);
   return result;
 }

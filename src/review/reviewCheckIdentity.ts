@@ -6,6 +6,9 @@ export { REVIEW_CI_CHECK_NAME } from './reviewCi';
 export type { ReviewGateCoordinates } from './reviewGateContracts';
 export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
 
+/** GitHub's hard maximum for the output.title field on a Check Run. */
+export const MAX_CHECK_RUN_TITLE_CHARACTERS = 140;
+
 /** GitHub Check Run action used for a persisted same-head recovery request. */
 export const REVIEW_REFRESH_ACTION = Object.freeze({
   label: 'Refresh review',
@@ -84,6 +87,15 @@ const EXACT_SHA = /^[a-f0-9]{40}$/u;
 const EXACT_POLICY_DIGEST = /^[a-f0-9]{64}$/u;
 const EXACT_RUN_ID = /^run_[a-f0-9]{32}$/u;
 const EXACT_REQUEST_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
+
+/** Validate a caller-supplied Check Run output title before any API write. */
+export function validateCheckRunTitle(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0
+    || value.length > MAX_CHECK_RUN_TITLE_CHARACTERS || CONTROL_CHARACTER.test(value)) {
+    throw new Error('GitHub Check Run title is invalid');
+  }
+  return value;
+}
 
 function requiredText(value: unknown, field: string, maxLength = 512): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > maxLength || CONTROL_CHARACTER.test(value)) {
