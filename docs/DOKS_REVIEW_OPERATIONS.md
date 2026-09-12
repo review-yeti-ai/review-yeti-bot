@@ -49,6 +49,12 @@ the target health and the owning process's reaper counters after rollout;
 scraping another Review Yeti process can show the same metric names at zero
 without proving that reaper activity is observable.
 
+The production dispatcher is a singleton `Recreate` Deployment, so a static
+`ClusterIP` target is attributable to the one process that owns these counters.
+If the dispatcher is ever scaled above one, replace static targeting with pod or
+endpoints discovery (or a headless Service with per-pod targets) so counter
+ownership and reset semantics remain attributable.
+
 ---
 
 ## 🔁 Advancing the Production Worker Digest
