@@ -154,7 +154,7 @@ describe('zero-replica review job dispatcher deployment', () => {
 
   it('is inert by default and carries no review execution credentials', () => {
     const docs = documents();
-    expect(docs.some((document) => ['Service', 'Ingress', 'PersistentVolumeClaim'].includes(document.kind))).toBe(false);
+    expect(docs.some((document) => ['Ingress', 'PersistentVolumeClaim'].includes(document.kind))).toBe(false);
     const deployment = docs.find((document) => document.kind === 'Deployment');
     expect(deployment).toBeDefined();
     const pod = deployment!.spec.template.spec;
@@ -165,6 +165,7 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(pod.automountServiceAccountToken).toBe(true);
     expect(container.image).toBe(dispatcherImage);
     expect(container.command).toEqual(['node', 'dist/reviewJobDispatcherIndex.js']);
+    expect(container.ports).toEqual([{ name: 'metrics', containerPort: 9090, protocol: 'TCP' }]);
     expect(container.envFrom).toEqual([
       { configMapRef: { name: 'ct-review-job-dispatcher' } },
     ]);
@@ -246,11 +247,31 @@ describe('zero-replica review job dispatcher deployment', () => {
       REVIEW_JOB_NAMESPACE: 'ct-review-system',
       REVIEW_JOB_WORKER_IMAGE: workerImage,
     }));
+    const service = docs.find((document) => document.kind === 'Service');
+    expect(service).toEqual(expect.objectContaining({
+      metadata: expect.objectContaining({ name: 'ct-review-job-dispatcher-metrics' }),
+      spec: expect.objectContaining({
+        type: 'ClusterIP',
+        selector: { 'app.kubernetes.io/name': 'ct-review-job-dispatcher' },
+        ports: [{ name: 'metrics', protocol: 'TCP', port: 9090, targetPort: 'metrics' }],
+      }),
+    }));
     const policies = docs.filter((document) => document.kind === 'NetworkPolicy');
-    expect(policies.some((policy) => policy.metadata.name === 'ct-review-job-dispatcher-default-deny')).toBe(true);
+    const defaultDeny = policies.find((policy) => policy.metadata.name === 'ct-review-job-dispatcher-default-deny');
+    expect(defaultDeny!.spec.policyTypes).toEqual(['Ingress', 'Egress']);
     const allowed = policies.find((policy) => policy.metadata.name === 'ct-review-job-dispatcher-allowed');
     expect(allowed).toBeDefined();
-    expect(allowed!.spec.policyTypes).toEqual(['Egress']);
+    expect(allowed!.spec.policyTypes).toEqual(['Ingress', 'Egress']);
+    expect(allowed!.spec.ingress).toEqual([{
+      from: [{
+        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'observability' } },
+        podSelector: { matchLabels: {
+          'app.kubernetes.io/instance': 'victoria-metrics',
+          'app.kubernetes.io/name': 'victoria-metrics',
+        } },
+      }],
+      ports: [{ protocol: 'TCP', port: 9090 }],
+    }]);
     expect(allowed!.spec.egress).toEqual(expect.arrayContaining([
       expect.objectContaining({ ports: expect.arrayContaining([{ protocol: 'TCP', port: 443 }]) }),
       expect.objectContaining({ ports: expect.arrayContaining([{ protocol: 'TCP', port: 25060 }]) }),

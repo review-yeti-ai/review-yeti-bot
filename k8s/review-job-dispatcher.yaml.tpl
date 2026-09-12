@@ -90,6 +90,10 @@ spec:
           image: ${CT_REVIEW_JOB_DISPATCHER_IMAGE}
           imagePullPolicy: IfNotPresent
           command: [node, dist/reviewJobDispatcherIndex.js]
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
           envFrom:
             - configMapRef:
                 name: ct-review-job-dispatcher
@@ -146,6 +150,21 @@ spec:
           emptyDir:
             sizeLimit: 16Mi
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ct-review-job-dispatcher-metrics
+  namespace: ct-review-system
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ct-review-job-dispatcher
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: 9090
+      targetPort: metrics
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -155,7 +174,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: ct-review-job-dispatcher
-  policyTypes: [Egress]
+  policyTypes: [Ingress, Egress]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -166,7 +185,19 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: ct-review-job-dispatcher
-  policyTypes: [Egress]
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: victoria-metrics
+              app.kubernetes.io/name: victoria-metrics
+      ports:
+        - protocol: TCP
+          port: 9090
   egress:
     - to:
         - namespaceSelector:
