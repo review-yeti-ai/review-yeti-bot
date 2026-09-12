@@ -268,6 +268,25 @@ describe('GitHubReviewGateClient', () => {
     expect(rejectedFetch).not.toHaveBeenCalled();
   });
 
+  it('never applies successful Gate presentation to a terminal failure', async () => {
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(exactCheck()))
+      .mockResolvedValueOnce(response(exactCheck({ status: 'completed', conclusion: 'failure' })));
+    const gate = client(fetchImplementation);
+
+    await expect(gate.updateExisting(coordinates, 9876, {
+      conclusion: 'failure',
+      title: 'Review Yeti Gate: Rejected',
+      summary: 'Policy eligibility gate failed.',
+    })).resolves.toMatchObject({ id: 9876, status: 'completed', conclusion: 'failure' });
+    const body = JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body));
+    expect(body.output).toEqual({
+      title: 'Review Yeti Gate: Rejected',
+      summary: 'Policy eligibility gate failed.',
+    });
+    expect(body.output.text).toBeUndefined();
+  });
+
   it('rejects a wrong-identity update and never recreates on a missing check', async () => {
     const wrongAppFetch = vi.fn<typeof fetch>().mockResolvedValue(response(exactCheck({ app: { id: appId + 1 } })));
     await expect(client(wrongAppFetch).updateExisting(coordinates, 9876, { status: 'in_progress' })).rejects.toThrow(/identity/u);
