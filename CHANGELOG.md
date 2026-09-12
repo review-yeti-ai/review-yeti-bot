@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.61.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.60.2...v1.61.0) (2026-09-12)
+
+
+### Features
+
+* **events:** publish Review Yeti events to JetStream ([#771](https://github.com/review-yeti-ai/review-yeti-bot/issues/771)) ([8e2bae4](https://github.com/review-yeti-ai/review-yeti-bot/commit/8e2bae4a6cad899c64d5849c37ed09727126354d))
+
 ## [1.60.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.60.1...v1.60.2) (2026-09-12)
 
 
