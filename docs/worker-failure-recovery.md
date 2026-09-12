@@ -206,15 +206,17 @@ parameters are rejected before a PostgreSQL pool is constructed so libpq/pg
 connection overrides cannot redirect the harness to another host, role, port,
 database, service, or option set.
 
-Each branch runs twice in one process lifetime. The acceptance receipt verifies
-that each projected outbox row first carries a non-null expired lease, then
+Each branch runs twice in one process lifetime, but every reaper invocation has
+exactly one seeded candidate. The acceptance receipt binds that run ID to its
+projected outbox lease, durable terminal record, reaper outcome, and metric
+transition. A scrape before and two scrapes after each isolated sweep prove
+that only the branch-specific counter increments, the other counter remains
+unchanged, and both values persist across an unchanged scrape. The receipt also
 verifies the durable reason and lifecycle terminal class, an unset result
 digest, terminal run/outbox state, and cleared leases after the real reaper.
-Four HTTP scrapes prove both counters are positive, retain their values across
-an unchanged scrape, increase after the second pair, and remain monotonic on a
-final scrape. Teardown attempts every owned resource independently, including
-the final admin-pool close; cleanup failures are aggregated after success and
-cannot replace an earlier operation failure.
+Teardown attempts every owned resource independently, including the final
+admin-pool close; cleanup failures are aggregated after success and cannot
+replace an earlier operation failure.
 
 Run it only against an owned disposable PostgreSQL service. The harness rejects
 non-loopback hosts and requires the disposable `postgres` user/database shape:
