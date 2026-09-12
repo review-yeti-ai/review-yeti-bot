@@ -3,6 +3,8 @@ import { parseAndValidateConfig } from '../../src/config/configLoader';
 import { actionDispatchRequestSchema } from '../../src/review/actionDispatch';
 import { buildDispatchRequest } from '../../scripts/dispatch-doks-action.mjs';
 
+// Unit test suite verifying hierarchical passthrough of skills, knowledge, metrics,
+// and retry analysis configurations across .ct-review.yaml, Action inputs, and DOKS dispatch.
 describe('configuration passthrough for skills, knowledge, metrics, and retry analysis', () => {
   it('preserves top-level skills, knowledge, metrics, and retry_analysis from YAML', () => {
     const yaml = `
