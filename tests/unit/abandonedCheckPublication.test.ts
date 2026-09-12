@@ -378,6 +378,27 @@ describe('abandoned check exact App/attempt failure publication', () => {
       .toBe(true);
   });
 
+  it('refuses the audited receipt check id for a non-historical run', async () => {
+    const nonHistoricalRun = {
+      ...historicalEmptyIdentityRun,
+      runId: `run_${'a'.repeat(32)}`,
+    };
+    const { client, fetchImplementation } = fixture(
+      [historicalEmptyIdentityCheck],
+      historicalEmptyIdentityCheck,
+    );
+
+    await expect(client.failAbandonedCheck(
+      nonHistoricalRun,
+      4385771,
+      signal(),
+    )).rejects.toThrow('Abandoned check failure publication refused or unavailable');
+
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+  });
+
   it('refuses when the exact historical receipt is absent and no historical shape is visible', async () => {
     const unrelatedCheck = {
       ...check,
