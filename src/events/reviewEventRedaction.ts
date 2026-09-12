@@ -615,9 +615,35 @@ function hasRootOwnedExplicitUrl(value: string, spanStart: number, spanEnd: numb
   return false;
 }
 
+function isSimpleMailtoEmail(value: string, spanStart: number, spanEnd: number): boolean {
+  const prefix = 'mailto:';
+  if (spanEnd - spanStart <= prefix.length) return false;
+  if (value.slice(spanStart, spanStart + prefix.length).toLowerCase() !== prefix) return false;
+
+  const addressStart = spanStart + prefix.length;
+  const at = value.indexOf('@', addressStart);
+  if (at <= addressStart || at + 1 >= spanEnd) return false;
+  for (let index = addressStart; index < at; index += 1) {
+    const code = value.charCodeAt(index);
+    if (
+      !isAsciiWordCharacter(code)
+      && code !== 43
+      && code !== 45
+      && code !== 46
+    ) return false;
+  }
+  for (let index = at + 1; index < spanEnd; index += 1) {
+    const code = value.charCodeAt(index);
+    if (!isAsciiLetter(code) && !isAsciiDigit(code) && code !== 45 && code !== 46) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Reject a scheme-less `username:password@host` authority without turning
- * ordinary email addresses or model revisions into credential findings.
+ * ordinary emails or slash-qualified model revisions into credential findings.
  * Explicit URLs are handled by hasUrlAuthorityUserinfo(), whose parsed owner
  * semantics intentionally keep path and query content opaque to this check.
  */
@@ -642,7 +668,10 @@ function hasBareAuthorityUserinfo(value: string): boolean {
       whitespaceSpanEnd += 1;
     }
 
-    if (!hasRootOwnedExplicitUrl(value, whitespaceSpanStart, whitespaceSpanEnd)) {
+    if (
+      !isSimpleMailtoEmail(value, whitespaceSpanStart, whitespaceSpanEnd)
+      && !hasRootOwnedExplicitUrl(value, whitespaceSpanStart, whitespaceSpanEnd)
+    ) {
       let candidateStart = whitespaceSpanStart;
       let passwordSeparator = -1;
       for (let index = whitespaceSpanStart; index < whitespaceSpanEnd; index += 1) {
