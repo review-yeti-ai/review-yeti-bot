@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.57.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.57.1...v1.57.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **reaper:** expose delivery-mismatch quarantine telemetry and timestamp-fence coverage ([#743](https://github.com/review-yeti-ai/review-yeti-bot/issues/743)) ([c911d8e](https://github.com/review-yeti-ai/review-yeti-bot/commit/c911d8e01f79d1031265c54e097d98dfb4b3d3ac))
+
 ## [1.57.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.57.0...v1.57.1) (2026-09-12)
 
 
