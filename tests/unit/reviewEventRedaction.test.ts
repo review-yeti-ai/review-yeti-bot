@@ -1047,10 +1047,17 @@ describe('progress event redaction boundary', () => {
         'review:synthetic(part)@private.test',
         'review:synthetic!$&*+part@private.test',
         'review:synthetic%2Fpart@private.test',
+        'review:synthetic<secret@private.test',
+        'review:synthetic>secret@private.test',
+        'review:synthetic`secret@private.test',
+        'review:synthetic{secret@private.test',
+        'review:synthetic}secret@private.test',
+        'review:synthetic"secret@private.test',
         `:synthetic-secret@sha256:${'a'.repeat(64)}`,
         `review:@sha256:${'a'.repeat(64)}`,
         `review:synthetic-secret@sha256:${'a'.repeat(64)}`,
         `registry/team/review:synthetic-secret@sha256:${'a'.repeat(64)}`,
+        'mailto:review:synthetic-secret@private.test',
         'mailto:alice@example.com,review:synthetic-secret@private.test',
         '{review:synthetic-secret@private.test}',
         'review:synthetic-secret@private.test,https://safe.test',
@@ -1075,6 +1082,9 @@ describe('progress event redaction boundary', () => {
         'mailto:alice@example.com',
         'a@b:c',
         'provider/model@stable',
+        'review:synthetic-secret@',
+        'review:synthetic-secret@,',
+        'review:synthetic-secret@=',
       ]) {
         const fixture = location.inject(value);
         expect(sanitizeProgressEvent(fixture.event, fixture.identity), value)
