@@ -1,5 +1,6 @@
 import {
   MeterProvider,
+  AggregationTemporality,
   InMemoryMetricExporter,
   PeriodicExportingMetricReader,
   ExplicitBucketHistogramAggregation,
@@ -36,7 +37,7 @@ export function initMetrics(): MetricCounters {
     return metricsInstance;
   }
 
-  const exporter = new InMemoryMetricExporter(0);
+  const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
   metricReader = new PeriodicExportingMetricReader({
     exporter,
     exportIntervalMillis: 60000,
