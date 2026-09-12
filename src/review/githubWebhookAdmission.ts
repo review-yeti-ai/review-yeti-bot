@@ -148,7 +148,6 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const retryAfterExecutionAttempt = Number(payload.check_run.external_id.slice(attemptSeparator + 2));
       const authoritative = options.authoritativePublishing;
       const hasAuthoritativeIdentity = authoritative !== undefined
-        && authoritative.expectedAppId === payload.check_run.app.id
         && authoritativeIds.has(payload.repository.id);
       // GitHub's native re-request action carries no separately named action
       // identifier. Admit it only where the service can re-read and bind the
