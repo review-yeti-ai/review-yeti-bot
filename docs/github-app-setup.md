@@ -126,7 +126,7 @@ setup above:
   `review-yeti-bot`;
 * central installation: owner `exampleorg`, repository exactly
   `example-review-actions`;
-* caller workflow: exactly `.github/workflows/review-bot.yaml` in the target's
+* caller workflow: exactly `.github/workflows/ct-review-bot.yml` in the target's
   default branch.
 
 The trusted workflows consume `CT_REVIEW_BOT_APP_ID` and

@@ -92,7 +92,7 @@ Before executing any review step, the central dispatch validator (`scripts/valid
 1. Admits either an existing `exampleorg/*` repository with
    `.github/workflows/ct-review-bot.yml`, or exactly
    `review-yeti-ai/review-yeti-bot` with
-   `.github/workflows/review-bot.yaml`. No other external owner, repository, or
+   `.github/workflows/ct-review-bot.yml`. No other external owner, repository, or
    caller path is accepted.
 2. Calls the GitHub API using the GitHub App token to ensure the PR is currently open.
 3. Asserts that the live base SHA and head SHA match the dispatch payload byte-for-byte. If a contributor pushes a new commit while a dispatch is queued, the stale run immediately halts.

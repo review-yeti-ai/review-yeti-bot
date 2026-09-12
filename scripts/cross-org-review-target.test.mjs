@@ -105,6 +105,7 @@ function externalFetch(calls, {
 }
 
 test('admits exactly the Review Yeti repository and caller path outside exampleorg', () => {
+  assert.equal(REVIEW_YETI_CALLER_WORKFLOW_PATH, '.github/workflows/ct-review-bot.yml');
   assert.deepEqual(resolveAdmittedTarget(REVIEW_YETI_REPOSITORY), {
     owner: 'review-yeti-ai',
     name: 'review-yeti-bot',
@@ -154,7 +155,7 @@ test('fails closed on wrong external caller path and token-scope mistakes', asyn
       return response({
         repository: { full_name: REVIEW_YETI_REPOSITORY },
         event: 'pull_request_target',
-        path: '.github/workflows/ct-review-bot.yml',
+        path: '.github/workflows/review-bot.yaml',
         head_sha: headSha,
         head_branch: 'fix/cross-org-caller',
         run_attempt: callerRunAttempt,
@@ -202,7 +203,7 @@ test('trusted workflows mint owner-aware target and central tokens without ambie
 
   for (const workflow of [receiver, reusable]) {
     assert.match(workflow, /^\s+review-yeti-ai\/review-yeti-bot\)$/mu);
-    assert.match(workflow, /caller_workflow_path=\.github\/workflows\/review-bot\.yaml/u);
+    assert.match(workflow, /caller_workflow_path=\.github\/workflows\/ct-review-bot\.yml/u);
     assert.doesNotMatch(workflow, /^\s+review-yeti-ai\/\*\)$/mu);
     assert.match(workflow, /owner:\s*\$\{\{ steps\.target\.outputs\.owner \}\}/u);
     assert.match(workflow, /repositories:\s*\$\{\{ steps\.target\.outputs\.repositories \}\}/u);

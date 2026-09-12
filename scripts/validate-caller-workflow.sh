@@ -12,10 +12,12 @@ sha_re='^[0-9a-fA-F]{40,64}$'
 [[ "$EXPECTED_BASE_SHA" =~ $sha_re ]] || { echo "::error::base-sha is invalid"; exit 1; }
 
 caller_workflow='.github/workflows/ct-review-bot.yml'
-external_self_review=false
 case "$REVIEW_REPOSITORY" in
   exampleorg/*) ;;
-  review-yeti-ai/review-yeti-bot) external_self_review=true ;;
+  review-yeti-ai/review-yeti-bot)
+    echo "::error::external self-review must use the central dispatch workflow; GitHub cannot resolve this private reusable workflow from a public repository"
+    exit 1
+    ;;
   *) echo "::error::repository is not admitted for caller validation"; exit 1 ;;
 esac
 central_ref="${CENTRAL_REF:-v1}"
@@ -43,10 +45,6 @@ release_uses_count="$(grep -Fxc "$expected_uses" <<<"$workflow_content" || true)
 immutable_uses_count="$(grep -Ec '^    uses: exampleorg/example-review-actions/\.github/workflows/review-yeti\.yml@[0-9a-fA-F]{40}$' <<<"$workflow_content" || true)"
 uses_count=$((release_uses_count + immutable_uses_count))
 
-if [[ "$external_self_review" == true && "$immutable_uses_count" -ne 1 ]]; then
-  echo "::error::external self-review caller must use one full immutable central SHA."
-  exit 1
-fi
 if [[ "$uses_count" -ne 1 ]]; then
   echo "::error::${caller_workflow} must contain exactly one central Review Yeti ref at ${central_ref} or one immutable SHA pin."
   exit 1
@@ -82,109 +80,6 @@ fi
 if grep -Eq '^[[:space:]]+execution_backend:' <<<"$workflow_content"; then
   echo "::error::${caller_workflow} must not override execution_backend; the central policy is the only authority for backend selection."
   exit 1
-fi
-
-if [[ "$external_self_review" == true ]]; then
-  if grep -Eq '^[[:space:]]+secrets:[[:space:]]+inherit[[:space:]]*$' <<<"$workflow_content"; then
-    echo "::error::external self-review caller must map secrets explicitly; secrets: inherit is forbidden."
-    exit 1
-  fi
-
-  jobs_content="$(awk '
-    /^jobs:[[:space:]]*$/ { in_jobs=1; next }
-    in_jobs && /^[^[:space:]]/ { exit }
-    in_jobs { print }
-  ' <<<"$workflow_content")"
-  job_count="$(grep -Ec '^  [A-Za-z0-9_.-]+:[[:space:]]*$' <<<"$jobs_content" || true)"
-  if [[ "$job_count" -ne 1 ]] || grep -Eq '^[[:space:]]+(runs-on|steps|run|shell|container|services):' <<<"$jobs_content"; then
-    echo "::error::external self-review caller must contain only the reusable review job; runner and PR-head execution are forbidden."
-    exit 1
-  fi
-  external_uses_count="$(grep -Ec '^    uses:[[:space:]]+' <<<"$jobs_content" || true)"
-  if [[ "$external_uses_count" -ne 1 ]]; then
-    echo "::error::external self-review caller must contain exactly one central uses binding."
-    exit 1
-  fi
-  if grep -Eq '^    with:[[:space:]]*$' <<<"$jobs_content"; then
-    echo "::error::external self-review caller may not override reusable-workflow inputs."
-    exit 1
-  fi
-
-  job_properties="$(sed -nE 's/^    ([A-Za-z0-9_.-]+):.*/\1/p' <<<"$jobs_content")"
-  seen_properties=' '
-  while IFS= read -r property; do
-    [[ -z "$property" ]] && continue
-    case "$property" in
-      name|if|uses|secrets) ;;
-      *)
-        echo "::error::external self-review caller job property ${property} is not admitted."
-        exit 1
-        ;;
-    esac
-    if [[ "$seen_properties" == *" ${property} "* ]]; then
-      echo "::error::external self-review caller job property ${property} is duplicated."
-      exit 1
-    fi
-    seen_properties+="${property} "
-  done <<<"$job_properties"
-
-  if [[ "$(grep -Ec '^  pull_request_target:[[:space:]]*$' <<<"$workflow_content" || true)" -ne 1 ]] ||
-     grep -Eq '^  pull_request:[[:space:]]*$' <<<"$workflow_content"; then
-    echo "::error::external self-review caller must be base-owned pull_request_target only."
-    exit 1
-  fi
-
-  secrets_mapping_count="$(grep -Ec '^    secrets:[[:space:]]*$' <<<"$jobs_content" || true)"
-  if [[ "$secrets_mapping_count" -ne 1 ]]; then
-    echo "::error::external self-review caller must contain exactly one explicit secrets mapping."
-    exit 1
-  fi
-
-  secrets_content="$(awk '
-    /^    secrets:[[:space:]]*$/ { in_secrets=1; next }
-    in_secrets && /^    [^[:space:]]/ { exit }
-    in_secrets { print }
-  ' <<<"$jobs_content")"
-  [[ -n "$secrets_content" ]] || {
-    echo "::error::external self-review caller must map secrets explicitly."
-    exit 1
-  }
-
-  allowed_secrets=' CT_REVIEW_BOT_APP_ID CT_REVIEW_BOT_APP_PRIVATE_KEY REVIEW_YETI_BIFROST_API_KEY OPENROUTER_REVIEW_FLEET_KEY GEMINI_API_KEY OLLAMA_PR_REVIEW_API_KEY SYNTHETIC_API_KEY HONCHO_BASE_URL HONCHO_API_KEY CONTEXT7_API_KEY '
-  mapped_secrets=' '
-  while IFS= read -r mapping; do
-    [[ -z "$mapping" ]] && continue
-    if [[ ! "$mapping" =~ ^[[:space:]]{6}([A-Z0-9_]+):[[:space:]]+\$\{\{[[:space:]]*secrets\.([A-Z0-9_]+)[[:space:]]*\}\}[[:space:]]*$ ]]; then
-      echo "::error::external self-review caller has a malformed secret mapping."
-      exit 1
-    fi
-    mapped_name="${BASH_REMATCH[1]}"
-    source_name="${BASH_REMATCH[2]}"
-    if [[ "$allowed_secrets" != *" ${mapped_name} "* ]]; then
-      echo "::error::external self-review caller maps unapproved secret ${mapped_name}."
-      exit 1
-    fi
-    expected_source_name="$mapped_name"
-    if [[ "$mapped_name" == OPENROUTER_REVIEW_FLEET_KEY ]]; then
-      expected_source_name='CT_REVIEW_OPENROUTER_API_KEY'
-    fi
-    if [[ "$source_name" != "$expected_source_name" ]]; then
-      echo "::error::external self-review caller secret ${mapped_name} must map from secrets.${expected_source_name}."
-      exit 1
-    fi
-    if [[ "$mapped_secrets" == *" ${mapped_name} "* ]]; then
-      echo "::error::external self-review caller maps ${mapped_name} more than once."
-      exit 1
-    fi
-    mapped_secrets+="${mapped_name} "
-  done <<<"$secrets_content"
-
-  for required_secret in CT_REVIEW_BOT_APP_ID CT_REVIEW_BOT_APP_PRIVATE_KEY; do
-    if [[ "$mapped_secrets" != *" ${required_secret} "* ]]; then
-      echo "::error::external self-review caller must map ${required_secret} explicitly."
-      exit 1
-    fi
-  done
 fi
 
 echo "Validated ${caller_workflow} at base ${EXPECTED_BASE_SHA} uses central Review Yeti ${central_ref} or a reachable immutable SHA pin."

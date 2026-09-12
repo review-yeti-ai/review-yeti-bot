@@ -253,16 +253,19 @@ if output="$({
 fi
 grep -Fq "central-ref must be a platform-owned major release ref such as v1" <<<"$output"
 
-# The sole admitted external self-review caller has a stricter ABI than legacy
-# exampleorg consumers: one reachable full SHA and explicit secret mappings
-# from a closed destination/source-pair allowlist. It may not inherit every repository secret
-# or carry any runner/checkout path capable of executing its PR head.
+# The public external self-review repository cannot resolve this private
+# reusable workflow. Every direct shape fails with one explicit route: use the
+# base-owned central dispatch workflow instead.
 external_workflow=$'name: Review Yeti\non:\n  pull_request_target:\njobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff\n    secrets:\n      CT_REVIEW_BOT_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}\n      CT_REVIEW_BOT_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}\n      REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}\n      OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}\n'
-PATH="$tmp_dir/bin:$PATH" \
-  GH_TOKEN=test REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
-  FAKE_WORKFLOW_CONTENT="$external_workflow" \
-  "$repo_root/scripts/validate-caller-workflow.sh"
-
+if output="$({
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
+    REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    FAKE_WORKFLOW_CONTENT="$external_workflow" "$repo_root/scripts/validate-caller-workflow.sh"
+} 2>&1)"; then
+  echo 'expected the external reusable-workflow caller to fail' >&2
+  exit 1
+fi
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 external_floating="${external_workflow/@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff/@v1}"
 if output="$({
   PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
@@ -272,7 +275,7 @@ if output="$({
   echo 'expected the external self-review caller floating v1 ref to fail' >&2
   exit 1
 fi
-grep -Fq 'external self-review caller must use one full immutable central SHA' <<<"$output"
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 
 external_inherit=$'jobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff\n    secrets: inherit\n'
 if output="$({
@@ -283,7 +286,7 @@ if output="$({
   echo 'expected external secrets inheritance to fail' >&2
   exit 1
 fi
-grep -Fq 'external self-review caller must map secrets explicitly' <<<"$output"
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 
 external_extra_secret="${external_workflow}"$'      UNRELATED_SECRET: ${{ secrets.UNRELATED_SECRET }}\n'
 if output="$({
@@ -294,7 +297,7 @@ if output="$({
   echo 'expected an unallowlisted external secret mapping to fail' >&2
   exit 1
 fi
-grep -Fq 'external self-review caller maps unapproved secret UNRELATED_SECRET' <<<"$output"
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 
 external_missing_identity="$(grep -v 'CT_REVIEW_BOT_APP_PRIVATE_KEY:' <<<"$external_workflow")"
 if output="$({
@@ -305,7 +308,7 @@ if output="$({
   echo 'expected a missing mandatory App identity mapping to fail' >&2
   exit 1
 fi
-grep -Fq 'external self-review caller must map CT_REVIEW_BOT_APP_PRIVATE_KEY explicitly' <<<"$output"
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 
 external_pr_head_job="${external_workflow}"$'  unsafe:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n'
 if output="$({
@@ -316,7 +319,7 @@ if output="$({
   echo 'expected external PR-head execution to fail' >&2
   exit 1
 fi
-grep -Fq 'external self-review caller must contain only the reusable review job' <<<"$output"
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 
 external_duplicate_uses="${external_workflow/    secrets:/    uses: attacker\/untrusted\/.github\/workflows\/review.yml@main$'\n'    secrets:}"
 if output="$({
@@ -327,7 +330,7 @@ if output="$({
   echo 'expected a duplicate reusable-workflow target to fail' >&2
   exit 1
 fi
-grep -Fq 'external self-review caller must contain exactly one central uses binding' <<<"$output"
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 
 external_with_override="${external_workflow/    secrets:/$'    with:\n      central_execution: true\n    secrets:'}"
 if output="$({
@@ -338,7 +341,7 @@ if output="$({
   echo 'expected external reusable-workflow input overrides to fail' >&2
   exit 1
 fi
-grep -Fq 'external self-review caller may not override reusable-workflow inputs' <<<"$output"
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 
 external_duplicate_secrets="${external_workflow}"$'    secrets:\n      CT_REVIEW_BOT_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}\n      CT_REVIEW_BOT_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}\n'
 if output="$({
@@ -349,6 +352,6 @@ if output="$({
   echo 'expected duplicate YAML secret mappings to fail' >&2
   exit 1
 fi
-grep -Fq 'external self-review caller job property secrets is duplicated' <<<"$output"
+grep -Fq 'external self-review must use the central dispatch workflow' <<<"$output"
 
 echo "validate-caller-workflow contract passed"

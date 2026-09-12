@@ -149,7 +149,7 @@ jobs:
                 echo "owner=review-yeti-ai"
                 echo "name=review-yeti-bot"
                 echo "repositories=review-yeti-bot"
-                echo "caller_workflow_path=.github/workflows/review-bot.yaml"
+                echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
                 echo "needs_central_token=true"
               } >> "$GITHUB_OUTPUT"
               ;;

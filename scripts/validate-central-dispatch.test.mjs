@@ -402,7 +402,7 @@ test('receiver scopes App tokens to one owner while preserving exampleorg covera
     owner: 'review-yeti-ai',
     name: 'review-yeti-bot',
     repositories: 'review-yeti-bot',
-    caller_workflow_path: '.github/workflows/review-bot.yaml',
+    caller_workflow_path: '.github/workflows/ct-review-bot.yml',
     needs_central_token: 'true',
   });
 

@@ -32,13 +32,19 @@ Review Yeti supports two consumer workflow patterns depending on your organizati
 
 The governed central receiver preserves `exampleorg/*` callers at
 `.github/workflows/ct-review-bot.yml` and has one exact cross-owner admission:
-`review-yeti-ai/review-yeti-bot` at `.github/workflows/review-bot.yaml`. That
+`review-yeti-ai/review-yeti-bot` at `.github/workflows/ct-review-bot.yml`. That
 route requires separate App installation tokens for the `review-yeti-ai`
 target and the `exampleorg/example-review-actions` hub; a repository list cannot
 span owners. The App must be installed on both selected repositories, and the
 trusted caller must have access to the existing `CT_REVIEW_BOT_APP_ID` and
 `CT_REVIEW_BOT_APP_PRIVATE_KEY` Actions secrets. There is no PAT or ambient
 workflow-token fallback.
+
+Because the admitted external repository is public while the central workflow
+repository is private, that route must use the async dispatch shim. GitHub does
+not expose private reusable workflows to public callers. Provider credentials
+therefore remain central; the public caller uses only the App identity needed
+to submit the coordinate-only dispatch.
 
 ---
 

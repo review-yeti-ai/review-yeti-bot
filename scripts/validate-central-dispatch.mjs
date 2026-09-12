@@ -61,7 +61,7 @@ export function globalConcurrencyCap(env = process.env) {
 
 export const DISPATCH_EVENT_TYPE = 'review-yeti-request';
 export const CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
-export const REVIEW_YETI_CALLER_WORKFLOW_PATH = '.github/workflows/review-bot.yaml';
+export const REVIEW_YETI_CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
 
 export function resolveAdmittedTarget(repository) {
   if (typeof repository !== 'string') throw new Error('repository must be a string');
