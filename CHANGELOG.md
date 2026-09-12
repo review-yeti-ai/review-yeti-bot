@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.60.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.60.1...v1.60.2) (2026-09-12)
+
+
+### Bug Fixes
+
+* **REL-818:** persist legacy worker success ([#768](https://github.com/review-yeti-ai/review-yeti-bot/issues/768)) ([3385b01](https://github.com/review-yeti-ai/review-yeti-bot/commit/3385b01589959f8c8f2b6fb528dd3a47c59a2307))
+
 ## [1.60.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.60.0...v1.60.1) (2026-09-12)
 
 
