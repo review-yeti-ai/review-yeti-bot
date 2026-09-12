@@ -267,6 +267,29 @@ describe('abandoned check exact App/attempt failure publication', () => {
     expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
   });
 
+  it('does not let a newer publisher-owned check on another head suppress exact fail-closed publication', async () => {
+    const otherHead = {
+      ...exactCheck,
+      id: 102575533973,
+      head_sha: 'f'.repeat(40),
+      external_id: `run_${'b'.repeat(32)}:a1`,
+      started_at: '2026-09-09T17:38:00Z',
+      status: 'completed',
+      conclusion: 'success',
+    };
+    const created = { ...exactCheck, id: 77, status: 'completed', conclusion: 'failure' };
+    const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === 'POST') return new Response(JSON.stringify(created));
+      return new Response(JSON.stringify(String(url).includes('/commits/') ? { check_runs: [otherHead] } : created));
+    });
+    const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation, sleep: async () => undefined });
+
+    await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
+
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(0);
+  });
+
   it.each([
     { head_sha: 'f'.repeat(40) },
     { app: { id: 4435435 } },
