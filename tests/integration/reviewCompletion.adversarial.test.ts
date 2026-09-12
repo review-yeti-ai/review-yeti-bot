@@ -13,6 +13,7 @@ import {
   ReviewCompletionDeliveryEngine,
   CIRequestClient,
 } from '../../src/k8s/reviewCompletionDeliveryEngine';
+import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 
 const TEST_SCHEMA = 'test_challenger_m2';
 const DATABASE_URL = process.env.REVIEW_YETI_TEST_DATABASE_URL || 'postgres://localhost/postgres';
@@ -20,6 +21,7 @@ const DATABASE_URL = process.env.REVIEW_YETI_TEST_DATABASE_URL || 'postgres://lo
 describe('Milestone 2 Empirical Challenger Stress Tests', () => {
   let pool: Pool;
   let repository: PostgresReviewCompletionRepository;
+  let lifecycleRepository: PostgresReviewCompletionRepository;
 
   beforeAll(async () => {
     pool = new Pool({
@@ -69,6 +71,24 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
         CREATE UNIQUE INDEX IF NOT EXISTS review_completion_val_req_idx
           ON ${TEST_SCHEMA}.review_completion_outbox (validation_request_id)
       `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ${TEST_SCHEMA}.review_runs (
+          run_id TEXT PRIMARY KEY,
+          repository_id BIGINT,
+          pr_number INTEGER,
+          base_sha TEXT,
+          head_sha TEXT,
+          attempt INTEGER NOT NULL DEFAULT 0,
+          effective_policy_digest TEXT
+        )
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ${TEST_SCHEMA}.review_dispatch_outbox (
+          run_id TEXT PRIMARY KEY REFERENCES ${TEST_SCHEMA}.review_runs(run_id) ON DELETE CASCADE,
+          execution_attempt INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+      await client.query(REVIEW_EVENT_SCHEMA_SQL);
     } finally {
       client.release();
     }
@@ -90,7 +110,8 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
       },
     };
 
-    repository = new PostgresReviewCompletionRepository(schemaPool);
+    repository = new PostgresReviewCompletionRepository(schemaPool, { lifecycleEvents: 'disabled' });
+    lifecycleRepository = new PostgresReviewCompletionRepository(schemaPool, { lifecycleEvents: 'enabled' });
   });
 
   afterAll(async () => {
@@ -108,10 +129,213 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
   beforeEach(async () => {
     const client = await pool.connect();
     try {
-      await client.query(`TRUNCATE TABLE ${TEST_SCHEMA}.review_completion_outbox`);
+      await client.query(`TRUNCATE TABLE ${TEST_SCHEMA}.review_completion_outbox,
+        ${TEST_SCHEMA}.review_event_outbox,
+        ${TEST_SCHEMA}.review_event_sequence_counters,
+        ${TEST_SCHEMA}.review_dispatch_outbox,
+        ${TEST_SCHEMA}.review_runs CASCADE`);
     } finally {
       client.release();
     }
+  });
+
+  async function insertLifecycleRun(
+    runId: string,
+    repositoryId: number | null = 123,
+    prNumber = 42,
+  ): Promise<void> {
+    const client = await pool.connect();
+    try {
+      await client.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+      await client.query(`INSERT INTO review_runs
+        (run_id, repository_id, pr_number, base_sha, head_sha, attempt, effective_policy_digest)
+        VALUES ($1, $2, $3, $4, $5, 0, $6)`,
+      [runId, repositoryId, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64)]);
+    } finally {
+      client.release();
+    }
+  }
+
+  function lifecycleInput(
+    runId: string,
+    overrides: Partial<ReviewCompletionRecordInput> = {},
+  ): ReviewCompletionRecordInput {
+    return {
+      runId,
+      repositoryId: 123,
+      repository: 'calltelemetry/dashboard',
+      prNumber: 42,
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+      attemptId: `${runId}-g0-e1`,
+      policyDigest: 'c'.repeat(64),
+      validationRequestId: 'validation-lifecycle-replay',
+      availableAt: 1_000,
+      ...overrides,
+    };
+  }
+
+  async function lifecycleQuery(text: string, values: unknown[] = []): Promise<{ rows: any[] }> {
+    const client = await pool.connect();
+    try {
+      await client.query(`SET search_path TO ${TEST_SCHEMA}, public`);
+      return await client.query(text, values);
+    } finally {
+      client.release();
+    }
+  }
+
+  describe('Task 3 lifecycle replay authority', () => {
+    it('does not append or consume a sequence on sequential completion replay', async () => {
+      const runId = 'run_lifecycle_sequential';
+      await insertLifecycleRun(runId);
+
+      const first = await lifecycleRepository.recordCompletion(lifecycleInput(runId));
+      const replay = await lifecycleRepository.recordCompletion(lifecycleInput(runId, {
+        verdict: 'NO_SHIP',
+        conclusion: 'failure',
+      }));
+
+      expect(replay.completionId).toBe(first.completionId);
+      expect(replay.runId).toBe(runId);
+      expect(replay.verdict).toBe('NO_SHIP');
+      expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_completion_outbox')).rows[0].count).toBe(1);
+      expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(1);
+      expect((await lifecycleQuery('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [runId])).rows[0].next_sequence).toBe('1');
+    });
+
+    it('serializes concurrent completion replays without duplicate events or sequences', async () => {
+      const runId = 'run_lifecycle_concurrent';
+      await insertLifecycleRun(runId);
+
+      await Promise.all(Array.from({ length: 8 }, () =>
+        lifecycleRepository.recordCompletion(lifecycleInput(runId))));
+
+      expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_completion_outbox')).rows[0].count).toBe(1);
+      expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(1);
+      expect((await lifecycleQuery('SELECT next_sequence FROM review_event_sequence_counters WHERE run_id = $1', [runId])).rows[0].next_sequence).toBe('1');
+    });
+
+    it('rejects a validation request replay with conflicting immutable identity', async () => {
+      const originalRunId = 'run_lifecycle_original';
+      const conflictingRunId = 'run_lifecycle_conflict';
+      await insertLifecycleRun(originalRunId);
+      await insertLifecycleRun(conflictingRunId, 456, 43);
+
+      await lifecycleRepository.recordCompletion(lifecycleInput(originalRunId, {
+        validationRequestId: 'validation-identity-conflict',
+      }));
+
+      await expect(lifecycleRepository.recordCompletion(lifecycleInput(conflictingRunId, {
+        repositoryId: 456,
+        prNumber: 43,
+        baseSha: 'd'.repeat(40),
+        headSha: 'e'.repeat(40),
+        validationRequestId: 'validation-identity-conflict',
+      }))).rejects.toThrow(/identity conflict/i);
+
+      const completion = (await lifecycleQuery(
+        'SELECT run_id, repository_id, pr_number FROM review_completion_outbox WHERE validation_request_id = $1',
+        ['validation-identity-conflict'],
+      )).rows[0];
+      expect(completion).toMatchObject({ run_id: originalRunId, repository_id: '123', pr_number: 42 });
+      expect((await lifecycleQuery('SELECT run_id FROM review_event_outbox')).rows).toEqual([{ run_id: originalRunId }]);
+      expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters WHERE run_id = $1', [conflictingRunId])).rows[0].count).toBe(0);
+    });
+
+    it('rolls back completion state, event intent, and sequence when run metadata is incomplete', async () => {
+      const runId = 'run_lifecycle_missing_metadata';
+      await insertLifecycleRun(runId, null);
+
+      await expect(lifecycleRepository.recordCompletion(lifecycleInput(runId, {
+        validationRequestId: 'validation-missing-metadata',
+      }))).rejects.toThrow(/metadata/i);
+
+      expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_completion_outbox')).rows[0].count).toBe(0);
+      expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_outbox')).rows[0].count).toBe(0);
+      expect((await lifecycleQuery('SELECT COUNT(*)::int AS count FROM review_event_sequence_counters')).rows[0].count).toBe(0);
+    });
+
+    it('emits the exact completion mutation event kinds and keeps claim and heartbeat lease-only', async () => {
+      const claimedRun = 'run_completion_event_kinds_claimed';
+      await insertLifecycleRun(claimedRun);
+      const record = await lifecycleRepository.recordCompletion(lifecycleInput(claimedRun, {
+        validationRequestId: 'validation-event-kinds-claimed',
+      }));
+      const claim = await lifecycleRepository.claimNext('completion-worker', 2_000, 30_000);
+      expect(claim?.completionId).toBe(record.completionId);
+      await expect(lifecycleRepository.heartbeat(record.completionId, 'completion-worker', 3_000, 30_000)).resolves.toBe(true);
+      await expect(lifecycleRepository.markDispatched(record.completionId, 'completion-worker', 4_000)).resolves.toBe(true);
+      await expect(lifecycleRepository.markCompleted(record.completionId, 'completion-worker', 5_000)).resolves.toBe(true);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [claimedRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.dispatched' },
+          { event_kind: 'review.lifecycle.terminal' },
+        ]);
+
+      const retriedRun = 'run_completion_event_kinds_retry';
+      await insertLifecycleRun(retriedRun);
+      const retried = await lifecycleRepository.recordCompletion(lifecycleInput(retriedRun, {
+        validationRequestId: 'validation-event-kinds-retry',
+      }));
+      await lifecycleRepository.claimNext('retry-worker', 2_000, 30_000);
+      await expect(lifecycleRepository.releaseForRetry(retried.completionId, 'retry-worker', 3_000, 5_000)).resolves.toBe(true);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [retriedRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.retrying' },
+        ]);
+
+      const terminalRun = 'run_completion_event_kinds_terminal';
+      await insertLifecycleRun(terminalRun);
+      const terminal = await lifecycleRepository.recordCompletion(lifecycleInput(terminalRun, {
+        validationRequestId: 'validation-event-kinds-terminal',
+      }));
+      await expect(lifecycleRepository.markTerminal(terminal.completionId, 'terminal-worker', 2_000)).resolves.toBe(true);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [terminalRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.terminal' },
+        ]);
+
+      const errorRun = 'run_completion_event_kinds_error';
+      await insertLifecycleRun(errorRun);
+      const errored = await lifecycleRepository.recordCompletion(lifecycleInput(errorRun, {
+        validationRequestId: 'validation-event-kinds-error',
+      }));
+      await lifecycleRepository.claimNext('error-worker', 2_000, 30_000);
+      await expect(lifecycleRepository.markError(errored.completionId, 'error-worker', 3_000, 'permanent')).resolves.toBe(true);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [errorRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.terminal' },
+        ]);
+
+      const readyRun = 'run_completion_event_kinds_ready';
+      await insertLifecycleRun(readyRun);
+      await lifecycleRepository.recordCompletion(lifecycleInput(readyRun, {
+        validationRequestId: 'validation-event-kinds-ready', draftDeferred: true,
+      }));
+      await expect(lifecycleRepository.markReady(123, 42, 'b'.repeat(40), 2_000)).resolves.toBe(1);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [readyRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.queued' },
+        ]);
+
+      const supersededRun = 'run_completion_event_kinds_superseded';
+      await insertLifecycleRun(supersededRun);
+      await lifecycleRepository.recordCompletion(lifecycleInput(supersededRun, {
+        validationRequestId: 'validation-event-kinds-superseded', headSha: 'c'.repeat(40),
+      }));
+      await expect(lifecycleRepository.supersedeOlderHeads(123, 42, 'b'.repeat(40), 2_000)).resolves.toBe(1);
+      expect((await lifecycleQuery('SELECT event_kind FROM review_event_outbox WHERE run_id = $1 ORDER BY sequence', [supersededRun])).rows)
+        .toEqual([
+          { event_kind: 'review.lifecycle.queued' },
+          { event_kind: 'review.lifecycle.superseded' },
+        ]);
+    });
   });
 
   // =========================================================================

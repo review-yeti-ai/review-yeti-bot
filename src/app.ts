@@ -852,6 +852,7 @@ export function createApp(): Express {
     const oidcPolicy = githubActionsOidcPolicyFromEnv();
     const dispatchConfig = actionDispatchConfigFromEnv();
     const dispatchRepository = new PostgresReviewDispatchRepository(postgresStore.getPool(), undefined, {
+      lifecycleEvents: 'enabled',
       requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
     });
     app.use('/api/dispatch', createActionDispatchRouter({

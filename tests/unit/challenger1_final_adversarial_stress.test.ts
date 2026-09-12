@@ -344,7 +344,7 @@ personas:
         release: vi.fn(),
       };
 
-      const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => mockClient) } as any);
+      const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => mockClient) } as any, undefined, { lifecycleEvents: 'disabled' });
 
       const admissionResult = await repository.admit({
         deliveryId: 'new-delivery-999',
