@@ -64,6 +64,7 @@ their transitive closure; provenance is generated from the exact clean release c
    - [Native `.ct-review.yaml` (V3)](#native-ct-reviewyaml-v3)
    - [CodeRabbit-Compatible `.coderabbit.yaml`](#coderabbit-compatible-coderabbityaml)
 9. [Historical OpenRouter infrastructure record](#historical-openrouter-infrastructure-record)
+10. [Hierarchical Configuration Passthrough & Extensibility](#hierarchical-configuration-passthrough--extensibility)
 
 ---
 
@@ -636,4 +637,63 @@ path_filters:
 auto_review:
   enabled: true
   ignore_drafts: true
+```
+
+---
+
+<a id="hierarchical-configuration-passthrough--extensibility"></a>
+
+## 10. Hierarchical Configuration Passthrough & Extensibility
+
+Review Yeti supports transparent passthrough of extended enterprise configuration elements. All nested configuration sections (`personaSchema`, `reviewsSchema`, `chatSchema`, `knowledgeBaseSchema`, `autoReviewSchema`, `enforcementPolicySchema`, and `dialsSchema`) use Zod `.passthrough()`, ensuring that specialized fields, tool definitions, and custom dials pass through schema normalization without truncation.
+
+### Extended Configuration Keys
+
+The following top-level configuration keys can be declared in `.ct-review.yaml`, injected via central organization policies (such as `policy/review-yeti.json` in `calltelemetry/ct-review-actions`), or passed as Action inputs:
+
+| Key | Action Input Equivalent | Type | Description |
+|---|---|---|---|
+| `skills` | `skills` | `array` \| `string` \| `object` | Passthrough skill configurations, tools, and capability definitions available to persona agents. |
+| `knowledge` | `knowledge` | `array` \| `string` \| `object` | Knowledge base paths, documents, and reference mappings for domain-specific review context. |
+| `metrics` / `telemetry` | `metrics` | `object` \| `string` | Observability configurations, metric prefixes, and exporter settings. |
+| `retry_analysis` / `retro_analysis` | `retry-analysis` | `object` \| `string` | Error categorization rules, transient vs deterministic failure classification, and retro feedback hooks. |
+| *(N/A)* | `policy-json` | `string` (JSON) | Raw policy overrides passed directly to the DOKS admission dispatcher. |
+
+### Resolution Hierarchy
+
+Configuration values are resolved hierarchically from most-specific to broadest default:
+
+1. **GitHub Action Inputs / Workflow Dispatch**: Explicit inputs provided in caller workflow files (`with: skills: ...`, `with: metrics: ...`).
+2. **Repository-Level Config**: `.ct-review.yaml` (or `.coderabbit.yaml`) at the immutable PR base SHA.
+3. **Organization Default Repository**: `.github/.ct-review.yaml` in the organization's `.github` repository.
+4. **Central Organization Policy**: Central policy definitions (`policy/review-yeti.json` hosted in `calltelemetry/ct-review-actions`).
+5. **System Defaults**: Built-in V4 defaults (`createDefaultV4Config()`).
+
+### Example: Passthrough Configuration
+
+```yaml
+# .ct-review.yaml with passthrough extensions
+version: 3
+profile: "assertive"
+
+skills:
+  - name: "telemetry-auditor"
+    path: "plugins/ct-workflow/skills/telemetry"
+  - name: "elixir-best-practices"
+    path: "plugins/ct-elixir/skills/elixir-quality"
+
+knowledge:
+  sources:
+    - "knowledge/review-learnings/*.md"
+    - "docs/architecture/*.md"
+
+metrics:
+  exporter: "opentelemetry"
+  endpoint: "http://otel-collector.observability:4318/v1/metrics"
+  service_name: "review-yeti-ci"
+
+retry_analysis:
+  transient_error_codes: [429, 502, 503, 504]
+  max_transient_retries: 3
+  fail_closed_on_schema_error: true
 ```

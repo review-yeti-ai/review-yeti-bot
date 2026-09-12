@@ -136,9 +136,28 @@ When integrated with GitHub Branch Protection, a `BLOCK` conclusion marks the re
 
 ---
 
+## 📈 Telemetry & Observability Plane
+
+Review Yeti implements a unified telemetry plane across ephemeral runner and Kubernetes deployments:
+
+1. **Prometheus Endpoint (`:3000/metrics`)**: Exposes fine-grained token counts (`ct_review_tokens_total`), model inference costs in USD (`ct_review_model_cost_usd_total`), and review durations. Protected by rate limiting and optional bearer auth.
+2. **OpenTelemetry Collector Pipeline**: Accepts OTLP traces (`:4317`/`:4318`) and metrics, routing traces to Grafana Tempo and converting metrics to Prometheus format on port `:8889`.
+3. **VictoriaMetrics Time Series Database**: Scrapes all cluster targets (19/19 active targets healthy) for persistent storage and high-cardinality PromQL analytics.
+
+---
+
+## 🔌 Extensibility & Configuration Passthrough
+
+Review Yeti's configuration parser is designed for hierarchical extensibility:
+- **Schema Passthrough**: Sub-schemas (`personaSchema`, `reviewsSchema`, `chatSchema`, `knowledgeBaseSchema`, etc.) support Zod `.passthrough()`, allowing organization policies (`policy/review-yeti.json` in `ct-review-actions`) and repository `.ct-review.yaml` files to pass custom keys.
+- **Enterprise Controls**: First-class support for passing `skills`, `knowledge`, `metrics`, `telemetry`, `retry_analysis`, and raw `policy-json` overrides end-to-end from Action inputs to execution engines.
+
+---
+
 ## 📚 Further Reading
 
 - [GitHub App Setup Guide](GITHUB_APP_SETUP.md)
 - [Kubernetes & DOKS Execution Mode](KUBERNETES_MODE.md)
+- [DigitalOcean Kubernetes (DOKS) Operations](DOKS_REVIEW_OPERATIONS.md)
 - [Friendly Onboarding Guide](ONBOARDING_GUIDE.md)
 - [Configuration Reference](CONFIGURATION_REFERENCE.md)

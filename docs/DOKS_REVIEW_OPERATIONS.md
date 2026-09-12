@@ -318,3 +318,96 @@ Roll out the exact-generation contract without an availability gap:
 Compatibility mode never ignores a supplied value: invalid values receive the
 safe HTTP 400 diagnostic and a valid but stale or future generation is rejected
 transactionally with HTTP 409.
+
+---
+
+## 📊 Observability, OpenTelemetry & VictoriaMetrics
+
+Review Yeti incorporates end-to-end metrics collection and distributed tracing across the DOKS cluster:
+
+```
+ Workloads & Worker Pods
+       │
+       ├── OTLP Traces & Metrics (HTTP :4318 / gRPC :4317)
+       │         │
+       │         ▼
+       │   ┌───────────────────────────┐
+       │   │  OpenTelemetry Collector  │
+       │   │  (otel-collector:4317/18) │
+       │   └─────┬───────────────┬─────┘
+       │         │ (traces)      │ (metrics)
+       │         ▼               ▼
+       │   ┌───────────┐   ┌──────────────────────────┐
+       │   │   Tempo   │   │ Prometheus Exporter:8889 │
+       │   │  (Traces) │   └─────────────┬────────────┘
+       │   └───────────┘                 │
+       │                                 │
+       └── Prometheus Scrapes            │
+                 │                       │
+                 ▼                       │
+         ┌───────────────────────────────┴────────┐
+         │          VictoriaMetrics               │
+         │   (victoria-metrics-server:8428)       │
+         └────────────────────────────────────────┘
+```
+
+### 1. Action Dispatch Metrics (`:3000/metrics`)
+The `ct-review-action-dispatch` service exposes real-time OpenTelemetry metrics on port `:3000`:
+- **Path**: `/metrics`
+- **Security**: Token-bucket rate limiting and optional bearer authentication via `ACTION_DISPATCH_METRICS_TOKEN`.
+- **Key Metrics**:
+  - `ct_review_tokens_total`: Total tokens consumed across all reviews.
+  - `ct_review_model_cost_usd_total`: Cumulative inference cost in USD.
+  - `ct_review_duration_seconds`: Histogram of review duration.
+  - `ct_persona_execution_duration_seconds`: Histogram of individual persona latencies.
+
+### 2. OpenTelemetry Collector Pipeline
+Deployed in the `observability` namespace:
+- **Receivers**: OTLP gRPC (`:4317`) and OTLP HTTP (`:4318`).
+- **Trace Exporter**: Forwards OTLP spans directly to Tempo (`tempo.observability.svc.cluster.local:4317`).
+- **Prometheus Exporter**: Exposes converted OTLP metrics on port `:8889` under the `otel_*` namespace.
+- **Scrape Job**: VictoriaMetrics scrapes `otel-collector.observability.svc.cluster.local:8889` every 15s.
+
+### 3. VictoriaMetrics Scrape Topology (19 Active Targets)
+VictoriaMetrics (`vmsingle`) monitors all cluster platform components, applications, and collectors with 100% health (`UP`):
+- `ct-review-action-dispatch` (`:3000`)
+- `otel-collector` (`:8889`)
+- `review-yeti-operator` (`:8080`)
+- `bifrost-gateway` (Bifrost `:8080`)
+- Cluster infrastructure (`kubelet-cadvisor`, `node-exporter`, `kube-state-metrics`, `alertmanager`, `coredns`, etc.)
+
+### 4. Essential PromQL Operational Queries
+
+```promql
+# Active & queued Review Yeti operator jobs
+sum(ct_operator_active_jobs{job="review-yeti-operator"})
+sum(ct_operator_queued_jobs{job="review-yeti-operator"})
+
+# p95 Review execution duration
+histogram_quantile(0.95, sum(rate(ct_review_duration_seconds_bucket{job="ct-review-action-dispatch"}[5m])) by (le))
+
+# Cumulative model inference cost in USD (last 24 hours)
+sum(increase(ct_review_model_cost_usd_total{job="ct-review-action-dispatch"}[24h]))
+
+# Provider rate limits and error rate
+sum by (error) (rate(review_yeti_provider_errors_total[5m]))
+```
+
+---
+
+## 🔁 Retry & Retro Analysis Operational Governance
+
+To ensure cluster resources are conserved and review integrity is preserved:
+
+1. **Strict Replay Criteria**:
+   Automated or operator retry replays are strictly permitted **only** when the GitHub Check Run reports:
+   - `conclusion: failure` with output title `Review Yeti: review did not complete`, OR
+   - `conclusion: failure` with output title `Review Yeti: NO VERDICT (no panel result for this head)`
+   - AND exactly one completed worker `a1` exists in the check ledger.
+
+2. **Transient vs Fatal Failure Classification**:
+   - **Transient (Retryable)**: Upstream LLM HTTP 429 (rate limit), 502/503/504 gateway errors, or temporary network drops. These trigger exponential backoff and lane-level retries within worker pods.
+   - **Deterministic (Fatal / Fail Closed)**: Schema validation errors, nonce mismatches, or malformed JSON. These fail closed immediately and are never retried blindly.
+
+3. **Retro Feedback Loop**:
+   Review failures and turn-budget exhaustions feed into retrospective analysis tools to fine-tune `max_investigation_turns`, recalibrate persona token budgets, and improve static path instructions.
