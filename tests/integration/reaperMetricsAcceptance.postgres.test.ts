@@ -25,6 +25,15 @@ describeAcceptance('REL-817 deterministic reaper metric acceptance', () => {
     expect(receipt.githubWriteCount).toBe(0);
     expect(receipt.branches).toHaveLength(4);
 
+    const { leasePreconditions } = receipt;
+    expect(leasePreconditions).toHaveLength(4);
+    for (const precondition of leasePreconditions) {
+      expect(precondition.outboxStatus).toBe('projected');
+      expect(precondition.outboxLeaseOwner).toMatch(/^rel817-orphan-(mismatch|superseded)-[12]$/u);
+      expect(precondition.outboxLeaseExpiresAt).not.toBeNull();
+      expect(Date.parse(precondition.outboxLeaseExpiresAt!)).toBeLessThan(precondition.sweepAt);
+    }
+
     const mismatches = receipt.branches.filter(({ branch }) => branch === 'delivery_identity_mismatch');
     const superseded = receipt.branches.filter(({ branch }) => branch === 'superseded_attempt');
     expect(mismatches).toHaveLength(2);
