@@ -10,6 +10,12 @@ import {
   formatSpan,
 } from '../../src/telemetry';
 
+function metricValue(text: string, sample: string): number {
+  const line = text.split('\n').find((entry) => entry.startsWith(`${sample} `));
+  if (!line) throw new Error(`missing metric sample ${sample}`);
+  return Number(line.slice(sample.length + 1));
+}
+
 describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
   beforeEach(() => {
     initTelemetry('test-service');
@@ -42,6 +48,67 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(prometheusText).toContain('# HELP ct_review_reaper_superseded_attempt_total Abandoned review attempts retired because a completed newer same-head App check already exists.');
     expect(prometheusText).toContain('# TYPE ct_review_reaper_superseded_attempt_total counter');
     expect(prometheusText).toContain('ct_review_reaper_superseded_attempt_total 0');
+  });
+
+  it('keeps every counter total cumulative across repeated Prometheus collections', async () => {
+    const metrics = getMetrics();
+    const counters = [
+      { instrument: metrics.tokensPrompt, name: 'ct_review_tokens_prompt_total', increment: 11 },
+      { instrument: metrics.tokensCompletion, name: 'ct_review_tokens_completion_total', increment: 12 },
+      { instrument: metrics.tokensTotal, name: 'ct_review_tokens_total', increment: 13 },
+      { instrument: metrics.modelCostUsd, name: 'ct_review_model_cost_usd_total', increment: 1.5 },
+      { instrument: metrics.indexerFilesIndexed, name: 'ct_indexer_files_indexed_total', increment: 14 },
+      { instrument: metrics.indexerSymbolsExtracted, name: 'ct_indexer_symbols_extracted_total', increment: 15 },
+      { instrument: metrics.arbiterVerdicts, name: 'ct_arbiter_verdicts_total', increment: 16 },
+      { instrument: metrics.jobsQueued, name: 'ct_queue_jobs_queued_total', increment: 17 },
+      { instrument: metrics.jobsDispatched, name: 'ct_queue_jobs_dispatched_total', increment: 18 },
+      {
+        instrument: metrics.reviewReaperDeliveryIdentityMismatches,
+        name: 'ct_review_reaper_delivery_identity_mismatch_total',
+        increment: 19,
+      },
+      {
+        instrument: metrics.reviewReaperSupersededAttempts,
+        name: 'ct_review_reaper_superseded_attempt_total',
+        increment: 20,
+      },
+    ];
+
+    counters.forEach(({ instrument, increment }, index) => {
+      instrument.add(increment, { regression: 'cumulative-counters', instrument: String(index) });
+    });
+
+    const firstCollection = await getPrometheusMetrics();
+    const secondCollection = await getPrometheusMetrics();
+
+    counters.forEach(({ name, increment }, index) => {
+      const sample = `${name}{regression="cumulative-counters",instrument="${index}"}`;
+      expect(metricValue(firstCollection, sample)).toBe(increment);
+      expect(metricValue(secondCollection, sample)).toBe(increment);
+    });
+  });
+
+  it('keeps histogram totals cumulative and exposes an up-down counter as the current gauge value', async () => {
+    const metrics = getMetrics();
+    const attributes = { regression: 'cumulative-non-counter-semantics' };
+    metrics.reviewDuration.record(2.5, attributes);
+    metrics.activeJobs.add(3, attributes);
+
+    const firstCollection = await getPrometheusMetrics();
+    const secondCollection = await getPrometheusMetrics();
+    const histogramCount = 'ct_review_duration_seconds_count{regression="cumulative-non-counter-semantics"}';
+    const histogramSum = 'ct_review_duration_seconds_sum{regression="cumulative-non-counter-semantics"}';
+    const gauge = 'ct_queue_active_jobs{regression="cumulative-non-counter-semantics"}';
+
+    expect(metricValue(firstCollection, histogramCount)).toBe(1);
+    expect(metricValue(secondCollection, histogramCount)).toBe(1);
+    expect(metricValue(secondCollection, histogramSum)).toBe(2.5);
+    expect(metricValue(firstCollection, gauge)).toBe(3);
+    expect(metricValue(secondCollection, gauge)).toBe(3);
+
+    metrics.activeJobs.add(-1, attributes);
+    const thirdCollection = await getPrometheusMetrics();
+    expect(metricValue(thirdCollection, gauge)).toBe(2);
   });
 
   it('records metrics and serializes to Prometheus format via getPrometheusMetrics()', async () => {
