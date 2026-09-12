@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer, type Socket } from 'node:net';
 import { postgresStore, PostgresStore, ADVISORY_LOCK_ID } from '../../src/persistence/postgresStore';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
+import { logger } from '../../src/utils/logger';
 import path from 'path';
 import fs from 'fs';
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 
 describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
   const tmpDashboardPath = path.join('/tmp', `test_pg_dashboard_${Date.now()}.json`);
@@ -39,6 +47,103 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
   it('uses advisory lock ID 1029384 during schema initialization', () => {
     expect(ADVISORY_LOCK_ID).toBe(1029384);
   });
+
+  it('logs a bounded static code while rolling back and rethrowing initialization failures', async () => {
+    process.env.DATABASE_URL = 'postgresql://fixture:synthetic-password@127.0.0.1:5432/fixture';
+    const store = new PostgresStore();
+    const failure = new Error('synthetic-postgres-error-response raw provider detail');
+    const query = vi.fn(async (statement: string) => {
+      if (statement.startsWith('SELECT pg_advisory_xact_lock')) throw failure;
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const pool = store.getPool();
+    vi.spyOn(pool, 'connect').mockResolvedValue({ query, release } as never);
+    const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+
+    try {
+      await expect(store.initialize()).rejects.toBe(failure);
+
+      expect(query).toHaveBeenCalledWith('BEGIN');
+      expect(query).toHaveBeenCalledWith('ROLLBACK');
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(errorLog).toHaveBeenCalledWith(
+        '[PostgresStore] PostgreSQL database schema initialization failed',
+        { code: 'postgres_initialization_failed' },
+      );
+      const logged = JSON.stringify(errorLog.mock.calls);
+      expect(logged).not.toContain('synthetic-postgres-error-response');
+      expect(logged).not.toContain('raw provider detail');
+      expect(logged).not.toContain('synthetic-password');
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('keeps a real PostgreSQL ErrorResponse out of isolated startup output', async () => {
+    const rawSecret = 'synthetic-postgres-error-response-must-not-print';
+    const sockets = new Set<Socket>();
+    let responseSent = false;
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.once('data', () => {
+        responseSent = true;
+        const fields = Buffer.from(`SFATAL\0C28P01\0M${rawSecret} raw-provider-detail\0\0`, 'utf8');
+        const length = Buffer.alloc(4);
+        length.writeUInt32BE(fields.length + 4);
+        socket.end(Buffer.concat([Buffer.from('E'), length, fields]));
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('missing PostgreSQL fixture address');
+    const script = `
+      const { PostgresStore } = require('./src/persistence/postgresStore.ts');
+      const store = new PostgresStore();
+      process.stdout.write('APPLICATION_LOG_VISIBLE\\n');
+      void store.initialize()
+        .then(() => { process.stdout.write('UNEXPECTED_INITIALIZE_SUCCESS\\n'); process.exitCode = 2; })
+        .catch(() => { process.stdout.write('INITIALIZE_REJECTED\\n'); process.exitCode = 1; })
+        .finally(() => store.close().catch(() => undefined));
+    `;
+    const childEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      NODE_ENV: 'test',
+      LOG_LEVEL: 'error',
+      DATABASE_URL: `postgresql://fixture:synthetic-db-password@127.0.0.1:${address.port}/fixture`,
+    };
+    delete childEnvironment.POSTGRES_URL;
+    const child = spawn(process.execPath, ['-r', 'ts-node/register/transpile-only', '-e', script], {
+      cwd: process.cwd(),
+      env: childEnvironment,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout?.on('data', (chunk) => { output += chunk.toString('utf8'); });
+    child.stderr?.on('data', (chunk) => { output += chunk.toString('utf8'); });
+
+    try {
+      const exit = await Promise.race([
+        once(child, 'exit'),
+        delay(4_000).then(() => { throw new Error(`PostgreSQL startup probe exceeded deadline: ${output}`); }),
+      ]);
+
+      expect(exit).toEqual([1, null]);
+      expect(responseSent).toBe(true);
+      expect(output).toContain('APPLICATION_LOG_VISIBLE');
+      expect(output).toContain('INITIALIZE_REJECTED');
+      expect(output).toContain('postgres_initialization_failed');
+      expect(output).not.toContain(rawSecret);
+      expect(output).not.toContain('raw-provider-detail');
+      expect(output).not.toContain('synthetic-db-password');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      for (const socket of sockets) socket.destroy();
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 10_000);
 
   it('falls back seamlessly to PVC file storage when DATABASE_URL is unconfigured', () => {
     delete process.env.DATABASE_URL;
