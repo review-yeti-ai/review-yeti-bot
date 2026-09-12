@@ -90,6 +90,9 @@ jobs:
       - name: Run Full Test Suite
         run: npm test
 
+      - name: Run REL-817 reaper acceptance harness
+        run: npm run test:acceptance:reaper
+
       - name: Verify TypeScript Build
         run: npm run build
 
