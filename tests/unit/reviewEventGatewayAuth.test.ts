@@ -68,6 +68,15 @@ describe('review event gateway auth contract', () => {
     ]))).toThrow(/repository/i);
   });
 
+  it.each([undefined, '', ' \t\n '])('keeps absent or blank service configuration fail-closed (%j)', raw => {
+    const credentials = parseReviewEventServiceCredentials(raw);
+    expect(credentials).toEqual([]);
+    const config = createReviewEventAuthConfig({ serviceCredentials: credentials });
+    expect(authenticateReviewEventRequest({ authorization: `Bearer ${SERVICE_TOKEN}` }, config))
+      .toMatchObject({ kind: 'unauthenticated', reason: 'invalid' });
+    expect(() => parseReviewEventServiceCredentials('{malformed')).toThrow(/valid JSON/);
+  });
+
   it('returns unauthenticated for missing, malformed, unknown, and legacy demo credentials', () => {
     const config = authConfig();
 
@@ -175,6 +184,32 @@ describe('review event gateway auth contract', () => {
       .toThrow(/repository scope/i);
     expect(() => createReviewEventGrant({ ...principal, runIds: ['other-run'] }, identity, GRANT_SECRET))
       .toThrow(/run scope/i);
+  });
+
+  it('authenticates a grant bearer through the gateway entry point, with no service credential match', () => {
+    const grant = createReviewEventGrant({ subject: 'session-reader', repositoryIds: [identity.repositoryId] },
+      identity, GRANT_SECRET, { now: 1_700_000_000_000 });
+    const config = authConfig({ serviceCredentials: [] });
+    expect(authenticateReviewEventRequest({ authorization: `Bearer ${grant.token}` }, config))
+      .toMatchObject({ kind: 'authenticated', principal: { kind: 'grant', subject: 'session-reader',
+        identity, repositoryIds: [identity.repositoryId], runIds: [identity.runId] } });
+    expect(authenticateReviewEventRequest({ authorization: `Bearer ${grant.token}` },
+      authConfig({ serviceCredentials: [], now: () => 1_700_000_060_000 })))
+      .toMatchObject({ kind: 'unauthenticated', reason: 'invalid' });
+    expect(authenticateReviewEventRequest({ authorization: `Bearer ${grant.token}` },
+      authConfig({ serviceCredentials: [], grantSecret: 'different-secret-with-at-least-32-bytes' })))
+      .toMatchObject({ kind: 'unauthenticated', reason: 'invalid' });
+  });
+
+  it('does not let an authenticated grant principal issue a new grant', () => {
+    const grant = createReviewEventGrant({ subject: 'session-reader', repositoryIds: [identity.repositoryId] },
+      identity, GRANT_SECRET, { now: 1_700_000_000_000 });
+    const authenticated = authenticateReviewEventRequest({ authorization: `Bearer ${grant.token}` },
+      authConfig({ serviceCredentials: [] }));
+    expect(authenticated.kind).toBe('authenticated');
+    if (authenticated.kind !== 'authenticated') throw new Error('Grant fixture failed');
+    expect(() => createReviewEventGrant(authenticated.principal, identity, GRANT_SECRET,
+      { now: 1_700_000_030_000 })).toThrow('a grant cannot issue another grant');
   });
 
   it('rejects grants with a missing, invalid, expired, or overlong lifetime', () => {
