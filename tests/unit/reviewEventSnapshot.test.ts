@@ -57,6 +57,24 @@ describe('authoritative review event snapshots', () => {
     expect(JSON.stringify(snapshot)).not.toContain('unrecognized-private-error');
   });
 
+  it.each([
+    [{ failure_class: 'provider_error' }, 'provider_failure'],
+    [{ failure_class: 'transport' }, 'transport_failure'],
+    [{ failure_class: 'timeout' }, 'transport_failure'],
+    [{ failure_class: 'internal_error' }, 'internal_failure'],
+    [{ failure_class: 'contract' }, 'internal_failure'],
+    [{ failure_class: 'internal_error', failure_reason: 'superseded_publisher_owned_check' }, 'superseded'],
+    [{ failure_class: 'internal_error', failure_reason: 'dispatch_delivery_identity_mismatch' }, 'internal_failure'],
+    [{ stage: 'publish' }, 'publication_failure'],
+    [{ failure_class: null }, 'unknown'],
+  ])('projects actual dispatcher terminal rows without inferring success: %j', async (overrides, expected) => {
+    const snapshot = await fixture(record({ status: 'terminal', stage: 'terminal', ...overrides }))
+      .store.getSnapshot(runId, scope);
+    expect(snapshot).toMatchObject({ status: 'terminal', terminalClass: expected });
+    expect(snapshot?.terminalClass).not.toBe('review_verdict');
+    expect(JSON.stringify(snapshot)).not.toMatch(/failure_reason|dispatch_delivery_identity_mismatch/);
+  });
+
   it('preserves unknown delivery and distinguishes a verdict from delivery success', async () => {
     const snapshot = await fixture(record({ status: 'succeeded', result_digest: 'd'.repeat(64),
       gate_attempt_id: `${runId}-g0-e1`, gate_check_id: '456', gate_app_id: '4385771',
