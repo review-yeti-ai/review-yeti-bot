@@ -232,6 +232,100 @@ interface ReviewRunDatabase {
   connect?: () => Promise<ReviewEventTransactionClient>;
 }
 
+// Keep lease predicates and their parameter positions identical in both lifecycle modes.
+// Transaction ownership, PR locks, and event appends remain in the adapter methods.
+type ReviewRunMutation = [text: string, values: unknown[]];
+
+function claimMutation(runId: string, workerId: string, now: number, leaseMs: number, maxAttempts: number): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET status=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN status ELSE 'running' END, error_text=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN error_text ELSE NULL END, attempt=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN attempt ELSE attempt+1 END, lease_owner=$2, lease_expires_at=to_timestamp($3 / 1000.0), updated_at=to_timestamp($4 / 1000.0)
+     WHERE run_id=$1 AND status IN ('queued','running','failed') AND (status <> 'failed' OR stage <> 'publish') AND (attempt < $5 OR (lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0))) AND (lease_owner IS NULL OR lease_owner=$2 OR lease_expires_at <= to_timestamp($4 / 1000.0)) RETURNING *`,
+    [runId, workerId, now + leaseMs, now, maxAttempts],
+  ];
+}
+
+function claimPublicationMutation(runId: string, workerId: string, now: number): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET status='publishing', publication_fence=COALESCE(publication_fence,$4), updated_at=to_timestamp($3 / 1000.0)
+     WHERE run_id=$1 AND lease_owner=$2 AND stage='publish' AND status IN ('running','publishing')
+     AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
+    [runId, workerId, now, publicationFenceFor(runId, workerId)],
+  ];
+}
+
+function heartbeatMutation(runId: string, workerId: string, now: number, leaseMs: number): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET lease_expires_at=to_timestamp($3 / 1000.0), updated_at=to_timestamp($4 / 1000.0)
+     WHERE run_id=$1 AND lease_owner=$2 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($4 / 1000.0)
+     RETURNING run_id`,
+    [runId, workerId, now + leaseMs, now],
+  ];
+}
+
+function recordArtifactMutation(runId: string, stage: PiStage, digest: string, workerId: string, now: number): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET artifacts=jsonb_set(artifacts, ARRAY[$2], to_jsonb($3::text), true), updated_at=to_timestamp($4 / 1000.0)
+     WHERE run_id=$1 AND stage=$2 AND lease_owner=$5 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($4 / 1000.0)
+     AND (artifacts ->> $2 IS NULL OR artifacts ->> $2 = $3) RETURNING *`,
+    [runId, stage, digest, now, workerId],
+  ];
+}
+
+function transitionMutation(runId: string, nextStage: PiStage, workerId: string, now: number, currentStage: PiStage, resultDigest?: string): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET stage=$2, result_digest=COALESCE($3,result_digest), updated_at=to_timestamp($4 / 1000.0)
+     WHERE run_id=$1 AND lease_owner=$5 AND status='running' AND stage=$6 AND artifacts ? $6::text
+     AND lease_expires_at > to_timestamp($4 / 1000.0) RETURNING *`,
+    [runId, nextStage, resultDigest || null, now, workerId, currentStage],
+  ];
+}
+
+function succeedMutation(runId: string, workerId: string, now: number, resultDigest: string): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET status='succeeded', stage='complete', result_digest=$2, error_text=NULL, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
+     WHERE run_id=$1 AND lease_owner=$4 AND stage='publish' AND status='publishing' AND publication_fence IS NOT NULL AND artifacts ->> 'publish' = $2
+     AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
+    [runId, resultDigest, now, workerId],
+  ];
+}
+
+function failMutation(runId: string, workerId: string, now: number, error: string): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET status='failed', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
+     WHERE run_id=$1 AND lease_owner=$4 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
+    [runId, error, now, workerId],
+  ];
+}
+
+function requeueMutation(runId: string, workerId: string, now: number, error: string): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET status='queued', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
+     WHERE run_id=$1 AND lease_owner=$4 AND status='running' AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
+    [runId, error, now, workerId],
+  ];
+}
+
+function cancelMutation(runId: string, now: number, error: string): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET status='cancelled', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
+     WHERE run_id=$1 AND status IN ('queued','running') RETURNING *`,
+    [runId, error, now],
+  ];
+}
+
+function reapMutation(now: number, binding?: { runId: string; repositoryId: number; prNumber: number }): ReviewRunMutation {
+  return [
+    `UPDATE review_runs SET status=CASE WHEN status='publishing' THEN 'failed' ELSE 'queued' END,
+     error_text=CASE WHEN status='publishing' THEN 'publication lease expired after publication claim; outcome is unknown' ELSE error_text END,
+     lease_owner=NULL, lease_expires_at=NULL,
+     updated_at=to_timestamp($1 / 1000.0)
+     WHERE status IN ('running','publishing') AND (lease_expires_at IS NULL OR lease_expires_at <= to_timestamp($1 / 1000.0))
+       ${binding ? 'AND run_id=$2 AND repository_id=$3 AND pr_number=$4' : ''}
+     RETURNING run_id`,
+    binding ? [now, binding.runId, binding.repositoryId, binding.prNumber] : [now],
+  ];
+}
+
 const REAPER_BATCH_SIZE = 100;
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -357,11 +451,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
       const reentrant = current.lease_owner === workerId
         && current.lease_expires_at
         && new Date(current.lease_expires_at).getTime() > now;
-      const result = await client.query(
-        `UPDATE review_runs SET status=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN status ELSE 'running' END, error_text=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN error_text ELSE NULL END, attempt=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN attempt ELSE attempt+1 END, lease_owner=$2, lease_expires_at=to_timestamp($3 / 1000.0), updated_at=to_timestamp($4 / 1000.0)
-         WHERE run_id=$1 AND status IN ('queued','running','failed') AND (status <> 'failed' OR stage <> 'publish') AND (attempt < $5 OR (lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0))) AND (lease_owner IS NULL OR lease_owner=$2 OR lease_expires_at <= to_timestamp($4 / 1000.0)) RETURNING *`,
-        [runId, workerId, now + leaseMs, now, maxAttempts],
-      );
+      const result = await client.query(...claimMutation(runId, workerId, now, leaseMs, maxAttempts));
       if (!result.rows[0]) return null;
       if (!reentrant) await this.append(client, runId, 'review.lifecycle.started', now, { stage: 'started' });
       return this.fromRow(result.rows[0]);
@@ -374,13 +464,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
       const current = await this.lockRun(client, runId);
       if (!current) return null;
       const wasPublishing = current.status === 'publishing';
-      const publicationFence = publicationFenceFor(runId, workerId);
-      const result = await client.query(
-        `UPDATE review_runs SET status='publishing', publication_fence=COALESCE(publication_fence,$4), updated_at=to_timestamp($3 / 1000.0)
-         WHERE run_id=$1 AND lease_owner=$2 AND stage='publish' AND status IN ('running','publishing')
-         AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
-        [runId, workerId, now, publicationFence],
-      );
+      const result = await client.query(...claimPublicationMutation(runId, workerId, now));
       if (!result.rows[0]) return null;
       if (!wasPublishing) {
         await this.append(client, runId, 'review.lifecycle.gate_publication', now, {
@@ -396,12 +480,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     if (!this.lifecycleEventsEnabled) return this.heartbeatDisabled(runId, workerId, now, leaseMs);
     return this.withTransaction(async (client) => {
       if (!await this.lockRun(client, runId)) return false;
-      const result = await client.query(
-        `UPDATE review_runs SET lease_expires_at=to_timestamp($3 / 1000.0), updated_at=to_timestamp($4 / 1000.0)
-         WHERE run_id=$1 AND lease_owner=$2 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($4 / 1000.0)
-         RETURNING run_id`,
-        [runId, workerId, now + leaseMs, now],
-      );
+      const result = await client.query(...heartbeatMutation(runId, workerId, now, leaseMs));
       return result.rows.length > 0;
     });
   }
@@ -410,12 +489,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     if (!this.lifecycleEventsEnabled) return this.recordArtifactDisabled(runId, stage, digest, workerId, now);
     return this.withTransaction(async (client) => {
       if (!await this.lockRun(client, runId)) throw new Error(`review run ${runId} not found`);
-      const result = await client.query(
-        `UPDATE review_runs SET artifacts=jsonb_set(artifacts, ARRAY[$2], to_jsonb($3::text), true), updated_at=to_timestamp($4 / 1000.0)
-         WHERE run_id=$1 AND stage=$2 AND lease_owner=$5 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($4 / 1000.0)
-         AND (artifacts ->> $2 IS NULL OR artifacts ->> $2 = $3) RETURNING *`,
-        [runId, stage, digest, now, workerId],
-      );
+      const result = await client.query(...recordArtifactMutation(runId, stage, digest, workerId, now));
       if (!result.rows[0]) throw new Error(`review run ${runId} cannot record ${stage} artifact`);
       return this.fromRow(result.rows[0]);
     });
@@ -427,12 +501,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
       const current = await this.lockRun(client, runId);
       if (!current) throw new Error(`review run ${runId} not found`);
       assertStageTransition(current.stage, nextStage);
-      const result = await client.query(
-        `UPDATE review_runs SET stage=$2, result_digest=COALESCE($3,result_digest), updated_at=to_timestamp($4 / 1000.0)
-         WHERE run_id=$1 AND lease_owner=$5 AND status='running' AND stage=$6 AND artifacts ? $6::text
-         AND lease_expires_at > to_timestamp($4 / 1000.0) RETURNING *`,
-        [runId, nextStage, resultDigest || null, now, workerId, current.stage],
-      );
+      const result = await client.query(...transitionMutation(runId, nextStage, workerId, now, current.stage, resultDigest));
       if (!result.rows[0]) throw new Error(`review run ${runId} lease is not active`);
       await this.append(client, runId, 'review.lifecycle.started', now, { stage: nextStage });
       return this.fromRow(result.rows[0]);
@@ -443,12 +512,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     if (!this.lifecycleEventsEnabled) return this.succeedDisabled(runId, workerId, now, resultDigest);
     return this.withTransaction(async (client) => {
       if (!await this.lockRun(client, runId)) throw new Error(`review run ${runId} not found`);
-      const result = await client.query(
-        `UPDATE review_runs SET status='succeeded', stage='complete', result_digest=$2, error_text=NULL, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
-         WHERE run_id=$1 AND lease_owner=$4 AND stage='publish' AND status='publishing' AND publication_fence IS NOT NULL AND artifacts ->> 'publish' = $2
-         AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
-        [runId, resultDigest, now, workerId],
-      );
+      const result = await client.query(...succeedMutation(runId, workerId, now, resultDigest));
       if (!result.rows[0]) throw new Error(`review run ${runId} cannot succeed`);
       await this.append(client, runId, 'review.lifecycle.terminal', now, {
         stage: 'complete', terminal_class: 'success', result_digest: resultDigest,
@@ -461,11 +525,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     if (!this.lifecycleEventsEnabled) return this.failDisabled(runId, workerId, now, error);
     return this.withTransaction(async (client) => {
       if (!await this.lockRun(client, runId)) throw new Error(`review run ${runId} not found`);
-      const result = await client.query(
-        `UPDATE review_runs SET status='failed', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
-         WHERE run_id=$1 AND lease_owner=$4 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
-        [runId, error, now, workerId],
-      );
+      const result = await client.query(...failMutation(runId, workerId, now, error));
       if (!result.rows[0]) throw new Error(`review run ${runId} cannot fail`);
       await this.append(client, runId, 'review.lifecycle.terminal', now, {
         stage: 'terminal', terminal_class: 'failure',
@@ -479,11 +539,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     return this.withTransaction(async (client) => {
       const current = await this.lockRun(client, runId);
       if (!current) throw new Error(`review run ${runId} not found`);
-      const result = await client.query(
-        `UPDATE review_runs SET status='queued', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
-         WHERE run_id=$1 AND lease_owner=$4 AND status='running' AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
-        [runId, error, now, workerId],
-      );
+      const result = await client.query(...requeueMutation(runId, workerId, now, error));
       if (!result.rows[0]) throw new Error(`review run ${runId} cannot be requeued`);
       await this.append(client, runId, 'review.lifecycle.retrying', now, {
         stage: current.stage, retry_class: 'requeue',
@@ -496,11 +552,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     if (!this.lifecycleEventsEnabled) return this.cancelDisabled(runId, now, error);
     return this.withTransaction(async (client) => {
       if (!await this.lockRun(client, runId)) return null;
-      const result = await client.query(
-        `UPDATE review_runs SET status='cancelled', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
-         WHERE run_id=$1 AND status IN ('queued','running') RETURNING *`,
-        [runId, error, now],
-      );
+      const result = await client.query(...cancelMutation(runId, now, error));
       if (!result.rows[0]) return null;
       await this.append(client, runId, 'review.lifecycle.terminal', now, {
         stage: 'terminal', terminal_class: 'cancelled',
@@ -511,14 +563,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
 
   async reapExpiredLeases(now: number): Promise<number> {
     if (!this.lifecycleEventsEnabled) {
-      const result = await this.query(
-        `UPDATE review_runs SET status=CASE WHEN status='publishing' THEN 'failed' ELSE 'queued' END,
-         error_text=CASE WHEN status='publishing' THEN 'publication lease expired after publication claim; outcome is unknown' ELSE error_text END,
-         lease_owner=NULL, lease_expires_at=NULL,
-         updated_at=to_timestamp($1 / 1000.0)
-         WHERE status IN ('running','publishing') AND (lease_expires_at IS NULL OR lease_expires_at <= to_timestamp($1 / 1000.0)) RETURNING run_id`,
-        [now],
-      );
+      const result = await this.query(...reapMutation(now));
       return result.rows.length;
     }
 
@@ -555,17 +600,9 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
         if (!current) continue;
         this.assertRepositoryBinding(current, repositoryId);
         const publishing = current.status === 'publishing';
-        const result = await client.query(
-          `UPDATE review_runs SET status=CASE WHEN status='publishing' THEN 'failed' ELSE 'queued' END,
-           error_text=CASE WHEN status='publishing' THEN 'publication lease expired after publication claim; outcome is unknown' ELSE error_text END,
-           lease_owner=NULL, lease_expires_at=NULL,
-           updated_at=to_timestamp($4 / 1000.0)
-           WHERE run_id=$1 AND repository_id=$2 AND pr_number=$3
-             AND status IN ('running','publishing')
-             AND (lease_expires_at IS NULL OR lease_expires_at <= to_timestamp($4 / 1000.0))
-           RETURNING *`,
-          [candidate.run_id, repositoryId, prNumber, now],
-        );
+        const result = await client.query(...reapMutation(now, {
+          runId: candidate.run_id, repositoryId, prNumber,
+        }));
         if (!result.rows[0]) continue;
         reaped += 1;
         if (publishing) {
@@ -601,42 +638,22 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
   }
 
   private async claimDisabled(runId: string, workerId: string, now: number, leaseMs: number, maxAttempts: number): Promise<ReviewRunRecord | null> {
-    const result = await this.query(
-      `UPDATE review_runs SET status=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN status ELSE 'running' END, error_text=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN error_text ELSE NULL END, attempt=CASE WHEN lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0) THEN attempt ELSE attempt+1 END, lease_owner=$2, lease_expires_at=to_timestamp($3 / 1000.0), updated_at=to_timestamp($4 / 1000.0)
-       WHERE run_id=$1 AND status IN ('queued','running','failed') AND (status <> 'failed' OR stage <> 'publish') AND (attempt < $5 OR (lease_owner=$2 AND lease_expires_at > to_timestamp($4 / 1000.0))) AND (lease_owner IS NULL OR lease_owner=$2 OR lease_expires_at <= to_timestamp($4 / 1000.0)) RETURNING *`,
-      [runId, workerId, now + leaseMs, now, maxAttempts],
-    );
+    const result = await this.query(...claimMutation(runId, workerId, now, leaseMs, maxAttempts));
     return result.rows[0] ? this.fromRow(result.rows[0]) : null;
   }
 
   private async claimPublicationDisabled(runId: string, workerId: string, now: number): Promise<ReviewRunRecord | null> {
-    const publicationFence = publicationFenceFor(runId, workerId);
-    const result = await this.query(
-      `UPDATE review_runs SET status='publishing', publication_fence=COALESCE(publication_fence,$4), updated_at=to_timestamp($3 / 1000.0)
-       WHERE run_id=$1 AND lease_owner=$2 AND stage='publish' AND status IN ('running','publishing')
-       AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
-      [runId, workerId, now, publicationFence],
-    );
+    const result = await this.query(...claimPublicationMutation(runId, workerId, now));
     return result.rows[0] ? this.fromRow(result.rows[0]) : null;
   }
 
   private async heartbeatDisabled(runId: string, workerId: string, now: number, leaseMs: number): Promise<boolean> {
-    const result = await this.query(
-      `UPDATE review_runs SET lease_expires_at=to_timestamp($3 / 1000.0), updated_at=to_timestamp($4 / 1000.0)
-       WHERE run_id=$1 AND lease_owner=$2 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($4 / 1000.0)
-       RETURNING run_id`,
-      [runId, workerId, now + leaseMs, now],
-    );
+    const result = await this.query(...heartbeatMutation(runId, workerId, now, leaseMs));
     return result.rows.length > 0;
   }
 
   private async recordArtifactDisabled(runId: string, stage: PiStage, digest: string, workerId: string, now: number): Promise<ReviewRunRecord> {
-    const result = await this.query(
-      `UPDATE review_runs SET artifacts=jsonb_set(artifacts, ARRAY[$2], to_jsonb($3::text), true), updated_at=to_timestamp($4 / 1000.0)
-       WHERE run_id=$1 AND stage=$2 AND lease_owner=$5 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($4 / 1000.0)
-       AND (artifacts ->> $2 IS NULL OR artifacts ->> $2 = $3) RETURNING *`,
-      [runId, stage, digest, now, workerId],
-    );
+    const result = await this.query(...recordArtifactMutation(runId, stage, digest, workerId, now));
     if (!result.rows[0]) throw new Error(`review run ${runId} cannot record ${stage} artifact`);
     return this.fromRow(result.rows[0]);
   }
@@ -645,53 +662,31 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     const current = await this.get(runId);
     if (!current) throw new Error(`review run ${runId} not found`);
     assertStageTransition(current.stage, nextStage);
-    const result = await this.query(
-      `UPDATE review_runs SET stage=$2, result_digest=COALESCE($3,result_digest), updated_at=to_timestamp($4 / 1000.0)
-       WHERE run_id=$1 AND lease_owner=$5 AND status='running' AND stage=$6 AND artifacts ? $6::text
-       AND lease_expires_at > to_timestamp($4 / 1000.0) RETURNING *`,
-      [runId, nextStage, resultDigest || null, now, workerId, current.stage],
-    );
+    const result = await this.query(...transitionMutation(runId, nextStage, workerId, now, current.stage, resultDigest));
     if (!result.rows[0]) throw new Error(`review run ${runId} lease is not active`);
     return this.fromRow(result.rows[0]);
   }
 
   private async succeedDisabled(runId: string, workerId: string, now: number, resultDigest: string): Promise<ReviewRunRecord> {
-    const result = await this.query(
-      `UPDATE review_runs SET status='succeeded', stage='complete', result_digest=$2, error_text=NULL, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
-       WHERE run_id=$1 AND lease_owner=$4 AND stage='publish' AND status='publishing' AND publication_fence IS NOT NULL AND artifacts ->> 'publish' = $2
-       AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
-      [runId, resultDigest, now, workerId],
-    );
+    const result = await this.query(...succeedMutation(runId, workerId, now, resultDigest));
     if (!result.rows[0]) throw new Error(`review run ${runId} cannot succeed`);
     return this.fromRow(result.rows[0]);
   }
 
   private async failDisabled(runId: string, workerId: string, now: number, error: string): Promise<ReviewRunRecord> {
-    const result = await this.query(
-      `UPDATE review_runs SET status='failed', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
-       WHERE run_id=$1 AND lease_owner=$4 AND status IN ('running','publishing') AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
-      [runId, error, now, workerId],
-    );
+    const result = await this.query(...failMutation(runId, workerId, now, error));
     if (!result.rows[0]) throw new Error(`review run ${runId} cannot fail`);
     return this.fromRow(result.rows[0]);
   }
 
   private async requeueDisabled(runId: string, workerId: string, now: number, error: string): Promise<ReviewRunRecord> {
-    const result = await this.query(
-      `UPDATE review_runs SET status='queued', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
-       WHERE run_id=$1 AND lease_owner=$4 AND status='running' AND lease_expires_at > to_timestamp($3 / 1000.0) RETURNING *`,
-      [runId, error, now, workerId],
-    );
+    const result = await this.query(...requeueMutation(runId, workerId, now, error));
     if (!result.rows[0]) throw new Error(`review run ${runId} cannot be requeued`);
     return this.fromRow(result.rows[0]);
   }
 
   private async cancelDisabled(runId: string, now: number, error: string): Promise<ReviewRunRecord | null> {
-    const result = await this.query(
-      `UPDATE review_runs SET status='cancelled', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
-       WHERE run_id=$1 AND status IN ('queued','running') RETURNING *`,
-      [runId, error, now],
-    );
+    const result = await this.query(...cancelMutation(runId, now, error));
     return result.rows[0] ? this.fromRow(result.rows[0]) : null;
   }
 
