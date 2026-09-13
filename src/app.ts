@@ -61,8 +61,9 @@ import {
 export { type RequestWithRawBody, providerPool };
 
 const store = new ReviewRunStore(process.env.CT_REVIEW_RUN_STORE || '/tmp/ct-review-bot/review-runs.json');
+// Task 3R-B must validate all-producer lock ordering and historical-ID migration/cutover before activation.
 const durableReviewRuns: ReviewRunRepository | null = postgresStore.isConfigured()
-  ? new PostgresReviewRunRepository(postgresStore.getPool())
+  ? new PostgresReviewRunRepository(postgresStore.getPool(), { lifecycleEvents: 'disabled' })
   : null;
 const durableReviewArtifacts: ReviewArtifactStore | null = postgresStore.isConfigured()
   ? new PostgresReviewArtifactStore(postgresStore.getPool())
@@ -232,7 +233,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
   const durableWorkerId = `app-${process.pid}-${randomUUID()}`;
   const durableIdentity = admissionIdentity(payload);
   const durableRun = durableReviewRuns
-    ? await durableReviewRuns.createOrGet({ identity: durableIdentity, now: startTime })
+    ? await durableReviewRuns.createOrGet({ identity: durableIdentity, repositoryId: payload.repositoryId, now: startTime })
     : null;
   if (durableRun && !(await durableReviewRuns!.claim(durableRun.runId, durableWorkerId, startTime, 15 * 60 * 1000))) {
     throw new Error(`review run ${durableRun.runId} is already leased by another worker`);
@@ -929,7 +930,7 @@ export function createApp(): Express {
       const payload = trigger.parsedPayload;
 
       if (durableReviewRuns && payload.triggerSource !== 'pr_close_event') {
-        await durableReviewRuns.createOrGet({ identity: admissionIdentity(payload), now: Date.now() });
+        await durableReviewRuns.createOrGet({ identity: admissionIdentity(payload), repositoryId: payload.repositoryId, now: Date.now() });
       }
 
       if (payload.triggerSource === 'pr_close_event') {
