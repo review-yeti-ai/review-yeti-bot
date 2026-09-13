@@ -10,7 +10,10 @@ const integer = z.preprocess(value => typeof value === 'string' && /^\d+$/u.test
 const positiveInteger = integer.refine(value => value > 0);
 const timestamp = z.preprocess(value => value instanceof Date ? value.toISOString() : value,
   z.string().datetime({ offset: true }));
-const statuses = ['queued', 'running', 'publishing', 'succeeded', 'failed', 'cancelled', 'superseded'] as const;
+// Dispatcher terminalization is distinct from the older Pi stage machine.
+// Keep both durable vocabularies without changing the executable Pi contract.
+const statuses = ['queued', 'running', 'publishing', 'succeeded', 'failed', 'cancelled', 'superseded', 'terminal'] as const;
+const snapshotStages = [...PI_STAGES, 'terminal'] as const;
 const gateStates = ['queued', 'in_progress', 'success', 'failure', 'cancelled', 'timed_out'] as const;
 const gateReasons = ['review-pending', 'review-deadline-exceeded', 'candidate-superseded', 'pull-request-closed',
   'invalid-evidence', 'infrastructure-failure', 'incomplete-review', 'blocking-findings', 'clean-review',
@@ -27,7 +30,7 @@ export interface ReviewSnapshotQueryable {
 }
 
 export type ReviewSnapshotTerminalClass = 'review_verdict' | 'provider_failure' | 'transport_failure'
-  | 'publication_failure' | 'pr_terminal' | 'superseded' | 'unknown';
+  | 'publication_failure' | 'internal_failure' | 'pr_terminal' | 'superseded' | 'unknown';
 
 export interface ReviewEventSnapshot {
   schema: 'review-yeti-snapshot.v1';
@@ -38,7 +41,7 @@ export interface ReviewEventSnapshot {
   baseSha: string;
   headSha: string;
   status: typeof statuses[number];
-  stage: typeof PI_STAGES[number];
+  stage: typeof snapshotStages[number];
   attempt: number;
   /** Compatibility high-water mark; never treat it as PR aggregate order. */
   lifecycleSequenceDomain: 'legacy_run_v1';
@@ -57,14 +60,14 @@ const scopeSchema = z.object({ repositoryIds: z.array(z.number().int().positive(
 const rowSchema = z.object({
   run_id: runIdSchema, repository_id: positiveInteger, owner: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/u),
   repo: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/u), pr_number: positiveInteger,
-  base_sha: sha, head_sha: sha, status: z.enum(statuses), stage: z.enum(PI_STAGES), attempt: integer,
+  base_sha: sha, head_sha: sha, status: z.enum(statuses), stage: z.enum(snapshotStages), attempt: integer,
   result_digest: digest.nullable(), lifecycle_sequence: integer,
   created_at: timestamp, updated_at: timestamp,
   gate_attempt_id: identifier.nullable(), gate_check_id: positiveInteger.nullable(),
   gate_app_id: positiveInteger.nullable(), gate_state: z.enum(gateStates).nullable(),
   gate_published: z.boolean().nullable(), gate_reason: z.unknown(),
   completion_status: z.enum(completionStates).nullable(), validation_request_id: identifier.nullable(),
-  failure_class: z.unknown(),
+  failure_class: z.unknown(), failure_reason: z.unknown(),
 });
 type SnapshotRow = z.infer<typeof rowSchema>;
 
@@ -74,6 +77,7 @@ type SnapshotRow = z.infer<typeof rowSchema>;
 const SNAPSHOT_SQL = `SELECT r.run_id, r.repository_id, r.owner, r.repo, r.pr_number,
     r.base_sha, r.head_sha, r.status, r.stage, r.attempt, r.result_digest,
     r.created_at, r.updated_at, r.failure_diagnostics->>'failureClass' AS failure_class,
+    r.failure_diagnostics->>'reason' AS failure_reason,
     COALESCE(s.next_sequence, 0) AS lifecycle_sequence,
     g.attempt_id AS gate_attempt_id, g.check_id AS gate_check_id, g.expected_app_id AS gate_app_id,
     g.desired_state AS gate_state, (g.published_version >= g.desired_version) AS gate_published,
@@ -98,17 +102,19 @@ const SNAPSHOT_SQL = `SELECT r.run_id, r.repository_id, r.owner, r.repo, r.pr_nu
 
 function terminalClass(row: SnapshotRow): ReviewSnapshotTerminalClass | null {
   if (row.status === 'superseded' || row.gate_reason === 'candidate-superseded') return 'superseded';
+  if (row.status === 'terminal' && row.failure_reason === 'superseded_publisher_owned_check') return 'superseded';
   if (row.gate_reason === 'pull-request-closed') return 'pr_terminal';
   if (['queued', 'running', 'publishing'].includes(row.status)) return null;
   // A review verdict is not necessarily a clean review, nor proof that delivery
   // succeeded. Gate state/reason and completion state remain separate fields.
   if (row.status === 'succeeded') return 'review_verdict';
-  if (row.status === 'failed' && row.stage === 'publish') return 'publication_failure';
-  if (row.status === 'failed') {
+  if (['failed', 'terminal'].includes(row.status) && row.stage === 'publish') return 'publication_failure';
+  if (['failed', 'terminal'].includes(row.status)) {
     if (['transport', 'timeout'].includes(String(row.failure_class))) return 'transport_failure';
     if (['provider_error', 'auth', 'rate_limit', 'malformed_output', 'budget_exhausted'].includes(String(row.failure_class))) {
       return 'provider_failure';
     }
+    if (['contract', 'internal_error'].includes(String(row.failure_class))) return 'internal_failure';
     if (row.gate_reason === 'blocking-findings') return 'review_verdict';
   }
   return 'unknown';

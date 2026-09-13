@@ -90,6 +90,15 @@ suite('snapshot through a real PostgreSQL SELECT-only role', () => {
     expect(await store.getSnapshot(foreignRun, { repositoryIds: [999] })).toMatchObject({ repositoryId: 999 });
   });
 
+  it('projects the production dispatcher terminal state and supersession diagnostic through the read role', async () => {
+    await admin.query(`UPDATE review_runs SET status='terminal', stage='terminal',
+      failure_diagnostics=$2::jsonb WHERE run_id=$1`, [foreignRun,
+      { failureClass: 'internal_error', reason: 'superseded_publisher_owned_check', logTail: 'private-diagnostic' }]);
+    const snapshot = await store.getSnapshot(foreignRun, { repositoryIds: [999] });
+    expect(snapshot).toMatchObject({ status: 'terminal', stage: 'terminal', terminalClass: 'superseded' });
+    expect(JSON.stringify(snapshot)).not.toMatch(/private|failure_diagnostics|logTail/);
+  });
+
   it('proves the actual reader role cannot update state, allocate sequences, or bootstrap DDL', async () => {
     for (const sql of ['UPDATE review_runs SET status=\'succeeded\'',
       'INSERT INTO review_event_sequence_counters VALUES (\'forged\',999)',
