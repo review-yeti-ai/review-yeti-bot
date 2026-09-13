@@ -93,6 +93,48 @@ describe('authoritative review event snapshots', () => {
     expect(snapshot?.completion).toEqual({ state: 'pending', validationRequestId: 'validation-1' });
   });
 
+  it('classifies an active running run with an unpublished superseded gate', async () => {
+    const attemptId = `${runId}-g0-e1`;
+    const snapshot = await fixture(record({
+      gate_attempt_id: attemptId,
+      gate_check_id: '456',
+      gate_app_id: 4385771,
+      gate_state: 'cancelled',
+      gate_published: false,
+      gate_reason: 'candidate-superseded',
+    })).store.getSnapshot(runId, scope);
+
+    expect(snapshot).toEqual({
+      schema: 'review-yeti-snapshot.v1',
+      runId,
+      repositoryId: 123,
+      repository: 'example/service',
+      prNumber: 42,
+      baseSha: 'c'.repeat(40),
+      headSha: 'b'.repeat(40),
+      status: 'running',
+      stage: 'review',
+      attempt: 0,
+      lifecycleSequenceDomain: 'legacy_run_v1',
+      lifecycleSequence: 4,
+      terminalClass: 'superseded',
+      resultDigest: null,
+      gate: {
+        attemptId,
+        checkId: 456,
+        expectedAppId: 4385771,
+        state: 'cancelled',
+        published: false,
+        reason: 'candidate-superseded',
+      },
+      completion: null,
+      createdAt: '2026-09-13T00:00:00.000Z',
+      updatedAt: '2026-09-13T00:01:00.000Z',
+    });
+    expect(snapshot?.terminalClass).not.toBe('review_verdict');
+    expect(snapshot?.terminalClass).not.toBe('provider_failure');
+  });
+
   it.each(['gate_app_id', 'gate_state', 'gate_published'])('rejects an incomplete gate with missing %s', field => {
     const row = record({ gate_attempt_id: `${runId}-g0-e1`, gate_app_id: 4385771,
       gate_state: 'queued', gate_published: false, [field]: null });
