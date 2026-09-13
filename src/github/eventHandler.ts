@@ -2,6 +2,8 @@ import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/reposi
 
 export interface ParsedPRPayload {
   installationId: string;
+  /** Verified webhook target repository identity, never a PR fork identity. */
+  repositoryId?: number;
   owner: string;
   repo: string;
   prNumber: number;
@@ -119,6 +121,12 @@ export class GitHubEventHandler {
 
     const { owner, repo } = extractOwnerRepo(payload);
     const repositoryVisibility = extractRepositoryVisibility(payload);
+    const numericRepositoryId = payload.repository?.id;
+    // Absence stays explicit for legacy/local callers. Durable lifecycle
+    // admission must reject an unbound identity rather than guess or coerce it.
+    const repositoryIdentity = typeof numericRepositoryId === 'number'
+      && Number.isSafeInteger(numericRepositoryId) && numericRepositoryId > 0
+      ? { repositoryId: numericRepositoryId } : {};
 
     if (eventName === 'pull_request') {
       const action = payload.action;
@@ -132,6 +140,7 @@ export class GitHubEventHandler {
         
         const parsedPayload: ParsedPRPayload = {
           installationId: String(payload.installation?.id || ''),
+          ...repositoryIdentity,
           owner,
           repo,
           prNumber: pr.number || payload.number || 0,
@@ -179,6 +188,7 @@ export class GitHubEventHandler {
 
       const parsedPayload: ParsedPRPayload = {
         installationId: String(payload.installation?.id || ''),
+        ...repositoryIdentity,
         owner,
         repo,
         prNumber: pr.number || payload.number || 0,
@@ -221,6 +231,7 @@ export class GitHubEventHandler {
       const issue = payload.issue || payload.pull_request || {};
       const parsedPayload: ParsedPRPayload = {
         installationId: String(payload.installation?.id || ''),
+        ...repositoryIdentity,
         owner,
         repo,
         prNumber: issue.number || payload.number || 0,
