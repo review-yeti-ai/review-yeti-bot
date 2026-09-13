@@ -7,6 +7,16 @@ export LC_ALL=C
 namespace=ct-review-system
 name=ct-review-job-dispatcher
 container=review-job-dispatcher
+# The dispatcher ConfigMap name is NOT the deployment name. Under Kustomize's
+# configMapGenerator it carries a content-hash suffix
+# (ct-review-job-dispatcher-<hash>) -- that suffix is what makes a worker-pin
+# change alter the pod template and roll the deployment at all. Assuming the
+# bare name made this helper read the wrong object (or nothing) the moment the
+# ConfigMap became generated. Resolved from the deployment's envFrom in
+# read_state and constrained to this shape so a foreign ConfigMap is still
+# refused.
+configmap_name="$name"
+configmap_name_pattern="^${name}(-[0-9a-z]+)?$"
 marker_key=review-yeti.ai/worker-upgrade
 # shellcheck source=scripts/lib/review-runtime-image-provenance.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/review-runtime-image-provenance.sh"
@@ -71,8 +81,9 @@ worker_management() {
 # Full objects remain in memory only. Hash every declared field except owned
 # worker key / restart marker and Kubernetes-managed volatile metadata.
 summarize() {
-  local kind="$1" raw="$2" protected
-  jq -e --arg kind "$kind" --arg name "$name" --arg ns "$namespace" '
+  local kind="$1" raw="$2" protected expected="$name"
+  [[ "$kind" == ConfigMap ]] && expected="$configmap_name"
+  jq -e --arg kind "$kind" --arg name "$expected" --arg ns "$namespace" '
     .kind==$kind and .metadata.name==$name and .metadata.namespace==$ns
     and (.metadata.uid|type)=="string" and (.metadata.uid|length)>0
     and (.metadata.resourceVersion|type)=="string" and (.metadata.resourceVersion|length)>0
@@ -93,12 +104,12 @@ summarize() {
       {uid:.metadata.uid,resourceVersion:.metadata.resourceVersion,workerImage:.data.REVIEW_JOB_WORKER_IMAGE,
        protectedHash:$hash} end' <<<"$raw"
   else
-    jq -ceS --arg hash "$protected" --arg container "$container" --arg marker "$marker_key" --arg name "$name" '
+    jq -ceS --arg hash "$protected" --arg container "$container" --arg marker "$marker_key" --arg name "$name" --arg cmpat "$configmap_name_pattern" '
       [.spec.template.spec.containers[]?|select(.name==$container)] as $c |
       if ($c|length)!=1 or (.spec.replicas|type)!="number" or .spec.replicas<1
          or (.metadata.generation|type)!="number" or .metadata.generation<1
          or ($c[0].envFrom|length)!=1
-         or ([ $c[0].envFrom[]? | select(.configMapRef.name==$name and (.prefix // "")=="") ]|length)!=1
+         or ([ $c[0].envFrom[]? | select((.configMapRef.name // "")|test($cmpat)) | select((.prefix // "")=="") ]|length)!=1
          or any($c[0].env[]?; .name=="REVIEW_JOB_WORKER_IMAGE" or .name=="REVIEW_JOB_RUNNER_MODE" or .name=="REVIEW_JOB_DISPATCH_ENABLED")
       then error("inactive or malformed dispatcher") else
       {uid:.metadata.uid,resourceVersion:.metadata.resourceVersion,generation:.metadata.generation,
@@ -107,8 +118,15 @@ summarize() {
   fi
 }
 read_state() {
-  cm_raw="$(k get configmap "$name" -o json --show-managed-fields=true | json)" || return 1
   dep_raw="$(k get deployment "$name" -o json | json)" || return 1
+  # Authoritative source for the ConfigMap name: exactly one unprefixed
+  # configMapRef on the dispatcher container. summarize() re-checks the shape.
+  configmap_name="$(jq -er --arg c "$container" '
+      [ .spec.template.spec.containers[]? | select(.name==$c) ][0].envFrom
+      | map(select((.prefix // "")=="" and .configMapRef.name != null))
+      | if length!=1 then error("envFrom") else .[0].configMapRef.name end' <<<"$dep_raw")" || return 1
+  [[ "$configmap_name" =~ $configmap_name_pattern ]] || return 1
+  cm_raw="$(k get configmap "$configmap_name" -o json --show-managed-fields=true | json)" || return 1
   cm_management="$(worker_management "$cm_raw")" || return 1
   cm="$(summarize ConfigMap "$cm_raw" 2>/dev/null)" || return 1
   dep="$(summarize Deployment "$dep_raw" 2>/dev/null)" || return 1
@@ -324,7 +342,7 @@ if [[ "$action" == update-and-restart ]]; then
      {op:"test",path:"/metadata/resourceVersion",value:$cm.resourceVersion},
      {op:"test",path:"/data/REVIEW_JOB_WORKER_IMAGE",value:$cm.workerImage},
      {op:"replace",path:"/data/REVIEW_JOB_WORKER_IMAGE",value:$target}]')"
-  ack="$(k patch configmap "$name" --type=json --field-manager=review-yeti-worker-upgrade --patch "$patch" -o json | json)" || die 'worker patch rejected or acknowledgement lost; no retry'
+  ack="$(k patch configmap "$configmap_name" --type=json --field-manager=review-yeti-worker-upgrade --patch "$patch" -o json | json)" || die 'worker patch rejected or acknowledgement lost; no retry'
   ack_management="$(worker_management "$ack")" || die 'worker patch acknowledgement ownership invalid'
   expected_cm="$(summarize ConfigMap "$ack" 2>/dev/null)" || die 'worker patch acknowledgement invalid'
   same "$ack_management" "$expected_management" || die 'worker patch acknowledgement ownership drift'
