@@ -655,7 +655,9 @@ The following top-level configuration keys can be declared in `.ct-review.yaml`,
 |---|---|---|---|
 | `skills` | `skills` | `array` \| `string` \| `object` | Passthrough skill configurations, tools, and capability definitions available to persona agents. |
 | `knowledge` | `knowledge` | `array` \| `string` \| `object` | Knowledge base paths, documents, and reference mappings for domain-specific review context. |
-| `metrics` / `telemetry` | `metrics` | `object` \| `string` | Observability configurations, metric prefixes, and exporter settings. |
+| `metrics` / `telemetry` | `metrics` | `object` \| `string` | Observability configurations, metric prefixes, cumulative temporality (`cumulative`), and exporter settings. |
+| `event_plane` | `event-plane` | `object` \| `string` | Private NATS JetStream event plane settings, stream names (`CT_REVIEW_EVENTS`, `CT_REVIEW_PROGRESS`), and outbox options. |
+| `storage` | `storage` | `object` \| `string` | Worker pod storage profile (e.g., `type: emptyDir`, `size_limit: 1Gi` for 0 PVC delay). |
 | `retry_analysis` / `retro_analysis` | `retry-analysis` | `object` \| `string` | Error categorization rules, transient vs deterministic failure classification, and retro feedback hooks. |
 | *(N/A)* | `policy-json` | `string` (JSON) | Raw policy overrides passed directly to the DOKS admission dispatcher. |
 
@@ -691,6 +693,20 @@ metrics:
   exporter: "opentelemetry"
   endpoint: "http://otel-collector.observability:4318/v1/metrics"
   service_name: "review-yeti-ci"
+  aggregation_temporality: "cumulative"    # REL-817: ensures monotonic counters across scrapes
+
+event_plane:
+  enabled: true
+  schema: "review-yeti-event.v1"
+  stream_prefix: "CT_REVIEW"
+  outbox:
+    enabled: true
+    table: "review_yeti_events_outbox"
+    poll_interval_ms: 1000
+
+storage:
+  type: "emptyDir"
+  size_limit: "1Gi"                       # High-speed ephemeral storage, 0 PVC delay
 
 retry_analysis:
   transient_error_codes: [429, 502, 503, 504]
