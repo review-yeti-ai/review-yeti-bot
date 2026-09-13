@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { PI_STAGES } from '../review/piWorkflow';
 
 const runIdSchema = z.string().regex(/^run_[a-f0-9]{32}$/u);
 const identifier = z.string().regex(/^[A-Za-z0-9_.:-]{1,255}$/u);
@@ -10,10 +9,10 @@ const integer = z.preprocess(value => typeof value === 'string' && /^\d+$/u.test
 const positiveInteger = integer.refine(value => value > 0);
 const timestamp = z.preprocess(value => value instanceof Date ? value.toISOString() : value,
   z.string().datetime({ offset: true }));
-// Dispatcher terminalization is distinct from the older Pi stage machine.
-// Keep both durable vocabularies without changing the executable Pi contract.
+// V1 owns its historical durable vocabulary. A future executable-stage change
+// must not silently invalidate retained snapshots or widen this wire contract.
 const statuses = ['queued', 'running', 'publishing', 'succeeded', 'failed', 'cancelled', 'superseded', 'terminal'] as const;
-const snapshotStages = [...PI_STAGES, 'terminal'] as const;
+const snapshotStages = ['admission', 'snapshot', 'config', 'submodules', 'review', 'arbiter', 'publish', 'complete', 'terminal'] as const;
 const gateStates = ['queued', 'in_progress', 'success', 'failure', 'cancelled', 'timed_out'] as const;
 const gateReasons = ['review-pending', 'review-deadline-exceeded', 'candidate-superseded', 'pull-request-closed',
   'invalid-evidence', 'infrastructure-failure', 'incomplete-review', 'blocking-findings', 'clean-review',
