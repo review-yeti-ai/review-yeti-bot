@@ -55,6 +55,26 @@ describe('shared CI check publication client', () => {
     expect(JSON.parse(String(fetcher.mock.calls[2][1]?.body))).toMatchObject({ conclusion: 'success' });
     expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(['POST', 'GET', 'PATCH']);
   });
+  it('does not apply canonical Gate success presentation to terminal Review Yeti CI success', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json(check()))
+      .mockResolvedValueOnce(json(check({ status: 'completed', conclusion: 'success' })));
+    const client = createReviewCiCheckClient({ ...options, fetchImplementation: fetcher });
+
+    await expect(client.updateExisting(coordinates, 77, {
+      conclusion: 'success',
+      title: 'Review Yeti CI: Required lanes passed',
+      summary: 'The bound CI validation completed successfully.',
+    })).resolves.toMatchObject({ id: 77, status: 'completed', conclusion: 'success' });
+
+    const body = JSON.parse(String(fetcher.mock.calls[1][1]?.body));
+    expect(body.output).toEqual({
+      title: 'Review Yeti CI: Required lanes passed',
+      summary: 'The bound CI validation completed successfully.',
+    });
+    expect(body.output.title).not.toContain('Review Yeti Gate');
+    expect(body.output.text).toBeUndefined();
+  });
   it('does not reconcile a foreign App, eligibility gate, or unrelated attempt as CI', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json({ total_count: 4, check_runs: [
       check({ id: 1, app: { id: 1 } }), check({ id: 2, name: 'Review Yeti Gate' }), check({ id: 3, external_id: 'old-attempt' }), check(),
