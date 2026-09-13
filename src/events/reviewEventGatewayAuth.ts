@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { reviewEventRunIdSchema } from './reviewEventRunId';
+import { reviewEventRunIdSchema, reviewEventGitShaSchema, reviewEventTokenDigestSchema } from './reviewEventIdentity';
 
 /**
  * Authentication for the event gateway is deliberately independent from the
@@ -15,9 +15,7 @@ export const REVIEW_EVENT_GATEWAY_MAX_GRANT_TTL_SECONDS = 300;
 export const REVIEW_EVENT_GATEWAY_DEFAULT_GRANT_TTL_SECONDS = 60;
 
 const LEGACY_PUBLIC_TOKENS = new Set(['demo_token_public', 'public_viewer_token']);
-const TOKEN_DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
 const SAFE_ID_PATTERN = /^[^\u0000-\u001f\u007f\s]{1,256}$/u;
-const SHA_PATTERN = /^[a-f0-9]{40}$/iu;
 
 export interface ReviewEventIdentity {
   /** Numeric GitHub repository identity, never an owner/repo string alone. */
@@ -161,10 +159,11 @@ function normalizeRunIds(value: unknown, field: string): string[] | undefined {
 }
 
 function requireTokenDigest(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !TOKEN_DIGEST_PATTERN.test(value)) {
+  const parsed = reviewEventTokenDigestSchema.safeParse(value);
+  if (!parsed.success) {
     throw new ReviewEventGatewayAuthConfigError(`${field} must be a lowercase SHA-256 tokenDigest`);
   }
-  return value;
+  return parsed.data;
 }
 
 function requireHmacSecret(value: unknown): string {
@@ -341,10 +340,10 @@ function validateIdentity(value: unknown): ReviewEventIdentity {
   const runId = requireRunId(value.runId, 'identity.runId');
   const baseSha = value.baseSha;
   const headSha = value.headSha;
-  if (typeof baseSha !== 'string' || !SHA_PATTERN.test(baseSha)) {
+  if (typeof baseSha !== 'string' || !reviewEventGitShaSchema.safeParse(baseSha).success) {
     throw new ReviewEventGatewayAuthConfigError('identity.baseSha must be an exact 40-character SHA');
   }
-  if (typeof headSha !== 'string' || !SHA_PATTERN.test(headSha)) {
+  if (typeof headSha !== 'string' || !reviewEventGitShaSchema.safeParse(headSha).success) {
     throw new ReviewEventGatewayAuthConfigError('identity.headSha must be an exact 40-character SHA');
   }
   return { repositoryId, runId, baseSha, headSha };

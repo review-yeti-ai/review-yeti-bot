@@ -41,6 +41,12 @@ describe('authoritative review event snapshots', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it('preserves historical hexadecimal SHA and durable result-digest case', async () => {
+    const snapshot = await fixture(record({ base_sha: 'C'.repeat(40), head_sha: 'B'.repeat(40),
+      result_digest: 'D'.repeat(64) })).store.getSnapshot(runId, scope);
+    expect(snapshot).toMatchObject({ baseSha: 'C'.repeat(40), headSha: 'B'.repeat(40), resultDigest: 'D'.repeat(64) });
+  });
+
   it('hides absent and foreign rows identically, even from a misbehaving query adapter', async () => {
     expect(await fixture(null).store.getSnapshot(runId, scope)).toBeNull();
     expect(await fixture(record({ repository_id: 999 })).store.getSnapshot(runId, scope)).toBeNull();

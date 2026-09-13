@@ -1,9 +1,8 @@
 import { z } from 'zod';
-import { reviewEventRunIdSchema as runIdSchema } from './reviewEventRunId';
+import { reviewEventRunIdSchema as runIdSchema, reviewEventGitShaSchema as sha,
+  reviewEventDigestSchema as digest } from './reviewEventIdentity';
 
 const identifier = z.string().regex(/^[A-Za-z0-9_.:-]{1,255}$/u);
-const sha = z.string().regex(/^[a-f0-9]{40}$/iu);
-const digest = z.string().regex(/^[a-f0-9]{64}$/iu);
 const integer = z.preprocess(value => typeof value === 'string' && /^\d+$/u.test(value) ? Number(value) : value,
   z.number().int().nonnegative().safe());
 const positiveInteger = integer.refine(value => value > 0);
