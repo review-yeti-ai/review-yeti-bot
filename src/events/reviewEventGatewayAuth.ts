@@ -194,6 +194,26 @@ function normalizeCredential(value: unknown, index: number): ReviewEventServiceC
   });
 }
 
+function normalizeCredentials(value: unknown): ReviewEventServiceCredential[] {
+  if (!Array.isArray(value)) {
+    throw new ReviewEventGatewayAuthConfigError('serviceCredentials must be a JSON array');
+  }
+  const credentials = value.map(normalizeCredential);
+  const ids = new Set<string>();
+  const digests = new Set<string>();
+  for (const credential of credentials) {
+    if (ids.has(credential.id)) {
+      throw new ReviewEventGatewayAuthConfigError(`duplicate service credential id: ${credential.id}`);
+    }
+    if (digests.has(credential.tokenDigest)) {
+      throw new ReviewEventGatewayAuthConfigError('duplicate service credential digest');
+    }
+    ids.add(credential.id);
+    digests.add(credential.tokenDigest);
+  }
+  return credentials;
+}
+
 /**
  * Parse the JSON value intended for REVIEW_EVENT_GATEWAY_SERVICE_CREDENTIALS.
  * An absent value produces no credentials, which is fail-closed at request
@@ -208,18 +228,7 @@ export function parseReviewEventServiceCredentials(raw: string | undefined): Rev
   } catch {
     throw new ReviewEventGatewayAuthConfigError('serviceCredentials must be valid JSON');
   }
-  if (!Array.isArray(parsed)) {
-    throw new ReviewEventGatewayAuthConfigError('serviceCredentials must be a JSON array');
-  }
-  const credentials = parsed.map(normalizeCredential);
-  const ids = new Set<string>();
-  for (const credential of credentials) {
-    if (ids.has(credential.id)) {
-      throw new ReviewEventGatewayAuthConfigError(`duplicate service credential id: ${credential.id}`);
-    }
-    ids.add(credential.id);
-  }
-  return credentials;
+  return normalizeCredentials(parsed);
 }
 
 /** Validate and freeze configuration before it is used by a server. */
@@ -227,14 +236,7 @@ export function createReviewEventAuthConfig(input: ReviewEventAuthConfigInput): 
   if (!isRecord(input)) {
     throw new ReviewEventGatewayAuthConfigError('auth configuration must be an object');
   }
-  const serviceCredentials = input.serviceCredentials.map(normalizeCredential);
-  const ids = new Set<string>();
-  for (const credential of serviceCredentials) {
-    if (ids.has(credential.id)) {
-      throw new ReviewEventGatewayAuthConfigError(`duplicate service credential id: ${credential.id}`);
-    }
-    ids.add(credential.id);
-  }
+  const serviceCredentials = normalizeCredentials(input.serviceCredentials);
   const grantSecret = input.grantSecret === undefined ? undefined : requireHmacSecret(input.grantSecret);
   return Object.freeze({
     serviceCredentials: Object.freeze(serviceCredentials),
@@ -267,7 +269,7 @@ function constantTimeStringEqual(left: string, right: string): boolean {
 }
 
 function hasQueryCredential(value: string | null | undefined): boolean {
-  return value !== undefined && value !== null && value.length > 0;
+  return value !== undefined && value !== null;
 }
 
 function authenticatedServicePrincipal(credential: ReviewEventServiceCredential): ReviewEventServicePrincipal {
@@ -496,6 +498,7 @@ export function verifyReviewEventGrant(
   const parts = token.split('.');
   if (parts.length !== 3 || parts.some((part) => part.length === 0)) return null;
   const [encodedHeader, encodedPayload, encodedSignature] = parts;
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(encodedSignature)) return null;
   const expectedMac = grantMac(hmacSecret, `${encodedHeader}.${encodedPayload}`);
   let suppliedMac: Buffer;
   try {
@@ -504,7 +507,7 @@ export function verifyReviewEventGrant(
     suppliedMac = Buffer.alloc(0);
   }
   const macMatches = constantTimeEqual(suppliedMac, expectedMac);
-  if (!macMatches) return null;
+  if (!macMatches || suppliedMac.toString('base64url') !== encodedSignature) return null;
 
   const header = decodeBase64urlJson(encodedHeader);
   if (!isRecord(header) || header.alg !== REVIEW_EVENT_GATEWAY_GRANT_ALGORITHM || header.typ !== 'JWT') {

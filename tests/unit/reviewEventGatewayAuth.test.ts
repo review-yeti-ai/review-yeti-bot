@@ -126,6 +126,30 @@ describe('review event gateway auth contract', () => {
     });
   });
 
+  it('rejects even empty query-token presence alongside an otherwise valid bearer', () => {
+    expect(authenticateReviewEventRequest({ authorization: `Bearer ${SERVICE_TOKEN}`, queryToken: '' }, authConfig()))
+      .toMatchObject({ kind: 'unauthenticated', reason: 'query_token_rejected' });
+  });
+
+  it('rejects ambiguous digest aliases instead of selecting whichever scope is configured last', () => {
+    const aliases = [serviceCredential, { ...serviceCredential, id: 'other-repository', repositoryIds: [999] }];
+    expect(() => createReviewEventAuthConfig({ serviceCredentials: aliases })).toThrow(/duplicate.*digest/i);
+    expect(() => parseReviewEventServiceCredentials(JSON.stringify(aliases))).toThrow(/duplicate.*digest/i);
+  });
+
+  it('rejects non-canonical HMAC signature encodings', () => {
+    const grant = createReviewEventGrant({ subject: 'reader', repositoryIds: [identity.repositoryId] },
+      identity, GRANT_SECRET, { now: 1_700_000_000_000 });
+    for (const suffix of ['!', '=']) {
+      expect(verifyReviewEventGrant(grant.token + suffix, GRANT_SECRET, { now: 1_700_000_001_000 })).toBeNull();
+    }
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const last = alphabet.indexOf(grant.token.at(-1)!);
+    const aliased = grant.token.slice(0, -1) + alphabet[last + 1];
+    expect(Buffer.from(aliased.split('.')[2], 'base64url')).toEqual(Buffer.from(grant.token.split('.')[2], 'base64url'));
+    expect(verifyReviewEventGrant(aliased, GRANT_SECRET, { now: 1_700_000_001_000 })).toBeNull();
+  });
+
   it('creates a bounded single-run grant only for an already scoped principal', () => {
     const principal: ReviewEventPrincipal = {
       kind: 'service',
