@@ -211,6 +211,47 @@ describe('review event gateway auth contract', () => {
       .toThrow(/run scope/i);
   });
 
+  it('accepts a freshly issued grant exactly five seconds ahead with its complete principal', () => {
+    const now = 1_700_000_000_000;
+    const principal: ReviewEventPrincipal = {
+      kind: 'service',
+      subject: 'future-issuer',
+      repositoryIds: [identity.repositoryId],
+      runIds: [identity.runId],
+    };
+    const grant = createReviewEventGrant(principal, identity, GRANT_SECRET, {
+      now: now + 5_000,
+      ttlSeconds: 60,
+    });
+
+    expect(verifyReviewEventGrant(grant.token, GRANT_SECRET, { now })).toEqual({
+      kind: 'grant',
+      subject: 'future-issuer',
+      repositoryIds: [identity.repositoryId],
+      runIds: [identity.runId],
+      identity,
+      expiresAt: 1_700_000_065,
+    });
+  });
+
+  it('rejects a freshly issued, unexpired grant exactly six seconds ahead', () => {
+    const now = 1_700_000_000_000;
+    const principal: ReviewEventPrincipal = {
+      kind: 'service',
+      subject: 'future-issuer',
+      repositoryIds: [identity.repositoryId],
+      runIds: [identity.runId],
+    };
+    const grant = createReviewEventGrant(principal, identity, GRANT_SECRET, {
+      now: now + 6_000,
+      ttlSeconds: 60,
+    });
+
+    expect(grant.expiresAt).toBe(1_700_000_066);
+    expect(grant.expiresAt).toBeGreaterThan(Math.floor(now / 1000));
+    expect(verifyReviewEventGrant(grant.token, GRANT_SECRET, { now })).toBeNull();
+  });
+
   it('authenticates a grant bearer through the gateway entry point, with no service credential match', () => {
     const grant = createReviewEventGrant({ subject: 'session-reader', repositoryIds: [identity.repositoryId] },
       identity, GRANT_SECRET, { now: 1_700_000_000_000 });
