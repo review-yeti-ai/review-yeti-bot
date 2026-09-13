@@ -150,10 +150,16 @@ function validateMetadata(metadata: ReviewGateCheckMetadata): ReviewGateCheckMet
   return result;
 }
 
-function outputFor(metadata: ReviewGateCheckMetadata, defaultTitle: string, defaultSummary: string): Record<string, string> {
+function outputFor(
+  metadata: ReviewGateCheckMetadata,
+  defaultTitle: string,
+  defaultSummary: string,
+  defaultText?: string,
+): Record<string, string> {
   return {
     title: metadata.title ?? defaultTitle,
     summary: metadata.summary ?? defaultSummary,
+    ...(defaultText !== undefined ? { text: defaultText } : {}),
   };
 }
 
@@ -551,9 +557,16 @@ export class GitHubReviewGateClient {
       status: terminal ? 'completed' : desired.status,
       ...(terminal ? { conclusion: desired.conclusion, completed_at: new Date().toISOString() } : {}),
       ...(metadata.detailsUrl ? { details_url: metadata.detailsUrl } : {}),
-      ...(metadata.title !== undefined || metadata.summary !== undefined
-        ? { output: outputFor(metadata, this.checkName, 'Review Yeti gate state updated.') }
-        : {}),
+      ...(terminal && this.checkName === REVIEW_GATE_CHECK_NAME && desired.conclusion === 'success'
+        ? { output: outputFor(
+          metadata,
+          'Review Yeti Gate: Approved (SHIP)',
+          'Review Yeti completed this attempt and the policy eligibility gate passed.',
+          'Terminal conclusion: success.',
+        ) }
+        : metadata.title !== undefined || metadata.summary !== undefined
+          ? { output: outputFor(metadata, this.checkName, 'Review Yeti gate state updated.') }
+          : {}),
     };
     const updated = assertExactIdentity(
       await this.request<unknown>(
