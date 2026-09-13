@@ -235,6 +235,100 @@ describe('PostgresReviewRunRepository legacy lifecycle events', () => {
     ]);
   });
 
+  it.each(['queued', 'running'] as const)('rejects a different-head historical NULL-ID %s candidate and rolls back earlier supersession', async (status) => {
+    const repository = new PostgresReviewRunRepository(pool, LIFECYCLE_OPTIONS);
+    const bound = await repository.createOrGet({ identity: identity(), repositoryId: REPOSITORY_ID, now: RECEIVED_AT });
+    // Sort after the bound candidate so the rejection must undo its mutation and event allocation.
+    const unboundRunId = 'zz-historical-null-candidate';
+    const unboundIdentity = identity({ headSha: 'c'.repeat(40) });
+    await pool.query(`INSERT INTO review_runs
+      (run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha, snapshot_digest,
+       config_digest, effective_policy_digest, effective_config_digest, identity, status, stage,
+       lease_owner, lease_expires_at)
+      SELECT $1, $2, owner, repo, pr_number, $3, base_sha, snapshot_digest,
+        config_digest, effective_policy_digest, effective_config_digest, $4, $5, stage,
+        'historical-worker', to_timestamp($6 / 1000.0)
+      FROM review_runs WHERE run_id = $7`, [unboundRunId, sha256(unboundIdentity), unboundIdentity.headSha,
+      JSON.stringify(unboundIdentity), status, RECEIVED_AT + 10_000, bound.runId]);
+    const beforeRows = (await pool.query('SELECT * FROM review_runs ORDER BY run_id')).rows;
+    expect(beforeRows.map(row => row.run_id)).toEqual([bound.runId, unboundRunId]);
+    const beforeEvents = (await pool.query('SELECT * FROM review_event_outbox ORDER BY event_id')).rows;
+    const beforeCounters = (await pool.query('SELECT * FROM review_event_sequence_counters ORDER BY run_id')).rows;
+
+    await expect(repository.createOrGet({ identity: identity({ headSha: 'e'.repeat(40) }),
+      repositoryId: REPOSITORY_ID, now: RECEIVED_AT + 1_000 }))
+      .rejects.toThrow(`Review lifecycle run repository binding is unavailable for ${unboundRunId}`);
+
+    expect((await pool.query('SELECT * FROM review_runs ORDER BY run_id')).rows).toEqual(beforeRows);
+    expect((await pool.query('SELECT * FROM review_event_outbox ORDER BY event_id')).rows).toEqual(beforeEvents);
+    expect((await pool.query('SELECT * FROM review_event_sequence_counters ORDER BY run_id')).rows).toEqual(beforeCounters);
+    expect(await lifecycleEvents(unboundRunId)).toEqual([]);
+  });
+
+  it.each(['running', 'publishing'] as const)('skips an expired historical NULL-ID %s lease in the enabled reaper', async (status) => {
+    const repository = new PostgresReviewRunRepository(pool, LIFECYCLE_OPTIONS);
+    const unboundRunId = 'historical-null-expired';
+    const boundRunId = 'bound-expired';
+    await insertExpiredRuns([{ runId: unboundRunId, prNumber: 42, status },
+      { runId: boundRunId, prNumber: 43 }]);
+    await pool.query('UPDATE review_runs SET repository_id = NULL WHERE run_id = $1', [unboundRunId]);
+    const beforeUnbound = (await pool.query('SELECT * FROM review_runs WHERE run_id = $1', [unboundRunId])).rows[0];
+
+    expect(await repository.reapExpiredLeases(RECEIVED_AT)).toBe(1);
+    expect(await repository.reapExpiredLeases(RECEIVED_AT)).toBe(0);
+    expect((await pool.query('SELECT * FROM review_runs WHERE run_id = $1', [unboundRunId])).rows[0]).toEqual(beforeUnbound);
+    expect(await lifecycleEvents(unboundRunId)).toEqual([]);
+    expect((await pool.query('SELECT * FROM review_event_sequence_counters WHERE run_id = $1', [unboundRunId])).rows).toEqual([]);
+    expect((await runState(boundRunId)).status).toBe('queued');
+    expect(await lifecycleEvents(boundRunId)).toHaveLength(1);
+  });
+
+  it.each(['enabled', 'disabled'] as const)('preserves shared lease and publication fences with lifecycle events %s', async (lifecycleEvents) => {
+    // Seed known fixture bindings identically; admission/migration is deliberately not shared.
+    const seed = new PostgresReviewRunRepository(pool, LIFECYCLE_OPTIONS);
+    const run = await seed.createOrGet({ identity: identity(), repositoryId: REPOSITORY_ID, now: RECEIVED_AT });
+    const recovery = await seed.createOrGet({ identity: identity({ prNumber: 43 }), repositoryId: REPOSITORY_ID, now: RECEIVED_AT });
+    const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents });
+    const initialEvents = (await pool.query('SELECT * FROM review_event_outbox ORDER BY event_id')).rows;
+    const now = RECEIVED_AT + 1_000;
+    await expect(repository.claim(run.runId, 'worker-a', now, 10_000, 1)).resolves.toMatchObject({ attempt: 1 });
+    await expect(repository.claim(run.runId, 'worker-b', now + 1, 10_000, 1)).resolves.toBeNull();
+    await expect(repository.claim(run.runId, 'worker-a', now + 1, 10_000, 1)).resolves.toMatchObject({ attempt: 1 });
+    await expect(repository.heartbeat(run.runId, 'worker-b', now + 2, 10_000)).resolves.toBe(false);
+    await expect(repository.heartbeat(run.runId, 'worker-a', now + 2, 10_000)).resolves.toBe(true);
+    await expect(repository.transition(run.runId, 'snapshot', 'worker-a', now + 3)).rejects.toThrow(/lease is not active/);
+    await repository.recordArtifact(run.runId, 'admission', digestFor('admission'), 'worker-a', now + 3);
+    await expect(repository.recordArtifact(run.runId, 'admission', 'other-digest', 'worker-a', now + 3))
+      .rejects.toThrow(/cannot record/);
+    await advanceToPublish(repository, run.runId, 'worker-a', now + 3);
+    await expect(repository.claimPublication(run.runId, 'worker-b', now + 4)).resolves.toBeNull();
+    const publication = await repository.claimPublication(run.runId, 'worker-a', now + 4);
+    expect(publication).toMatchObject({ status: 'publishing', publicationFence: expect.any(String) });
+    expect((await repository.claimPublication(run.runId, 'worker-a', now + 5))?.publicationFence).toBe(publication?.publicationFence);
+    await expect(repository.cancel(run.runId, now + 5, 'cancel')).resolves.toBeNull();
+    await expect(repository.requeue(run.runId, 'worker-a', now + 5, 'retry')).rejects.toThrow(/cannot be requeued/);
+    await expect(repository.succeed(run.runId, 'worker-a', now + 5, '0'.repeat(64))).rejects.toThrow(/cannot succeed/);
+    await expect(repository.succeed(run.runId, 'worker-a', now + 5, 'f'.repeat(64)))
+      .resolves.toMatchObject({ status: 'succeeded', stage: 'complete', leaseOwner: undefined });
+
+    await repository.claim(recovery.runId, 'worker-a', now, 100);
+    await expect(repository.fail(recovery.runId, 'worker-b', now + 1, 'stale')).rejects.toThrow(/cannot fail/);
+    await expect(repository.fail(recovery.runId, 'worker-a', now + 1, 'failure')).resolves.toMatchObject({ status: 'failed' });
+    await repository.claim(recovery.runId, 'worker-a', now + 2, 100);
+    await expect(repository.requeue(recovery.runId, 'worker-a', now + 3, 'retry')).resolves.toMatchObject({ status: 'queued' });
+    await repository.claim(recovery.runId, 'worker-b', now + 4, 100);
+    await expect(repository.heartbeat(recovery.runId, 'worker-b', now + 104, 100)).resolves.toBe(false);
+    await expect(repository.fail(recovery.runId, 'worker-b', now + 104, 'expired')).rejects.toThrow(/cannot fail/);
+    expect(await repository.reapExpiredLeases(now + 104)).toBe(1);
+    expect(await repository.reapExpiredLeases(now + 104)).toBe(0);
+    await expect(repository.claim(recovery.runId, 'worker-c', now + 105, 100, 3)).resolves.toBeNull();
+    await expect(repository.cancel(recovery.runId, now + 105, 'cancel')).resolves.toMatchObject({ status: 'cancelled' });
+    await expect(repository.cancel(recovery.runId, now + 106, 'again')).resolves.toBeNull();
+    const finalEvents = (await pool.query('SELECT * FROM review_event_outbox ORDER BY event_id')).rows;
+    if (lifecycleEvents === 'disabled') expect(finalEvents).toEqual(initialEvents);
+    else expect(finalEvents.length).toBeGreaterThan(initialEvents.length);
+  });
+
   it('records a real claim and stage transition but not a heartbeat or artifact write', async () => {
     const repository = new PostgresReviewRunRepository(pool, LIFECYCLE_OPTIONS);
     const run = await repository.createOrGet({ identity: identity(), repositoryId: REPOSITORY_ID, now: RECEIVED_AT });
