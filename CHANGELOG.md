@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.64.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.63.0...v1.64.0) (2026-09-13)
+
+
+### Features
+
+* add dormant review lifecycle v2 storage ([#785](https://github.com/review-yeti-ai/review-yeti-bot/issues/785)) ([b24bab0](https://github.com/review-yeti-ai/review-yeti-bot/commit/b24bab0f14bea7e729ba03c050b54e0278415e10))
+
 ## [1.63.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.62.0...v1.63.0) (2026-09-13)
 
 
