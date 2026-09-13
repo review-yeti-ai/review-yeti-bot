@@ -1,6 +1,6 @@
 import { z } from 'zod';
+import { reviewEventRunIdSchema as runIdSchema } from './reviewEventRunId';
 
-const runIdSchema = z.string().regex(/^run_[a-f0-9]{32}$/u);
 const identifier = z.string().regex(/^[A-Za-z0-9_.:-]{1,255}$/u);
 const sha = z.string().regex(/^[a-f0-9]{40}$/iu);
 const digest = z.string().regex(/^[a-f0-9]{64}$/iu);
