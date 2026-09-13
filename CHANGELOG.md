@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.61.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.0...v1.61.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **events:** reject bare credential authorities ([#774](https://github.com/review-yeti-ai/review-yeti-bot/issues/774)) ([3504b51](https://github.com/review-yeti-ai/review-yeti-bot/commit/3504b518b53ba0b63fa656764302426834b5ddf9))
+
 ## [1.61.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.60.2...v1.61.0) (2026-09-12)
 
 
