@@ -66,6 +66,55 @@ describe('review-yeti-event.v2 parser', () => {
     expect(REVIEW_YETI_EVENT_V2_SEQUENCE_DOMAIN).toBe('pr_lifecycle_v2');
   });
 
+  it('rejects every missing required envelope field', () => {
+    const base = validEvent();
+    const requiredFields = [
+      'schema', 'event_id', 'event_kind', 'occurred_at', 'repository_id', 'pr_number',
+      'base_sha', 'head_sha', 'attempt_id', 'run_id', 'sequence', 'sequence_domain',
+      'correlation_id', 'trace_id', 'visibility', 'data',
+    ] as const;
+
+    for (const field of requiredFields) {
+      const missing = { ...base } as Record<string, unknown>;
+      delete missing[field];
+      expect(() => parseReviewYetiEventV2(missing), field).toThrow();
+      expect(reviewYetiEventV2Schema.safeParse(missing).success, field).toBe(false);
+      expect(checkJsonSchema(jsonSchema, missing), field).toBe(false);
+    }
+  });
+
+  it('accepts nested lifecycle timing and rejects malformed timestamps, SHAs, and digests', () => {
+    const timed = {
+      ...validEvent(),
+      data: {
+        ...validEvent().data,
+        timing: {
+          queued_at: occurredAt,
+          started_at: '2026-09-11T12:00:01.000Z',
+          completed_at: '2026-09-11T12:00:02.000Z',
+          duration_ms: 2,
+        },
+      },
+    };
+    expect(parseReviewYetiEventV2(timed)).toEqual(timed);
+    expect(checkJsonSchema(jsonSchema, timed)).toBe(true);
+
+    const invalidValues = [
+      { ...timed, occurred_at: 'not-a-timestamp' },
+      { ...timed, base_sha: 'not-a-sha' },
+      { ...timed, head_sha: 'not-a-sha' },
+      { ...timed, data: { ...timed.data, result_digest: 'not-a-digest' } },
+      { ...timed, data: { ...timed.data, policy_digest: 'not-a-digest' } },
+      { ...timed, data: { ...timed.data, timing: { ...timed.data.timing, queued_at: 'not-a-timestamp' } } },
+    ];
+
+    for (const value of invalidValues) {
+      expect(() => parseReviewYetiEventV2(value)).toThrow();
+      expect(reviewYetiEventV2Schema.safeParse(value).success).toBe(false);
+      expect(checkJsonSchema(jsonSchema, value)).toBe(false);
+    }
+  });
+
   it('rejects progress, versioned, wrong-domain, unknown-field, and secret-shaped inputs', () => {
     const base = validEvent();
     const invalidValues = [
@@ -136,6 +185,12 @@ describe('review-yeti-event.v2 parser', () => {
     expect(reviewYetiEventV1Schema.safeParse(v1Progress).success).toBe(true);
     expect(() => parseReviewYetiEventV2(v1Progress)).toThrow();
     expect(checkJsonSchema(jsonSchema, v1Progress)).toBe(false);
+  });
+
+  it('does not allow a valid v2 lifecycle envelope through the v1 parser or schema', () => {
+    const v2 = validEvent();
+    expect(() => parseReviewYetiEventV1(v2)).toThrow();
+    expect(reviewYetiEventV1Schema.safeParse(v2).success).toBe(false);
   });
 
   it('rejects oversize and non-JSON-serializable envelopes before parsing', () => {
