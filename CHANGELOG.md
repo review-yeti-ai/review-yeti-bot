@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.61.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.1...v1.61.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* **REL-820:** publish terminal gate presentation atomically ([#773](https://github.com/review-yeti-ai/review-yeti-bot/issues/773)) ([9fb7382](https://github.com/review-yeti-ai/review-yeti-bot/commit/9fb7382b08c3be681e138dc11e118114ae754bdd))
+
 ## [1.61.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.0...v1.61.1) (2026-09-12)
 
 
