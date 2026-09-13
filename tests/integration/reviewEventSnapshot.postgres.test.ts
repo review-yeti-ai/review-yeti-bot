@@ -1,9 +1,10 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { PostgresReviewEventSnapshotStore } from '../../src/events/reviewEventSnapshot';
+import { PostgresStore } from '../../src/persistence/postgresStore';
 
-const databaseUrl = process.env.REVIEW_YETI_SNAPSHOT_TEST_DATABASE_URL;
+const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 const suite = databaseUrl ? describe : describe.skip;
 const runId = `run_${'a'.repeat(32)}`;
 const foreignRun = `run_${'b'.repeat(32)}`;
@@ -12,6 +13,7 @@ suite('snapshot through a real PostgreSQL SELECT-only role', () => {
   const suffix = randomBytes(8).toString('hex');
   const schema = `review_snapshot_${suffix}`;
   const readerRole = `review_snapshot_reader_${suffix}`;
+  const readerPassword = randomBytes(24).toString('hex');
   let admin: Pool;
   let reader: Pool;
   let store: PostgresReviewEventSnapshotStore;
@@ -23,40 +25,42 @@ suite('snapshot through a real PostgreSQL SELECT-only role', () => {
     }
     admin = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema},public` });
     await admin.query(`CREATE SCHEMA ${schema}`);
-    // Minimal projections of the production migrations, including real BIGINT,
-    // JSONB and timestamp decoding. The application under test issues its actual
-    // parameterized query through a role unable to mutate these tables.
-    await admin.query(`CREATE TABLE review_runs (
-      run_id text PRIMARY KEY, repository_id bigint NOT NULL, owner text, repo text, pr_number int,
-      base_sha text, head_sha text, status text, stage text, attempt int, result_digest text,
-      created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now(),
-      failure_diagnostics jsonb DEFAULT '{}', error_text text);
-      CREATE TABLE review_event_sequence_counters (run_id text PRIMARY KEY, next_sequence bigint);
-      CREATE TABLE review_gate_attempts (attempt_id text PRIMARY KEY, run_id text, repository_id bigint,
-        pr_number int, check_id bigint, expected_app_id bigint, desired_state text, desired_version bigint,
-        published_version bigint, decision jsonb, current_attempt boolean, review_generation int);
-      CREATE TABLE review_completion_outbox (completion_id text PRIMARY KEY, run_id text, repository_id bigint,
-        pr_number int, base_sha text, head_sha text, status text, validation_request_id text, created_at timestamptz DEFAULT now());
-      CREATE ROLE ${readerRole} LOGIN;
+    // Only the test setup may initialize schema, using the real production
+    // migrations. The snapshot implementation gets a separate SELECT-only pool.
+    const migrationStore = new PostgresStore();
+    const configured = vi.spyOn(migrationStore, 'isConfigured').mockReturnValue(true);
+    const pool = vi.spyOn(migrationStore, 'getPool').mockReturnValue(admin);
+    try { await migrationStore.initialize(); }
+    finally { configured.mockRestore(); pool.mockRestore(); }
+    // Generated hex password also exercises password-auth CI servers; the
+    // loopback development fixture's trust mode is not a test prerequisite.
+    await admin.query(`CREATE ROLE ${readerRole} LOGIN PASSWORD '${readerPassword}';
       GRANT USAGE ON SCHEMA ${schema} TO ${readerRole};
       GRANT SELECT ON ALL TABLES IN SCHEMA ${schema} TO ${readerRole};`);
     for (const [id, repositoryId] of [[runId, 123], [foreignRun, 999]]) {
       await admin.query(`INSERT INTO review_runs
-        (run_id,repository_id,owner,repo,pr_number,base_sha,head_sha,status,stage,attempt,failure_diagnostics,error_text)
-        VALUES ($1,$2,'example','service',42,$3,$4,'failed','review',0,$5,'private-error')`,
-      [id, repositoryId, 'c'.repeat(40), 'd'.repeat(40), { failureClass: 'provider_error', logTail: 'private-log' }]);
+        (run_id,repository_id,owner,repo,pr_number,base_sha,head_sha,status,stage,attempt,failure_diagnostics,error_text,
+         identity_digest,snapshot_digest,config_digest,effective_policy_digest,effective_config_digest,identity)
+        VALUES ($1,$2,'example','service',42,$3,$4,'failed','review',0,$5,'private-error',
+          $6,repeat('e',64),repeat('e',64),repeat('e',64),repeat('e',64),'{}')`,
+      [id, repositoryId, 'c'.repeat(40), 'd'.repeat(40), { failureClass: 'provider_error', logTail: 'private-log' },
+        createHash('sha256').update(String(id)).digest('hex')]);
     }
-    await admin.query('INSERT INTO review_event_sequence_counters VALUES ($1, 9)', [runId]);
-    await admin.query(`INSERT INTO review_gate_attempts VALUES
-      ($1,$2,123,42,456,4385771,'failure',2,1,$3,true,0)`,
+    await admin.query('INSERT INTO review_event_sequence_counters (run_id,next_sequence) VALUES ($1, 9)', [runId]);
+    await admin.query(`INSERT INTO review_gate_attempts
+      (attempt_id,run_id,repository_id,pr_number,check_id,expected_app_id,desired_state,desired_version,
+       published_version,decision,current_attempt,review_generation,execution_attempt,coordinates,external_id,creation_state)
+      VALUES ($1,$2,123,42,456,4385771,'failure',2,1,$3,true,0,1,'{}','snapshot-gate','bound')`,
     [`${runId}-g0-e1`, runId, { reason: 'infrastructure-failure', private: 'hidden' }]);
     // A mismatched completion must not leak into the run snapshot.
     await admin.query(`INSERT INTO review_completion_outbox
-      (completion_id,run_id,repository_id,pr_number,base_sha,head_sha,status,validation_request_id)
-      VALUES ('foreign-completion',$1,999,42,$2,$3,'completed','foreign-validation')`,
+      (completion_id,run_id,repository_id,pr_number,base_sha,head_sha,status,validation_request_id,
+       repository,attempt_id,policy_digest)
+      VALUES ('foreign-completion',$1,999,42,$2,$3,'completed','foreign-validation',
+        'example/service','foreign-attempt',repeat('e',64))`,
     [runId, 'c'.repeat(40), 'd'.repeat(40)]);
     url.username = readerRole;
-    url.password = '';
+    url.password = readerPassword;
     reader = new Pool({ connectionString: url.toString(), options: `-c search_path=${schema},public`, max: 2 });
     store = new PostgresReviewEventSnapshotStore(reader);
   });
