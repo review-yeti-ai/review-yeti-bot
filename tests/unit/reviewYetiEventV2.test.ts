@@ -135,6 +135,27 @@ describe('review-yeti-event.v2 parser', () => {
     }
   });
 
+  it('keeps one-digit version exclusions and multi-digit lifecycle labels in parser/schema parity', () => {
+    const cases = [
+      { eventKind: 'review.lifecycle.terminal', accepted: true },
+      { eventKind: 'review.lifecycle.v2.terminal', accepted: false },
+      { eventKind: 'review.lifecycle.v12.terminal', accepted: true },
+      { eventKind: 'review.progress.persona_completed', accepted: false },
+      { eventKind: 'review.lifecycle..terminal', accepted: false },
+    ] as const;
+
+    for (const { eventKind, accepted } of cases) {
+      const value = { ...validEvent(), event_kind: eventKind };
+      if (accepted) {
+        expect(parseReviewYetiEventV2(value)).toMatchObject({ event_kind: eventKind });
+      } else {
+        expect(() => parseReviewYetiEventV2(value)).toThrow();
+      }
+      expect(reviewYetiEventV2Schema.safeParse(value).success).toBe(accepted);
+      expect(checkJsonSchema(jsonSchema, value)).toBe(accepted);
+    }
+  });
+
   it('rejects unsafe, negative, fractional, and non-finite aggregate coordinates', () => {
     const base = validEvent();
     const invalidValues = [

@@ -1,3 +1,13 @@
+import {
+  REVIEW_YETI_EVENT_V2_SCHEMA,
+  REVIEW_YETI_EVENT_V2_SEQUENCE_DOMAIN,
+} from '../events/reviewYetiEventV2';
+
+export {
+  REVIEW_YETI_EVENT_V2_SCHEMA,
+  REVIEW_YETI_EVENT_V2_SEQUENCE_DOMAIN,
+};
+
 /**
  * Dormant additive storage for the lifecycle-v2 contract.
  *
@@ -5,8 +15,8 @@
  * cutover/readiness, and publication remain deferred to the governed writer
  * slices that can establish the PR-first lock order.
  */
-export const REVIEW_EVENT_V2_SEQUENCE_DOMAIN = 'pr_lifecycle_v2' as const;
-export const REVIEW_EVENT_V2_SCHEMA = 'review-yeti-event.v2' as const;
+export const REVIEW_EVENT_V2_SEQUENCE_DOMAIN = REVIEW_YETI_EVENT_V2_SEQUENCE_DOMAIN;
+export const REVIEW_EVENT_V2_SCHEMA = REVIEW_YETI_EVENT_V2_SCHEMA;
 export const REVIEW_EVENT_V2_MAX_SAFE_INTEGER = 9007199254740991;
 export const REVIEW_EVENT_V2_SEQUENCE_COUNTER_TABLE = 'review_event_v2_sequence_counters' as const;
 export const REVIEW_EVENT_V2_OUTBOX_TABLE = 'review_event_v2_outbox' as const;
@@ -43,13 +53,13 @@ export const REVIEW_EVENT_V2_SCHEMA_SQL = `
     head_sha VARCHAR(40) NOT NULL CHECK (head_sha ~ '^[a-fA-F0-9]{40}$'),
     sequence BIGINT NOT NULL
       CHECK (sequence > 0 AND sequence <= 9007199254740991),
-    schema TEXT NOT NULL CHECK (schema = 'review-yeti-event.v2'),
+    schema TEXT NOT NULL CHECK (schema = '${REVIEW_EVENT_V2_SCHEMA}'),
     event_kind TEXT NOT NULL CHECK (
       event_kind ~ '^review[.]lifecycle[.][a-z][a-z0-9]*([._-][a-z0-9]+)*$'
-      AND event_kind !~ '^review[.]lifecycle[.]v[0-9]+([.]|$)'
+      AND event_kind !~ '^review[.]lifecycle[.]v[0-9]([.]|$)'
     ),
     occurred_at TIMESTAMPTZ NOT NULL,
-    sequence_domain TEXT NOT NULL CHECK (sequence_domain = 'pr_lifecycle_v2'),
+    sequence_domain TEXT NOT NULL CHECK (sequence_domain = '${REVIEW_EVENT_V2_SEQUENCE_DOMAIN}'),
     correlation_id TEXT NOT NULL
       CHECK (char_length(correlation_id) BETWEEN 1 AND 256
         AND correlation_id !~ '[[:space:][:cntrl:]]'),
