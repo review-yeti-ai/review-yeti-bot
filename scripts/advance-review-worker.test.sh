@@ -78,7 +78,11 @@ change() {
 case "$1 $2" in
   'get configmap'|'get deployment')
     if [[ "$2" == configmap ]]; then
-      [[ "$3 $4 $5 $6" == 'ct-review-job-dispatcher -o json --show-managed-fields=true' ]] || exit 91
+      # Record which ConfigMap the helper asked for. Under a configMapGenerator the
+      # name carries a content-hash suffix, so asserting a fixed name here would
+      # pin the very assumption under test.
+      printf '%s' "$3" >"$CASE_DIR/got-cm-name"
+      [[ "$3 $4 $5 $6" == "${EXPECT_CM:-ct-review-job-dispatcher} -o json --show-managed-fields=true" ]] || exit 91
     else
       [[ "$3 $4 $5" == 'ct-review-job-dispatcher -o json' ]] || exit 91
     fi
@@ -411,6 +415,22 @@ no_write; ok 'dispatcher must actually consume the owned worker ConfigMap'
 fresh; edit deployment '.spec.template.spec.containers[0].envFrom += [{secretRef:{name:"shadow"}}]'
 if run; then fail 'additional potentially shadowing envFrom accepted'; fi
 no_write; ok 'unknown envFrom override cannot falsify prebaked admission'
+
+# A Kustomize configMapGenerator renames the ConfigMap with a content hash; that
+# suffix is what makes a worker-pin change alter the pod template and roll the
+# deployment. Assuming the bare name made this helper read the wrong object.
+fresh
+hashed_cm=ct-review-job-dispatcher-bc9bf6ff5f
+edit configmap ".metadata.name=\"$hashed_cm\""
+edit deployment ".spec.template.spec.containers[0].envFrom=[{configMapRef:{name:\"$hashed_cm\"}}]"
+EXPECT_CM="$hashed_cm" plan
+[[ "$(cat "$CASE_DIR/got-cm-name")" == "$hashed_cm" ]] || fail 'helper did not read the hashed ConfigMap'
+ok 'configMapGenerator hash suffix is resolved from envFrom, not assumed'
+
+# The resolution must not become "trust whatever envFrom points at".
+fresh; edit deployment '.spec.template.spec.containers[0].envFrom=[{configMapRef:{name:"someone-elses-config"}}]'
+if run; then fail 'ConfigMap outside the dispatcher name shape accepted'; fi
+no_write; ok 'a foreign envFrom ConfigMap is still refused'
 fresh; plan; apply || fail apply; status_is applied
 jq -e '.schema=="review-yeti-worker-plan.v2" and (.before.configmap|has("management")|not)' "$CASE_DIR/plan" >/dev/null
 jq -e '.schema=="review-yeti-worker-receipt.v1"
