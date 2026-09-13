@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.63.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.62.0...v1.63.0) (2026-09-13)
+
+
+### Features
+
+* add dormant legacy lifecycle event adapter ([#781](https://github.com/review-yeti-ai/review-yeti-bot/issues/781)) ([055cc0b](https://github.com/review-yeti-ai/review-yeti-bot/commit/055cc0bbc1953078cffc2e460ded6262348bbc7f))
+
 ## [1.62.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.3...v1.62.0) (2026-09-13)
 
 
