@@ -16,6 +16,7 @@ import { PREPARED_REVIEW_SCHEMA_SQL } from './preparedReviewRepository';
 import { REVIEW_CI_SCHEMA_SQL } from './reviewCiSchema';
 import { REVIEW_CI_CHECK_SCHEMA_SQL } from './reviewCiCheckSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from './reviewEventRepository';
+import { REVIEW_EVENT_V2_SCHEMA_SQL } from './reviewEventV2Repository';
 
 export const ADVISORY_LOCK_ID = 1029384;
 
@@ -371,6 +372,7 @@ export class PostgresStore {
       await client.query(REVIEW_CI_SCHEMA_SQL);
       await client.query(REVIEW_CI_CHECK_SCHEMA_SQL);
       await client.query(REVIEW_EVENT_SCHEMA_SQL);
+      await client.query(REVIEW_EVENT_V2_SCHEMA_SQL);
       const checkRes = await client.query('SELECT COUNT(*)::int as count FROM dashboard_settings');
       const count = checkRes.rows[0]?.count || 0;
 
