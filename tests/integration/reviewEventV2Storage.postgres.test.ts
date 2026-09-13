@@ -17,6 +17,39 @@ const runIds = [
   'run_legacy_claimed_0000000000000000000000',
   'run_legacy_published_000000000000000000000',
 ];
+const storageEnvironmentKeys = ['DATABASE_URL', 'POSTGRES_URL', 'NATS_URL'] as const;
+type StorageEnvironmentKey = typeof storageEnvironmentKeys[number];
+type EnvironmentSnapshot = Record<StorageEnvironmentKey, { present: boolean; value?: string }>;
+
+function snapshotEnvironment(): EnvironmentSnapshot {
+  return Object.fromEntries(storageEnvironmentKeys.map((key) => [key, {
+    present: Object.prototype.hasOwnProperty.call(process.env, key),
+    value: process.env[key],
+  }])) as EnvironmentSnapshot;
+}
+
+function restoreEnvironment(snapshot: EnvironmentSnapshot): void {
+  for (const key of storageEnvironmentKeys) {
+    if (snapshot[key].present) process.env[key] = snapshot[key].value!;
+    else delete process.env[key];
+  }
+}
+
+function configureFixtureEnvironment(connectionString: string): void {
+  process.env.DATABASE_URL = connectionString;
+  delete process.env.POSTGRES_URL;
+  delete process.env.NATS_URL;
+}
+
+function expectEnvironmentState(snapshot: EnvironmentSnapshot): void {
+  for (const key of storageEnvironmentKeys) {
+    const expected = snapshot[key];
+    const present = Object.prototype.hasOwnProperty.call(process.env, key);
+    expect(present, `${key} presence`).toBe(expected.present);
+    if (expected.present) expect(process.env[key] === expected.value, `${key} value equality`).toBe(true);
+    else expect(process.env[key] === undefined, `${key} absence`).toBe(true);
+  }
+}
 
 function eventId(index: number): string {
   return `${eventSeed.slice(0, -1)}${eventAlphabet[index]}`;
@@ -137,6 +170,8 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
   let pool: Pool;
   let schema: string;
   let scopedDatabaseUrl: string;
+  let environmentBeforeSuite: EnvironmentSnapshot;
+  let environmentBeforeTest: EnvironmentSnapshot | undefined;
 
   async function insertV2Row(overrides: V2RowOverrides = {}, runId = runIds[0], index = 0): Promise<void> {
     const row = buildV2Row(runId, index, overrides);
@@ -180,6 +215,7 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
   }
 
   beforeAll(async () => {
+    environmentBeforeSuite = snapshotEnvironment();
     schema = `review_yeti_v2_storage_test_${randomBytes(8).toString('hex')}`;
     if (!ownedSchema.test(schema)) throw new Error(`Generated schema is not owned by this test: ${schema}`);
     adminPool = new Pool({ connectionString: databaseUrl, max: 2 });
@@ -192,15 +228,29 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
   });
 
   beforeEach(async () => {
-    process.env.DATABASE_URL = scopedDatabaseUrl;
-    delete process.env.POSTGRES_URL;
-    delete process.env.NATS_URL;
-    await pool.query('DROP TABLE IF EXISTS review_event_v2_outbox, review_event_v2_sequence_counters CASCADE');
+    environmentBeforeTest = snapshotEnvironment();
+    try {
+      configureFixtureEnvironment(scopedDatabaseUrl);
+      await pool.query('DROP TABLE IF EXISTS review_event_v2_outbox, review_event_v2_sequence_counters CASCADE');
+    } catch (error) {
+      restoreEnvironment(environmentBeforeTest);
+      environmentBeforeTest = undefined;
+      throw error;
+    }
   });
 
   afterEach(async () => {
-    if (!pool) return;
-    await pool.query('DROP TABLE IF EXISTS review_event_v2_outbox, review_event_v2_sequence_counters CASCADE').catch(() => undefined);
+    try {
+      if (!pool) return;
+      await pool.query('DROP TABLE IF EXISTS review_event_v2_outbox, review_event_v2_sequence_counters CASCADE').catch(() => undefined);
+    } finally {
+      if (environmentBeforeTest) {
+        const expectedEnvironment = environmentBeforeTest;
+        restoreEnvironment(expectedEnvironment);
+        environmentBeforeTest = undefined;
+        expectEnvironmentState(expectedEnvironment);
+      }
+    }
   });
 
   afterAll(async () => {
@@ -209,6 +259,11 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
     } finally {
       await pool?.end();
       await adminPool?.end();
+      try {
+        expectEnvironmentState(environmentBeforeSuite);
+      } finally {
+        restoreEnvironment(environmentBeforeSuite);
+      }
     }
   });
 
@@ -413,6 +468,30 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_v2_sequence_counters')).rows[0].count).toBe(0);
     expect((await pool.query(`SELECT table_name FROM information_schema.tables
       WHERE table_schema = current_schema() AND table_name LIKE '%readiness%'`)).rows).toEqual([]);
+  });
+
+  it('restores exact present and absent fixture environment states without exposing values', () => {
+    const baseline = snapshotEnvironment();
+    try {
+      for (const present of [true, false]) {
+        if (present) {
+          process.env.DATABASE_URL = 'fixture-present-database';
+          process.env.POSTGRES_URL = 'fixture-present-postgres';
+          process.env.NATS_URL = 'fixture-present-nats';
+        } else {
+          for (const key of storageEnvironmentKeys) delete process.env[key];
+        }
+        const expected = snapshotEnvironment();
+        try {
+          configureFixtureEnvironment(scopedDatabaseUrl);
+        } finally {
+          restoreEnvironment(expected);
+        }
+        expectEnvironmentState(expected);
+      }
+    } finally {
+      restoreEnvironment(baseline);
+    }
   });
 
   it('rejects raw payload shape drift, mismatched JSON types, and invalid lifecycle data', async () => {
