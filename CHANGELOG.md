@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.62.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.3...v1.62.0) (2026-09-13)
+
+
+### Features
+
+* add scoped event gateway auth and PostgreSQL snapshots ([#778](https://github.com/review-yeti-ai/review-yeti-bot/issues/778)) ([752b68f](https://github.com/review-yeti-ai/review-yeti-bot/commit/752b68f431a72140335cb5f4c153ac7beddcfdf7))
+
 ## [1.61.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.2...v1.61.3) (2026-09-13)
 
 
