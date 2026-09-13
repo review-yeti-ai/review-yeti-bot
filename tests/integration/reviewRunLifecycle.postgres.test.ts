@@ -414,3 +414,152 @@ describe('PostgresReviewRunRepository legacy lifecycle events', () => {
       WHERE repository_id = $1 AND pr_number = 43`, [REPOSITORY_ID])).rows[0].count).toBe(2);
   });
 });
+
+describe('disabled legacy lifecycle compatibility without event tables', () => {
+  let legacyPool: Pool;
+  let legacySchema: string;
+  let repository: PostgresReviewRunRepository;
+  const ownedSchema = /^review_run_disabled_test_[a-f0-9]{16}$/u;
+
+  beforeAll(async () => {
+    legacySchema = `review_run_disabled_test_${randomBytes(8).toString('hex')}`;
+    if (!ownedSchema.test(legacySchema)) throw new Error('Generated schema is not owned by this test');
+    // No public fallback: any accidental lifecycle/dispatch-table query must fail.
+    legacyPool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${legacySchema}` });
+    await legacyPool.query(`CREATE SCHEMA "${legacySchema}"`);
+    await legacyPool.query(`CREATE TABLE review_runs (
+      run_id TEXT PRIMARY KEY,
+      identity_digest VARCHAR(64) UNIQUE NOT NULL,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      head_sha VARCHAR(40) NOT NULL,
+      base_sha VARCHAR(40) NOT NULL,
+      snapshot_digest VARCHAR(64) NOT NULL,
+      config_digest VARCHAR(64) NOT NULL,
+      effective_policy_digest VARCHAR(64) NOT NULL,
+      effective_config_digest VARCHAR(64) NOT NULL,
+      index_epoch BIGINT NOT NULL DEFAULT 0,
+      identity JSONB NOT NULL,
+      repository_id BIGINT,
+      status VARCHAR(32) NOT NULL,
+      stage VARCHAR(32) NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      lease_owner TEXT,
+      lease_expires_at TIMESTAMPTZ,
+      publication_fence VARCHAR(64),
+      result_digest VARCHAR(64),
+      artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
+      error_text TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    repository = new PostgresReviewRunRepository(legacyPool, { lifecycleEvents: 'disabled' });
+  });
+
+  afterEach(async () => {
+    expect((await legacyPool.query(`SELECT
+      to_regclass('review_event_outbox') AS events,
+      to_regclass('review_event_sequence_counters') AS counters,
+      to_regclass('review_dispatch_outbox') AS dispatch`)).rows[0])
+      .toEqual({ events: null, counters: null, dispatch: null });
+    expect((await legacyPool.query('SELECT COUNT(*)::int AS bound FROM review_runs WHERE repository_id IS NOT NULL'))
+      .rows[0].bound).toBe(0);
+    await legacyPool.query('TRUNCATE review_runs');
+  });
+
+  afterAll(async () => {
+    if (!legacyPool) return;
+    try {
+      if (!ownedSchema.test(legacySchema)) throw new Error('Refusing to drop unowned legacy schema');
+      await legacyPool.query(`DROP SCHEMA "${legacySchema}" CASCADE`);
+    } finally {
+      await legacyPool.end();
+    }
+  });
+
+  async function historicalRun(
+    prNumber = 42,
+    status: 'queued' | 'running' | 'publishing' = 'queued',
+    leaseExpiresAt: number | null = null,
+  ): Promise<string> {
+    const runIdentity = identity({ prNumber });
+    const runId = `historical-null-id-${prNumber}`;
+    await legacyPool.query(`INSERT INTO review_runs
+      (run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha,
+       snapshot_digest, config_digest, effective_policy_digest, effective_config_digest,
+       identity, repository_id, status, stage, attempt, lease_owner, lease_expires_at,
+       created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $9, $10, NULL, $11, $12,
+        $13, $14, to_timestamp($15 / 1000.0), to_timestamp($16 / 1000.0), to_timestamp($16 / 1000.0))`, [
+      runId, sha256(runIdentity), runIdentity.owner, runIdentity.repo, prNumber,
+      runIdentity.headSha, runIdentity.baseSha, runIdentity.snapshotDigest, runIdentity.configDigest,
+      JSON.stringify(runIdentity), status, status === 'publishing' ? 'publish' : 'admission',
+      status === 'queued' ? 0 : 1, status === 'queued' ? null : 'historical-worker',
+      leaseExpiresAt, RECEIVED_AT,
+    ]);
+    return runId;
+  }
+
+  it('returns a historical NULL-ID duplicate with absent or supplied webhook ID without rebinding it', async () => {
+    const runId = await historicalRun();
+    for (const repositoryId of [undefined, REPOSITORY_ID]) {
+      const duplicate = await repository.createOrGet({ identity: identity(), repositoryId, now: RECEIVED_AT + 1_000 });
+      expect(duplicate).toMatchObject({ runId, status: 'queued', attempt: 0, updatedAt: RECEIVED_AT });
+      expect(duplicate.repositoryId).toBeUndefined();
+    }
+    expect((await legacyPool.query('SELECT COUNT(*)::int AS count FROM review_runs')).rows[0].count).toBe(1);
+  });
+
+  it('claims a historical NULL-ID run while preserving active-lease and duplicate-claim behavior', async () => {
+    const runId = await historicalRun();
+    await expect(repository.claim(runId, 'worker-a', RECEIVED_AT, 10_000)).resolves.toMatchObject({
+      runId, status: 'running', attempt: 1, leaseOwner: 'worker-a', leaseExpiresAt: RECEIVED_AT + 10_000,
+    });
+    await expect(repository.claim(runId, 'worker-b', RECEIVED_AT + 1, 10_000)).resolves.toBeNull();
+    await expect(repository.claim(runId, 'worker-a', RECEIVED_AT + 2, 10_000)).resolves.toMatchObject({
+      status: 'running', attempt: 1, leaseOwner: 'worker-a', leaseExpiresAt: RECEIVED_AT + 10_002,
+    });
+    expect((await repository.get(runId))?.repositoryId).toBeUndefined();
+  });
+
+  it('reaps expired NULL-ID running and publishing leases and leaves live leases alone', async () => {
+    const running = await historicalRun(42, 'running', RECEIVED_AT + 100);
+    const publishing = await historicalRun(43, 'publishing', RECEIVED_AT + 100);
+    const active = await historicalRun(44, 'running', RECEIVED_AT + 10_000);
+    expect(await repository.reapExpiredLeases(RECEIVED_AT + 1_000)).toBe(2);
+    await expect(repository.get(running)).resolves.toMatchObject({
+      status: 'queued', repositoryId: undefined, leaseOwner: undefined, leaseExpiresAt: undefined,
+    });
+    await expect(repository.get(publishing)).resolves.toMatchObject({
+      status: 'failed', repositoryId: undefined, leaseOwner: undefined, leaseExpiresAt: undefined,
+      error: 'publication lease expired after publication claim; outcome is unknown',
+    });
+    await expect(repository.get(active)).resolves.toMatchObject({
+      status: 'running', leaseOwner: 'historical-worker', leaseExpiresAt: RECEIVED_AT + 10_000,
+    });
+    expect(await repository.reapExpiredLeases(RECEIVED_AT + 1_000)).toBe(0);
+  });
+
+  it.each(['queued', 'running'] as const)('admits a new head over a historical NULL-ID %s run', async (status) => {
+    const oldRunId = await historicalRun(42, status, RECEIVED_AT + 10_000);
+    const newIdentity = identity({ headSha: 'e'.repeat(40), snapshotDigest: 'f'.repeat(64) });
+    const newRun = await repository.createOrGet({
+      identity: newIdentity, repositoryId: REPOSITORY_ID, now: RECEIVED_AT + 1_000,
+    });
+    expect(newRun.runId).not.toBe(oldRunId);
+    expect(newRun).toMatchObject({ status: 'queued', identity: newIdentity, repositoryId: undefined });
+    await expect(repository.get(oldRunId)).resolves.toMatchObject({
+      status: 'superseded', repositoryId: undefined, leaseOwner: undefined, leaseExpiresAt: undefined,
+    });
+    await expect(repository.claim(newRun.runId, 'new-worker', RECEIVED_AT + 1_000, 10_000))
+      .resolves.toMatchObject({ status: 'running', attempt: 1 });
+  });
+
+  it('admits and claims incoming traffic whose repository ID is absent', async () => {
+    const run = await repository.createOrGet({ identity: identity(), now: RECEIVED_AT });
+    expect(run).toMatchObject({ status: 'queued', repositoryId: undefined });
+    await expect(repository.claim(run.runId, 'worker-a', RECEIVED_AT, 10_000))
+      .resolves.toMatchObject({ status: 'running', attempt: 1 });
+  });
+});
