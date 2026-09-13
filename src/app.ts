@@ -61,8 +61,9 @@ import {
 export { type RequestWithRawBody, providerPool };
 
 const store = new ReviewRunStore(process.env.CT_REVIEW_RUN_STORE || '/tmp/ct-review-bot/review-runs.json');
+// Task 3R-B must validate all-producer lock ordering and historical-ID migration/cutover before activation.
 const durableReviewRuns: ReviewRunRepository | null = postgresStore.isConfigured()
-  ? new PostgresReviewRunRepository(postgresStore.getPool(), { lifecycleEvents: 'enabled' })
+  ? new PostgresReviewRunRepository(postgresStore.getPool(), { lifecycleEvents: 'disabled' })
   : null;
 const durableReviewArtifacts: ReviewArtifactStore | null = postgresStore.isConfigured()
   ? new PostgresReviewArtifactStore(postgresStore.getPool())

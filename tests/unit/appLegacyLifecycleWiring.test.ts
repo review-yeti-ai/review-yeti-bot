@@ -31,8 +31,8 @@ describe('legacy application lifecycle wiring', () => {
     fixture.createOrGet.mockReset().mockRejectedValue(new Error('fixture admission boundary'));
   });
 
-  it('constructs the durable repository with lifecycle events explicitly enabled', () => {
-    expect(fixture.constructorOptions).toEqual({ lifecycleEvents: 'enabled' });
+  it('keeps production legacy lifecycle events explicitly disabled pending Task 3R-B acceptance', () => {
+    expect(fixture.constructorOptions).toEqual({ lifecycleEvents: 'disabled' });
   });
 
   it('passes numeric identity separately without changing the hashed review identity', async () => {
@@ -45,7 +45,7 @@ describe('legacy application lifecycle wiring', () => {
     expect(admission.identity).not.toHaveProperty('repositoryId');
   });
 
-  it('leaves unknown identity absent for the enabled repository to reject, never fabricates one', async () => {
+  it('preserves an absent repository identity without fabricating one', async () => {
     await expect(runReviewPipeline({ ...payload, repositoryId: undefined })).rejects.toThrow('fixture admission boundary');
     expect(fixture.createOrGet.mock.calls[0][0].repositoryId).toBeUndefined();
   });
