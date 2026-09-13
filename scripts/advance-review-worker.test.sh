@@ -97,7 +97,17 @@ case "$1 $2" in
     ;;
   'patch configmap'|'patch deployment')
     kind="$2"
-    [[ "$3 $4 $5 $6" == 'ct-review-job-dispatcher --type=json --field-manager=review-yeti-worker-upgrade --patch' && "$8 $9" == '-o json' ]] || exit 92
+    # The ConfigMap patch target is the RESOLVED name (hash-suffixed under a
+    # configMapGenerator). Asserting a fixed name here would let a regression on
+    # the write path pass: read_state would resolve correctly while the patch
+    # still went to the bare name.
+    printf '%s' "$3" >"$CASE_DIR/patched-$kind-name"
+    if [[ "$kind" == configmap ]]; then
+      [[ "$3" == "${EXPECT_CM:-ct-review-job-dispatcher}" ]] || exit 92
+    else
+      [[ "$3" == ct-review-job-dispatcher ]] || exit 92
+    fi
+    [[ "$4 $5 $6" == '--type=json --field-manager=review-yeti-worker-upgrade --patch' && "$8 $9" == '-o json' ]] || exit 92
     [[ -f "$INTENT" ]] || exit 93
     jq -e '.status == "intent" and .after == null' "$INTENT" >/dev/null || exit 94
     [[ "$(ls -l "$INTENT" | cut -c1-10)" == '-rw-------' ]] || exit 95
@@ -426,6 +436,14 @@ edit deployment ".spec.template.spec.containers[0].envFrom=[{configMapRef:{name:
 EXPECT_CM="$hashed_cm" plan
 [[ "$(cat "$CASE_DIR/got-cm-name")" == "$hashed_cm" ]] || fail 'helper did not read the hashed ConfigMap'
 ok 'configMapGenerator hash suffix is resolved from envFrom, not assumed'
+
+# The write path matters more than the read: a patch aimed at the bare name would
+# miss the generated ConfigMap entirely. Drive update-and-restart, not just plan.
+EXPECT_CM="$hashed_cm" apply || fail 'apply against a hashed ConfigMap failed'
+status_is applied
+[[ "$(cat "$CASE_DIR/patched-configmap-name")" == "$hashed_cm" ]] || fail 'worker CAS patched the wrong ConfigMap name'
+[[ "$(cat "$CASE_DIR/patched-deployment-name")" == ct-review-job-dispatcher ]] || fail 'restart patched the wrong deployment'
+ok 'the worker CAS patch targets the resolved hashed ConfigMap'
 
 # The resolution must not become "trust whatever envFrom points at".
 fresh; edit deployment '.spec.template.spec.containers[0].envFrom=[{configMapRef:{name:"someone-elses-config"}}]'
