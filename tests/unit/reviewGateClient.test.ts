@@ -287,6 +287,26 @@ describe('GitHubReviewGateClient', () => {
     expect(body.output.text).toBeUndefined();
   });
 
+  it('gives caller title and summary precedence over canonical Gate success defaults', async () => {
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(exactCheck()))
+      .mockResolvedValueOnce(response(exactCheck({ status: 'completed', conclusion: 'success' })));
+    const gate = client(fetchImplementation);
+
+    await expect(gate.updateExisting(coordinates, 9876, {
+      conclusion: 'success',
+      title: 'Caller-selected terminal Gate title',
+      summary: 'Caller-selected terminal Gate summary.',
+    })).resolves.toMatchObject({ id: 9876, status: 'completed', conclusion: 'success' });
+
+    const body = JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body));
+    expect(body.output).toEqual({
+      title: 'Caller-selected terminal Gate title',
+      summary: 'Caller-selected terminal Gate summary.',
+      text: 'Terminal conclusion: success.',
+    });
+  });
+
   it('rejects a wrong-identity update and never recreates on a missing check', async () => {
     const wrongAppFetch = vi.fn<typeof fetch>().mockResolvedValue(response(exactCheck({ app: { id: appId + 1 } })));
     await expect(client(wrongAppFetch).updateExisting(coordinates, 9876, { status: 'in_progress' })).rejects.toThrow(/identity/u);
