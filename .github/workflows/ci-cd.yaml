@@ -93,6 +93,13 @@ jobs:
       - name: Run REL-817 reaper acceptance harness
         run: npm run test:acceptance:reaper
 
+      # scripts/advance-review-worker.test.sh guards the only sanctioned writer of
+      # the production worker pin, and was never wired into CI -- 88 tests that
+      # only ran when someone remembered to. A guard whose tests do not run is a
+      # guard nobody is checking.
+      - name: Run worker-helper guard tests
+        run: npm run test:worker-helper
+
       - name: Verify TypeScript Build
         run: npm run build
 
