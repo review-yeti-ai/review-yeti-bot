@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.61.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.2...v1.61.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **worker-helper:** resolve the dispatcher ConfigMap name instead of assuming it ([#779](https://github.com/review-yeti-ai/review-yeti-bot/issues/779)) ([9718cd3](https://github.com/review-yeti-ai/review-yeti-bot/commit/9718cd32386718e7a379e54b4fdced0f8cae60da))
+
 ## [1.61.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.1...v1.61.2) (2026-09-13)
 
 
