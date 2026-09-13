@@ -18,7 +18,7 @@ const GRANT_SECRET = 'review-event-grant-secret-with-at-least-32-bytes';
 
 const identity: ReviewEventIdentity = {
   repositoryId: 4242,
-  runId: 'run-4242-attempt-1',
+  runId: `run_${'a'.repeat(32)}`,
   baseSha: 'a'.repeat(40),
   headSha: 'b'.repeat(40),
 };
@@ -40,6 +40,14 @@ function authConfig(overrides: Partial<Parameters<typeof createReviewEventAuthCo
 }
 
 describe('review event gateway auth contract', () => {
+  it.each(['run-4242-attempt-1', `run_${'a'.repeat(31)}`, `run_${'a'.repeat(33)}`,
+    `run_${'A'.repeat(32)}`, `run_${'g'.repeat(32)}`])('rejects noncanonical run identity at configuration and grant issuance: %s', runId => {
+    expect(() => createReviewEventAuthConfig({ serviceCredentials: [{ ...serviceCredential, runIds: [runId] }] }))
+      .toThrow(/run/i);
+    expect(() => createReviewEventGrant({ subject: 'issuer', repositoryIds: [identity.repositoryId] },
+      { ...identity, runId }, GRANT_SECRET, { now: 1_700_000_000_000 })).toThrow(/run/i);
+  });
+
   it('hashes bearer material as a deterministic SHA-256 digest', () => {
     expect(sha256TokenDigest('abc')).toBe(
       'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
@@ -52,7 +60,7 @@ describe('review event gateway auth contract', () => {
         id: 'reader',
         tokenDigest: serviceCredential.tokenDigest,
         repositoryIds: [4242],
-        runIds: ['run-4242-attempt-1'],
+        runIds: [identity.runId],
       },
     ]));
 
@@ -131,7 +139,7 @@ describe('review event gateway auth contract', () => {
       kind: 'service',
       subject: 'gateway-reader',
       repositoryIds: [4242],
-      runIds: ['run-4242-attempt-1'],
+      runIds: [identity.runId],
     });
   });
 
@@ -182,7 +190,7 @@ describe('review event gateway auth contract', () => {
 
     expect(() => createReviewEventGrant({ ...principal, repositoryIds: [99] }, identity, GRANT_SECRET))
       .toThrow(/repository scope/i);
-    expect(() => createReviewEventGrant({ ...principal, runIds: ['other-run'] }, identity, GRANT_SECRET))
+    expect(() => createReviewEventGrant({ ...principal, runIds: [`run_${'c'.repeat(32)}`] }, identity, GRANT_SECRET))
       .toThrow(/run scope/i);
   });
 
@@ -272,7 +280,7 @@ describe('review event gateway auth contract', () => {
       kind: 'authorized',
       principal: serviceResult.principal,
     });
-    expect(authorizeReviewEventAccess(serviceResult.principal, { ...identity, runId: 'other-run' })).toMatchObject({
+    expect(authorizeReviewEventAccess(serviceResult.principal, { ...identity, runId: `run_${'c'.repeat(32)}` })).toMatchObject({
       kind: 'authenticated_foreign_run',
       reason: 'run_scope',
     });
@@ -297,7 +305,7 @@ describe('review event gateway auth contract', () => {
 
     expect(authorizeReviewEventAccess(repositoryReader.principal, {
       ...identity,
-      runId: 'another-run-in-the-same-repository',
+      runId: `run_${'c'.repeat(32)}`,
     }).kind).toBe('authorized');
     expect(authorizeReviewEventAccess(repositoryReader.principal, {
       ...identity,
@@ -325,7 +333,7 @@ describe('review event gateway auth contract', () => {
 
     for (const changed of [
       { repositoryId: 999 },
-      { runId: 'other-run' },
+      { runId: `run_${'c'.repeat(32)}` },
       { baseSha: 'c'.repeat(40) },
       { headSha: 'd'.repeat(40) },
     ]) {

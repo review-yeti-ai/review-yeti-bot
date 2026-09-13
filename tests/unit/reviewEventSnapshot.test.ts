@@ -87,6 +87,25 @@ describe('authoritative review event snapshots', () => {
     expect(snapshot?.completion).toEqual({ state: 'pending', validationRequestId: 'validation-1' });
   });
 
+  it.each(['gate_app_id', 'gate_state', 'gate_published'])('rejects an incomplete gate with missing %s', field => {
+    const row = record({ gate_attempt_id: `${runId}-g0-e1`, gate_app_id: 4385771,
+      gate_state: 'queued', gate_published: false, [field]: null });
+    return expect(fixture(row).store.getSnapshot(runId, scope)).rejects.toThrow(/^Review snapshot unavailable$/);
+  });
+
+  it('rejects a completion without its validation request identity', async () => {
+    await expect(fixture(record({ completion_status: 'pending', validation_request_id: null }))
+      .store.getSnapshot(runId, scope)).rejects.toThrow(/^Review snapshot unavailable$/);
+  });
+
+  it('redacts an unrecognized gate reason without changing the durable gate state', async () => {
+    const snapshot = await fixture(record({ gate_attempt_id: `${runId}-g0-e1`, gate_app_id: 4385771,
+      gate_state: 'failure', gate_published: false, gate_reason: 'unrecognized-private-gate-diagnostic' }))
+      .store.getSnapshot(runId, scope);
+    expect(snapshot?.gate).toMatchObject({ state: 'failure', published: false, reason: null });
+    expect(JSON.stringify(snapshot)).not.toContain('unrecognized-private-gate-diagnostic');
+  });
+
   it.each([
     [{ status: 'superseded' }, 'superseded'],
     [{ status: 'cancelled', gate_attempt_id: `${runId}-g0-e1`, gate_state: 'cancelled',

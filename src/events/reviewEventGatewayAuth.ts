@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { reviewEventRunIdSchema } from './reviewEventRunId';
 
 /**
  * Authentication for the event gateway is deliberately independent from the
@@ -134,6 +135,12 @@ function requireRepositoryId(value: unknown, field: string): number {
   return value;
 }
 
+function requireRunId(value: unknown, field: string): string {
+  const parsed = reviewEventRunIdSchema.safeParse(value);
+  if (!parsed.success) throw new ReviewEventGatewayAuthConfigError(`${field} must be a canonical durable run ID`);
+  return parsed.data;
+}
+
 function normalizeRepositoryIds(value: unknown, field: string): number[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new ReviewEventGatewayAuthConfigError(`${field} must contain at least one repository ID`);
@@ -150,7 +157,7 @@ function normalizeRunIds(value: unknown, field: string): string[] | undefined {
   if (!Array.isArray(value) || value.length === 0) {
     throw new ReviewEventGatewayAuthConfigError(`${field} must be omitted or contain at least one run ID`);
   }
-  return Array.from(new Set(value.map((entry) => requireSafeId(entry, field))));
+  return Array.from(new Set(value.map((entry) => requireRunId(entry, field))));
 }
 
 function requireTokenDigest(value: unknown, field: string): string {
@@ -331,7 +338,7 @@ function validateIdentity(value: unknown): ReviewEventIdentity {
     throw new ReviewEventGatewayAuthConfigError('grant identity must be an object');
   }
   const repositoryId = requireRepositoryId(value.repositoryId, 'identity.repositoryId');
-  const runId = requireSafeId(value.runId, 'identity.runId');
+  const runId = requireRunId(value.runId, 'identity.runId');
   const baseSha = value.baseSha;
   const headSha = value.headSha;
   if (typeof baseSha !== 'string' || !SHA_PATTERN.test(baseSha)) {
