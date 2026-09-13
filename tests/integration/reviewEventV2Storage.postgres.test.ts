@@ -52,6 +52,11 @@ function expectEnvironmentState(snapshot: EnvironmentSnapshot): void {
 }
 
 function eventId(index: number): string {
+  if (index >= eventAlphabet.length) {
+    const high = eventAlphabet[Math.floor(index / eventAlphabet.length)];
+    const low = eventAlphabet[index % eventAlphabet.length];
+    return `${eventSeed.slice(0, -2)}${high}${low}`;
+  }
   return `${eventSeed.slice(0, -1)}${eventAlphabet[index]}`;
 }
 
@@ -494,6 +499,33 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
     }
   });
 
+  it('matches the approved lifecycle event-kind grammar at the PostgreSQL boundary', async () => {
+    await initializeWithFreshStore();
+    const cases = [
+      { index: 29, repositoryId: 170, prNumber: 80, eventKind: 'review.lifecycle.terminal', accepted: true },
+      { index: 30, repositoryId: 171, prNumber: 81, eventKind: 'review.lifecycle.v2.terminal', accepted: false },
+      { index: 31, repositoryId: 172, prNumber: 82, eventKind: 'review.lifecycle.v12.terminal', accepted: true },
+      { index: 32, repositoryId: 173, prNumber: 83, eventKind: 'review.progress.persona_completed', accepted: false },
+      { index: 33, repositoryId: 174, prNumber: 84, eventKind: 'review.lifecycle.', accepted: false },
+      { index: 34, repositoryId: 175, prNumber: 85, eventKind: 'review.lifecycle.Terminal', accepted: false },
+    ] as const;
+
+    for (const testCase of cases) {
+      const insert = () => insertV2Row({
+        eventId: eventId(testCase.index),
+        repositoryId: testCase.repositoryId,
+        prNumber: testCase.prNumber,
+        sequence: 1,
+        eventKind: testCase.eventKind,
+      }, runIds[0], testCase.index);
+      if (testCase.accepted) {
+        await insert();
+      } else {
+        await expectConstraintFailure(insert, /event_kind/iu);
+      }
+    }
+  });
+
   it('rejects raw payload shape drift, mismatched JSON types, and invalid lifecycle data', async () => {
     await initializeWithFreshStore();
 
@@ -616,6 +648,35 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
           publishAck: invalidAcknowledgement.publishAck,
         }),
         /review_event_v2_ack_state_check/iu,
+      );
+    }
+
+    const invalidLeaseStates = [
+      { index: 35, repositoryId: 170, prNumber: 70, state: 'claimed' as const, leaseOwner: null, leaseExpiresAt: '2026-09-11T13:00:00.000Z' },
+      { index: 36, repositoryId: 171, prNumber: 71, state: 'claimed' as const, leaseOwner: 'v2-worker', leaseExpiresAt: null },
+      { index: 37, repositoryId: 172, prNumber: 72, state: 'claimed' as const, leaseOwner: null, leaseExpiresAt: null },
+      { index: 38, repositoryId: 173, prNumber: 73, state: 'pending' as const, leaseOwner: 'v2-worker', leaseExpiresAt: null },
+      { index: 39, repositoryId: 174, prNumber: 74, state: 'pending' as const, leaseOwner: null, leaseExpiresAt: '2026-09-11T13:00:00.000Z' },
+      { index: 40, repositoryId: 175, prNumber: 75, state: 'pending' as const, leaseOwner: 'v2-worker', leaseExpiresAt: '2026-09-11T13:00:00.000Z' },
+      { index: 41, repositoryId: 176, prNumber: 76, state: 'published' as const, leaseOwner: 'v2-worker', leaseExpiresAt: null },
+      { index: 42, repositoryId: 177, prNumber: 77, state: 'published' as const, leaseOwner: null, leaseExpiresAt: '2026-09-11T13:00:00.000Z' },
+      { index: 43, repositoryId: 178, prNumber: 78, state: 'published' as const, leaseOwner: 'v2-worker', leaseExpiresAt: '2026-09-11T13:00:00.000Z' },
+    ] as const;
+    for (const invalidLeaseState of invalidLeaseStates) {
+      const isPublished = invalidLeaseState.state === 'published';
+      await expectConstraintFailure(
+        () => insertV2Row({
+          eventId: eventId(invalidLeaseState.index),
+          repositoryId: invalidLeaseState.repositoryId,
+          prNumber: invalidLeaseState.prNumber,
+          sequence: 1,
+          state: invalidLeaseState.state,
+          leaseOwner: invalidLeaseState.leaseOwner,
+          leaseExpiresAt: invalidLeaseState.leaseExpiresAt,
+          publishAcknowledgedAt: isPublished ? '2026-09-11T12:10:00.000Z' : null,
+          publishAck: isPublished ? `lease-invalid-ack-${invalidLeaseState.index}` : null,
+        }),
+        /review_event_v2_lease_state_check/iu,
       );
     }
 
