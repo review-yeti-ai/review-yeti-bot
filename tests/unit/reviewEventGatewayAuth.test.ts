@@ -333,6 +333,22 @@ describe('review event gateway auth contract', () => {
     });
   });
 
+  it('maps malformed identity to the same foreign-run result for service and grant principals', () => {
+    const service: ReviewEventPrincipal = { kind: 'service', subject: 'reader', repositoryIds: [identity.repositoryId] };
+    const grant = createReviewEventGrant(service, identity, GRANT_SECRET, { now: 1_700_000_000_000 });
+    const verified = verifyReviewEventGrant(grant.token, GRANT_SECRET, { now: 1_700_000_001_000 });
+    expect(verified).not.toBeNull();
+    if (!verified) throw new Error('fixture grant must authenticate');
+    for (const principal of [service, verified]) {
+      for (const invalid of [{ ...identity, repositoryId: -1 }, { ...identity, repositoryId: NaN },
+        { ...identity, runId: 'invalid' }, { ...identity, baseSha: 'invalid' }, { ...identity, headSha: 'invalid' }]) {
+        expect(authorizeReviewEventAccess(principal, invalid)).toEqual({
+          kind: 'authenticated_foreign_run', principal, reason: 'grant_identity_mismatch',
+        });
+      }
+    }
+  });
+
   it('requires a grant to match repository, run, base, and head exactly', () => {
     const principal: ReviewEventPrincipal = {
       kind: 'service',
