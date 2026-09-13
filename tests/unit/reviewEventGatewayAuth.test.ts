@@ -108,12 +108,29 @@ describe('review event gateway auth contract', () => {
       kind: 'unauthenticated',
       reason: 'invalid',
     });
-    // A legacy session-looking value is not a gateway credential unless its
-    // digest was explicitly provisioned with a repository scope.
+    // Session-looking values receive no implicit scope. The two public demo
+    // values above remain forbidden even when their digest is provisioned.
     expect(authenticateReviewEventRequest({ authorization: 'Bearer sess_admin_default_password' }, config)).toMatchObject({
       kind: 'unauthenticated',
       reason: 'invalid',
     });
+  });
+
+  it.each(['demo_token_public', 'public_viewer_token'])('rejects an explicitly provisioned public legacy digest: %s', token => {
+    const config = authConfig({ serviceCredentials: [{ id: 'legacy', tokenDigest: sha256TokenDigest(token),
+      repositoryIds: [identity.repositoryId] }] });
+    expect(authenticateReviewEventRequest({ authorization: `Bearer ${token}` }, config))
+      .toEqual({ kind: 'unauthenticated', reason: 'invalid' });
+  });
+
+  it('keeps service digest configuration canonical while accepting historical hexadecimal SHA case', () => {
+    expect(() => authConfig({ serviceCredentials: [{ ...serviceCredential,
+      tokenDigest: serviceCredential.tokenDigest.toUpperCase() }] })).toThrow(/lowercase/);
+    const upperIdentity = { ...identity, baseSha: 'A'.repeat(40), headSha: 'B'.repeat(40) };
+    const grant = createReviewEventGrant({ subject: 'issuer', repositoryIds: [identity.repositoryId] },
+      upperIdentity, GRANT_SECRET, { now: 1_700_000_000_000 });
+    expect(verifyReviewEventGrant(grant.token, GRANT_SECRET, { now: 1_700_000_001_000 })?.identity)
+      .toEqual(upperIdentity);
   });
 
   it('rejects query-string credentials even when the value is a configured bearer token', () => {
