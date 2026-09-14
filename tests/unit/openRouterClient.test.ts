@@ -437,6 +437,21 @@ describe('OpenRouterClient', () => {
     await expect(client.complete({ ...request, stream: true })).rejects.toThrow('malformed response');
   });
 
+  it('tags an HTTP 200 response with no usable completion content as a retryable 502', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify(sdkChatResult('   ')), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    await expect(client.complete({ ...request, stream: false })).rejects.toMatchObject({
+      name: 'OpenRouterResponseError',
+      status: 502,
+      message: 'OpenRouter returned empty completion content',
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
   it('fails closed when the first streamed chunk exceeds the TTFT deadline', async () => {
     const stalledStream = new ReadableStream({
       start() {},
