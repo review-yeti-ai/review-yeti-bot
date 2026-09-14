@@ -940,7 +940,12 @@ export function validateFindings(value: unknown, changedFiles?: Array<{ path: st
 export function isRetryablePanelError(error: unknown): boolean {
   if (error instanceof OpenRouterTimeoutError) return true;
   if (error instanceof OpenRouterResponseError) {
-    return error.status === 429 || (error.status !== undefined && error.status >= 500 && error.status <= 599);
+    if (error.status === 429 || (error.status !== undefined && error.status >= 500 && error.status <= 599)) return true;
+    // An empty completion (HTTP 200, no usable content) is a transient provider
+    // glitch, not a contract violation: the same request shape succeeds on retry
+    // or on the next provider. Left unclassified, one empty response failed the
+    // whole required-persona lane closed with no retry and no failover.
+    return /empty completion content/i.test(error.message);
   }
   const message = error instanceof Error ? error.message : String(error || '');
   return /(?:\b500\b|\b502\b|\b503\b|\b504\b|Connection error|fetch failed|ECONNRESET|ETIMEDOUT)/i.test(message);
