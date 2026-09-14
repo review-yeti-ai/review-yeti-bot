@@ -44,7 +44,8 @@ function deps(over: Record<string, unknown> = {}) {
     checkClient: checkClient(),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     panelRunner: vi.fn(async () => ({
-      personas: [{ findings: [] }],
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
       arbiter: { verdict: 'SHIP' },
     })) as never,
@@ -56,7 +57,8 @@ function deps(over: Record<string, unknown> = {}) {
 describe('publishingReview.ts — repository visibility threading', () => {
   it('passes repositoryVisibility=PRIVATE through to the panel runner', async () => {
     const panelRunner = vi.fn(async () => ({
-      personas: [{ findings: [] }],
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
       arbiter: { verdict: 'SHIP' },
     }));
@@ -79,7 +81,8 @@ describe('publishingReview.ts — repository visibility threading', () => {
   it('degrades to UNKNOWN, and still ships, when the visibility env var is absent', async () => {
     const client = checkClient();
     const panelRunner = vi.fn(async () => ({
-      personas: [{ findings: [] }],
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
       arbiter: { verdict: 'SHIP' },
     }));
@@ -97,7 +100,8 @@ describe('publishingReview.ts — repository visibility threading', () => {
 
   it('degrades to UNKNOWN on an unrecognised visibility value rather than guessing', async () => {
     const panelRunner = vi.fn(async () => ({
-      personas: [{ findings: [] }],
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
       arbiter: { verdict: 'SHIP' },
     }));
