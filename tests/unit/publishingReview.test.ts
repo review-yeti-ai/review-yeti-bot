@@ -671,6 +671,32 @@ describe('runPublishingReviewWorker', () => {
     });
   });
 
+  it('reads a lane decision from its findings only when the lane did not state one', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}) };
+    const d = deps({
+      completion,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['found', 'clean', 'stated'],
+        personas: [
+          { id: 'found', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy this' }] },
+          { id: 'clean', findings: [] },
+          { id: 'stated', decision: 'APPROVE', findings: [{ severity: 'P2', path: 'src/a.ts', line: 2, title: 'Nit', body: 'Also' }] },
+        ],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('success');
+    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } };
+    expect(event?.result?.personas.map((p) => [p.id, p.decision])).toEqual([
+      ['found', 'FINDINGS'],   // no stated decision, findings present
+      ['clean', 'APPROVE'],    // no stated decision, no findings
+      ['stated', 'APPROVE'],   // a stated decision is preserved even with findings
+    ]);
+  });
+
   it('does not publish contradictory failure evidence when the success acknowledgement is uncertain', async () => {
     const callbackError = new Error('success callback acknowledgement lost');
     const completion = {
