@@ -851,17 +851,24 @@ export async function runPublishingReviewWorker(
     });
 
     const completedAt = new Date(now()).toISOString();
-    if (authoritative) {
+    // The persona lanes and findings behind the published check, in the shape
+    // the service's completion contract accepts. Built once and reported on
+    // both paths: the authoritative gate re-arbitrates from it; the legacy
+    // terminal success carries it as evidence so the service can keep it.
+    const buildReviewResult = () => {
       const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
         'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
-      const personas = panelResult.personas.map((persona) => ({ id: persona.id, decision: persona.decision,
+      const personas = panelResult.personas.map((persona) => ({ id: persona.id,
+        // A lane that completed without stating a decision is read from its
+        // findings: evidence must not be dropped for a missing label.
+        decision: persona.decision ?? (persona.findings.length > 0 ? 'FINDINGS' : 'APPROVE'),
         status: 'COMPLETE' as const,
         findings: persona.findings.map((finding) => Object.fromEntries(
           Object.entries(finding).filter(([key, value]) => findingKeys.has(key) && value !== undefined))),
       }));
       const errors = (panelResult.optionalFailures || []).map((failure) => ({ id: failure.id,
         decision: 'ERROR' as const, status: 'ERROR' as const, findings: [], errorClass: classifyFailure(failure.error) }));
-      const result = parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
+      return parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
         runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
         prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
         policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
@@ -869,9 +876,15 @@ export async function runPublishingReviewWorker(
         result: { version: 'WorkerReviewResult.v1', completedAt, personas: [...personas, ...errors],
           coverageComplete: unreadable.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true },
       }).result;
-      await reportReviewResult(result);
+    };
+    if (authoritative) {
+      await reportReviewResult(buildReviewResult());
     }
     if (!authoritative && conclusion === 'success' && deps.completion) {
+      // Evidence must never be the reason a published green check goes
+      // unreported: a result that fails the contract is dropped, not fatal.
+      let evidence: WorkerReviewResult | undefined;
+      try { evidence = buildReviewResult(); } catch { evidence = undefined; }
       const event: WorkerTerminalSuccess = {
         version: 'WorkerTerminalSuccess.v1',
         runId: identity.runId,
@@ -885,6 +898,7 @@ export async function runPublishingReviewWorker(
         configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
         executionAttempt: identity.executionAttempt,
         checkId,
+        ...(evidence ? { result: evidence } : {}),
       };
       // Set before awaiting: an HTTP timeout cannot prove the service failed to
       // commit, so the catch path must not emit a different terminal body.
