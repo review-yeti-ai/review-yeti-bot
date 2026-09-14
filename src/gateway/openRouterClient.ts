@@ -1691,7 +1691,9 @@ export class OpenRouterClient implements ReviewModelClient {
     this.apiKey = options.apiKey || process.env.OPENROUTER_API_KEY || '';
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
     this.now = options.now || Date.now;
-    this.maxRetries = options.maxRetries !== undefined ? options.maxRetries : 2;
+    this.maxRetries = options.maxRetries !== undefined
+      ? options.maxRetries
+      : (process.env.REVIEW_YETI_GATEWAY_RETRIES ? Number(process.env.REVIEW_YETI_GATEWAY_RETRIES) : 0);
     this.initialRetryDelayMs = options.initialRetryDelayMs !== undefined ? options.initialRetryDelayMs : 500;
     this.maxRetryDelayMs = options.maxRetryDelayMs !== undefined ? options.maxRetryDelayMs : 5000;
     this.sleep = options.sleep || ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
