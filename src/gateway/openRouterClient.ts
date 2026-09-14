@@ -1864,7 +1864,8 @@ export class OpenRouterClient implements ReviewModelClient {
         ? rawMsg.content
         : (typeof rawMsg?.reasoning === 'string' && rawMsg.reasoning.trim() !== '' ? rawMsg.reasoning : '');
       if (typeof content !== 'string' || content.trim() === '') {
-        throw new OpenRouterResponseError('OpenRouter returned empty completion content');
+        // Tag the error so panel retry/failover can classify it as transient.
+        throw new OpenRouterResponseError('OpenRouter returned empty completion content', 502);
       }
 
       const rawUsage = data.usage;
