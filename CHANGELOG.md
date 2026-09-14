@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.66.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.66.1...v1.66.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* **review:** fail closed on incomplete raw review coverage ([#788](https://github.com/review-yeti-ai/review-yeti-bot/issues/788)) ([82741ca](https://github.com/review-yeti-ai/review-yeti-bot/commit/82741cab65da8d484a9365630c5a3bd97adadf02))
+
 ## [1.66.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.66.0...v1.66.1) (2026-09-14)
 
 
