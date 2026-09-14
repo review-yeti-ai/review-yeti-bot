@@ -121,7 +121,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         if (!ownedSharedSchema.test(sharedSchema)) throw new Error('Refusing to remove an unowned test schema');
         await client.query(`DROP SCHEMA ${sharedSchema} CASCADE`);
       } else {
-        await client.query('DROP TABLE IF EXISTS pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
+        await client.query('DROP TABLE IF EXISTS pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
       }
       client.release();
       client = undefined;
@@ -197,7 +197,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       );
     `;
     await client.query(sharedSchema ? fixtureSql.replaceAll('CREATE TEMP TABLE pg_temp.', 'CREATE TABLE ') : fixtureSql);
-    await client.query(sharedSchema ? REVIEW_GATE_SCHEMA_SQL : REVIEW_GATE_SCHEMA_SQL.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
+    await client.query(sharedSchema ? REVIEW_GATE_SCHEMA_SQL : REVIEW_GATE_SCHEMA_SQL.replaceAll('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
     await client.query(sharedSchema ? PREPARED_REVIEW_SCHEMA_SQL : PREPARED_REVIEW_SCHEMA_SQL.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
     await client.query(sharedSchema ? REVIEW_EVENT_SCHEMA_SQL : REVIEW_EVENT_SCHEMA_SQL.replaceAll('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
 
