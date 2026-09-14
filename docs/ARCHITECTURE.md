@@ -138,11 +138,55 @@ When integrated with GitHub Branch Protection, a `BLOCK` conclusion marks the re
 
 ## 📈 Telemetry & Observability Plane
 
-Review Yeti implements a unified telemetry plane across ephemeral runner and Kubernetes deployments:
+Review Yeti implements an enterprise-grade telemetry and observability plane across runner and Kubernetes deployments:
 
-1. **Prometheus Endpoint (`:3000/metrics`)**: Exposes fine-grained token counts (`ct_review_tokens_total`), model inference costs in USD (`ct_review_model_cost_usd_total`), and review durations. Protected by rate limiting and optional bearer auth.
-2. **OpenTelemetry Collector Pipeline**: Accepts OTLP traces (`:4317`/`:4318`) and metrics, routing traces to Grafana Tempo and converting metrics to Prometheus format on port `:8889`.
-3. **VictoriaMetrics Time Series Database**: Scrapes all cluster targets (19/19 active targets healthy) for persistent storage and high-cardinality PromQL analytics.
+1. **Cumulative Prometheus Metrics (REL-817 / v1.60.2)**: All in-memory metric exporters enforce `AggregationTemporality.CUMULATIVE` (1), guaranteeing that counters (`ct_review_requests_total`, `ct_review_errors_total`, `ct_review_tokens_total`, `ct_review_model_cost_usd_total`, `ct_review_reaper_superseded_attempt_total`) increase monotonically without dropping to 0 between scrapes.
+2. **Multi-Service Scrape Surface**:
+   - `ct-review-action-dispatch` (`:3000/metrics`): Token volumes, USD model costs, and review durations.
+   - `ct-review-job-dispatcher` (`:9090/metrics`): Queue depths and reaper recovery events.
+   - `review-yeti-operator` (`:8080`): Controller loop and reconciliation telemetry.
+3. **OpenTelemetry Collector Pipeline**: Accepts OTLP traces (`:4317`/`:4318`) and metrics in the `observability` namespace, routing traces to Grafana Tempo and converting metrics to Prometheus format on port `:8889`.
+4. **VictoriaMetrics Integration**: Scrapes all cluster targets (20/20 active targets UP) for long-term retention and PromQL analytics.
+5. **Alertmanager Rule Group (`review_yeti`)**: Evaluates 5 automated rules monitoring dispatch health, operator uptime, review execution latency, worker pod restarts, and error ratios.
+6. **Grafana Operations Dashboard (`review-yeti-ops.json`)**: Pre-provisioned 12-panel dashboard (UID: `ct-review-yeti-ops`) with 23 PromQL queries covering throughput, latency quantiles, concurrency, cost accumulation, and reaper activity.
+7. **Empirical Performance Benchmarks**: Qualified on live DOKS infrastructure (PR #271):
+   - Fast-Ship Path: **13s** execution for doc-only diffs.
+   - Full Modular DAG: **59s** execution across 5 persona lanes (23,043 tokens) with `SHIP` verdict.
+   - Storage Profile: Ephemeral `emptyDir` 1Gi volumes with 0s PVC allocation delay.
+
+---
+
+## 🛰️ Private JetStream Event Plane & Transactional Outbox (API-3230 / ADR 0564)
+
+```mermaid
+flowchart LR
+    subgraph Execution & State
+        Worker[Review Yeti Worker] -->|Review State Change| PG[(PostgreSQL)]
+        PG -->|Atomic Outbox Row| Outbox[review_yeti_events_outbox]
+        Outbox -->|pg_advisory_xact_lock| Relay[Outbox Publisher]
+    end
+
+    subgraph Private JetStream Plane
+        Relay -->|Sanitize 18 Fields| San[Recursive Allowlist Sanitizer]
+        San -->|review-yeti-event.v1| NATS[JetStream R=3 Cluster]
+        NATS --> S1[(CT_REVIEW_EVENTS\n30d Retention)]
+        NATS --> S2[(CT_REVIEW_PROGRESS\n48h Retention)]
+    end
+
+    subgraph Audit & Consumer Plane
+        S1 --> Audit[Audit & Governance]
+        S1 --> Replay[Deterministic Replay]
+        S2 --> Stream[Live Review Streaming]
+    end
+```
+
+Under ADR 0564 and API-3230, Review Yeti decouples lifecycle event distribution from raw database queries using a resilient event-driven architecture:
+
+1. **Transactional Outbox Pattern**: State mutations (`QUEUED`, `DISPATCHED`, `COMPLETED`, `FAILED`, `SUPERSEDED`) write atomically to `review_yeti_events_outbox` in the same database transaction that updates review state, guarded by PostgreSQL advisory locks (`pg_advisory_xact_lock`).
+2. **Strict Closed Envelope (`review-yeti-event.v1`)**: Closed schema containing exactly 15 top-level properties and monotonic Crockford Base32 ULIDs, bounded by a strict 16 KiB size ceiling.
+3. **Recursive Allowlist Sanitizer**: Strips secrets, tokens, credentials, and full diff bodies across 18 sensitive fields before publishing.
+4. **Dedicated Cluster Infrastructure**: Private R=3 JetStream cluster deployed across 3 Kubernetes worker nodes with anti-affinity, mTLS, Doppler NKey credentials, and zero-trust NetworkPolicies.
+5. **No Raw Work Payload Streams**: The architecture explicitly prohibits untruncated `CT_REVIEW_WORK` payload streams, maintaining strict separation of concerns between control events and code data.
 
 ---
 
