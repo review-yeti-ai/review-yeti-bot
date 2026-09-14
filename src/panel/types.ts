@@ -52,6 +52,8 @@ export interface PanelResult {
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];
   optionalFailures: Array<{ id: string; error: string }>;
+  /** Final path/config/classifier-selected roster used by the panel execution. */
+  applicablePersonaIds?: string[];
   zeroLaneNonEvidence?: boolean;
   quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
   moderator: {

@@ -247,8 +247,9 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
   describe('2. Watchdog Timeout & Auto-Reconnect on Dropped SSE Connections', () => {
     it('triggers reconnect status on network error (onerror)', async () => {
       const { result } = renderHook(() => useSSE({ jobId: 'drop-job' }));
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      expect(result.current.connectionStatus).toBe('connected');
+      await vi.waitFor(() => {
+        expect(result.current.connectionStatus).toBe('connected');
+      }, { timeout: 2000 });
 
       const mockEs = MockEventSource.instances[0];
 
@@ -263,7 +264,9 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
 
     it('executes exponential backoff reconnection attempts on dropped connection', async () => {
       const { result } = renderHook(() => useSSE({ jobId: 'backoff-job' }));
-      await new Promise((resolve) => setTimeout(resolve, 15));
+      await vi.waitFor(() => {
+        expect(result.current.connectionStatus).toBe('connected');
+      }, { timeout: 2000 });
 
       const firstEs = MockEventSource.instances[0];
 
@@ -284,7 +287,9 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
 
     it('resets reconnect attempt counter when connection successfully re-opens (onopen)', async () => {
       const { result } = renderHook(() => useSSE({ jobId: 'reset-job' }));
-      await new Promise((resolve) => setTimeout(resolve, 15));
+      await vi.waitFor(() => {
+        expect(result.current.connectionStatus).toBe('connected');
+      }, { timeout: 2000 });
 
       const es1 = MockEventSource.instances[0];
 
@@ -307,7 +312,9 @@ describe('Milestone 3 Empirical Challenge: Live Real-Time SSE Stream & Terminal 
 
     it('cleans up EventSource and allows manual reconnect() invocation', async () => {
       const { result } = renderHook(() => useSSE({ jobId: 'reconnect-test-job' }));
-      await new Promise((resolve) => setTimeout(resolve, 15));
+      await vi.waitFor(() => {
+        expect(result.current.connectionStatus).toBe('connected');
+      }, { timeout: 2000 });
 
       act(() => {
         result.current.reconnect();

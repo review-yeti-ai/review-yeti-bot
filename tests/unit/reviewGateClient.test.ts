@@ -247,6 +247,34 @@ describe('GitHubReviewGateClient', () => {
     expect(body).toMatchObject({ status: 'completed', conclusion: 'timed_out' });
   });
 
+  it('preserves explicit progress metadata in the same GET/PATCH without creating a check', async () => {
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response(exactCheck()))
+      .mockResolvedValueOnce(response(exactCheck({ status: 'in_progress' })));
+    const gate = client(fetchImplementation);
+
+    await expect(gate.updateExisting({
+      coordinates,
+      checkId: 9876,
+      update: {
+        status: 'in_progress',
+        title: 'Review Yeti Gate: Running',
+        summary: 'Review Yeti is evaluating this attempt.',
+      },
+    })).resolves.toMatchObject({ id: 9876, status: 'in_progress', conclusion: null });
+
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(fetchImplementation.mock.calls.map((call) => call[1]?.method)).toEqual(['GET', 'PATCH']);
+    const body = JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body));
+    expect(body).toEqual({
+      status: 'in_progress',
+      output: {
+        title: 'Review Yeti Gate: Running',
+        summary: 'Review Yeti is evaluating this attempt.',
+      },
+    });
+  });
+
   it('accepts a 140-character title and rejects a 141-character title before update', async () => {
     const acceptedTitle = 't'.repeat(MAX_CHECK_RUN_TITLE_CHARACTERS);
     const fetchImplementation = vi.fn<typeof fetch>()
