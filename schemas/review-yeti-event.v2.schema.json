@@ -3,7 +3,7 @@
   "$id": "https://review-yeti.ai/schemas/review-yeti-event.v2.schema.json",
   "title": "Review Yeti Lifecycle Event Envelope v2",
   "description": "Closed, sanitized Review Yeti lifecycle-only event envelope with a PR-wide position.",
-  "$comment": "Maintenance contract: update this language-neutral schema and src/events/reviewYetiEventV2.ts together; tests/unit/reviewYetiEventV2.test.ts is the executable semantic parity gate.",
+  "$comment": "Maintenance contract: update this language-neutral schema with src/events/reviewYetiEventV2.ts (runtime schema) and src/persistence/reviewEventV2Repository.ts (SQL DDL); tests/unit/reviewYetiEventV2.test.ts and tests/integration/reviewEventV2Storage.postgres.test.ts are the unit and real-PostgreSQL parity gates.",
   "type": "object",
   "additionalProperties": false,
   "required": [
