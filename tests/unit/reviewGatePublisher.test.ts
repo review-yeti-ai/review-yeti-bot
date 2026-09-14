@@ -147,6 +147,37 @@ describe('durable service gate publisher', () => {
       },
     });
   });
+
+  it('publishes bounded terminal failure output in the same PATCH without metadata', async () => {
+    const f = fixture({ mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'failure' });
+    const observed = { id: 1234, name: REVIEW_GATE_CHECK_NAME, app: { id: 4385771 },
+      head_sha: coordinates.headSha, external_id: claim.externalId };
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...observed, status: 'queued', conclusion: null }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...observed, status: 'completed', conclusion: 'failure' }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }));
+    f.clientFor.mockResolvedValue(new GitHubReviewGateClient({
+      token: 'ghs_test-token', expectedAppId: 4385771, baseUrl: 'https://github.test/api/v3', fetchImplementation,
+    }));
+
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    const body = JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body));
+    expect(body).toMatchObject({
+      status: 'completed',
+      conclusion: 'failure',
+      output: {
+        title: 'Review Yeti Gate: Failed',
+        summary: 'Review Yeti completed this attempt but the policy eligibility gate failed.',
+        text: 'Terminal conclusion: failure.',
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain('ghs_test-token');
+  });
+
   it('records a bound-check transport failure without creating or reconciling another check', async () => {
     const f = fixture({ mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'success' });
     f.client.updateExisting.mockRejectedValue(new Error('synthetic private transport detail'));

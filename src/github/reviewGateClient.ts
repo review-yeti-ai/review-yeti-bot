@@ -553,20 +553,29 @@ export class GitHubReviewGateClient {
 
     const terminal = 'conclusion' in desired;
     const metadata = validateMetadata(desired);
+    const terminalOutput = terminal && this.checkName === REVIEW_GATE_CHECK_NAME && desired.conclusion === 'success'
+      ? outputFor(
+        metadata,
+        'Review Yeti Gate: Approved (SHIP)',
+        'Review Yeti completed this attempt and the policy eligibility gate passed.',
+        'Terminal conclusion: success.',
+      )
+      : terminal && this.checkName === REVIEW_GATE_CHECK_NAME && desired.conclusion === 'failure'
+        && metadata.title === undefined && metadata.summary === undefined
+        ? outputFor(
+          metadata,
+          'Review Yeti Gate: Failed',
+          'Review Yeti completed this attempt but the policy eligibility gate failed.',
+          'Terminal conclusion: failure.',
+        )
+        : terminal && (metadata.title !== undefined || metadata.summary !== undefined)
+          ? outputFor(metadata, this.checkName, 'Review Yeti gate state updated.')
+          : undefined;
     const body: Record<string, unknown> = {
       status: terminal ? 'completed' : desired.status,
       ...(terminal ? { conclusion: desired.conclusion, completed_at: new Date().toISOString() } : {}),
       ...(metadata.detailsUrl ? { details_url: metadata.detailsUrl } : {}),
-      ...(terminal && this.checkName === REVIEW_GATE_CHECK_NAME && desired.conclusion === 'success'
-        ? { output: outputFor(
-          metadata,
-          'Review Yeti Gate: Approved (SHIP)',
-          'Review Yeti completed this attempt and the policy eligibility gate passed.',
-          'Terminal conclusion: success.',
-        ) }
-        : metadata.title !== undefined || metadata.summary !== undefined
-          ? { output: outputFor(metadata, this.checkName, 'Review Yeti gate state updated.') }
-          : {}),
+      ...(terminalOutput ? { output: terminalOutput } : {}),
     };
     const updated = assertExactIdentity(
       await this.request<unknown>(
