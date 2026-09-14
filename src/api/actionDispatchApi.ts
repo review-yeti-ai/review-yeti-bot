@@ -22,7 +22,8 @@ import { sha256 } from '../review/reviewCore';
 import { isCentralRefreshAuthorized } from '../review/reviewRecoveryPolicy';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
-import { parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
+import { parseWorkerReviewCompletion, workerReviewCompletionDigest, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
+import type { WorkerCompletionStore } from '../persistence/workerCompletionStore';
 import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, AuthoritativeReviewCompletion } from '../review/authoritativeServiceContracts';
 import { ReviewGenerationConflictError } from '../review/reviewRun';
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
@@ -47,9 +48,35 @@ export interface ActionDispatchRouterOptions {
   workerCompletion?: {
     verifier: WorkerCompletionVerifier;
     repository: Pick<ReviewDispatchRepository, 'markWorkerFailure' | 'markWorkerSuccess'>;
+    /** Where an accepted terminal success's optional review result is kept. */
+    evidence?: WorkerCompletionStore;
   };
   authoritativeWorkerCompletion?: AuthoritativeReviewCompletion;
   now?: () => number;
+}
+
+/** Shape the terminal success's result as the same WorkerReviewCompletion.v1 the
+ * authoritative path stores, so one table and one reader serve both paths, and
+ * validate it with that contract's bounds (personas, findings, 1 MB). */
+async function persistTerminalSuccessEvidence(evidence: WorkerCompletionStore, event: WorkerTerminalSuccess): Promise<void> {
+  try {
+    const { checkId: _checkId, result, ...coordinates } = event;
+    const completion = parseWorkerReviewCompletion({
+      ...coordinates, version: 'WorkerReviewCompletion.v1', result,
+    });
+    await evidence.put({
+      runId: completion.runId,
+      executionAttempt: completion.executionAttempt,
+      contentDigest: workerReviewCompletionDigest(completion),
+      payload: completion,
+    });
+  } catch (error) {
+    logger.warn('Terminal success carried a review result that could not be kept', {
+      reason: error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code) : 'invalid_or_unpersistable',
+      runId: event.runId,
+      executionAttempt: event.executionAttempt,
+    });
+  }
 }
 
 function bearerToken(request: Request): string | null {
@@ -240,6 +267,12 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         }
         if (transition.status === 'ignored') {
           return response.status(409).json({ error: 'Worker completion conflicts with durable state' });
+        }
+        // The check is already published and the lifecycle transition committed.
+        // Keeping the evidence behind it must never change that answer: a bad or
+        // unpersistable result is logged and dropped, never a retry trigger.
+        if (event.result !== undefined && completion.evidence) {
+          await persistTerminalSuccessEvidence(completion.evidence, event);
         }
         return response.status(200).json({
           version: 'WorkerTerminalSuccessAccepted.v1',

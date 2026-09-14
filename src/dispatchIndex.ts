@@ -1,4 +1,5 @@
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
+import { PostgresWorkerCompletionStore } from './persistence/workerCompletionStore';
 import { createActionDispatchApp } from './dispatchServer';
 import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
 import {
@@ -93,6 +94,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     workerCompletion: {
       verifier: createWorkerCompletionVerifier(),
       repository,
+      evidence: new PostgresWorkerCompletionStore(pool),
     },
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId({
