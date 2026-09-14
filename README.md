@@ -29,6 +29,9 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 - 👥 **Community Persona Store**: Reference and compose external persona charters across repositories using `uses: ...` ([Guide](docs/TEAM_MEMORY.md#community-persona-store--charter-loader)).
 - 🧠 **Persistent Team Memory**: SQLite WAL database (`.ct-memory/team_memory.db`) that suppresses repetitive false-positive nits while enforcing non-bypassable P0/P1 security gates ([Guide](docs/TEAM_MEMORY.md)).
 - ⚖️ **Binding Arbitration Engine**: Automated moderator and arbiter that deduplicate findings and deliver clear verdicts: `SHIP`, `FIX_FIRST`, or `BLOCK`.
+- 🛰️ **Private JetStream Event Plane & Outbox**: Decoupled, auditable lifecycle event stream (`review-yeti-event.v1`) with transactional PostgreSQL outbox, monotonic ULIDs, and 18-field recursive sanitizer ([Architecture](docs/ARCHITECTURE.md#private-jetstream-event-plane--transactional-outbox-api-3230--adr-0564)).
+- 📊 **Enterprise Observability & Monotonic Metrics**: Full VictoriaMetrics integration (20 active targets UP), monotonic cumulative Prometheus counters (REL-817), 5 Alertmanager SLO rules, and a dedicated 12-panel Grafana operations dashboard (`review-yeti-ops.json`) ([Guide](docs/DOKS_REVIEW_OPERATIONS.md#observability-opentelemetry--victoriametrics)).
+- 🚀 **Sub-Minute Modular DAG Reviews**: High-throughput DOKS worker execution with ephemeral `emptyDir` storage (0 PVC delay)—13s fast-ship doc reviews and 59s 5-lane parallel DAG reviews ([Benchmarks](docs/DOKS_REVIEW_OPERATIONS.md#live-doks-qualification-evidence)).
 - ⚡ **Dual Execution Engines**:
   - **Ephemeral Action Mode**: Zero infrastructure, 60-second setup directly in GitHub Actions.
   - **Kubernetes Worker Mode**: Dispatches reviews to K8s pods in **< 10 seconds**, eliminating 95%+ of billable runner minute waste.
