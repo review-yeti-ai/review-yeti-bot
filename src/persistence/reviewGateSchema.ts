@@ -54,13 +54,20 @@ export const REVIEW_GATE_SCHEMA_SQL = `
     execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
     content_digest VARCHAR(64) NOT NULL,
     payload JSONB NOT NULL,
-    -- The wire contract's bound, interpolated so it cannot drift from the parser.
-    -- A re-serialized accepted payload is never larger than the body the service
-    -- accepted, so an accepted completion cannot trip this constraint.
-    byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= ${MAX_COMPLETION_BYTES}),
+    byte_length INTEGER NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (run_id, execution_attempt)
   );
+  -- The byte bound is the wire contract's (MAX_COMPLETION_BYTES). CREATE TABLE
+  -- IF NOT EXISTS never rewrites an existing table, so a bound baked into the
+  -- CREATE would be frozen at first install and drift from the parser the day
+  -- the contract changes. Re-applying a named constraint on every initialize
+  -- keeps the deployed CHECK equal to the running code's constant.
+  ALTER TABLE review_worker_completions
+    DROP CONSTRAINT IF EXISTS review_worker_completions_byte_length_check;
+  ALTER TABLE review_worker_completions
+    ADD CONSTRAINT review_worker_completions_byte_length_check
+    CHECK (byte_length > 0 AND byte_length <= ${MAX_COMPLETION_BYTES});
   CREATE INDEX IF NOT EXISTS review_worker_completions_created_at_idx
     ON review_worker_completions (created_at);
 `;
