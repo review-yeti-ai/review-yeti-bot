@@ -940,6 +940,10 @@ export function validateFindings(value: unknown, changedFiles?: Array<{ path: st
 export function isRetryablePanelError(error: unknown): boolean {
   if (error instanceof OpenRouterTimeoutError) return true;
   if (error instanceof OpenRouterResponseError) {
+    // An empty completion (HTTP 200, no usable content) is a transient provider
+    // glitch, not a contract violation: the same request shape succeeds on retry
+    // or on the next provider. The gateway tags it with status 502 at the throw
+    // site, so the 5xx branch below classifies it; no message-matching here.
     return error.status === 429 || (error.status !== undefined && error.status >= 500 && error.status <= 599);
   }
   const message = error instanceof Error ? error.message : String(error || '');
