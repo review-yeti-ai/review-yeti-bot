@@ -294,6 +294,46 @@ describe('runPublishingReviewWorker', () => {
     expect(receipt.blockingFindingCount).toBe(1);
   });
 
+  it('fails raw publication when an applicable optional lane exhausts its budget', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [{ id: 'arch-lane', error: 'turn budget exhausted' }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ conclusion: 'failure' }),
+    );
+  });
+
+  it('fails raw publication when returned lane identities duplicate the applicable roster', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [
+          { id: 'sec-lane', findings: [] },
+          { id: 'sec-lane', findings: [] },
+        ],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+  });
+
   it('does not count a finding that arbitration discarded', async () => {
     // Regression: the blocking count came from raw persona output while the
     // verdict came from the canonical set, so a check could read `SHIP` and

@@ -149,6 +149,7 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     expect(result.optionalFailures).toHaveLength(1);
     expect(result.optionalFailures[0].id).toBe('opt-lane');
     expect(result.optionalFailures[0].error).toContain('Grok provider timeout');
+    expect(result.applicablePersonaIds).toEqual(['sec-lane', 'opt-lane']);
   });
 
   it('normalizes APPROVE with validated findings to FINDINGS without discarding evidence', async () => {
