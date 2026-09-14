@@ -1247,8 +1247,10 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       // The next initialize (schema re-application) must restore the current bound.
       await pool!.query(REVIEW_GATE_SCHEMA_SQL);
       expect(await read()).toContain(`byte_length <= ${MAX_COMPLETION_BYTES}`);
+      // Exactly one byte_length constraint survives (execution_attempt has its own CHECK).
       expect((await pool!.query(`SELECT count(*)::int AS n FROM pg_constraint
-        WHERE conrelid = 'review_worker_completions'::regclass AND contype = 'c'`)).rows[0].n).toBe(1);
+        WHERE conrelid = 'review_worker_completions'::regclass AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%byte_length%'`)).rows[0].n).toBe(1);
     });
 
     it.each(['pending', 'claimed', 'projected'] as const)(
