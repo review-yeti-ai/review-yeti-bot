@@ -3,14 +3,20 @@ import { deriveReviewRunId } from '../review/reviewAdmission';
 import { assertStageTransition, PiStage } from '../review/piWorkflow';
 import { ReviewRun, ReviewRunIdentity, ReviewRunStatus } from '../review/reviewRun';
 import type { ReviewYetiLifecycleEventV1 } from '../events/reviewYetiEvent';
-import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
   type ReviewEventQueryable,
-  type ReviewEventTransactionClient,
   type ReviewLifecycleEventsOptions,
 } from './reviewEventRepository';
+import {
+  assertReviewPrCoordinates,
+  lockReviewPr,
+  reviewPrLockKey,
+  tryLockReviewPr,
+  withReviewPrTransaction,
+  type ReviewPrTransactionClient,
+} from './reviewPrTransaction';
 
 export type { ReviewRunIdentity, ReviewRunStatus } from '../review/reviewRun';
 export type ReviewRunRecord = ReviewRun;
@@ -229,7 +235,7 @@ export class InMemoryReviewRunRepository implements ReviewRunRepository {
 
 interface ReviewRunDatabase {
   query?: (text: string, values?: unknown[]) => Promise<{ rows: any[]; rowCount?: number }>;
-  connect?: () => Promise<ReviewEventTransactionClient>;
+  connect?: () => Promise<ReviewPrTransactionClient>;
 }
 
 // Keep lease predicates and their parameter positions identical in both lifecycle modes.
@@ -332,6 +338,25 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
+const REVIEW_RUN_IDENTITY_KEYS = ['owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'snapshotDigest', 'configDigest'] as const;
+
+function isReviewRunIdentity(value: unknown): value is ReviewRunIdentity {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join('\0') !== [...REVIEW_RUN_IDENTITY_KEYS].sort().join('\0')) return false;
+  return typeof record.owner === 'string'
+    && typeof record.repo === 'string'
+    && isPositiveSafeInteger(record.prNumber)
+    && typeof record.headSha === 'string'
+    && typeof record.baseSha === 'string'
+    && typeof record.snapshotDigest === 'string'
+    && typeof record.configDigest === 'string';
+}
+
+function sameReviewRunIdentity(left: ReviewRunIdentity, right: ReviewRunIdentity): boolean {
+  return REVIEW_RUN_IDENTITY_KEYS.every(key => left[key] === right[key]);
+}
+
 export class PostgresReviewRunRepository implements ReviewRunRepository {
   private readonly lifecycleEventsEnabled: boolean;
 
@@ -352,49 +377,21 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     }
 
     const repositoryId = input.repositoryId;
+    const coordinates = assertReviewPrCoordinates(repositoryId, input.identity.prNumber);
     const identityDigest = sha256(input.identity);
     const runId = deriveReviewRunId(input.identity);
     const now = input.now ?? Date.now();
-    const lockKey = reviewDispatchPrLockKey(repositoryId, input.identity.prNumber);
     return this.withTransaction(async (client) => {
-      await this.lockPr(client, lockKey);
+      await lockReviewPr(client, coordinates.repositoryId, coordinates.prNumber);
 
       const existing = (await client.query(
         'SELECT * FROM review_runs WHERE identity_digest = $1 FOR UPDATE',
         [identityDigest],
       )).rows[0];
       if (existing) {
+        this.assertStoredRunIdentity(existing, input.identity);
         this.assertRepositoryBinding(existing, repositoryId, true);
         return this.fromRow(existing);
-      }
-
-      const candidates = (await client.query(
-        `SELECT * FROM review_runs
-          WHERE owner = $1 AND repo = $2 AND pr_number = $3 AND head_sha <> $4
-            AND status IN ('queued', 'running')
-          ORDER BY run_id
-          FOR UPDATE`,
-        [input.identity.owner, input.identity.repo, input.identity.prNumber, input.identity.headSha],
-      )).rows;
-      for (const candidate of candidates) {
-        this.assertRepositoryBinding(candidate, repositoryId);
-        const superseded = await client.query(
-          `UPDATE review_runs
-              SET status = 'superseded',
-                  error_text = 'superseded by a newer pull request head',
-                  lease_owner = NULL,
-                  lease_expires_at = NULL,
-                  updated_at = to_timestamp($2 / 1000.0)
-            WHERE run_id = $1 AND status IN ('queued', 'running')
-            RETURNING *`,
-          [candidate.run_id, now],
-        );
-        if (superseded.rows[0]) {
-          await this.append(client, String(candidate.run_id), 'review.lifecycle.superseded', now, {
-            stage: 'superseded',
-            terminal_class: 'candidate_superseded',
-          });
-        }
       }
 
       const inserted = await client.query(
@@ -417,6 +414,36 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
         ],
       );
       if (inserted.rows[0]) {
+        const candidates = (await client.query(
+          `SELECT * FROM review_runs
+            WHERE owner = $1 AND repo = $2 AND pr_number = $3 AND head_sha <> $4
+              AND status IN ('queued', 'running')
+            ORDER BY run_id
+            FOR UPDATE`,
+          [input.identity.owner, input.identity.repo, input.identity.prNumber, input.identity.headSha],
+        )).rows;
+        for (const candidate of candidates) {
+          this.assertStoredRunIdentity(candidate);
+          this.assertRepositoryBinding(candidate, repositoryId);
+          const superseded = await client.query(
+            `UPDATE review_runs
+                SET status = 'superseded',
+                    error_text = 'superseded by a newer pull request head',
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = to_timestamp($2 / 1000.0)
+              WHERE run_id = $1 AND status IN ('queued', 'running')
+              RETURNING *`,
+            [candidate.run_id, now],
+          );
+          if (superseded.rows[0]) {
+            await this.append(client, String(candidate.run_id), 'review.lifecycle.superseded', now, {
+              stage: 'superseded',
+              terminal_class: 'candidate_superseded',
+            });
+          }
+        }
+
         await this.append(client, runId, 'review.lifecycle.admission', now, { stage: 'admission' });
         await this.append(client, runId, 'review.lifecycle.queued', now, { stage: 'queued' });
         return this.fromRow(inserted.rows[0]);
@@ -427,6 +454,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
         [identityDigest],
       )).rows[0];
       if (!concurrent) throw new Error(`review run ${runId} could not be created or recovered`);
+      this.assertStoredRunIdentity(concurrent, input.identity);
       this.assertRepositoryBinding(concurrent, repositoryId, true);
       return this.fromRow(concurrent);
     });
@@ -587,10 +615,11 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
         if (!isPositiveSafeInteger(repositoryId) || !isPositiveSafeInteger(prNumber)) {
           throw new Error(`Review lifecycle run metadata is incomplete for ${candidate.run_id}`);
         }
-        const lockKey = reviewDispatchPrLockKey(repositoryId, prNumber);
+        const coordinates = assertReviewPrCoordinates(repositoryId, prNumber);
+        const lockKey = reviewPrLockKey(coordinates.repositoryId, coordinates.prNumber);
         if (lockKey !== previousLockKey) {
           previousLockKey = lockKey;
-          previousLockAvailable = await this.tryLockPr(client, lockKey);
+          previousLockAvailable = await tryLockReviewPr(client, coordinates.repositoryId, coordinates.prNumber);
         }
         if (!previousLockAvailable) continue;
         const current = (await client.query(
@@ -598,6 +627,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
           [candidate.run_id],
         )).rows[0];
         if (!current) continue;
+        this.assertStoredRunIdentity(current);
         this.assertRepositoryBinding(current, repositoryId);
         const publishing = current.status === 'publishing';
         const result = await client.query(...reapMutation(now, {
@@ -704,40 +734,15 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     }
   }
 
-  private async withTransaction<T>(operation: (client: ReviewEventTransactionClient) => Promise<T>): Promise<T> {
-    const client = await this.connect();
-    let committed = false;
-    try {
-      await client.query('BEGIN');
-      const result = await operation(client);
-      await client.query('COMMIT');
-      committed = true;
-      return result;
-    } catch (error) {
-      if (!committed) await client.query('ROLLBACK').catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+  private async withTransaction<T>(operation: (client: ReviewPrTransactionClient) => Promise<T>): Promise<T> {
+    return withReviewPrTransaction({ connect: () => this.connect() }, operation);
   }
 
-  private async connect(): Promise<ReviewEventTransactionClient> {
+  private async connect(): Promise<ReviewPrTransactionClient> {
     if (typeof this.db.connect !== 'function') {
       throw new Error('PostgresReviewRunRepository lifecycle events require a connection pool');
     }
     return this.db.connect();
-  }
-
-  private async lockPr(client: ReviewEventQueryable, lockKey: string): Promise<void> {
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [lockKey]);
-  }
-
-  private async tryLockPr(client: ReviewEventQueryable, lockKey: string): Promise<boolean> {
-    const result = await client.query(
-      'SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired',
-      [lockKey],
-    );
-    return result.rows[0]?.acquired === true;
   }
 
   private async lockRun(client: ReviewEventQueryable, runId: string): Promise<any | null> {
@@ -751,14 +756,35 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     if (!isPositiveSafeInteger(repositoryId) || !isPositiveSafeInteger(prNumber)) {
       throw new Error(`Review lifecycle run metadata is incomplete for ${runId}`);
     }
-    await this.lockPr(client, reviewDispatchPrLockKey(repositoryId, prNumber));
+    const coordinates = assertReviewPrCoordinates(repositoryId, prNumber);
+    await lockReviewPr(client, coordinates.repositoryId, coordinates.prNumber);
     const result = await client.query('SELECT * FROM review_runs WHERE run_id = $1 FOR UPDATE', [runId]);
     const row = result.rows[0];
     if (!row) return null;
     if (Number(row.repository_id) !== repositoryId || Number(row.pr_number) !== prNumber) {
       throw new Error(`Review lifecycle run binding changed while locking ${runId}`);
     }
+    this.assertStoredRunIdentity(row);
     return row;
+  }
+
+  private assertStoredRunIdentity(row: any, expected?: ReviewRunIdentity): void {
+    const stored = typeof row.identity === 'string' ? JSON.parse(row.identity) : row.identity;
+    const rowIdentity: ReviewRunIdentity = {
+      owner: row.owner,
+      repo: row.repo,
+      prNumber: Number(row.pr_number),
+      headSha: row.head_sha,
+      baseSha: row.base_sha,
+      snapshotDigest: row.snapshot_digest,
+      configDigest: row.config_digest,
+    };
+    if (!isReviewRunIdentity(stored)
+      || !sameReviewRunIdentity(stored, rowIdentity)
+      || sha256(stored) !== String(row.identity_digest)
+      || (expected && !sameReviewRunIdentity(stored, expected))) {
+      throw new Error(`inconsistent review lifecycle run identity for ${row.run_id}`);
+    }
   }
 
   private assertRepositoryBinding(row: any, repositoryId: number, allowMissing = false): void {
