@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { sha256 } from '../../src/review/reviewCore';
 import { deriveReviewRunId } from '../../src/review/reviewAdmission';
+import { appendLifecycleEventForRun } from '../../src/persistence/reviewEventRepository';
 import { PostgresStore } from '../../src/persistence/postgresStore';
 import {
   PostgresReviewRunRepository,
@@ -47,6 +48,44 @@ function restoreEnv(snapshot: EnvSnapshot): void {
   }
 }
 
+const environment = snapshotEnv(['DATABASE_URL', 'POSTGRES_URL']);
+
+interface FixtureCleanupPool {
+  query(text: string): Promise<unknown>;
+  end(): Promise<void>;
+}
+
+type FixtureCleanupResources = {
+  environment: EnvSnapshot;
+  bootstrapPool?: FixtureCleanupPool;
+  storePool?: FixtureCleanupPool;
+  schema?: string;
+  schemaCreated: boolean;
+  schemaDropped: boolean;
+  bootstrapPoolEnded: boolean;
+  storePoolEnded: boolean;
+};
+
+async function cleanupOwnedFixture(resources: FixtureCleanupResources): Promise<void> {
+  try {
+    if (resources.storePool && !resources.storePoolEnded) {
+      resources.storePoolEnded = true;
+      await resources.storePool.end();
+    }
+    if (resources.bootstrapPool && resources.schema && resources.schemaCreated && !resources.schemaDropped
+      && !resources.bootstrapPoolEnded) {
+      await resources.bootstrapPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(resources.schema)} CASCADE`);
+      resources.schemaDropped = true;
+    }
+    if (resources.bootstrapPool && !resources.bootstrapPoolEnded) {
+      resources.bootstrapPoolEnded = true;
+      await resources.bootstrapPool.end();
+    }
+  } finally {
+    restoreEnv(resources.environment);
+  }
+}
+
 function quoteIdentifier(identifier: string): string {
   if (!/^review_run_admission_[a-f0-9]{16}$/u.test(identifier)) {
     throw new Error('Unexpected test schema identifier');
@@ -68,18 +107,25 @@ function runIdFor(runIdentity: ReviewRunIdentity): string {
   return deriveReviewRunId(runIdentity);
 }
 
+type RunSeedOverrides = {
+  repositoryId?: number | null;
+  status?: string;
+  stage?: string;
+  attempt?: number;
+  runId?: string;
+  leaseOwner?: string | null;
+  leaseExpiresAt?: Date | null;
+  errorText?: string | null;
+  resultDigest?: string | null;
+  artifacts?: Record<string, string>;
+  createdAt?: Date;
+  updatedAt?: Date;
+};
+
 async function insertRun(
   pool: Pool,
   runIdentity: ReviewRunIdentity,
-  overrides: Partial<{
-    repositoryId: number | null;
-    status: string;
-    stage: string;
-    attempt: number;
-    runId: string;
-    createdAt: Date;
-    updatedAt: Date;
-  }> = {},
+  overrides: RunSeedOverrides = {},
 ): Promise<string> {
   const runId = overrides.runId ?? runIdFor(runIdentity);
   const createdAt = overrides.createdAt ?? new Date(baseTime);
@@ -90,10 +136,11 @@ async function insertRun(
       run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha,
         snapshot_digest, config_digest, effective_policy_digest,
         effective_config_digest, identity, repository_id, status, stage,
-        attempt, created_at, updated_at
+        attempt, lease_owner, lease_expires_at, error_text, result_digest,
+        artifacts, created_at, updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb,
-        $13, $14, $15, $16, $17, $18
+        $13, $14, $15, $16, $17, $18, $19, $20, $21::jsonb, $22, $23
       )
     `,
     [
@@ -111,8 +158,13 @@ async function insertRun(
       JSON.stringify(runIdentity),
       overrides.repositoryId === undefined ? repositoryId : overrides.repositoryId,
       overrides.status ?? 'queued',
-      overrides.stage ?? 'queued',
+      overrides.stage ?? (overrides.status === 'queued' ? 'queued' : 'admission'),
       overrides.attempt ?? 0,
+      overrides.leaseOwner === undefined ? null : overrides.leaseOwner,
+      overrides.leaseExpiresAt === undefined ? null : overrides.leaseExpiresAt,
+      overrides.errorText === undefined ? null : overrides.errorText,
+      overrides.resultDigest === undefined ? null : overrides.resultDigest,
+      JSON.stringify(overrides.artifacts ?? {}),
       createdAt,
       updatedAt,
     ],
@@ -142,6 +194,125 @@ async function eventRows(pool: Pool, runId: string): Promise<Record<string, unkn
     [runId],
   );
   return result.rows;
+}
+
+type LifecycleEventSummary = {
+  eventKind: string;
+  sequence: number;
+  data: Record<string, unknown>;
+};
+
+async function lifecycleEvents(pool: Pool, runId: string): Promise<LifecycleEventSummary[]> {
+  const result = await pool.query<{
+    event_kind: string;
+    sequence: string | number;
+    data: Record<string, unknown>;
+  }>(
+    `SELECT event_kind, sequence, payload->'data' AS data
+       FROM review_event_outbox
+      WHERE run_id = $1
+      ORDER BY sequence`,
+    [runId],
+  );
+  return result.rows.map(row => ({
+    eventKind: row.event_kind,
+    sequence: Number(row.sequence),
+    data: row.data,
+  }));
+}
+
+async function eventCounters(pool: Pool, runId: string): Promise<Record<string, unknown>[]> {
+  const result = await pool.query<Record<string, unknown>>(
+    'SELECT * FROM review_event_sequence_counters WHERE run_id = $1',
+    [runId],
+  );
+  return result.rows;
+}
+
+async function appendLifecycleHistory(pool: Pool, runId: string): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await appendLifecycleEventForRun(client, {
+      runId,
+      eventKind: 'review.lifecycle.started',
+      occurredAt: baseTime - 1_500,
+      data: { stage: 'admission' },
+    });
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function statusSeed(status: string): RunSeedOverrides {
+  const seed: RunSeedOverrides = {
+    createdAt: new Date(baseTime - 2_000),
+    updatedAt: new Date(baseTime - 1_000),
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    errorText: null,
+    resultDigest: null,
+    artifacts: {},
+  };
+  switch (status) {
+    case 'queued':
+      return { ...seed, stage: 'queued' };
+    case 'running':
+      return {
+        ...seed,
+        stage: 'review',
+        attempt: 2,
+        leaseOwner: 'worker-running',
+        leaseExpiresAt: new Date(baseTime + 60_000),
+        artifacts: { snapshot: 'snapshot-running', config: 'config-running' },
+      };
+    case 'publishing':
+      return {
+        ...seed,
+        stage: 'publish',
+        attempt: 3,
+        leaseOwner: 'worker-publishing',
+        leaseExpiresAt: new Date(baseTime + 60_000),
+        artifacts: { publish: 'publish-publishing' },
+      };
+    case 'succeeded':
+      return {
+        ...seed,
+        stage: 'complete',
+        attempt: 4,
+        resultDigest: 's'.repeat(64),
+        artifacts: { publish: 'publish-succeeded' },
+      };
+    case 'failed':
+      return {
+        ...seed,
+        stage: 'review',
+        attempt: 2,
+        errorText: 'preserved failure',
+        artifacts: { review: 'review-failed' },
+      };
+    case 'cancelled':
+      return {
+        ...seed,
+        stage: 'admission',
+        attempt: 1,
+        errorText: 'preserved cancellation',
+      };
+    case 'superseded':
+      return {
+        ...seed,
+        stage: 'superseded',
+        attempt: 2,
+        errorText: 'preserved supersession',
+        artifacts: { snapshot: 'snapshot-superseded' },
+      };
+    default:
+      throw new Error(`Unexpected status seed ${status}`);
+  }
 }
 
 async function truncateFixture(pool: Pool): Promise<void> {
@@ -239,37 +410,36 @@ async function canAcquirePrLock(pool: Pool, runIdentity: ReviewRunIdentity): Pro
   }
 }
 
-let bootstrapPool: Pool | undefined;
-let store: PostgresStore | undefined;
 let pool: Pool | undefined;
-let schema: string | undefined;
-let environment: EnvSnapshot;
+const fixtureCleanup: FixtureCleanupResources = {
+  environment,
+  schemaCreated: false,
+  schemaDropped: false,
+  bootstrapPoolEnded: false,
+  storePoolEnded: false,
+};
 let nextUniquePrNumber = 700;
 
 beforeAll(async () => {
   if (!databaseUrl) {
     throw new Error('REVIEW_YETI_TEST_DATABASE_URL is required for this compatibility suite');
   }
-  environment = snapshotEnv(['DATABASE_URL', 'POSTGRES_URL']);
-  bootstrapPool = new Pool({ connectionString: databaseUrl, max: 2 });
-  schema = `review_run_admission_${randomBytes(8).toString('hex')}`;
-  const quotedSchema = quoteIdentifier(schema);
+  const bootstrapPool = new Pool({ connectionString: databaseUrl, max: 2 });
+  fixtureCleanup.bootstrapPool = bootstrapPool;
+  fixtureCleanup.schema = `review_run_admission_${randomBytes(8).toString('hex')}`;
+  const schemaName = fixtureCleanup.schema!;
+  const quotedSchema = quoteIdentifier(schemaName);
   try {
     await bootstrapPool.query(`CREATE SCHEMA ${quotedSchema}`);
-    process.env.DATABASE_URL = scopedDatabaseUrl(schema);
+    fixtureCleanup.schemaCreated = true;
+    process.env.DATABASE_URL = scopedDatabaseUrl(schemaName);
     delete process.env.POSTGRES_URL;
-    store = new PostgresStore();
+    const store = new PostgresStore();
+    fixtureCleanup.storePool = store.getPool();
     await store.initialize();
-    pool = store.getPool();
+    pool = fixtureCleanup.storePool as Pool;
   } catch (error) {
-    if (store) {
-      await store.getPool().end().catch(() => undefined);
-    }
-    if (schema) {
-      await bootstrapPool.query(`DROP SCHEMA IF EXISTS ${quotedSchema} CASCADE`).catch(() => undefined);
-    }
-    await bootstrapPool.end().catch(() => undefined);
-    restoreEnv(environment);
+    await cleanupOwnedFixture(fixtureCleanup).catch(() => undefined);
     throw error;
   }
 });
@@ -281,19 +451,77 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  try {
-    if (store) {
-      await store.getPool().end();
+  await cleanupOwnedFixture(fixtureCleanup);
+});
+
+describe('owned fixture cleanup boundary', () => {
+  it('preserves the setup error and performs owned cleanup exactly once', async () => {
+    const testEnvironment = snapshotEnv(['DATABASE_URL', 'POSTGRES_URL']);
+    process.env.DATABASE_URL = 'synthetic-mutated-database';
+    process.env.POSTGRES_URL = 'synthetic-mutated-postgres';
+    const operations: string[] = [];
+    const resources: FixtureCleanupResources = {
+      environment: testEnvironment,
+      bootstrapPool: {
+        query: async (text) => {
+          operations.push(text);
+        },
+        end: async () => {
+          operations.push('bootstrap-end');
+        },
+      },
+      storePool: {
+        query: async () => undefined,
+        end: async () => {
+          operations.push('store-end');
+        },
+      },
+      schema: 'review_run_admission_0123456789abcdef',
+      schemaCreated: true,
+      schemaDropped: false,
+      bootstrapPoolEnded: false,
+      storePoolEnded: false,
+    };
+    const setupError = new Error('synthetic setup failure');
+    let observedError: unknown;
+
+    try {
+      throw setupError;
+    } catch (error) {
+      await cleanupOwnedFixture(resources).catch(() => undefined);
+      observedError = error;
     }
-    if (schema && bootstrapPool) {
-      await bootstrapPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schema)} CASCADE`);
-    }
-    if (bootstrapPool) {
-      await bootstrapPool.end();
-    }
-  } finally {
-    restoreEnv(environment);
-  }
+
+    expect(observedError).toBe(setupError);
+    expect(operations).toEqual([
+      'store-end',
+      'DROP SCHEMA IF EXISTS "review_run_admission_0123456789abcdef" CASCADE',
+      'bootstrap-end',
+    ]);
+    await cleanupOwnedFixture(resources);
+    expect(operations).toHaveLength(3);
+    expect(snapshotEnv(['DATABASE_URL', 'POSTGRES_URL'])).toEqual(testEnvironment);
+
+    const uncreatedOperations: string[] = [];
+    const uncreatedResources: FixtureCleanupResources = {
+      environment: snapshotEnv(['DATABASE_URL', 'POSTGRES_URL']),
+      bootstrapPool: {
+        query: async (text) => {
+          uncreatedOperations.push(text);
+        },
+        end: async () => {
+          uncreatedOperations.push('bootstrap-end');
+        },
+      },
+      schema: 'review_run_admission_fedcba9876543210',
+      schemaCreated: false,
+      schemaDropped: false,
+      bootstrapPoolEnded: false,
+      storePoolEnded: false,
+    };
+    await cleanupOwnedFixture(uncreatedResources);
+    expect(uncreatedOperations).toEqual(['bootstrap-end']);
+  });
 });
 
 describe('enabled run admission compatibility boundary', () => {
@@ -397,6 +625,94 @@ describe('enabled run admission compatibility boundary', () => {
     expect(await countRows(pool, 'review_event_sequence_counters')).toBe(0);
   });
 
+  it('rejects contradictory immutable metadata on the ordinary duplicate lookup without mutation', async () => {
+    if (!pool) throw new Error('test pool was not initialized');
+    const runIdentity = identity({ prNumber: 645 });
+    const runId = await insertRun(pool, runIdentity, { status: 'running', ...statusSeed('running') });
+    await pool.query('UPDATE review_runs SET head_sha = $2 WHERE run_id = $1', [runId, 'e'.repeat(40)]);
+    const before = await runRow(pool, runId);
+    const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'enabled' });
+
+    await expect(repository.createOrGet({ identity: runIdentity, repositoryId, now: baseTime })).rejects.toThrow(
+      /inconsistent review lifecycle run identity/u,
+    );
+
+    expect(await runRow(pool, runId)).toEqual(before);
+    expect(await lifecycleEvents(pool, runId)).toEqual([]);
+    expect(await eventCounters(pool, runId)).toEqual([]);
+  });
+
+  it('rejects a self-consistent stored identity with a wrong digest through the lock guard', async () => {
+    if (!pool) throw new Error('test pool was not initialized');
+    const runIdentity = identity({ prNumber: 646 });
+    const runId = await insertRun(pool, runIdentity, { status: 'queued', ...statusSeed('queued') });
+    await pool.query('UPDATE review_runs SET identity_digest = $2 WHERE run_id = $1', [runId, '0'.repeat(64)]);
+    const before = await runRow(pool, runId);
+    const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'enabled' });
+
+    await expect(repository.claim(runId, 'digest-guard-worker', baseTime, 30_000)).rejects.toThrow(
+      /inconsistent review lifecycle run identity/u,
+    );
+
+    expect(await runRow(pool, runId)).toEqual(before);
+    expect(await lifecycleEvents(pool, runId)).toEqual([]);
+    expect(await eventCounters(pool, runId)).toEqual([]);
+  });
+
+  it('rejects a malformed missing-key identity through the lock guard', async () => {
+    if (!pool) throw new Error('test pool was not initialized');
+    const runIdentity = identity({ prNumber: 647 });
+    const runId = await insertRun(pool, runIdentity, { status: 'queued', ...statusSeed('queued') });
+    await pool.query("UPDATE review_runs SET identity = identity - 'configDigest' WHERE run_id = $1", [runId]);
+    const before = await runRow(pool, runId);
+    const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'enabled' });
+
+    await expect(repository.claim(runId, 'shape-guard-worker', baseTime, 30_000)).rejects.toThrow(
+      /inconsistent review lifecycle run identity/u,
+    );
+
+    expect(await runRow(pool, runId)).toEqual(before);
+    expect(await lifecycleEvents(pool, runId)).toEqual([]);
+    expect(await eventCounters(pool, runId)).toEqual([]);
+  });
+
+  it('rolls back earlier candidate supersession and v1 history when a later candidate binding conflicts', async () => {
+    if (!pool) throw new Error('test pool was not initialized');
+    const candidateIdentities = [
+      identity({ prNumber: 654, headSha: '1'.repeat(40) }),
+      identity({ prNumber: 654, headSha: '2'.repeat(40) }),
+    ].sort((left, right) => runIdFor(left).localeCompare(runIdFor(right)));
+    const validCandidateId = await insertRun(pool, candidateIdentities[0], {
+      status: 'running',
+      ...statusSeed('running'),
+    });
+    const conflictingCandidateId = await insertRun(pool, candidateIdentities[1], {
+      status: 'queued',
+      ...statusSeed('queued'),
+      repositoryId: repositoryId + 1,
+    });
+    await appendLifecycleHistory(pool, validCandidateId);
+    const beforeValid = await runRow(pool, validCandidateId);
+    const beforeConflicting = await runRow(pool, conflictingCandidateId);
+    const beforeEvents = await lifecycleEvents(pool, validCandidateId);
+    const beforeCounters = await eventCounters(pool, validCandidateId);
+    const runIdentity = identity({ prNumber: 654, headSha: 'a'.repeat(40) });
+    const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'enabled' });
+
+    await expect(repository.createOrGet({ identity: runIdentity, repositoryId, now: baseTime })).rejects.toThrow(
+      /conflicting review lifecycle repository binding/iu,
+    );
+
+    expect(await countRows(pool, 'review_runs')).toBe(2);
+    expect(await runRow(pool, runIdFor(runIdentity))).toBeUndefined();
+    expect(await runRow(pool, validCandidateId)).toEqual(beforeValid);
+    expect(await runRow(pool, conflictingCandidateId)).toEqual(beforeConflicting);
+    expect(await lifecycleEvents(pool, validCandidateId)).toEqual(beforeEvents);
+    expect(await eventCounters(pool, validCandidateId)).toEqual(beforeCounters);
+    expect(await lifecycleEvents(pool, runIdFor(runIdentity))).toEqual([]);
+    expect(await eventCounters(pool, runIdFor(runIdentity))).toEqual([]);
+  });
+
   it('does not supersede an existing different-head candidate before a duplicate recovery', async () => {
     if (!pool) throw new Error('test pool was not initialized');
     const runIdentity = identity({ prNumber: 643 });
@@ -449,7 +765,11 @@ describe('enabled versus disabled status compatibility', () => {
   it.each(statuses)('enabled exact duplicate preserves %s without new events', async (status) => {
     if (!pool) throw new Error('test pool was not initialized');
     const runIdentity = identity({ prNumber: 648 });
-    const runId = await insertRun(pool, runIdentity, { status });
+    const runId = await insertRun(pool, runIdentity, { status, ...statusSeed(status) });
+    await appendLifecycleHistory(pool, runId);
+    const before = await runRow(pool, runId);
+    const beforeEvents = await lifecycleEvents(pool, runId);
+    const beforeCounters = await eventCounters(pool, runId);
     const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'enabled' });
 
     const duplicate = await repository.createOrGet({ identity: runIdentity, repositoryId, now: baseTime + 1_000 });
@@ -457,13 +777,16 @@ describe('enabled versus disabled status compatibility', () => {
     expect(duplicate.runId).toBe(runId);
     expect(duplicate.status).toBe(status);
     expect(duplicate.repositoryId).toBe(repositoryId);
-    expect(await eventRows(pool, runId)).toEqual([]);
+    expect(await runRow(pool, runId)).toEqual(before);
+    expect(await lifecycleEvents(pool, runId)).toEqual(beforeEvents);
+    expect(await eventCounters(pool, runId)).toEqual(beforeCounters);
   });
 
   it.each(statuses)('disabled exact duplicate preserves legacy %s without repository binding', async (status) => {
     if (!pool) throw new Error('test pool was not initialized');
     const runIdentity = identity({ prNumber: 649 });
-    const runId = await insertRun(pool, runIdentity, { repositoryId: null, status });
+    const runId = await insertRun(pool, runIdentity, { repositoryId: null, status, ...statusSeed(status) });
+    const before = await runRow(pool, runId);
     const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'disabled' });
 
     const duplicate = await repository.createOrGet({ identity: runIdentity, repositoryId, now: baseTime + 1_000 });
@@ -471,29 +794,128 @@ describe('enabled versus disabled status compatibility', () => {
     expect(duplicate.runId).toBe(runId);
     expect(duplicate.status).toBe(status);
     expect(duplicate.repositoryId).toBeUndefined();
+    expect(await runRow(pool, runId)).toEqual(before);
+    expect(await lifecycleEvents(pool, runId)).toEqual([]);
+    expect(await eventCounters(pool, runId)).toEqual([]);
   });
 
   it.each(statuses)('enabled admission only supersedes %s when eligible', async (status) => {
     if (!pool) throw new Error('test pool was not initialized');
     const runIdentity = identity({ prNumber: 650, headSha: '1'.repeat(40) });
-    const candidateId = await insertRun(pool, identity({ prNumber: 650, headSha: '2'.repeat(40) }), { status });
+    const candidateId = await insertRun(pool, identity({ prNumber: 650, headSha: '2'.repeat(40) }), {
+      status,
+      ...statusSeed(status),
+    });
+    await appendLifecycleHistory(pool, candidateId);
+    const before = await runRow(pool, candidateId);
+    const beforeEvents = await lifecycleEvents(pool, candidateId);
+    const beforeCounters = await eventCounters(pool, candidateId);
     const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'enabled' });
 
-    await repository.createOrGet({ identity: runIdentity, repositoryId, now: baseTime });
+    const admitted = await repository.createOrGet({ identity: runIdentity, repositoryId, now: baseTime });
     const candidate = await runRow(pool, candidateId);
-    expect(candidate?.status).toBe(status === 'queued' || status === 'running' ? 'superseded' : status);
+    const admittedRow = await runRow(pool, admitted.runId);
+    const eligible = status === 'queued' || status === 'running';
+
+    if (eligible) {
+      expect(candidate).toEqual({
+        ...before,
+        status: 'superseded',
+        error_text: 'superseded by a newer pull request head',
+        lease_owner: null,
+        lease_expires_at: null,
+        updated_at: new Date(baseTime),
+      });
+      const candidateEvents = await lifecycleEvents(pool, candidateId);
+      expect(candidateEvents.map(({ eventKind, sequence }) => ({ eventKind, sequence }))).toEqual([
+        ...beforeEvents.map(({ eventKind, sequence }) => ({ eventKind, sequence })),
+        { eventKind: 'review.lifecycle.superseded', sequence: beforeEvents.length + 1 },
+      ]);
+      expect(candidateEvents[candidateEvents.length - 1]?.data).toMatchObject({
+        stage: 'superseded',
+        terminal_class: 'candidate_superseded',
+      });
+      expect(await eventCounters(pool, candidateId)).not.toEqual(beforeCounters);
+    } else {
+      expect(candidate).toEqual(before);
+      expect(await lifecycleEvents(pool, candidateId)).toEqual(beforeEvents);
+      expect(await eventCounters(pool, candidateId)).toEqual(beforeCounters);
+    }
+
+    expect(admittedRow).toMatchObject({
+      run_id: admitted.runId,
+      identity_digest: sha256(runIdentity),
+      owner: runIdentity.owner,
+      repo: runIdentity.repo,
+      pr_number: runIdentity.prNumber,
+      head_sha: runIdentity.headSha,
+      base_sha: runIdentity.baseSha,
+      snapshot_digest: runIdentity.snapshotDigest,
+      config_digest: runIdentity.configDigest,
+      identity: runIdentity,
+      repository_id: String(repositoryId),
+      status: 'queued',
+      stage: 'admission',
+      attempt: 0,
+      lease_owner: null,
+      lease_expires_at: null,
+      error_text: null,
+      result_digest: null,
+      artifacts: {},
+      created_at: new Date(baseTime),
+      updated_at: new Date(baseTime),
+    });
+    const admittedEvents = await lifecycleEvents(pool, admitted.runId);
+    expect(admittedEvents.map(({ eventKind, sequence }) => ({ eventKind, sequence }))).toEqual([
+      { eventKind: 'review.lifecycle.admission', sequence: 1 },
+      { eventKind: 'review.lifecycle.queued', sequence: 2 },
+    ]);
   });
 
   it.each(statuses)('disabled admission preserves legacy %s eligibility semantics', async (status) => {
     if (!pool) throw new Error('test pool was not initialized');
     const candidateIdentity = identity({ prNumber: 651, headSha: '3'.repeat(40) });
     const runIdentity = identity({ prNumber: 651, headSha: '4'.repeat(40) });
-    const candidateId = await insertRun(pool, candidateIdentity, { repositoryId: null, status });
+    const candidateId = await insertRun(pool, candidateIdentity, {
+      repositoryId: null,
+      status,
+      ...statusSeed(status),
+    });
+    const before = await runRow(pool, candidateId);
     const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'disabled' });
 
-    await repository.createOrGet({ identity: runIdentity, repositoryId, now: baseTime });
+    const admitted = await repository.createOrGet({ identity: runIdentity, repositoryId, now: baseTime });
     const candidate = await runRow(pool, candidateId);
-    expect(candidate?.status).toBe(status === 'queued' || status === 'running' ? 'superseded' : status);
+    const eligible = status === 'queued' || status === 'running';
+    if (eligible) {
+      expect(candidate).toEqual({
+        ...before,
+        status: 'superseded',
+        error_text: 'superseded by a newer pull request head',
+        lease_owner: null,
+        lease_expires_at: null,
+        updated_at: new Date(baseTime),
+      });
+    } else {
+      expect(candidate).toEqual(before);
+    }
+    expect(await lifecycleEvents(pool, candidateId)).toEqual([]);
+    expect(await eventCounters(pool, candidateId)).toEqual([]);
+    expect(await runRow(pool, admitted.runId)).toMatchObject({
+      run_id: admitted.runId,
+      identity: runIdentity,
+      repository_id: null,
+      status: 'queued',
+      stage: 'admission',
+      attempt: 0,
+      lease_owner: null,
+      lease_expires_at: null,
+      error_text: null,
+      result_digest: null,
+      artifacts: {},
+      created_at: new Date(baseTime),
+      updated_at: new Date(baseTime),
+    });
   });
 
   it('keeps enabled old-head redelivery bound to the old run while legacy CTE semantics remain observable', async () => {
@@ -518,17 +940,80 @@ describe('enabled versus disabled status compatibility', () => {
     expect((await runRow(pool, legacyNewRunId))?.status).toBe('superseded');
   });
 
-  it('creates a separate run for a same-head identity with different immutable metadata', async () => {
+  it.each(['enabled', 'disabled'] as const)('creates a separate run for a same-head identity with different immutable metadata in %s mode', async (mode) => {
     if (!pool) throw new Error('test pool was not initialized');
     const firstIdentity = identity({ prNumber: 653, headSha: '7'.repeat(40), configDigest: '8'.repeat(64) });
     const secondIdentity = identity({ prNumber: 653, headSha: '7'.repeat(40), configDigest: '9'.repeat(64) });
-    const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: 'enabled' });
+    const repository = new PostgresReviewRunRepository(pool, { lifecycleEvents: mode });
 
     const first = await repository.createOrGet({ identity: firstIdentity, repositoryId, now: baseTime });
     const second = await repository.createOrGet({ identity: secondIdentity, repositoryId, now: baseTime });
 
     expect(second.runId).not.toBe(first.runId);
-    expect((await runRow(pool, first.runId))?.status).toBe('queued');
-    expect((await runRow(pool, second.runId))?.status).toBe('queued');
+    expect(first.repositoryId).toBe(mode === 'enabled' ? repositoryId : undefined);
+    expect(second.repositoryId).toBe(mode === 'enabled' ? repositoryId : undefined);
+    expect(await runRow(pool, first.runId)).toMatchObject({
+      run_id: first.runId,
+      identity_digest: sha256(firstIdentity),
+      owner: firstIdentity.owner,
+      repo: firstIdentity.repo,
+      pr_number: firstIdentity.prNumber,
+      head_sha: firstIdentity.headSha,
+      base_sha: firstIdentity.baseSha,
+      snapshot_digest: firstIdentity.snapshotDigest,
+      config_digest: firstIdentity.configDigest,
+      identity: firstIdentity,
+      repository_id: mode === 'enabled' ? String(repositoryId) : null,
+      status: 'queued',
+      stage: 'admission',
+      attempt: 0,
+      lease_owner: null,
+      lease_expires_at: null,
+      error_text: null,
+      result_digest: null,
+      artifacts: {},
+      created_at: new Date(baseTime),
+      updated_at: new Date(baseTime),
+    });
+    expect(await runRow(pool, second.runId)).toMatchObject({
+      run_id: second.runId,
+      identity_digest: sha256(secondIdentity),
+      owner: secondIdentity.owner,
+      repo: secondIdentity.repo,
+      pr_number: secondIdentity.prNumber,
+      head_sha: secondIdentity.headSha,
+      base_sha: secondIdentity.baseSha,
+      snapshot_digest: secondIdentity.snapshotDigest,
+      config_digest: secondIdentity.configDigest,
+      identity: secondIdentity,
+      repository_id: mode === 'enabled' ? String(repositoryId) : null,
+      status: 'queued',
+      stage: 'admission',
+      attempt: 0,
+      lease_owner: null,
+      lease_expires_at: null,
+      error_text: null,
+      result_digest: null,
+      artifacts: {},
+      created_at: new Date(baseTime),
+      updated_at: new Date(baseTime),
+    });
+    const expectedEvents = mode === 'enabled'
+      ? [
+        { eventKind: 'review.lifecycle.admission', sequence: 1 },
+        { eventKind: 'review.lifecycle.queued', sequence: 2 },
+      ]
+      : [];
+    expect((await lifecycleEvents(pool, first.runId)).map(({ eventKind, sequence }) => ({ eventKind, sequence })))
+      .toEqual(expectedEvents);
+    expect((await lifecycleEvents(pool, second.runId)).map(({ eventKind, sequence }) => ({ eventKind, sequence })))
+      .toEqual(expectedEvents);
+    if (mode === 'enabled') {
+      expect(await eventCounters(pool, first.runId)).not.toEqual([]);
+      expect(await eventCounters(pool, second.runId)).not.toEqual([]);
+    } else {
+      expect(await eventCounters(pool, first.runId)).toEqual([]);
+      expect(await eventCounters(pool, second.runId)).toEqual([]);
+    }
   });
 });
