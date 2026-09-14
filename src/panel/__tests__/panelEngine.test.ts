@@ -94,7 +94,8 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     expect(isRetryablePanelError(new OpenRouterResponseError('unauthorized', 401))).toBe(false);
     expect(isRetryablePanelError(new OpenRouterResponseError('rate limited', 429))).toBe(true);
     expect(isRetryablePanelError(new OpenRouterResponseError('unavailable', 503))).toBe(true);
-    expect(isRetryablePanelError(new OpenRouterResponseError('OpenRouter returned empty completion content'))).toBe(true);
+    // The gateway tags empty completions with 502; classification is status-based, not stringly-typed.
+    expect(isRetryablePanelError(new OpenRouterResponseError('OpenRouter returned empty completion content', 502))).toBe(true);
     expect(isRetryablePanelError(new OpenRouterResponseError('some other contract error'))).toBe(false);
     expect(isRetryablePanelError(new OpenRouterTimeoutError('deadline', 'total'))).toBe(true);
   });
