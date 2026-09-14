@@ -1,3 +1,5 @@
+import { MAX_COMPLETION_BYTES } from '../review/workerReviewCompletion';
+
 /** Additive schema for the service-owned check publication outbox. No consumer
  * protection or CI admission is activated by installing these tables. */
 export const REVIEW_GATE_SCHEMA_SQL = `
@@ -52,9 +54,10 @@ export const REVIEW_GATE_SCHEMA_SQL = `
     execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
     content_digest VARCHAR(64) NOT NULL,
     payload JSONB NOT NULL,
-    -- Same bound as the wire contract (MAX_COMPLETION_BYTES); a re-serialized
-    -- accepted payload is never larger than the body the service accepted.
-    byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= 1000000),
+    -- The wire contract's bound, interpolated so it cannot drift from the parser.
+    -- A re-serialized accepted payload is never larger than the body the service
+    -- accepted, so an accepted completion cannot trip this constraint.
+    byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= ${MAX_COMPLETION_BYTES}),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (run_id, execution_attempt)
   );
