@@ -1117,6 +1117,15 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
       expect(observedUpdates).toEqual(['review_gate_attempts', 'review_dispatch_outbox', 'review_runs']);
       expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+      // The verified payload is kept, bound to the gate by the same digest.
+      const completions = (await pool!.query(
+        'SELECT execution_attempt, content_digest, payload, byte_length FROM review_worker_completions WHERE run_id = $1', [id],
+      )).rows;
+      expect(completions).toHaveLength(1);
+      expect(completions[0]).toMatchObject({
+        execution_attempt: 5, content_digest: workerReviewCompletionDigest(event), payload: event,
+      });
+      expect(Number(completions[0].byte_length)).toBe(Buffer.byteLength(JSON.stringify(event), 'utf8'));
       expect(resolve).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
         checkId: 8080, creationState: 'bound', reviewGeneration: 2,
         coordinates: expect.objectContaining({ runId: id, executionAttempt: 5 }),
@@ -1140,17 +1149,53 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       await expect(failing.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).rejects.toThrow('injected transaction failure');
       expect(await snapshot(id)).toEqual(before);
       expect((await pool!.query('SELECT * FROM review_ci_requests WHERE review->>\'runId\'=$1', [id])).rows).toHaveLength(0);
+      // The completion payload rolls back with everything else.
+      expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(0);
       const repository = new PostgresReviewGateRepository(pool!, { ...ENABLED_LIFECYCLE_EVENTS, onEligibleCompletion: async (client, gate, now) => {
         await enqueueReviewCiCompletionInTransaction(client, gate.coordinates.attemptId, now);
       } });
       expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
       expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT + 1)).toBe('duplicate');
       expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+      // Recorded once; the duplicate neither adds nor rewrites the payload.
+      expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(1);
       const requests = (await pool!.query('SELECT * FROM review_ci_requests WHERE review->>\'runId\'=$1', [id])).rows;
       expect(requests).toHaveLength(1);
       expect((await pool!.query('SELECT * FROM review_ci_deliveries WHERE request_id=$1', [requests[0].request_id])).rows)
         .toEqual([expect.objectContaining({ kind: 'repository', state: 'pending', epoch: 0 })]);
       await pool!.query('TRUNCATE review_ci_deliveries, review_ci_requests');
+    });
+
+    it('persists persona findings verbatim for a blocking result and nothing for a rejected one', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      const blocking: WorkerReviewCompletion = {
+        ...event,
+        result: {
+          ...event.result,
+          personas: [
+            { id: 'sec-lane', decision: 'FINDINGS', findings: [{
+              severity: 'P1', path: 'src/example.ts', line: 1,
+              title: 'Constant is never read', body: 'first is assigned and never used.',
+            }] },
+            { id: 'arch-lane', decision: 'APPROVE', findings: [] },
+          ],
+        },
+      };
+      // Wrong execution attempt: authenticated identity mismatch, so the
+      // service must not keep a payload it refused.
+      const rejected = { ...blocking, executionAttempt: blocking.executionAttempt + 1 };
+      await expect(repository.recordWorkerResult(rejected, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('unauthorized');
+      expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(0);
+
+      await expect(repository.recordWorkerResult(blocking, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      const state = await snapshot(id);
+      expect(state.gates[0].decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
+      const rows = (await pool!.query(
+        'SELECT content_digest, payload FROM review_worker_completions WHERE run_id = $1', [id],
+      )).rows;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].content_digest).toBe(state.gates[0].worker_result_digest);
+      expect(rows[0].payload.result.personas[0].findings).toEqual(blocking.result.personas[0].findings);
     });
 
     it.each(['pending', 'claimed', 'projected'] as const)(

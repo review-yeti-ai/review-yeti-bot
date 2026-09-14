@@ -41,4 +41,21 @@ export const REVIEW_GATE_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS review_gate_publication_idx
     ON review_gate_attempts (available_at, lease_expires_at)
     WHERE published_version < desired_version;
+  -- The verified worker completion for each accepted execution attempt. Until
+  -- this table existed the service kept only the payload's digest and its
+  -- P0/P1 counts, so "what did the worker actually find" survived nowhere but
+  -- the published check text. content_digest is the same value stored as
+  -- review_gate_attempts.worker_result_digest, binding the row to its gate
+  -- record. Written inside the completion transaction; never updated.
+  CREATE TABLE IF NOT EXISTS review_worker_completions (
+    run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
+    execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
+    content_digest VARCHAR(64) NOT NULL,
+    payload JSONB NOT NULL,
+    byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= 2000000),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (run_id, execution_attempt)
+  );
+  CREATE INDEX IF NOT EXISTS review_worker_completions_created_at_idx
+    ON review_worker_completions (created_at);
 `;
