@@ -24,6 +24,7 @@ import { ReviewGatePublisher, type ReviewGatePublisherOptions } from '../../src/
 import {
   workerReviewCompletionDigest,
   type WorkerReviewCompletion,
+MAX_COMPLETION_BYTES,
 } from '../../src/review/workerReviewCompletion';
 
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
@@ -1117,6 +1118,15 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
       expect(observedUpdates).toEqual(['review_gate_attempts', 'review_dispatch_outbox', 'review_runs']);
       expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+      // The verified payload is kept, bound to the gate by the same digest.
+      const completions = (await pool!.query(
+        'SELECT execution_attempt, content_digest, payload, byte_length FROM review_worker_completions WHERE run_id = $1', [id],
+      )).rows;
+      expect(completions).toHaveLength(1);
+      expect(completions[0]).toMatchObject({
+        execution_attempt: 5, content_digest: workerReviewCompletionDigest(event), payload: event,
+      });
+      expect(Number(completions[0].byte_length)).toBe(Buffer.byteLength(JSON.stringify(event), 'utf8'));
       expect(resolve).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
         checkId: 8080, creationState: 'bound', reviewGeneration: 2,
         coordinates: expect.objectContaining({ runId: id, executionAttempt: 5 }),
@@ -1140,17 +1150,107 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       await expect(failing.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).rejects.toThrow('injected transaction failure');
       expect(await snapshot(id)).toEqual(before);
       expect((await pool!.query('SELECT * FROM review_ci_requests WHERE review->>\'runId\'=$1', [id])).rows).toHaveLength(0);
+      // The completion payload rolls back with everything else.
+      expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(0);
       const repository = new PostgresReviewGateRepository(pool!, { ...ENABLED_LIFECYCLE_EVENTS, onEligibleCompletion: async (client, gate, now) => {
         await enqueueReviewCiCompletionInTransaction(client, gate.coordinates.attemptId, now);
       } });
       expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
       expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT + 1)).toBe('duplicate');
       expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+      // Recorded once; the duplicate neither adds nor rewrites the payload.
+      expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(1);
       const requests = (await pool!.query('SELECT * FROM review_ci_requests WHERE review->>\'runId\'=$1', [id])).rows;
       expect(requests).toHaveLength(1);
       expect((await pool!.query('SELECT * FROM review_ci_deliveries WHERE request_id=$1', [requests[0].request_id])).rows)
         .toEqual([expect.objectContaining({ kind: 'repository', state: 'pending', epoch: 0 })]);
       await pool!.query('TRUNCATE review_ci_deliveries, review_ci_requests');
+    });
+
+    it('persists persona findings verbatim for a blocking result and nothing for a rejected one', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      const blocking: WorkerReviewCompletion = {
+        ...event,
+        result: {
+          ...event.result,
+          personas: [
+            { id: 'sec-lane', decision: 'FINDINGS', findings: [{
+              severity: 'P1', path: 'src/example.ts', line: 1,
+              title: 'Constant is never read — “first”', body: 'first is assigned and never used (naïve 例).',
+            }] },
+            { id: 'arch-lane', decision: 'APPROVE', findings: [] },
+          ],
+        },
+      };
+      // Wrong execution attempt: authenticated identity mismatch, so the
+      // service must not keep a payload it refused.
+      const rejected = { ...blocking, executionAttempt: blocking.executionAttempt + 1 };
+      await expect(repository.recordWorkerResult(rejected, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('unauthorized');
+      expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(0);
+
+      await expect(repository.recordWorkerResult(blocking, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      const state = await snapshot(id);
+      expect(state.gates[0].decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
+      const rows = (await pool!.query(
+        'SELECT content_digest, payload, byte_length FROM review_worker_completions WHERE run_id = $1', [id],
+      )).rows;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].content_digest).toBe(state.gates[0].worker_result_digest);
+      expect(rows[0].payload.result.personas[0].findings).toEqual(blocking.result.personas[0].findings);
+      // byte_length counts UTF-8 bytes, not characters: the fixture's multibyte
+      // title and body make the two differ.
+      const serialized = JSON.stringify(blocking);
+      expect(Buffer.byteLength(serialized, 'utf8')).toBeGreaterThan(serialized.length);
+      expect(Number(rows[0].byte_length)).toBe(Buffer.byteLength(serialized, 'utf8'));
+    });
+
+    it('rejects an oversize completion before the transaction: no gate change, no row', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      const before = await snapshot(id);
+      // Within every per-field and per-lane bound of the contract, yet past
+      // MAX_COMPLETION_BYTES once serialized. The parser refuses it before any
+      // SQL runs, and the schema's byte_length CHECK is the same bound, so an
+      // accepted payload can never trip the constraint.
+      const oversize: WorkerReviewCompletion = {
+        ...event,
+        result: {
+          ...event.result,
+          personas: [
+            { id: 'sec-lane', decision: 'FINDINGS', findings: Array.from({ length: 400 }, (_, index) => ({
+              severity: 'P2' as const, path: 'src/example.ts', line: 1,
+              title: `finding ${index}`, body: 'x'.repeat(10_000),
+            })) },
+            { id: 'arch-lane', decision: 'APPROVE', findings: [] },
+          ],
+        },
+      };
+      const serialized = JSON.stringify(oversize);
+      expect(Buffer.byteLength(serialized, 'utf8')).toBeGreaterThan(MAX_COMPLETION_BYTES);
+      await expect(repository.recordWorkerResult(oversize, WORKER_PROOF, resolve, COMPLETED_AT))
+        .rejects.toMatchObject({ code: 'payload-too-large' });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(await snapshot(id)).toEqual(before);
+      expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(0);
+    });
+
+    it('re-applies the byte_length bound on every initialize so an installed table follows the wire contract', async () => {
+      const read = async () => (await pool!.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conrelid = 'review_worker_completions'::regclass AND conname = 'review_worker_completions_byte_length_check'`)).rows[0]?.def as string;
+      expect(await read()).toContain(`byte_length <= ${MAX_COMPLETION_BYTES}`);
+      expect(await read()).toContain('byte_length > 0');
+      // Simulate an install whose CHECK was frozen at an older contract value.
+      await pool!.query('ALTER TABLE review_worker_completions DROP CONSTRAINT review_worker_completions_byte_length_check');
+      // NOT VALID: rows persisted by earlier cases in this schema would otherwise
+      // fail the pin itself; what is under test is the re-application, not the pin.
+      await pool!.query('ALTER TABLE review_worker_completions ADD CONSTRAINT review_worker_completions_byte_length_check CHECK (byte_length > 0 AND byte_length <= 1) NOT VALID');
+      expect(await read()).toContain('byte_length <= 1');
+      // The next initialize (schema re-application) must restore the current bound.
+      await pool!.query(REVIEW_GATE_SCHEMA_SQL);
+      expect(await read()).toContain(`byte_length <= ${MAX_COMPLETION_BYTES}`);
+      // Exactly one byte_length constraint survives (execution_attempt has its own CHECK).
+      expect((await pool!.query(`SELECT count(*)::int AS n FROM pg_constraint
+        WHERE conrelid = 'review_worker_completions'::regclass AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%byte_length%'`)).rows[0].n).toBe(1);
     });
 
     it.each(['pending', 'claimed', 'projected'] as const)(
