@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.65.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.64.0...v1.65.0) (2026-09-14)
+
+
+### Features
+
+* **review:** add enabled PR transaction boundary ([#787](https://github.com/review-yeti-ai/review-yeti-bot/issues/787)) ([8d793e4](https://github.com/review-yeti-ai/review-yeti-bot/commit/8d793e45fc0634052383f35c4435b2f253cc545c))
+
 ## [1.64.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.63.0...v1.64.0) (2026-09-13)
 
 
