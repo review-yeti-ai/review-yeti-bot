@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.68.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.67.0...v1.68.0) (2026-09-14)
+
+
+### Features
+
+* **gate:** carry the review result on the terminal success and keep it as evidence ([#799](https://github.com/review-yeti-ai/review-yeti-bot/issues/799)) ([11c890e](https://github.com/review-yeti-ai/review-yeti-bot/commit/11c890ebef35b473bf9d73700e3bf009b27c5d95))
+
 ## [1.67.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.66.2...v1.67.0) (2026-09-14)
 
 
