@@ -553,6 +553,7 @@ export class GitHubReviewGateClient {
 
     const terminal = 'conclusion' in desired;
     const metadata = validateMetadata(desired);
+    const hasMetadata = metadata.title !== undefined || metadata.summary !== undefined;
     const terminalOutput = terminal && this.checkName === REVIEW_GATE_CHECK_NAME && desired.conclusion === 'success'
       ? outputFor(
         metadata,
@@ -568,7 +569,7 @@ export class GitHubReviewGateClient {
           'Review Yeti completed this attempt but the policy eligibility gate failed.',
           'Terminal conclusion: failure.',
         )
-        : terminal && (metadata.title !== undefined || metadata.summary !== undefined)
+        : hasMetadata
           ? outputFor(metadata, this.checkName, 'Review Yeti gate state updated.')
           : undefined;
     const body: Record<string, unknown> = {

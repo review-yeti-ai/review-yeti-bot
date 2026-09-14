@@ -502,9 +502,14 @@ describe('runPublishingReviewWorker', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
 
-    // The panel still saw the readable file, and still said SHIP.
-    expect(receipt.verdict).toBe('SHIP');
+    // The panel still saw the readable file, but canonical coverage must reject
+    // the verdict because one changed-file header was never readable.
+    expect(receipt.verdict).toBe('BLOCK');
     expect(receipt.blockingFindingCount).toBe(0);
+    expect(receipt.coverage).toMatchObject({
+      mode: 'panel', expectedLaneCount: 1, completedLaneCount: 1, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: false, fullPanelComplete: false,
+    });
     // The check does not.
     expect(receipt.conclusion).toBe('failure');
     const arg = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
@@ -1206,6 +1211,37 @@ describe('hosted lane — repository visibility resolution', () => {
     expect(summaryOf(client)).toContain('Docs only modification');
     expect(summaryOf(client)).toContain('12,500 tokens saved');
     expect(summaryOf(client)).toContain('mode=fast_ship');
+  });
+
+  it('does not present rejected fast-ship coverage as a SHIP check', async () => {
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      sourceLoader: vi.fn(async () => ({
+        diff: `${DIFF}diff --git nonsense\n@@ -1 +1 @@\n-a\n+b\n`,
+        githubReads: 1,
+      })) as never,
+      panelRunner: vi.fn(async () => ({
+        isFastShip: true,
+        classifierRationale: 'Docs only modification',
+        tokensSaved: 12500,
+        personas: [{ id: 'fast-ship', findings: [] }],
+        quorum: { required: 0, distinctProviders: [], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({
+      mode: 'fast_ship', expectedLaneCount: null, completedLaneCount: 0, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: false, fullPanelComplete: false,
+    });
+    const published = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(published.title).toBe('Review Yeti: BLOCK');
+    expect(String(published.summary)).not.toContain('SHIP (fast-ship)');
   });
 
   it('publishes normal Review Yeti: SHIP with Telemetry line for standard panel result', async () => {
