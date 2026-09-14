@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.66.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.65.1...v1.66.0) (2026-09-14)
+
+
+### Features
+
+* **gateway:** implement retry resilience, reasoning extraction, and root status route ([#792](https://github.com/review-yeti-ai/review-yeti-bot/issues/792)) ([7716230](https://github.com/review-yeti-ai/review-yeti-bot/commit/77162300512ef8dfc218742a8db9627aff61ed1a))
+
 ## [1.65.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.65.0...v1.65.1) (2026-09-14)
 
 
