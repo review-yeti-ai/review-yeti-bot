@@ -1240,7 +1240,9 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       expect(await read()).toContain('byte_length > 0');
       // Simulate an install whose CHECK was frozen at an older contract value.
       await pool!.query('ALTER TABLE review_worker_completions DROP CONSTRAINT review_worker_completions_byte_length_check');
-      await pool!.query('ALTER TABLE review_worker_completions ADD CONSTRAINT review_worker_completions_byte_length_check CHECK (byte_length > 0 AND byte_length <= 1)');
+      // NOT VALID: rows persisted by earlier cases in this schema would otherwise
+      // fail the pin itself; what is under test is the re-application, not the pin.
+      await pool!.query('ALTER TABLE review_worker_completions ADD CONSTRAINT review_worker_completions_byte_length_check CHECK (byte_length > 0 AND byte_length <= 1) NOT VALID');
       expect(await read()).toContain('byte_length <= 1');
       // The next initialize (schema re-application) must restore the current bound.
       await pool!.query(REVIEW_GATE_SCHEMA_SQL);
