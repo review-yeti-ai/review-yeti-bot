@@ -49,6 +49,7 @@ import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
 import { parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
+import type { PanelResult } from '../panel/types';
 
 import { parseChangedFiles } from '../review/changedFiles';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
@@ -277,6 +278,61 @@ const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 export function publishingConclusion(verdict: string, blockingFindingCount: number): PublishingConclusion {
   if (blockingFindingCount > 0) return 'failure';
   return String(verdict).toUpperCase() === 'SHIP' ? 'success' : 'failure';
+}
+
+type RawPublicationLane = Parameters<typeof computeArbitration>[0][number];
+
+interface RawPublicationRoster {
+  lanes: RawPublicationLane[];
+  expectedCount: number;
+  coverageComplete: boolean;
+}
+
+function hasDuplicate(values: string[]): boolean {
+  return new Set(values).size !== values.length;
+}
+
+/**
+ * Convert the panel's existing selection result into raw-publication evidence.
+ * The panel engine owns path matching and classifier narrowing; this publisher
+ * only validates the returned roster and adds failed optional lanes to the
+ * arbitration input. Fast-ship remains its explicit classifier-owned bypass.
+ */
+function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): RawPublicationRoster {
+  const completed = panelResult.personas || [];
+  const failures = panelResult.optionalFailures || [];
+  const failedLanes: RawPublicationLane[] = failures.map((failure) => ({
+    id: failure.id,
+    decision: 'ERROR',
+    status: 'ERROR',
+    error: failure.error,
+    findings: [],
+  }));
+  const lanes: RawPublicationLane[] = [...completed, ...failedLanes];
+
+  if (isFastShip) {
+    return { lanes, expectedCount: completed.length, coverageComplete: true };
+  }
+
+  const configuredIds = Array.isArray(panelResult.applicablePersonaIds)
+    ? panelResult.applicablePersonaIds
+    : undefined;
+  if (configuredIds === undefined) {
+    // Backward-compatible injected/test fixtures have no roster field. They
+    // still account for explicit failed lanes instead of silently dropping them.
+    return { lanes, expectedCount: lanes.length, coverageComplete: true };
+  }
+
+  const returnedIds = lanes.map((lane) => lane.id || '');
+  const configuredSet = new Set(configuredIds);
+  const returnedSet = new Set(returnedIds);
+  const validRoster = configuredIds.every((id) => typeof id === 'string' && id.length > 0)
+    && !hasDuplicate(configuredIds)
+    && returnedIds.every((id) => id.length > 0 && configuredSet.has(id))
+    && !hasDuplicate(returnedIds)
+    && configuredIds.every((id) => returnedSet.has(id));
+
+  return { lanes, expectedCount: configuredIds.length, coverageComplete: validRoster };
 }
 
 export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
@@ -592,15 +648,18 @@ export async function runPublishingReviewWorker(
       );
       throwIfPanelAborted(panelDeadline.signal);
 
+      const isFastShip = isFastShipPanelResult(panelResult);
+      const rawRoster = rawPublicationRoster(panelResult, isFastShip);
       const rawFindings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
       // The model arbiter is evidence, not the policy boundary. The canonical
       // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
       // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
       // Recompute from the exact persona findings and quorum so this lane shares
       // the same fail-closed severity contract as the hosted review path.
-      const canonical = computeArbitration(panelResult.personas, panelResult.personas.length, {
+      const canonical = computeArbitration(rawRoster.lanes, rawRoster.expectedCount, {
         changedFiles,
-        coverageComplete: panelResult?.quorum ? panelResult.quorum.satisfied : true,
+        coverageComplete: rawRoster.coverageComplete
+          && (panelResult?.quorum ? panelResult.quorum.satisfied : true),
       });
       const verdict = canonical.verdict;
       // Count blocking findings from the canonical set, not the raw persona
@@ -654,7 +713,6 @@ export async function runPublishingReviewWorker(
     // annotation -- nothing an author could act on. Both fields below need only
     // `checks: write`, so the findings become visible without widening the
     const changedPaths = new Set(changedFiles.map((file) => file.path));
-    const isFastShip = isFastShipPanelResult(panelResult);
 
     const title = isFastShip
       ? 'Review Yeti: SHIP (fast-ship)'
