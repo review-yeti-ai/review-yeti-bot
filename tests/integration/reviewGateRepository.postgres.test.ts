@@ -24,6 +24,7 @@ import { ReviewGatePublisher, type ReviewGatePublisherOptions } from '../../src/
 import {
   workerReviewCompletionDigest,
   type WorkerReviewCompletion,
+MAX_COMPLETION_BYTES,
 } from '../../src/review/workerReviewCompletion';
 
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
@@ -1175,7 +1176,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           personas: [
             { id: 'sec-lane', decision: 'FINDINGS', findings: [{
               severity: 'P1', path: 'src/example.ts', line: 1,
-              title: 'Constant is never read', body: 'first is assigned and never used.',
+              title: 'Constant is never read — “first”', body: 'first is assigned and never used (naïve 例).',
             }] },
             { id: 'arch-lane', decision: 'APPROVE', findings: [] },
           ],
@@ -1191,11 +1192,53 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const state = await snapshot(id);
       expect(state.gates[0].decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
       const rows = (await pool!.query(
-        'SELECT content_digest, payload FROM review_worker_completions WHERE run_id = $1', [id],
+        'SELECT content_digest, payload, byte_length FROM review_worker_completions WHERE run_id = $1', [id],
       )).rows;
       expect(rows).toHaveLength(1);
       expect(rows[0].content_digest).toBe(state.gates[0].worker_result_digest);
       expect(rows[0].payload.result.personas[0].findings).toEqual(blocking.result.personas[0].findings);
+      // byte_length counts UTF-8 bytes, not characters: the fixture's multibyte
+      // title and body make the two differ.
+      const serialized = JSON.stringify(blocking);
+      expect(Buffer.byteLength(serialized, 'utf8')).toBeGreaterThan(serialized.length);
+      expect(Number(rows[0].byte_length)).toBe(Buffer.byteLength(serialized, 'utf8'));
+    });
+
+    it('rejects an oversize completion before the transaction: no gate change, no row', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      const before = await snapshot(id);
+      // Within every per-field and per-lane bound of the contract, yet past
+      // MAX_COMPLETION_BYTES once serialized. The parser refuses it before any
+      // SQL runs, and the schema's byte_length CHECK is the same bound, so an
+      // accepted payload can never trip the constraint.
+      const oversize: WorkerReviewCompletion = {
+        ...event,
+        result: {
+          ...event.result,
+          personas: [
+            { id: 'sec-lane', decision: 'FINDINGS', findings: Array.from({ length: 400 }, (_, index) => ({
+              severity: 'P2' as const, path: 'src/example.ts', line: 1,
+              title: `finding ${index}`, body: 'x'.repeat(10_000),
+            })) },
+            { id: 'arch-lane', decision: 'APPROVE', findings: [] },
+          ],
+        },
+      };
+      const serialized = JSON.stringify(oversize);
+      expect(Buffer.byteLength(serialized, 'utf8')).toBeGreaterThan(MAX_COMPLETION_BYTES);
+      await expect(repository.recordWorkerResult(oversize, WORKER_PROOF, resolve, COMPLETED_AT))
+        .rejects.toMatchObject({ code: 'payload-too-large' });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(await snapshot(id)).toEqual(before);
+      expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(0);
+    });
+
+    it('pins the schema byte_length bound to the wire contract', async () => {
+      const bound = (await pool!.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conrelid = 'review_worker_completions'::regclass AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%byte_length%'`)).rows[0]?.def as string;
+      expect(bound).toContain(`byte_length <= ${MAX_COMPLETION_BYTES}`);
+      expect(bound).toContain('byte_length > 0');
     });
 
     it.each(['pending', 'claimed', 'projected'] as const)(
