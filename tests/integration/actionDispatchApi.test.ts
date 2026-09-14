@@ -1,4 +1,6 @@
 import express from 'express';
+import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
+import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../src/review/workerReviewCompletion';
 import request from 'supertest';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -1266,10 +1268,17 @@ describe('POST /api/dispatch/completion', () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ version: 'WorkerTerminalSuccessAccepted.v1', runId: terminalSuccess.runId, status: 'succeeded' });
+    // The digest binds the row to its gate record: it is the completion contract's
+    // digest of the stored payload (check id excluded), not of the raw event.
+    const { checkId: _checkId, ...coordinates } = terminalSuccess;
+    const expectedDigest = workerReviewCompletionDigest(parseWorkerReviewCompletion({
+      ...coordinates, version: 'WorkerReviewCompletion.v1', result: terminalSuccessResult,
+    }));
+    expect(expectedDigest).not.toBe(workerTerminalSuccessDigest({ ...terminalSuccess, result: terminalSuccessResult }));
     expect(fixture.evidence.put).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       runId: terminalSuccess.runId,
       executionAttempt: terminalSuccess.executionAttempt,
-      contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      contentDigest: expectedDigest,
       payload: expect.objectContaining({
         version: 'WorkerReviewCompletion.v1',
         runId: terminalSuccess.runId, headSha: terminalSuccess.headSha, executionAttempt: terminalSuccess.executionAttempt,
