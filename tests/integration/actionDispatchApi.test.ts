@@ -134,16 +134,29 @@ function completionApp(overrides: Record<string, any> = {}) {
     markWorkerSuccess: vi.fn(async (event: typeof terminalSuccess) => ({ runId: event.runId, status: 'succeeded' as const })),
     ...(overrides.repository || {}),
   };
+  const evidence = { put: vi.fn(async () => 'inserted' as const), ...(overrides.evidence || {}) };
   const instance = express();
   instance.use(express.json({ limit: '64kb' }));
   instance.use('/api/dispatch', createActionDispatchRouter({
     verifier: { verify: vi.fn(async () => verified) },
     admission: { admit: vi.fn() },
     resolveInstallationId: vi.fn(),
-    workerCompletion: { verifier, repository },
+    workerCompletion: { verifier, repository, evidence },
   }));
-  return { instance, verifier, repository };
+  return { instance, verifier, repository, evidence };
 }
+
+const terminalSuccessResult = {
+  version: 'WorkerReviewResult.v1',
+  completedAt: '2026-09-14T12:00:00Z',
+  personas: [
+    { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE',
+      findings: [{ severity: 'P1', path: 'src/a.ts', line: 3, title: 'Unchecked input', body: 'Validate it.' }] },
+    { id: 'arch-lane', decision: 'APPROVE', findings: [] },
+  ],
+  coverageComplete: true,
+  quorumSatisfied: true,
+} as const;
 
 describe('POST /api/dispatch/action', () => {
   it('returns 202 only after the verified request is durably admitted', async () => {
@@ -1242,6 +1255,56 @@ describe('POST /api/dispatch/completion', () => {
       expect.any(Number),
     );
     expect(fixture.repository.markWorkerFailure).not.toHaveBeenCalled();
+  });
+
+  it('keeps the review result behind an accepted terminal success as a WorkerReviewCompletion.v1 record', async () => {
+    const fixture = completionApp();
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send({ ...terminalSuccess, result: terminalSuccessResult });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ version: 'WorkerTerminalSuccessAccepted.v1', runId: terminalSuccess.runId, status: 'succeeded' });
+    expect(fixture.evidence.put).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      runId: terminalSuccess.runId,
+      executionAttempt: terminalSuccess.executionAttempt,
+      contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      payload: expect.objectContaining({
+        version: 'WorkerReviewCompletion.v1',
+        runId: terminalSuccess.runId, headSha: terminalSuccess.headSha, executionAttempt: terminalSuccess.executionAttempt,
+        result: expect.objectContaining({ personas: [
+          expect.objectContaining({ id: 'sec-lane', findings: [expect.objectContaining({ severity: 'P1', path: 'src/a.ts' })] }),
+          expect.objectContaining({ id: 'arch-lane' }),
+        ] }),
+      }),
+    }));
+    // The check id is lifecycle state, not review evidence.
+    expect((fixture.evidence.put.mock.calls[0][0] as { payload: Record<string, unknown> }).payload).not.toHaveProperty('checkId');
+  });
+
+  it('does not touch evidence for a terminal success without a result, a rejected one, or one the store cannot keep', async () => {
+    const plain = completionApp();
+    await request(plain.instance).post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token').send(terminalSuccess);
+    expect(plain.evidence.put).not.toHaveBeenCalled();
+
+    const rejected = completionApp({ repository: { markWorkerSuccess: vi.fn(async () => ({ runId: terminalSuccess.runId, status: 'unauthorized' as const })) } });
+    const denied = await request(rejected.instance).post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token')
+      .send({ ...terminalSuccess, result: terminalSuccessResult });
+    expect(denied.status).toBe(403);
+    expect(rejected.evidence.put).not.toHaveBeenCalled();
+
+    const failing = completionApp({ evidence: { put: vi.fn(async () => { throw new Error('disk on fire'); }) } });
+    const stillOk = await request(failing.instance).post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token')
+      .send({ ...terminalSuccess, result: terminalSuccessResult });
+    expect(stillOk.status).toBe(200);
+    expect(stillOk.body.status).toBe('succeeded');
+
+    const malformed = completionApp();
+    const bad = await request(malformed.instance).post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token')
+      .send({ ...terminalSuccess, result: { version: 'WorkerReviewResult.v1', personas: 'nope' } });
+    expect(bad.status).toBe(200);
+    expect(malformed.evidence.put).not.toHaveBeenCalled();
   });
 
   it('rejects conflicting terminal-success evidence without exposing persistence details', async () => {

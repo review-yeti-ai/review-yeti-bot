@@ -227,6 +227,10 @@ function coordinatesMatch(completion: WorkerReviewCompletion, expected: TrustedW
 }
 
 /** Parse the authenticated success payload before any result is treated as review evidence. */
+export function parseWorkerReviewResult(input: unknown): WorkerReviewResult {
+  return resultSchema.parse(input);
+}
+
 export function parseWorkerReviewCompletion(input: unknown): WorkerReviewCompletion {
   if (!isRecord(input)) {
     throw new WorkerReviewCompletionError('invalid-schema', 'worker review completion must be a JSON object');

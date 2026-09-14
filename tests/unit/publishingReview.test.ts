@@ -662,6 +662,12 @@ describe('runPublishingReviewWorker', () => {
       configDigest: 'd'.repeat(64),
       executionAttempt: 2,
       checkId: 4242,
+      // The persona lanes behind the published check ride along as evidence.
+      result: expect.objectContaining({
+        version: 'WorkerReviewResult.v1',
+        personas: [expect.objectContaining({ id: 'sec-lane', status: 'COMPLETE', findings: [] })],
+        coverageComplete: true,
+      }),
     });
   });
 
