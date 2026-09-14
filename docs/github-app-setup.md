@@ -119,15 +119,12 @@ contains repository names under that owner; it does not accept a mixture of
 `owner/repository` values from different organizations. Install the same App
 separately for each owner and mint a separate token for each installation.
 
-The governed self-hosting route is deliberately narrower than the generic
-setup above:
-
-* target installation: owner `review-yeti-ai`, repository exactly
-  `review-yeti-bot`;
-* central installation: owner `exampleorg`, repository exactly
-  `example-review-actions`;
-* caller workflow: exactly `.github/workflows/ct-review-bot.yml` in the target's
-  default branch.
+Admission is owner-scoped: only `exampleorg/*` repositories are admitted.
+The internal review lane is a private company resource and is never granted to a
+public repository entity (for example `review-yeti-ai/review-yeti-bot`), which
+keeps the `ct-review-bot` App installation, private key, and internal network
+access within the company boundary. A public repository reviews itself with its
+own native workflow and its own credentials.
 
 The trusted workflows consume `CT_REVIEW_BOT_APP_ID` and
 `CT_REVIEW_BOT_APP_PRIVATE_KEY` only in pinned

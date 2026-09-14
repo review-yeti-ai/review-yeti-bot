@@ -142,8 +142,8 @@ jobs:
       TRUSTED_EXECUTION_BACKEND: ${{ inputs.central_execution && 'doks' || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
     steps:
       # Resolve only the existing exampleorg owner admission or the one
-      # explicitly admitted external repository. The trusted reusable workflow
-      # performs this before exposing the App private key to token minting.
+      # owner-scoped boundary. The trusted reusable workflow performs this
+      # before exposing the App private key to token minting.
       - name: Resolve target repository scope
         id: target
         env:
@@ -166,16 +166,6 @@ jobs:
                 echo "name=${target_name}"
                 echo "repositories=${repositories}"
                 echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
-                echo "needs_central_token=false"
-              } >> "$GITHUB_OUTPUT"
-              ;;
-            review-yeti-ai/review-yeti-bot)
-              {
-                echo "owner=review-yeti-ai"
-                echo "name=review-yeti-bot"
-                echo "repositories=review-yeti-bot"
-                echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
-                echo "needs_central_token=true"
               } >> "$GITHUB_OUTPUT"
               ;;
             *) echo "::error::target repository is not admitted: '${TARGET_REPOSITORY}'"; exit 1 ;;
@@ -194,18 +184,6 @@ jobs:
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
-
-      - name: Mint Review Yeti App token for central tooling
-        id: central_token
-        if: ${{ steps.target.outputs.needs_central_token == 'true' }}
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
-        with:
-          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
-          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
-          owner: exampleorg
-          repositories: example-review-actions
-          permission-actions: read
-          permission-contents: read
 
       # job.workflow_sha is the immutable commit GitHub selected when it
       # admitted this reusable workflow invocation. Capture it in trusted
@@ -241,7 +219,7 @@ jobs:
           repository: exampleorg/example-review-actions
           ref: ${{ steps.central_source.outputs.sha }}
           path: .exampleorg-review-actions
-          token: ${{ steps.central_token.outputs.token || steps.ry_token.outputs.token }}
+          token: ${{ steps.ry_token.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
 
@@ -268,7 +246,7 @@ jobs:
         if: ${{ inputs.central_execution }}
         env:
           GH_TARGET_TOKEN: ${{ steps.ry_token.outputs.token }}
-          GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token || steps.ry_token.outputs.token }}
+          GH_CENTRAL_TOKEN: ${{ steps.ry_token.outputs.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
           CENTRAL_DISPATCH_PAYLOAD: >-
             {"request_id":"${{ inputs.request_id }}","repository":"${{ inputs.repository }}","pr_number":${{ inputs.pr_number }},"base_sha":"${{ inputs.base_sha }}","head_sha":"${{ inputs.head_sha }}","refresh_requested":${{ inputs.refresh_requested && 'true' || 'false' }}}

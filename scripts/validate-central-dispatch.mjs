@@ -7,14 +7,13 @@ import { isEntrypoint } from './entrypoint-guard.mjs';
 export const CENTRAL_REPOSITORY = 'exampleorg/example-review-actions';
 // Repositories admitted to the central dispatch boundary. ADR 0519 replaced the
 // fixed exampleorg repository list with an owner check plus a per-repository
-// concurrency cap. The self-hosting route below is the one explicit external
-// exception and carries its own exact caller path and installation boundary.
+// concurrency cap. Admission is owner-scoped by design: the internal review lane
+// is a private resource and is never granted to a public repository entity.
 // ADR 0490 still governs the shared lane itself.
 export const TARGET_OWNER = 'exampleorg';
 // A GitHub repository name: no slashes, no leading dot, no path traversal.
 const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/u;
 export const TARGET_REPOSITORY = 'exampleorg/example-api';
-export const REVIEW_YETI_REPOSITORY = 'review-yeti-ai/review-yeti-bot';
 
 // Peak observed central concurrency over a 17.4h / 100-run sample was 4 global,
 // and 4 / 3 / 2 for example-release / example-meta / example-api. Six is above every
@@ -61,7 +60,6 @@ export function globalConcurrencyCap(env = process.env) {
 
 export const DISPATCH_EVENT_TYPE = 'review-yeti-request';
 export const CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
-export const REVIEW_YETI_CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
 
 export function resolveAdmittedTarget(repository) {
   if (typeof repository !== 'string') throw new Error('repository must be a string');
@@ -74,17 +72,8 @@ export function resolveAdmittedTarget(repository) {
       callerWorkflowPath: CALLER_WORKFLOW_PATH,
     };
   }
-  if (repository === REVIEW_YETI_REPOSITORY) {
-    return {
-      owner: 'review-yeti-ai',
-      name: 'review-yeti-bot',
-      repository,
-      callerWorkflowPath: REVIEW_YETI_CALLER_WORKFLOW_PATH,
-    };
-  }
   throw new Error(
-    `repository is not admitted; repository must be a ${TARGET_OWNER}/<repo> repository `
-    + `or exactly ${REVIEW_YETI_REPOSITORY}, got '${repository}'`,
+    `repository is not admitted; repository must be a ${TARGET_OWNER}/<repo> repository, got '${repository}'`,
   );
 }
 

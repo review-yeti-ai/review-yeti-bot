@@ -10,7 +10,6 @@ import {
   DEFAULT_REPOSITORY_CONCURRENCY_CAP,
   CAPACITY_RUN_STATUSES,
   DISPATCH_EVENT_TYPE,
-  REVIEW_YETI_REPOSITORY,
   TARGET_REPOSITORY,
   assertAdmittedRepository,
   assertRepositoryCapacity,
@@ -351,7 +350,7 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   // REL-540 / ADR 0511: the receiver's validate job runs as the ct-review-bot App, never the PAT.
   assert.match(receiver, /create-github-app-token@[0-9a-f]{40}/u);
   assert.match(receiver, /app-id: \$\{\{ secrets\.CT_REVIEW_BOT_APP_ID \}\}/u);
-  const validationTokenStep = receiver.match(/- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Mint Review Yeti App token for central validation)/u)?.[0] ?? '';
+  const validationTokenStep = receiver.match(/- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Validate payload)/u)?.[0] ?? '';
   const scopedPermissions = [...validationTokenStep.matchAll(/^\s+permission-([a-z-]+):\s*(\w+)\s*$/gmu)]
     .map((match) => `${match[1]}:${match[2]}`).sort();
   assert.deepEqual(scopedPermissions, [
@@ -367,7 +366,7 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   // validation receives a separate token when the target owner differs.
   assert.match(reusable, /GH_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \}\}/u);
   assert.match(reusable, /GH_TARGET_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \}\}/u);
-  assert.match(reusable, /GH_CENTRAL_TOKEN:\s*\$\{\{ steps\.central_token\.outputs\.token \|\| steps\.ry_token\.outputs\.token \}\}/u);
+  assert.match(reusable, /GH_CENTRAL_TOKEN:\s*\$\{\{ steps\.ry_token\.outputs\.token \}\}/u);
   assert.doesNotMatch(reusable, /steps\.ry_token\.outputs\.token \|\| github\.token/u);
   assert.match(reusable, /REVIEW_YETI_DOKS_PUBLISH_MODE:\s*\$\{\{ inputs\.central_execution && 'app-gate' \|\| vars\.REVIEW_YETI_DOKS_PUBLISH_MODE \|\| 'disabled' \}\}/u);
   assert.match(reusable, /expected_generation:\s*[\s\S]*?default:\s*1[\s\S]*?type:\s*number/u);
@@ -389,34 +388,27 @@ test('receiver scopes App tokens to one owner while preserving exampleorg covera
     name: 'example-api',
     repositories: 'example-api,example-review-actions',
     caller_workflow_path: '.github/workflows/ct-review-bot.yml',
-    needs_central_token: 'false',
   });
   assert.deepEqual(resolveValidationTokenScope(CENTRAL_REPOSITORY), {
     owner: 'exampleorg',
     name: 'example-review-actions',
     repositories: 'example-review-actions',
     caller_workflow_path: '.github/workflows/ct-review-bot.yml',
-    needs_central_token: 'false',
   });
-  assert.deepEqual(resolveValidationTokenScope(REVIEW_YETI_REPOSITORY), {
-    owner: 'review-yeti-ai',
-    name: 'review-yeti-bot',
-    repositories: 'review-yeti-bot',
-    caller_workflow_path: '.github/workflows/ct-review-bot.yml',
-    needs_central_token: 'true',
+  // Admission is owner-scoped by design: a non-exampleorg (public) target
+  // is not admitted, so no cross-owner token scope can exist.
+  const crossOrg = spawnSync('bash', ['-c', workflowStepRun(receiverWorkflow, 'Resolve target repository scope')], {
+    encoding: 'utf8',
+    env: { ...process.env, TARGET_REPOSITORY: 'review-yeti-ai/review-yeti-bot' },
   });
+  assert.notEqual(crossOrg.status, 0);
+  assert.match(crossOrg.stdout + crossOrg.stderr, /target repository is not admitted/u);
 
   const validationTokenStep = receiverWorkflow.match(
-    /- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Mint Review Yeti App token for central validation)/u,
+    /- name: Mint Review Yeti App token for target validation[\s\S]*?(?=\n\s+- name: Validate payload)/u,
   )?.[0] ?? '';
   assert.match(validationTokenStep, /owner:\s*\$\{\{ steps\.target\.outputs\.owner \}\}/u);
   assert.match(validationTokenStep, /repositories:\s*\$\{\{ steps\.target\.outputs\.repositories \}\}/u);
-  const centralTokenStep = receiverWorkflow.match(
-    /- name: Mint Review Yeti App token for central validation[\s\S]*?(?=\n\s+- name: Validate payload)/u,
-  )?.[0] ?? '';
-  assert.match(centralTokenStep, /owner:\s*exampleorg/u);
-  assert.match(centralTokenStep, /repositories:\s*example-review-actions/u);
-  assert.match(centralTokenStep, /if:\s*\$\{\{ steps\.target\.outputs\.needs_central_token == 'true' \}\}/u);
 });
 
 

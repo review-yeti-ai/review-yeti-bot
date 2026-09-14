@@ -98,16 +98,6 @@ jobs:
                 echo "name=${target_name}"
                 echo "repositories=${repositories}"
                 echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
-                echo "needs_central_token=false"
-              } >> "$GITHUB_OUTPUT"
-              ;;
-            review-yeti-ai/review-yeti-bot)
-              {
-                echo "owner=review-yeti-ai"
-                echo "name=review-yeti-bot"
-                echo "repositories=review-yeti-bot"
-                echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
-                echo "needs_central_token=true"
               } >> "$GITHUB_OUTPUT"
               ;;
             *) echo "::error::target repository is not admitted: '${TARGET_REPOSITORY}'"; exit 1 ;;
@@ -126,24 +116,12 @@ jobs:
           permission-contents: read
           permission-pull-requests: read
 
-      - name: Mint Review Yeti App token for central validation
-        id: central_token
-        if: ${{ steps.target.outputs.needs_central_token == 'true' }}
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
-        with:
-          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
-          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
-          owner: exampleorg
-          repositories: example-review-actions
-          permission-actions: read
-          permission-contents: read
-
       - name: Validate payload, current PR, and immutable caller
         id: request
         working-directory: .exampleorg-review-actions
         env:
           GH_TARGET_TOKEN: ${{ steps.ry_token.outputs.token }}
-          GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token || steps.ry_token.outputs.token }}
+          GH_CENTRAL_TOKEN: ${{ steps.ry_token.outputs.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
           CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload || inputs) }}
         run: node scripts/validate-central-dispatch.mjs
