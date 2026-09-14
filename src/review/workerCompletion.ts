@@ -76,12 +76,20 @@ export const workerTerminalSuccessSchema = z.object({
   configDigest: digest,
   executionAttempt: positiveInteger,
   checkId: positiveInteger,
+  /** Optional WorkerReviewResult.v1: the persona lanes and findings behind the
+   * check the worker published. Evidence only; it never re-arbitrates the
+   * verdict or selects a check. Validated by the service with the same bounds
+   * as the authoritative completion contract before it is persisted. */
+  result: z.unknown().optional(),
 }).strict();
 
 export type WorkerTerminalSuccess = z.infer<typeof workerTerminalSuccessSchema>;
 
+/** Lifecycle identity of a terminal success. The optional result is evidence,
+ * not identity: a retry that omits or repeats it must not read as a conflict. */
 export function workerTerminalSuccessDigest(input: unknown): string {
-  return sha256(workerTerminalSuccessSchema.parse(input));
+  const { result: _result, ...identity } = workerTerminalSuccessSchema.parse(input);
+  return sha256(identity);
 }
 
 /** The dispatch service derives this only from the bearer; it is never sent by the worker. */

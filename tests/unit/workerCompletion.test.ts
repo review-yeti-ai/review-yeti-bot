@@ -361,3 +361,29 @@ describe('workerTerminalFailureSchema', () => {
     },
   );
 });
+
+
+describe('WorkerTerminalSuccess.v1 optional review result', () => {
+  const base = {
+    version: 'WorkerTerminalSuccess.v1' as const,
+    runId: 'run_' + 'a'.repeat(32), repositoryId: 7, owner: 'o', repo: 'r', prNumber: 1,
+    headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    executionAttempt: 1, checkId: 9,
+  };
+  const result = { version: 'WorkerReviewResult.v1', completedAt: '2026-09-14T00:00:00Z',
+    personas: [{ id: 'sec', decision: 'FINDINGS', findings: [{ severity: 'P2', path: 'a.ts', line: 1, title: 't', body: 'b' }] }],
+    coverageComplete: true, quorumSatisfied: true };
+
+  it('accepts a terminal success with and without a result, and still rejects unknown keys', () => {
+    expect(workerTerminalSuccessSchema.safeParse(base).success).toBe(true);
+    expect(workerTerminalSuccessSchema.safeParse({ ...base, result }).success).toBe(true);
+    expect(workerTerminalSuccessSchema.safeParse({ ...base, surprise: 1 }).success).toBe(false);
+  });
+
+  it('keeps the lifecycle identity digest independent of the evidence', () => {
+    // A retry that omits or repeats the result is the same terminal success,
+    // not a conflicting one.
+    expect(workerTerminalSuccessDigest({ ...base, result })).toBe(workerTerminalSuccessDigest(base));
+    expect(workerTerminalSuccessDigest({ ...base, checkId: 10 })).not.toBe(workerTerminalSuccessDigest(base));
+  });
+});
