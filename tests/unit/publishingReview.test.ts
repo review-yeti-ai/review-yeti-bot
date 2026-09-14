@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
   bifrostTransport,
   classifyFailure,
@@ -672,7 +673,10 @@ describe('runPublishingReviewWorker', () => {
   });
 
   it('reads a lane decision from its findings only when the lane did not state one', async () => {
-    const completion = { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}) };
+    const completion = {
+      reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
+      reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
+    };
     const d = deps({
       completion,
       panelRunner: vi.fn(async () => ({
@@ -689,12 +693,39 @@ describe('runPublishingReviewWorker', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
-    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } };
+    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } } | undefined;
     expect(event?.result?.personas.map((p) => [p.id, p.decision])).toEqual([
       ['found', 'FINDINGS'],   // no stated decision, findings present
       ['clean', 'APPROVE'],    // no stated decision, no findings
       ['stated', 'APPROVE'],   // a stated decision is preserved even with findings
     ]);
+  });
+
+  it('still reports the terminal success, without evidence, when the result fails the contract', async () => {
+    // The green check is already published by the time evidence is built. A
+    // result the service would refuse (here: a finding body past the contract's
+    // text bound) must be dropped, not allowed to abort the report.
+    const completion = {
+      reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
+      reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
+    };
+    const d = deps({
+      completion,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'x'.repeat(MAX_TEXT_CHARACTERS + 1) }] }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('success');
+    expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
+    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(event.version).toBe('WorkerTerminalSuccess.v1');
+    expect(event).not.toHaveProperty('result');
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
 
   it('does not publish contradictory failure evidence when the success acknowledgement is uncertain', async () => {
