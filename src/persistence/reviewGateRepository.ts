@@ -212,6 +212,10 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       // conflicting completion returned earlier and writes nothing. Findings
       // are persisted for every terminal class, including a failed gate: what
       // the worker reported is evidence regardless of what the gate decided.
+      // parseWorkerReviewCompletion at the top of this method already refused
+      // anything over MAX_COMPLETION_BYTES, and the schema's byte_length CHECK
+      // is that same bound, so this insert cannot fail on size for a payload
+      // that reached the transaction.
       const completionJson = JSON.stringify(event);
       await client.query(`INSERT INTO review_worker_completions
           (run_id, execution_attempt, content_digest, payload, byte_length)

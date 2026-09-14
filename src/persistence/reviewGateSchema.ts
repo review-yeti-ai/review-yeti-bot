@@ -52,7 +52,9 @@ export const REVIEW_GATE_SCHEMA_SQL = `
     execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
     content_digest VARCHAR(64) NOT NULL,
     payload JSONB NOT NULL,
-    byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= 2000000),
+    -- Same bound as the wire contract (MAX_COMPLETION_BYTES); a re-serialized
+    -- accepted payload is never larger than the body the service accepted.
+    byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= 1000000),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (run_id, execution_attempt)
   );
