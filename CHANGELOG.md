@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.67.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.66.2...v1.67.0) (2026-09-14)
+
+
+### Features
+
+* **gate:** persist the verified worker completion payload per accepted attempt ([#797](https://github.com/review-yeti-ai/review-yeti-bot/issues/797)) ([c19ea05](https://github.com/review-yeti-ai/review-yeti-bot/commit/c19ea05a92c40daa6315655bb31780d3d2cdffd8))
+
 ## [1.66.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.66.1...v1.66.2) (2026-09-14)
 
 
