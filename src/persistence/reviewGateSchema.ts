@@ -1,3 +1,5 @@
+import { MAX_COMPLETION_BYTES } from '../review/workerReviewCompletion';
+
 /** Additive schema for the service-owned check publication outbox. No consumer
  * protection or CI admission is activated by installing these tables. */
 export const REVIEW_GATE_SCHEMA_SQL = `
@@ -41,4 +43,31 @@ export const REVIEW_GATE_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS review_gate_publication_idx
     ON review_gate_attempts (available_at, lease_expires_at)
     WHERE published_version < desired_version;
+  -- The verified worker completion for each accepted execution attempt. Until
+  -- this table existed the service kept only the payload's digest and its
+  -- P0/P1 counts, so "what did the worker actually find" survived nowhere but
+  -- the published check text. content_digest is the same value stored as
+  -- review_gate_attempts.worker_result_digest, binding the row to its gate
+  -- record. Written inside the completion transaction; never updated.
+  CREATE TABLE IF NOT EXISTS review_worker_completions (
+    run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
+    execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
+    content_digest VARCHAR(64) NOT NULL,
+    payload JSONB NOT NULL,
+    byte_length INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (run_id, execution_attempt)
+  );
+  -- The byte bound is the wire contract's (MAX_COMPLETION_BYTES). CREATE TABLE
+  -- IF NOT EXISTS never rewrites an existing table, so a bound baked into the
+  -- CREATE would be frozen at first install and drift from the parser the day
+  -- the contract changes. Re-applying a named constraint on every initialize
+  -- keeps the deployed CHECK equal to the running code's constant.
+  ALTER TABLE review_worker_completions
+    DROP CONSTRAINT IF EXISTS review_worker_completions_byte_length_check;
+  ALTER TABLE review_worker_completions
+    ADD CONSTRAINT review_worker_completions_byte_length_check
+    CHECK (byte_length > 0 AND byte_length <= ${MAX_COMPLETION_BYTES});
+  CREATE INDEX IF NOT EXISTS review_worker_completions_created_at_idx
+    ON review_worker_completions (created_at);
 `;
