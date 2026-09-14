@@ -1233,12 +1233,20 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       expect((await pool!.query('SELECT 1 FROM review_worker_completions WHERE run_id = $1', [id])).rows).toHaveLength(0);
     });
 
-    it('pins the schema byte_length bound to the wire contract', async () => {
-      const bound = (await pool!.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
-        WHERE conrelid = 'review_worker_completions'::regclass AND contype = 'c'
-          AND pg_get_constraintdef(oid) LIKE '%byte_length%'`)).rows[0]?.def as string;
-      expect(bound).toContain(`byte_length <= ${MAX_COMPLETION_BYTES}`);
-      expect(bound).toContain('byte_length > 0');
+    it('re-applies the byte_length bound on every initialize so an installed table follows the wire contract', async () => {
+      const read = async () => (await pool!.query(`SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conrelid = 'review_worker_completions'::regclass AND conname = 'review_worker_completions_byte_length_check'`)).rows[0]?.def as string;
+      expect(await read()).toContain(`byte_length <= ${MAX_COMPLETION_BYTES}`);
+      expect(await read()).toContain('byte_length > 0');
+      // Simulate an install whose CHECK was frozen at an older contract value.
+      await pool!.query('ALTER TABLE review_worker_completions DROP CONSTRAINT review_worker_completions_byte_length_check');
+      await pool!.query('ALTER TABLE review_worker_completions ADD CONSTRAINT review_worker_completions_byte_length_check CHECK (byte_length > 0 AND byte_length <= 1)');
+      expect(await read()).toContain('byte_length <= 1');
+      // The next initialize (schema re-application) must restore the current bound.
+      await pool!.query(REVIEW_GATE_SCHEMA_SQL);
+      expect(await read()).toContain(`byte_length <= ${MAX_COMPLETION_BYTES}`);
+      expect((await pool!.query(`SELECT count(*)::int AS n FROM pg_constraint
+        WHERE conrelid = 'review_worker_completions'::regclass AND contype = 'c'`)).rows[0].n).toBe(1);
     });
 
     it.each(['pending', 'claimed', 'projected'] as const)(
