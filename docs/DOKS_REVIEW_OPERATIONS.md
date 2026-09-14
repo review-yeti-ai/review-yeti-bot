@@ -355,32 +355,50 @@ Review Yeti incorporates end-to-end metrics collection and distributed tracing a
          └────────────────────────────────────────┘
 ```
 
-### 1. Action Dispatch Metrics (`:3000/metrics`)
-The `ct-review-action-dispatch` service exposes real-time OpenTelemetry metrics on port `:3000`:
-- **Path**: `/metrics`
-- **Security**: Token-bucket rate limiting and optional bearer authentication via `ACTION_DISPATCH_METRICS_TOKEN`.
-- **Key Metrics**:
-  - `ct_review_tokens_total`: Total tokens consumed across all reviews.
-  - `ct_review_model_cost_usd_total`: Cumulative inference cost in USD.
-  - `ct_review_duration_seconds`: Histogram of review duration.
-  - `ct_persona_execution_duration_seconds`: Histogram of individual persona latencies.
+### 1. Cumulative Metric Export Semantics (REL-817 / v1.60.2)
+All Review Yeti in-memory metric exporters configure `AggregationTemporality.CUMULATIVE` (enum value `1`). Counter metrics (`ct_review_requests_total`, `ct_review_errors_total`, `ct_review_tokens_total`, `ct_review_model_cost_usd_total`, `ct_review_reaper_superseded_attempt_total`) increase monotonically across successive VictoriaMetrics scrapes without zero-drops or single-scrape delta resets. Always query using `increase(metric[range])` or `rate(metric[range])` in PromQL.
 
-### 2. OpenTelemetry Collector Pipeline
+### 2. Action Dispatch & Dispatcher Metrics
+- **Action Dispatch (`:3000/metrics`)**: Exposes token counts, model inference costs in USD, review durations, and persona latencies. Protected by token-bucket rate limiting and optional bearer authentication via `ACTION_DISPATCH_METRICS_TOKEN`.
+- **Dispatcher Reaper & Queue (`:9090/metrics`)**: Exposes queue depths (`ct_queue_active_jobs`, `ct_queue_queued_jobs`) and reaper events (`ct_review_reaper_superseded_attempt_total`, `ct_review_reaper_delivery_identity_mismatch_total`).
+
+### 3. OpenTelemetry Collector Pipeline
 Deployed in the `observability` namespace:
 - **Receivers**: OTLP gRPC (`:4317`) and OTLP HTTP (`:4318`).
 - **Trace Exporter**: Forwards OTLP spans directly to Tempo (`tempo.observability.svc.cluster.local:4317`).
 - **Prometheus Exporter**: Exposes converted OTLP metrics on port `:8889` under the `otel_*` namespace.
 - **Scrape Job**: VictoriaMetrics scrapes `otel-collector.observability.svc.cluster.local:8889` every 15s.
 
-### 3. VictoriaMetrics Scrape Topology (19 Active Targets)
+### 4. VictoriaMetrics Scrape Topology (20 Active Targets)
 VictoriaMetrics (`vmsingle`) monitors all cluster platform components, applications, and collectors with 100% health (`UP`):
 - `ct-review-action-dispatch` (`:3000`)
+- `ct-review-job-dispatcher` (`:9090`)
 - `otel-collector` (`:8889`)
 - `review-yeti-operator` (`:8080`)
 - `bifrost-gateway` (Bifrost `:8080`)
 - Cluster infrastructure (`kubelet-cadvisor`, `node-exporter`, `kube-state-metrics`, `alertmanager`, `coredns`, etc.)
 
-### 4. Essential PromQL Operational Queries
+### 5. Alertmanager Prometheus Alert Rules (`review_yeti`)
+Evaluated every 15s by `vmalert`:
+
+| Alert Name | Severity | Condition | For | Summary |
+|---|---|---|---|---|
+| `ReviewActionDispatchTargetDown` | `critical` | `up{job="ct-review-action-dispatch"} == 0` | 2m | Action dispatch metrics endpoint down |
+| `ReviewYetiOperatorTargetDown` | `critical` | `up{job="review-yeti-operator"} == 0` | 2m | Operator metrics endpoint down |
+| `ReviewDispatchErrorsDetected` | `warning` | `sum(rate(ct_review_errors_total{job="ct-review-action-dispatch"}[5m])) > 0` | 5m | Dispatch errors detected |
+| `ReviewExecutionDurationHigh` | `warning` | `histogram_quantile(0.95, sum by (le) (rate(ct_review_duration_seconds_bucket{job="ct-review-action-dispatch"}[5m]))) > 300` | 10m | p95 review latency exceeds 5m |
+| `ReviewOperatorJobFailures` | `warning` | `sum(rate(ct_operator_job_failures_total{job="review-yeti-operator"}[5m])) > 0` | 5m | Operator PR review job failures detected |
+
+### 6. Production Grafana Operations Dashboard (`review-yeti-ops.json`)
+The 12-panel operations dashboard (UID: `ct-review-yeti-ops`) provisions automatically in Grafana via GitOps Helm release:
+- **Review Throughput & Errors**: `sum(rate(ct_review_requests_total[5m]))` vs `sum(rate(ct_review_errors_total[5m]))`.
+- **Latency Percentiles**: p50, p95, and p99 quantiles from `ct_review_duration_seconds_bucket`.
+- **Queue Depth & Concurrency**: Real-time gauge of `ct_queue_active_jobs` and `ct_queue_queued_jobs`.
+- **Token Consumption & Inference Cost**: `sum(increase(ct_review_tokens_total[24h]))` and `sum(increase(ct_review_model_cost_usd_total[24h]))`.
+- **Dispatcher Reaper Activity**: Rate of retired superseded review runs and quarantined deliveries.
+- **Target Health Matrix**: Real-time up status across all review services.
+
+### 7. Essential PromQL Operational Queries
 
 ```promql
 # Active & queued Review Yeti operator jobs
@@ -396,6 +414,37 @@ sum(increase(ct_review_model_cost_usd_total{job="ct-review-action-dispatch"}[24h
 # Provider rate limits and error rate
 sum by (error) (rate(review_yeti_provider_errors_total[5m]))
 ```
+
+---
+
+## 🛰️ Private JetStream Lifecycle and Replay Event Plane (API-3230 / ADR 0564)
+
+Under ADR 0564 and API-3230, Review Yeti incorporates a private NATS JetStream event plane on DOKS for deterministic lifecycle tracing, audit trails, and offline replay:
+
+1. **Transactional PostgreSQL Outbox**:
+   - State transitions (`QUEUED`, `DISPATCHED`, `COMPLETED`, `FAILED`, `SUPERSEDED`) atomically insert into table `review_yeti_events_outbox` within the authoritative review run transaction.
+   - Concurrency is managed via advisory locks (`pg_advisory_xact_lock`), guaranteeing strictly ordered, duplicate-free outbox sequences without duplicating `review_ci_` legacy state.
+2. **Closed Event Envelope (`review-yeti-event.v1`)**:
+   - Strict 15-property closed JSON schema with monotonic Crockford Base32 ULIDs.
+   - Enforces a hard 16 KiB size ceiling per event.
+3. **Recursive Allowlist Sanitizer**:
+   - Automatically redacts 18 sensitive fields (tokens, secrets, private keys, diff bodies, raw prompts, stack traces) across 10 lifecycle event types.
+4. **Cluster JetStream Topology**:
+   - StatefulSet `ct-review-nats` running 3 replicas across physical nodes with pod anti-affinity.
+   - Dedicated streams: `CT_REVIEW_EVENTS` (subjects `ct.review.lifecycle.v1.>`, 30d retention, 5GiB) and `CT_REVIEW_PROGRESS` (subjects `ct.review.progress.v1.>`, 48h retention, 10GiB).
+   - Raw `CT_REVIEW_WORK` payload streams are strictly prohibited to prevent data leakage.
+   - Mutual TLS (mTLS) with cert-manager certificates and Doppler NKey credentials.
+   - Zero-trust Kubernetes NetworkPolicies restrict ingress/egress strictly to Review Yeti workers and dispatcher pods.
+
+---
+
+## 🏆 Live DOKS Qualification Evidence
+
+On 2026-09-12, production qualification on `doks-nyc1` (`ct-infrastructure` PR #271) validated the full runtime:
+- **Fast-Ship Path**: Completed in **13 seconds** (`check_run` ID `103601331582`) on doc-only diffs.
+- **Full Modular DAG Path**: Completed in **59 seconds** (`check_run` ID `103601457039`) across 5 parallel persona lanes, processing 23,043 tokens and publishing terminal `SHIP`.
+- **Storage Profile**: Verified ephemeral `emptyDir` 1Gi volume mount with instant pod startup and 0 PVC provisioning delays.
+- **Telemetry Integrity**: 20/20 targets remained UP, and all 5 Alertmanager rules remained healthy throughout heavy qualification execution.
 
 ---
 
