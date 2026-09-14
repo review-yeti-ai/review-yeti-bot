@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.66.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.66.0...v1.66.1) (2026-09-14)
+
+
+### Reverts
+
+* **API-3210:** remove cross-org self-review dispatch caller ([#794](https://github.com/review-yeti-ai/review-yeti-bot/issues/794)) ([561cb5a](https://github.com/review-yeti-ai/review-yeti-bot/commit/561cb5a1aad85bcc4de836878245bc458a5c501c))
+
 ## [1.66.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.65.1...v1.66.0) (2026-09-14)
 
 
