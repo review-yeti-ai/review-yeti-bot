@@ -1,5 +1,47 @@
 # Changelog
 
+## [1.65.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.65.0...v1.65.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **REL-831:** classify empty provider completions as transient retryables ([#790](https://github.com/review-yeti-ai/review-yeti-bot/issues/790)) ([ae5eb3a](https://github.com/review-yeti-ai/review-yeti-bot/commit/ae5eb3a724ca6daba8e8e5dac92bf7e4ce7514bc))
+
+## [1.65.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.64.0...v1.65.0) (2026-09-14)
+
+
+### Features
+
+* **review:** add enabled PR transaction boundary ([#787](https://github.com/review-yeti-ai/review-yeti-bot/issues/787)) ([8d793e4](https://github.com/review-yeti-ai/review-yeti-bot/commit/8d793e45fc0634052383f35c4435b2f253cc545c))
+
+## [1.64.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.63.0...v1.64.0) (2026-09-13)
+
+
+### Features
+
+* add dormant review lifecycle v2 storage ([#785](https://github.com/review-yeti-ai/review-yeti-bot/issues/785)) ([b24bab0](https://github.com/review-yeti-ai/review-yeti-bot/commit/b24bab0f14bea7e729ba03c050b54e0278415e10))
+
+## [1.63.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.62.0...v1.63.0) (2026-09-13)
+
+
+### Features
+
+* add dormant legacy lifecycle event adapter ([#781](https://github.com/review-yeti-ai/review-yeti-bot/issues/781)) ([055cc0b](https://github.com/review-yeti-ai/review-yeti-bot/commit/055cc0bbc1953078cffc2e460ded6262348bbc7f))
+
+## [1.62.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.3...v1.62.0) (2026-09-13)
+
+
+### Features
+
+* add scoped event gateway auth and PostgreSQL snapshots ([#778](https://github.com/review-yeti-ai/review-yeti-bot/issues/778)) ([752b68f](https://github.com/review-yeti-ai/review-yeti-bot/commit/752b68f431a72140335cb5f4c153ac7beddcfdf7))
+
+## [1.61.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.2...v1.61.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **worker-helper:** resolve the dispatcher ConfigMap name instead of assuming it ([#779](https://github.com/review-yeti-ai/review-yeti-bot/issues/779)) ([9718cd3](https://github.com/review-yeti-ai/review-yeti-bot/commit/9718cd32386718e7a379e54b4fdced0f8cae60da))
+
 ## [1.61.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.61.1...v1.61.2) (2026-09-13)
 
 
