@@ -715,7 +715,8 @@ export async function runPublishingReviewWorker(
       // the same fail-closed severity contract as the hosted review path.
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
-        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied,
+        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && unreadable.length === 0,
+        ...(unreadable.length > 0 ? { coverageGaps: ['unreadable diff header(s)'] } : {}),
       });
       const coverage: PublishingCoverageProjection = {
         mode: rawRoster.mode,
@@ -726,6 +727,7 @@ export async function runPublishingReviewWorker(
         quorumSatisfied: canonical.quorumSatisfied,
         fullPanelComplete: rawRoster.mode === 'panel' && canonical.quorumSatisfied,
       };
+      const fastShipApproved = isFastShip && canonical.quorumSatisfied;
       const verdict = canonical.verdict;
       // Count blocking findings from the canonical set, not the raw persona
       // output. The two disagreed: the check reported a blocking count derived
@@ -779,15 +781,15 @@ export async function runPublishingReviewWorker(
     // `checks: write`, so the findings become visible without widening the
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
-    const title = isFastShip
+    const title = fastShipApproved
       ? 'Review Yeti: SHIP (fast-ship)'
       : `Review Yeti: ${verdict}`;
 
-    const safeClassifierRationale = isFastShip && panelResult.classifierRationale
+    const safeClassifierRationale = fastShipApproved && panelResult.classifierRationale
       ? panelResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
       : 'Approved via fast-ship triage classifier.';
 
-    const summaryParts = isFastShip
+    const summaryParts = fastShipApproved
       ? [
           `### Review Yeti: SHIP (fast-ship)`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,
