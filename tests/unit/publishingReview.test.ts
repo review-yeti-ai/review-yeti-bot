@@ -59,7 +59,9 @@ function deps(over: Record<string, unknown> = {}) {
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async () => ({
-      personas: [{ findings: [] }],
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      optionalFailures: [],
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
       arbiter: { verdict: 'SHIP' },
     })) as never,
@@ -87,7 +89,8 @@ describe('qualification source arguments', () => {
 
   it('runs production Bifrost reviews with the strict native JSON contract', async () => {
     const panelRunner = vi.fn(async () => ({
-      personas: [{ findings: [] }],
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
       arbiter: { verdict: 'SHIP' },
     }));
@@ -272,6 +275,10 @@ describe('runPublishingReviewWorker', () => {
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
     expect(receipt.transport).toBe('bifrost');
+    expect(receipt.coverage).toEqual({
+      mode: 'panel', expectedLaneCount: 1, completedLaneCount: 1, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: true, fullPanelComplete: true,
+    });
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({ conclusion: 'success', checkId: 4242 }),
     );
@@ -284,7 +291,9 @@ describe('runPublishingReviewWorker', () => {
     // unusable. See the sibling test below.
     const d = deps({
       panelRunner: vi.fn(async () => ({
-        personas: [{ findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }] }],
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }] }],
+        optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
@@ -294,13 +303,159 @@ describe('runPublishingReviewWorker', () => {
     expect(receipt.blockingFindingCount).toBe(1);
   });
 
+  it('fails raw publication when an applicable optional lane exhausts its budget', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [{ id: 'arch-lane', error: 'turn budget exhausted' }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toEqual({
+      mode: 'panel', expectedLaneCount: 2, completedLaneCount: 1, failedLaneCount: 1,
+      rosterValid: true, quorumSatisfied: false, fullPanelComplete: false,
+    });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ conclusion: 'failure' }),
+    );
+    const summary = String((d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] &&
+      ((d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('mode=panel');
+    expect(summary).not.toContain('turn budget exhausted');
+  });
+
+  it('fails raw publication when returned lane identities duplicate the applicable roster', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [
+          { id: 'sec-lane', findings: [] },
+          { id: 'sec-lane', findings: [] },
+        ],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({ expectedLaneCount: 2, completedLaneCount: 2, failedLaneCount: 0,
+      rosterValid: false, quorumSatisfied: false, fullPanelComplete: false });
+  });
+
+  it('fails closed when the panel omits the applicable roster', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({ expectedLaneCount: null, completedLaneCount: 1, failedLaneCount: 0,
+      rosterValid: false, quorumSatisfied: false, fullPanelComplete: false });
+  });
+
+  it('fails closed when panel quorum evidence is absent', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [],
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({ expectedLaneCount: 1, completedLaneCount: 1, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: false, fullPanelComplete: false });
+  });
+
+  it('fails closed when an applicable lane is missing without an optional failure record', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({ expectedLaneCount: 2, completedLaneCount: 1, failedLaneCount: 0,
+      rosterValid: false, quorumSatisfied: false, fullPanelComplete: false });
+  });
+
+  it('fails closed when a returned lane is outside the applicable roster', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [
+          { id: 'sec-lane', findings: [] },
+          { id: 'foreign-lane', findings: [] },
+        ],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({ expectedLaneCount: 2, completedLaneCount: 2, failedLaneCount: 0,
+      rosterValid: false, quorumSatisfied: false, fullPanelComplete: false });
+  });
+
+  it('keeps a zero-lane panel as non-evidence with a zero-lane projection', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: [],
+        personas: [],
+        optionalFailures: [],
+        zeroLaneNonEvidence: true,
+        quorum: { required: 0, distinctProviders: [], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toEqual({
+      mode: 'zero_lane', expectedLaneCount: 0, completedLaneCount: 0, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: false, fullPanelComplete: false,
+    });
+  });
+
   it('does not count a finding that arbitration discarded', async () => {
     // Regression: the blocking count came from raw persona output while the
     // verdict came from the canonical set, so a check could read `SHIP` and
     // `blocking P0/P1: 13` at once and publish nothing an author could act on.
     const d = deps({
       panelRunner: vi.fn(async () => ({
-        personas: [{ findings: [{ severity: 'P1' }] }],
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P1' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
@@ -317,7 +472,8 @@ describe('runPublishingReviewWorker', () => {
     const d = deps({
       checkClient: client,
       panelRunner: vi.fn(async () => ({
-        personas: [{ findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Null deref', body: 'Crashes on empty input' }] }],
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Null deref', body: 'Crashes on empty input' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
@@ -346,9 +502,14 @@ describe('runPublishingReviewWorker', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
 
-    // The panel still saw the readable file, and still said SHIP.
-    expect(receipt.verdict).toBe('SHIP');
+    // The panel still saw the readable file, but canonical coverage must reject
+    // the verdict because one changed-file header was never readable.
+    expect(receipt.verdict).toBe('BLOCK');
     expect(receipt.blockingFindingCount).toBe(0);
+    expect(receipt.coverage).toMatchObject({
+      mode: 'panel', expectedLaneCount: 1, completedLaneCount: 1, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: false, fullPanelComplete: false,
+    });
     // The check does not.
     expect(receipt.conclusion).toBe('failure');
     const arg = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
@@ -365,7 +526,9 @@ describe('runPublishingReviewWorker', () => {
     const d = deps({
       checkClient: client,
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
         personas: [{
+          id: 'sec-lane',
           findings: [
             { severity: 'P2', path: 'src/a.ts', line: 1, title: 'Kept', body: 'anchored' },
             { severity: 'P1', title: 'Dropped', body: 'no path, cannot be anchored' },
@@ -397,7 +560,8 @@ describe('runPublishingReviewWorker', () => {
     const d = deps({
       checkClient: client,
       panelRunner: vi.fn(async () => ({
-        personas: [{ findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'InDiff', body: 'x' }] }],
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'InDiff', body: 'x' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
@@ -412,7 +576,8 @@ describe('runPublishingReviewWorker', () => {
   it('keeps P2-only findings advisory even when the model arbiter says FIX_FIRST', async () => {
     const d = deps({
       panelRunner: vi.fn(async () => ({
-        personas: [{ findings: [{ severity: 'P2', path: 'docs/guide.md', line: 1, title: 'Advisory', body: 'Advisory' }] }],
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'docs/guide.md', line: 1, title: 'Advisory', body: 'Advisory' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'FIX_FIRST' },
       })) as never,
@@ -863,6 +1028,7 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
   it('persists per-lane metrics and totals in receipt', async () => {
     const d = deps({
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'perf-lane'],
         personas: [
           {
             id: 'sec-lane',
@@ -887,11 +1053,17 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
             durationMs: 2500,
           },
         ],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
+    expect(receipt.coverage).toEqual({
+      mode: 'panel', expectedLaneCount: 2, completedLaneCount: 2, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: true, fullPanelComplete: true,
+    });
     expect(receipt.personas).toHaveLength(2);
     expect(receipt.personas?.[0].id).toBe('sec-lane');
     expect(receipt.personas?.[0].turnsCount).toBe(2);
@@ -1026,6 +1198,10 @@ describe('hosted lane — repository visibility resolution', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
+    expect(receipt.coverage).toEqual({
+      mode: 'fast_ship', expectedLaneCount: null, completedLaneCount: 0, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: true, fullPanelComplete: false,
+    });
     expect(client.completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'Review Yeti: SHIP (fast-ship)',
@@ -1034,6 +1210,38 @@ describe('hosted lane — repository visibility resolution', () => {
     );
     expect(summaryOf(client)).toContain('Docs only modification');
     expect(summaryOf(client)).toContain('12,500 tokens saved');
+    expect(summaryOf(client)).toContain('mode=fast_ship');
+  });
+
+  it('does not present rejected fast-ship coverage as a SHIP check', async () => {
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      sourceLoader: vi.fn(async () => ({
+        diff: `${DIFF}diff --git nonsense\n@@ -1 +1 @@\n-a\n+b\n`,
+        githubReads: 1,
+      })) as never,
+      panelRunner: vi.fn(async () => ({
+        isFastShip: true,
+        classifierRationale: 'Docs only modification',
+        tokensSaved: 12500,
+        personas: [{ id: 'fast-ship', findings: [] }],
+        quorum: { required: 0, distinctProviders: [], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({
+      mode: 'fast_ship', expectedLaneCount: null, completedLaneCount: 0, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: false, fullPanelComplete: false,
+    });
+    const published = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(published.title).toBe('Review Yeti: BLOCK');
+    expect(String(published.summary)).not.toContain('SHIP (fast-ship)');
   });
 
   it('publishes normal Review Yeti: SHIP with Telemetry line for standard panel result', async () => {
@@ -1041,6 +1249,7 @@ describe('hosted lane — repository visibility resolution', () => {
     const d = deps({
       checkClient: client,
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
         personas: [{ id: 'sec-lane', findings: [] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
@@ -1048,6 +1257,10 @@ describe('hosted lane — repository visibility resolution', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
+    expect(receipt.coverage).toEqual({
+      mode: 'panel', expectedLaneCount: 1, completedLaneCount: 1, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: true, fullPanelComplete: true,
+    });
     expect(client.completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'Review Yeti: SHIP',
@@ -1065,6 +1278,7 @@ describe('hosted lane — repository visibility resolution', () => {
     const d = deps({
       checkClient: client,
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
         personas: [{ id: 'sec-lane', findings: [] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },

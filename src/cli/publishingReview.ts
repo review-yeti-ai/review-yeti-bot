@@ -47,8 +47,9 @@ import {
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '../pipeline/domainIndex';
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
-import { parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
+import { MAX_PERSONAS, parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
+import type { PanelResult } from '../panel/types';
 
 import { parseChangedFiles } from '../review/changedFiles';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
@@ -127,6 +128,18 @@ export interface PublishingReviewPersonaMetrics {
   durationMs: number;
 }
 
+export type PublishingCoverageMode = 'panel' | 'fast_ship' | 'zero_lane';
+
+export interface PublishingCoverageProjection {
+  mode: PublishingCoverageMode;
+  expectedLaneCount: number | null;
+  completedLaneCount: number;
+  failedLaneCount: number;
+  rosterValid: boolean;
+  quorumSatisfied: boolean;
+  fullPanelComplete: boolean;
+}
+
 export interface PublishingReviewReceipt {
   version: 'ReviewYetiPublishingReview.v1';
   runId: string;
@@ -145,6 +158,7 @@ export interface PublishingReviewReceipt {
   failureClass: string | null;
   startedAt: string;
   completedAt: string;
+  coverage: PublishingCoverageProjection;
   personas?: PublishingReviewPersonaMetrics[];
   metrics?: {
     totalPromptTokens: number;
@@ -277,6 +291,103 @@ const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 export function publishingConclusion(verdict: string, blockingFindingCount: number): PublishingConclusion {
   if (blockingFindingCount > 0) return 'failure';
   return String(verdict).toUpperCase() === 'SHIP' ? 'success' : 'failure';
+}
+
+type RawPublicationLane = Parameters<typeof computeArbitration>[0][number];
+
+interface RawPublicationRoster {
+  mode: PublishingCoverageMode;
+  lanes: RawPublicationLane[];
+  expectedLaneCount: number | null;
+  arbitrationExpectedCount: number;
+  completedLaneCount: number;
+  failedLaneCount: number;
+  rosterValid: boolean;
+}
+
+function hasDuplicate(values: string[]): boolean {
+  return new Set(values).size !== values.length;
+}
+
+function boundedLaneCount(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) return 0;
+  return Math.min(value, MAX_PERSONAS);
+}
+
+function isRosterId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z][a-z0-9_-]{0,127}$/u.test(value);
+}
+
+function validConfiguredRoster(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length <= MAX_PERSONAS
+    && value.every(isRosterId)
+    && !hasDuplicate(value);
+}
+
+/**
+ * Convert the panel's existing selection result into raw-publication evidence.
+ * The panel engine owns path matching and classifier narrowing; this publisher
+ * only validates the returned roster and adds failed optional lanes to the
+ * arbitration input. Fast-ship remains its explicit classifier-owned bypass.
+ */
+function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): RawPublicationRoster {
+  const completed = Array.isArray(panelResult.personas) ? panelResult.personas : [];
+  const failures = Array.isArray(panelResult.optionalFailures) ? panelResult.optionalFailures : [];
+  const failedLanes: RawPublicationLane[] = failures.map((failure) => ({
+    id: failure.id,
+    decision: 'ERROR',
+    status: 'ERROR',
+    error: failure.error,
+    findings: [],
+  }));
+  const allLanes: RawPublicationLane[] = [...completed, ...failedLanes];
+  // Keep the arbitration input bounded even if an injected result bypasses the
+  // panel/completion contracts. The projection below reports the bounded count,
+  // while the roster validity bit carries the fail-closed reason.
+  const lanes = allLanes.slice(0, MAX_PERSONAS);
+  const completedLaneCount = boundedLaneCount(completed.length);
+  const failedLaneCount = boundedLaneCount(failures.length);
+
+  if (isFastShip) {
+    return {
+      mode: 'fast_ship',
+      lanes,
+      expectedLaneCount: null,
+      arbitrationExpectedCount: boundedLaneCount(completed.length),
+      completedLaneCount: 0,
+      failedLaneCount,
+      rosterValid: allLanes.length <= MAX_PERSONAS,
+    };
+  }
+
+  const configuredIds = panelResult.applicablePersonaIds;
+  const configuredRosterValid = validConfiguredRoster(configuredIds);
+  const expectedLaneCount = configuredRosterValid ? configuredIds.length : null;
+  const arbitrationExpectedCount = configuredRosterValid ? configuredIds.length : 0;
+  const returnedIds = allLanes.map((lane) => lane.id || '');
+  const configuredSet = new Set(configuredRosterValid ? configuredIds : []);
+  const returnedSet = new Set(returnedIds);
+  const rosterValid = configuredRosterValid
+    && allLanes.length <= MAX_PERSONAS
+    && returnedIds.every((id) => isRosterId(id) && configuredSet.has(id))
+    && !hasDuplicate(returnedIds)
+    && configuredIds.every((id) => returnedSet.has(id));
+
+  return {
+    mode: panelResult.zeroLaneNonEvidence ? 'zero_lane' : 'panel',
+    lanes,
+    expectedLaneCount,
+    arbitrationExpectedCount,
+    completedLaneCount,
+    failedLaneCount,
+    rosterValid,
+  };
+}
+
+function renderCoverageSummary(coverage: PublishingCoverageProjection): string {
+  const expected = coverage.expectedLaneCount === null ? 'unknown' : String(coverage.expectedLaneCount);
+  return `Coverage: mode=${coverage.mode}; expected lanes=${expected}; completed lanes=${coverage.completedLaneCount}; failed lanes=${coverage.failedLaneCount}; roster valid=${coverage.rosterValid}; quorum satisfied=${coverage.quorumSatisfied}; full panel complete=${coverage.fullPanelComplete}.`;
 }
 
 export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
@@ -592,16 +703,31 @@ export async function runPublishingReviewWorker(
       );
       throwIfPanelAborted(panelDeadline.signal);
 
-      const rawFindings = (panelResult.personas || []).flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
+      const isFastShip = isFastShipPanelResult(panelResult);
+      const rawRoster = rawPublicationRoster(panelResult, isFastShip);
+      const rawFindings = (Array.isArray(panelResult.personas) ? panelResult.personas : [])
+        .flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
+      const panelQuorumSatisfied = panelResult?.quorum?.satisfied === true;
       // The model arbiter is evidence, not the policy boundary. The canonical
       // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
       // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
       // Recompute from the exact persona findings and quorum so this lane shares
       // the same fail-closed severity contract as the hosted review path.
-      const canonical = computeArbitration(panelResult.personas, panelResult.personas.length, {
+      const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
-        coverageComplete: panelResult?.quorum ? panelResult.quorum.satisfied : true,
+        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && unreadable.length === 0,
+        ...(unreadable.length > 0 ? { coverageGaps: ['unreadable diff header(s)'] } : {}),
       });
+      const coverage: PublishingCoverageProjection = {
+        mode: rawRoster.mode,
+        expectedLaneCount: rawRoster.expectedLaneCount,
+        completedLaneCount: rawRoster.completedLaneCount,
+        failedLaneCount: rawRoster.failedLaneCount,
+        rosterValid: rawRoster.rosterValid,
+        quorumSatisfied: canonical.quorumSatisfied,
+        fullPanelComplete: rawRoster.mode === 'panel' && canonical.quorumSatisfied,
+      };
+      const fastShipApproved = isFastShip && canonical.quorumSatisfied;
       const verdict = canonical.verdict;
       // Count blocking findings from the canonical set, not the raw persona
       // output. The two disagreed: the check reported a blocking count derived
@@ -654,22 +780,22 @@ export async function runPublishingReviewWorker(
     // annotation -- nothing an author could act on. Both fields below need only
     // `checks: write`, so the findings become visible without widening the
     const changedPaths = new Set(changedFiles.map((file) => file.path));
-    const isFastShip = isFastShipPanelResult(panelResult);
 
-    const title = isFastShip
+    const title = fastShipApproved
       ? 'Review Yeti: SHIP (fast-ship)'
       : `Review Yeti: ${verdict}`;
 
-    const safeClassifierRationale = isFastShip && panelResult.classifierRationale
+    const safeClassifierRationale = fastShipApproved && panelResult.classifierRationale
       ? panelResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
       : 'Approved via fast-ship triage classifier.';
 
-    const summaryParts = isFastShip
+    const summaryParts = fastShipApproved
       ? [
           `### Review Yeti: SHIP (fast-ship)`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,
           `- **Classifier Rationale**: \`${safeClassifierRationale}\``,
           `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
+          renderCoverageSummary(coverage),
           `Transport: bifrost \`${transport.model}\`.`,
           `Repository visibility: ${repositoryVisibility}.`,
         ]
@@ -684,6 +810,7 @@ export async function runPublishingReviewWorker(
           ...(unreadable.length > 0
             ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
             : []),
+          renderCoverageSummary(coverage),
           `Transport: bifrost \`${transport.model}\`.`,
           `Repository visibility: ${repositoryVisibility}.`,
           `Telemetry: ${totalTurns} turns, ${totalToolCalls} tool calls, ${totalTokens} tokens across ${personaMetrics.length} lanes (${totalDurationMs}ms).`,
@@ -782,6 +909,7 @@ export async function runPublishingReviewWorker(
       failureClass: null,
       startedAt,
       completedAt,
+      coverage,
       personas: personaMetrics,
       metrics: {
         totalPromptTokens,
