@@ -42,6 +42,7 @@ function fixture() {
   const usage = { prompt: 10, completion: 5, total: 15 };
   const panel: PanelResult = {
     headSha: HEAD,
+    applicablePersonaIds: prepared.expectedPersonaIds,
     personas: prepared.expectedPersonaIds.map((id) => ({ id, required: id === 'sec-lane',
       providerId: 'bifrost', model: transport.model, decision: 'APPROVE', findings: [],
       usage, costUSD: null, durationMs: 25 })),

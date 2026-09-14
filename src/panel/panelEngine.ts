@@ -2113,6 +2113,7 @@ export async function executePersonaPanel(options: {
       const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
       return {
         headSha,
+        applicablePersonaIds: [],
         personas: [],
         optionalFailures: [],
         zeroLaneNonEvidence: true,
@@ -2208,7 +2209,7 @@ export async function executePersonaPanel(options: {
           },
         });
 
-        return fastShipResult;
+        return { ...fastShipResult, applicablePersonaIds: applicable.map((persona) => persona.id) };
       }
     }
 
@@ -2608,6 +2609,7 @@ export async function executePersonaPanel(options: {
     return {
         headSha,
         repositoryVisibility,
+        applicablePersonaIds: applicable.map((persona) => persona.id),
         personas,
         optionalFailures,
         quorum: { required: config.quorum, distinctProviders, satisfied: true },

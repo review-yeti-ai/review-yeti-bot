@@ -70,6 +70,7 @@ function mockDeps(overrides: Record<string, unknown> = {}) {
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       sourceLoader: vi.fn(async () => ({ diff: VALID_DIFF, githubReads: 1 })),
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['arch'],
         personas: [{ id: 'arch', findings: [] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
@@ -157,6 +158,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
   it('Scenario 5: Blocking findings (P0) fail the single check', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec'],
         personas: [
           {
             id: 'sec',
@@ -193,6 +195,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
   it('Scenario 6: Blocking findings (P1) present with model claiming SHIP -> single check fails closed', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['perf'],
         personas: [
           {
             id: 'perf',
@@ -229,6 +232,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
   it('Scenario 7: Only P2 (advisory) findings present -> conclusion remains success', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['style'],
         personas: [
           {
             id: 'style',
@@ -266,6 +270,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
   it('Scenario 8: Quorum unsatisfied forces BLOCK verdict and fails closed', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['block-lane'],
         personas: [{ id: 'block-lane', findings: [] }],
         quorum: { required: 2, distinctProviders: ['bifrost'], satisfied: false },
         arbiter: { verdict: 'BLOCK' },
@@ -297,7 +302,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: 'Review Yeti: SHIP',
+        title: 'Review Yeti: BLOCK',
       }),
     );
   });
