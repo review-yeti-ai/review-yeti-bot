@@ -206,6 +206,18 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           available_at = to_timestamp($7/1000.0), updated_at = to_timestamp($7/1000.0)
         WHERE attempt_id = $1`, [coordinates.attemptId, evidence ? JSON.stringify(evidence) : null,
       JSON.stringify(decision), resultDigest, decision.status, decision.status !== 'cancelled', now]);
+      // Keep the verified payload itself, not only its digest. Every branch
+      // that reaches this point has authenticated the worker and bound the
+      // completion to the current execution attempt; a rejected, duplicate or
+      // conflicting completion returned earlier and writes nothing. Findings
+      // are persisted for every terminal class, including a failed gate: what
+      // the worker reported is evidence regardless of what the gate decided.
+      const completionJson = JSON.stringify(event);
+      await client.query(`INSERT INTO review_worker_completions
+          (run_id, execution_attempt, content_digest, payload, byte_length)
+        VALUES ($1, $2, $3, $4::jsonb, $5)
+        ON CONFLICT (run_id, execution_attempt) DO NOTHING`,
+      [event.runId, event.executionAttempt, resultDigest, completionJson, Buffer.byteLength(completionJson, 'utf8')]);
       // Authenticated completion proves projection even when Kubernetes accepted
       // the Job before its dispatcher ACK. Keep 'projected' so a failed review's
       // explicit re-admission advances execution and receives a fresh Secret.
