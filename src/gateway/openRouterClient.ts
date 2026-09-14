@@ -83,6 +83,11 @@ export interface OpenRouterRequest {
   onFirstToken?: () => void;
   /** Caller-owned cancellation for the whole request, including streamed bodies. */
   signal?: AbortSignal;
+  maxRetries?: number;
+  initialRetryDelayMs?: number;
+  maxRetryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
 }
 
 export interface TokensUsed {
@@ -138,6 +143,11 @@ export interface OpenRouterClientOptions {
   /** @deprecated Use fetchImplementation. */
   fetchImpl?: FetchImplementation;
   now?: () => number;
+  maxRetries?: number;
+  initialRetryDelayMs?: number;
+  maxRetryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  random?: () => number;
 }
 
 /**
@@ -757,6 +767,8 @@ function reasoningText(value: unknown): string {
     if (typeof candidate.text === 'string') return [candidate.text];
     if (typeof candidate.reasoning === 'string') return [candidate.reasoning];
     if (typeof candidate.content === 'string') return [candidate.content];
+    if (typeof candidate.reasoning_content === 'string') return [candidate.reasoning_content];
+    if (typeof candidate.reasoningContent === 'string') return [candidate.reasoningContent];
     return [];
   }).join('');
 }
@@ -800,9 +812,12 @@ function hasMeaningfulChunk(data: any): boolean {
       ?? delta.reasoningDetails
       ?? delta.reasoning
       ?? delta.reasoning_content
+      ?? delta.reasoningContent
       ?? message.reasoning_details
       ?? message.reasoningDetails
-      ?? message.reasoning;
+      ?? message.reasoning
+      ?? message.reasoning_content
+      ?? message.reasoningContent;
     const toolCalls = delta.tool_calls
       ?? delta.toolCalls
       ?? message.tool_calls
@@ -820,8 +835,15 @@ function collectChunk(data: any, state: StreamState): boolean {
   const content = choice?.delta?.content ?? choice?.message?.content;
   if (typeof content === 'string') state.content += content;
   const reasoning = choice?.delta?.reasoning_details
+    ?? choice?.delta?.reasoningDetails
     ?? choice?.delta?.reasoning
-    ?? choice?.delta?.reasoning_content;
+    ?? choice?.delta?.reasoning_content
+    ?? choice?.delta?.reasoningContent
+    ?? choice?.message?.reasoning_details
+    ?? choice?.message?.reasoningDetails
+    ?? choice?.message?.reasoning
+    ?? choice?.message?.reasoning_content
+    ?? choice?.message?.reasoningContent;
   state.reasoning += reasoningText(reasoning);
   if (data?.usage) {
     // Providers may emit token usage and cost details in separate terminal SSE frames. Merge
@@ -1252,9 +1274,13 @@ function collectSdkChunk(data: any, state: StreamState): boolean {
   const reasoning = choice?.delta?.reasoningDetails
     ?? choice?.delta?.reasoning_details
     ?? choice?.delta?.reasoning
+    ?? choice?.delta?.reasoning_content
+    ?? choice?.delta?.reasoningContent
     ?? choice?.message?.reasoningDetails
     ?? choice?.message?.reasoning_details
-    ?? choice?.message?.reasoning;
+    ?? choice?.message?.reasoning
+    ?? choice?.message?.reasoning_content
+    ?? choice?.message?.reasoningContent;
   state.reasoning += reasoningText(reasoning);
   if (choice?.finishReason !== undefined || choice?.finish_reason !== undefined) {
     state.finishReason = choice.finishReason ?? choice.finish_reason ?? null;
@@ -1479,6 +1505,9 @@ function normalizeSdkResponse(response: any, rawUsage?: any): any {
         content,
         ...(message.reasoning ? { reasoning: message.reasoning } : {}),
         ...(message.reasoningDetails ? { reasoning_details: message.reasoningDetails } : {}),
+        ...(message.reasoning_details ? { reasoning_details: message.reasoning_details } : {}),
+        ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
+        ...(message.reasoningContent ? { reasoningContent: message.reasoningContent } : {}),
       },
     }],
     ...(usage ? { usage } : {}),
@@ -1618,18 +1647,57 @@ function isSdkResponseValidationFailure(error: any): boolean {
     || /response validation failed|invalid input|invalid_(?:union|type|value)|expected .* received|malformed json|unexpected status or content-type/i.test(message);
 }
 
+export function calculateFullJitterDelay(
+  attempt: number,
+  initialDelayMs: number = 500,
+  maxDelayMs: number = 5000,
+  random: () => number = Math.random,
+): number {
+  const ceiling = Math.min(maxDelayMs, initialDelayMs * Math.pow(2, attempt));
+  return Math.floor(random() * ceiling);
+}
+
+export function isTransientGatewayError(error: unknown): boolean {
+  if (error instanceof OpenRouterResponseError) {
+    if (error.status === 502 || error.status === 503 || error.status === 504) {
+      return true;
+    }
+    if (typeof error.message === 'string') {
+      if (/HTTP (502|503|504)\b/i.test(error.message)) {
+        return true;
+      }
+      if (/empty completion content/i.test(error.message)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** OpenAI-compatible model boundary pinned to OpenRouter for review execution. */
 export class OpenRouterClient implements ReviewModelClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly fetchImplementation: FetchImplementation;
   private readonly now: () => number;
+  readonly maxRetries: number;
+  readonly initialRetryDelayMs: number;
+  readonly maxRetryDelayMs: number;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly random: () => number;
 
   constructor(options: OpenRouterClientOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
     this.apiKey = options.apiKey || process.env.OPENROUTER_API_KEY || '';
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
     this.now = options.now || Date.now;
+    this.maxRetries = options.maxRetries !== undefined
+      ? options.maxRetries
+      : (process.env.REVIEW_YETI_GATEWAY_RETRIES ? Number(process.env.REVIEW_YETI_GATEWAY_RETRIES) : 0);
+    this.initialRetryDelayMs = options.initialRetryDelayMs !== undefined ? options.initialRetryDelayMs : 500;
+    this.maxRetryDelayMs = options.maxRetryDelayMs !== undefined ? options.maxRetryDelayMs : 5000;
+    this.sleep = options.sleep || ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    this.random = options.random || Math.random;
   }
 
   async complete(request: OpenRouterRequest): Promise<OpenRouterResponse> {
@@ -1647,6 +1715,69 @@ export class OpenRouterClient implements ReviewModelClient {
       throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
     }
 
+    const maxRetries = request.maxRetries !== undefined ? request.maxRetries : this.maxRetries;
+    const initialRetryDelayMs = request.initialRetryDelayMs !== undefined ? request.initialRetryDelayMs : this.initialRetryDelayMs;
+    const maxRetryDelayMs = request.maxRetryDelayMs !== undefined ? request.maxRetryDelayMs : this.maxRetryDelayMs;
+    const sleep = request.sleep || this.sleep;
+    const random = request.random || this.random;
+
+    const started = this.now();
+    const overallDeadline = started + request.timeoutMs;
+    const effectiveModel = normalizeOpenRouterModel(request.model);
+
+    for (let attempt = 0; ; attempt++) {
+      if (request.signal?.aborted) {
+        throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
+      }
+      const remainingTimeoutMs = overallDeadline - this.now();
+      if (remainingTimeoutMs <= 0) {
+        const timeoutError = new OpenRouterTimeoutError(
+          `OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`,
+          'request',
+        );
+        if (request.jobId) {
+          LiveStreamBus.getInstance().publishEvent({
+            jobId: request.jobId,
+            timestamp: new Date(this.now()).toISOString(),
+            type: 'openrouter:metric',
+            persona: request.persona || 'openrouter',
+            data: {
+              outcome: 'failed',
+              failureClass: 'timeout',
+              requestedModel: effectiveModel,
+              provider: request.providerId || 'openrouter',
+              latencyMs: this.now() - started,
+              timeoutKind: 'request',
+            },
+          });
+        }
+        throw timeoutError;
+      }
+
+      try {
+        return await this.executeSingleAttempt(request, remainingTimeoutMs, started, attempt, maxRetries);
+      } catch (error: any) {
+        if (request.signal?.aborted || (error instanceof OpenRouterTimeoutError && error.message.includes('cancelled'))) {
+          throw error;
+        }
+        if (isTransientGatewayError(error) && attempt < maxRetries) {
+          const delay = calculateFullJitterDelay(attempt, initialRetryDelayMs, maxRetryDelayMs, random);
+          logger.warn(`OpenRouter transient failure (${error.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+          await raceWithAbort(sleep(delay), request.signal);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async executeSingleAttempt(
+    request: OpenRouterRequest,
+    attemptTimeoutMs: number,
+    overallStarted: number,
+    attempt: number,
+    maxRetries: number,
+  ): Promise<OpenRouterResponse> {
     const effectiveModel = normalizeOpenRouterModel(request.model);
     let generationId: string | null = null;
     const started = this.now();
@@ -1680,7 +1811,7 @@ export class OpenRouterClient implements ReviewModelClient {
       controller.abort(requestTimeout);
       requestAbortController.abort(requestTimeout);
       streamAbortController.abort(totalTimeout);
-    }, request.timeoutMs);
+    }, attemptTimeoutMs);
 
     try {
       let data: any;
@@ -1727,6 +1858,7 @@ export class OpenRouterClient implements ReviewModelClient {
               isJsonBody = true;
             } catch (error) {
               if (error instanceof OpenRouterTimeoutError) throw error;
+              // Fall through to text for malformed/non-JSON doubles.
             }
           }
           if (!compatibilityBody && typeof compatibilityResponse?.text === 'function') {
@@ -1753,8 +1885,8 @@ export class OpenRouterClient implements ReviewModelClient {
           });
         }
 
-        const genId = response?.headers?.get?.('x-generation-id');
-        if (genId) generationId = genId;
+        const responseGenerationId = response.headers?.get?.('x-generation-id');
+        if (responseGenerationId) generationId = responseGenerationId;
 
         if (!response.ok) {
           let errorBody = '';
@@ -1772,27 +1904,42 @@ export class OpenRouterClient implements ReviewModelClient {
           throw new OpenRouterResponseError(`OpenRouter HTTP ${status}: ${parsedMsg}`, status);
         }
 
-        data = await readStreamingResponse(response, effectiveModel, {
-          ttftTimeoutMs: request.ttftTimeoutMs,
-          inactivityTimeoutMs: request.inactivityTimeoutMs ?? Math.min(45_000, request.timeoutMs),
-          totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
-          signal: streamAbortController.signal,
-          onTotalTimeout: () => {
-            requestDeadlineExpired = true;
-            const totalTimeout = new OpenRouterTimeoutError(
-              `OpenRouter streaming response exceeded total deadline of ${request.timeoutMs}ms`,
-              'total',
-            );
-            controller.abort(totalTimeout);
-            requestAbortController.abort(totalTimeout);
-            streamAbortController.abort(totalTimeout);
-          },
-          onCancel: (reason) => {
-            if (reason === 'stream error') streamTransportFailure = true;
-            controller.abort();
-          },
-          onFirstToken: request.onFirstToken,
-        });
+        const contentType = response.headers?.get?.('content-type') || '';
+        if (contentType.includes('application/json')) {
+          let text = '';
+          try {
+            text = await readResponseText(response, requestAbortController.signal);
+          } catch (error) {
+            if (error instanceof OpenRouterTimeoutError) throw error;
+          }
+          try {
+            data = JSON.parse(text);
+          } catch (err: any) {
+            throw new OpenRouterResponseError(`OpenRouter returned malformed response: ${err.message}`);
+          }
+        } else {
+          data = await readStreamingResponse(response, effectiveModel, {
+            ttftTimeoutMs: request.ttftTimeoutMs,
+            inactivityTimeoutMs: request.inactivityTimeoutMs ?? Math.min(45_000, request.timeoutMs),
+            totalTimeoutMs: Math.max(1, request.timeoutMs - (Date.now() - startedAt)),
+            signal: streamAbortController.signal,
+            onTotalTimeout: () => {
+              requestDeadlineExpired = true;
+              const totalTimeout = new OpenRouterTimeoutError(
+                `OpenRouter streaming response exceeded total deadline of ${request.timeoutMs}ms`,
+                'total',
+              );
+              controller.abort(totalTimeout);
+              requestAbortController.abort(totalTimeout);
+              streamAbortController.abort(totalTimeout);
+            },
+            onCancel: (reason) => {
+              if (reason === 'stream error') streamTransportFailure = true;
+              controller.abort();
+            },
+            onFirstToken: request.onFirstToken,
+          });
+        }
       } else {
         const sdkClient = await raceWithAbort(
           createOpenRouterSdkClient({
@@ -1860,9 +2007,24 @@ export class OpenRouterClient implements ReviewModelClient {
         }
       }
       const rawMsg = data?.choices?.[0]?.message;
-      const content = (typeof rawMsg?.content === 'string' && rawMsg.content.trim() !== '')
-        ? rawMsg.content
-        : (typeof rawMsg?.reasoning === 'string' && rawMsg.reasoning.trim() !== '' ? rawMsg.reasoning : '');
+      let extractedContent = '';
+      if (typeof rawMsg?.content === 'string' && rawMsg.content.trim() !== '') {
+        extractedContent = rawMsg.content;
+      } else if (Array.isArray(rawMsg?.content)) {
+        extractedContent = rawMsg.content.map((part: any) => (typeof part === 'string' ? part : part?.text || '')).join('').trim();
+      }
+      const rawReasoning = (typeof rawMsg?.reasoning === 'string' && rawMsg.reasoning.trim() !== '')
+        ? rawMsg.reasoning
+        : (typeof rawMsg?.reasoning_content === 'string' && rawMsg.reasoning_content.trim() !== '')
+          ? rawMsg.reasoning_content
+          : (typeof rawMsg?.reasoningContent === 'string' && rawMsg.reasoningContent.trim() !== '')
+            ? rawMsg.reasoningContent
+            : (typeof rawMsg?.reasoning_details === 'string' && rawMsg.reasoning_details.trim() !== '')
+              ? rawMsg.reasoning_details
+              : (typeof rawMsg?.reasoningDetails === 'string' && rawMsg.reasoningDetails.trim() !== '')
+                ? rawMsg.reasoningDetails
+                : reasoningText(rawMsg?.reasoning ?? rawMsg?.reasoning_content ?? rawMsg?.reasoningContent ?? rawMsg?.reasoning_details ?? rawMsg?.reasoningDetails).trim();
+      const content = extractedContent !== '' ? extractedContent : rawReasoning;
       if (typeof content !== 'string' || content.trim() === '') {
         // Tag the error so panel retry/failover can classify it as transient.
         throw new OpenRouterResponseError('OpenRouter returned empty completion content', 502);
@@ -1909,7 +2071,7 @@ export class OpenRouterClient implements ReviewModelClient {
             requestedModel: effectiveModel,
             resolvedModel: model,
             provider: 'openrouter',
-            latencyMs: this.now() - started,
+            latencyMs: this.now() - overallStarted,
             promptTokens: usage?.prompt || 0,
             completionTokens: usage?.completion || 0,
             totalTokens: usage?.total || 0,
@@ -1949,7 +2111,8 @@ export class OpenRouterClient implements ReviewModelClient {
         }
       }
 
-      if (request.jobId) {
+      const willRetry = isTransientGatewayError(classifiedError) && attempt < maxRetries && !callerCancelled && !request.signal?.aborted;
+      if (!willRetry && request.jobId) {
         const responseStatus = classifiedError instanceof OpenRouterResponseError
           ? classifiedError.status
           : undefined;
@@ -1974,7 +2137,7 @@ export class OpenRouterClient implements ReviewModelClient {
             failureClass,
             requestedModel: effectiveModel,
             provider: request.providerId || 'openrouter',
-            latencyMs: this.now() - started,
+            latencyMs: this.now() - overallStarted,
             ...(responseStatus !== undefined ? { responseStatus } : {}),
             ...(classifiedError instanceof OpenRouterTimeoutError ? { timeoutKind: classifiedError.kind } : {}),
             ...(generationId ? { generationId } : {}),

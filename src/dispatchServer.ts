@@ -47,6 +47,47 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
   app.use('/api/dispatch/completion', express.json({ limit: MAX_COMPLETION_BYTES, strict: true }));
   app.use(express.json({ limit: '64kb', strict: true }));
 
+  app.get('/', (request: Request, response: Response) => {
+    const payload = {
+      status: 'ok',
+      service: 'review-yeti-action-dispatch',
+      timestamp: new Date().toISOString(),
+      health: '/health',
+      ready: '/ready',
+      landing: 'https://review-bot.calltelemetry.com',
+    };
+    const acceptsHtml = request.headers.accept?.includes('text/html');
+    const prefersJson = request.headers.accept?.includes('application/json');
+    if (acceptsHtml && !prefersJson) {
+      return response.status(200).type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Review Yeti Action Dispatch</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 2rem; max-width: 600px; margin: auto; background: #0f172a; color: #f8fafc; }
+    h1 { color: #38bdf8; }
+    .status { padding: 0.5rem 1rem; background: #064e3b; color: #34d399; border-radius: 4px; display: inline-block; font-weight: bold; }
+    a { color: #38bdf8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul { list-style: none; padding: 0; }
+    li { margin: 0.5rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Review Yeti Action Dispatch</h1>
+  <p><span class="status">Operational (200 OK)</span></p>
+  <p>Service: <code>${payload.service}</code></p>
+  <ul>
+    <li>Health Check: <a href="${payload.health}">${payload.health}</a></li>
+    <li>Readiness Check: <a href="${payload.ready}">${payload.ready}</a></li>
+  </ul>
+</body>
+</html>`);
+    }
+    return response.status(200).json(payload);
+  });
+
   app.get('/health', (_request: Request, response: Response) => response.status(200).json({
     status: 'ok',
     service: 'review-yeti-action-dispatch',
