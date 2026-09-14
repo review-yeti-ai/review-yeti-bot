@@ -9,7 +9,10 @@ import {
   normalizeOpenRouterModel,
   OpenRouterClient,
   OpenRouterConnectionError,
+  OpenRouterResponseError,
   OpenRouterTimeoutError,
+  calculateFullJitterDelay,
+  isTransientGatewayError,
   getStaticModelMetadata,
   resolveModelMetadata,
   calculateSafeDiffCapacity,
@@ -338,6 +341,7 @@ describe('OpenRouterClient', () => {
       baseUrl: 'https://openrouter.ai/api/v1',
       apiKey: 'test-openrouter-key',
       fetchImplementation: cassette.fetchImplementation,
+      maxRetries: 0,
     });
 
     for (const status of [401, 429, 503]) {
@@ -377,7 +381,6 @@ describe('OpenRouterClient', () => {
   it.each([
     [401, 'unauthorized'],
     [429, 'rate limited'],
-    [503, 'upstream unavailable'],
   ])('fails closed on OpenRouter HTTP %s without client-side retry', async (status, detail) => {
     const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: detail } }), {
       status,
@@ -404,7 +407,7 @@ describe('OpenRouterClient', () => {
         'x-generation-id': 'gen-support-503',
       },
     }));
-    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
 
     await expect(client.complete({
       ...request,
@@ -1083,6 +1086,456 @@ describe('OpenRouterClient', () => {
       })),
     });
     await expect(malformed.complete(request)).rejects.toThrow('malformed response');
+  });
+
+  describe('Resilience, Reasoning Content & Retry Logic', () => {
+    it('parses non-streaming reasoning_content without empty completion error', async () => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-reasoning',
+          object: 'chat.completion',
+          created: 1_700_000_000,
+          model: 'deepseek/deepseek-r1',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+            message: {
+              role: 'assistant',
+              content: '',
+              reasoning_content: 'Step 1: Inspect diff for SQL injection vulnerabilities...',
+            },
+          }],
+          usage: { prompt_tokens: 20, completion_tokens: 15, total_tokens: 35 },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+      );
+      const client = new OpenRouterClient({
+        baseUrl: 'https://openrouter.test/api/v1',
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+      });
+
+      const res = await client.complete({
+        ...request,
+        model: 'deepseek/deepseek-r1',
+        stream: false,
+      });
+
+      expect(res.content).toBe('Step 1: Inspect diff for SQL injection vulnerabilities...');
+      expect(res.model).toBe('deepseek/deepseek-r1');
+      expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    });
+
+    it('parses non-streaming reasoningContent and reasoning_details fallback', async () => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-reasoning-camel',
+          object: 'chat.completion',
+          created: 1_700_000_000,
+          model: 'qwen/qwen-2.5-72b',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+            message: {
+              role: 'assistant',
+              content: '',
+              reasoningContent: 'Detailed chain-of-thought analysis',
+            },
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+      );
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+      const res = await client.complete({ ...request, model: 'qwen/qwen-2.5-72b', stream: false });
+      expect(res.content).toBe('Detailed chain-of-thought analysis');
+    });
+
+    it('retries on 504 Gateway Timeout and resolves on retry', async () => {
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            error: { code: 504, message: 'Gateway Timeout from upstream Ollama' },
+          }), {
+            status: 504,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        return Promise.resolve(new Response(JSON.stringify(sdkChatResult('RECOVERED_AFTER_504')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }));
+      });
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      const res = await client.complete({ ...request, stream: false });
+      expect(res.content).toBe('RECOVERED_AFTER_504');
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries on 502 and 503 with exponential backoff and jitter', async () => {
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({ error: { message: 'Bad Gateway' } }), {
+            status: 502,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        if (callCount === 2) {
+          return Promise.resolve(new Response(JSON.stringify({ error: { message: 'Service Unavailable' } }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        return Promise.resolve(new Response(JSON.stringify(sdkChatResult('RECOVERED_AFTER_502_503')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }));
+      });
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const random = vi.fn().mockReturnValue(0.5);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        random,
+        maxRetries: 3,
+        initialRetryDelayMs: 500,
+        maxRetryDelayMs: 5000,
+      });
+
+      const res = await client.complete({ ...request, stream: false });
+      expect(res.content).toBe('RECOVERED_AFTER_502_503');
+      expect(fetchImplementation).toHaveBeenCalledTimes(3);
+      expect(sleep).toHaveBeenCalledTimes(2);
+      // attempt 0: ceiling = min(5000, 500 * 2^0) = 500; delay = floor(0.5 * 500) = 250
+      expect(sleep).toHaveBeenNthCalledWith(1, 250);
+      // attempt 1: ceiling = min(5000, 500 * 2^1) = 1000; delay = floor(0.5 * 1000) = 500
+      expect(sleep).toHaveBeenNthCalledWith(2, 500);
+    });
+
+    it('retries on empty completion content and recovers on next attempt', async () => {
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            id: 'chatcmpl-empty',
+            object: 'chat.completion',
+            created: 1_700_000_000,
+            model: 'openai/gpt-4o-mini',
+            choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: '' } }],
+          }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        return Promise.resolve(new Response(JSON.stringify(sdkChatResult('NON_EMPTY_RESPONSE')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }));
+      });
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      const res = await client.complete({ ...request, stream: false });
+      expect(res.content).toBe('NON_EMPTY_RESPONSE');
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed with OpenRouterResponseError after exhausting retries on persistent 504', async () => {
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        return Promise.resolve(new Response(JSON.stringify({
+          error: { code: 504, message: 'Gateway Timeout' },
+        }), {
+          status: 504,
+          headers: { 'content-type': 'application/json' },
+        }));
+      });
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      await expect(client.complete({ ...request, stream: false })).rejects.toMatchObject({
+        name: 'OpenRouterResponseError',
+        status: 504,
+      });
+      // 1 initial + 2 retries = 3 calls
+      expect(fetchImplementation).toHaveBeenCalledTimes(3);
+      expect(sleep).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails closed with OpenRouterResponseError after exhausting retries on persistent empty completion', async () => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-empty',
+          object: 'chat.completion',
+          created: 1_700_000_000,
+          model: 'openai/gpt-4o-mini',
+          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: '   ' } }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+      );
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      await expect(client.complete({ ...request, stream: false })).rejects.toThrow(
+        'OpenRouter returned empty completion content',
+      );
+      expect(fetchImplementation).toHaveBeenCalledTimes(3);
+      expect(sleep).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      [400, 'Bad Request'],
+      [401, 'Unauthorized'],
+      [403, 'Forbidden'],
+      [404, 'Not Found'],
+      [429, 'Too Many Requests'],
+    ])('does not retry non-transient HTTP %s errors', async (status, detail) => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({ error: { message: detail } }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        }))
+      );
+      const sleep = vi.fn();
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      await expect(client.complete({ ...request, stream: false })).rejects.toMatchObject({
+        name: 'OpenRouterResponseError',
+        status,
+      });
+      expect(fetchImplementation).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('cancels immediately when AbortSignal is aborted during retry sleep', async () => {
+      let callCount = 0;
+      const controller = new AbortController();
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        return Promise.resolve(new Response(JSON.stringify({ error: { message: 'Gateway Timeout' } }), {
+          status: 504,
+          headers: { 'content-type': 'application/json' },
+        }));
+      });
+      const sleep = vi.fn().mockImplementation((_ms: number) => {
+        controller.abort();
+        return new Promise((resolve) => setTimeout(resolve, 100));
+      });
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      await expect(client.complete({
+        ...request,
+        signal: controller.signal,
+        stream: false,
+      })).rejects.toMatchObject({
+        name: 'OpenRouterTimeoutError',
+      });
+      expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    });
+
+    it('honors per-request overrides for maxRetries, initialRetryDelayMs, maxRetryDelayMs, sleep, random', async () => {
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({ error: { message: '504 Gateway Timeout' } }), {
+            status: 504,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        return Promise.resolve(new Response(JSON.stringify(sdkChatResult('OVERRIDE_OK')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }));
+      });
+      const clientSleep = vi.fn();
+      const requestSleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep: clientSleep,
+        maxRetries: 0,
+      });
+
+      const res = await client.complete({
+        ...request,
+        stream: false,
+        maxRetries: 1,
+        sleep: requestSleep,
+      });
+
+      expect(res.content).toBe('OVERRIDE_OK');
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+      expect(clientSleep).not.toHaveBeenCalled();
+      expect(requestSleep).toHaveBeenCalledTimes(1);
+    });
+
+    it('calculates full jitter delay within ceiling and respects maxRetryDelayMs', () => {
+      const randomMax = () => 0.999999;
+      const randomMin = () => 0;
+
+      expect(calculateFullJitterDelay(0, 500, 5000, randomMin)).toBe(0);
+      expect(calculateFullJitterDelay(0, 500, 5000, randomMax)).toBe(499);
+      expect(calculateFullJitterDelay(1, 500, 5000, randomMax)).toBe(999);
+      expect(calculateFullJitterDelay(2, 500, 5000, randomMax)).toBe(1999);
+      expect(calculateFullJitterDelay(3, 500, 5000, randomMax)).toBe(3999);
+      expect(calculateFullJitterDelay(4, 500, 5000, randomMax)).toBe(4999);
+    });
+
+    it('identifies transient gateway errors with isTransientGatewayError', () => {
+      expect(isTransientGatewayError(new OpenRouterResponseError('Gateway Timeout', 504))).toBe(true);
+      expect(isTransientGatewayError(new OpenRouterResponseError('Bad Gateway', 502))).toBe(true);
+      expect(isTransientGatewayError(new OpenRouterResponseError('Service Unavailable', 503))).toBe(true);
+      expect(isTransientGatewayError(new OpenRouterResponseError('OpenRouter returned empty completion content'))).toBe(true);
+      expect(isTransientGatewayError(new OpenRouterResponseError('Unauthorized', 401))).toBe(false);
+      expect(isTransientGatewayError(new OpenRouterResponseError('Rate Limited', 429))).toBe(false);
+      expect(isTransientGatewayError(new OpenRouterResponseError('Internal Server Error', 500))).toBe(false);
+      expect(isTransientGatewayError(new Error('Generic network error'))).toBe(false);
+    });
+  });
+
+  describe('Streaming Retries & Telemetry', () => {
+    it('retries on streaming 504 Gateway Timeout and resolves on retry', async () => {
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            error: { code: 504, message: 'Gateway Timeout' },
+          }), {
+            status: 504,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        return Promise.resolve(new Response(
+          `data: ${sdkChunk({ content: 'STREAM_RECOVERED_504' })}\n\ndata: [DONE]\n\n`,
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ));
+      });
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      const res = await client.complete({ ...request, stream: true });
+      expect(res.content).toBe('STREAM_RECOVERED_504');
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries on streaming empty completion and recovers on retry', async () => {
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve(new Response(
+            `data: ${sdkChunk({ content: '' })}\n\ndata: [DONE]\n\n`,
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          ));
+        }
+        return Promise.resolve(new Response(
+          `data: ${sdkChunk({ content: 'STREAM_NON_EMPTY' })}\n\ndata: [DONE]\n\n`,
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        ));
+      });
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      const res = await client.complete({ ...request, stream: true });
+      expect(res.content).toBe('STREAM_NON_EMPTY');
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not publish failure metrics to LiveStreamBus when transient failure recovers on retry', async () => {
+      const jobId = 'run_retry_telemetry_clean_123';
+      const bus = LiveStreamBus.getInstance();
+      bus.clearHistory(jobId);
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({ error: { message: '504 Gateway Timeout' } }), {
+            status: 504,
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+        return Promise.resolve(new Response(JSON.stringify(sdkChatResult('SUCCESS_AFTER_RETRY')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }));
+      });
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      const res = await client.complete({ ...request, jobId, stream: false });
+      expect(res.content).toBe('SUCCESS_AFTER_RETRY');
+
+      const events = bus.getHistory(jobId);
+      expect(events).toHaveLength(1);
+      expect(events[0].data.outcome).toBeUndefined(); // success events do not have outcome: 'failed'
+      expect(events[0].data.requestedModel).toBe('openai/gpt-4o-mini');
+      bus.clearHistory(jobId);
+    });
   });
 });
 
