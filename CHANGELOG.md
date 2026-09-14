@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.65.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.65.0...v1.65.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **REL-831:** classify empty provider completions as transient retryables ([#790](https://github.com/review-yeti-ai/review-yeti-bot/issues/790)) ([ae5eb3a](https://github.com/review-yeti-ai/review-yeti-bot/commit/ae5eb3a724ca6daba8e8e5dac92bf7e4ce7514bc))
+
 ## [1.65.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.64.0...v1.65.0) (2026-09-14)
 
 
