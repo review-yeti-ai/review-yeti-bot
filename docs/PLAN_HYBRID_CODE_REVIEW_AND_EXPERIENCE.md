@@ -1,6 +1,6 @@
 # Architecture Plan & Strategic Specification: Review Yeti Hybrid Quality & Experience Engine (v2)
 
-**Target Systems**: Review Yeti (`calltelemetry/review-yeti-bot`), DOKS Infrastructure (`calltelemetry/ct-infrastructure`), Bifrost Gateway (`ct-llm-gateway`)  
+**Target Systems**: Review Yeti (`calltelemetry/review-yeti-bot`), DOKS Infrastructure (`calltelemetry/ct-infrastructure`), Bifrost Gateway (`llm-gateway-service`)  
 **Benchmarks Evaluated**: Alibaba Open Code Review (`alibaba/open-code-review`), Qodo `pr-agent`, CodeRabbit Enterprise  
 **Author**: Call Telemetry Engineering Architecture (Refined via Deep Static & Comparative Synthesis)  
 **Status**: Authoritative Architectural Plan  
