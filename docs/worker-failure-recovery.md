@@ -98,6 +98,27 @@ Secret identity. An old execution's callback cannot fail or approve the new
 one. A failure before check creation can omit `checkId`; the check is useful
 evidence but is not the callback's authority.
 
+A legacy publishing worker can also receive a returned panel result with a
+valid reviewer roster, failed reviewer calls, incomplete quorum, and no raw or
+canonical findings. That result is an incomplete execution, not a code verdict.
+The worker keeps the check failed, publishes `Review Yeti: review did not
+complete` with bounded coverage counts, and sends the existing exact-attempt
+failure callback. The existing explicit **Refresh review** path can then request
+a new execution on the same head. Only the failure class is derived from the
+failed reviewer; its free-form provider response is not published or persisted.
+
+This classification does not apply to findings (including advisory findings),
+malformed rosters, unreadable diff coverage, or authoritative service results.
+It never produces `SHIP`, weakens quorum, or automatically retries a review.
+If check publication or callback acknowledgement fails, the original failed
+execution remains failed and deadline recovery remains available. Already
+published legacy `BLOCK` checks are not rewritten by this worker change.
+
+The panel engine never converts an explicit `INCOMPLETE` into `APPROVE`, even
+when its findings list is empty. A required incomplete lane fails the panel;
+an optional incomplete lane is retained as a failed call and cannot satisfy
+complete-panel coverage. This restores the explicit incomplete-review contract.
+
 The deterministic non-production reaper acceptance harness attempts every
 cleanup step even when the primary operation already failed. It preserves the
 exact primary thrown value. When that value is an extensible object, the harness
