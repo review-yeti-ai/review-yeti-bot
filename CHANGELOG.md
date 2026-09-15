@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.69.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.68.1...v1.69.0) (2026-09-15)
+
+
+### Features
+
+* **pre-checks:** replace miller with zoekt symbol pre-checks and sandbox analyzers, ban legacy models ([a405227](https://github.com/review-yeti-ai/review-yeti-bot/commit/a4052270d3c23163862168ecf6215fb257578551))
+
+
+### Bug Fixes
+
+* **models:** allow legacy models publicly and standardize modern Sept 2026 testing defaults ([ab37931](https://github.com/review-yeti-ai/review-yeti-bot/commit/ab379317011627a732bd632b58b8a7fb8efdaf1c))
+* **schema:** make pre_checks optional on v3 schema and allow boolean secrets toggle in prepared storage ([3cc068e](https://github.com/review-yeti-ai/review-yeti-bot/commit/3cc068e75aa0f87c20ee95a02935e18dbb4b46ce))
+* **tests:** update zoekt max_symbols expectation and remove internal identifiers from plan doc ([d0faf27](https://github.com/review-yeti-ai/review-yeti-bot/commit/d0faf27d66229cf31da452d348b4b20f8da4f7f3))
+* **types:** resolve test and config typing for pre-check test suites ([a331713](https://github.com/review-yeti-ai/review-yeti-bot/commit/a3317137e841915ed2ad816ed4b308a65b6b6961))
+
 ## [1.68.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.68.0...v1.68.1) (2026-09-15)
 
 
