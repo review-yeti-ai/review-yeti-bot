@@ -68,7 +68,7 @@ class MockSandboxRunner implements SandboxRunner {
 describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
   let mockRunner: MockSandboxRunner;
   const workspaceRoot = '/test/workspace';
-  const fullConfig: PreChecksAnalyzersConfig = {
+  const fullConfig: PreChecksAnalyzersConfig & { heavy_compilers?: boolean } = {
     enabled: true,
     linters: true,
     security: true,
