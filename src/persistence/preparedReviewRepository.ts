@@ -80,13 +80,16 @@ function requireSafeBoundedJson(input: unknown, maxBytes = MAX_PREPARED_REVIEW_B
       if (array && key === 'length') continue;
       if (typeof key !== 'string') throw new Error();
       const field = key.replace(/[_-]/gu, '').toLowerCase();
-      if (['__proto__', 'prototype', 'constructor'].includes(key)
-        || /(?:apikey|accesskey|privatekey|password|secret|token|credential|authorization|headers)/u.test(field)
-        || ['rawpolicy', 'policyjson', 'rawcontent', 'content'].includes(field)) throw new Error();
-      textBytes += Buffer.byteLength(key, 'utf8');
-      if (textBytes > maxBytes) throw new Error();
       const descriptor = Object.getOwnPropertyDescriptor(item, key)!;
       if (!descriptor.enumerable || !('value' in descriptor)) throw new Error();
+      const isBooleanSecretsToggle = typeof descriptor.value === 'boolean' && field === 'secrets';
+      if (!isBooleanSecretsToggle && (
+        ['__proto__', 'prototype', 'constructor'].includes(key)
+        || /(?:apikey|accesskey|privatekey|password|secret|token|credential|authorization|headers)/u.test(field)
+        || ['rawpolicy', 'policyjson', 'rawcontent', 'content'].includes(field)
+      )) throw new Error();
+      textBytes += Buffer.byteLength(key, 'utf8');
+      if (textBytes > maxBytes) throw new Error();
       visit(descriptor.value, depth + 1);
     }
     ancestors.delete(item);
