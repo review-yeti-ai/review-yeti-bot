@@ -442,7 +442,7 @@ const ctReviewConfigV3ObjectSchema = z.object({
   mcps: mcpsSchema,
   on_pr_close: onPRCloseSchema,
   evidence: evidenceSchema.optional(),
-  pre_checks: preChecksSchema.default({}),
+  pre_checks: preChecksSchema.optional(),
 
   reviewers: z.object({
     execution: z.literal('personas'),

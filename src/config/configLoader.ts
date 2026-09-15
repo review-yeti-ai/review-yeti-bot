@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, PreChecksConfig, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT, MODERN_TESTING_MODELS } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, PreChecksConfig, resolvePreChecksConfig, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT, MODERN_TESTING_MODELS } from './schema';
 import { logger } from '../utils/logger';
 import { OMNIROUTE_GENERATED_PROVIDERS, OMNIROUTE_GENERATED_MODEL_LIST } from '../types/providers.generated';
 import { CommunityPersonaLoader, CommunityPersonaLoaderOptions, sanitizePersonaId } from '../personas/communityPersonaLoader';
@@ -429,6 +429,9 @@ export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = fal
   }
 
   const raw = parsed as Record<string, unknown>;
+  if (raw.pre_checks === undefined) {
+    raw.pre_checks = resolvePreChecksConfig(undefined);
+  }
   if (String(raw.version ?? 1) === '4') {
     if ('lenses' in raw) throw new ConfigValidationError('version 4 personas cannot be mixed with legacy lenses');
     const sanitized = sanitizeV3Config(raw);

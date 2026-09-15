@@ -373,13 +373,13 @@ pre_checks: {}
         },
       };
 
-      const parsedV3 = ctReviewConfigV3Schema.parse(baseObj);
-      expect(parsedV3.pre_checks.enabled).toBe(true);
-      expect(parsedV3.pre_checks.zoekt.max_symbols).toBe(200);
+      const parsedV3 = ctReviewConfigV3Schema.parse({ ...baseObj, pre_checks: {} });
+      expect(parsedV3.pre_checks?.enabled).toBe(true);
+      expect(parsedV3.pre_checks?.zoekt.max_symbols).toBe(200);
 
-      const parsedV4 = ctReviewConfigV4Schema.parse({ ...baseObj, version: 4 });
-      expect(parsedV4.pre_checks.enabled).toBe(true);
-      expect(parsedV4.pre_checks.analyzers.linters).toBe(true);
+      const parsedV4 = ctReviewConfigV4Schema.parse({ ...baseObj, version: 4, pre_checks: {} });
+      expect(parsedV4.pre_checks?.enabled).toBe(true);
+      expect(parsedV4.pre_checks?.analyzers.linters).toBe(true);
     });
   });
 
