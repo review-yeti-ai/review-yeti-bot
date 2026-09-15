@@ -7,7 +7,7 @@ import {
 import { CompiledDomainIndex, loadCompiledIndex } from '../../src/pipeline/domainIndex';
 
 describe('publishingWorkerConfig', () => {
-  it.each([[1, 1], [3, 3], [5, 5], [10, 10], [11, 10], [20, 10]])(
+  it.each([[1, 1], [3, 3], [5, 5], [10, 10], [11, 11], [20, 15]])(
     'projects admitted turn budget %i to %i without replacing a lower limit', (requested, expected) => {
       const config = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({
         review_yeti: { personas: 'security', budget: { max_investigation_turns: requested } },
