@@ -22,12 +22,15 @@ retired the run; that does not make the old check retryable or successful.
 
 ## Verification
 
-- 284 tests pass across publishingReview, workerCompletion, reviewRecoveryPolicy,
-  panelEngineDeep and panelEngineExpansion.
+- 336 tests pass across publicationFailurePolicy, publishingReview,
+  workerCompletion, reviewRecoveryPolicy, panelEngineDeep,
+  panelEngineExpansion and authoritativePublishingWorker.
 - Backend TypeScript build and full-tree `tsc --noEmit` pass.
 - Regression cases cover exact attempt identity, redaction, lost publication
   and callback acknowledgement, P1/P2 findings, discarded raw findings, and
-  required/optional incomplete responses.
+  required/optional incomplete responses. The raw-evidence classification is
+  now a pure review-layer policy with one-guard-at-a-time exclusions, including
+  satisfied canonical quorum; exact publication callbacks remain in the worker.
 
 Central decision: ct-meta ADR 0595. Independent review, protected CI/landing,
 immutable release deployment and live retry acceptance remain separate gates.
