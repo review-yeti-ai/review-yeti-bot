@@ -319,17 +319,125 @@ describe('runPublishingReviewWorker', () => {
 
     expect(receipt.verdict).toBe('BLOCK');
     expect(receipt.conclusion).toBe('failure');
+    expect(receipt.failureClass).toBe('budget_exhausted');
     expect(receipt.coverage).toEqual({
       mode: 'panel', expectedLaneCount: 2, completedLaneCount: 1, failedLaneCount: 1,
       rosterValid: true, quorumSatisfied: false, fullPanelComplete: false,
     });
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
-      expect.objectContaining({ conclusion: 'failure' }),
+      expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: review did not complete' }),
     );
     const summary = String((d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] &&
       ((d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
     expect(summary).toContain('mode=panel');
     expect(summary).not.toContain('turn budget exhausted');
+  });
+
+  it('persists a recoverable no-findings panel failure with the exact attempt and check identity', async () => {
+    const order: string[] = [];
+    const completion = {
+      reportTerminalFailure: vi.fn(async () => { order.push('callback'); }),
+      reportTerminalSuccess: vi.fn(async () => {}),
+    };
+    const cc = checkClient();
+    cc.completeCheck.mockImplementation(async () => { order.push('check'); });
+    const d = deps({ checkClient: cc, completion, panelRunner: vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane', 'arch-lane', 'test-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      optionalFailures: [
+        { id: 'arch-lane', error: 'provider HTTP 502 private response do-not-publish' },
+        { id: 'test-lane', error: 'provider HTTP 502 token=do-not-publish' },
+      ],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+      arbiter: { verdict: 'SHIP' },
+    })) });
+
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_EXECUTION_ATTEMPT: '2' }), d as never);
+
+    expect(receipt).toMatchObject({ verdict: 'BLOCK', conclusion: 'failure', failureClass: 'provider_error' });
+    expect(order).toEqual(['check', 'callback']);
+    expect(cc.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      checkId: 4242, conclusion: 'failure', title: 'Review Yeti: review did not complete',
+      summary: expect.stringContaining('expected lanes=3; completed lanes=1; failed lanes=2'),
+    }));
+    expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      version: 'WorkerTerminalFailure.v1', runId: env().REVIEW_RUN_ID,
+      headSha: HEAD, baseSha: BASE, executionAttempt: 2, checkId: 4242, failureClass: 'provider_error',
+    }));
+    expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
+    expect(JSON.stringify([receipt, cc.completeCheck.mock.calls, completion.reportTerminalFailure.mock.calls]))
+      .not.toContain('do-not-publish');
+  });
+
+  it('keeps the returned panel failed when failure publication and callback acknowledgement both fail', async () => {
+    const log = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const cc = checkClient();
+    cc.completeCheck.mockRejectedValue(new Error('private check response do-not-publish'));
+    const completion = {
+      reportTerminalFailure: vi.fn().mockRejectedValue(new Error('private callback do-not-publish')),
+      reportTerminalSuccess: vi.fn(),
+    };
+    const d = deps({ checkClient: cc, completion, panelRunner: vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane', 'arch-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      optionalFailures: [{ id: 'arch-lane', error: 'provider HTTP 502 do-not-publish' }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+      arbiter: { verdict: 'SHIP' },
+    })) });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt).toMatchObject({ conclusion: 'failure', verdict: 'BLOCK', failureClass: 'provider_error' });
+    expect(cc.completeCheck).toHaveBeenCalledOnce();
+    expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
+    expect(log.mock.calls).toEqual([
+      ['Failed to publish the fail-closed conclusion', {
+        runId: env().REVIEW_RUN_ID, failureClass: 'provider_error', reason: 'check_publication_failed',
+      }],
+      ['Failed to persist worker terminal failure', {
+        runId: env().REVIEW_RUN_ID, failureClass: 'provider_error', reason: 'completion_callback_failed',
+      }],
+    ]);
+    expect(JSON.stringify([log.mock.calls, receipt, cc.completeCheck.mock.calls, completion.reportTerminalFailure.mock.calls]))
+      .not.toContain('do-not-publish');
+    log.mockRestore();
+  });
+
+  it('does not relabel a failed panel whose raw findings were discarded as unanchorable', async () => {
+    const completion = { reportTerminalFailure: vi.fn(), reportTerminalSuccess: vi.fn() };
+    const d = deps({ completion, panelRunner: vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane', 'arch-lane'],
+      personas: [{ id: 'sec-lane', findings: [{ severity: 'P1', path: 'not-in-diff.ts', line: 1, title: 'Finding', body: 'Review this' }] }],
+      optionalFailures: [{ id: 'arch-lane', error: 'provider HTTP 502' }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+      arbiter: { verdict: 'SHIP' },
+    })) });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt).toMatchObject({ conclusion: 'failure', failureClass: null, findingCount: 0 });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ title: 'Review Yeti: BLOCK' }));
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+  });
+
+  it.each(['P1', 'P2'])('does not turn a partial panel with %s findings into a retryable infrastructure failure', async (severity) => {
+    const completion = { reportTerminalFailure: vi.fn(), reportTerminalSuccess: vi.fn() };
+    const d = deps({ completion, panelRunner: vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane', 'arch-lane'],
+      personas: [{ id: 'sec-lane', findings: [{ severity, path: 'src/a.ts', line: 1, title: 'Finding', body: 'Review this' }] }],
+      optionalFailures: [{ id: 'arch-lane', error: 'provider HTTP 502' }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+      arbiter: { verdict: 'SHIP' },
+    })) });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt).toMatchObject({ conclusion: 'failure', failureClass: null, findingCount: 1 });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Review Yeti: BLOCK', text: expect.stringContaining('Finding'),
+    }));
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
 
   it('fails raw publication when returned lane identities duplicate the applicable roster', async () => {
