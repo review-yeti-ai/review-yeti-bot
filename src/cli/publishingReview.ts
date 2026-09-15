@@ -40,6 +40,7 @@ import type { ProviderId } from '../config/schema';
 import { resolveWorkerConfig, PUBLISHING_MAX_TURNS, PUBLISHING_IDLE_TIMEOUT_SECONDS, PUBLISHING_OVERALL_TIMEOUT_SECONDS } from '../config/publishingWorkerConfig';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
+import { isRecoverableIncompletePanel } from '../review/publicationFailurePolicy';
 import {
   buildWorkerFailureDiagnostics, validateWorkerCompletionEndpoint,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
@@ -758,10 +759,16 @@ export async function runPublishingReviewWorker(
       // leaving the durable run queued. Never relabel findings, malformed
       // rosters, missing diff coverage, or authoritative service results.
       const firstFailedLane = panelResult.optionalFailures?.[0];
-      const recoverablePanelFailure = firstFailedLane !== undefined && !authoritative && unreadable.length === 0
-        && rawRoster.mode === 'panel' && rawRoster.rosterValid
-        && rawRoster.failedLaneCount > 0 && !canonical.quorumSatisfied
-        && rawFindings.length === 0 && findings.length === 0
+      const recoverablePanelFailure = firstFailedLane !== undefined && isRecoverableIncompletePanel({
+        authoritative,
+        unreadableDiffCount: unreadable.length,
+        mode: rawRoster.mode,
+        rosterValid: rawRoster.rosterValid,
+        failedLaneCount: rawRoster.failedLaneCount,
+        quorumSatisfied: canonical.quorumSatisfied,
+        rawFindingCount: rawFindings.length,
+        canonicalFindingCount: findings.length,
+      })
         ? classifyFailure(firstFailedLane.error)
         : undefined;
 
