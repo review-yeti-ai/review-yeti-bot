@@ -153,10 +153,16 @@ describe('authoritative prepared publishing worker', () => {
     const f = fixture();
     f.panel.personas = [f.panel.personas[0]];
     f.panel.optionalFailures = [{ id: 'qual-lane', error: `429 ${PRIVATE_DETAIL} ${TOKEN}` }];
-    await runPublishingReviewWorker(f.env, f.deps);
+    f.panel.quorum.satisfied = false;
+    const receipt = await runPublishingReviewWorker(f.env, f.deps);
     const expected = cleanResult();
+    expected.quorumSatisfied = false;
     expected.personas[1] = { id: 'qual-lane', decision: 'ERROR', status: 'ERROR', findings: [], errorClass: 'rate_limit' };
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
+    expect(receipt).toMatchObject({ conclusion: 'failure', verdict: 'BLOCK', failureClass: null });
+    expect(f.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      conclusion: 'failure', title: 'Review Yeti: BLOCK',
+    }));
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(TOKEN);
   });
