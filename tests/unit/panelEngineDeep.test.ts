@@ -444,6 +444,45 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(result.applicablePersonaIds).toEqual(['completed-lane', 'incomplete-lane']);
   });
 
+  it('retries once then fails over to the fallback provider when a persona reports INCOMPLETE', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Fallback lane completed' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.model.includes('claude')) {
+        // Primary provider never completes: each attempt reports INCOMPLETE.
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'INCOMPLETE', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-incomplete-failover',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    const secLane = result.personas.find((persona) => persona.id === 'sec-lane');
+    expect(secLane?.providerId).toBe('grok');
+    const claudeLaneCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
+      request.metadata?.role === 'persona'
+      && request.metadata?.persona === 'sec-lane'
+      && request.model.includes('claude'));
+    // INCOMPLETE consumes the bounded fresh-request retry before failover.
+    expect(claudeLaneCalls).toHaveLength(2);
+  });
+
   it('fails closed when persona INCOMPLETE includes unvalidated findings', async () => {
     const baseConfig = buildDeepConfig();
     const config = {
