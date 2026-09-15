@@ -1869,10 +1869,11 @@ async function runPersona(
           });
           throwIfPanelAborted(signal);
           if (result.parsed?.decision === 'INCOMPLETE') {
-            // No findings is not a completed review. Preserve the explicit
-            // incomplete decision as a failed lane, even when the model ran
-            // out of investigation turns without identifying a defect.
-            throw new PanelConfigurationError(`persona ${persona.id} reported INCOMPLETE without a completed review`);
+            // No findings is not a completed review. Treat INCOMPLETE like
+            // other structured-output failures so the existing retry-then-
+            // failover loop can try glm/synthetic instead of labeling the
+            // worker as internally crashed.
+            throw new PanelStructuredOutputError(`persona ${persona.id} reported INCOMPLETE without a completed review`);
           }
           if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
               || !Array.isArray(result.parsed.findings)) {
