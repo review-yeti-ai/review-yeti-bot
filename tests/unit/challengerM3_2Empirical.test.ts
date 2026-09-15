@@ -492,7 +492,7 @@ describe('Challenger M3-2 Empirical Challenge Test Suite', () => {
       const resolved = resolvePreChecksConfig({ pre_checks: true });
       expect(resolved.enabled).toBe(true);
       expect(resolved.zoekt.enabled).toBe(true);
-      expect(resolved.zoekt.max_symbols).toBe(25);
+      expect(resolved.zoekt.max_symbols).toBe(200);
       expect(resolved.analyzers.enabled).toBe(true);
     });
 
