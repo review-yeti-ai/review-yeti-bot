@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.68.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.68.0...v1.68.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* keep incomplete reviews failed and recoverable (REL-861) ([#801](https://github.com/review-yeti-ai/review-yeti-bot/issues/801)) ([d0ee8f9](https://github.com/review-yeti-ai/review-yeti-bot/commit/d0ee8f938affe379032856dc94c12c33c723d61f))
+
 ## [1.68.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.67.0...v1.68.0) (2026-09-14)
 
 
