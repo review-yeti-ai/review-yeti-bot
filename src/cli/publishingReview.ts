@@ -556,12 +556,16 @@ export async function runPublishingReviewWorker(
     await deps.reviewCompletion.reportReviewResult(event);
   };
 
-  const reportTerminalFailure = async (error: unknown, failedCheckId?: number): Promise<void> => {
+  const reportTerminalFailure = async (
+    error: unknown,
+    failedCheckId?: number,
+    panelFailure?: { failureClass: WorkerTerminalFailure['failureClass']; coverage: PublishingCoverageProjection },
+  ): Promise<void> => {
     // A success callback may have committed even when its acknowledgement was
     // lost. Never replace that immutable body or its already-green check with a
     // contradictory terminal failure.
     if (legacySuccessCompletionAttempted) return;
-    const failureClass = classifyFailure(error);
+    const failureClass = panelFailure?.failureClass ?? classifyFailure(error);
     const diagnostics = buildWorkerFailureDiagnostics(error, failureClass);
     if (authoritative && !authoritativeCompletionAttempted) {
       try {
@@ -582,7 +586,8 @@ export async function runPublishingReviewWorker(
           checkId: failedCheckId,
           conclusion: 'failure',
           title: 'Review Yeti: review did not complete',
-          summary: renderFailureSummary(failureClass, identity.headSha, diagnostics),
+          summary: [renderFailureSummary(failureClass, identity.headSha, diagnostics),
+            ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : [])].join('\n\n'),
         });
       } catch {
         logger.error('Failed to publish the fail-closed conclusion', {
@@ -747,6 +752,17 @@ export async function runPublishingReviewWorker(
       const conclusion = unreadable.length > 0
         ? ('failure' as const)
         : publishingConclusion(verdict, blocking.length);
+      // A valid roster with failed reviewer calls and no findings is not a
+      // code verdict. Preserve failure, but use the existing exact-head
+      // recovery protocol instead of publishing an unrepeatable BLOCK while
+      // leaving the durable run queued. Never relabel findings, malformed
+      // rosters, missing diff coverage, or authoritative service results.
+      const recoverablePanelFailure = !authoritative && unreadable.length === 0
+        && rawRoster.mode === 'panel' && rawRoster.rosterValid
+        && rawRoster.failedLaneCount > 0 && !canonical.quorumSatisfied
+        && rawFindings.length === 0 && findings.length === 0
+        ? classifyFailure(panelResult.optionalFailures![0].error)
+        : undefined;
 
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
       const pFindings = p.findings || [];
@@ -816,7 +832,12 @@ export async function runPublishingReviewWorker(
           `Telemetry: ${totalTurns} turns, ${totalToolCalls} tool calls, ${totalTokens} tokens across ${personaMetrics.length} lanes (${totalDurationMs}ms).`,
         ];
 
-    await deps.checkClient.completeCheck({
+    if (recoverablePanelFailure) {
+      // Failed-lane error strings may contain provider payloads. Keep their
+      // classification and bounded counts, not their free-form text.
+      await reportTerminalFailure(new Error('An optional reviewer did not complete.'), checkId,
+        { failureClass: recoverablePanelFailure, coverage });
+    } else await deps.checkClient.completeCheck({
       owner: identity.owner,
       repo: identity.repoName,
       checkId,
@@ -920,7 +941,7 @@ export async function runPublishingReviewWorker(
       conclusion,
       findingCount: findings.length,
       blockingFindingCount: blocking.length,
-      failureClass: null,
+      failureClass: recoverablePanelFailure ?? null,
       startedAt,
       completedAt,
       coverage,
