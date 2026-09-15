@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.69.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.69.0...v1.69.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **API-3260:** treat persona INCOMPLETE as malformed_output and failover ([#805](https://github.com/review-yeti-ai/review-yeti-bot/issues/805)) ([5f17692](https://github.com/review-yeti-ai/review-yeti-bot/commit/5f1769280c7bcddbf11c14111a91e1e40076ec15))
+
 ## [1.69.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.68.1...v1.69.0) (2026-09-15)
 
 
