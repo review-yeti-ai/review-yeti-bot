@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { CtReviewConfigV3, CtReviewConfigV4, ctReviewConfigV3Schema } from './schema';
+import { CtReviewConfigV3, CtReviewConfigV4, ctReviewConfigV3Schema, PreChecksConfig } from './schema';
 import { parseAndValidateConfig, createDefaultV3Config, ConfigValidationError, translateLegacyConfigToV3, sanitizeV3Config, normalizeConfigToV4 } from './configLoader';
 import { sha256 } from '../review/reviewCore';
 
@@ -259,6 +259,8 @@ export class ConfigResolver {
       ...(repoObj.on_pr_close || {}),
     };
 
+    const mergedPreChecks = this.mergePreChecks(sys.pre_checks, orgObj.pre_checks, repoObj.pre_checks);
+
     // 7. Construct merged V3 config
     const result: CtReviewConfigV3 = {
       ...sys,
@@ -300,6 +302,7 @@ export class ConfigResolver {
       rules,
       mcps,
       on_pr_close: mergedOnPRClose,
+      pre_checks: mergedPreChecks,
     };
 
     return result;
@@ -362,6 +365,112 @@ export class ConfigResolver {
     return Array.from(providerMap.values());
   }
 
+  private mergePreChecks(sysPre: any, orgPre: any, repoPre: any): PreChecksConfig {
+    const normSys = this.normalizePreChecksLayer(sysPre);
+    const normOrg = this.normalizePreChecksLayer(orgPre);
+    const normRepo = this.normalizePreChecksLayer(repoPre);
+
+    // Master switch precedence: repo -> org -> sys -> true
+    const enabled = normRepo.enabled ?? normOrg.enabled ?? normSys.enabled ?? true;
+
+    // Subsystem default enablement matches the master switch
+    const defaultSubsystemEnabled = enabled;
+
+    // Merge zoekt pre-checks
+    const sysZoekt = normSys.zoekt && typeof normSys.zoekt === 'object' ? normSys.zoekt : {};
+    const orgZoekt = normOrg.zoekt && typeof normOrg.zoekt === 'object' ? normOrg.zoekt : {};
+    const repoZoekt = normRepo.zoekt && typeof normRepo.zoekt === 'object' ? normRepo.zoekt : {};
+
+    let zoektEnabled: boolean;
+    if (repoZoekt.enabled !== undefined) {
+      zoektEnabled = repoZoekt.enabled;
+    } else if (!enabled) {
+      zoektEnabled = false;
+    } else if (orgZoekt.enabled !== undefined) {
+      zoektEnabled = orgZoekt.enabled;
+    } else {
+      zoektEnabled = sysZoekt.enabled ?? defaultSubsystemEnabled;
+    }
+
+    const max_symbols = repoZoekt.max_symbols ?? orgZoekt.max_symbols ?? sysZoekt.max_symbols ?? 200;
+    const timeoutMs = repoZoekt.timeoutMs ?? orgZoekt.timeoutMs ?? sysZoekt.timeoutMs ?? 10000;
+    const indexDir = repoZoekt.indexDir ?? orgZoekt.indexDir ?? sysZoekt.indexDir;
+
+    // Merge analyzers pre-checks
+    const sysAnalyzers = normSys.analyzers && typeof normSys.analyzers === 'object' ? normSys.analyzers : {};
+    const orgAnalyzers = normOrg.analyzers && typeof normOrg.analyzers === 'object' ? normOrg.analyzers : {};
+    const repoAnalyzers = normRepo.analyzers && typeof normRepo.analyzers === 'object' ? normRepo.analyzers : {};
+
+    let analyzersEnabled: boolean;
+    if (repoAnalyzers.enabled !== undefined) {
+      analyzersEnabled = repoAnalyzers.enabled;
+    } else if (!enabled) {
+      analyzersEnabled = false;
+    } else if (orgAnalyzers.enabled !== undefined) {
+      analyzersEnabled = orgAnalyzers.enabled;
+    } else {
+      analyzersEnabled = sysAnalyzers.enabled ?? defaultSubsystemEnabled;
+    }
+
+    const linters = repoAnalyzers.linters ?? orgAnalyzers.linters ?? sysAnalyzers.linters ?? true;
+    const security = repoAnalyzers.security ?? orgAnalyzers.security ?? sysAnalyzers.security ?? true;
+    const secrets = repoAnalyzers.secrets ?? orgAnalyzers.secrets ?? sysAnalyzers.secrets ?? true;
+
+    return {
+      enabled,
+      zoekt: {
+        enabled: zoektEnabled,
+        max_symbols,
+        timeoutMs,
+        ...(indexDir !== undefined ? { indexDir } : {}),
+      },
+      analyzers: {
+        enabled: analyzersEnabled,
+        linters,
+        security,
+        secrets,
+      },
+    };
+  }
+
+  private normalizePreChecksLayer(val: any): Record<string, any> {
+    if (val === false) {
+      return {
+        enabled: false,
+        zoekt: { enabled: false },
+        analyzers: { enabled: false, linters: false, security: false, secrets: false },
+      };
+    }
+    if (val === true) {
+      return { enabled: true };
+    }
+    if (!val || typeof val !== 'object' || Array.isArray(val)) {
+      return {};
+    }
+    const copy: Record<string, any> = { ...val };
+    if (copy.zoekt === false) {
+      copy.zoekt = { enabled: false };
+    } else if (copy.zoekt === true) {
+      copy.zoekt = { enabled: true };
+    }
+    if (copy.analyzers === false) {
+      copy.analyzers = { enabled: false };
+    } else if (copy.analyzers === true) {
+      copy.analyzers = { enabled: true };
+    }
+    if (copy.enabled === false) {
+      copy.zoekt = {
+        ...(typeof copy.zoekt === 'object' ? copy.zoekt : {}),
+        enabled: copy.zoekt?.enabled === true,
+      };
+      copy.analyzers = {
+        ...(typeof copy.analyzers === 'object' ? copy.analyzers : {}),
+        enabled: copy.analyzers?.enabled === true,
+      };
+    }
+    return copy;
+  }
+
   public validateResolvedConfig(config: any): CtReviewConfigV3 {
     sanitizeV3Config(config);
     const parseResult = ctReviewConfigV3Schema.safeParse(config);
@@ -381,6 +490,9 @@ export class ConfigResolver {
           p.model = overrides.defaultModelOverrides[p.id];
         }
       }
+    }
+    if (overrides.pre_checks) {
+      target.pre_checks = this.mergePreChecks(target.pre_checks, null, overrides.pre_checks);
     }
   }
 }

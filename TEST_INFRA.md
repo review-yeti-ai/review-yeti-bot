@@ -1,126 +1,44 @@
-# E2E Test Infrastructure: Review Yeti Platform Superpowers
+# E2E Test Infra: Review Yeti — Miller Retirement & Pre-Check System
 
-## 1. Test Philosophy & Design Principles
-The Review Yeti Platform Superpowers E2E test track enforces opaque-box, specification-driven verification of core developer delight features:
-- **R1**: Native 1-click "Commit Suggestion" diffs vs fallback tables.
-- **R2**: Interactive PR comment chat mentoring (`@review-yeti explain`, `fix`, `ignore`/`mute`).
-- **R3**: Local pre-commit CLI (`npx review-yeti pre-commit` / `git yeti pre-commit`) with fast flash evaluation (< 5s).
-- **R4**: 30-Second GitHub App setup wizard (`npx review-yeti init`).
-- **R5**: Community persona store (`uses:` syntax) & persistent SQLite team memory (`.ct-memory/team_memory.db`).
-- **R6**: Documentation completeness and strict public anonymity audit (0 proprietary company references).
+## Test Philosophy
+- Opaque-box, requirement-driven. Derived from `ORIGINAL_REQUEST.md`.
+- No reliance on internal implementation details or private AST functions.
+- Methodology: Category-Partition + Boundary Value Analysis + Pairwise Combinatorial Testing + Real-World Workload Testing.
 
-### The 4-Tier Test Design Methodology
-1. **Tier 1: Feature Coverage (Happy Path)**:
-   - Exhaustive isolation testing of every functional requirement.
-   - Strictly enforces **>= 5 distinct tests per feature** across all 6 requirements (minimum 30 tests in Tier 1).
-2. **Tier 2: Boundary & Corner Cases**:
-   - Extreme inputs, empty diffs, missing or malformed authentication tokens, invalid bot commands, malformed persona frontmatter, lockfile exclusions, and GitHub HTTP 422 line resolution fallbacks.
-3. **Tier 3: Cross-Feature Combinations**:
-   - Integration across subsystems: PR chat dismissal (`@review-yeti ignore`) persisting to SQLite team memory, which then automatically suppresses false-positive nits during subsequent pre-commit or review runs; community personas generating native suggestions; setup wizard credentials powering review publishers.
-4. **Tier 4: Real-World Developer Scenarios & Anonymity Audit**:
-   - Full developer lifecycle simulations from repository setup (`review-yeti init`) -> staged pre-commit evaluation -> PR review with native 1-click diffs -> interactive mentoring conversation -> team memory learning.
-   - Comprehensive zero-leakage anonymity audit ensuring 0 occurrences of proprietary company names across public documentation, charts, and examples.
+## Feature Inventory
+| # | Feature | Source (Requirement) | Tier 1 | Tier 2 | Tier 3 | Tier 4 |
+|---|---------|---------------------|:------:|:------:|:------:|:------:|
+| 1 | Miller Absence | ORIGINAL_REQUEST §R1 | 5 | 5 | ✓ | ✓ |
+| 2 | Zoekt Symbol Pre-Check | ORIGINAL_REQUEST §R2 | 5 | 5 | ✓ | ✓ |
+| 3 | Sandbox Analyzers | ORIGINAL_REQUEST §R3 | 5 | 5 | ✓ | ✓ |
+| 4 | Config Schema & Defaults | ORIGINAL_REQUEST §R4 | 5 | 5 | ✓ | ✓ |
 
----
+## Test Architecture
+- Test Runner: Vitest (`npx vitest run tests/e2e/preChecksE2E.test.ts`)
+- Test Location: `tests/e2e/preChecksE2E.test.ts`
+- Pass/Fail Semantics: Clean exit code 0, all assertions pass.
 
-## 2. Requirements & Feature Coverage Matrix
+## Coverage Goals by Tier
+- **Tier 1: Feature Coverage (>=5 per feature = 20 tests)**:
+  - F1 (Miller Absence): Tool rejection in panel, absence of `miller` in tool list, prompt omission, absence from allowed list, rejection message.
+  - F2 (Zoekt Pre-Check): Symbol discovery on changed lines, external caller resolution, definition lookup, prompt injection, budget capping.
+  - F3 (Sandbox Analyzers): Linter invocation, hypothesis structure, severity mapping, persona prompt injection, multi-ecosystem support.
+  - F4 (Config Schema): Default-on resolution, yaml loading, explicit bypass (`enabled: false`), individual toggle overrides, invalid config rejection.
+- **Tier 2: Boundary & Corner Cases (>=5 per feature = 20 tests)**:
+  - F1: Empty tool arguments, case sensitivity, injection attempts.
+  - F2: Empty patch/no diff, unindexed repo fail-soft, missing zoekt binary fail-soft, timeout fail-soft, symbol limit overflow.
+  - F3: Missing analyzer binary fail-soft, exit code 1 (clean lint output) vs fatal crash, buffer limit overflow, malformed JSON stdout, non-matching file extensions.
+  - F4: Empty `pre_checks: {}`, null values, negative `max_symbols`, partial analyzer overrides, conflicting flags.
+- **Tier 3: Cross-Feature Combinations (>=4 tests)**:
+  - Zoekt pre-check + Sandbox analyzers together in persona context.
+  - Zoekt enabled + Analyzers disabled.
+  - Zoekt disabled + Analyzers enabled.
+  - All pre-checks disabled (`pre_checks.enabled: false`).
+- **Tier 4: Real-World Application Scenarios (>=5 tests)**:
+  - Scenario 1: Full PR diff with TypeScript changes (Zoekt caller discovery + ESLint hypothesis generation).
+  - Scenario 2: Polyglot PR (TypeScript + Go + Elixir) triggering multi-ecosystem analyzers.
+  - Scenario 3: Secret detection PR (Gitleaks flags dummy credential as candidate hypothesis for persona review).
+  - Scenario 4: Degraded runner environment (Zoekt and Linters missing binaries, verifying review completes cleanly).
+  - Scenario 5: Full Review Pipeline E2E with custom `.ct-review.yaml` overrides.
 
-| Req | Superpower Feature | Source | Tier 1 (Isolation >=5 tests) | Tier 2 (Boundary & Corner) | Tier 3 (Cross-Feature) | Tier 4 (Real-World Lifecycle) |
-|:---:|:---|:---:|:---:|:---:|:---:|:---:|
-
----
-
-## 3. Test Architecture & Execution Engines
-
-```
-                                +------------------------------------------+
-                                | Review Yeti Platform Superpowers Test   |
-                                +------------------------------------------+
-                                                     |
-                         +---------------------------+---------------------------+
-                         |                                                       |
-                         v                                                       v
-        +---------------------------------+                     +---------------------------------+
-        | Vitest E2E Suite                |                     | Standalone E2E Runner           |
-        | `tests/e2e/superpowersE2E.test.ts`|                   | `tests/e2e/run-superpowers-e2e.mjs`|
-        +---------------------------------+                     +---------------------------------+
-                         |                                                       |
-                         +---------------------------+---------------------------+
-                                                     |
-                                                     v
-      +-----------------------------------------------------------------------------------------------+
-      |                                  Core Validation Engines                                      |
-      |                                                                                               |
-      |  1. Diff & Hunk Engine (`src/pipeline/hunkFilter.ts`)                                         |
-      |     - Staged diff parsing (`git diff --cached`)                                               |
-      |     - Lockfile & binary exclusions (`package-lock.json`, `.min.js`, `dist/`)                 |
-      |                                                                                               |
-      |  2. Comment & Suggestion Engine (`src/github/commentPublisher.ts`, `panelPublication.ts`)     |
-      |     - Native ` ```suggestion ` block generation for single & multi-line replacements           |
-      |     - Ranked fix options (Option 1 ` ```suggestion `, Option 2 informational diff)            |
-      |     - Fallback markdown table rendering upon HTTP 422 or multi-file architectural advice      |
-      |                                                                                               |
-      |  3. Chat & Mentoring Engine (`src/chat/commandDispatcher.ts`, `appAuth.ts`)                   |
-      |     - Mentions parsing (`@review-yeti explain|fix|ignore|mute`)                               |
-      |     - Bot self-loop prevention & ephemeral RS256 GitHub App JWT token minting                 |
-      |                                                                                               |
-      |  4. Pre-Commit CLI & Secret Scanner (`src/cli/`)                                              |
-      |     - Sub-5s fast evaluation (DeepSeek Flash / Gemini Flash / Ollama)                         |
-      |     - Instant static regex scanner (AWS keys, GitHub tokens, RSA private keys)                |
-      |     - ANSI terminal color formatting & blocking exit code 1 for P0                            |
-      |                                                                                               |
-      |  5. GitHub App Manifest Wizard Engine (`src/api/githubAppApi.ts`)                             |
-      |     - Least-privilege manifest generator (`checks:write`, `pull_requests:write`, ...)         |
-      |     - Temporary HTTP callback & `POST https://api.github.com/app-manifests/{code}/conversions`|
-      |                                                                                               |
-      |  6. Community Persona & Team Memory Engine (`node:sqlite`, `NitSuppressionEngine`)            |
-      |     - `uses:` loader (bundled `examples/personas/`, local, remote)                            |
-      |     - Zero-dependency Node 24 native SQLite WAL database (`DatabaseSync`)                    |
-      |     - Automatic false-positive nit suppression with absolute P0/P1 security immunity          |
-      |                                                                                               |
-      |  7. Public Anonymity Audit Engine                                                             |
-      |     - Recursive text scanner guaranteeing 0 proprietary terms (e.g. legacy company names)     |
-      +-----------------------------------------------------------------------------------------------+
-```
-
-### 1. Test Execution Suites
-- **Vitest Suite**: `tests/e2e/superpowersE2E.test.ts`
-  - Runs with: `npx vitest run tests/e2e/superpowersE2E.test.ts`
-  - Integrated into project `npm run test:e2e`.
-  - Full TypeScript types, mocks, and asynchronous assertions.
-- **Standalone E2E Runner**: `tests/e2e/run-superpowers-e2e.mjs`
-  - Runs with: `node tests/e2e/run-superpowers-e2e.mjs`
-  - Executable Node.js ESM script with zero dev-dependency requirement.
-  - Formatted ANSI terminal output, real-time tier breakdowns, and pass/fail summary.
-
-### 2. Validation Engines
-- **Native Node 24 SQLite Engine**: Utilizes `node:sqlite` (`DatabaseSync`), requiring zero external native binaries or compilation.
-- **YAML Engine**: `js-yaml` (`load`, `dump`) for AST verification of persona markdown frontmatter and GitHub Action workflows.
-- **Diff & Patch Engine**: Unified diff parsing with hunk calculation, line mapping, and lockfile filtering.
-- **Anonymity Audit Engine**: Recursive text search across all public documentation, examples, and charts verifying 0 occurrences of prohibited proprietary names.
-
----
-
-## 4. Coverage Thresholds & Quality Gates
-
-| Tier | Quality Gate / Acceptance Criteria | Target |
-|---|---|:---:|
-| **Tier 1 (Feature Coverage)** | Minimum 5 distinct tests per requirement across R1 to R6 (minimum 30 tests total). All tests must exercise real logic and verify happy-path functionality. | **100% PASS** (>=30 tests) |
-| **Tier 2 (Boundary & Corner Cases)** | Covers empty staged diffs, missing tokens, invalid commands, malformed persona frontmatter, lockfile exclusions, HTTP 422 line errors, secret detection edge cases. | **100% PASS** (>=8 tests) |
-| **Tier 3 (Cross-Feature Combinations)** | Covers multi-component interactions: PR chat ignore -> SQLite memory -> nit suppression; community persona -> native suggestion -> chat fix; manifest wizard -> publisher token. | **100% PASS** (>=5 tests) |
-| **Tier 4 (Real-World Scenarios & Anonymity)** | Covers complete developer lifecycle from `init` -> `pre-commit` -> PR review -> chat mentoring -> suppression. 0 proprietary occurrences across repository. | **100% PASS** (>=4 tests) |
-| **Combined E2E Suite Total** | Complete 4-Tier test suite execution. | **>= 47 tests passing** |
-
----
-
-## 5. Verification Commands
-```bash
-# 1. Run full Vitest Superpowers E2E test suite
-npx vitest run tests/e2e/superpowersE2E.test.ts
-
-# 2. Run standalone executable 4-tier E2E runner
-node tests/e2e/run-superpowers-e2e.mjs
-
-# 3. Verify public anonymity (zero proprietary company references)
-node -e 'const { execSync } = require("child_process"); const target = "call" + "telemetry"; const res = execSync(`grep -rnIi "${target}" docs/HELM_GUIDE.md docs/TROUBLESHOOTING.md README.md charts/ examples/ || true`, { encoding: "utf-8" }); if (res.trim()) { console.error("Anonymity violation:", res); process.exit(1); } else { console.log("Anonymity audit passed: 0 matches"); }'
-```
+## Total Minimum Tests Target: ~49 tests

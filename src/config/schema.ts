@@ -20,6 +20,49 @@ export const V3_PROVIDER_MODELS = {
   opencode: 'opencode-go/glm-5.2',
 } as const;
 
+export const BANNED_MODELS = [
+  'claude-3.5-sonnet',
+  'claude-3-5-sonnet',
+  'anthropic/claude-3.5-sonnet',
+  'openrouter/anthropic/claude-3.5-sonnet',
+  'claude-3.7-sonnet',
+  'claude-3-7-sonnet',
+  'anthropic/claude-3.7-sonnet',
+  'openrouter/anthropic/claude-3.7-sonnet',
+  'gpt-4o',
+  'gpt-4o-mini',
+  'openai/gpt-4o',
+  'openai/gpt-4o-mini',
+  'openrouter/openai/gpt-4o',
+  'openrouter/openai/gpt-4o-mini',
+  'glm-4',
+  'glm-4.7',
+  'GLM-4',
+  'GLM-4.7-Flash',
+  'synthetic/hf:zai-org/GLM-4.7-Flash',
+] as const;
+
+export function isBannedModel(modelName?: string | null): boolean {
+  if (!modelName || typeof modelName !== 'string') return false;
+  const lower = modelName.trim().toLowerCase();
+  // Claude 3.5 and 3.7 Sonnet (all variants)
+  if ((lower.includes('claude-3.5') || lower.includes('claude-3-5') || lower.includes('claude-3.7') || lower.includes('claude-3-7')) && lower.includes('sonnet')) {
+    return true;
+  }
+  if (/claude[-_.]3[.-]?[57][-_.].*sonnet/.test(lower)) {
+    return true;
+  }
+  // GPT-4o (including mini)
+  if (lower.includes('gpt-4o')) {
+    return true;
+  }
+  // GLM-4
+  if (/glm[-_.]?4(\b|[.-])/.test(lower) || lower.includes('glm-4')) {
+    return true;
+  }
+  return false;
+}
+
 export const R4_ALLOWED_MODELS = [
   'openrouter/auto',
   'openrouter/anthropic/claude-3.7-sonnet',
@@ -279,6 +322,110 @@ export const evidenceSchema = z.object({
 
 export type EvidenceConfig = z.infer<typeof evidenceSchema>;
 
+export const zoektPreCheckSchema = z.object({
+  enabled: z.boolean().default(true),
+  max_symbols: z.number().int().positive().default(200),
+  timeoutMs: z.number().int().positive().default(10000),
+  indexDir: z.string().optional(),
+}).default({ enabled: true, max_symbols: 200, timeoutMs: 10000 });
+
+export type PreChecksZoektConfig = z.infer<typeof zoektPreCheckSchema>;
+
+export const analyzersPreCheckSchema = z.object({
+  enabled: z.boolean().default(true),
+  linters: z.boolean().default(true),
+  security: z.boolean().default(true),
+  secrets: z.boolean().default(true),
+}).default({ enabled: true, linters: true, security: true, secrets: true });
+
+export type PreChecksAnalyzersConfig = z.infer<typeof analyzersPreCheckSchema>;
+
+export const preChecksSchema = z.preprocess(
+  (val: unknown) => {
+    if (val === null || val === undefined) {
+      return {};
+    }
+    if (val === false) {
+      return {
+        enabled: false,
+        zoekt: { enabled: false },
+        analyzers: { enabled: false },
+      };
+    }
+    if (val === true) {
+      return {
+        enabled: true,
+        zoekt: { enabled: true },
+        analyzers: { enabled: true },
+      };
+    }
+    if (typeof val === 'object' && !Array.isArray(val)) {
+      const copy = { ...val } as any;
+      if (copy.zoekt === false) {
+        copy.zoekt = { enabled: false };
+      } else if (copy.zoekt === true) {
+        copy.zoekt = { enabled: true };
+      }
+      if (copy.analyzers === false) {
+        copy.analyzers = { enabled: false };
+      } else if (copy.analyzers === true) {
+        copy.analyzers = { enabled: true };
+      }
+      if (copy.enabled === false) {
+        copy.zoekt = {
+          ...(typeof copy.zoekt === 'object' ? copy.zoekt : {}),
+          enabled: copy.zoekt?.enabled === true,
+        };
+        copy.analyzers = {
+          ...(typeof copy.analyzers === 'object' ? copy.analyzers : {}),
+          enabled: copy.analyzers?.enabled === true,
+        };
+      }
+      return copy;
+    }
+    return val;
+  },
+  z.object({
+    enabled: z.boolean().default(true),
+    zoekt: zoektPreCheckSchema.default({}),
+    analyzers: analyzersPreCheckSchema.default({}),
+  })
+).default({});
+
+export type PreChecksConfig = z.infer<typeof preChecksSchema>;
+
+export function resolvePreChecksConfig(rawConfig: any): PreChecksConfig {
+  if (!rawConfig) {
+    return preChecksSchema.parse({});
+  }
+  if (rawConfig.pre_checks === undefined || rawConfig.pre_checks === null) {
+    return preChecksSchema.parse({});
+  }
+  if (rawConfig.pre_checks === false) {
+    return {
+      enabled: false,
+      zoekt: { enabled: false, max_symbols: 200, timeoutMs: 10000 },
+      analyzers: { enabled: false, linters: false, security: false, secrets: false },
+    };
+  }
+  const parsed = preChecksSchema.parse(rawConfig.pre_checks);
+  if (parsed.enabled === false) {
+    const rawPreChecks = rawConfig.pre_checks;
+    return {
+      enabled: false,
+      zoekt: {
+        ...parsed.zoekt,
+        enabled: rawPreChecks.zoekt?.enabled === true,
+      },
+      analyzers: {
+        ...parsed.analyzers,
+        enabled: rawPreChecks.analyzers?.enabled === true,
+      },
+    };
+  }
+  return parsed;
+}
+
 const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
@@ -305,6 +452,7 @@ const ctReviewConfigV3ObjectSchema = z.object({
   mcps: mcpsSchema,
   on_pr_close: onPRCloseSchema,
   evidence: evidenceSchema.optional(),
+  pre_checks: preChecksSchema.default({}),
 
   reviewers: z.object({
     execution: z.literal('personas'),
@@ -345,6 +493,9 @@ function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'providers'], message: 'provider ids must be unique' });
   }
   config.personas.forEach((persona: any, index: number) => {
+    if (persona.model && isBannedModel(persona.model)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas', index, 'model'], message: `model '${persona.model}' is banned` });
+    }
     if (Array.isArray(persona.providers)) {
       persona.providers.forEach((provider: string) => {
         if (!enabled.has(provider)) {
@@ -353,6 +504,14 @@ function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {
       });
     }
   });
+  config.reviewers.providers.forEach((provider: any, index: number) => {
+    if (provider.model && isBannedModel(provider.model)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'providers', index, 'model'], message: `provider '${provider.id}' model '${provider.model}' is banned` });
+    }
+  });
+  if (config.dials?.persona_model && isBannedModel(config.dials.persona_model)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['dials', 'persona_model'], message: `dials.persona_model '${config.dials.persona_model}' is banned` });
+  }
   config.reviewers.arbiter.order.forEach((provider: string) => {
     if (!enabled.has(provider)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'arbiter', 'order'], message: `arbiter references disabled provider ${provider}` });
@@ -395,6 +554,14 @@ export const ctReviewConfigV4Schema = ctReviewConfigV3ObjectSchema.extend({
 }).superRefine(validateReviewConfig);
 
 export const ctReviewConfigSchema = z.union([ctReviewConfigV4Schema, ctReviewConfigV3Schema, legacyConfigSchema]);
-export type CtReviewConfigV3 = z.infer<typeof ctReviewConfigV3Schema>;
+
+type WithoutIndexSignature<T> = {
+  [K in keyof T as string extends K ? never : number extends K ? never : K]: T[K];
+};
+
+export type CtReviewConfigV3 = Omit<WithoutIndexSignature<z.infer<typeof ctReviewConfigV3Schema>>, 'pre_checks'> & {
+  [x: string]: unknown;
+  pre_checks?: PreChecksConfig;
+};
 export type CtReviewConfigV4 = z.infer<typeof ctReviewConfigV4Schema>;
-export type CtReviewConfig = z.infer<typeof ctReviewConfigSchema>;
+export type CtReviewConfig = CtReviewConfigV4 | CtReviewConfigV3 | z.infer<typeof legacyConfigSchema>;
