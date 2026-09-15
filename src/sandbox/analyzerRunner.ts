@@ -87,7 +87,7 @@ export interface AnalyzerExecutionOptions {
 export interface AnalyzerRunnerOptions {
   workspaceRoot: string;
   changedFiles: Array<{ path: string; patch?: string; content?: string; status?: string }> | string[];
-  config?: PreChecksAnalyzersConfig | Partial<PreChecksAnalyzersConfig>;
+  config?: (PreChecksAnalyzersConfig | Partial<PreChecksAnalyzersConfig>) & { heavy_compilers?: boolean };
   sandboxRunner?: SandboxRunner;
   spawnImpl?: any;
   timeoutMs?: number;

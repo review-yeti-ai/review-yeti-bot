@@ -534,13 +534,6 @@ export const ctReviewConfigV4Schema = ctReviewConfigV3ObjectSchema.extend({
 
 export const ctReviewConfigSchema = z.union([ctReviewConfigV4Schema, ctReviewConfigV3Schema, legacyConfigSchema]);
 
-type WithoutIndexSignature<T> = {
-  [K in keyof T as string extends K ? never : number extends K ? never : K]: T[K];
-};
-
-export type CtReviewConfigV3 = Omit<WithoutIndexSignature<z.infer<typeof ctReviewConfigV3Schema>>, 'pre_checks'> & {
-  [x: string]: unknown;
-  pre_checks?: PreChecksConfig;
-};
+export type CtReviewConfigV3 = z.infer<typeof ctReviewConfigV3Schema>;
 export type CtReviewConfigV4 = z.infer<typeof ctReviewConfigV4Schema>;
-export type CtReviewConfig = CtReviewConfigV4 | CtReviewConfigV3 | z.infer<typeof legacyConfigSchema>;
+export type CtReviewConfig = z.infer<typeof ctReviewConfigSchema>;

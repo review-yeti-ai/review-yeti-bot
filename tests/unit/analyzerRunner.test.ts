@@ -533,7 +533,7 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
         stdout: '[{"check_id": "sqli", "start": { "line": 15', // truncated mid-JSON
       });
 
-      let summary: PreCheckSummary | null = null;
+      let summary: any = null;
       await expect((async () => {
         summary = await runPreCheckAnalyzers({
           workspaceRoot: defaultWorkspace,
@@ -543,7 +543,7 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
         });
       })()).resolves.not.toThrow();
 
-      expect(summary?.hypotheses.filter((h) => h.analyzer === 'semgrep')).toHaveLength(0);
+      expect(summary?.hypotheses.filter((h: any) => h.analyzer === 'semgrep')).toHaveLength(0);
     });
 
     it('3.6: skips execution cleanly with 0 commands when changedFiles list is empty', async () => {

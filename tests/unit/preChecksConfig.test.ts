@@ -204,7 +204,7 @@ describe('preChecksConfig.test.ts — Milestone 2 Unit Test Suite', () => {
   // ===========================================================================
   describe('Suite 2: Config Loader & YAML Parsing', () => {
     it('2.1: createDefaultV3Config() includes complete default-on pre_checks configuration', () => {
-      const config = createDefaultV3Config();
+      const config: any = createDefaultV3Config();
       expect(config.pre_checks).toBeDefined();
       expect(config.pre_checks.enabled).toBe(true);
       expect(config.pre_checks.zoekt.enabled).toBe(true);
@@ -217,7 +217,7 @@ describe('preChecksConfig.test.ts — Milestone 2 Unit Test Suite', () => {
     });
 
     it('2.2: createDefaultV4Config() includes complete default-on pre_checks configuration', () => {
-      const config = createDefaultV4Config();
+      const config: any = createDefaultV4Config();
       expect(config.pre_checks).toBeDefined();
       expect(config.pre_checks.enabled).toBe(true);
       expect(config.pre_checks.zoekt.enabled).toBe(true);
@@ -226,7 +226,7 @@ describe('preChecksConfig.test.ts — Milestone 2 Unit Test Suite', () => {
 
     it('2.3: parseAndValidateConfig() resolves default-on pre_checks when omitted in Version 3 YAML', () => {
       const yamlStr = createBaseV3Yaml();
-      const config = parseAndValidateConfig(yamlStr);
+      const config: any = parseAndValidateConfig(yamlStr);
       expect(config.pre_checks).toBeDefined();
       expect(config.pre_checks.enabled).toBe(true);
       expect(config.pre_checks.zoekt.enabled).toBe(true);
@@ -239,7 +239,7 @@ describe('preChecksConfig.test.ts — Milestone 2 Unit Test Suite', () => {
 
     it('2.4: parseAndValidateConfig() resolves default-on pre_checks when omitted in Version 4 YAML', () => {
       const yamlStr = createBaseV4Yaml();
-      const config = parseAndValidateConfig(yamlStr);
+      const config: any = parseAndValidateConfig(yamlStr);
       expect(config.pre_checks).toBeDefined();
       expect(config.pre_checks.enabled).toBe(true);
       expect(config.pre_checks.zoekt.enabled).toBe(true);
@@ -251,7 +251,7 @@ describe('preChecksConfig.test.ts — Milestone 2 Unit Test Suite', () => {
 pre_checks:
   enabled: false
 `);
-      const config = parseAndValidateConfig(yamlStr);
+      const config: any = parseAndValidateConfig(yamlStr);
       expect(config.pre_checks.enabled).toBe(false);
     });
 
@@ -264,7 +264,7 @@ pre_checks:
   analyzers:
     enabled: true
 `);
-      const config = parseAndValidateConfig(yamlStr);
+      const config: any = parseAndValidateConfig(yamlStr);
       expect(config.pre_checks.enabled).toBe(true);
       expect(config.pre_checks.zoekt.enabled).toBe(false);
       expect(config.pre_checks.analyzers.enabled).toBe(true);
@@ -277,7 +277,7 @@ pre_checks:
   zoekt:
     max_symbols: 10
 `);
-      const config = parseAndValidateConfig(yamlStr);
+      const config: any = parseAndValidateConfig(yamlStr);
       expect(config.pre_checks.zoekt.max_symbols).toBe(10);
       expect(config.pre_checks.zoekt.enabled).toBe(true);
     });
@@ -290,7 +290,7 @@ pre_checks:
     security: true
     secrets: false
 `);
-      const config = parseAndValidateConfig(yamlStr);
+      const config: any = parseAndValidateConfig(yamlStr);
       expect(config.pre_checks.analyzers.linters).toBe(false);
       expect(config.pre_checks.analyzers.security).toBe(true);
       expect(config.pre_checks.analyzers.secrets).toBe(false);
@@ -305,7 +305,7 @@ pre_checks:
   analyzers:
     enabled: false
 `);
-      const config = parseAndValidateConfig(yamlStr);
+      const config: any = parseAndValidateConfig(yamlStr);
       expect(config.pre_checks.zoekt.enabled).toBe(true);
       expect(config.pre_checks.analyzers.enabled).toBe(false);
     });
@@ -348,7 +348,7 @@ pre_checks: "invalid-string"
       const yamlStr = createBaseV3Yaml(`
 pre_checks: {}
 `);
-      const config = parseAndValidateConfig(yamlStr);
+      const config: any = parseAndValidateConfig(yamlStr);
       expect(config.pre_checks.enabled).toBe(true);
       expect(config.pre_checks.zoekt.max_symbols).toBe(200);
       expect(config.pre_checks.analyzers.secrets).toBe(true);
@@ -390,7 +390,7 @@ pre_checks: {}
     it('3.1: preserves system default pre_checks when neither org nor repo specifies it', () => {
       const resolver = new ConfigResolver();
       const sys = createDefaultV3Config();
-      const merged = resolver.deepMergeConfigs(sys, null, null);
+      const merged: any = resolver.deepMergeConfigs(sys, null, null);
 
       expect(merged.pre_checks).toBeDefined();
       expect(merged.pre_checks.enabled).toBe(true);
@@ -409,7 +409,7 @@ pre_checks: {}
         },
       };
 
-      const merged = resolver.deepMergeConfigs(sys, orgConfig, null);
+      const merged: any = resolver.deepMergeConfigs(sys, orgConfig, null);
       expect(merged.pre_checks.zoekt.max_symbols).toBe(50);
       expect(merged.pre_checks.analyzers.secrets).toBe(false);
       // Unmentioned fields inherit system defaults
@@ -433,7 +433,7 @@ pre_checks: {}
         },
       };
 
-      const merged = resolver.deepMergeConfigs(sys, orgConfig, repoConfig);
+      const merged: any = resolver.deepMergeConfigs(sys, orgConfig, repoConfig);
       // Repo overrides Org max_symbols (10 vs 50)
       expect(merged.pre_checks.zoekt.max_symbols).toBe(10);
       // Inherits Org linters: false
@@ -453,7 +453,7 @@ pre_checks: {}
         },
       };
 
-      const merged = resolver.deepMergeConfigs(sys, null, repoConfig);
+      const merged: any = resolver.deepMergeConfigs(sys, null, repoConfig);
       // Explicitly set in repo
       expect(merged.pre_checks.analyzers.secrets).toBe(false);
       // Must NOT be clobbered: unmentioned sub-keys retain defaults
@@ -479,7 +479,7 @@ pre_checks: {}
         },
       };
 
-      const merged = resolver.deepMergeConfigs(sys, orgConfig, repoConfig);
+      const merged: any = resolver.deepMergeConfigs(sys, orgConfig, repoConfig);
       expect(merged.pre_checks.enabled).toBe(false);
       expect(merged.pre_checks.zoekt.enabled).toBe(false);
       expect(merged.pre_checks.analyzers.enabled).toBe(false);
@@ -492,7 +492,7 @@ pre_checks: {}
         pre_checks: false,
       };
 
-      const merged = resolver.deepMergeConfigs(sys, null, repoConfig);
+      const merged: any = resolver.deepMergeConfigs(sys, null, repoConfig);
       expect(merged.pre_checks.enabled).toBe(false);
       expect(merged.pre_checks.zoekt.enabled).toBe(false);
       expect(merged.pre_checks.analyzers.enabled).toBe(false);
@@ -507,7 +507,7 @@ pre_checks: {}
         },
       };
 
-      const merged = resolver.deepMergeConfigs(sys, null, repoConfig);
+      const merged: any = resolver.deepMergeConfigs(sys, null, repoConfig);
       expect(merged.pre_checks.enabled).toBe(true);
       expect(merged.pre_checks.zoekt.enabled).toBe(false);
       expect(merged.pre_checks.analyzers.enabled).toBe(true);
@@ -516,7 +516,7 @@ pre_checks: {}
     it('3.8: handles null or undefined pre_checks objects across all tiers gracefully', () => {
       const resolver = new ConfigResolver();
       const sys = createDefaultV3Config();
-      const merged = resolver.deepMergeConfigs(sys, { pre_checks: null }, { pre_checks: undefined });
+      const merged: any = resolver.deepMergeConfigs(sys, { pre_checks: null }, { pre_checks: undefined });
 
       expect(merged.pre_checks).toBeDefined();
       expect(merged.pre_checks.enabled).toBe(true);
@@ -539,7 +539,7 @@ pre_checks:
 `);
       const client = mockClient({ '.ct-review.yaml': repoYaml });
 
-      const config = await resolver.resolveConfig({
+      const config: any = await resolver.resolveConfig({
         owner: 'calltelemetry',
         repo: 'my-service',
         ref: 'main',
@@ -561,7 +561,7 @@ pre_checks:
 `);
       const client = mockClient({ '.reviewyeti.yaml': repoYaml });
 
-      const config = await resolver.resolveConfig({
+      const config: any = await resolver.resolveConfig({
         owner: 'calltelemetry',
         repo: 'my-service',
         ref: 'main',
@@ -575,7 +575,7 @@ pre_checks:
       const resolver = new ConfigResolver();
       const client = mockClient({});
 
-      const config = await resolver.resolveConfig({
+      const config: any = await resolver.resolveConfig({
         owner: 'calltelemetry',
         repo: 'my-service',
         ref: 'main',
@@ -602,7 +602,7 @@ pre_checks:
           profile: 'assertive',
         },
       };
-      const v3 = translateCodeRabbitToV3(raw);
+      const v3: any = translateCodeRabbitToV3(raw);
 
       expect(v3.pre_checks).toBeDefined();
       expect(v3.pre_checks.enabled).toBe(true);
@@ -615,7 +615,7 @@ pre_checks:
         version: 1,
         profile: 'balanced',
       };
-      const v3 = translateLegacyConfigToV3(legacyRaw);
+      const v3: any = translateLegacyConfigToV3(legacyRaw);
 
       expect(v3.pre_checks).toBeDefined();
       expect(v3.pre_checks.enabled).toBe(true);
