@@ -59,7 +59,7 @@ class MockSandboxRunner implements SandboxRunner {
 }
 
 // Helper to construct full valid test configuration
-function createTestConfig(overrides: Partial<CtReviewConfigV3> = {}): CtReviewConfigV3 {
+function createTestConfig(overrides: any = {}): CtReviewConfigV3 {
   return {
     version: 3,
     profile: 'balanced',
@@ -218,10 +218,10 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
           scannedSymbolsCount: 2,
           matchedSymbolsCount: 2,
           symbols: [
-            { name: 'authenticate', kind: 'function', line: 12, sourcePath: 'src/sec/auth.ts', preview: 'function authenticate() {}' },
+            { symbol: 'authenticate', kind: 'function', line: 12, sourcePath: 'src/sec/auth.ts', preview: 'function authenticate() {}' } as any,
           ],
           receipt: { totalQueries: 1, durationMs: 40 },
-        };
+        } as any;
       });
 
       vi.spyOn(analyzerRunnerModule, 'runPreCheckAnalyzers').mockImplementation(async () => {
@@ -260,7 +260,6 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
         repository: 'calltelemetry/repo',
         headSha: 'head1234',
-        memoryRules: [],
       });
 
       expect(result).toBeDefined();
@@ -313,7 +312,6 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
         repository: 'calltelemetry/repo',
         headSha: 'head-zoekt-fail',
-        memoryRules: [],
       });
 
       expect(result).toBeDefined();
@@ -333,7 +331,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         scannedSymbolsCount: 1,
         matchedSymbolsCount: 1,
         symbols: [
-          { name: 'verifyToken', kind: 'function', line: 42, sourcePath: 'src/sec/auth.ts', preview: 'function verifyToken() {}' },
+          { symbol: 'verifyToken', kind: 'function', line: 42, sourcePath: 'src/sec/auth.ts', preview: 'function verifyToken() {}' } as any,
         ],
         receipt: { totalQueries: 1, durationMs: 15 },
       });
@@ -352,7 +350,6 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
         repository: 'calltelemetry/repo',
         headSha: 'head-analyzer-fail',
-        memoryRules: [],
       });
 
       expect(result).toBeDefined();
@@ -383,7 +380,6 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
         repository: 'calltelemetry/repo',
         headSha: 'head-dual-fail',
-        memoryRules: [],
       });
 
       expect(result).toBeDefined();
@@ -643,7 +639,6 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
         repository: 'calltelemetry/repo',
         headSha: 'head-role-isolation',
-        memoryRules: [],
       });
 
       const personaCalls = recordedCalls.filter((c) => c.role === 'persona');
@@ -698,7 +693,6 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
         repository: 'calltelemetry/repo',
         headSha: 'head-prechecks-disabled',
-        memoryRules: [],
       });
 
       expect(result.arbiter.verdict).toBe('SHIP');
@@ -741,7 +735,6 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
         repository: 'calltelemetry/repo',
         headSha: 'head-analyzers-disabled',
-        memoryRules: [],
       });
 
       expect(result.arbiter.verdict).toBe('SHIP');
@@ -795,7 +788,6 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
         repository: 'calltelemetry/repo',
         headSha: 'head-zoekt-disabled',
-        memoryRules: [],
       });
 
       expect(result.arbiter.verdict).toBe('SHIP');
