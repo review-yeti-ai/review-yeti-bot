@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
-import { CtReviewConfigV3, ProviderId } from '../config/schema';
+import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
 import { resolveMaxFileSize } from '../config/configLoader';
+import { executeZoektPreCheck, formatZoektPreCheckPrompt, isSameFile, ZoektPreCheckResult } from '../services/zoektPreCheckService';
+import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, filterHypothesesForPersona, PreCheckSummary } from '../sandbox/analyzerRunner';
 import { OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRouterResponse, OpenRouterResponseError, OpenRouterTimeoutError, ReviewModelClient, TokensUsed, isExplicitUpstreamRejection, resolveCachedTokens } from '../gateway/openRouterClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
@@ -16,7 +18,6 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { validateReviewFindings } from '../review/reviewCore';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
-import { executeMillerTool } from '../services/millerTool';
 import { ASTParser } from '../indexer/astParser';
 import { matchOne } from '../pipeline/domainIndex';
 import { classifyReviewScope, ClassifierResult, containsExecutableOrSensitiveCode } from './classifierEngine';
@@ -990,7 +991,7 @@ export function buildDiffSection(
     `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`,
     compactFileList,
     ``,
-    `Use get_diff, read_file, view_file, search_code, miller, or zoekt on these paths.`,
+    `Use get_diff, read_file, view_file, search_code, or zoekt on these paths.`,
     `Do not assume file contents from this list. Fetch the commit diffs yourself.`,
     `SKIPPED paths are larger than max-file-diff-chars; do not request their payloads.`,
   ].join('\n');
@@ -1075,6 +1076,18 @@ async function invoke(
     ...(prNumberStr ? [`Pull Request: ${prNumberStr}`] : []),
   ];
 
+  const preCheckEvidence = (payload as any)?.preCheckEvidence as {
+    zoekt?: ZoektPreCheckResult;
+    analyzers?: PreCheckSummary;
+    [key: string]: any;
+  } | undefined;
+  const zoektPreCheckPromptText = (role === 'persona' && preCheckEvidence?.zoekt)
+    ? formatZoektPreCheckPrompt(preCheckEvidence.zoekt)
+    : '';
+  const analyzersPreCheckPromptText = (role === 'persona' && preCheckEvidence?.analyzers)
+    ? formatCandidateHypothesesPrompt(preCheckEvidence.analyzers)
+    : '';
+
   const staticPrefix = [
     `=== CALLTELEMETRY AUTOMATED CODE REVIEW TASK ===`,
     ...metadataLines,
@@ -1084,6 +1097,14 @@ async function invoke(
     ``,
     `=== PR CHANGED FILES & DIFF SCOPE ===`,
     diffSection,
+    ...(zoektPreCheckPromptText ? [
+      ``,
+      zoektPreCheckPromptText,
+    ] : []),
+    ...(analyzersPreCheckPromptText ? [
+      ``,
+      analyzersPreCheckPromptText,
+    ] : []),
     ``,
     `=== SEVERITY CALIBRATION (binding) ===`,
     ...SEVERITY_CALIBRATION_LINES,
@@ -1179,7 +1200,7 @@ async function invoke(
 === MULTI-TURN EXPLORATION & TOOL INVOCATION PROTOCOL ===
 - Permitted Tool Categories:
   1. Code Reading: view_file, read_file, get_diff (patch-scoped to changed files in this PR)
-  2. AST Context & Symbols: miller (AST context), symbol_search, search_code, grep_search, find_files, code_search_zoekt
+  2. AST Context & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt
   3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}
      Use Context7 when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Do NOT call Context7 if the code is self-explanatory or contained in the repository.
 - IMPORTANT EVIDENCE BOUNDARY: Default code reading and symbol search tools are patch-scoped: they only inspect the patch hunks of files modified in this PR. They DO NOT search unchanged files across the repository. Never claim a function, module, or symbol is undefined, missing, or broken in the repository simply because a patch-scoped search returns no hits.
@@ -1334,36 +1355,23 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         const targetPath = toolCall.args?.path || toolCall.args?.filePath || '';
         const searchQ = toolCall.args?.query || toolCall.args?.pattern || '';
 
-        // Whitelist check: Code Reading, Miller, Context Searching, Dashboard MCPs, Zoekt
+        // Whitelist check: Code Reading, Context Searching, Dashboard MCPs, Zoekt
         const isCodeReading = ['view_file', 'read_file', 'get_diff'].includes(tName);
-        const isMiller = tName === 'miller';
         const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code', 'code_search_zoekt', 'zoekt_search'].includes(tName);
         const readOnlyMcpNames = new Set(['fetch_docs', 'context7_search', 'mcp_context7_query', 'linear_get_issue']);
         const isMcp = readOnlyMcpNames.has(tName);
 
-        const isAllowed = isCodeReading || isMiller || isSearching || isMcp;
+        const isAllowed = isCodeReading || isSearching || isMcp;
 
         let toolOutput = '';
         let toolScope = 'changed-patches-only';
         let isExhaustive = false;
 
         if (!isAllowed) {
-          toolOutput = `Tool '${tName}' execution rejected: Permission denied. Reviewer personas are restricted strictly to read-only code, Miller, search, and MCP tools.`;
+          toolOutput = `Tool '${tName}' execution rejected: Permission denied. Reviewer personas are restricted strictly to read-only code, search, and MCP tools.`;
         } else {
           toolOutput = `Tool '${tName}' execution result:\n`;
-          if (isMiller) {
-            try {
-              const patch = toolCall.args?.patch || changedFiles.find((f: any) => f.path === targetPath)?.patch;
-              const millerRes = await raceWithPanelAbort(executeMillerTool({
-                filePath: targetPath,
-                patch,
-                maxDepth: toolCall.args?.maxDepth,
-              }), options?.signal);
-              toolOutput += millerRes.miller;
-            } catch (err: any) {
-              toolOutput += `Miller Tool Error: ${err.message || String(err)}`;
-            }
-          } else if (isCodeReading) {
+          if (isCodeReading) {
             const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
             if (matched) {
               toolScope = 'changed-patches-only';
@@ -1650,6 +1658,7 @@ async function runPersona(
   gitContext?: { baseSha?: string; branch?: string; prNumber?: number },
   signal?: AbortSignal,
   remainingPanelTimeoutMs?: () => number,
+  preCheckEvidence?: { zoekt?: ZoektPreCheckResult; [key: string]: any },
 ): Promise<PersonaLaneResult> {
   return runInSpan(`ct_persona_lane`, async (span) => {
     throwIfPanelAborted(signal);
@@ -1688,6 +1697,38 @@ async function runPersona(
     const scopedFiles = changedFiles.filter((file) =>
       persona.paths.some((pattern) => pathMatches(pattern, file.path)),
     );
+
+    // Scope pre-check evidence to files evaluated by this persona
+    let scopedPreCheckEvidence = preCheckEvidence;
+    if (preCheckEvidence?.zoekt && Array.isArray(preCheckEvidence.zoekt.symbols)) {
+      const scopedSymbols = preCheckEvidence.zoekt.symbols.filter((sym) =>
+        scopedFiles.some((f) => pathMatches(sym.sourcePath, f.path) || f.path === sym.sourcePath || isSameFile(sym.sourcePath, f.path))
+      );
+      scopedPreCheckEvidence = {
+        ...preCheckEvidence,
+        zoekt: {
+          ...preCheckEvidence.zoekt,
+          symbols: scopedSymbols,
+          matchedSymbolsCount: scopedSymbols.length,
+        },
+      };
+    }
+    if (preCheckEvidence?.analyzers && Array.isArray(preCheckEvidence.analyzers.hypotheses)) {
+      const scopedHypotheses = filterHypothesesForPersona({
+        hypotheses: preCheckEvidence.analyzers.hypotheses,
+        personaId: persona.id,
+        charter: effectiveCharter,
+        scopedFiles,
+      });
+      scopedPreCheckEvidence = {
+        ...scopedPreCheckEvidence,
+        analyzers: {
+          ...preCheckEvidence.analyzers,
+          hypotheses: scopedHypotheses,
+          hypothesesCount: scopedHypotheses.length,
+        },
+      };
+    }
 
     bus.publishEvent({
       jobId: effectiveJobId,
@@ -1792,6 +1833,7 @@ async function runPersona(
             changedFiles: scopedFiles,
             pathInstructions: config.path_instructions,
             rules: [...(config.rules || []), ...memoryRules],
+            preCheckEvidence: scopedPreCheckEvidence,
             outputSchema: {
               decision: ['json_object', 'json_schema'].includes(
                 String(requestPolicy?.responseFormat?.type || '').toLowerCase(),
@@ -1809,7 +1851,7 @@ async function runPersona(
             persona: persona.id,
             providerId,
             requestPolicy,
-            zoektConfig: (config as any)?.evidence?.zoekt,
+            zoektConfig: (config as any)?.pre_checks?.zoekt || (config as any)?.evidence?.zoekt,
             repoFileProvider,
             onFirstToken: (requestPolicy as any)?.onFirstToken,
             signal,
@@ -2046,6 +2088,7 @@ export async function executePersonaPanel(options: {
   repositoryVisibility?: RepositoryVisibility;
   /** Caller cancellation is linked to the configured overall panel deadline. */
   signal?: AbortSignal;
+  workspaceRoot?: string;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
@@ -2258,6 +2301,83 @@ export async function executePersonaPanel(options: {
       throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
     }
 
+    // Execute deterministic Zoekt and Static Analyzer pre-checks concurrently prior to persona execution
+    let zoektPreCheckResult: ZoektPreCheckResult | undefined;
+    let analyzersPreCheckResult: PreCheckSummary | undefined;
+    const preChecksConfig = resolvePreChecksConfig(config);
+
+    if (preChecksConfig.enabled) {
+      const zoektPromise = preChecksConfig.zoekt.enabled
+        ? (async () => {
+            try {
+              const indexDir = (config as any)?.evidence?.zoekt?.indexDir
+                || preChecksConfig.zoekt.indexDir
+                || process.env.ZOEKT_INDEX_DIR;
+
+              return await raceWithPanelAbort(
+                executeZoektPreCheck({
+                  changedFiles: effectiveFiles,
+                  config: preChecksConfig.zoekt,
+                  indexDir,
+                  signal,
+                }),
+                signal
+              );
+            } catch (err: any) {
+              throwIfPanelAborted(signal);
+              logger.warn('Zoekt pre-check failed soft during executePersonaPanel', {
+                repository,
+                headSha,
+                error: err?.message,
+              });
+              return {
+                status: 'unavailable' as const,
+                reason: err?.message || 'unexpected_error',
+                scannedSymbolsCount: 0,
+                matchedSymbolsCount: 0,
+                symbols: [],
+                receipt: { totalQueries: 0, durationMs: 0 },
+              };
+            }
+          })()
+        : Promise.resolve(undefined);
+
+      const analyzersPromise = preChecksConfig.analyzers.enabled
+        ? (async () => {
+            try {
+              return await raceWithPanelAbort(
+                runPreCheckAnalyzers({
+                  workspaceRoot: options.workspaceRoot || process.env.CT_REVIEW_WORKSPACE_ROOT || process.cwd(),
+                  changedFiles: effectiveFiles,
+                  config: preChecksConfig.analyzers,
+                  signal,
+                }),
+                signal
+              );
+            } catch (err: any) {
+              throwIfPanelAborted(signal);
+              logger.warn('Analyzers pre-check failed soft during executePersonaPanel', {
+                repository,
+                headSha,
+                error: err?.message,
+              });
+              return {
+                enabled: false,
+                status: 'unavailable' as const,
+                reason: err?.message || 'unexpected_error',
+                durationMs: 0,
+                analyzersExecuted: 0,
+                hypothesesCount: 0,
+                receipts: [],
+                hypotheses: [],
+              };
+            }
+          })()
+        : Promise.resolve(undefined);
+
+      [zoektPreCheckResult, analyzersPreCheckResult] = await Promise.all([zoektPromise, analyzersPromise]);
+    }
+
     const settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[] =
       await mapConcurrentSettled(
         applicable,
@@ -2296,6 +2416,12 @@ export async function executePersonaPanel(options: {
               },
               signal,
               remainingPanelTimeoutMs,
+              (zoektPreCheckResult || analyzersPreCheckResult)
+                ? {
+                    ...(zoektPreCheckResult ? { zoekt: zoektPreCheckResult } : {}),
+                    ...(analyzersPreCheckResult ? { analyzers: analyzersPreCheckResult } : {}),
+                  }
+                : undefined,
             );
             return { persona, result, error: undefined };
           } finally {
