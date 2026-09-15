@@ -757,11 +757,12 @@ export async function runPublishingReviewWorker(
       // recovery protocol instead of publishing an unrepeatable BLOCK while
       // leaving the durable run queued. Never relabel findings, malformed
       // rosters, missing diff coverage, or authoritative service results.
-      const recoverablePanelFailure = !authoritative && unreadable.length === 0
+      const firstFailedLane = panelResult.optionalFailures?.[0];
+      const recoverablePanelFailure = firstFailedLane !== undefined && !authoritative && unreadable.length === 0
         && rawRoster.mode === 'panel' && rawRoster.rosterValid
         && rawRoster.failedLaneCount > 0 && !canonical.quorumSatisfied
         && rawFindings.length === 0 && findings.length === 0
-        ? classifyFailure(panelResult.optionalFailures![0].error)
+        ? classifyFailure(firstFailedLane.error)
         : undefined;
 
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {

@@ -404,6 +404,46 @@ describe('runPublishingReviewWorker', () => {
     log.mockRestore();
   });
 
+  it('does not classify an incomplete panel as recoverable when some diff headers were unreadable', async () => {
+    const completion = { reportTerminalFailure: vi.fn(), reportTerminalSuccess: vi.fn() };
+    const d = deps({ completion,
+      sourceLoader: vi.fn(async () => ({ diff: `${DIFF}diff --git nonsense\n@@ -1 +1 @@\n-a\n+b\n`, githubReads: 1 })),
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [{ id: 'arch-lane', error: 'provider HTTP 502' }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+        arbiter: { verdict: 'SHIP' },
+      })),
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt).toMatchObject({ conclusion: 'failure', failureClass: null, verdict: 'BLOCK' });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      title: 'Review Yeti: BLOCK', summary: expect.stringContaining('diff --git nonsense'),
+    }));
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+    expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
+  });
+
+  it('does not relabel an incomplete panel with a failed lane outside its admitted roster', async () => {
+    const completion = { reportTerminalFailure: vi.fn(), reportTerminalSuccess: vi.fn() };
+    const d = deps({ completion, panelRunner: vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane', 'arch-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      optionalFailures: [{ id: 'outside-lane', error: 'provider HTTP 502' }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+      arbiter: { verdict: 'SHIP' },
+    })) });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt).toMatchObject({ conclusion: 'failure', failureClass: null, coverage: { rosterValid: false } });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ title: 'Review Yeti: BLOCK' }));
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+  });
+
   it('does not relabel a failed panel whose raw findings were discarded as unanchorable', async () => {
     const completion = { reportTerminalFailure: vi.fn(), reportTerminalSuccess: vi.fn() };
     const d = deps({ completion, panelRunner: vi.fn(async () => ({
