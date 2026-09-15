@@ -53,7 +53,7 @@ const ABLATION_CONDITIONS = [
     id: 'multi-turn-tools',
     name: 'Multi-Turn Investigation (Tool Enabled)',
     category: 'turn_depth',
-    description: 'Iterative investigation using miller, grep_search, view_file, symbol_search up to 5 turns.',
+    description: 'Iterative investigation using grep_search, view_file, symbol_search up to 5 turns.',
     turnDepthMultiplier: 3.2,
     discoveryBonus: 0.15,
     fpMultiplier: 0.2,

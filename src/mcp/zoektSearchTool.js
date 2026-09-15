@@ -42,7 +42,7 @@ const DEFAULTS = Object.freeze({
   timeoutMs: 2_000,
 });
 const MAX_LIMITS = Object.freeze({
-  maxCalls: 40,
+  maxCalls: 500,
   maxFindResults: 100,
   maxResultBytes: 64 * 1024,
   maxQueryLength: 200,
