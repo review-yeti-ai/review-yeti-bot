@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.69.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.69.1...v1.69.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* **REL-872:** delete internal-infra plan doc from the public repo ([#806](https://github.com/review-yeti-ai/review-yeti-bot/issues/806)) ([5703252](https://github.com/review-yeti-ai/review-yeti-bot/commit/5703252056c90bbdf2f2b54d9a43ca012b2d1975))
+
 ## [1.69.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.69.0...v1.69.1) (2026-09-15)
 
 
