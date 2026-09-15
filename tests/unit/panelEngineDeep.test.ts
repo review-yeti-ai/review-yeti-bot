@@ -1197,7 +1197,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     }
   });
 
-  it('enforces MAX_PERSONA_BUDGET_MS (10 turns × 3 min) cumulative cap per persona lane', async () => {
+  it('enforces MAX_PERSONA_BUDGET_MS (15 turns × 3 min) cumulative cap per persona lane', async () => {
     const config = ctReviewConfigV3Schema.parse({
       version: 3,
       profile: 'assertive',
@@ -1223,7 +1223,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const baseTime = realNow();
     vi.spyOn(Date, 'now').mockImplementation(() => {
       if (callCount > 0) {
-        return baseTime + 1_801_000;
+        return baseTime + 2_701_000;
       }
       return baseTime;
     });
@@ -1240,7 +1240,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
         repository: 'calltelemetry/repo',
         headSha: 'head-sha-timeout-cap-test',
         client: mockClient as unknown as OmniRouteClient,
-      })).rejects.toThrow(/exceeded total retry\/execution budget of 1800s/);
+      })).rejects.toThrow(/exceeded total retry\/execution budget of 2700s/);
     } finally {
       vi.spyOn(Date, 'now').mockRestore();
     }
