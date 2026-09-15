@@ -353,7 +353,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
-  it('normalizes persona INCOMPLETE with empty findings to APPROVE', async () => {
+  it('fails closed when persona INCOMPLETE has empty findings', async () => {
     const baseConfig = buildDeepConfig();
     const config = {
       ...baseConfig,
@@ -394,22 +394,54 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       };
     });
 
-    const panelResult = await executePersonaPanel({
+    await expect(executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
       repository: 'calltelemetry/repo',
       headSha: 'head-sha-native-incomplete',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
-    });
-
-    expect(panelResult.personas[0].decision).toBe('APPROVE');
-    expect(panelResult.personas[0].findings).toEqual([]);
+    })).rejects.toThrow(/required persona failure.*INCOMPLETE/iu);
 
     const personaRequest = mockClient.complete.mock.calls
       .map(([request]: any[]) => request)
       .find((request: any) => request.metadata?.role === 'persona');
     expect(personaRequest.responseFormat.json_schema.schema.properties.decision.enum).toContain('INCOMPLETE');
+  });
+
+  it('retains an optional INCOMPLETE lane as a failure rather than an empty approval', async () => {
+    const baseConfig = buildDeepConfig();
+    const config = {
+      ...baseConfig,
+      quorum: 1,
+      personas: [
+        { ...baseConfig.personas[0], id: 'completed-lane', providers: ['claude'], maxTurns: 1 },
+        { ...baseConfig.personas[0], id: 'incomplete-lane', required: false, providers: ['claude'], maxTurns: 1 },
+      ],
+      reviewers: { ...baseConfig.reviewers, fallback: 'none' as const },
+    };
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const body = opts.metadata?.role === 'arbiter'
+        ? { verdict: 'SHIP', rationale: 'Completed lane has no findings' }
+        : opts.metadata?.role === 'moderator'
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: opts.persona === 'incomplete-lane' ? 'INCOMPLETE' : 'APPROVE', findings: [] };
+      return { model: opts.model, content: JSON.stringify({ nonce, ...body }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+      repository: 'calltelemetry/repo', headSha: 'head-sha-optional-incomplete',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    expect(result.personas.map((persona) => persona.id)).toEqual(['completed-lane']);
+    expect(result.optionalFailures).toEqual([{ id: 'incomplete-lane', error: expect.stringContaining('INCOMPLETE') }]);
+    expect(result.applicablePersonaIds).toEqual(['completed-lane', 'incomplete-lane']);
   });
 
   it('fails closed when persona INCOMPLETE includes unvalidated findings', async () => {
