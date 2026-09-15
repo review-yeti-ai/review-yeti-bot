@@ -1052,6 +1052,9 @@ describe('identity and failure classification', () => {
     ['APPROVE cannot contain findings', 'malformed_output'],
     ['FINDINGS requires at least one finding', 'malformed_output'],
     ['nonce-fenced structured output rejected', 'malformed_output'],
+    ['persona sec-lane reported INCOMPLETE without a completed review', 'malformed_output'],
+    ['required persona failure: bifrost: persona sec-lane reported INCOMPLETE without a completed review', 'malformed_output'],
+    ['An optional reviewer did not complete.', 'malformed_output'],
     ['gateway returned an unexpected payload', 'provider_error'],
   ])('classifies %s as %s', (message, expected) => {
     expect(classifyFailure(new Error(message))).toBe(expected);
