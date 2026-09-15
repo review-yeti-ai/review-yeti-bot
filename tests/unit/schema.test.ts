@@ -9,6 +9,8 @@ import {
   PreChecksConfig,
   BANNED_MODELS,
   isBannedModel,
+  R4_ALLOWED_MODELS,
+  MODERN_TESTING_MODELS,
 } from '../../src/config/schema';
 import {
   createDefaultV3Config,
@@ -274,44 +276,20 @@ pre_checks:
   });
 
   // =========================================================================
-  // SUITE 6: BANNED MODELS VALIDATION & ENFORCEMENT
+  // SUITE 6: MODEL COMPATIBILITY & MODERN TESTING DEFAULTS (SEPT 2026)
   // =========================================================================
-  describe('Suite 6: Banned Models Validation & Enforcement', () => {
-    it('6.1: isBannedModel correctly flags all specified banned models', () => {
-      // Claude 3.5 Sonnet variants
-      expect(isBannedModel('claude-3.5-sonnet')).toBe(true);
-      expect(isBannedModel('claude-3-5-sonnet')).toBe(true);
-      expect(isBannedModel('anthropic/claude-3.5-sonnet')).toBe(true);
-      expect(isBannedModel('openrouter/anthropic/claude-3.5-sonnet')).toBe(true);
-
-      // Claude 3.7 Sonnet variants
-      expect(isBannedModel('claude-3.7-sonnet')).toBe(true);
-      expect(isBannedModel('claude-3-7-sonnet')).toBe(true);
-      expect(isBannedModel('anthropic/claude-3.7-sonnet')).toBe(true);
-      expect(isBannedModel('openrouter/anthropic/claude-3.7-sonnet')).toBe(true);
-
-      // GPT-4o variants
-      expect(isBannedModel('gpt-4o')).toBe(true);
-      expect(isBannedModel('gpt-4o-mini')).toBe(true);
-      expect(isBannedModel('openai/gpt-4o')).toBe(true);
-      expect(isBannedModel('openai/gpt-4o-mini')).toBe(true);
-      expect(isBannedModel('openrouter/openai/gpt-4o')).toBe(true);
-
-      // GLM-4 variants
-      expect(isBannedModel('glm-4')).toBe(true);
-      expect(isBannedModel('glm-4.7')).toBe(true);
-      expect(isBannedModel('GLM-4.7-Flash')).toBe(true);
-      expect(isBannedModel('synthetic/hf:zai-org/GLM-4.7-Flash')).toBe(true);
-
-      // Non-banned models pass
-      expect(isBannedModel('glm-5.2')).toBe(false);
-      expect(isBannedModel('claude-5-sonnet')).toBe(false);
-      expect(isBannedModel('claude-opus-4-8')).toBe(false);
-      expect(isBannedModel('gpt-5.6-sol')).toBe(false);
-      expect(isBannedModel('deepseek-v4-pro')).toBe(false);
+  describe('Suite 6: Model Compatibility & Modern Testing Defaults (Sept 2026)', () => {
+    it('6.1: legacy models are not banned publicly and isBannedModel returns false', () => {
+      expect(isBannedModel('claude-3.5-sonnet')).toBe(false);
+      expect(isBannedModel('claude-3-5-sonnet')).toBe(false);
+      expect(isBannedModel('anthropic/claude-3.5-sonnet')).toBe(false);
+      expect(isBannedModel('gpt-4o')).toBe(false);
+      expect(isBannedModel('gpt-4o-mini')).toBe(false);
+      expect(isBannedModel('glm-4')).toBe(false);
+      expect(BANNED_MODELS).toHaveLength(0);
     });
 
-    it('6.2: parseAndValidateConfig rejects persona with banned model', () => {
+    it('6.2: parseAndValidateConfig allows persona with legacy model publicly without error', () => {
       const yaml = `
 version: 3
 profile: balanced
@@ -338,10 +316,12 @@ reviewers:
   arbiter:
     order: [claude]
 `;
-      expect(() => parseAndValidateConfig(yaml)).toThrow(ConfigValidationError);
+      const config = parseAndValidateConfig(yaml);
+      expect(config).toBeDefined();
+      expect((config as any).personas[0].model).toBe('gpt-4o');
     });
 
-    it('6.3: parseAndValidateConfig rejects provider with banned model', () => {
+    it('6.3: parseAndValidateConfig allows provider with legacy model publicly without error', () => {
       const yaml = `
 version: 3
 profile: balanced
@@ -367,7 +347,52 @@ reviewers:
   arbiter:
     order: [claude]
 `;
-      expect(() => parseAndValidateConfig(yaml)).toThrow(ConfigValidationError);
+      const config = parseAndValidateConfig(yaml);
+      expect(config).toBeDefined();
+      expect((config as any).reviewers.providers[0].model).toBe('claude-3-5-sonnet');
+    });
+
+    it('6.4: modern Sept 2026 models (DeepSeek v4.1 Flash, GLM 5.3 Flash) are in R4_ALLOWED_MODELS', () => {
+      expect(R4_ALLOWED_MODELS).toContain('deepseek/deepseek-v4.1-flash');
+      expect(R4_ALLOWED_MODELS).toContain('deepseek-v4.1-flash');
+      expect(R4_ALLOWED_MODELS).toContain('z-ai/glm-5.3-flash');
+      expect(R4_ALLOWED_MODELS).toContain('synthetic/glm-5.3-flash');
+      expect(R4_ALLOWED_MODELS).toContain('ollama/glm-5.3-flash');
+      expect(MODERN_TESTING_MODELS.deepseek).toBe('deepseek/deepseek-v4.1-flash');
+      expect(MODERN_TESTING_MODELS.glm).toBe('z-ai/glm-5.3-flash');
+    });
+
+    it('6.5: parseAndValidateConfig cleanly validates modern Sept 2026 models in personas and providers', () => {
+      const yaml = `
+version: 3
+profile: balanced
+quorum: 1
+personas:
+  - id: sec-lane
+    enabled: true
+    required: true
+    charter: builtin:security
+    paths: ["**"]
+    providers: [synthetic]
+    model: deepseek/deepseek-v4.1-flash
+reviewers:
+  execution: personas
+  fallback: ordered
+  overall_timeout_s: 60
+  providers:
+    - id: synthetic
+      enabled: true
+      model: z-ai/glm-5.3-flash
+      effort: high
+      review_timeout_s: 30
+      arbiter_timeout_s: 30
+  arbiter:
+    order: [synthetic]
+`;
+      const config = parseAndValidateConfig(yaml);
+      expect(config).toBeDefined();
+      expect((config as any).personas[0].model).toBe('deepseek/deepseek-v4.1-flash');
+      expect((config as any).reviewers.providers[0].model).toBe('z-ai/glm-5.3-flash');
     });
   });
 });
