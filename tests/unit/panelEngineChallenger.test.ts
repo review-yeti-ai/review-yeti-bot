@@ -195,8 +195,8 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       expect(result.personas[0].decision).toBe('APPROVE');
     });
 
-    it('caps configured maxTurns = 15 at the five-turn runtime limit', async () => {
-      const config = createMockConfig({ maxTurns: 15 });
+    it('caps configured maxTurns = 25 at the fifteen-turn runtime limit', async () => {
+      const config = createMockConfig({ maxTurns: 25 });
       const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log("test");' }];
       let turnCounter = 0;
 
@@ -230,7 +230,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         }
 
         turnCounter++;
-        if (turnCounter < 15) {
+        if (turnCounter < 25) {
           return {
             model: opts.model,
             content: `Turn ${turnCounter}: Need to search symbol\n\`\`\`json\n{"tool": "search_code", "args": {"query": "test"}}\n\`\`\``,
@@ -256,7 +256,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       expect(turnCounter).toBe(MAX_INVESTIGATION_TURNS);
     });
 
-    it('caps configured maxTurns = 20 at the ten-turn runtime limit', async () => {
+    it('caps configured maxTurns = 20 at the fifteen-turn runtime limit', async () => {
       const config = createMockConfig({ maxTurns: 20 });
       const changedFiles = [{ path: 'src/app.ts', patch: '+ console.log("test");' }];
       let turnCounter = 0;

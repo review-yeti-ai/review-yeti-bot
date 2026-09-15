@@ -59,10 +59,10 @@ import type {
 export const REPO_FIND_FILES_MAX_HITS = 50;
 export const REPO_READ_FILE_MAX_CHARS = 512 * 1024;
 /** Max investigation turns per persona. After that the session must emit findings. */
-export const MAX_INVESTIGATION_TURNS = 10;
+export const MAX_INVESTIGATION_TURNS = 15;
 /** Idle budget after the last completed turn: start the next turn or end the session. */
 export const TURN_IDLE_MS = 180_000;
-/** Outer persona budget: 10 turns × 3 minutes. Not a mid-stream hard stop. */
+/** Outer persona budget: 15 turns × 3 minutes. Not a mid-stream hard stop. */
 export const MAX_PERSONA_BUDGET_MS = MAX_INVESTIGATION_TURNS * TURN_IDLE_MS;
 
 /** Skip PR file patches larger than this. Plumbed from policy `max_file_diff_chars`. */
