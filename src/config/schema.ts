@@ -20,51 +20,41 @@ export const V3_PROVIDER_MODELS = {
   opencode: 'opencode-go/glm-5.2',
 } as const;
 
-export const BANNED_MODELS = [
-  'claude-3.5-sonnet',
-  'claude-3-5-sonnet',
-  'anthropic/claude-3.5-sonnet',
-  'openrouter/anthropic/claude-3.5-sonnet',
-  'claude-3.7-sonnet',
-  'claude-3-7-sonnet',
-  'anthropic/claude-3.7-sonnet',
-  'openrouter/anthropic/claude-3.7-sonnet',
-  'gpt-4o',
-  'gpt-4o-mini',
-  'openai/gpt-4o',
-  'openai/gpt-4o-mini',
-  'openrouter/openai/gpt-4o',
-  'openrouter/openai/gpt-4o-mini',
-  'glm-4',
-  'glm-4.7',
-  'GLM-4',
-  'GLM-4.7-Flash',
-  'synthetic/hf:zai-org/GLM-4.7-Flash',
-] as const;
+/**
+ * Testing default models (Sept 2026).
+ * Standardized modern fast inference models for testing defaults and local harnesses.
+ */
+export const MODERN_TESTING_MODELS = {
+  deepseek: 'deepseek/deepseek-v4.1-flash',
+  glm: 'z-ai/glm-5.3-flash',
+  ollamaGlm: 'ollama/glm-5.3-flash',
+} as const;
 
-export function isBannedModel(modelName?: string | null): boolean {
-  if (!modelName || typeof modelName !== 'string') return false;
-  const lower = modelName.trim().toLowerCase();
-  // Claude 3.5 and 3.7 Sonnet (all variants)
-  if ((lower.includes('claude-3.5') || lower.includes('claude-3-5') || lower.includes('claude-3.7') || lower.includes('claude-3-7')) && lower.includes('sonnet')) {
-    return true;
-  }
-  if (/claude[-_.]3[.-]?[57][-_.].*sonnet/.test(lower)) {
-    return true;
-  }
-  // GPT-4o (including mini)
-  if (lower.includes('gpt-4o')) {
-    return true;
-  }
-  // GLM-4
-  if (/glm[-_.]?4(\b|[.-])/.test(lower) || lower.includes('glm-4')) {
-    return true;
-  }
+/**
+ * Legacy model reference. Kept for backward compatibility;
+ * legacy models are NOT banned publicly.
+ */
+export const BANNED_MODELS: readonly string[] = [];
+
+export function isBannedModel(_modelName?: string | null): boolean {
+  // Legacy models are allowed publicly; no models are rejected from configuration.
   return false;
 }
 
 export const R4_ALLOWED_MODELS = [
   'openrouter/auto',
+  'deepseek/deepseek-v4.1-flash',
+  'deepseek/deepseek-v4.1-flash:high',
+  'deepseek/deepseek-v4.1-flash:low',
+  'deepseek-v4.1-flash',
+  'openrouter/deepseek/deepseek-v4.1-flash',
+  'z-ai/glm-5.3-flash',
+  'synthetic/glm-5.3-flash',
+  'synthetic/hf:zai-org/GLM-5.3-Flash',
+  'hf:zai-org/GLM-5.3-Flash',
+  'ollama/glm-5.3-flash',
+  'glm-5.3-flash',
+  'bifrost/pr-reviewer',
   'openrouter/anthropic/claude-3.7-sonnet',
   'openrouter/deepseek/deepseek-r1',
   'openrouter/google/gemini-2.5-pro',
@@ -493,9 +483,6 @@ function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'providers'], message: 'provider ids must be unique' });
   }
   config.personas.forEach((persona: any, index: number) => {
-    if (persona.model && isBannedModel(persona.model)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['personas', index, 'model'], message: `model '${persona.model}' is banned` });
-    }
     if (Array.isArray(persona.providers)) {
       persona.providers.forEach((provider: string) => {
         if (!enabled.has(provider)) {
@@ -504,14 +491,6 @@ function validateReviewConfig(config: any, ctx: z.RefinementCtx): void {
       });
     }
   });
-  config.reviewers.providers.forEach((provider: any, index: number) => {
-    if (provider.model && isBannedModel(provider.model)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'providers', index, 'model'], message: `provider '${provider.id}' model '${provider.model}' is banned` });
-    }
-  });
-  if (config.dials?.persona_model && isBannedModel(config.dials.persona_model)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['dials', 'persona_model'], message: `dials.persona_model '${config.dials.persona_model}' is banned` });
-  }
   config.reviewers.arbiter.order.forEach((provider: string) => {
     if (!enabled.has(provider)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewers', 'arbiter', 'order'], message: `arbiter references disabled provider ${provider}` });

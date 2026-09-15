@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, PreChecksConfig, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT, BANNED_MODELS, isBannedModel } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, PreChecksConfig, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT, MODERN_TESTING_MODELS } from './schema';
 import { logger } from '../utils/logger';
 import { OMNIROUTE_GENERATED_PROVIDERS, OMNIROUTE_GENERATED_MODEL_LIST } from '../types/providers.generated';
 import { CommunityPersonaLoader, CommunityPersonaLoaderOptions, sanitizePersonaId } from '../personas/communityPersonaLoader';
@@ -497,9 +497,6 @@ export function sanitizeV3Config(raw: Record<string, unknown>): Record<string, u
         logger.warn(`Stripping provider '${p.id}' — missing model`);
         continue;
       }
-      if (isBannedModel(p.model)) {
-        throw new ConfigValidationError(`Provider '${p.id}' model '${p.model}' is banned and cannot be used`);
-      }
       if (OMNIROUTE_GENERATED_PROVIDERS[p.id as keyof typeof OMNIROUTE_GENERATED_PROVIDERS]) {
         const meta = OMNIROUTE_GENERATED_PROVIDERS[p.id as keyof typeof OMNIROUTE_GENERATED_PROVIDERS];
         const CORE_R4_MODELS = ['claude-5-sonnet', 'gpt-5.6-sol', 'deepseek-v4-pro', 'glm-5.2'];
@@ -539,9 +536,6 @@ export function sanitizeV3Config(raw: Record<string, unknown>): Record<string, u
         persona.providers = [Array.from(definedProviderIds)[0]];
       }
       if (persona.model && typeof persona.model === 'string') {
-        if (isBannedModel(persona.model)) {
-          throw new ConfigValidationError(`Persona '${persona.id}' model '${persona.model}' is banned and cannot be used`);
-        }
         const isSupportedModel = R4_ALLOWED_MODELS.includes(persona.model) ||
           OMNIROUTE_GENERATED_MODEL_LIST.includes(persona.model) ||
           persona.model.includes('/') ||
