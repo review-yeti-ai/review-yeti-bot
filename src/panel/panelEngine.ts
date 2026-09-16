@@ -7,7 +7,7 @@ import { OpenRouterConnectionError, OpenRouterContentBlock, OpenRouterMessage, O
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
-import { redactWorkerFailureLogTail } from '../review/workerCompletion';
+import { classifyWorkerFailureMessage, redactWorkerFailureLogTail } from '../review/workerCompletion';
 import type { WorkerFailureClass } from '../review/workerCompletion';
 import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
@@ -288,7 +288,7 @@ export class PanelConfigurationError extends Error {
  * `.lastKnownUsage` / `.lastKnownModel` with compiler-checked confidence that they are the two
  * fields this class declares, not whatever shape happened to be cast onto it.
  */
-class PanelStructuredOutputError extends PanelConfigurationError {
+export class PanelStructuredOutputError extends PanelConfigurationError {
   constructor(message: string, lane?: { lastKnownUsage?: LaneTokenUsage; lastKnownModel?: string }) {
     super(message, lane);
     this.name = 'PanelStructuredOutputError';
@@ -410,7 +410,7 @@ function panelDelay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-class PanelFindingsValidationError extends Error {
+export class PanelFindingsValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PanelFindingsValidationError';
@@ -1002,8 +1002,12 @@ export function isRetryablePanelError(error: unknown): boolean {
  * The typed branches mirror the same `instanceof`/status checks this file already uses to decide
  * retry and failover behaviour a few lines above each call site, so this is not a second,
  * independently-drifting judgment -- it reads the same structural facts the panel already acted
- * on. The trailing message-pattern checks exist only for the small remainder of errors that carry
- * no distinguishing type (e.g. a plain `Error` thrown by a dependency).
+ * on. `PanelStructuredOutputError` and `PanelFindingsValidationError` are panel-internal (module-
+ * private, never exported) so they can only be checked here. Everything else -- the message/
+ * status-pattern remainder for errors that carry no distinguishing type -- delegates to
+ * `classifyWorkerFailureMessage` in `../review/workerCompletion`, the single shared implementation
+ * `classifyFailure` (`../cli/publishingReview`) also delegates to, so that regex ladder exists in
+ * exactly one place instead of two that can drift (REL-892 finding).
  */
 /** `error.message` when `error` is an `Error`, otherwise its string form. Exists so call sites
  * that only know their caught value as `unknown` (as they must, to keep the compiler honest
@@ -1024,17 +1028,7 @@ export function classifyPersonaAttemptFailure(error: unknown): WorkerFailureClas
   }
   if (error instanceof PanelStructuredOutputError) return 'malformed_output';
   if (error instanceof PanelFindingsValidationError) return 'malformed_output';
-  const message = panelErrorMessage(error);
-  if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
-  if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
-  if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
-  if (/429|rate limit/iu.test(message)) return 'rate_limit';
-  if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
-  if (/invalid (?:or missing )?(?:native )?JSON|native JSON response must be an object|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output|reported INCOMPLETE without a completed review|optional reviewer did not complete/iu.test(message)) {
-    return 'malformed_output';
-  }
-  if (/provider|gateway|model/iu.test(message)) return 'provider_error';
-  return 'internal_error';
+  return classifyWorkerFailureMessage(error);
 }
 
 export const MAX_INLINE_DIFF_CHARS = 0;

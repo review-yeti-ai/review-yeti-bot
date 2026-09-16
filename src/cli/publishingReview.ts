@@ -42,7 +42,7 @@ import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../githu
 import { computeArbitration } from '../review/reviewCore';
 import { isRecoverableIncompletePanel } from '../review/publicationFailurePolicy';
 import {
-  buildWorkerFailureDiagnostics, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
+  buildWorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
   validateWorkerCompletionEndpoint,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
@@ -452,6 +452,15 @@ export function isGithubDiffNotRenderableError(error: unknown): boolean {
   return error instanceof GitHubQualificationReadError && error.httpStatus === 406;
 }
 
+/**
+ * Publisher-layer classification. The typed OpenRouter/Upstream-capacity `instanceof` checks and
+ * the `contract`-class branches below are specific to this layer (a persona attempt inside the
+ * panel never throws a `GitHubQualificationReadError` or a "worker contract is invalid" config
+ * error), so they stay local. Everything else -- the message/status-pattern remainder -- delegates
+ * to `classifyWorkerFailureMessage` in `../review/workerCompletion`, the single shared
+ * implementation `classifyPersonaAttemptFailure` (`../panel/panelEngine`) also delegates to, so
+ * that regex ladder exists in exactly one place instead of two that can drift (REL-892 finding).
+ */
 export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
   if (error instanceof OpenRouterTimeoutError) return 'timeout';
   if (error instanceof UpstreamCapacityRejectionError) return 'rate_limit';
@@ -465,16 +474,7 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
   if (/contract is invalid/iu.test(message)) return 'contract';
   // A non-renderable diff is a contract violation, not the internal_error catch-all.
   if (isGithubDiffNotRenderableError(error)) return 'contract';
-  if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
-  if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
-  if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
-  if (/429|rate limit/iu.test(message)) return 'rate_limit';
-  if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
-  if (/invalid (?:or missing )?(?:native )?JSON|native JSON response must be an object|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output|reported INCOMPLETE without a completed review|optional reviewer did not complete/iu.test(message)) {
-    return 'malformed_output';
-  }
-  if (/provider|gateway|model/iu.test(message)) return 'provider_error';
-  return 'internal_error';
+  return classifyWorkerFailureMessage(error);
 }
 
 /**

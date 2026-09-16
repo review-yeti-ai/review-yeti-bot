@@ -169,6 +169,37 @@ export const GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION =
   'GitHub returned HTTP 406: this diff is too large to render as configured (roughly over 20,000 changed lines '
   + 'or 300 files). This is a permanent property of this head, not an infrastructure outage.';
 
+/**
+ * Message/status-pattern fallback shared by both classification call sites: the panel's
+ * `classifyPersonaAttemptFailure` (`../panel/panelEngine`), which classifies a single persona
+ * attempt's terminal error at the exact point `runPersona` observed it, and the publisher's
+ * `classifyFailure` (`../cli/publishingReview`), which only ever sees a lane's already-joined,
+ * cross-attempt free-form message. Both used to re-implement this same regex ladder
+ * independently (REL-892 finding: two implementations of one decision that can drift); it now
+ * lives in exactly one place.
+ *
+ * Deliberately excludes the concrete OpenRouter/Upstream-capacity/panel-structured-output
+ * `instanceof` checks each call site performs before falling back here. Those checks are typed
+ * and unambiguous -- unlike a regex, they cannot silently drift out of sync with the classes they
+ * test -- and each call site already imports the relevant transport or panel-internal error class
+ * for its own retry/failover decisions, so keeping them local costs nothing and keeps this module
+ * free of a dependency on gateway transport types (the same boundary `buildWorkerFailureDiagnostics`
+ * above already keeps with GitHub transport types).
+ */
+export function classifyWorkerFailureMessage(error: unknown): WorkerFailureClass {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
+  if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
+  if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
+  if (/429|rate limit/iu.test(message)) return 'rate_limit';
+  if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
+  if (/invalid (?:or missing )?(?:native )?JSON|native JSON response must be an object|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output|reported INCOMPLETE without a completed review|optional reviewer did not complete/iu.test(message)) {
+    return 'malformed_output';
+  }
+  if (/provider|gateway|model/iu.test(message)) return 'provider_error';
+  return 'internal_error';
+}
+
 export function workerFailureReason(failureClass: WorkerTerminalFailure['failureClass']): string {
   return {
     contract: 'worker_contract_invalid',
