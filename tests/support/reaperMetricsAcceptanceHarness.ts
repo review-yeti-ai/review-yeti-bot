@@ -17,8 +17,8 @@ import { initTelemetry } from '../../src/telemetry';
 const PUBLISHER_APP_ID = 4_385_771;
 const OWNED_SCHEMA = /^review_reaper_acceptance_[a-f0-9]{16}$/u;
 const METRIC_NAMES = {
-  deliveryIdentityMismatch: 'ct_review_reaper_delivery_identity_mismatch_total',
-  supersededAttempt: 'ct_review_reaper_superseded_attempt_total',
+  deliveryIdentityMismatch: 'review_yeti_review_reaper_delivery_identity_mismatch_total',
+  supersededAttempt: 'review_yeti_review_reaper_superseded_attempt_total',
 } as const;
 
 export interface ReaperMetricSample {

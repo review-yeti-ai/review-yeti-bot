@@ -30,9 +30,9 @@ describe("Action dispatch metrics endpoint", () => {
     expect(response.status).toBe(200);
     expect(response.headers["content-type"]).toContain("text/plain");
     expect(response.headers["content-type"]).toContain("version=0.0.4");
-    expect(response.text).toContain("# HELP ct_queue_jobs_queued_total");
-    expect(response.text).toContain("# TYPE ct_queue_jobs_queued_total counter");
-    expect(response.text).toContain("ct_queue_jobs_queued_total");
+    expect(response.text).toContain("# HELP review_yeti_queue_jobs_queued_total");
+    expect(response.text).toContain("# TYPE review_yeti_queue_jobs_queued_total counter");
+    expect(response.text).toContain("review_yeti_queue_jobs_queued_total");
   });
 
   it("enforces authentication when metricsAuthToken is configured", async () => {

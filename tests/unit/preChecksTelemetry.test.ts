@@ -272,7 +272,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
 
     // Verify OpenTelemetry spans and attributes
     const spans = getRecentSpans();
-    const panelSpan = spans.find((s) => s.name === 'ct_persona_panel');
+    const panelSpan = spans.find((s) => s.name === 'review_yeti_panel');
     expect(panelSpan).toBeDefined();
 
     // Check review_yeti pre-check span attributes
@@ -393,7 +393,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
     });
 
     const spans = getRecentSpans();
-    const panelSpan = spans.find((s) => s.name === 'ct_persona_panel');
+    const panelSpan = spans.find((s) => s.name === 'review_yeti_panel');
     expect(panelSpan?.attributes['review_yeti.pre_checks.zoekt.truncated']).toBe(true);
 
     const text = await getPrometheusMetrics();
@@ -455,7 +455,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
     expect(result.arbiter.verdict).toBe('SHIP');
 
     const spans = getRecentSpans();
-    const panelSpan = spans.find((s) => s.name === 'ct_persona_panel');
+    const panelSpan = spans.find((s) => s.name === 'review_yeti_panel');
     expect(panelSpan?.attributes['review_yeti.pre_checks.zoekt.status']).toBe('unavailable');
     expect(panelSpan?.attributes['review_yeti.pre_checks.analyzers.status']).toBe('unavailable');
   });

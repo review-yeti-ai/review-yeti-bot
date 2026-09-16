@@ -64,7 +64,7 @@ export type AnalyzerSeverity = 'info' | 'warning' | 'error' | 'critical';
 
 export interface CandidateHypothesis {
   id: string;
-  analyzer: 'eslint' | 'semgrep' | 'credo' | 'sobelow' | 'govet' | 'gitleaks' | string;
+  analyzer: 'eslint' | 'semgrep' | 'gitleaks' | string;
   category: AnalyzerCategory;
   ruleId: string;
   path: string;
@@ -341,26 +341,17 @@ export function getApplicableAnalyzers(filePath: string, config: PreChecksAnalyz
   const ext = path.extname(filePath).toLowerCase();
   const tools: string[] = [];
 
-  // Linters
+  // Linters (Zero-compilation: eslint only for JS/TS)
   if (config.linters) {
     if (['.ts', '.tsx', '.js', '.jsx'].includes(ext)) {
       tools.push('eslint');
     }
-    if (['.ex', '.exs'].includes(ext)) {
-      tools.push('credo');
-    }
-    if (ext === '.go') {
-      tools.push('govet');
-    }
   }
 
-  // Security Scanners
+  // Security Scanners (Zero-compilation: semgrep for all supported languages)
   if (config.security) {
-    if (['.ts', '.tsx', '.js', '.jsx', '.py', '.go'].includes(ext)) {
+    if (['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.ex', '.exs'].includes(ext)) {
       tools.push('semgrep');
-    }
-    if (['.ex', '.exs'].includes(ext)) {
-      tools.push('sobelow');
     }
   }
 
@@ -626,8 +617,8 @@ Context & Symbols: symbol_search, search_code, grep_search, find_files, code_sea
         const cfg: PreChecksAnalyzersConfig = { enabled: true, linters: true, security: true, secrets: true };
 
         expect(getApplicableAnalyzers('src/app.ts', cfg)).toEqual(['eslint', 'semgrep', 'gitleaks']);
-        expect(getApplicableAnalyzers('lib/telecom/server.ex', cfg)).toEqual(['credo', 'sobelow', 'gitleaks']);
-        expect(getApplicableAnalyzers('pkg/router/main.go', cfg)).toEqual(['govet', 'semgrep', 'gitleaks']);
+        expect(getApplicableAnalyzers('lib/telecom/server.ex', cfg)).toEqual(['semgrep', 'gitleaks']);
+        expect(getApplicableAnalyzers('pkg/router/main.go', cfg)).toEqual(['semgrep', 'gitleaks']);
         expect(getApplicableAnalyzers('README.md', cfg)).toEqual(['gitleaks']);
       });
 
@@ -665,7 +656,7 @@ Context & Symbols: symbol_search, search_code, grep_search, find_files, code_sea
           { tool: 'gitleaks', raw: 'CRITICAL', expected: 'critical' },
           { tool: 'semgrep', raw: 'ERROR', expected: 'error' },
           { tool: 'eslint', raw: 'warn', expected: 'warning' },
-          { tool: 'credo', raw: 'readability', expected: 'info' },
+          { tool: 'eslint', raw: 'info', expected: 'info' },
         ];
 
         for (const m of mappings) {
@@ -964,13 +955,13 @@ pre_checks:
     describe('F3: Sandbox Static Analyzers Boundary Cases', () => {
       it('2.3.1: Missing analyzer binary (ENOENT) records available: false and exitStatus: "not_installed" gracefully', () => {
         const receipt: PreCheckAnalyzerReceipt = {
-          tool: 'govet',
+          tool: 'eslint',
           category: 'linter',
           available: false,
           exitStatus: 'not_installed',
           durationMs: 5,
           hypotheses: [],
-          error: 'spawn govet ENOENT: binary not found in PATH',
+          error: 'spawn eslint ENOENT: binary not found in PATH',
         };
 
         expect(receipt.available).toBe(false);
@@ -1287,7 +1278,7 @@ pre_checks:
       expect(aEvidence).toContain('unusedRate');
     });
 
-    it('4.2: Scenario 2 (Polyglot Monorepo PR): PR touching TS, Go, and Elixir files correctly routes to ESLint, Govet, and Credo/Sobelow', () => {
+    it('4.2: Scenario 2 (Polyglot Monorepo PR): PR touching TS, Go, and Elixir files correctly routes to ESLint, Semgrep, and Gitleaks (zero-compilation pattern)', () => {
       const cfg: PreChecksAnalyzersConfig = { enabled: true, linters: true, security: true, secrets: true };
 
       const files = [
@@ -1304,11 +1295,11 @@ pre_checks:
       expect(routing[0].tools).toContain('eslint');
       expect(routing[0].tools).toContain('semgrep');
 
-      expect(routing[1].tools).toContain('govet');
       expect(routing[1].tools).toContain('semgrep');
+      expect(routing[1].tools).toContain('gitleaks');
 
-      expect(routing[2].tools).toContain('credo');
-      expect(routing[2].tools).toContain('sobelow');
+      expect(routing[2].tools).toContain('semgrep');
+      expect(routing[2].tools).toContain('gitleaks');
     });
 
     it('4.3: Scenario 3 (Secret Detection PR): Accidental credential in PR triggers Gitleaks scanner hypothesis with critical severity and immunity from suppression', () => {
