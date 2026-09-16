@@ -57,8 +57,8 @@ describe('review job dispatcher metrics server', () => {
     getMetrics().reviewReaperSupersededAttempts.add(1);
     const after = await request(server).get('/metrics').expect(200);
     for (const name of [
-      'ct_review_reaper_delivery_identity_mismatch_total',
-      'ct_review_reaper_superseded_attempt_total',
+      'review_yeti_review_reaper_delivery_identity_mismatch_total',
+      'review_yeti_review_reaper_superseded_attempt_total',
     ]) {
       expect(metricValue(after.text, name)).toBe(metricValue(before.text, name) + 1);
     }

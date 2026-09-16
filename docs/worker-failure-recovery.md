@@ -171,7 +171,7 @@ delivery digests, and appends a `delivery_identity_mismatch` lifecycle event.
 The repository returns this quarantine explicitly to the reaper (rather than
 requiring it to infer the outcome from a missing publication callback). The run
 remains without a result or success verdict, is counted by
-`ct_review_reaper_delivery_identity_mismatch_total`, and is not eligible for
+`review_yeti_review_reaper_delivery_identity_mismatch_total`, and is not eligible for
 another legacy sweep.
 
 A completed newer successful or failed `Review Yeti` check from the authenticated publisher App can
@@ -183,7 +183,7 @@ check. While holding the old attempt's run and outbox locks, it instead
 atomically terminalizes the outbox, clears both leases, leaves `result_digest`
 unset, and records `superseded_publisher_owned_check` diagnostics plus a
 `superseded_by_newer_check` lifecycle event. The one-shot retirement increments
-`ct_review_reaper_superseded_attempt_total`; malformed, same-second,
+`review_yeti_review_reaper_superseded_attempt_total`; malformed, same-second,
 non-terminal, foreign-App, or otherwise ambiguous identities remain fail
 closed and retryable.
 

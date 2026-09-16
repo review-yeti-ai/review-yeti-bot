@@ -78,10 +78,10 @@ describe('Milestone 23 & 24: Empirical Challenger Test Suite', () => {
       metrics.reviewDuration.record(1.2, { status: 'success' });
 
       const promOutput = await getPrometheusMetrics();
-      expect(promOutput).toContain('ct_review_tokens_prompt_total{model="gpt-4"} 300');
-      expect(promOutput).toContain('ct_review_tokens_completion_total{model="gpt-4"} 50');
-      expect(promOutput).toContain('ct_review_duration_seconds_count{status="success"} 2');
-      expect(promOutput).toContain('ct_review_duration_seconds_sum{status="success"} 1.6');
+      expect(promOutput).toContain('review_yeti_tokens_prompt_total{model="gpt-4"} 300');
+      expect(promOutput).toContain('review_yeti_tokens_completion_total{model="gpt-4"} 50');
+      expect(promOutput).toContain('review_yeti_review_duration_seconds_count{status="success"} 2');
+      expect(promOutput).toContain('review_yeti_review_duration_seconds_sum{status="success"} 1.6');
     });
 
     it('empirically audits AST parse duration recordings for TypeScript, Python, and fallback files', async () => {
@@ -104,7 +104,7 @@ describe('Milestone 23 & 24: Empirical Challenger Test Suite', () => {
 
       const afterPromText = await getPrometheusMetrics();
       console.log('[Empirical Audit] AST Indexer Duration Metrics in Prometheus Output:');
-      console.log(afterPromText.split('\n').filter((line) => line.includes('ct_indexer_ast_duration_seconds')).join('\n'));
+      console.log(afterPromText.split('\n').filter((line) => line.includes('review_yeti_indexer_ast_duration_seconds')).join('\n'));
     });
   });
 
@@ -115,13 +115,13 @@ describe('Milestone 23 & 24: Empirical Challenger Test Suite', () => {
       expect(res.headers['content-type']).toContain('text/plain');
 
       const text = res.text;
-      expect(text).toMatch(/# HELP ct_review_tokens_prompt_total .+/);
-      expect(text).toMatch(/# TYPE ct_review_tokens_prompt_total counter/);
-      expect(text).toMatch(/# HELP ct_review_duration_seconds .+/);
-      expect(text).toMatch(/# TYPE ct_review_duration_seconds histogram/);
-      expect(text).toMatch(/^ct_review_duration_seconds_bucket\{[^}]*le="\+Inf"[^}]*\} \d+(?:\.\d+)?$/m);
-      expect(text).toContain('ct_review_duration_seconds_sum');
-      expect(text).toContain('ct_review_duration_seconds_count');
+      expect(text).toMatch(/# HELP review_yeti_tokens_prompt_total .+/);
+      expect(text).toMatch(/# TYPE review_yeti_tokens_prompt_total counter/);
+      expect(text).toMatch(/# HELP review_yeti_review_duration_seconds .+/);
+      expect(text).toMatch(/# TYPE review_yeti_review_duration_seconds histogram/);
+      expect(text).toMatch(/^review_yeti_review_duration_seconds_bucket\{[^}]*le="\+Inf"[^}]*\} \d+(?:\.\d+)?$/m);
+      expect(text).toContain('review_yeti_review_duration_seconds_sum');
+      expect(text).toContain('review_yeti_review_duration_seconds_count');
     });
 
     it('validates GET /api/telemetry/spans JSON structure, authentication, and filtering', async () => {
@@ -234,7 +234,7 @@ describe('Milestone 23 & 24: Empirical Challenger Test Suite', () => {
       metrics.tokensPrompt.add(1, { persona: 'test"persona', provider: 'test\\provider' });
 
       const text = await getPrometheusMetrics();
-      expect(text).toContain('ct_review_tokens_prompt_total{persona="test\\"persona",provider="test\\\\provider"}');
+      expect(text).toContain('review_yeti_tokens_prompt_total{persona="test\\"persona",provider="test\\\\provider"}');
     });
 
     it('tests analytics token endpoint query parameters handling', async () => {

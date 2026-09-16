@@ -178,14 +178,14 @@ export function buildPanelResponseFormat(
         };
 
   const names: Record<StructuredOutputRole, string> = {
-    persona: 'ct_review_persona_v1',
-    moderator: 'ct_review_moderator_v1',
-    arbiter: 'ct_review_arbiter_v1',
+    persona: 'review_yeti_persona_v1',
+    moderator: 'review_yeti_moderator_v1',
+    arbiter: 'review_yeti_arbiter_v1',
   };
   return {
     type: 'json_schema',
     json_schema: {
-      name: names[normalizedRole] || 'ct_review_panel_v1',
+      name: names[normalizedRole] || 'review_yeti_panel_v1',
       strict: true,
       schema,
     },
@@ -1658,14 +1658,12 @@ async function runPersona(
   gitContext?: { baseSha?: string; branch?: string; prNumber?: number },
   signal?: AbortSignal,
   remainingPanelTimeoutMs?: () => number,
-  preCheckEvidence?: { zoekt?: ZoektPreCheckResult; [key: string]: any },
-): Promise<PersonaLaneResult> {
-  return runInSpan(`ct_persona_lane`, async (span) => {
+  preCheckEvidence?: { zoekt?: ZoektPreCheckResult; [key: string]: any }
+) {
+  return runInSpan(`review_yeti_persona_lane`, async (span) => {
     throwIfPanelAborted(signal);
     span.setAttribute('review_yeti.persona.id', persona.id);
     span.setAttribute('review_yeti.persona.required', persona.required);
-    span.setAttribute('ct.persona.id', persona.id);
-    span.setAttribute('ct.persona.required', persona.required);
 
     const personaStartedAt = Date.now();
 
@@ -1964,18 +1962,6 @@ async function runPersona(
           span.setAttribute('review_yeti.tokens.cache_hit_percentage', hitPercentage);
           span.setAttribute('review_yeti.cost_usd', costUSD);
 
-          span.setAttribute('ct.persona.provider', providerId);
-          span.setAttribute('ct.persona.model', result.response.model);
-          span.setAttribute('ct.persona.decision', decision);
-          span.setAttribute('ct.persona.findings_count', findings.length);
-          span.setAttribute('ct.persona.duration_ms', result.durationMs);
-          span.setAttribute('ct.tokens.prompt', promptTokens);
-          span.setAttribute('ct.tokens.completion', completionTokens);
-          span.setAttribute('ct.tokens.total', totalTokens);
-          span.setAttribute('ct.tokens.cached', cachedTokens);
-          span.setAttribute('ct.tokens.cache_hit_percentage', hitPercentage);
-          span.setAttribute('ct.cost_usd', costUSD);
-
           try {
             const metrics = getMetrics();
             metrics.tokensPrompt.add(promptTokens, { persona: persona.id, provider: providerId, model: result.response.model });
@@ -2108,7 +2094,7 @@ export async function executePersonaPanel(options: {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => deadline.timeoutMs - (Date.now() - panelStartedAt);
-  return runInSpan<PanelResult>('ct_persona_panel', async (span): Promise<PanelResult> => {
+  return runInSpan<PanelResult>('review_yeti_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const signal = deadline.signal;
     throwIfPanelAborted(signal);
@@ -2122,9 +2108,6 @@ export async function executePersonaPanel(options: {
       span.setAttribute('review_yeti.repo', repository);
       span.setAttribute('review_yeti.head_sha', headSha);
       span.setAttribute('review_yeti.repository_visibility', repositoryVisibility);
-      span.setAttribute('ct.repo', repository);
-      span.setAttribute('ct.head_sha', headSha);
-      span.setAttribute('ct.repository_visibility', repositoryVisibility);
 
     const hunkResult = filterDiffHunks(changedFiles);
     const origMap = new Map(changedFiles.map((cf) => [cf.path, cf as any]));
@@ -2147,9 +2130,6 @@ export async function executePersonaPanel(options: {
     span.setAttribute('review_yeti.token_budget.effort_tier', budget.effortTier);
     span.setAttribute('review_yeti.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
     span.setAttribute('review_yeti.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
-    span.setAttribute('ct.token_budget.effort_tier', budget.effortTier);
-    span.setAttribute('ct.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
-    span.setAttribute('ct.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
 
     let applicable = config.personas.filter((persona) => {
       const storePersona = dashboardStore.getPersonaSetting(persona.id);
@@ -2158,8 +2138,6 @@ export async function executePersonaPanel(options: {
     });
     span.setAttribute('review_yeti.persona_count', applicable.length);
     span.setAttribute('review_yeti.quorum_required', config.quorum);
-    span.setAttribute('ct.persona_count', applicable.length);
-    span.setAttribute('ct.quorum_required', config.quorum);
 
     if (applicable.length === 0) {
       const allNonCode = effectiveFiles.length > 0 && effectiveFiles.every((f: any) =>
@@ -2206,7 +2184,7 @@ export async function executePersonaPanel(options: {
     let classifierResult: ClassifierResult | null = null;
     if (shouldClassify) {
       try {
-        classifierResult = await runInSpan('ct_classifier', async (classSpan) => {
+        classifierResult = await runInSpan('review_yeti_classifier', async (classSpan) => {
           const result = await classifyReviewScope({
             config,
             changedFiles: effectiveFiles,
@@ -2219,9 +2197,9 @@ export async function executePersonaPanel(options: {
             signal,
           });
           if (result) {
-            classSpan.setAttribute('ct.classifier.fast_ship', result.fastShip);
-            classSpan.setAttribute('ct.classifier.effort_tier', result.effortTier);
-            classSpan.setAttribute('ct.classifier.selected_count', result.selectedPersonas.length);
+            classSpan.setAttribute('review_yeti.classifier.fast_ship', result.fastShip);
+            classSpan.setAttribute('review_yeti.classifier.effort_tier', result.effortTier);
+            classSpan.setAttribute('review_yeti.classifier.selected_count', result.selectedPersonas.length);
           }
           return result;
         });
@@ -2286,7 +2264,6 @@ export async function executePersonaPanel(options: {
         });
         applicable = narrowed;
         span.setAttribute('review_yeti.persona_count_narrowed', applicable.length);
-        span.setAttribute('ct.persona_count_narrowed', applicable.length);
       }
     }
 
@@ -2596,8 +2573,6 @@ export async function executePersonaPanel(options: {
     const distinctProviders = [...new Set(personas.map((lane) => lane.providerId))];
     span.setAttribute('review_yeti.quorum_distinct', distinctProviders.length);
     span.setAttribute('review_yeti.quorum_satisfied', distinctProviders.length >= config.quorum);
-    span.setAttribute('ct.quorum_distinct', distinctProviders.length);
-    span.setAttribute('ct.quorum_satisfied', distinctProviders.length >= config.quorum);
 
     if (distinctProviders.length < config.quorum) {
       throw new PanelConfigurationError(`distinct-provider quorum failed: ${distinctProviders.length}/${config.quorum}`);
@@ -2615,7 +2590,7 @@ export async function executePersonaPanel(options: {
     const combinedDiff = effectiveFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
 
     const [moderatorRun, mermaidDiagram, prSummary] = await Promise.all([
-      runInSpan('ct_moderator', async (modSpan) => {
+      runInSpan('review_yeti_moderator', async (modSpan) => {
         const moderatorInactivityTimeoutMs = configuredProviderTimeoutMs(
           moderatorProvider.review_timeout_s,
           TURN_IDLE_MS,
@@ -2656,15 +2631,15 @@ export async function executePersonaPanel(options: {
         const modCached = resolveCachedTokens(run.response.usage);
         const modHitPercentage = modPrompt > 0 ? Math.round((modCached / modPrompt) * 100) : 0;
 
-        modSpan.setAttribute('ct.moderator.provider', moderatorId);
-        modSpan.setAttribute('ct.moderator.model', run.response.model);
-        modSpan.setAttribute('ct.moderator.findings_count', modFindings.length);
-        modSpan.setAttribute('ct.tokens.prompt', modPrompt);
-        modSpan.setAttribute('ct.tokens.completion', modComp);
-        modSpan.setAttribute('ct.tokens.total', modTotal);
-        modSpan.setAttribute('ct.tokens.cached', modCached);
-        modSpan.setAttribute('ct.tokens.cache_hit_percentage', modHitPercentage);
-        modSpan.setAttribute('ct.cost_usd', modCost);
+        modSpan.setAttribute('review_yeti.moderator.provider', moderatorId);
+        modSpan.setAttribute('review_yeti.moderator.model', run.response.model);
+        modSpan.setAttribute('review_yeti.moderator.findings_count', modFindings.length);
+        modSpan.setAttribute('review_yeti.tokens.prompt', modPrompt);
+        modSpan.setAttribute('review_yeti.tokens.completion', modComp);
+        modSpan.setAttribute('review_yeti.tokens.total', modTotal);
+        modSpan.setAttribute('review_yeti.tokens.cached', modCached);
+        modSpan.setAttribute('review_yeti.tokens.cache_hit_percentage', modHitPercentage);
+        modSpan.setAttribute('review_yeti.cost_usd', modCost);
 
         try {
           const metrics = getMetrics();
@@ -2721,7 +2696,7 @@ export async function executePersonaPanel(options: {
       throwIfPanelAborted(signal);
       const spec = provider(config, providerId);
       try {
-        arbiterResult = await runInSpan('ct_arbiter', async (arbSpan) => {
+        arbiterResult = await runInSpan('review_yeti_arbiter', async (arbSpan) => {
           const arbiterInactivityTimeoutMs = configuredProviderTimeoutMs(
             spec.arbiter_timeout_s,
             TURN_IDLE_MS,
@@ -2764,15 +2739,15 @@ export async function executePersonaPanel(options: {
           const arbCached = resolveCachedTokens(run.response.usage);
           const arbHitPercentage = arbPrompt > 0 ? Math.round((arbCached / arbPrompt) * 100) : 0;
 
-          arbSpan.setAttribute('ct.arbiter.provider', providerId);
-          arbSpan.setAttribute('ct.arbiter.model', run.response.model);
-          arbSpan.setAttribute('ct.arbiter.verdict', run.parsed.verdict);
-          arbSpan.setAttribute('ct.tokens.prompt', arbPrompt);
-          arbSpan.setAttribute('ct.tokens.completion', arbComp);
-          arbSpan.setAttribute('ct.tokens.total', arbTotal);
-          arbSpan.setAttribute('ct.tokens.cached', arbCached);
-          arbSpan.setAttribute('ct.tokens.cache_hit_percentage', arbHitPercentage);
-          arbSpan.setAttribute('ct.cost_usd', arbCost);
+          arbSpan.setAttribute('review_yeti.arbiter.provider', providerId);
+          arbSpan.setAttribute('review_yeti.arbiter.model', run.response.model);
+          arbSpan.setAttribute('review_yeti.arbiter.verdict', run.parsed.verdict);
+          arbSpan.setAttribute('review_yeti.tokens.prompt', arbPrompt);
+          arbSpan.setAttribute('review_yeti.tokens.completion', arbComp);
+          arbSpan.setAttribute('review_yeti.tokens.total', arbTotal);
+          arbSpan.setAttribute('review_yeti.tokens.cached', arbCached);
+          arbSpan.setAttribute('review_yeti.tokens.cache_hit_percentage', arbHitPercentage);
+          arbSpan.setAttribute('review_yeti.cost_usd', arbCost);
 
           try {
             const metrics = getMetrics();
@@ -2836,14 +2811,6 @@ export async function executePersonaPanel(options: {
     span.setAttribute('review_yeti.tokens.cache_hit_percentage', panelHitPercentage);
     span.setAttribute('review_yeti.cost_usd', totalCost);
     span.setAttribute('review_yeti.duration_ms', totalDuration);
-
-    span.setAttribute('ct.tokens.prompt', panelPrompt);
-    span.setAttribute('ct.tokens.completion', panelComp);
-    span.setAttribute('ct.tokens.total', panelTotal);
-    span.setAttribute('ct.tokens.cached', panelCached);
-    span.setAttribute('ct.tokens.cache_hit_percentage', panelHitPercentage);
-    span.setAttribute('ct.cost_usd', totalCost);
-    span.setAttribute('ct.duration_ms', totalDuration);
 
     LiveStreamBus.getInstance().publishEvent({
       jobId: effectiveJobId,
