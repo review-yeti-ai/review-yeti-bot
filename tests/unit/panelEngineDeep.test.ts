@@ -440,7 +440,13 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     });
 
     expect(result.personas.map((persona) => persona.id)).toEqual(['completed-lane']);
-    expect(result.optionalFailures).toEqual([{ id: 'incomplete-lane', error: expect.stringContaining('INCOMPLETE') }]);
+    // The lane received a real (if contract-violating) response on every attempt, so the failure
+    // carries the resolved model it was served even though it never produced usable findings.
+    expect(result.optionalFailures).toEqual([{
+      id: 'incomplete-lane',
+      error: expect.stringContaining('INCOMPLETE'),
+      lastKnownModel: expect.any(String),
+    }]);
     expect(result.applicablePersonaIds).toEqual(['completed-lane', 'incomplete-lane']);
   });
 

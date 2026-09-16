@@ -51,7 +51,7 @@ import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
 import { MAX_PERSONAS, parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
-import type { PanelResult } from '../panel/types';
+import type { PanelResult, LaneTokenUsage } from '../panel/types';
 
 import { parseChangedFiles } from '../review/changedFiles';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
@@ -128,6 +128,19 @@ export interface PublishingReviewPersonaMetrics {
   completionTokens: number;
   totalTokens: number;
   durationMs: number;
+  /** The concrete model the provider actually reported for this lane's call, which may differ
+   * from the requested `transport.model` when that value is an alias. */
+  model?: string;
+}
+
+/** Per-lane identity and bounded telemetry for a failed lane, safe to publish on a fail-closed
+ * check: an identifier and a classification, plus numeric usage from the lane's last provider
+ * response when one was received. Never the lane's free-form error text. */
+export interface PublishingReviewFailedLane {
+  id: string;
+  failureClass: WorkerTerminalFailure['failureClass'];
+  usage?: LaneTokenUsage;
+  model?: string;
 }
 
 export type PublishingCoverageMode = 'panel' | 'fast_ship' | 'zero_lane';
@@ -392,6 +405,42 @@ function renderCoverageSummary(coverage: PublishingCoverageProjection): string {
   return `Coverage: mode=${coverage.mode}; expected lanes=${expected}; completed lanes=${coverage.completedLaneCount}; failed lanes=${coverage.failedLaneCount}; roster valid=${coverage.rosterValid}; quorum satisfied=${coverage.quorumSatisfied}; full panel complete=${coverage.fullPanelComplete}.`;
 }
 
+/**
+ * `transport.model` is the exact `REVIEW_MODEL` string the deployment configured -- an alias in
+ * some deployments, already-concrete in others. `resolvedModel` is what the provider actually
+ * reported back on a real call (`response.model` from the gateway), which can differ from the
+ * alias. Publish both whenever they differ instead of only the requested value, so a reader is
+ * never left assuming the alias and the served model are the same thing.
+ */
+function renderTransportSummary(requestedModel: string, resolvedModel?: string): string {
+  return resolvedModel && resolvedModel !== requestedModel
+    ? `Transport: bifrost \`${requestedModel}\` (resolved \`${resolvedModel}\`).`
+    : `Transport: bifrost \`${requestedModel}\`.`;
+}
+
+function renderTelemetrySummary(telemetry: {
+  totalTurns: number; totalToolCalls: number; totalTokens: number; laneCount: number; totalDurationMs: number;
+}): string {
+  return `Telemetry: ${telemetry.totalTurns} turns, ${telemetry.totalToolCalls} tool calls, `
+    + `${telemetry.totalTokens} tokens across ${telemetry.laneCount} lanes (${telemetry.totalDurationMs}ms).`;
+}
+
+/**
+ * Identify which lane(s) failed and how, plus bounded numeric usage when a provider response was
+ * received before the lane failed closed. Deliberately identifiers and counts only -- never the
+ * lane's free-form error text, which may carry provider prompt/response content.
+ */
+function renderFailedLanesSummary(failedLanes: PublishingReviewFailedLane[]): string {
+  const lines = failedLanes.map((lane) => {
+    const usage = lane.usage
+      ? ` usage=${lane.usage.promptTokens}+${lane.usage.completionTokens}=${lane.usage.totalTokens} tokens`
+      : ' usage=unavailable (no provider response was received before this lane failed closed)';
+    const model = lane.model ? ` model=\`${lane.model}\`` : '';
+    return `- \`${lane.id}\`: failure class \`${lane.failureClass}\`;${usage};${model}`;
+  });
+  return ['Failed lane(s):', ...lines].join('\n');
+}
+
 // GitHub returns 406 Not Acceptable when a pull request's diff cannot be
 // rendered in the requested representation (most commonly because it is too
 // large -- roughly over 20,000 lines or 300 files). That is a permanent
@@ -583,7 +632,21 @@ export async function runPublishingReviewWorker(
   const reportTerminalFailure = async (
     error: unknown,
     failedCheckId?: number,
-    panelFailure?: { failureClass: WorkerTerminalFailure['failureClass']; coverage: PublishingCoverageProjection },
+    panelFailure?: {
+      failureClass: WorkerTerminalFailure['failureClass'];
+      coverage: PublishingCoverageProjection;
+      /** Structured, bounded evidence available only when a panel actually ran (as opposed to an
+       * earlier setup failure, e.g. an invalid provider contract, where none of this exists yet).
+       * Additive to the existing fail-closed contract: every field here is safe to publish
+       * alongside the redacted `renderFailureSummary` because it carries no free-form provider
+       * text -- only the requested/resolved model, aggregate counters, and per-lane identity. */
+      panelEvidence?: {
+        requestedModel: string;
+        resolvedModel?: string;
+        telemetry: { totalTurns: number; totalToolCalls: number; totalTokens: number; laneCount: number; totalDurationMs: number };
+        failedLanes: PublishingReviewFailedLane[];
+      };
+    },
   ): Promise<void> => {
     // A success callback may have committed even when its acknowledgement was
     // lost. Never replace that immutable body or its already-green check with a
@@ -611,8 +674,19 @@ export async function runPublishingReviewWorker(
           checkId: failedCheckId,
           conclusion: 'failure',
           title: 'Review Yeti: review did not complete',
-          summary: [renderFailureSummary(failureClass, identity.headSha, diagnostics),
-            ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : [])].join('\n\n'),
+          summary: [
+            renderFailureSummary(failureClass, identity.headSha, diagnostics),
+            ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : []),
+            ...(panelFailure?.panelEvidence
+              ? [
+                  renderTransportSummary(panelFailure.panelEvidence.requestedModel, panelFailure.panelEvidence.resolvedModel),
+                  renderTelemetrySummary(panelFailure.panelEvidence.telemetry),
+                  ...(panelFailure.panelEvidence.failedLanes.length > 0
+                    ? [renderFailedLanesSummary(panelFailure.panelEvidence.failedLanes)]
+                    : []),
+                ]
+              : []),
+          ].join('\n\n'),
         });
       } catch {
         logger.error('Failed to publish the fail-closed conclusion', {
@@ -812,6 +886,7 @@ export async function runPublishingReviewWorker(
         completionTokens: p.completionTokens || p.usage?.completion || 0,
         totalTokens: p.totalTokens || p.usage?.total || 0,
         durationMs: p.durationMs || 0,
+        ...(p.model ? { model: p.model } : {}),
       };
     });
 
@@ -821,6 +896,20 @@ export async function runPublishingReviewWorker(
     const totalTurns = personaMetrics.reduce((sum, p) => sum + p.turnsCount, 0);
     const totalToolCalls = personaMetrics.reduce((sum, p) => sum + p.toolCallsCount, 0);
     const totalDurationMs = personaMetrics.reduce((sum, p) => sum + p.durationMs, 0);
+    // `transport.model` is the exact configured `REVIEW_MODEL` (alias or concrete, depending on
+    // deployment). The resolved concrete model is whatever the provider actually reported on a
+    // real call: prefer a completed lane's, and fall back to a failed lane's last-known model so a
+    // fully-failed panel can still report it.
+    const resolvedTransportModel = personaMetrics.find((p) => p.model)?.model
+      ?? (panelResult.optionalFailures || []).find((failure) => failure.lastKnownModel)?.lastKnownModel;
+    // Every failed lane, identified and classified -- never their free-form error text -- plus
+    // bounded numeric usage from the lane's last provider response when one was received.
+    const failedLanes: PublishingReviewFailedLane[] = (panelResult.optionalFailures || []).map((failure) => ({
+      id: failure.id,
+      failureClass: classifyFailure(failure.error),
+      ...(failure.lastKnownUsage ? { usage: failure.lastKnownUsage } : {}),
+      ...(failure.lastKnownModel ? { model: failure.lastKnownModel } : {}),
+    }));
 
     // A count with nothing attached is not reviewable. Until now the check
     // published only a title and a summary, so a run could report four blocking
@@ -844,7 +933,7 @@ export async function runPublishingReviewWorker(
           `- **Classifier Rationale**: \`${safeClassifierRationale}\``,
           `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
           renderCoverageSummary(coverage),
-          `Transport: bifrost \`${transport.model}\`.`,
+          renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
         ]
       : [
@@ -859,16 +948,26 @@ export async function runPublishingReviewWorker(
             ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
             : []),
           renderCoverageSummary(coverage),
-          `Transport: bifrost \`${transport.model}\`.`,
+          renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
-          `Telemetry: ${totalTurns} turns, ${totalToolCalls} tool calls, ${totalTokens} tokens across ${personaMetrics.length} lanes (${totalDurationMs}ms).`,
+          renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs }),
         ];
 
     if (recoverablePanelFailure) {
       // Failed-lane error strings may contain provider payloads. Keep their
-      // classification and bounded counts, not their free-form text.
-      await reportTerminalFailure(new Error('An optional reviewer did not complete.'), checkId,
-        { failureClass: recoverablePanelFailure, coverage });
+      // classification and bounded counts, not their free-form text. Everything else here --
+      // transport/resolved model, aggregate telemetry, and per-lane identity/classification/usage
+      // -- carries no provider payload and is safe to publish on the fail-closed check.
+      await reportTerminalFailure(new Error('An optional reviewer did not complete.'), checkId, {
+        failureClass: recoverablePanelFailure,
+        coverage,
+        panelEvidence: {
+          requestedModel: transport.model,
+          resolvedModel: resolvedTransportModel,
+          telemetry: { totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs },
+          failedLanes,
+        },
+      });
     } else await deps.checkClient.completeCheck({
       owner: identity.owner,
       repo: identity.repoName,

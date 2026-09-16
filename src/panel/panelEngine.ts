@@ -7,6 +7,7 @@ import { OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRoute
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
+import { redactWorkerFailureLogTail } from '../review/workerCompletion';
 import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
@@ -25,6 +26,7 @@ import { buildFastShipPanelResult } from './fastShipResult';
 export type {
   FindingSeverity,
   FixOption,
+  LaneTokenUsage,
   PanelFinding,
   PersonaLaneResult,
   PanelResult,
@@ -33,6 +35,7 @@ export type {
 import type {
   FindingSeverity,
   FixOption,
+  LaneTokenUsage,
   PanelFinding,
   PersonaLaneResult,
   PanelResult,
@@ -240,9 +243,16 @@ function structuredOutputExample(role: string, nonceValue: string, payload: Reco
 }
 
 export class PanelConfigurationError extends Error {
-  constructor(message: string) {
+  /** Bounded, numeric-only telemetry from the lane's last provider response before it failed
+   * closed, when one was received. Never the free-form message this error already carries. */
+  readonly lastKnownUsage?: LaneTokenUsage;
+  readonly lastKnownModel?: string;
+
+  constructor(message: string, lane?: { lastKnownUsage?: LaneTokenUsage; lastKnownModel?: string }) {
     super(message);
     this.name = 'PanelConfigurationError';
+    this.lastKnownUsage = lane?.lastKnownUsage;
+    this.lastKnownModel = lane?.lastKnownModel;
   }
 }
 
@@ -1527,6 +1537,29 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         continue;
       }
 
+      // The turn that failed to parse still received a real provider response with real usage.
+      // Attach that bounded, numeric-only telemetry to the error so a caller that only sees this
+      // rejection (never a returned `result`) can still report how far the lane got before it
+      // failed closed.
+      if (fenceErr && typeof fenceErr === 'object') {
+        if (response?.usage) {
+          (fenceErr as { lastKnownUsage?: LaneTokenUsage }).lastKnownUsage = {
+            promptTokens: response.usage.prompt || 0,
+            completionTokens: response.usage.completion || 0,
+            totalTokens: response.usage.total || 0,
+          };
+        }
+        if (response?.model) (fenceErr as { lastKnownModel?: string }).lastKnownModel = response.model;
+        // `rawCompletionExcerpt` is a DIFFERENT, narrower-scoped field than the two above: it
+        // carries the actual completion text, which may contain provider prompt/response content.
+        // The only consumer that may ever read it is the local-log line in `runPersona`'s catch
+        // block below, which redacts and bounds it before a single `logger.warn` call and then
+        // drops it. It must never be copied onto `PanelConfigurationError`'s public fields or into
+        // `optionalFailures` -- doing so would carry it all the way to a published check.
+        if (typeof response?.content === 'string') {
+          (fenceErr as { rawCompletionExcerpt?: string }).rawCompletionExcerpt = response.content;
+        }
+      }
       throw fenceErr;
     }
   }
@@ -1694,6 +1727,19 @@ async function runPersona(
     });
 
     const errors: string[] = [];
+    // The most recent provider response this lane received, across every attempt and provider
+    // tried, kept even when a later step (decision/contract validation) rejects that response and
+    // the lane ultimately fails closed. Bounded to numeric token counts and the resolved model
+    // string -- never the response content -- so it is safe to surface on a failed lane.
+    let lastKnownUsage: LaneTokenUsage | undefined;
+    let lastKnownModel: string | undefined;
+    // The raw completion text this lane's last provider response carried, kept ONLY for a local
+    // operator-log line if the lane fails closed -- never attached to the thrown error, never
+    // added to `optionalFailures`, and therefore never reachable from a published check. Logged
+    // through the same bounded/redacted `redactWorkerFailureLogTail` helper the worker boundary
+    // already uses, so it gets the same treatment as any other diagnostic that crosses out of a
+    // single request/response pair.
+    let lastKnownCompletionExcerpt: string | undefined;
     const scopedFiles = changedFiles.filter((file) =>
       persona.paths.some((pattern) => pathMatches(pattern, file.path)),
     );
@@ -1868,6 +1914,19 @@ async function runPersona(
             },
           });
           throwIfPanelAborted(signal);
+          // A provider response was received on this attempt even if the checks below reject it
+          // (INCOMPLETE, an invalid contract, exhausted turns). Keep its bounded, numeric usage and
+          // resolved model so a lane that ultimately fails closed still reports how far it got,
+          // instead of being indistinguishable from a lane that never reached the provider at all.
+          if (result.response?.usage) {
+            lastKnownUsage = {
+              promptTokens: result.response.usage.prompt || 0,
+              completionTokens: result.response.usage.completion || 0,
+              totalTokens: result.response.usage.total || 0,
+            };
+          }
+          if (result.response?.model) lastKnownModel = result.response.model;
+          if (typeof result.response?.content === 'string') lastKnownCompletionExcerpt = result.response.content;
           if (result.parsed?.decision === 'INCOMPLETE') {
             // No findings is not a completed review. Treat INCOMPLETE like
             // other structured-output failures so the existing retry-then-
@@ -2008,6 +2067,16 @@ async function runPersona(
           };
         } catch (error: any) {
           throwIfPanelAborted(signal);
+          // A structured-output failure deep inside a multi-turn `invoke()` call throws before
+          // returning a `result` this function can read directly; pick up whatever bounded,
+          // numeric telemetry that inner failure attached to its own error instance instead.
+          if (error?.lastKnownUsage) lastKnownUsage = error.lastKnownUsage;
+          if (error?.lastKnownModel) lastKnownModel = error.lastKnownModel;
+          // `rawCompletionExcerpt` stays local to this function -- see the note where it is set,
+          // above. It is read only for the bounded/redacted local log line emitted below when the
+          // lane finally fails closed; it is deliberately never assigned onto any error this
+          // function throws and never enters `errors`, `lastKnownUsage`, or `lastKnownModel`.
+          if (typeof error?.rawCompletionExcerpt === 'string') lastKnownCompletionExcerpt = error.rawCompletionExcerpt;
           if (Date.now() - personaStartedAt >= MAX_PERSONA_BUDGET_MS) {
             logger.warn(`[Persona: ${persona.id}] Total execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s exhausted; failing closed.`);
             errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s`);
@@ -2056,7 +2125,19 @@ async function runPersona(
         }
       }
     }
-    throw new PanelConfigurationError(`persona ${persona.id} failed closed: ${errors.join('; ')}`);
+    // Operator-diagnostic only: the actual completion text this lane last received, bounded and
+    // redacted the same way the worker boundary already redacts outbound diagnostics, written to
+    // this process's own log and nowhere else. It lets an operator tell a truncated completion
+    // from a complete-but-malformed one without reproducing the run -- but it must never reach a
+    // published check, so it is logged here and only here, never attached to the error thrown
+    // below (which is what feeds `optionalFailures` and, from there, the publishing check).
+    if (lastKnownCompletionExcerpt) {
+      logger.warn(`[Persona: ${persona.id}] Lane failed closed; last completion excerpt (operator diagnostic, never published)`, {
+        persona: persona.id,
+        completionExcerpt: redactWorkerFailureLogTail(lastKnownCompletionExcerpt),
+      });
+    }
+    throw new PanelConfigurationError(`persona ${persona.id} failed closed: ${errors.join('; ')}`, { lastKnownUsage, lastKnownModel });
   });
 }
 
@@ -2555,11 +2636,16 @@ export async function executePersonaPanel(options: {
     const settled = settledResults.map((res, index) => {
       const persona = applicable[index];
       if (res.status === 'fulfilled') {
-        return res.value;
+        return { ...res.value, lastKnownUsage: undefined as LaneTokenUsage | undefined, lastKnownModel: undefined as string | undefined };
       }
       const errorMsg = res.reason?.message || String(res.reason);
       logger.warn('Persona execution failed', { persona: persona.id, error: errorMsg });
-      return { persona, result: undefined, error: errorMsg };
+      // Bounded, numeric-only telemetry from the lane's last provider response, if one was
+      // received before it failed closed. `res.reason` is the thrown PanelConfigurationError (or
+      // an inner error carrying the same fields); never its free-form message.
+      const lastKnownUsage: LaneTokenUsage | undefined = res.reason?.lastKnownUsage;
+      const lastKnownModel: string | undefined = res.reason?.lastKnownModel;
+      return { persona, result: undefined, error: errorMsg, lastKnownUsage, lastKnownModel };
     });
     const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
     if (requiredFailures.length > 0) {
@@ -2568,7 +2654,12 @@ export async function executePersonaPanel(options: {
     throwIfPanelAborted(signal);
     const personas = settled.flatMap((entry) => entry.result ? [entry.result] : []);
     const optionalFailures = settled.flatMap((entry) =>
-      !entry.result ? [{ id: entry.persona.id, error: entry.error || 'unknown failure' }] : [],
+      !entry.result ? [{
+        id: entry.persona.id,
+        error: entry.error || 'unknown failure',
+        ...(entry.lastKnownUsage ? { lastKnownUsage: entry.lastKnownUsage } : {}),
+        ...(entry.lastKnownModel ? { lastKnownModel: entry.lastKnownModel } : {}),
+      }] : [],
     );
     const distinctProviders = [...new Set(personas.map((lane) => lane.providerId))];
     span.setAttribute('review_yeti.quorum_distinct', distinctProviders.length);
