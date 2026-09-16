@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
-import { PostgresReviewDispatchRepository, type ReviewDispatchRepositoryOptions } from '../../src/persistence/reviewDispatchRepository';
+import {
+  PostgresReviewDispatchRepository,
+  PUBLISHABLE_PUBLICATION_MODES,
+  type ReviewDispatchRepositoryOptions,
+} from '../../src/persistence/reviewDispatchRepository';
+import { actionDispatchRequestSchema } from '../../src/review/actionDispatch';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
 import { sha256 } from '../../src/review/reviewCore';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
@@ -2725,6 +2730,47 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(gatedState.outbox.status).toBe('projected');
     });
 
+    // Guards the exact defect the reviewer flagged: the two reapers must
+    // stay each other's exact complement, by construction, for every mode
+    // the action-dispatch contract can actually admit -- not a second
+    // hardcoded list re-typed in this test that could itself drift from
+    // PUBLISHABLE_PUBLICATION_MODES.
+    it('routes every publication mode admitted by the action-dispatch schema to exactly one reaper', async () => {
+      const { repository, client } = await createRepository();
+      // actionDispatchRequestSchema is wrapped in a superRefine (ZodEffects);
+      // unwrap to the underlying object shape to read the enum without
+      // re-typing its literal values here.
+      const modes = actionDispatchRequestSchema.innerType().shape.publishMode.options;
+      expect(modes.length).toBeGreaterThan(0);
+
+      for (const [index, mode] of modes.entries()) {
+        const receivedAt = 1_000 + index * 1_000_000;
+        const admission = {
+          ...sameHeadAdmission(`partition-${mode}`, receivedAt, { prNumber: 9_000 + index }),
+          publicationMode: mode,
+        };
+        const admitted = await repository.admit(admission);
+        const workerId = `worker-partition-${mode}`;
+        const claim = (await repository.claimNext(workerId, receivedAt + 1, 30_000))!;
+        await repository.markProjected(claim.runId, workerId, claim.claimAttempt, `${workerId}-projection`, receivedAt + 2);
+        const now = admission.terminalDeadline + 1;
+        const isPublishable = (PUBLISHABLE_PUBLICATION_MODES as readonly string[]).includes(mode);
+
+        const retiredCount = await repository.retireExpiredNonPublishableRuns(now, 20);
+        const claimed = await repository.claimAbandonedPublishingRuns(`reaper-partition-${mode}`, now, 20);
+        const claimedRunIds = claimed.map((run) => run.runId);
+
+        if (isPublishable) {
+          expect(retiredCount).toBe(0);
+          expect(claimedRunIds).toContain(admitted.run.runId);
+        } else {
+          expect(retiredCount).toBe(1);
+          expect(claimedRunIds).not.toContain(admitted.run.runId);
+          expect((await dispatchState(client, admitted.run.runId)).run.status).toBe('terminal');
+        }
+      }
+    });
+
     it('leaves a disabled-mode run alone before its terminal deadline', async () => {
       const { repository, client } = await createRepository();
       const disabled = await queueProjected(repository, 'non-pub-early', 1_000, 'worker-early');
@@ -2743,6 +2789,30 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
       await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(0);
       expect((await dispatchState(client, disabled.admitted.run.runId)).run.status).toBe('queued');
+    });
+
+    // Mirrors claimAbandonedPublishingRuns's own expired-lease-is-unowned
+    // treatment (runs.lease_expires_at <= now) and dispatchClaimPredicate's
+    // identical treatment of the outbox lease: a claimant that died without
+    // releasing its lease must not strand the row past its deadline forever.
+    it('retires a disabled-mode run whose lease already expired (claimant died without releasing it)', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-expired-lease', 1_000, 'worker-expired-lease');
+      await client.query(
+        "UPDATE review_runs SET lease_owner = 'dead-worker', lease_expires_at = to_timestamp(($2 - 60000) / 1000.0) WHERE run_id = $1",
+        [disabled.admitted.run.runId, disabled.terminalDeadline],
+      );
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(1);
+      const state = await dispatchState(client, disabled.admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal',
+        stage: 'terminal',
+        error_text: 'publication mode disabled: never claimed before its terminal deadline; retired by reaper',
+        lease_owner: null,
+        lease_expires_at: null,
+      });
+      expect(state.outbox).toMatchObject({ status: 'terminal', lease_owner: null, lease_expires_at: null });
     });
 
     it('leaves a non-app-gate expired queued run alone when it already carries a result digest', async () => {
