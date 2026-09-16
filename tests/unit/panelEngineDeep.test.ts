@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { OpenRouterResponseError } from '../../src/gateway/openRouterClient';
@@ -40,6 +40,54 @@ function buildDeepConfig(): CtReviewConfigV3 {
         { id: 'codex', enabled: true, model: 'gpt-5.6-sol', effort: 'high', review_timeout_s: 30, arbiter_timeout_s: 30 },
       ],
       arbiter: { order: ['claude', 'codex'] },
+    },
+    path_instructions: [],
+    rules: [],
+    reviewer_effort: 'high',
+    confidence_threshold: 70,
+    mascot: true,
+    display: { mascot: true },
+  });
+}
+
+// REL-886: `bifrost/pr-reviewer` is a single Bifrost surge-router alias, not a
+// second provider identity -- the fix here retries that one alias with its own
+// budget instead of adding a second `reviewers.providers` entry. This config
+// intentionally gives sec-lane exactly one provider so a test against it can
+// only pass by retrying that same alias, never by failing over to a different
+// configured identity.
+function buildSingleAliasDeepConfig(): CtReviewConfigV3 {
+  return ctReviewConfigV3Schema.parse({
+    version: 3,
+    profile: 'assertive',
+    quorum: 2,
+    personas: [
+      {
+        id: 'sec-lane',
+        enabled: true,
+        required: true,
+        charter: 'builtin:security',
+        paths: ['src/security/**'],
+        providers: ['bifrost'],
+      },
+      {
+        id: 'correct-lane',
+        enabled: true,
+        required: true,
+        charter: 'builtin:correctness',
+        paths: ['src/security/**'],
+        providers: ['codex'],
+      },
+    ],
+    reviewers: {
+      execution: 'personas',
+      fallback: 'ordered',
+      overall_timeout_s: 120,
+      providers: [
+        { id: 'bifrost', enabled: true, model: 'bifrost/pr-reviewer', effort: 'high', review_timeout_s: 30, arbiter_timeout_s: 30 },
+        { id: 'codex', enabled: true, model: 'gpt-5.6-sol', effort: 'high', review_timeout_s: 30, arbiter_timeout_s: 30 },
+      ],
+      arbiter: { order: ['bifrost', 'codex'] },
     },
     path_instructions: [],
     rules: [],
@@ -483,34 +531,39 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(claudeLaneCalls).toHaveLength(2);
   });
 
-  // REL-886: a real gateway call can return HTTP 200 with no usable completion
-  // content (openRouterClient.ts throws OpenRouterResponseError('...empty
-  // completion content', 502) after exhausting its own transport-level
-  // retries). That error was already classified retryable by
-  // isRetryablePanelError (status 502 falls in the 500-599 branch), but the
-  // deployed resolveWorkerConfig() only ever produced one provider entry, so
-  // providersToTry could never contain a second id to fail over to. This test
-  // proves the classification and the persona-level retry-then-failover loop
-  // both already work correctly once a real fallback provider exists: the
-  // required sec-lane persists through the empty-completion error on 'claude'
-  // and completes on 'grok' instead of failing the lane.
-  it('retries once then advances to the fallback provider on an empty-completion 502 from the primary provider', async () => {
-    const config = buildDeepConfig();
+  // REL-886 (redesigned): `bifrost/pr-reviewer` stays the single configured
+  // model identity -- no second provider entry. A real gateway call can return
+  // HTTP 200 with no usable completion content (openRouterClient.ts throws
+  // OpenRouterResponseError('...empty completion content', 502)). Rather than
+  // exhausting a 2-attempt generic retry and falling off the end of a
+  // one-element providersToTry, the persona loop now retries the *same* alias
+  // with its own larger budget (EMPTY_COMPLETION_MAX_ATTEMPTS) -- re-entering
+  // Bifrost's own routing is the failover for this failure mode, at the layer
+  // that already owns it. This proves the required sec-lane survives repeated
+  // empty completions and completes on the same 'bifrost' identity throughout,
+  // never switching provider identity.
+  it('retries the same alias across its own larger budget and completes without a second provider', async () => {
+    const config = buildSingleAliasDeepConfig();
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    let bifrostAttempts = 0;
     mockClient.complete.mockImplementation(async (opts: any) => {
       const prompt = extractMessageContentText(opts.messages[1]?.content || '');
       const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
       const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
       if (role === 'arbiter') {
-        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Fallback lane completed' }), usage: null, costUSD: null, raw: {} };
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Both lanes completed' }), usage: null, costUSD: null, raw: {} };
       }
       if (role === 'moderator') {
         return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
       }
-      if (opts.model.includes('claude')) {
-        // The primary provider's gateway call always returns HTTP 200 with an
-        // empty completion -- exactly the shape openRouterClient.ts tags 502.
-        throw new OpenRouterResponseError('OpenRouter returned empty completion content', 502);
+      if (opts.model === 'bifrost/pr-reviewer') {
+        bifrostAttempts++;
+        // Every attempt but the last returns HTTP-200-empty-completion; the
+        // final attempt (still within EMPTY_COMPLETION_MAX_ATTEMPTS) succeeds.
+        if (bifrostAttempts < EMPTY_COMPLETION_MAX_ATTEMPTS) {
+          throw new OpenRouterResponseError('OpenRouter returned empty completion content', 502);
+        }
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
       }
       return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
     });
@@ -519,20 +572,61 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       config,
       changedFiles,
       repository: 'calltelemetry/repo',
-      headSha: 'head-sha-empty-completion-failover',
+      headSha: 'head-sha-empty-completion-same-alias',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
     });
 
     const secLane = result.personas.find((persona) => persona.id === 'sec-lane');
-    expect(secLane?.providerId).toBe('grok');
+    expect(secLane?.providerId).toBe('bifrost');
+    expect(secLane?.model).toBe('bifrost/pr-reviewer');
     expect(secLane?.decision).toBe('APPROVE');
-    const claudeLaneCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
+    expect(bifrostAttempts).toBe(EMPTY_COMPLETION_MAX_ATTEMPTS);
+    // Every attempt must have targeted the exact same alias -- no second
+    // provider/model identity was ever configured or reached for.
+    const secLaneCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
+      request.metadata?.role === 'persona' && request.metadata?.persona === 'sec-lane');
+    expect(secLaneCalls.every(([request]: any[]) => request.model === 'bifrost/pr-reviewer')).toBe(true);
+  });
+
+  // The larger budget must still fail closed once genuinely exhausted -- this
+  // is not a loosening of `required: true`, quorum, or the fail-closed
+  // contract; it only widens how many times the same alias gets re-entered
+  // first.
+  it('fails the required lane closed once the empty-completion budget is exhausted on the same alias', async () => {
+    const config = buildSingleAliasDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (opts.model === 'bifrost/pr-reviewer') {
+        // Every attempt, without exception, returns an empty completion.
+        throw new OpenRouterResponseError('OpenRouter returned empty completion content', 502);
+      }
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'n/a' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-empty-completion-exhausted',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    })).rejects.toThrow(/persona sec-lane failed closed/iu);
+
+    const bifrostCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
       request.metadata?.role === 'persona'
       && request.metadata?.persona === 'sec-lane'
-      && request.model.includes('claude'));
-    // The transient-error retry (maxAttempts = 2) is bounded before failover.
-    expect(claudeLaneCalls).toHaveLength(2);
+      && request.model === 'bifrost/pr-reviewer');
+    expect(bifrostCalls).toHaveLength(EMPTY_COMPLETION_MAX_ATTEMPTS);
   });
 
   it('fails closed when persona INCOMPLETE includes unvalidated findings', async () => {

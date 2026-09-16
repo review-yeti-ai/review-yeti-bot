@@ -797,36 +797,6 @@ func TestBuildWorkerJobAppGateIsNotReceiptOnly(t *testing.T) {
 	}
 }
 
-// REL-886: the TypeScript worker's resolveWorkerConfig() now parses an ordered,
-// comma-delimited fallback list out of REVIEW_MODEL so a required persona lane
-// that draws a transient empty-completion response from the primary provider
-// has a real second provider to fail over to (previously it always resolved to
-// exactly one hardcoded provider, so the panel's failover loop had nothing to
-// advance to). The operator needs no shape change for this: Model has always
-// been an opaque string projected verbatim into REVIEW_MODEL, and the existing
-// whitespace check already admits a comma. This test pins that passthrough so
-// a future change here cannot silently start splitting, trimming, or otherwise
-// mutating the fallback list before the worker sees it.
-func TestBuildWorkerJobPassesThroughCommaDelimitedFallbackModelList(t *testing.T) {
-	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
-	review := reviewFixture(now)
-	review.Spec.PublicationMode = "app-gate"
-	input := buildInput(review, now)
-	config := publishingFixture()
-	config.Model = "bifrost/pr-reviewer,ollama/deepseek-v4.1-flash"
-	input.Publishing = config
-	result, err := job.BuildWorkerJob(input)
-	if err != nil {
-		t.Fatalf("build app-gate job with fallback model list: %v", err)
-	}
-	container := result.Spec.Template.Spec.Containers[0]
-	got := envValue(container, "REVIEW_MODEL")
-	want := "bifrost/pr-reviewer,ollama/deepseek-v4.1-flash"
-	if got != want {
-		t.Fatalf("REVIEW_MODEL must carry the fallback list through unmodified: got %q, want %q", got, want)
-	}
-}
-
 // A disabled dispatch must keep producing a receipt-only pod.
 func TestBuildWorkerJobDisabledStaysReceiptOnly(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)

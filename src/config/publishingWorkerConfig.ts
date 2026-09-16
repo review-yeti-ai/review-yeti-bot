@@ -13,50 +13,6 @@ export const PUBLISHING_MAX_TURNS = 15;
 export const PUBLISHING_IDLE_TIMEOUT_SECONDS = 180;
 export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 1800;
 
-// REL-886: resolveWorkerConfig used to hardcode a single `bifrost` provider
-// entry regardless of what the operator's REVIEW_YETI_REVIEW_MODEL projected,
-// so `providersToTry` in panelEngine.ts could never contain more than one id
-// and the panel's own retry-then-failover loop had nothing to fail over to.
-// A required lane (sec-lane) that drew a transient HTTP-200-empty-completion
-// response from the sole provider hard-aborted the run instead of advancing.
-//
-// The fix keeps the wire contract as one string -- REVIEW_MODEL / transport.model
-// -- but lets it carry an ordered, comma-delimited fallback list. A bare single
-// value (no comma) is the only shape ever deployed and produces the exact same
-// one-provider config as before; this is intentionally the same env var so the
-// k8s-operator and Zod-validated worker contract need no shape change.
-export const PRIMARY_PROVIDER_ID = 'bifrost';
-
-/**
- * Parse transport.model into an ordered, deduplicated list of model identifiers.
- * Entries are comma-delimited, trimmed, and empty segments (a stray leading,
- * trailing, or doubled comma) are dropped so they can never mint a hollow
- * provider. A single value with no comma parses to a one-element list.
- */
-export function parseFallbackModelList(rawModel: string): string[] {
-  const trimmedInput = String(rawModel || '').trim();
-  const entries = trimmedInput
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  // An empty/unset value is a caller contract violation (bifrostTransport
-  // already refuses it before this runs), not this function's concern to
-  // invent a provider for. Preserve the pre-fallback behaviour of always
-  // returning exactly one entry -- even an empty string -- so this stays a
-  // safe drop-in for the single-value call sites.
-  if (entries.length === 0) return [trimmedInput];
-  // Preserve the caller's fallback order; only collapse an accidental repeat
-  // of the same model string so it cannot be retried against itself under a
-  // different provider id.
-  return Array.from(new Set(entries));
-}
-
-/** The primary provider keeps the stable `bifrost` id; each fallback gets an
- * ordinal suffix so panelEngine's provider lookups stay unambiguous. */
-export function fallbackProviderId(index: number): ProviderId {
-  return index === 0 ? PRIMARY_PROVIDER_ID : `${PRIMARY_PROVIDER_ID}-fallback-${index}`;
-}
-
 let cachedCompiledIndex: CompiledDomainIndex | null = null;
 
 export function getCompiledDomainIndex(): CompiledDomainIndex | null {
@@ -347,12 +303,6 @@ export function resolveWorkerConfig(
     'policy-lane': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
   };
 
-  // Ordered fallback chain: index 0 is always the primary `bifrost` id so a
-  // single-value REVIEW_MODEL (today's only deployed shape) resolves to the
-  // exact same one-provider config this function has always produced.
-  const modelList = parseFallbackModelList(transport.model);
-  const providerIds: ProviderId[] = modelList.map((_, index) => fallbackProviderId(index));
-
   const personas = effectivePersonaNames.map((name) => {
     const key = name.toLowerCase().trim();
     const matched = personaMap[key] || {
@@ -366,7 +316,7 @@ export function resolveWorkerConfig(
       required: matched.required,
       charter: matched.charter,
       paths: getPersonaEcosystemPaths(key),
-      providers: providerIds,
+      providers: ['bifrost'] as ProviderId[],
     };
   });
 
@@ -379,16 +329,18 @@ export function resolveWorkerConfig(
       execution: 'personas',
       fallback: 'ordered',
       overall_timeout_s: PUBLISHING_OVERALL_TIMEOUT_SECONDS,
-      providers: providerIds.map((id, index) => ({
-        id,
-        enabled: true,
-        model: modelList[index],
-        effort: 'medium' as const,
-        review_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
-        arbiter_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
-      })),
+      providers: [
+        {
+          id: 'bifrost' as ProviderId,
+          enabled: true,
+          model: transport.model,
+          effort: 'medium',
+          review_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
+          arbiter_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
+        },
+      ],
       arbiter: {
-        order: providerIds,
+        order: ['bifrost' as ProviderId],
       },
     },
     evidence: {
