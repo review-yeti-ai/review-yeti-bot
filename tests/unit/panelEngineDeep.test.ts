@@ -629,6 +629,51 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(bifrostCalls).toHaveLength(EMPTY_COMPLETION_MAX_ATTEMPTS);
   });
 
+  // isEmptyCompletionError's message guard must discriminate the specific
+  // "empty completion content" signature from any other OpenRouterResponseError
+  // (e.g. a 502 for malformed/unparseable payload content). A non-matching
+  // message must stay on the generic 2-attempt transient budget and never
+  // borrow the larger empty-completion budget -- pinning that the two retry
+  // paths cannot be silently merged by loosening the predicate.
+  it('keeps a non-empty-completion OpenRouterResponseError on the generic 2-attempt budget', async () => {
+    const config = buildSingleAliasDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (opts.model === 'bifrost/pr-reviewer') {
+        // Same status (502) as the empty-completion signature, but a
+        // non-matching message -- must not engage EMPTY_COMPLETION_MAX_ATTEMPTS.
+        throw new OpenRouterResponseError('OpenRouter returned malformed payload', 502);
+      }
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'n/a' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-malformed-payload-not-empty-completion',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    })).rejects.toThrow(/persona sec-lane failed closed/iu);
+
+    const bifrostCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
+      request.metadata?.role === 'persona'
+      && request.metadata?.persona === 'sec-lane'
+      && request.model === 'bifrost/pr-reviewer');
+    // Exactly the generic maxAttempts (2), not EMPTY_COMPLETION_MAX_ATTEMPTS (4) --
+    // proves the malformed-payload message never borrows the larger budget.
+    expect(bifrostCalls).toHaveLength(2);
+  });
+
   it('fails closed when persona INCOMPLETE includes unvalidated findings', async () => {
     const baseConfig = buildDeepConfig();
     const config = {
