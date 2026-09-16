@@ -1,6 +1,7 @@
 import { ProviderId } from '../config/schema';
 import { OpenRouterRequest, TokensUsed } from '../gateway/openRouterClient';
 import { RepositoryVisibility } from '../review/repositoryVisibility';
+import type { WorkerFailureClass } from '../review/workerCompletion';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -71,6 +72,15 @@ export interface PanelResult {
      * that never reached the provider (e.g. a local/transport error before any response). */
     lastKnownUsage?: LaneTokenUsage;
     lastKnownModel?: string;
+    /**
+     * Coded classification of why this lane failed, assigned by `runPersona` at the exact point
+     * it observed the terminal error for the lane -- authoritative over any later re-derivation
+     * from the free-form `error` string (REL-892 finding 2). Optional so a lane that failed
+     * before this classification existed in the code path still degrades safely; a consumer must
+     * fall back to `classifyFailure(error)` when this is undefined, never treat its absence as a
+     * class of its own.
+     */
+    failureClass?: WorkerFailureClass;
   }>;
   /** Final path/config/classifier-selected roster used by the panel execution. */
   applicablePersonaIds?: string[];

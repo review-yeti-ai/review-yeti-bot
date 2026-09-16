@@ -442,10 +442,14 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(result.personas.map((persona) => persona.id)).toEqual(['completed-lane']);
     // The lane received a real (if contract-violating) response on every attempt, so the failure
     // carries the resolved model it was served even though it never produced usable findings.
+    // `failureClass` is the coded reason `runPersona` assigns at the exact point it observed this
+    // terminal `PanelStructuredOutputError` (REL-892 finding 2) -- authoritative over any later
+    // re-derivation of the class from `error`'s free-form text at the publishing layer.
     expect(result.optionalFailures).toEqual([{
       id: 'incomplete-lane',
       error: expect.stringContaining('INCOMPLETE'),
       lastKnownModel: expect.any(String),
+      failureClass: 'malformed_output',
     }]);
     expect(result.applicablePersonaIds).toEqual(['completed-lane', 'incomplete-lane']);
   });

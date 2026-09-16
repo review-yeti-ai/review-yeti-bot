@@ -867,7 +867,11 @@ export async function runPublishingReviewWorker(
         rawFindingCount: rawFindings.length,
         canonicalFindingCount: findings.length,
       })
-        ? classifyFailure(firstFailedLane.error)
+        // `runPersona` assigns a coded `failureClass` at the exact point it observed the lane's
+        // terminal error (REL-892 finding 2); prefer that over re-deriving one from the free-form
+        // `error` string here. `classifyFailure` remains the fallback for a lane that failed
+        // before this classification existed in the code path.
+        ? (firstFailedLane.failureClass ?? classifyFailure(firstFailedLane.error))
         : undefined;
 
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
@@ -904,9 +908,11 @@ export async function runPublishingReviewWorker(
       ?? (panelResult.optionalFailures || []).find((failure) => failure.lastKnownModel)?.lastKnownModel;
     // Every failed lane, identified and classified -- never their free-form error text -- plus
     // bounded numeric usage from the lane's last provider response when one was received.
+    // `failure.failureClass` is the panel's own coded reason (REL-892 finding 2); `classifyFailure`
+    // is only a fallback for a lane that failed before that classification existed.
     const failedLanes: PublishingReviewFailedLane[] = (panelResult.optionalFailures || []).map((failure) => ({
       id: failure.id,
-      failureClass: classifyFailure(failure.error),
+      failureClass: failure.failureClass ?? classifyFailure(failure.error),
       ...(failure.lastKnownUsage ? { usage: failure.lastKnownUsage } : {}),
       ...(failure.lastKnownModel ? { model: failure.lastKnownModel } : {}),
     }));
@@ -1018,8 +1024,12 @@ export async function runPublishingReviewWorker(
         findings: persona.findings.map((finding) => Object.fromEntries(
           Object.entries(finding).filter(([key, value]) => findingKeys.has(key) && value !== undefined))),
       }));
+      // Same coded-reason-first precedence as the published check's `failedLanes` above: this is
+      // the authoritative service's own record of why each lane failed and must not independently
+      // drift from it by re-deriving a class from prose here.
       const errors = (panelResult.optionalFailures || []).map((failure) => ({ id: failure.id,
-        decision: 'ERROR' as const, status: 'ERROR' as const, findings: [], errorClass: classifyFailure(failure.error) }));
+        decision: 'ERROR' as const, status: 'ERROR' as const, findings: [],
+        errorClass: failure.failureClass ?? classifyFailure(failure.error) }));
       return parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
         runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
         prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
