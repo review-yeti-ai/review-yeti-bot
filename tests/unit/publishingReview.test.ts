@@ -372,9 +372,12 @@ describe('runPublishingReviewWorker', () => {
       diagnostics: expect.objectContaining({ recoverableIncompletePanel: true }),
     }));
     expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
-    expect(String((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0]
-      && ((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary))
-      .not.toContain('no further automatic retry');
+    // Pin the publish call first so the negative assertion below cannot pass
+    // vacuously against an absent summary.
+    expect(cc.completeCheck).toHaveBeenCalledTimes(1);
+    const publishedSummary = ((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary;
+    expect(typeof publishedSummary).toBe('string');
+    expect(publishedSummary as string).not.toContain('no further automatic retry');
     expect(JSON.stringify([receipt, cc.completeCheck.mock.calls, completion.reportTerminalFailure.mock.calls]))
       .not.toContain('do-not-publish');
   });

@@ -47,7 +47,10 @@ export const RECOVERABLE_PANEL_AUTO_RETRY_CAP = 2;
  * the two can never drift on what counts as eligible (REL-620).
  */
 export function isRecoverablePanelRetryEligible(executionAttempt: number): boolean {
-  return Number.isSafeInteger(executionAttempt) && executionAttempt <= RECOVERABLE_PANEL_AUTO_RETRY_CAP;
+  // Execution attempts are 1-based: the first worker execution reports
+  // attempt 1. Zero or a negative value is not a real attempt and must never
+  // be re-queued as `retryAfterExecutionAttempt: 0`.
+  return Number.isSafeInteger(executionAttempt) && executionAttempt >= 1 && executionAttempt <= RECOVERABLE_PANEL_AUTO_RETRY_CAP;
 }
 
 /**

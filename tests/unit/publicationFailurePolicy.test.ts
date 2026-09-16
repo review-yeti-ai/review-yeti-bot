@@ -57,6 +57,13 @@ describe('recoverable-panel auto-retry eligibility boundary', () => {
   });
 
   it.each<[string, number]>([
+    ['zero', 0],
+    ['negative', -1],
+  ])('is not eligible for a non-positive attempt (%s): attempts are 1-based', (_label, attempt) => {
+    expect(isRecoverablePanelRetryEligible(attempt)).toBe(false);
+  });
+
+  it.each<[string, number]>([
     ['NaN', NaN],
     ['fractional', 1.5],
     ['positive infinity', Number.POSITIVE_INFINITY],
