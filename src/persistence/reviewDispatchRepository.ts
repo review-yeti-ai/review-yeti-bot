@@ -2,7 +2,8 @@ import { timingSafeEqual } from 'node:crypto';
 import type { WorkerReviewEvidence } from '../review/workerReviewCompletion';
 import { sha256 } from '../review/reviewCore';
 import { deriveReviewRunId } from '../review/reviewAdmission';
-import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
+import { assertTerminalDeadlineWindow, TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
+import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS } from '../review/publicationFailurePolicy';
 import {
   ReviewAdmission,
   ReviewAdmissionInput,
@@ -147,6 +148,10 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
   }
   if (input.retryRequested === true && input.retryAfterExecutionAttempt === undefined) {
     throw new Error('retry requested requires a retry-after execution attempt');
+  }
+  if (input.availableAt !== undefined
+    && (!Number.isSafeInteger(input.availableAt) || input.availableAt < input.receivedAt)) {
+    throw new Error('available-at must be a safe integer at or after receivedAt');
   }
   if (input.expectedGeneration !== undefined
     && (!Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration <= 0)) {
@@ -626,7 +631,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       );
       await client.query(
         `INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, available_at, created_at, updated_at)
-         VALUES ($1, $2, 'pending', to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
+         VALUES ($1, $2, 'pending', to_timestamp($5 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
          ON CONFLICT (run_id) DO UPDATE
            SET status = 'pending', delivery_id = EXCLUDED.delivery_id,
                available_at = EXCLUDED.available_at, lease_owner = NULL,
@@ -658,7 +663,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 -- untouched even when a new delivery arrives while its worker starts.
                 AND r.delivery_id = EXCLUDED.delivery_id
            )`,
-        [runRow.run_id, input.deliveryId, input.receivedAt, runRow.retry_from_reaper_failure === true],
+        [runRow.run_id, input.deliveryId, input.receivedAt, runRow.retry_from_reaper_failure === true,
+          input.availableAt ?? input.receivedAt],
       );
       if (input.authoritativeGate && ['queued', 'running'].includes(runRow.status)) {
         const gate = await PostgresReviewGateRepository.reserveInTransaction(
@@ -1226,6 +1232,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
 
   async markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now = Date.now()): Promise<WorkerFailureTransition> {
     const client = await this.pool.connect();
+    let result: WorkerFailureTransition;
     try {
       await client.query('BEGIN');
       // Use admission's repository/PR lock so a same-head rerequest cannot
@@ -1233,15 +1240,73 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
         reviewDispatchPrLockKey(input.repositoryId, input.prNumber),
       ]);
-      const result = await this.persistWorkerFailure(client, input, proof, now);
+      result = await this.persistWorkerFailure(client, input, proof, now);
       await client.query('COMMIT');
-      return result;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
     } finally {
       client.release();
     }
+    // Runs strictly after the failure transition committed and its advisory
+    // lock released: `admit` takes that same lock itself, so calling it while
+    // still inside the transaction above would deadlock against itself. A
+    // re-admission failure here must never surface as a completion-callback
+    // error -- the worker's terminal failure is already durably recorded;
+    // losing the automatic retry only means this run needs its exact-head
+    // manual refresh instead, exactly as it did before REL-620.
+    if (result.status === 'failed') {
+      await this.requeueRecoverableIncompletePanelFailure(input, now).catch((error) => {
+        logger.error('Automatic recoverable-panel retry admission failed', {
+          runId: input.runId,
+          executionAttempt: input.executionAttempt,
+          reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+        });
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Bounded automatic recovery for a recoverable-incomplete-panel terminal
+   * failure (REL-620). Re-queues the exact same review identity for a fresh
+   * execution attempt through the identical admission path the manual
+   * exact-head refresh uses (`retryRequested` + `retryAfterExecutionAttempt`),
+   * so the same durable eligibility fence -- an outbox row proving this exact
+   * attempt actually ran -- governs both. A no-op for every other failure
+   * class, for a non-app-gate run, for an authoritative-gate run (its
+   * `authoritative_gate_app_id` is never null, so it is excluded below in
+   * addition to `markWorkerFailure` never transitioning one), and once the
+   * attempt cap is reached.
+   */
+  private async requeueRecoverableIncompletePanelFailure(input: WorkerTerminalFailure, now: number): Promise<void> {
+    if (input.diagnostics?.recoverableIncompletePanel !== true) return;
+    if (!Number.isSafeInteger(input.executionAttempt) || input.executionAttempt > RECOVERABLE_PANEL_AUTO_RETRY_CAP) return;
+    const current = await this.queryable.query(
+      `SELECT repository_id, installation_id, identity, publication_mode, authoritative_gate_app_id
+         FROM review_runs WHERE run_id = $1`,
+      [input.runId],
+    );
+    const row = current.rows[0] as Record<string, unknown> | undefined;
+    if (!row || row.publication_mode !== 'app-gate' || row.authoritative_gate_app_id != null) return;
+    const identity = typeof row.identity === 'string' ? JSON.parse(row.identity) : row.identity;
+    const receivedAt = now;
+    await this.admit({
+      deliveryId: `internal-recoverable-panel-retry:${input.runId}:a${input.executionAttempt}`,
+      eventName: 'internal_recoverable_panel_retry',
+      repositoryId: Number(row.repository_id),
+      installationId: Number(row.installation_id),
+      receivedAt,
+      terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+      payloadDigest: sha256({ runId: input.runId, executionAttempt: input.executionAttempt,
+        reason: 'recoverable_incomplete_panel' }),
+      publicationMode: 'app-gate',
+      centralActionDispatch: false,
+      retryRequested: true,
+      retryAfterExecutionAttempt: input.executionAttempt,
+      availableAt: receivedAt + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS,
+      identity,
+    });
   }
 
   async authorizeWorkerEvidence(input: WorkerReviewEvidence, proof: WorkerCompletionProof): Promise<WorkerEvidenceAuthorization> {
