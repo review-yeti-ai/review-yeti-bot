@@ -44,7 +44,7 @@
         "enabled": true,
         "base_url": "https://llm-gateway.example.com/v1",
         "api_key_env": "BIFROST_PR_REVIEW_API_KEY",
-        "model": "ollama/glm-5.3-flash",
+        "model": "openrouter-pool",
         "compat": "openai",
         "max_tokens": 65536,
         "timeout_ms": 90000,
@@ -63,7 +63,8 @@
           "max_retry_after_ms": 5000
         },
         "reasoning_effort": "medium",
-        "quarantine_on_timeout": false
+        "quarantine_on_timeout": false,
+        "structured_output": "strict"
       },
       {
         "name": "openrouter-primary",

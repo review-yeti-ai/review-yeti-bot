@@ -27,7 +27,7 @@ test('materializes the committed provider order and routing into the local CLI c
   // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
   assert.equal(config.github_action.openrouter.timeout_ms, bifrostTransport.timeout_ms);
   assert.equal(config.github_action.openrouter.ttft_ms, Number(policy.review_yeti.openrouter_ttft_ms));
-  assert.equal(config.github_action.openrouter.model, 'ollama/glm-5.3-flash');
+  assert.equal(config.github_action.openrouter.model, 'openrouter-pool');
   assert.deepEqual(config.github_action.openrouter.models, undefined);
   // Must track policy/review-yeti.json rather than restating a provider preference.
   assert.equal(
@@ -69,7 +69,7 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
   const transports = JSON.parse(env.REVIEW_YETI_TRANSPORTS);
   assert.deepEqual(transports.map((transport) => transport.name), ['bifrost', 'openrouter-primary']);
-  assert.equal(transports[0].model, 'ollama/glm-5.3-flash');
+  assert.equal(transports[0].model, 'openrouter-pool');
   assert.equal(transports[1].model, 'z-ai/glm-5.3-flash');
 });
 

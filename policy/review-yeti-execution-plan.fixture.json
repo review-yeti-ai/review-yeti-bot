@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "0f6e867a0273e5bdfb0999a8ab663c850c9f74fdbb786dd46cffea93a9460843",
+  "normalized_plan_sha256": "e4c9bc7275600b267717c281ed77ffd922ebac905fd710cbf12a0df0e781991e",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -31,7 +31,7 @@
       {
         "name": "bifrost",
         "base_url_class": "exampleorg-bifrost-openai-compatible",
-        "model": "ollama/glm-5.3-flash",
+        "model": "openrouter-pool",
         "compatibility_mode": "openai",
         "timeouts": {
           "connect_ms": 90000,
@@ -42,7 +42,7 @@
         },
         "max_output_tokens": 65536,
         "streaming": true,
-        "structured_output": "runtime-default-uncharacterized",
+        "structured_output": "strict",
         "reasoning": {
           "effort": "medium",
           "wire_shape": "reasoning_effort"
