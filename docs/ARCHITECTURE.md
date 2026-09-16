@@ -116,6 +116,68 @@ Review Yeti eliminates this attack vector:
 
 ---
 
+## 🔍 Deterministic Pre-Check Engine (Zoekt & Zero-Compilation Analyzers)
+
+Prior to invoking AI persona lanes, Review Yeti executes a two-phase deterministic pre-check pipeline on the pull request diff hunks:
+
+```mermaid
+graph LR
+    Diff[PR Diff Hunks] --> PreChecks{Pre-Checks Enabled?}
+    PreChecks -->|Yes| Zoekt[Phase 1: Zoekt Cross-File Discovery]
+    PreChecks -->|Yes| Analyzers[Phase 2: Zero-Compilation Analyzers]
+    PreChecks -->|No| Personas[Persona Lanes]
+    
+    subgraph Phase 1: Symbol Context
+        Zoekt --> Extracted[Diff Symbols Extracted]
+        Extracted --> ZQuery[Query Zoekt Index]
+        ZQuery --> SymbolContext[Symbol Definitions & Callers]
+    end
+    
+    subgraph Phase 2: Static Analysis
+        Analyzers --> ESLint[eslint: TS/JS AST]
+        Analyzers --> Semgrep[semgrep: Multi-Lang AST Pattern Match]
+        Analyzers --> Gitleaks[gitleaks: Regex/Entropy Secrets]
+        ESLint --> Hypotheses[Format Candidate Hypotheses]
+        Semgrep --> Hypotheses
+        Gitleaks --> Hypotheses
+    end
+    
+    SymbolContext --> Evidence[Structured Evidence Packet]
+    Hypotheses --> Evidence
+    Evidence --> Personas[Persona Lanes Verify Hypotheses]
+```
+
+### 1. Zoekt Cross-File Symbol Discovery
+- Extracts symbols modified within PR diff hunks and queries the local Zoekt trigram index.
+- Locates symbol definitions, call sites, and surrounding context across unchanged files.
+- Injects verified cross-file context into persona prompts, eliminating blind diff gaps without brittle AST slicing.
+- Respects `max_symbols` (default: 25) with soft truncation and telemetry tracking.
+
+### 2. Zero-Compilation Static Analyzers
+- Review Yeti strictly enforces a **zero-compilation pattern** for PR analysis:
+  - **TypeScript / JavaScript**: `eslint` (AST-only linter without compiler project builds)
+  - **Multi-Language (TS/JS, Elixir, Go, Python, Ruby, Rust, etc.)**: `semgrep` (fast AST semantic pattern matching on raw source files without dependency builds)
+  - **Secret Detection**: `gitleaks` (high-speed regex and entropy scanning on changed hunks)
+  - **No Compilers**: Eliminates compile-intensive tools (`mix credo`, `mix sobelow`, `go vet`), avoiding build cache contamination, gigabyte-scale toolchain downloads, and slow build-step timeouts.
+- **Candidate Hypothesis Verification**: Analyzer outputs are never posted directly to pull requests as raw SAST warnings. Instead, they are formatted as structured candidate hypotheses (file, line range, analyzer rule, proposed issue) that reviewer personas independently verify or refute, preventing false-positive noise from polluting review comments.
+
+### 3. Configuration (`.reviewyeti.yaml` or `.ct-review.yaml`)
+
+```yaml
+pre_checks:
+  enabled: true          # default: true
+  zoekt:
+    enabled: true        # default: true
+    max_symbols: 25
+  analyzers:
+    enabled: true        # default: true
+    linters: true        # eslint
+    security: true       # semgrep
+    secrets: true        # gitleaks
+```
+
+---
+
 ## ⚖️ Arbitration Engine & Merge Gate State Machine
 
 Review Yeti standardizes findings into a clear severity hierarchy:
@@ -140,15 +202,15 @@ When integrated with GitHub Branch Protection, a `BLOCK` conclusion marks the re
 
 Review Yeti implements an enterprise-grade telemetry and observability plane across runner and Kubernetes deployments:
 
-1. **Cumulative Prometheus Metrics (REL-817 / v1.60.2)**: All in-memory metric exporters enforce `AggregationTemporality.CUMULATIVE` (1), guaranteeing that counters (`review_yeti_requests_total`, `review_yeti_errors_total`, `review_yeti_tokens_total`, `review_yeti_model_cost_usd_total`, `review_yeti_review_reaper_superseded_attempt_total`) increase monotonically without dropping to 0 between scrapes.
+1. **Cumulative Prometheus Metrics (REL-817 / v1.60.2)**: All in-memory metric exporters enforce `AggregationTemporality.CUMULATIVE` (1), guaranteeing that counters (`review_yeti_requests_total`, `review_yeti_errors_total`, `review_yeti_tokens_total`, `review_yeti_model_cost_usd_total`, `review_yeti_review_reaper_superseded_attempt_total`, `review_yeti_zoekt_*`, `review_yeti_analyzers_*`) increase monotonically without dropping to 0 between scrapes.
 2. **Multi-Service Scrape Surface**:
-   - `ct-review-action-dispatch` (`:3000/metrics`): Token volumes, USD model costs, and review durations.
+   - `ct-review-action-dispatch` (`:3000/metrics`): Token volumes, USD model costs, review durations, and pre-check metrics.
    - `ct-review-job-dispatcher` (`:9090/metrics`): Queue depths and reaper recovery events.
-   - `review-yeti-operator` (`:8080`): Controller loop and reconciliation telemetry.
+   - `review-yeti-operator` (`:8080`): Controller loop and reconciliation telemetry (`review_yeti_operator_*`).
 3. **OpenTelemetry Collector Pipeline**: Accepts OTLP traces (`:4317`/`:4318`) and metrics in the `observability` namespace, routing traces to Grafana Tempo and converting metrics to Prometheus format on port `:8889`.
 4. **VictoriaMetrics Integration**: Scrapes all cluster targets (20/20 active targets UP) for long-term retention and PromQL analytics.
-5. **Alertmanager Rule Group (`review_yeti`)**: Evaluates 5 automated rules monitoring dispatch health, operator uptime, review execution latency, worker pod restarts, and error ratios.
-6. **Grafana Operations Dashboard (`review-yeti-ops.json`)**: Pre-provisioned 12-panel dashboard (UID: `ct-review-yeti-ops`) with 23 PromQL queries covering throughput, latency quantiles, concurrency, cost accumulation, and reaper activity.
+5. **Alertmanager Rule Group (`review_yeti`)**: Evaluates automated rules monitoring dispatch health, operator uptime, review execution latency, worker pod restarts, and error ratios.
+6. **Grafana Operations Dashboard (`review-yeti-ops.json`)**: Pre-provisioned 16-panel operations dashboard (UID: `review-yeti-ops`) with 27 PromQL queries covering throughput, latency quantiles, concurrency, cost accumulation, reaper activity, Zoekt cross-file symbol efficiency, and zero-compilation static analyzer throughput.
 7. **Empirical Performance Benchmarks**: Qualified on live DOKS infrastructure (PR #271):
    - Fast-Ship Path: **13s** execution for doc-only diffs.
    - Full Modular DAG: **59s** execution across 5 persona lanes (23,043 tokens) with `SHIP` verdict.

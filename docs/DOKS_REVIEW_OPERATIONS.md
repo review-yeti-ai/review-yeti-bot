@@ -390,12 +390,16 @@ Evaluated every 15s by `vmalert`:
 | `ReviewOperatorJobFailures` | `warning` | `sum(rate(review_yeti_operator_job_failures_total{job="review-yeti-operator"}[5m])) > 0` | 5m | Operator PR review job failures detected |
 
 ### 6. Production Grafana Operations Dashboard (`review-yeti-ops.json`)
-The 12-panel operations dashboard (UID: `ct-review-yeti-ops`) provisions automatically in Grafana via GitOps Helm release:
+The 16-panel operations dashboard (UID: `review-yeti-ops`) provisions automatically in Grafana via GitOps Helm release:
 - **Review Throughput & Errors**: `sum(rate(review_yeti_requests_total[5m]))` vs `sum(rate(review_yeti_errors_total[5m]))`.
 - **Latency Percentiles**: p50, p95, and p99 quantiles from `review_yeti_review_duration_seconds_bucket`.
 - **Queue Depth & Concurrency**: Real-time gauge of `review_yeti_queue_active_jobs` and `review_yeti_queue_queued_jobs`.
 - **Token Consumption & Inference Cost**: `sum(increase(review_yeti_tokens_total[24h]))` and `sum(increase(review_yeti_model_cost_usd_total[24h]))`.
 - **Dispatcher Reaper Activity**: Rate of retired superseded review runs and quarantined deliveries.
+- **Pre-Check Zoekt Symbol Discovery**: Real-time throughput of Zoekt queries, scanned diff symbols, cross-file matches, and truncation events.
+- **Pre-Check Sandbox Static Analyzers**: Execution rates broken down by zero-compilation tool (`eslint`, `semgrep`, `gitleaks`) and status, plus candidate hypotheses discovered by severity.
+- **Pre-Check Latencies (p95)**: p95 latencies for Zoekt resolution, sandbox static analyzers, and combined pre-checks.
+- **Zoekt Match Efficiency**: Symbol match ratio percentage (`matched / scanned * 100`).
 - **Target Health Matrix**: Real-time up status across all review services.
 
 ### 7. Essential PromQL Operational Queries

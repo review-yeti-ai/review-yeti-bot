@@ -22,6 +22,9 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 ## ✨ Features at a Glance
 
 - 👥 **Multi-Persona Review Panel**: Dedicated reviewers for Security & Tenancy, System Architecture, Performance, QA & Testing, and Dependency Safety.
+- 🔍 **Deterministic Pre-Check Engine**:
+  - **Zoekt Cross-File Symbol Discovery**: Deterministically queries code symbols across repository indexes to discover call sites, definitions, and types before persona evaluation turns.
+  - **Zero-Compilation Sandbox Analyzers**: Executes fast, compilation-free static analyzers (`eslint`, `semgrep`, `gitleaks`) on modified PR hunks. Outputs are formatted as structured candidate hypotheses that personas verify, eliminating SAST false positives.
 - ⚡ **Native Apply Suggestions**: Automatic reviews can include GitHub's **Apply suggestion** button for complete, self-contained fixes. Single-line and multiline replacements preserve indentation and support deletions. Suggestions are attached only to validated new-file diff ranges; uncertain fixes, file-level findings, and architectural advice remain prose. All severities publish inline; P2 findings do not change the verdict. A single sticky overview replaces its contents on each push or rerun, without accumulating verdict comments or history.
 - 💬 **Interactive PR Chat Mentoring**: Mention `@review-yeti explain`, `@review-yeti fix`, `@review-yeti ignore`, or `@review-yeti mute` in review threads ([Guide](docs/INTERACTIVE_CHAT.md)).
 - 💻 **Local Pre-Commit CLI & Git Hook**: Evaluate staged changes in < 5s with sub-10ms credential detection and blocking P0 checks via `git yeti pre-commit` ([Guide](docs/CLI_REFERENCE.md)).
@@ -30,7 +33,7 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 - 🧠 **Persistent Team Memory**: SQLite WAL database (`.ct-memory/team_memory.db`) that suppresses repetitive false-positive nits while enforcing non-bypassable P0/P1 security gates ([Guide](docs/TEAM_MEMORY.md)).
 - ⚖️ **Binding Arbitration Engine**: Automated moderator and arbiter that deduplicate findings and deliver clear verdicts: `SHIP`, `FIX_FIRST`, or `BLOCK`.
 - 🛰️ **Private JetStream Event Plane & Outbox**: Decoupled, auditable lifecycle event stream (`review-yeti-event.v1`) with transactional PostgreSQL outbox, monotonic ULIDs, and 18-field recursive sanitizer ([Architecture](docs/ARCHITECTURE.md#private-jetstream-event-plane--transactional-outbox-api-3230--adr-0564)).
-- 📊 **Enterprise Observability & Monotonic Metrics**: Full VictoriaMetrics integration (20 active targets UP), monotonic cumulative Prometheus counters (REL-817), 5 Alertmanager SLO rules, and a dedicated 12-panel Grafana operations dashboard (`review-yeti-ops.json`) ([Guide](docs/DOKS_REVIEW_OPERATIONS.md#observability-opentelemetry--victoriametrics)).
+- 📊 **Enterprise Observability & Monotonic Metrics**: Full VictoriaMetrics integration (20 active targets UP), monotonic cumulative Prometheus counters (REL-817), 5 Alertmanager SLO rules, and a dedicated 16-panel Grafana operations dashboard (`review-yeti-ops.json`) ([Guide](docs/DOKS_REVIEW_OPERATIONS.md#observability-opentelemetry--victoriametrics)).
 - 🚀 **Sub-Minute Modular DAG Reviews**: High-throughput DOKS worker execution with ephemeral `emptyDir` storage (0 PVC delay)—13s fast-ship doc reviews and 59s 5-lane parallel DAG reviews ([Benchmarks](docs/DOKS_REVIEW_OPERATIONS.md#live-doks-qualification-evidence)).
 - ⚡ **Dual Execution Engines**:
   - **Ephemeral Action Mode**: Zero infrastructure, 60-second setup directly in GitHub Actions.
