@@ -289,6 +289,9 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
   } catch (_) {}
 
   return runInSpan('ct_review_pipeline', async (span) => {
+    span.setAttribute('review_yeti.repo', repoFull);
+    span.setAttribute('review_yeti.pr_number', prNumber);
+    span.setAttribute('review_yeti.head_sha', headSha);
     span.setAttribute('ct.repo', repoFull);
     span.setAttribute('ct.pr_number', prNumber);
     span.setAttribute('ct.head_sha', headSha);
@@ -297,6 +300,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
       if (!dashboardStore.isAutomationEnabled(owner, repo)) {
         logger.info(`Review automation disabled for repository ${repoFull}`);
         await durableCancel('automation disabled per repo setting');
+        span.setAttribute('review_yeti.status', 'skipped');
         span.setAttribute('ct.status', 'skipped');
         try {
           getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
@@ -329,6 +333,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         const snapshot = await github.getPullRequest(owner, repo, prNumber);
         if (snapshot.headSha !== headSha) {
           await durableCancel('stale webhook head');
+          span.setAttribute('review_yeti.status', 'cancelled');
           span.setAttribute('ct.status', 'cancelled');
           try {
             getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
@@ -492,6 +497,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           }).catch((err) => logger.warn('Failed to complete check run for stale head', { error: err?.message || err }));
           }
           await durableFail(`review snapshot changed before publication: expected head ${headSha}, found head ${fresh.headSha}`);
+          span.setAttribute('review_yeti.status', 'cancelled');
           span.setAttribute('ct.status', 'cancelled');
           try {
             getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
@@ -703,6 +709,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           mermaidDiagram: panel.mermaidDiagram,
         });
 
+        span.setAttribute('review_yeti.status', 'processed');
         span.setAttribute('ct.status', 'processed');
         try {
           getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
@@ -722,6 +729,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           decision: ship ? 'APPROVE' : 'REQUEST_CHANGES',
         };
       } catch (error: any) {
+        span.setAttribute('review_yeti.status', 'failed');
         span.setAttribute('ct.status', 'failed');
         try {
           getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {

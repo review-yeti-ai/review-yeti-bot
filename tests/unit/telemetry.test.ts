@@ -37,6 +37,15 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
     expect(metrics.reviewReaperSupersededAttempts).toBeDefined();
     expect(metrics.activeJobs).toBeDefined();
     expect(metrics.queuedJobs).toBeDefined();
+    expect(metrics.zoektQueries).toBeDefined();
+    expect(metrics.zoektDuration).toBeDefined();
+    expect(metrics.zoektSymbolsScanned).toBeDefined();
+    expect(metrics.zoektSymbolsMatched).toBeDefined();
+    expect(metrics.zoektTruncatedTotal).toBeDefined();
+    expect(metrics.analyzersExecuted).toBeDefined();
+    expect(metrics.analyzersDuration).toBeDefined();
+    expect(metrics.analyzerHypotheses).toBeDefined();
+    expect(metrics.preCheckTotalDuration).toBeDefined();
   });
 
   it('exposes an untouched reaper quarantine counter with a zero baseline', async () => {
@@ -128,6 +137,17 @@ describe('OpenTelemetry Instrumentation Engine (Milestone 23)', () => {
 
     const prometheusText = await getPrometheusMetrics();
     expect(typeof prometheusText).toBe('string');
+    expect(prometheusText).toContain('# HELP review_yeti_tokens_prompt_total');
+    expect(prometheusText).toContain('# TYPE review_yeti_tokens_prompt_total counter');
+    expect(prometheusText).toContain('review_yeti_tokens_prompt_total{persona="security",provider="anthropic",model="claude-3-5-sonnet"} 150');
+    expect(prometheusText).toContain('review_yeti_review_duration_seconds');
+    expect(prometheusText).toContain('review_yeti_indexer_ast_duration_seconds');
+    expect(prometheusText).toContain('review_yeti_queue_jobs_queued_total');
+    expect(prometheusText).toContain('review_yeti_queue_jobs_dispatched_total');
+    expect(prometheusText).toContain('review_yeti_review_reaper_delivery_identity_mismatch_total');
+    expect(prometheusText).toContain('review_yeti_review_reaper_superseded_attempt_total');
+    expect(prometheusText).toContain('review_yeti_queue_active_jobs');
+    expect(prometheusText).toContain('review_yeti_queue_queued_jobs');
     expect(prometheusText).toContain('# HELP ct_review_tokens_prompt_total');
     expect(prometheusText).toContain('# TYPE ct_review_tokens_prompt_total counter');
     expect(prometheusText).toContain('ct_review_tokens_prompt_total{persona="security",provider="anthropic",model="claude-3-5-sonnet"} 150');
