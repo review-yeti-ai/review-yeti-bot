@@ -43,7 +43,7 @@ export class AsyncLocalStorageContextManager implements ContextManager {
 
 let tracerProvider: BasicTracerProvider | null = null;
 
-export function initTracer(serviceName = 'ct-review-bot'): BasicTracerProvider {
+export function initTracer(serviceName = 'review-yeti-bot'): BasicTracerProvider {
   if (tracerProvider) {
     return tracerProvider;
   }
@@ -62,7 +62,7 @@ export function initTracer(serviceName = 'ct-review-bot'): BasicTracerProvider {
   return tracerProvider;
 }
 
-export function getTracer(name = 'ct-review-bot', version?: string): Tracer {
+export function getTracer(name = 'review-yeti-bot', version?: string): Tracer {
   return trace.getTracer(name, version);
 }
 
