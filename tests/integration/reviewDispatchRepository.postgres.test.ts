@@ -1703,7 +1703,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimNext('dispatcher-2', 10_000_000, 30_000)).resolves.toBeNull();
   });
 
-  it('never automatically retries an authoritative-gate run even when its diagnostics claim recoverable', async () => {
+  it('markWorkerFailure refuses to transition an authoritative-gate run to failed, so no auto-retry can occur', async () => {
     const { repository, client } = await createRepository();
     const input = authoritativeAdmission('authoritative-no-auto-retry', 1_000);
     const admitted = await repository.admit(input);
