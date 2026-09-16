@@ -811,19 +811,91 @@ describe('runPublishingReviewWorker', () => {
       configDigest: 'd'.repeat(64),
       executionAttempt: 2,
       checkId: 4242,
-      // The persona lanes behind the published check ride along as evidence.
-      result: expect.objectContaining({
-        version: 'WorkerReviewResult.v1',
-        personas: [expect.objectContaining({ id: 'sec-lane', status: 'COMPLETE', findings: [] })],
-        coverageComplete: true,
-      }),
     });
+  });
+
+  it('reports the findings behind a self-published check as evidence, before the terminal callback, for both conclusions', async () => {
+    for (const [finding, conclusion] of [
+      [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }, 'failure'],
+      [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }, 'success'],
+    ] as const) {
+      const order: string[] = [];
+      const completion = {
+        reportTerminalFailure: vi.fn(async (_event: unknown) => { order.push('failure'); }),
+        reportTerminalSuccess: vi.fn(async (_event: unknown) => { order.push('success'); }),
+        reportReviewEvidence: vi.fn(async (_event: unknown) => { order.push('evidence'); }),
+      };
+      const cc = checkClient();
+      cc.completeCheck.mockImplementation(async () => { order.push('check'); });
+      const d = deps({
+        completion, checkClient: cc,
+        panelRunner: vi.fn(async () => ({
+          applicablePersonaIds: ['sec-lane'],
+          personas: [{ id: 'sec-lane', findings: [finding] }],
+          optionalFailures: [],
+          quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+          arbiter: { verdict: 'SHIP' },
+        })) as never,
+      });
+      const receipt = await runPublishingReviewWorker(env({ REVIEW_EXECUTION_ATTEMPT: '2' }), d as never);
+      expect(receipt.conclusion).toBe(conclusion);
+      expect(order[0]).toBe('check');
+      expect(order[1]).toBe('evidence');
+      const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as Record<string, any>;
+      expect(event).toMatchObject({
+        version: 'WorkerReviewEvidence.v1', runId: env().REVIEW_RUN_ID, executionAttempt: 2, checkId: 4242, conclusion,
+        result: { version: 'WorkerReviewResult.v1', personas: [{ id: 'sec-lane', decision: 'FINDINGS',
+          findings: [expect.objectContaining({ severity: finding.severity, path: 'src/a.ts' })] }] },
+      });
+      if (conclusion === 'success') {
+        expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
+        expect(completion.reportTerminalSuccess.mock.calls[0][0]).not.toHaveProperty('result');
+      } else {
+        expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
+      }
+      expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+    }
+  });
+
+  it('still reports the terminal success when the evidence callback fails', async () => {
+    const completion = {
+      reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
+      reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
+      reportReviewEvidence: vi.fn(async (_event: unknown) => { throw new Error('evidence endpoint down'); }),
+    };
+    const d = deps({ completion });
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_EXECUTION_ATTEMPT: '2' }), d as never);
+    expect(receipt.conclusion).toBe('success');
+    expect(completion.reportReviewEvidence).toHaveBeenCalledOnce();
+    expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+  });
+
+  it('sends no evidence when the panel failed recoverably (no verdict was published)', async () => {
+    const completion = {
+      reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
+      reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
+      reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
+    };
+    const d = deps({
+      completion,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [{ id: 'arch-lane', error: 'turn budget exhausted' }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    await runPublishingReviewWorker(env({ REVIEW_EXECUTION_ATTEMPT: '2' }), d as never);
+    expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
   });
 
   it('reads a lane decision from its findings only when the lane did not state one', async () => {
     const completion = {
       reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
+      reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
     };
     const d = deps({
       completion,
@@ -841,7 +913,7 @@ describe('runPublishingReviewWorker', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
-    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } } | undefined;
+    const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } } | undefined;
     expect(event?.result?.personas.map((p) => [p.id, p.decision])).toEqual([
       ['found', 'FINDINGS'],   // no stated decision, findings present
       ['clean', 'APPROVE'],    // no stated decision, no findings
@@ -849,13 +921,14 @@ describe('runPublishingReviewWorker', () => {
     ]);
   });
 
-  it('still reports the terminal success, without evidence, when the result fails the contract', async () => {
+  it('still reports the terminal success, and no evidence, when the result fails the contract', async () => {
     // The green check is already published by the time evidence is built. A
     // result the service would refuse (here: a finding body past the contract's
     // text bound) must be dropped, not allowed to abort the report.
     const completion = {
       reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
+      reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
     };
     const d = deps({
       completion,
@@ -873,6 +946,7 @@ describe('runPublishingReviewWorker', () => {
     const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(event.version).toBe('WorkerTerminalSuccess.v1');
     expect(event).not.toHaveProperty('result');
+    expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
 

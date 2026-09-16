@@ -1,11 +1,11 @@
 import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import type { GateWorkerResultTransition, StoredReviewGate, TrustedGateCompletionContext } from './reviewGateContracts';
 import type { WorkerCompletionProof, WorkerTerminalFailure, WorkerTerminalSuccess } from './workerCompletion';
-import type { WorkerReviewCompletion } from './workerReviewCompletion';
+import type { WorkerReviewCompletion, WorkerReviewEvidence } from './workerReviewCompletion';
 import { sha256 } from './reviewCore';
 
 export interface WorkerCompletionVerifier {
-  verify(token: string, event: WorkerTerminalFailure | WorkerTerminalSuccess | WorkerReviewCompletion): Promise<WorkerCompletionProof>;
+  verify(token: string, event: WorkerTerminalFailure | WorkerTerminalSuccess | WorkerReviewCompletion | WorkerReviewEvidence): Promise<WorkerCompletionProof>;
 }
 export interface AuthoritativeReviewAdmission {
   expectedAppId: number;
