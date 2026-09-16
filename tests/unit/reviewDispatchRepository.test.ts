@@ -405,6 +405,25 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it('rejects an availableAt before receivedAt before opening a transaction', async () => {
+    const connect = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect } as any);
+    await expect(repository.admit({ ...input(), availableAt: input().receivedAt - 1 }))
+      .rejects.toThrow(/available-at must be a safe integer at or after receivedAt/u);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it.each([1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects a non-safe-integer availableAt %s before opening a transaction',
+    async (availableAt) => {
+      const connect = vi.fn();
+      const repository = new PostgresReviewDispatchRepository({ connect } as any);
+      await expect(repository.admit({ ...input(), availableAt }))
+        .rejects.toThrow(/available-at must be a safe integer at or after receivedAt/u);
+      expect(connect).not.toHaveBeenCalled();
+    },
+  );
+
   // A run's persisted terminalDeadline reflects whichever REVIEW_YETI_TERMINAL_DEADLINE_MS
   // value was in effect at admission time. A later dispatcher restart or rolling config
   // update must not orphan that already-admitted run: this invariant validates the
