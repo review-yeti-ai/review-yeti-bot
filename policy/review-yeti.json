@@ -16,6 +16,26 @@
           ".exampleorg-review-actions/scripts/ct-impact-mcp.mjs"
         ],
         "enabled": true
+      },
+      {
+        "id": "review-arbiter",
+        "name": "Review Output Arbiter (structured-contract normalizer)",
+        "transport": "stdio",
+        "command": "node",
+        "args": [
+          ".exampleorg-review-actions/scripts/arbiter-mcp.mjs"
+        ],
+        "enabled": true
+      },
+      {
+        "id": "honcho-memory",
+        "name": "Honcho Operational Memory",
+        "transport": "stdio",
+        "command": "node",
+        "args": [
+          ".exampleorg-review-actions/scripts/honcho-mcp.mjs"
+        ],
+        "enabled": true
       }
     ],
     "transports": [
