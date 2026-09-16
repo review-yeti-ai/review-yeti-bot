@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { sha256 } from './reviewCore';
+import type { WorkerReviewEvidence } from './workerReviewCompletion';
 
 const runId = z.string().regex(/^run_[a-f0-9]{32}$/u);
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -100,6 +101,9 @@ export interface WorkerCompletionProof {
 export interface WorkerCompletionAdapter {
   reportTerminalFailure(event: WorkerTerminalFailure): Promise<void>;
   reportTerminalSuccess(event: WorkerTerminalSuccess): Promise<void>;
+  /** Findings behind a self-published check, for either conclusion. Optional
+   * so an adapter that predates the contract still satisfies the interface. */
+  reportReviewEvidence?(event: WorkerReviewEvidence): Promise<void>;
 }
 
 const SECRET_TOKEN_PATTERN = /(?:gh[pousr]_[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._~+/=-]{8,})/giu;
@@ -260,7 +264,11 @@ export class HttpWorkerCompletionAdapter implements WorkerCompletionAdapter {
     await this.report(event);
   }
 
-  private async report(event: WorkerTerminalFailure | WorkerTerminalSuccess): Promise<void> {
+  async reportReviewEvidence(event: WorkerReviewEvidence): Promise<void> {
+    await this.report(event);
+  }
+
+  private async report(event: WorkerTerminalFailure | WorkerTerminalSuccess | WorkerReviewEvidence): Promise<void> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     timer.unref?.();

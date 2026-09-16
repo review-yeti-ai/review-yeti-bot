@@ -22,7 +22,10 @@ import { sha256 } from '../review/reviewCore';
 import { isCentralRefreshAuthorized } from '../review/reviewRecoveryPolicy';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
-import { parseWorkerReviewCompletion, workerReviewCompletionDigest, type WorkerReviewCompletion } from '../review/workerReviewCompletion';
+import {
+  parseWorkerReviewCompletion, parseWorkerReviewEvidence, workerReviewCompletionDigest, workerReviewEvidenceDigest,
+  type WorkerReviewCompletion, type WorkerReviewEvidence,
+} from '../review/workerReviewCompletion';
 import type { WorkerCompletionStore } from '../persistence/workerCompletionStore';
 import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, AuthoritativeReviewCompletion } from '../review/authoritativeServiceContracts';
 import { ReviewGenerationConflictError } from '../review/reviewRun';
@@ -47,8 +50,9 @@ export interface ActionDispatchRouterOptions {
   authoritativePublishing?: AuthoritativeReviewAdmission;
   workerCompletion?: {
     verifier: WorkerCompletionVerifier;
-    repository: Pick<ReviewDispatchRepository, 'markWorkerFailure' | 'markWorkerSuccess'>;
-    /** Where an accepted terminal success's optional review result is kept. */
+    repository: Pick<ReviewDispatchRepository, 'markWorkerFailure' | 'markWorkerSuccess' | 'authorizeWorkerEvidence'>;
+    /** Where review evidence (WorkerReviewEvidence.v1, or a terminal success's
+     * optional result from older workers) is kept. */
     evidence?: WorkerCompletionStore;
   };
   authoritativeWorkerCompletion?: AuthoritativeReviewCompletion;
@@ -246,6 +250,32 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       } catch {
         logger.error('Failed to persist authoritative worker completion', { reason: 'persistence_unavailable', runId: event.runId });
         return response.status(503).json({ error: 'Worker review completion could not be persisted' });
+      }
+    }
+    if (request.body?.version === 'WorkerReviewEvidence.v1') {
+      let event: WorkerReviewEvidence;
+      try { event = parseWorkerReviewEvidence(request.body); }
+      catch { return response.status(400).json({ error: 'Invalid worker review evidence' }); }
+      const completion = options.workerCompletion;
+      if (!completion) return response.status(503).json({ error: 'Worker completion is not configured' });
+      if (!completion.evidence) return response.status(503).json({ error: 'Worker review evidence is not configured' });
+      let proof: WorkerCompletionProof;
+      try { proof = await completion.verifier.verify(token, event); }
+      catch { return response.status(403).json({ error: 'Worker completion is not authorized' }); }
+      try {
+        const authorization = await completion.repository.authorizeWorkerEvidence(event, proof);
+        if (authorization.status === 'unauthorized') return response.status(403).json({ error: 'Worker completion is not authorized' });
+        if (authorization.status === 'ignored') return response.status(409).json({ error: 'Worker completion conflicts with durable state' });
+        const outcome = await completion.evidence.put({
+          runId: event.runId,
+          executionAttempt: event.executionAttempt,
+          contentDigest: workerReviewEvidenceDigest(event),
+          payload: event,
+        });
+        return response.status(200).json({ version: 'WorkerReviewEvidenceAccepted.v1', runId: event.runId, status: outcome });
+      } catch {
+        logger.error('Failed to persist worker review evidence', { reason: 'persistence_unavailable', runId: event.runId });
+        return response.status(503).json({ error: 'Worker review evidence could not be persisted' });
       }
     }
     if (request.body?.version === 'WorkerTerminalSuccess.v1') {
