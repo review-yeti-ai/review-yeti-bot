@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.0...v1.72.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **review:** retire non-publishable runs stuck past their deadline ([#814](https://github.com/review-yeti-ai/review-yeti-bot/issues/814)) ([e7f7af1](https://github.com/review-yeti-ai/review-yeti-bot/commit/e7f7af19dd1a9e21f67b7b7b3e1d9ed9452c15c5))
+
 ## [1.72.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.71.0...v1.72.0) (2026-09-16)
 
 
