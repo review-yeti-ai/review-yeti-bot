@@ -114,9 +114,11 @@ export class ASTParser {
     const activeCtx = trace.setSpan(parentContext, span);
 
     return context.with(activeCtx, () => {
+      span.setAttribute('review_yeti.file_path', filePath);
       span.setAttribute('ct.file_path', filePath);
       const startTime = performance.now();
       const language = this.detectLanguage(filePath);
+      span.setAttribute('review_yeti.language', language);
       span.setAttribute('ct.language', language);
       const lines = content.split(/\r?\n/);
 
@@ -134,11 +136,14 @@ export class ASTParser {
         span.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
         result = this.fallbackParse(filePath, content, language, lines, startTime);
       } finally {
+        if (result!) {
+          span.setAttribute('review_yeti.symbols_count', result.symbols.length);
+          span.setAttribute('review_yeti.parse_duration_ms', result.parseDurationMs);
+          span.setAttribute('ct.symbols_count', result.symbols.length);
+          span.setAttribute('ct.parse_duration_ms', result.parseDurationMs);
+        }
         span.end();
       }
-
-      span.setAttribute('ct.symbols_count', result.symbols.length);
-      span.setAttribute('ct.parse_duration_ms', result.parseDurationMs);
 
       try {
         const metrics = getMetrics();
