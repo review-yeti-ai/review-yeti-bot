@@ -811,6 +811,7 @@ describe('abandoned reaper with the actual GitHub publication adapter', () => {
         pending = false;
         return { reconciled: true, outcome };
       },
+      retireExpiredNonPublishableRuns: async () => 0,
     };
     const reaper = new AbandonedRunReaper({
       repository,
@@ -856,6 +857,7 @@ describe('abandoned reaper with the actual GitHub publication adapter', () => {
         pending = false;
         return { reconciled: true, outcome };
       },
+      retireExpiredNonPublishableRuns: async () => 0,
     };
     const reaperNow = persistedRun.receivedAt + 2_000;
     expect(reaperNow).toBeLessThan(persistedRun.terminalDeadline);
