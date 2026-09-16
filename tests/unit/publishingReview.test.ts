@@ -4,6 +4,7 @@ import {
   bifrostTransport,
   classifyFailure,
   createBifrostPublishingConfig,
+  isGithubDiffNotRenderableError,
   isPublishingReviewWorker,
   parseChangedFiles,
   publishingConclusion,
@@ -12,6 +13,7 @@ import {
   runPublishingReviewWorker,
 } from '../../src/cli/publishingReview';
 import { HttpWorkerCompletionAdapter } from '../../src/review/workerCompletion';
+import { GitHubQualificationReadError } from '../../src/github/qualificationReader';
 import {
   OpenRouterConnectionError,
   OpenRouterResponseError,
@@ -1092,6 +1094,26 @@ describe('runPublishingReviewWorker', () => {
     }));
   });
 
+  it('classifies a real GitHubQualificationReadError HTTP 406 from the source loader as contract with the diff-not-renderable reason', async () => {
+    // End-to-end: the source loader throws the real error type qualificationReader.ts
+    // produces, and reportTerminalFailure -- worker-side, holding the Error object --
+    // must decide the github_diff_not_renderable diagnostic from its structured
+    // httpStatus field, not by parsing the message anywhere downstream.
+    const original = new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 2, 406);
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const d = deps({ completion, sourceLoader: vi.fn().mockRejectedValue(original) });
+    await expect(runPublishingReviewWorker(env(), d)).rejects.toBe(original);
+    expect(d.panelRunner).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      checkId: 4242,
+      failureClass: 'contract',
+      diagnostics: expect.objectContaining({
+        reason: 'github_diff_not_renderable',
+        providerStatus: 406,
+      }),
+    }));
+  });
+
   it('reports a terminal failure when publishing a successful review fails', async () => {
     const original = new Error('check publication timeout');
     const cc = checkClient();
@@ -1136,6 +1158,32 @@ describe('identity and failure classification', () => {
 
   it('does not label an unknown worker exception as a provider outage', () => {
     expect(classifyFailure(new Error('unexpected invariant violation'))).toBe('internal_error');
+  });
+
+  it('classifies a GitHub HTTP 406 qualification-read failure as contract, never internal_error', () => {
+    const failureClass = classifyFailure(new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 2, 406));
+    expect(failureClass).toBe('contract');
+    expect(failureClass).not.toBe('internal_error');
+  });
+
+  it('classifies GitHubQualificationReadError from the structured httpStatus field, not the message', () => {
+    // A plain Error carrying the same wording must not be classified as
+    // contract: the 406 branch reads `error.httpStatus`, not a regex over
+    // `error.message`, so wording alone can never trigger it.
+    const failureClass = classifyFailure(new Error('GitHub qualification read failed HTTP 406'));
+    expect(failureClass).not.toBe('contract');
+  });
+
+  it.each([
+    [429, 'rate_limit'],
+    [500, 'internal_error'],
+    [502, 'internal_error'],
+    [401, 'auth'],
+    [403, 'auth'],
+    [404, 'internal_error'],
+  ])('leaves the existing classification for GitHubQualificationReadError HTTP %s unchanged (%s)', (status, expected) => {
+    const message = `GitHub qualification read failed HTTP ${status}`;
+    expect(classifyFailure(new GitHubQualificationReadError(message, 1, status))).toBe(expected);
   });
 
   it.each([
@@ -1615,6 +1663,34 @@ describe('REL-810 follow-up: delivered failure clarity', () => {
     expect(summary).toContain('provider_status=502');
     expect(summary).toContain('not an approval');
   });
+
+  it('names the HTTP 406 status and the too-large meaning instead of a generic contract message', async () => {
+    const { renderFailureSummary } = await import('../../src/cli/publishingReview');
+    const summary = renderFailureSummary('contract', 'c'.repeat(40), {
+      reason: 'github_diff_not_renderable',
+      providerStatus: 406,
+      logTail: 'GitHub returned HTTP 406: this diff is too large to render as configured '
+        + '(roughly over 20,000 changed lines or 300 files). This is a permanent property of this head, '
+        + 'not an infrastructure outage. GitHub qualification read failed HTTP 406',
+    });
+    expect(summary).toContain('failure class `contract`');
+    expect(summary).toContain('406');
+    expect(summary).toContain('too large');
+    expect(summary).toContain('not an infrastructure outage');
+    expect(summary).toContain('provider_status=406');
+    expect(summary).toContain('reason=`github_diff_not_renderable`');
+    expect(summary).not.toContain('the review contract/configuration was invalid');
+  });
+
+  it('keeps the generic contract guidance for a non-diff-size contract failure', async () => {
+    const { renderFailureSummary } = await import('../../src/cli/publishingReview');
+    const summary = renderFailureSummary('contract', 'd'.repeat(40), {
+      reason: 'worker_contract_invalid',
+      logTail: 'same-head qualification worker contract is invalid',
+    });
+    expect(summary).toContain('the review contract/configuration was invalid');
+    expect(summary).not.toContain('too large');
+  });
 });
 
 describe('REL-810 follow-up: turn budget exhaustion detail', () => {
@@ -1627,5 +1703,21 @@ describe('REL-810 follow-up: turn budget exhaustion detail', () => {
   it('does not classify a generic incomplete message as budget_exhausted', async () => {
     const { classifyFailure } = await import('../../src/cli/publishingReview');
     expect(classifyFailure(new Error('repository tree lookup incomplete'))).not.toBe('budget_exhausted');
+  });
+});
+
+describe('isGithubDiffNotRenderableError', () => {
+  it('is true only for a GitHubQualificationReadError carrying HTTP 406', () => {
+    expect(isGithubDiffNotRenderableError(new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 1, 406))).toBe(true);
+    expect(isGithubDiffNotRenderableError(new GitHubQualificationReadError('GitHub qualification read failed HTTP 404', 1, 404))).toBe(false);
+    expect(isGithubDiffNotRenderableError(new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 1))).toBe(false);
+    expect(isGithubDiffNotRenderableError(new Error('GitHub qualification read failed HTTP 406'))).toBe(false);
+    expect(isGithubDiffNotRenderableError(undefined)).toBe(false);
+  });
+
+  it('is the single predicate behind both the contract class and the diagnostics reason', () => {
+    const error = new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 1, 406);
+    expect(classifyFailure(error)).toBe('contract');
+    expect(isGithubDiffNotRenderableError(error)).toBe(true);
   });
 });

@@ -156,6 +156,19 @@ export function redactWorkerFailureLogTail(value: unknown): string {
   return tail;
 }
 
+/**
+ * The one exported explanation of what a GitHub HTTP 406 qualification-read
+ * failure means for an operator. Both the bounded diagnostic log tail
+ * (`buildWorkerFailureDiagnostics`) and the published check summary
+ * (`renderFailureSummary` in `../cli/publishingReview`) render this same text
+ * instead of each keeping their own copy of the "too large" explanation. Kept
+ * free of the redaction filter's disclosure-boundary words (request/response/
+ * body/content/...) so it survives `redactWorkerFailureLogTail` intact.
+ */
+export const GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION =
+  'GitHub returned HTTP 406: this diff is too large to render as configured (roughly over 20,000 changed lines '
+  + 'or 300 files). This is a permanent property of this head, not an infrastructure outage.';
+
 export function workerFailureReason(failureClass: WorkerTerminalFailure['failureClass']): string {
   return {
     contract: 'worker_contract_invalid',
@@ -193,10 +206,20 @@ export function buildDurableWorkerFailureDiagnostics(
   };
 }
 
-/** Build the redacted diagnostic emitted by the publishing worker. */
+/**
+ * Build the redacted diagnostic emitted by the publishing worker.
+ *
+ * This module has no dependency on GitHub transport types: a caller that
+ * already holds the original error (and can check it against
+ * `GitHubQualificationReadError` from `../github/qualificationReader`) decides
+ * whether the failure is the GitHub-diff-too-large case and passes that
+ * decision in via `options.githubDiffNotRenderable`, rather than this
+ * function parsing the error's message or importing from `../github/`.
+ */
 export function buildWorkerFailureDiagnostics(
   error: unknown,
   failureClass: WorkerTerminalFailure['failureClass'],
+  options?: { githubDiffNotRenderable?: boolean },
 ): WorkerFailureDiagnostics {
   const providerStatus = error && typeof error === 'object' && 'status' in error
     ? Number((error as { status?: unknown }).status)
@@ -204,6 +227,13 @@ export function buildWorkerFailureDiagnostics(
   const safeStatus = Number.isInteger(providerStatus) && providerStatus >= 100 && providerStatus <= 599
     ? providerStatus : undefined;
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (options?.githubDiffNotRenderable) {
+    return {
+      reason: 'github_diff_not_renderable',
+      providerStatus: 406,
+      logTail: redactWorkerFailureLogTail(`${GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION} ${message}`),
+    };
+  }
   return {
     reason: workerFailureReason(failureClass),
     ...(safeStatus === undefined ? {} : { providerStatus: safeStatus }),
