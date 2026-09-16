@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.71.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.70.0...v1.71.0) (2026-09-16)
+
+
+### Features
+
+* **telemetry:** eliminate legacy ct prefixes and remove compile-heavy analyzers ([70b2aa2](https://github.com/review-yeti-ai/review-yeti-bot/commit/70b2aa240b8433c6bf4d8e9a69117ae850e20bcd))
+
 ## [1.70.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.69.2...v1.70.0) (2026-09-16)
 
 
