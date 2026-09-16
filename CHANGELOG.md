@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.3...v1.72.4) (2026-09-16)
+
+
+### Bug Fixes
+
+* **review:** automatically retry a recoverable-incomplete-panel failure [no-linear] ([#815](https://github.com/review-yeti-ai/review-yeti-bot/issues/815)) ([37c4990](https://github.com/review-yeti-ai/review-yeti-bot/commit/37c4990a035d53169af6f1a16e33691b98f2aa31))
+
 ## [1.72.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.2...v1.72.3) (2026-09-16)
 
 
