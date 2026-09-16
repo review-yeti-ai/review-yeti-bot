@@ -356,11 +356,11 @@ Review Yeti incorporates end-to-end metrics collection and distributed tracing a
 ```
 
 ### 1. Cumulative Metric Export Semantics (REL-817 / v1.60.2)
-All Review Yeti in-memory metric exporters configure `AggregationTemporality.CUMULATIVE` (enum value `1`). Counter metrics (`ct_review_requests_total`, `ct_review_errors_total`, `ct_review_tokens_total`, `ct_review_model_cost_usd_total`, `ct_review_reaper_superseded_attempt_total`) increase monotonically across successive VictoriaMetrics scrapes without zero-drops or single-scrape delta resets. Always query using `increase(metric[range])` or `rate(metric[range])` in PromQL.
+All Review Yeti in-memory metric exporters configure `AggregationTemporality.CUMULATIVE` (enum value `1`). Counter metrics (`review_yeti_requests_total`, `review_yeti_errors_total`, `review_yeti_tokens_total`, `review_yeti_model_cost_usd_total`, `review_yeti_review_reaper_superseded_attempt_total`) increase monotonically across successive VictoriaMetrics scrapes without zero-drops or single-scrape delta resets. Always query using `increase(metric[range])` or `rate(metric[range])` in PromQL.
 
 ### 2. Action Dispatch & Dispatcher Metrics
 - **Action Dispatch (`:3000/metrics`)**: Exposes token counts, model inference costs in USD, review durations, and persona latencies. Protected by token-bucket rate limiting and optional bearer authentication via `ACTION_DISPATCH_METRICS_TOKEN`.
-- **Dispatcher Reaper & Queue (`:9090/metrics`)**: Exposes queue depths (`ct_queue_active_jobs`, `ct_queue_queued_jobs`) and reaper events (`ct_review_reaper_superseded_attempt_total`, `ct_review_reaper_delivery_identity_mismatch_total`).
+- **Dispatcher Reaper & Queue (`:9090/metrics`)**: Exposes queue depths (`review_yeti_queue_active_jobs`, `review_yeti_queue_queued_jobs`) and reaper events (`review_yeti_review_reaper_superseded_attempt_total`, `review_yeti_review_reaper_delivery_identity_mismatch_total`).
 
 ### 3. OpenTelemetry Collector Pipeline
 Deployed in the `observability` namespace:
@@ -385,16 +385,16 @@ Evaluated every 15s by `vmalert`:
 |---|---|---|---|---|
 | `ReviewActionDispatchTargetDown` | `critical` | `up{job="ct-review-action-dispatch"} == 0` | 2m | Action dispatch metrics endpoint down |
 | `ReviewYetiOperatorTargetDown` | `critical` | `up{job="review-yeti-operator"} == 0` | 2m | Operator metrics endpoint down |
-| `ReviewDispatchErrorsDetected` | `warning` | `sum(rate(ct_review_errors_total{job="ct-review-action-dispatch"}[5m])) > 0` | 5m | Dispatch errors detected |
-| `ReviewExecutionDurationHigh` | `warning` | `histogram_quantile(0.95, sum by (le) (rate(ct_review_duration_seconds_bucket{job="ct-review-action-dispatch"}[5m]))) > 300` | 10m | p95 review latency exceeds 5m |
-| `ReviewOperatorJobFailures` | `warning` | `sum(rate(ct_operator_job_failures_total{job="review-yeti-operator"}[5m])) > 0` | 5m | Operator PR review job failures detected |
+| `ReviewDispatchErrorsDetected` | `warning` | `sum(rate(review_yeti_errors_total{job="ct-review-action-dispatch"}[5m])) > 0` | 5m | Dispatch errors detected |
+| `ReviewExecutionDurationHigh` | `warning` | `histogram_quantile(0.95, sum by (le) (rate(review_yeti_review_duration_seconds_bucket{job="ct-review-action-dispatch"}[5m]))) > 300` | 10m | p95 review latency exceeds 5m |
+| `ReviewOperatorJobFailures` | `warning` | `sum(rate(review_yeti_operator_job_failures_total{job="review-yeti-operator"}[5m])) > 0` | 5m | Operator PR review job failures detected |
 
 ### 6. Production Grafana Operations Dashboard (`review-yeti-ops.json`)
 The 12-panel operations dashboard (UID: `ct-review-yeti-ops`) provisions automatically in Grafana via GitOps Helm release:
-- **Review Throughput & Errors**: `sum(rate(ct_review_requests_total[5m]))` vs `sum(rate(ct_review_errors_total[5m]))`.
-- **Latency Percentiles**: p50, p95, and p99 quantiles from `ct_review_duration_seconds_bucket`.
-- **Queue Depth & Concurrency**: Real-time gauge of `ct_queue_active_jobs` and `ct_queue_queued_jobs`.
-- **Token Consumption & Inference Cost**: `sum(increase(ct_review_tokens_total[24h]))` and `sum(increase(ct_review_model_cost_usd_total[24h]))`.
+- **Review Throughput & Errors**: `sum(rate(review_yeti_requests_total[5m]))` vs `sum(rate(review_yeti_errors_total[5m]))`.
+- **Latency Percentiles**: p50, p95, and p99 quantiles from `review_yeti_review_duration_seconds_bucket`.
+- **Queue Depth & Concurrency**: Real-time gauge of `review_yeti_queue_active_jobs` and `review_yeti_queue_queued_jobs`.
+- **Token Consumption & Inference Cost**: `sum(increase(review_yeti_tokens_total[24h]))` and `sum(increase(review_yeti_model_cost_usd_total[24h]))`.
 - **Dispatcher Reaper Activity**: Rate of retired superseded review runs and quarantined deliveries.
 - **Target Health Matrix**: Real-time up status across all review services.
 
@@ -402,14 +402,14 @@ The 12-panel operations dashboard (UID: `ct-review-yeti-ops`) provisions automat
 
 ```promql
 # Active & queued Review Yeti operator jobs
-sum(ct_operator_active_jobs{job="review-yeti-operator"})
-sum(ct_operator_queued_jobs{job="review-yeti-operator"})
+sum(review_yeti_queue_active_jobs{job="review-yeti-operator"})
+sum(review_yeti_queue_queued_jobs{job="review-yeti-operator"})
 
 # p95 Review execution duration
-histogram_quantile(0.95, sum(rate(ct_review_duration_seconds_bucket{job="ct-review-action-dispatch"}[5m])) by (le))
+histogram_quantile(0.95, sum(rate(review_yeti_review_duration_seconds_bucket{job="ct-review-action-dispatch"}[5m])) by (le))
 
 # Cumulative model inference cost in USD (last 24 hours)
-sum(increase(ct_review_model_cost_usd_total{job="ct-review-action-dispatch"}[24h]))
+sum(increase(review_yeti_model_cost_usd_total{job="ct-review-action-dispatch"}[24h]))
 
 # Provider rate limits and error rate
 sum by (error) (rate(review_yeti_provider_errors_total[5m]))

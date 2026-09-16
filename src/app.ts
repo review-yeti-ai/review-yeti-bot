@@ -288,20 +288,16 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
     metrics.activeJobs.add(1, { repository: repoFull });
   } catch (_) {}
 
-  return runInSpan('ct_review_pipeline', async (span) => {
+  return runInSpan('review_yeti_pipeline', async (span) => {
     span.setAttribute('review_yeti.repo', repoFull);
     span.setAttribute('review_yeti.pr_number', prNumber);
     span.setAttribute('review_yeti.head_sha', headSha);
-    span.setAttribute('ct.repo', repoFull);
-    span.setAttribute('ct.pr_number', prNumber);
-    span.setAttribute('ct.head_sha', headSha);
 
     try {
       if (!dashboardStore.isAutomationEnabled(owner, repo)) {
         logger.info(`Review automation disabled for repository ${repoFull}`);
         await durableCancel('automation disabled per repo setting');
         span.setAttribute('review_yeti.status', 'skipped');
-        span.setAttribute('ct.status', 'skipped');
         try {
           getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
             repository: repoFull,
@@ -334,7 +330,6 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         if (snapshot.headSha !== headSha) {
           await durableCancel('stale webhook head');
           span.setAttribute('review_yeti.status', 'cancelled');
-          span.setAttribute('ct.status', 'cancelled');
           try {
             getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
               repository: repoFull,
@@ -498,7 +493,6 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           }
           await durableFail(`review snapshot changed before publication: expected head ${headSha}, found head ${fresh.headSha}`);
           span.setAttribute('review_yeti.status', 'cancelled');
-          span.setAttribute('ct.status', 'cancelled');
           try {
             getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
               repository: repoFull,
@@ -710,7 +704,6 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         });
 
         span.setAttribute('review_yeti.status', 'processed');
-        span.setAttribute('ct.status', 'processed');
         try {
           getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
             repository: repoFull,
@@ -730,7 +723,6 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
         };
       } catch (error: any) {
         span.setAttribute('review_yeti.status', 'failed');
-        span.setAttribute('ct.status', 'failed');
         try {
           getMetrics().reviewDuration.record((Date.now() - startTime) / 1000, {
             repository: repoFull,

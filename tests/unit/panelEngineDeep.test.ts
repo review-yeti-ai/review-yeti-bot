@@ -244,7 +244,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       type: 'json_schema',
       json_schema: {
         strict: true,
-        name: 'ct_review_persona_v1',
+        name: 'review_yeti_persona_v1',
         schema: { type: 'object', additionalProperties: false },
       },
     });

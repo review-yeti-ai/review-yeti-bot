@@ -668,7 +668,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
         expect(checkOutput).toContain('Prompt caching: 1200 / 2000 tokens (60% cache hit rate)');
       });
 
-      it('1.4.3: Telemetry span attributes record ct.tokens.cached and ct.tokens.cache_hit_percentage', () => {
+      it('1.4.3: Telemetry span attributes record review_yeti.tokens.cached and review_yeti.tokens.cache_hit_percentage', () => {
         const spanAttributes: Record<string, any> = {};
         const mockSpan = {
           setAttribute: vi.fn((key: string, value: any) => {
@@ -684,14 +684,14 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
         };
 
         const { cachedTokens, hitPercentage } = formatTokenTelemetrySummary(usage);
-        mockSpan.setAttribute('ct.tokens.prompt', usage.prompt);
-        mockSpan.setAttribute('ct.tokens.cached', cachedTokens);
-        mockSpan.setAttribute('ct.tokens.cache_hit_percentage', hitPercentage);
+        mockSpan.setAttribute('review_yeti.tokens.prompt', usage.prompt);
+        mockSpan.setAttribute('review_yeti.tokens.cached', cachedTokens);
+        mockSpan.setAttribute('review_yeti.tokens.cache_hit_percentage', hitPercentage);
 
-        expect(mockSpan.setAttribute).toHaveBeenCalledWith('ct.tokens.cached', 750);
-        expect(mockSpan.setAttribute).toHaveBeenCalledWith('ct.tokens.cache_hit_percentage', 75);
-        expect(spanAttributes['ct.tokens.cached']).toBe(750);
-        expect(spanAttributes['ct.tokens.cache_hit_percentage']).toBe(75);
+        expect(mockSpan.setAttribute).toHaveBeenCalledWith('review_yeti.tokens.cached', 750);
+        expect(mockSpan.setAttribute).toHaveBeenCalledWith('review_yeti.tokens.cache_hit_percentage', 75);
+        expect(spanAttributes['review_yeti.tokens.cached']).toBe(750);
+        expect(spanAttributes['review_yeti.tokens.cache_hit_percentage']).toBe(75);
       });
 
       it('1.4.4: Warm-then-fan-out dispatch sequence executes Persona 1 first to warm KV cache before fanning out in parallel', async () => {

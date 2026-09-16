@@ -4,9 +4,6 @@ import {
   runPreCheckAnalyzers,
   parseEslintOutput,
   parseSemgrepOutput,
-  parseCredoOutput,
-  parseSobelowOutput,
-  parseGovetOutput,
   parseGitleaksOutput,
   getApplicableAnalyzers,
   formatCandidateHypothesesPrompt,
@@ -116,31 +113,7 @@ describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
       }
     });
 
-    it('1.3: parseCredoOutput handles fuzz/corrupted inputs without unhandled exception', () => {
-      for (const payload of corruptedPayloads) {
-        expect(() => parseCredoOutput(payload, workspaceRoot)).not.toThrow();
-        const result = parseCredoOutput(payload, workspaceRoot);
-        expect(Array.isArray(result)).toBe(true);
-      }
-    });
-
-    it('1.4: parseSobelowOutput handles fuzz/corrupted inputs without unhandled exception', () => {
-      for (const payload of corruptedPayloads) {
-        expect(() => parseSobelowOutput(payload, workspaceRoot)).not.toThrow();
-        const result = parseSobelowOutput(payload, workspaceRoot);
-        expect(Array.isArray(result)).toBe(true);
-      }
-    });
-
-    it('1.5: parseGovetOutput handles fuzz/corrupted inputs without unhandled exception', () => {
-      for (const payload of corruptedPayloads) {
-        expect(() => parseGovetOutput(payload, workspaceRoot)).not.toThrow();
-        const result = parseGovetOutput(payload, workspaceRoot);
-        expect(Array.isArray(result)).toBe(true);
-      }
-    });
-
-    it('1.6: parseGitleaksOutput handles fuzz/corrupted inputs without unhandled exception', () => {
+    it('1.3: parseGitleaksOutput handles fuzz/corrupted inputs without unhandled exception', () => {
       for (const payload of corruptedPayloads) {
         expect(() => parseGitleaksOutput(payload, workspaceRoot)).not.toThrow();
         const result = parseGitleaksOutput(payload, workspaceRoot);
@@ -191,47 +164,6 @@ describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
       expect(hypotheses[0].severity).toBe('warning');
     });
 
-    it('1.9: Sobelow parser extracts findings from standard Phoenix scan', () => {
-      const standardPayload = JSON.stringify({
-        findings: {
-          sql_injection: [
-            {
-              type: 'SQL Injection in query',
-              file: 'lib/app/query.ex',
-              line: 25,
-              confidence: 'High',
-            },
-          ],
-        },
-      });
-
-      const hypotheses = parseSobelowOutput(standardPayload, workspaceRoot);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0].ruleId).toBe('sql_injection');
-      expect(hypotheses[0].path).toBe('lib/app/query.ex');
-      expect(hypotheses[0].line).toBe(25);
-      expect(hypotheses[0].confidence).toBe('high');
-    });
-
-    it('1.10: Sobelow parser extracts findings when placed at root without findings wrapper', () => {
-      const rootPayload = JSON.stringify({
-        sql_injection: [
-          {
-            type: 'SQL Injection in query',
-            file: 'lib/app/query.ex',
-            line: 25,
-            confidence: 'High',
-          },
-        ],
-      });
-      const res = parseSobelowOutput(rootPayload, workspaceRoot);
-      expect(res).toHaveLength(1);
-      expect(res[0].ruleId).toBe('sql_injection');
-      expect(res[0].path).toBe('lib/app/query.ex');
-      expect(res[0].line).toBe(25);
-      expect(res[0].confidence).toBe('high');
-    });
-
     it('1.11: Parsers with non-string paths in AST/SAST results handle safely without throwing', () => {
       // SAST output with unexpected schema: path is a number
       const weirdSemgrep = {
@@ -247,113 +179,6 @@ describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
       const hypotheses = parseSemgrepOutput(weirdSemgrep as any, workspaceRoot);
       expect(hypotheses).toHaveLength(1);
       expect(hypotheses[0].path).toBe('');
-    });
-  });
-
-  // ===========================================================================
-  // SUITE 2: GO VET DIAGNOSTIC STREAM EXTRACTION & INTERMIXED STDERR
-  // ===========================================================================
-  describe('Suite 2: Go Vet Diagnostic Stream Extraction', () => {
-    it('2.1: extracts Go Vet JSON from stderr when preceded by go compiler build banners', () => {
-      const stderr = [
-        '# github.com/telemetry/cdr/pkg/billing',
-        '{',
-        '  "github.com/telemetry/cdr/pkg/billing": {',
-        '    "printf": [',
-        '      {',
-        '        "posn": "pkg/billing/invoice.go:45:14",',
-        '        "message": "fmt.Sprintf format %s reads arg #1, but call has only 0 args"',
-        '      }',
-        '    ]',
-        '  }',
-        '}',
-        'exit status 1',
-      ].join('\n');
-
-      const hypotheses = parseGovetOutput(stderr, workspaceRoot);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0].ruleId).toBe('printf');
-      expect(hypotheses[0].path).toBe('pkg/billing/invoice.go');
-      expect(hypotheses[0].line).toBe(45);
-      expect(hypotheses[0].column).toBe(14);
-      expect(hypotheses[0].severity).toBe('warning');
-    });
-
-    it('2.2: extracts Go Vet from composite { stdout, stderr } object', () => {
-      const compositeInput = {
-        stdout: '',
-        stderr: JSON.stringify({
-          'main': {
-            'copylocks': [
-              {
-                'posn': 'cmd/server/main.go:88:2',
-                'message': 'assignment copies lock value to l: sync.Mutex',
-              },
-            ],
-          },
-        }),
-      };
-
-      const hypotheses = parseGovetOutput(compositeInput, workspaceRoot);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0].ruleId).toBe('copylocks');
-      expect(hypotheses[0].path).toBe('cmd/server/main.go');
-      expect(hypotheses[0].line).toBe(88);
-    });
-
-    it('2.3: Go Vet output returns empty hypotheses on pure compilation errors without JSON diagnostics', () => {
-      const compilerError = [
-        '# github.com/example/pkg',
-        'pkg/server.go:12:2: syntax error: unexpected semicolon, expecting comma or )',
-        'pkg/server.go:15:9: undefined: someService',
-      ].join('\n');
-
-      const hypotheses = parseGovetOutput(compilerError, workspaceRoot);
-      expect(hypotheses).toHaveLength(0);
-    });
-
-    it('2.4: Go Vet extracts all diagnostics when multiple packages emit concatenated JSON objects', () => {
-      // In standard Go toolchain (go vet -json ./...), each package produces its own JSON object
-      const multiPackageStderr = [
-        '{',
-        '  "pkg/one": {',
-        '    "printf": [',
-        '      { "posn": "pkg/one/a.go:10:2", "message": "format mismatch" }',
-        '    ]',
-        '  }',
-        '}',
-        '{',
-        '  "pkg/two": {',
-        '    "printf": [',
-        '      { "posn": "pkg/two/b.go:20:5", "message": "wrong number of args" }',
-        '    ]',
-        '  }',
-        '}',
-      ].join('\n');
-
-      const hypotheses = parseGovetOutput(multiPackageStderr, workspaceRoot);
-      expect(hypotheses).toHaveLength(2);
-      expect(hypotheses[0].path).toBe('pkg/one/a.go');
-      expect(hypotheses[0].line).toBe(10);
-      expect(hypotheses[1].path).toBe('pkg/two/b.go');
-      expect(hypotheses[1].line).toBe(20);
-    });
-
-    it('2.5: Go Vet composite object extracts stdout diagnostics when stderr has non-JSON text', () => {
-      const compositeInput = {
-        stdout: JSON.stringify({
-          'pkg/billing': {
-            'printf': [{ 'posn': 'pkg/billing/inv.go:10:2', 'message': 'printf mismatch' }],
-          },
-        }),
-        stderr: 'go: downloading github.com/stretchr/testify v1.8.4\n# pkg/billing\n',
-      };
-
-      const hypotheses = parseGovetOutput(compositeInput, workspaceRoot);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0].ruleId).toBe('printf');
-      expect(hypotheses[0].path).toBe('pkg/billing/inv.go');
-      expect(hypotheses[0].line).toBe(10);
     });
   });
 
@@ -421,7 +246,7 @@ describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
   // SUITE 4: EXECUTION BOUNDARY STRESS & SIMULATED TOOLCHAIN FAILURES
   // ===========================================================================
   describe('Suite 4: Execution Boundary Stress & Fail-Soft Conditions', () => {
-    const ALL_TOOLS = ['eslint', 'semgrep', 'credo', 'sobelow', 'govet', 'gitleaks'] as const;
+    const ALL_TOOLS = ['eslint', 'semgrep', 'gitleaks'] as const;
 
     for (const tool of ALL_TOOLS) {
       it(`4.1.${tool}: records exitStatus: "not_installed" with available: false when ${tool} binary triggers ENOENT`, async () => {
@@ -432,9 +257,7 @@ describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
 
         // Determine a target file that routes to this tool
         let testFile = 'src/app.ts';
-        if (tool === 'credo' || tool === 'sobelow') testFile = 'lib/app.ex';
-        else if (tool === 'govet') testFile = 'pkg/main.go';
-        else if (tool === 'gitleaks') testFile = 'config/secrets.env';
+        if (tool === 'gitleaks') testFile = 'config/secrets.env';
 
         const summary = await runPreCheckAnalyzers({
           workspaceRoot,
@@ -520,22 +343,22 @@ describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
     });
 
     it('4.4: handles exit code 2+ (linter crash / fatal error) cleanly with 0 hypotheses', async () => {
-      mockRunner.onCommand('credo', {
+      mockRunner.onCommand('eslint', {
         exitStatus: 2,
         stdout: '',
-        stderr: '** (Mix) Could not find dependency credo',
+        stderr: 'Fatal error: Cannot find module',
       });
 
       const summary = await runPreCheckAnalyzers({
         workspaceRoot,
-        changedFiles: ['lib/app.ex'],
+        changedFiles: ['src/app.ts'],
         config: fullConfig,
         sandboxRunner: mockRunner,
       });
 
-      const credoReceipt = summary.receipts.find((r) => r.tool === 'credo');
-      expect(credoReceipt?.exitStatus).toBe('error');
-      expect(credoReceipt?.hypotheses).toHaveLength(0);
+      const receipt = summary.receipts.find((r) => r.tool === 'eslint');
+      expect(receipt?.exitStatus).toBe('error');
+      expect(receipt?.hypotheses).toHaveLength(0);
     });
   });
 
@@ -627,8 +450,10 @@ describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
     it('6.1: correctly categorizes edge case extensions (.mjs, .cjs, .exs, uppercase .GO, .TSX)', () => {
       expect(getApplicableAnalyzers('server.mjs', fullConfig)).toContain('eslint');
       expect(getApplicableAnalyzers('server.cjs', fullConfig)).toContain('eslint');
-      expect(getApplicableAnalyzers('test/test_helper.exs', fullConfig)).toContain('credo');
-      expect(getApplicableAnalyzers('pkg/main.GO', fullConfig)).toContain('govet');
+      expect(getApplicableAnalyzers('test/test_helper.exs', fullConfig)).toContain('semgrep');
+      expect(getApplicableAnalyzers('test/test_helper.exs', fullConfig)).not.toContain('credo');
+      expect(getApplicableAnalyzers('pkg/main.GO', fullConfig)).toContain('semgrep');
+      expect(getApplicableAnalyzers('pkg/main.GO', fullConfig)).not.toContain('govet');
       expect(getApplicableAnalyzers('components/Header.TSX', fullConfig)).toContain('eslint');
     });
 
@@ -719,13 +544,12 @@ describe('Challenger M4-1 Empirical Adversarial Test Suite', () => {
       expect(eslintCmd?.args).not.toContain('lib/router.ex');
       expect(eslintCmd?.args).not.toContain('pkg/handler.go');
 
-      const credoCmd = mockRunner.executedCommands.find((c) => c.command.includes('credo'));
-      expect(credoCmd?.args).toContain('lib/router.ex');
-      expect(credoCmd?.args).not.toContain('src/app.ts');
+      const semgrepCmd = mockRunner.executedCommands.find((c) => c.command.includes('semgrep'));
+      expect(semgrepCmd?.args).toContain('lib/router.ex');
+      expect(semgrepCmd?.args).toContain('pkg/handler.go');
 
-      const govetCmd = mockRunner.executedCommands.find((c) => c.command.includes('govet'));
-      expect(govetCmd?.args).toContain('pkg/handler.go');
-      expect(govetCmd?.args).not.toContain('src/app.ts');
+      expect(mockRunner.executedCommands.some((c) => c.command.includes('credo'))).toBe(false);
+      expect(mockRunner.executedCommands.some((c) => c.command.includes('govet'))).toBe(false);
 
       const gitleaksCmd = mockRunner.executedCommands.find((c) => c.command.includes('gitleaks'));
       expect(gitleaksCmd).toBeDefined();
