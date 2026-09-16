@@ -1,6 +1,6 @@
 import express from 'express';
 import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
-import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../src/review/workerReviewCompletion';
+import { parseWorkerReviewCompletion, workerReviewCompletionDigest, workerReviewEvidenceDigest } from '../../src/review/workerReviewCompletion';
 import request from 'supertest';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -134,6 +134,7 @@ function completionApp(overrides: Record<string, any> = {}) {
   const repository = {
     markWorkerFailure: vi.fn(async (event: typeof terminalFailure) => ({ runId: event.runId, status: 'failed' as const })),
     markWorkerSuccess: vi.fn(async (event: typeof terminalSuccess) => ({ runId: event.runId, status: 'succeeded' as const })),
+    authorizeWorkerEvidence: vi.fn(async (event: { runId: string }) => ({ runId: event.runId, status: 'authorized' as const })),
     ...(overrides.repository || {}),
   };
   const evidence = { put: vi.fn(async () => 'inserted' as const), ...(overrides.evidence || {}) };
@@ -1257,6 +1258,57 @@ describe('POST /api/dispatch/completion', () => {
       expect.any(Number),
     );
     expect(fixture.repository.markWorkerFailure).not.toHaveBeenCalled();
+  });
+
+  const reviewEvidence = {
+    version: 'WorkerReviewEvidence.v1',
+    runId: terminalSuccess.runId, repositoryId: terminalSuccess.repositoryId, owner: terminalSuccess.owner, repo: terminalSuccess.repo,
+    prNumber: terminalSuccess.prNumber, headSha: terminalSuccess.headSha, baseSha: terminalSuccess.baseSha,
+    policyDigest: terminalSuccess.policyDigest, configDigest: terminalSuccess.configDigest,
+    executionAttempt: terminalSuccess.executionAttempt, checkId: terminalSuccess.checkId,
+    conclusion: 'failure',
+    result: terminalSuccessResult,
+  } as const;
+
+  it('keeps WorkerReviewEvidence.v1 for a failing check, bound by the token and the run coordinates', async () => {
+    const fixture = completionApp();
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token').send(reviewEvidence);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ version: 'WorkerReviewEvidenceAccepted.v1', runId: reviewEvidence.runId, status: 'inserted' });
+    expect(fixture.repository.authorizeWorkerEvidence).toHaveBeenCalledExactlyOnceWith(
+      reviewEvidence, expect.objectContaining({ workerTokenDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) }));
+    expect(fixture.evidence.put).toHaveBeenCalledExactlyOnceWith({
+      runId: reviewEvidence.runId,
+      executionAttempt: reviewEvidence.executionAttempt,
+      contentDigest: workerReviewEvidenceDigest(reviewEvidence),
+      payload: reviewEvidence,
+    });
+    // Evidence never transitions the run.
+    expect(fixture.repository.markWorkerSuccess).not.toHaveBeenCalled();
+    expect(fixture.repository.markWorkerFailure).not.toHaveBeenCalled();
+    const stored = (fixture.evidence.put.mock.calls[0][0] as { payload: typeof reviewEvidence }).payload;
+    expect(stored.conclusion).toBe('failure');
+    expect(stored.result.personas[0].findings[0].severity).toBe('P1');
+  });
+
+  it('refuses evidence that is unbound, unknown, malformed, or unpersistable, without touching the run', async () => {
+    const unauthorized = completionApp({ repository: { authorizeWorkerEvidence: vi.fn(async () => ({ runId: reviewEvidence.runId, status: 'unauthorized' as const })) } });
+    expect((await request(unauthorized.instance).post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token').send(reviewEvidence)).status).toBe(403);
+    expect(unauthorized.evidence.put).not.toHaveBeenCalled();
+
+    const unknown = completionApp({ repository: { authorizeWorkerEvidence: vi.fn(async () => ({ runId: reviewEvidence.runId, status: 'ignored' as const })) } });
+    expect((await request(unknown.instance).post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token').send(reviewEvidence)).status).toBe(409);
+    expect(unknown.evidence.put).not.toHaveBeenCalled();
+
+    const malformed = completionApp();
+    expect((await request(malformed.instance).post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token')
+      .send({ ...reviewEvidence, conclusion: 'neutral' })).status).toBe(400);
+    expect(malformed.repository.authorizeWorkerEvidence).not.toHaveBeenCalled();
+
+    const failing = completionApp({ evidence: { put: vi.fn(async () => { throw new Error('disk on fire'); }) } });
+    expect((await request(failing.instance).post('/api/dispatch/completion').set('Authorization', 'Bearer ghs_worker_token').send(reviewEvidence)).status).toBe(503);
+    expect(failing.repository.markWorkerSuccess).not.toHaveBeenCalled();
   });
 
   it('keeps the review result behind an accepted terminal success as a WorkerReviewCompletion.v1 record', async () => {

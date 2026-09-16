@@ -909,11 +909,29 @@ export async function runPublishingReviewWorker(
     if (authoritative) {
       await reportReviewResult(buildReviewResult());
     }
+    if (!authoritative && !recoverablePanelFailure && deps.completion?.reportReviewEvidence) {
+      // The findings behind the check just published, for either conclusion: a
+      // failing check carries the P0/P1 findings that made it fail. Evidence is
+      // never allowed to be the reason a published check goes unreported: a
+      // result that fails the contract, or a callback that fails, is logged
+      // and the lifecycle callbacks below proceed unchanged.
+      try {
+        await deps.completion.reportReviewEvidence({
+          version: 'WorkerReviewEvidence.v1',
+          runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+          prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
+          policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+          executionAttempt: identity.executionAttempt,
+          checkId, conclusion, result: buildReviewResult(),
+        });
+      } catch (error) {
+        logger.warn('Review evidence was not reported', {
+          runId: identity.runId, executionAttempt: identity.executionAttempt, conclusion,
+          reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+        });
+      }
+    }
     if (!authoritative && conclusion === 'success' && deps.completion) {
-      // Evidence must never be the reason a published green check goes
-      // unreported: a result that fails the contract is dropped, not fatal.
-      let evidence: WorkerReviewResult | undefined;
-      try { evidence = buildReviewResult(); } catch { evidence = undefined; }
       const event: WorkerTerminalSuccess = {
         version: 'WorkerTerminalSuccess.v1',
         runId: identity.runId,
@@ -927,7 +945,6 @@ export async function runPublishingReviewWorker(
         configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
         executionAttempt: identity.executionAttempt,
         checkId,
-        ...(evidence ? { result: evidence } : {}),
       };
       // Set before awaiting: an HTTP timeout cannot prove the service failed to
       // commit, so the catch path must not emit a different terminal body.

@@ -108,6 +108,24 @@ const completionSchema = z.object({
 
 export const workerReviewCompletionSchema = completionSchema;
 
+/**
+ * Evidence behind a check the worker published itself (app-gate publication
+ * without the authoritative gate). Sent once, right after the check is
+ * completed and before any terminal lifecycle callback, for BOTH conclusions:
+ * a failing check carries the P0/P1 findings that made it fail. It never
+ * transitions the run and never selects or completes a check.
+ */
+export const WORKER_REVIEW_EVIDENCE_VERSION = 'WorkerReviewEvidence.v1' as const;
+const evidenceSchema = z.object({
+  version: z.literal(WORKER_REVIEW_EVIDENCE_VERSION),
+  ...completionCoordinatesSchema.shape,
+  checkId: z.number().int().positive().safe(),
+  conclusion: z.enum(['success', 'failure']),
+  result: resultSchema,
+}).strict();
+export const workerReviewEvidenceSchema = evidenceSchema;
+export type WorkerReviewEvidence = z.infer<typeof evidenceSchema>;
+
 export type WorkerReviewCompletion = z.infer<typeof completionSchema>;
 export type WorkerReviewResult = z.infer<typeof resultSchema>;
 export type WorkerReviewPersonaEvidence = z.infer<typeof personaSchema>;
@@ -335,4 +353,22 @@ export function deriveCanonicalWorkerReviewEvidence(
 /** Stable digest helper for the later artifact store integration. */
 export function workerReviewCompletionDigest(input: unknown): string {
   return sha256(canonicalJson(parseWorkerReviewCompletion(input)));
+}
+
+export function parseWorkerReviewEvidence(input: unknown): WorkerReviewEvidence {
+  if (!isRecord(input)) {
+    throw new WorkerReviewCompletionError('invalid-schema', 'worker review evidence must be a JSON object');
+  }
+  if (serializedByteLength(input) > MAX_COMPLETION_BYTES) {
+    throw new WorkerReviewCompletionError('payload-too-large', `worker review evidence exceeds ${MAX_COMPLETION_BYTES} bytes`);
+  }
+  const parsed = evidenceSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new WorkerReviewCompletionError('invalid-schema', `invalid WorkerReviewEvidence.v1: ${issuePath(parsed.error)}`);
+  }
+  return parsed.data;
+}
+
+export function workerReviewEvidenceDigest(input: unknown): string {
+  return sha256(canonicalJson(parseWorkerReviewEvidence(input)));
 }

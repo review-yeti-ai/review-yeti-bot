@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parseWorkerReviewEvidence, workerReviewEvidenceDigest } from '../../src/review/workerReviewCompletion';
 import {
   buildWorkerFailureDiagnostics,
   HttpWorkerCompletionAdapter,
@@ -385,5 +386,43 @@ describe('WorkerTerminalSuccess.v1 optional review result', () => {
     // not a conflicting one.
     expect(workerTerminalSuccessDigest({ ...base, result })).toBe(workerTerminalSuccessDigest(base));
     expect(workerTerminalSuccessDigest({ ...base, checkId: 10 })).not.toBe(workerTerminalSuccessDigest(base));
+  });
+});
+
+
+describe('WorkerReviewEvidence.v1', () => {
+  const evidence = {
+    version: 'WorkerReviewEvidence.v1' as const,
+    runId: 'run_' + 'a'.repeat(32), repositoryId: 7, owner: 'o', repo: 'r', prNumber: 1,
+    headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    executionAttempt: 1, checkId: 9, conclusion: 'failure' as const,
+    result: { version: 'WorkerReviewResult.v1' as const, completedAt: '2026-09-16T00:00:00Z',
+      personas: [{ id: 'sec', decision: 'FINDINGS' as const, findings: [{ severity: 'P1' as const, path: 'a.ts', line: 1, title: 't', body: 'b' }] }],
+      coverageComplete: true, quorumSatisfied: true },
+  };
+
+  it('parses, digests deterministically, and rejects unknown keys, other conclusions and oversize bodies', () => {
+    expect(parseWorkerReviewEvidence(evidence)).toEqual(evidence);
+    expect(workerReviewEvidenceDigest(evidence)).toMatch(/^[a-f0-9]{64}$/u);
+    expect(workerReviewEvidenceDigest({ ...evidence, conclusion: 'success' })).not.toBe(workerReviewEvidenceDigest(evidence));
+    expect(() => parseWorkerReviewEvidence({ ...evidence, extra: 1 })).toThrow(/WorkerReviewEvidence/u);
+    expect(() => parseWorkerReviewEvidence({ ...evidence, conclusion: 'neutral' })).toThrow();
+    const oversize = { ...evidence, result: { ...evidence.result, personas: [{ id: 'sec', decision: 'FINDINGS' as const,
+      findings: Array.from({ length: 400 }, (_, i) => ({ severity: 'P2' as const, path: 'a.ts', line: 1, title: `f${i}`, body: 'x'.repeat(10_000) })) }] } };
+    expect(() => parseWorkerReviewEvidence(oversize)).toThrow(/exceeds/u);
+  });
+
+  it('is posted by the HTTP adapter to the completion endpoint with the worker bearer', async () => {
+    const calls: Array<{ url: string; body: unknown; auth: string | undefined }> = [];
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: JSON.parse(String(init?.body)), auth: (init?.headers as Record<string, string>)?.Authorization });
+      return new Response(null, { status: 200 });
+    });
+    const adapter = new HttpWorkerCompletionAdapter({ token: 'ghs_test', endpoint: 'https://dispatch.example.invalid/completion', fetchImplementation });
+    await adapter.reportReviewEvidence(evidence);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://dispatch.example.invalid/completion');
+    expect(calls[0].auth).toBe('Bearer ghs_test');
+    expect(calls[0].body).toEqual(evidence);
   });
 });
