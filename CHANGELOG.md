@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.70.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.69.2...v1.70.0) (2026-09-16)
+
+
+### Features
+
+* **telemetry:** instrument zoekt and analyzer pre-checks with review_yeti namespace ([d911cc5](https://github.com/review-yeti-ai/review-yeti-bot/commit/d911cc5063d9692c5cb3c2ff60f80386be924c51))
+
 ## [1.69.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.69.1...v1.69.2) (2026-09-15)
 
 
