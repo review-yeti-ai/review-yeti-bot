@@ -20,6 +20,7 @@ import {
 } from '../review/actionDispatch';
 import { sha256 } from '../review/reviewCore';
 import { isCentralRefreshAuthorized } from '../review/reviewRecoveryPolicy';
+import { requeueRecoverableIncompletePanelFailure } from '../review/recoverablePanelRetry';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
 import {
@@ -50,7 +51,8 @@ export interface ActionDispatchRouterOptions {
   authoritativePublishing?: AuthoritativeReviewAdmission;
   workerCompletion?: {
     verifier: WorkerCompletionVerifier;
-    repository: Pick<ReviewDispatchRepository, 'markWorkerFailure' | 'markWorkerSuccess' | 'authorizeWorkerEvidence'>;
+    repository: Pick<ReviewDispatchRepository, 'markWorkerFailure' | 'markWorkerSuccess' | 'authorizeWorkerEvidence'
+      | 'admit' | 'readRunRetryContext'>;
     /** Where review evidence (WorkerReviewEvidence.v1, or a terminal success's
      * optional result from older workers) is kept. */
     evidence?: WorkerCompletionStore;
@@ -335,9 +337,21 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     }
 
     try {
-      const transition = await completion.repository.markWorkerFailure(event, proof, now());
+      const failedAt = now();
+      const transition = await completion.repository.markWorkerFailure(event, proof, failedAt);
       if (transition.status === 'unauthorized') {
         return response.status(403).json({ error: 'Worker completion is not authorized' });
+      }
+      // The bounded automatic recoverable-panel retry (REL-620) is orchestrated
+      // here, not inside the repository: this handler owns `markWorkerFailure`
+      // and is the one caller allowed to inherit the auto-requeue behaviour. A
+      // failed re-admission is swallowed and logged inside the service itself,
+      // so it can never turn an already-durable failure transition into a
+      // completion-callback error.
+      if (transition.status === 'failed') {
+        await requeueRecoverableIncompletePanelFailure({
+          input: event, now: failedAt, repository: completion.repository, logger,
+        });
       }
       return response.status(200).json({
         version: 'WorkerTerminalFailureAccepted.v1',

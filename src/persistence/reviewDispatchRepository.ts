@@ -3,6 +3,7 @@ import type { WorkerReviewEvidence } from '../review/workerReviewCompletion';
 import { sha256 } from '../review/reviewCore';
 import { deriveReviewRunId } from '../review/reviewAdmission';
 import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
+import type { RunRetryContext } from '../review/recoverablePanelRetry';
 import {
   ReviewAdmission,
   ReviewAdmissionInput,
@@ -172,6 +173,10 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
   if (input.retryRequested === true && input.retryAfterExecutionAttempt === undefined) {
     throw new Error('retry requested requires a retry-after execution attempt');
   }
+  if (input.availableAt !== undefined
+    && (!Number.isSafeInteger(input.availableAt) || input.availableAt < input.receivedAt)) {
+    throw new Error('available-at must be a safe integer at or after receivedAt');
+  }
   if (input.expectedGeneration !== undefined
     && (!Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration <= 0)) {
     throw new Error('expected generation must be a positive integer');
@@ -282,6 +287,10 @@ export interface ReviewDispatchRepository {
     diagnostics?: WorkerFailureDiagnostics): Promise<boolean>;
   /** Persist a worker's fail-closed terminal outcome without approving the head. */
   markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
+  /** Read-only run metadata the recoverable-panel-retry service needs to
+   * decide whether a fresh execution attempt may be re-admitted. Returns
+   * `null` when the run no longer exists. Never transitions the run. */
+  readRunRetryContext(runId: string): Promise<RunRetryContext | null>;
   /** Terminalize a legacy run only after its worker published a green check. */
   markWorkerSuccess(input: WorkerTerminalSuccess, proof: WorkerCompletionProof, now?: number): Promise<WorkerSuccessTransition>;
   /** Whether a WorkerReviewEvidence.v1 is bound to this run's current worker
@@ -657,7 +666,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       );
       await client.query(
         `INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, available_at, created_at, updated_at)
-         VALUES ($1, $2, 'pending', to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
+         VALUES ($1, $2, 'pending', to_timestamp($5 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
          ON CONFLICT (run_id) DO UPDATE
            SET status = 'pending', delivery_id = EXCLUDED.delivery_id,
                available_at = EXCLUDED.available_at, lease_owner = NULL,
@@ -689,7 +698,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 -- untouched even when a new delivery arrives while its worker starts.
                 AND r.delivery_id = EXCLUDED.delivery_id
            )`,
-        [runRow.run_id, input.deliveryId, input.receivedAt, runRow.retry_from_reaper_failure === true],
+        [runRow.run_id, input.deliveryId, input.receivedAt, runRow.retry_from_reaper_failure === true,
+          input.availableAt ?? input.receivedAt],
       );
       if (input.authoritativeGate && ['queued', 'running'].includes(runRow.status)) {
         const gate = await PostgresReviewGateRepository.reserveInTransaction(
@@ -1314,6 +1324,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
 
   async markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now = Date.now()): Promise<WorkerFailureTransition> {
     const client = await this.pool.connect();
+    let result: WorkerFailureTransition;
     try {
       await client.query('BEGIN');
       // Use admission's repository/PR lock so a same-head rerequest cannot
@@ -1321,15 +1332,41 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
         reviewDispatchPrLockKey(input.repositoryId, input.prNumber),
       ]);
-      const result = await this.persistWorkerFailure(client, input, proof, now);
+      result = await this.persistWorkerFailure(client, input, proof, now);
       await client.query('COMMIT');
-      return result;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
     } finally {
       client.release();
     }
+    // The bounded automatic recoverable-panel retry (REL-620) is a
+    // review/dispatch service decision, not a persistence-layer one: the
+    // caller that owns `markWorkerFailure` orchestration decides whether and
+    // how to re-admit a fresh execution attempt once this transition commits
+    // (see `../review/recoverablePanelRetry`). This method's only
+    // responsibility is the durable failure transition itself.
+    return result;
+  }
+
+  /** Read-only run metadata the recoverable-panel-retry service needs to
+   * decide whether a fresh execution attempt may be re-admitted. */
+  async readRunRetryContext(runId: string): Promise<RunRetryContext | null> {
+    const current = await this.queryable.query(
+      `SELECT repository_id, installation_id, identity, publication_mode, authoritative_gate_app_id
+         FROM review_runs WHERE run_id = $1`,
+      [runId],
+    );
+    const row = current.rows[0] as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const identity = typeof row.identity === 'string' ? JSON.parse(row.identity) : row.identity;
+    return {
+      publicationMode: row.publication_mode as RunRetryContext['publicationMode'],
+      authoritativeGateAppId: row.authoritative_gate_app_id == null ? null : Number(row.authoritative_gate_app_id),
+      repositoryId: Number(row.repository_id),
+      installationId: Number(row.installation_id),
+      identity,
+    };
   }
 
   async authorizeWorkerEvidence(input: WorkerReviewEvidence, proof: WorkerCompletionProof): Promise<WorkerEvidenceAuthorization> {
