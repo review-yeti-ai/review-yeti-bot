@@ -123,6 +123,14 @@ func operatorMaxConcurrentJobsFromEnv(getenv func(string) string) (int, error) {
 // deployment configuration, not per-review input, so it lives here rather than on
 // the CRD. Unset fields leave the config incomplete and BuildWorkerJob refuses
 // app-gate reviews -- the safe default while the lane is being rolled out.
+//
+// REVIEW_YETI_REVIEW_MODEL is projected verbatim into Model and, from there,
+// into the worker's REVIEW_MODEL env var (job.go). As of REL-886 the worker's
+// resolveWorkerConfig() treats that string as an ordered, comma-delimited
+// fallback list -- a bare single value (no comma) is the only shape deployed
+// today and behaves exactly as before. The operator never parses, splits, or
+// validates the list shape itself; it stays an opaque string all the way
+// through this process, same as it always has.
 func publishingConfigFromEnv() job.PublishingConfig {
 	return job.PublishingConfig{
 		GatewayBaseURL:    strings.TrimSpace(os.Getenv("REVIEW_YETI_GATEWAY_BASE_URL")),

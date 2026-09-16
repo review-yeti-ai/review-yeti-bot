@@ -117,9 +117,15 @@ type Input struct {
 }
 
 // PublishingConfig configures the app-gate publishing lane. Bifrost is the only
-// admitted transport (ADR 0527): there is no second provider and no default, so a
+// admitted transport (ADR 0527): there is no second transport and no default, so a
 // missing or malformed field refuses the Job rather than silently reviewing
 // against something else.
+//
+// Model may itself carry more than one model identifier as an ordered,
+// comma-delimited fallback list (REL-886) -- all routed through this same
+// Bifrost transport, just different model strings. This struct and
+// validatePublishing below treat Model as an opaque string throughout; the
+// comma-splitting lives entirely in the worker's resolveWorkerConfig().
 type PublishingConfig struct {
 	GatewayBaseURL    string
 	Model             string

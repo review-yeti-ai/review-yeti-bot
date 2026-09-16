@@ -483,6 +483,58 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(claudeLaneCalls).toHaveLength(2);
   });
 
+  // REL-886: a real gateway call can return HTTP 200 with no usable completion
+  // content (openRouterClient.ts throws OpenRouterResponseError('...empty
+  // completion content', 502) after exhausting its own transport-level
+  // retries). That error was already classified retryable by
+  // isRetryablePanelError (status 502 falls in the 500-599 branch), but the
+  // deployed resolveWorkerConfig() only ever produced one provider entry, so
+  // providersToTry could never contain a second id to fail over to. This test
+  // proves the classification and the persona-level retry-then-failover loop
+  // both already work correctly once a real fallback provider exists: the
+  // required sec-lane persists through the empty-completion error on 'claude'
+  // and completes on 'grok' instead of failing the lane.
+  it('retries once then advances to the fallback provider on an empty-completion 502 from the primary provider', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Fallback lane completed' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.model.includes('claude')) {
+        // The primary provider's gateway call always returns HTTP 200 with an
+        // empty completion -- exactly the shape openRouterClient.ts tags 502.
+        throw new OpenRouterResponseError('OpenRouter returned empty completion content', 502);
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-empty-completion-failover',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    const secLane = result.personas.find((persona) => persona.id === 'sec-lane');
+    expect(secLane?.providerId).toBe('grok');
+    expect(secLane?.decision).toBe('APPROVE');
+    const claudeLaneCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
+      request.metadata?.role === 'persona'
+      && request.metadata?.persona === 'sec-lane'
+      && request.model.includes('claude'));
+    // The transient-error retry (maxAttempts = 2) is bounded before failover.
+    expect(claudeLaneCalls).toHaveLength(2);
+  });
+
   it('fails closed when persona INCOMPLETE includes unvalidated findings', async () => {
     const baseConfig = buildDeepConfig();
     const config = {

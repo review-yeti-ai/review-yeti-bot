@@ -83,7 +83,17 @@ export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
 }
 
 /** The future authoritative worker lane verifies its normalized prepared
- * config before a provider call. This does not activate or change legacy Jobs. */
+ * config before a provider call. This does not activate or change legacy Jobs.
+ *
+ * This lane intentionally still admits exactly one provider entry. REL-886 gave
+ * resolveWorkerConfig() (the lane actually deployed today) an ordered,
+ * comma-delimited fallback list, but this authoritative/PreparedReviewExecution
+ * lane has not opted into that yet: if `transport.model` here ever carried a
+ * comma-delimited list, `preparePublishingPolicy` would call resolveWorkerConfig
+ * with it, produce more than one provider, and this check would fail closed
+ * (`providers.length !== 1`) rather than silently admit an unverified fallback
+ * chain. Extending this lane to a fallback chain needs its own review of the
+ * digest/identity fingerprinting below, not a loosening of this check alone. */
 export function verifyPreparedPublishingConfig(config: unknown, expectedDigest: string,
   transport: PreparedPublishingPolicy['transport']): CtReviewConfigV3 {
   try {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  fallbackProviderId,
   getPersonaEcosystemPaths,
+  parseFallbackModelList,
   resolveWorkerConfig,
   STATIC_FALLBACK_ECOSYSTEM_PATHS,
 } from '../../src/config/publishingWorkerConfig';
@@ -160,5 +162,81 @@ describe('publishingWorkerConfig', () => {
     expect(depPaths).not.toContain('**/*.md');
     expect(depPaths).not.toContain('**/*.ts');
     expect(depPaths).not.toContain('**');
+  });
+
+  // REL-886: resolveWorkerConfig used to hardcode a single `bifrost` provider
+  // entry no matter what transport.model carried, so panelEngine's own
+  // retry-then-failover loop had nothing to fail over to. These tests prove a
+  // multi-value REVIEW_MODEL resolves to a real ordered fallback chain, and
+  // that the single-value shape deployed today is untouched.
+  describe('fallback provider resolution (REL-886)', () => {
+    it('parses a comma-delimited model list in order, trimming and dropping empty segments', () => {
+      expect(parseFallbackModelList('bifrost/pr-reviewer, ollama/deepseek-v4.1-flash'))
+        .toEqual(['bifrost/pr-reviewer', 'ollama/deepseek-v4.1-flash']);
+      expect(parseFallbackModelList('bifrost/pr-reviewer,,ollama/deepseek-v4.1-flash,'))
+        .toEqual(['bifrost/pr-reviewer', 'ollama/deepseek-v4.1-flash']);
+    });
+
+    it('parses a bare single-value model unchanged, matching the only shape deployed today', () => {
+      expect(parseFallbackModelList('bifrost/pr-reviewer')).toEqual(['bifrost/pr-reviewer']);
+    });
+
+    it('deduplicates a repeated model string so it cannot be retried against itself under a second id', () => {
+      expect(parseFallbackModelList('bifrost/pr-reviewer,bifrost/pr-reviewer')).toEqual(['bifrost/pr-reviewer']);
+    });
+
+    it('assigns the stable bifrost id to index 0 and an ordinal fallback id to every later entry', () => {
+      expect(fallbackProviderId(0)).toBe('bifrost');
+      expect(fallbackProviderId(1)).toBe('bifrost-fallback-1');
+      expect(fallbackProviderId(2)).toBe('bifrost-fallback-2');
+    });
+
+    it('resolves a single-value transport.model to exactly one bifrost provider (backward compatible)', () => {
+      const config = resolveWorkerConfig({}, {
+        baseUrl: 'https://gateway.example.invalid/v1',
+        apiKey: 'not-persisted',
+        model: 'bifrost/pr-reviewer',
+      });
+
+      expect(config.reviewers.providers).toEqual([
+        expect.objectContaining({ id: 'bifrost', model: 'bifrost/pr-reviewer' }),
+      ]);
+      expect(config.reviewers.arbiter.order).toEqual(['bifrost']);
+      for (const persona of config.personas) {
+        expect(persona.providers).toEqual(['bifrost']);
+      }
+    });
+
+    it('resolves a comma-delimited transport.model to an ordered multi-provider fallback chain', () => {
+      const config = resolveWorkerConfig({}, {
+        baseUrl: 'https://gateway.example.invalid/v1',
+        apiKey: 'not-persisted',
+        model: 'bifrost/pr-reviewer,ollama/deepseek-v4.1-flash',
+      });
+
+      expect(config.reviewers.providers).toEqual([
+        expect.objectContaining({ id: 'bifrost', model: 'bifrost/pr-reviewer' }),
+        expect.objectContaining({ id: 'bifrost-fallback-1', model: 'ollama/deepseek-v4.1-flash' }),
+      ]);
+      expect(config.reviewers.arbiter.order).toEqual(['bifrost', 'bifrost-fallback-1']);
+      for (const persona of config.personas) {
+        expect(persona.providers).toEqual(['bifrost', 'bifrost-fallback-1']);
+      }
+    });
+
+    it('supports three or more fallback entries in the configured order', () => {
+      const config = resolveWorkerConfig({}, {
+        baseUrl: 'https://gateway.example.invalid/v1',
+        apiKey: 'not-persisted',
+        model: 'bifrost/pr-reviewer,ollama/deepseek-v4.1-flash,ollama/glm-5.3-flash',
+      });
+
+      expect(config.reviewers.providers.map((p) => p.id)).toEqual([
+        'bifrost', 'bifrost-fallback-1', 'bifrost-fallback-2',
+      ]);
+      expect(config.reviewers.providers.map((p) => p.model)).toEqual([
+        'bifrost/pr-reviewer', 'ollama/deepseek-v4.1-flash', 'ollama/glm-5.3-flash',
+      ]);
+    });
   });
 });
