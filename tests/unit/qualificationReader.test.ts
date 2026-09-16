@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadSameHeadReviewSource } from '../../src/github/qualificationReader';
+import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../../src/github/qualificationReader';
 
 const headSha = 'a'.repeat(40);
 const baseSha = 'b'.repeat(40);
@@ -76,11 +76,29 @@ describe('same-head qualification reader', () => {
       new Error('ghs_secret_token raw provider response'),
       { status: 429 },
     ));
-    // This call always rejects in this fixture; narrow the union so `.message`
-    // (an Error-only member) type-checks against the always-error runtime result.
-    const error = await loadSameHeadReviewSource(input(), request as any).catch((caught) => caught as Error) as Error;
+    const error = await loadSameHeadReviewSource(input(), request as any)
+      .catch((caught) => caught as GitHubQualificationReadError) as GitHubQualificationReadError;
+    expect(error).toBeInstanceOf(GitHubQualificationReadError);
     expect(error.message).toBe('GitHub qualification read failed HTTP 429');
-    expect((error as Error & { githubReads: number }).githubReads).toBe(1);
+    expect(error.httpStatus).toBe(429);
+    expect(error.githubReads).toBe(1);
     expect(error.message).not.toContain('ghs_secret_token');
   });
+
+  it.each([406, 404, 401, 403, 429, 500, 502])(
+    'sets the structured httpStatus field to %s from the real throw site, not the message',
+    async (status) => {
+      // Exercise the real throw site here -- not a hand-built error -- so a
+      // future change to `safeRequest` that stops setting `httpStatus` fails
+      // here instead of silently disabling every downstream status branch.
+      // httpStatus is the single source of the status; the message text is
+      // for humans only and is free to change independently.
+      const request = vi.fn().mockRejectedValue(Object.assign(new Error('raw provider response'), { status }));
+      const error = await loadSameHeadReviewSource(input(), request as any)
+        .catch((caught) => caught as GitHubQualificationReadError) as GitHubQualificationReadError;
+      expect(error).toBeInstanceOf(GitHubQualificationReadError);
+      expect(error.httpStatus).toBe(status);
+      expect(error.message).toBe(`GitHub qualification read failed HTTP ${status}`);
+    },
+  );
 });

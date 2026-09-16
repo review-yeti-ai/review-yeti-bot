@@ -32,7 +32,15 @@ export type GitHubQualificationRequest = (
 ) => Promise<PullRequestResponse>;
 
 export class GitHubQualificationReadError extends Error {
-  constructor(message: string, readonly githubReads: number) {
+  /**
+   * The HTTP status GitHub returned for the failed read, when one was
+   * observed. This is the single source of the status a
+   * GitHubQualificationReadError carries: every consumer that needs to
+   * branch on it (worker failure classification, diff-too-large detection)
+   * reads this field instead of parsing the human-readable `message`. The
+   * message text remains free to change without breaking a consumer.
+   */
+  constructor(message: string, readonly githubReads: number, readonly httpStatus?: number) {
     super(message);
     this.name = 'GitHubQualificationReadError';
   }
@@ -74,7 +82,7 @@ async function safeRequest(
   } catch (error) {
     const status = Number((error as { status?: unknown })?.status);
     if (Number.isInteger(status) && status >= 100 && status <= 599) {
-      throw new GitHubQualificationReadError(`GitHub qualification read failed HTTP ${status}`, githubReads);
+      throw new GitHubQualificationReadError(`GitHub qualification read failed HTTP ${status}`, githubReads, status);
     }
     throw new GitHubQualificationReadError('GitHub qualification read failed', githubReads);
   }
