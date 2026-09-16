@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.72.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.1...v1.72.2) (2026-09-16)
+
+
+### Bug Fixes
+
+* **review:** classify GitHub HTTP 406 diff reads as contract, not internal_error ([#813](https://github.com/review-yeti-ai/review-yeti-bot/issues/813)) ([1340be1](https://github.com/review-yeti-ai/review-yeti-bot/commit/1340be1855f11cf4024d4268649780535f22dce6))
+
+## [1.72.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.0...v1.72.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **review:** retire non-publishable runs stuck past their deadline ([#814](https://github.com/review-yeti-ai/review-yeti-bot/issues/814)) ([e7f7af1](https://github.com/review-yeti-ai/review-yeti-bot/commit/e7f7af19dd1a9e21f67b7b7b3e1d9ed9452c15c5))
+
 ## [1.72.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.71.0...v1.72.0) (2026-09-16)
 
 

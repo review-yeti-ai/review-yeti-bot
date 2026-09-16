@@ -64,6 +64,30 @@ export const SUPERSEDED_PUBLISHING_ERROR_TEXT =
   'publishing run superseded by a newer publisher-owned same-head check; retired by reaper';
 export const SUPERSEDED_PUBLISHING_REASON = 'superseded_publisher_owned_check';
 
+/**
+ * The single source of truth for which publication modes have a worker
+ * check to fail closed. claimAbandonedPublishingRuns claims exactly the
+ * modes in this list; retireExpiredNonPublishableRuns retires exactly the
+ * complement. Both queries filter against this one array (`= ANY` /
+ * `<> ALL`) instead of two independently hand-maintained literals, so the
+ * partition cannot silently diverge if a future publication mode is added.
+ */
+export const PUBLISHABLE_PUBLICATION_MODES = ['app-gate'] as const;
+
+/**
+ * A non-'app-gate' run (currently only 'disabled') has no App check to fail
+ * closed: REL-586's publishing reaper exists to fail a check that a worker
+ * never created, and a disabled-mode run never had one to begin with. Left
+ * alone, a run that is never claimed before its deadline (token mint failure,
+ * capacity, workspace contention, or simply no worker ever dispatched) stays
+ * 'queued'/'running' forever -- unreachable by claimAbandonedPublishingRuns,
+ * which only claims 'app-gate' rows. This is the terminal text for the
+ * separate sweep that retires those rows without minting a token or calling
+ * GitHub.
+ */
+export const NON_PUBLISHABLE_DEADLINE_ERROR_TEXT =
+  'publication mode disabled: never claimed before its terminal deadline; retired by reaper';
+
 /** Lease cadence for lookup-only recovery after a check-create response is lost. */
 export const ABANDONED_RECOVERY_LEASE_MS = 60_000;
 
@@ -273,6 +297,13 @@ export interface ReviewDispatchRepository {
   claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
     publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<AbandonedRunReconciliation>;
+  /**
+   * Retire queued/running runs whose publication mode is not 'app-gate' and
+   * whose terminal deadline has passed. There is no App check to fail closed
+   * for these rows, so this never mints a token or calls GitHub -- it only
+   * terminalizes the run and its outbox row. Returns the number retired.
+   */
+  retireExpiredNonPublishableRuns(now: number, limit: number): Promise<number>;
 }
 
 export interface WorkerFailureTransition {
@@ -804,7 +835,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             OR (runs.status = 'terminal' AND runs.error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%'
               AND outbox.status = 'projected' AND runs.lease_owner IS NOT NULL)
           )
-            AND publication_mode = 'app-gate'
+            AND publication_mode = ANY($6::text[])
             AND result_digest IS NULL
             AND authoritative_gate_app_id IS NULL
             AND (runs.lease_expires_at IS NULL OR runs.lease_expires_at <= to_timestamp($2 / 1000.0))
@@ -846,7 +877,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                  retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only,
                  retired.delivery_identity_mismatch`,
       [workerId, now, limit, RECOVERY_UNCONFIRMED_ERROR_TEXT,
-        ABANDONED_PUBLISHING_ERROR_TEXT.reapedPrefix],
+        ABANDONED_PUBLISHING_ERROR_TEXT.reapedPrefix, PUBLISHABLE_PUBLICATION_MODES as unknown as string[]],
     );
       for (const row of result.rows as Record<string, unknown>[]) {
         await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', now,
@@ -865,6 +896,63 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         recoveryOnly: row.recovery_only === true,
         ...(row.delivery_identity_mismatch === true ? { deliveryIdentityMismatch: true } : {}),
       }));
+    });
+  }
+
+  /**
+   * Sweep queued/running runs that can never be published: their mode is not
+   * 'app-gate', so no worker check exists (or ever will) for this reaper to
+   * fail closed. Distinct from claimAbandonedPublishingRuns, which requires
+   * publication_mode = 'app-gate' and mints a fail-closed GitHub check --
+   * widening that query to include non-publishable rows would either skip
+   * publication for them (wrong: they need none) or attempt to publish a
+   * check that can never exist. This method only terminalizes; it never
+   * touches GitHub or a worker token. An unowned OR expired lease
+   * (lease_owner IS NULL, or lease_expires_at has already passed) keeps
+   * this from racing an active dispatcher claim on the same row, while
+   * still reclaiming a row whose claimant died without releasing it --
+   * mirroring the same expired-lease-is-unowned treatment
+   * claimAbandonedPublishingRuns applies to review_runs.lease_expires_at
+   * and dispatchClaimPredicate applies to the outbox lease.
+   */
+  async retireExpiredNonPublishableRuns(now: number, limit: number): Promise<number> {
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('reaper limit must be a positive integer');
+    return this.inTransaction(async (client) => {
+      const result = await client.query(
+        `WITH candidate AS (
+           SELECT runs.run_id
+             FROM review_runs runs
+             JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+            WHERE runs.status IN ('queued', 'running')
+              AND runs.publication_mode <> ALL($4::text[])
+              AND runs.terminal_deadline <= to_timestamp($1 / 1000.0)
+              AND (runs.lease_owner IS NULL OR runs.lease_expires_at <= to_timestamp($1 / 1000.0))
+              AND runs.authoritative_gate_app_id IS NULL
+              AND runs.result_digest IS NULL
+            ORDER BY runs.terminal_deadline
+            FOR UPDATE OF runs, outbox SKIP LOCKED
+            LIMIT $2
+         ), retired_outbox AS (
+           UPDATE review_dispatch_outbox AS outbox
+              SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($1 / 1000.0)
+             FROM candidate WHERE outbox.run_id = candidate.run_id
+           RETURNING outbox.run_id
+         )
+         UPDATE review_runs AS runs
+            SET status = 'terminal', stage = 'terminal',
+                error_text = $3::text, lease_owner = NULL, lease_expires_at = NULL,
+                updated_at = to_timestamp($1 / 1000.0)
+           FROM retired_outbox
+          WHERE runs.run_id = retired_outbox.run_id
+         RETURNING runs.run_id`,
+        [now, limit, NON_PUBLISHABLE_DEADLINE_ERROR_TEXT, PUBLISHABLE_PUBLICATION_MODES as unknown as string[]],
+      );
+      for (const row of result.rows as Record<string, unknown>[]) {
+        await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', now,
+          { stage: 'terminal', terminal_class: 'non_publishable_deadline', retry_class: 'reaper' });
+      }
+      return result.rows.length;
     });
   }
 

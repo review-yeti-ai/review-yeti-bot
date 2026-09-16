@@ -38,11 +38,12 @@ import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManag
 import { createDefaultV3Config } from '../config/configLoader';
 import type { ProviderId } from '../config/schema';
 import { resolveWorkerConfig, PUBLISHING_MAX_TURNS, PUBLISHING_IDLE_TIMEOUT_SECONDS, PUBLISHING_OVERALL_TIMEOUT_SECONDS } from '../config/publishingWorkerConfig';
-import { loadSameHeadReviewSource } from '../github/qualificationReader';
+import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { isRecoverableIncompletePanel, isRecoverablePanelRetryEligible, RECOVERABLE_PANEL_AUTO_RETRY_CAP } from '../review/publicationFailurePolicy';
 import {
-  buildWorkerFailureDiagnostics, validateWorkerCompletionEndpoint,
+  buildWorkerFailureDiagnostics, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
+  validateWorkerCompletionEndpoint,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
@@ -391,6 +392,17 @@ function renderCoverageSummary(coverage: PublishingCoverageProjection): string {
   return `Coverage: mode=${coverage.mode}; expected lanes=${expected}; completed lanes=${coverage.completedLaneCount}; failed lanes=${coverage.failedLaneCount}; roster valid=${coverage.rosterValid}; quorum satisfied=${coverage.quorumSatisfied}; full panel complete=${coverage.fullPanelComplete}.`;
 }
 
+// GitHub returns 406 Not Acceptable when a pull request's diff cannot be
+// rendered in the requested representation (most commonly because it is too
+// large -- roughly over 20,000 lines or 300 files). That is a permanent
+// property of the pull request head, i.e. an invalid review input, not an
+// infrastructure failure. The status comes from the structured `httpStatus`
+// field, never from parsing the message. This is the single predicate both
+// the failure class and the diagnostics flag derive from, so they cannot drift.
+export function isGithubDiffNotRenderableError(error: unknown): boolean {
+  return error instanceof GitHubQualificationReadError && error.httpStatus === 406;
+}
+
 export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
   if (error instanceof OpenRouterTimeoutError) return 'timeout';
   if (error instanceof UpstreamCapacityRejectionError) return 'rate_limit';
@@ -402,6 +414,8 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
   }
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
+  // A non-renderable diff is a contract violation, not the internal_error catch-all.
+  if (isGithubDiffNotRenderableError(error)) return 'contract';
   if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
   if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
@@ -448,10 +462,19 @@ export function renderFailureSummary(
   if (diagnostics?.reason) detail.push(`reason=\`${diagnostics.reason}\``);
   if (diagnostics?.providerStatus !== undefined) detail.push(`provider_status=${diagnostics.providerStatus}`);
   const tail = (diagnostics?.logTail || '').trim();
+  // GitHub HTTP 406 on the diff read is a permanent, too-large-to-render
+  // property of this pull request head, not an outage -- say so explicitly so
+  // an operator does not read the generic contract guidance as infrastructure
+  // flakiness and retry a review that can never succeed as-is.
+  const isGithubDiffNotRenderable = failureClass === 'contract' && diagnostics?.reason === 'github_diff_not_renderable';
+  const whatFailed = isGithubDiffNotRenderable
+    ? `${GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION} Retrying will not help -- split the pull request into smaller `
+      + 'changes to get it reviewed.'
+    : guidance[failureClass];
   const lines = [
     `Review Yeti could not complete a binding review at \`${headSha}\` (failure class \`${failureClass}\`).`,
     '',
-    `**What failed:** ${guidance[failureClass]}`,
+    `**What failed:** ${whatFailed}`,
     '',
     'This is a failed review, not an approval. The unchanged head is not merge-eligible until a review completes.',
   ];
@@ -579,11 +602,15 @@ export async function runPublishingReviewWorker(
     // contradictory terminal failure.
     if (legacySuccessCompletionAttempted) return;
     const failureClass = panelFailure?.failureClass ?? classifyFailure(error);
+    const githubDiffNotRenderable = isGithubDiffNotRenderableError(error);
     // The recoverable marker is the one bit the dispatcher's bounded
     // automatic retry (REL-620) reads off this event; it is set exactly when
     // this call came from the `isRecoverableIncompletePanel` branch below,
     // never inferred from `failureClass` alone.
-    const diagnostics = buildWorkerFailureDiagnostics(error, failureClass, panelFailure !== undefined);
+    const diagnostics = buildWorkerFailureDiagnostics(error, failureClass, {
+      githubDiffNotRenderable,
+      recoverableIncompletePanel: panelFailure !== undefined,
+    });
     // The dispatcher retries attempts 1..CAP; the attempt that fails as
     // CAP+1 is the exhausted one this exact worker execution is running as
     // (`identity.executionAttempt`), so no cross-process coordination is
