@@ -629,7 +629,7 @@ function fullPanelRequestPolicy(
   };
 }
 
-function qualificationFailureClass(error: unknown): string {
+export function qualificationFailureClass(error: unknown): string {
   if (error instanceof OpenRouterTimeoutError) return `timeout_${error.kind}`;
   if (error instanceof OpenRouterResponseError) {
     if (error.status === 429) return 'rate_limit';

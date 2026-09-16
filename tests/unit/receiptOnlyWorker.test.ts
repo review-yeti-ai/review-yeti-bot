@@ -30,6 +30,7 @@ import {
   isSameHeadQualificationWorker,
   runSameHeadQualificationWorker,
   qualificationTimeoutMs,
+  qualificationFailureClass,
 } from '../../src/cli/runLiveReview';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { compareQualificationReceipts } from '../../src/qualification/receiptComparison';
@@ -1193,5 +1194,37 @@ describe('qualificationTimeoutMs', () => {
       { REVIEW_QUALIFICATION_TIMEOUT_MS: String(TERMINAL_DEADLINE_MS + 1) } as unknown as NodeJS.ProcessEnv,
       () => new Error('panel qualification worker contract is invalid'),
     )).toThrow('panel qualification worker contract is invalid');
+  });
+});
+
+describe('qualificationFailureClass', () => {
+  // A GitHub qualification-diff read that comes back HTTP 406 means the diff
+  // cannot be rendered in the requested representation (most commonly because
+  // it is too large -- roughly over 20,000 lines or 300 files). That is a
+  // permanent property of this pull request head, not a transient GitHub
+  // failure, so it must get its own label and never fall into the generic
+  // 'panel_failure' catch-all. Pin every adjacent HTTP-status branch in the
+  // same table so a mistyped regex or a misspelled label -- on 406 or on its
+  // neighbors -- fails a test instead of only surfacing in production.
+  it.each([
+    ['GitHub qualification read failed HTTP 406', 'github_diff_not_renderable'],
+    ['GitHub qualification read failed HTTP 404', 'github_not_found'],
+    ['GitHub qualification read failed HTTP 500', 'github_5xx'],
+    ['GitHub qualification read failed HTTP 502', 'github_5xx'],
+    ['GitHub qualification read failed HTTP 503', 'github_5xx'],
+    ['GitHub qualification read failed HTTP 401', 'github_auth'],
+    ['GitHub qualification read failed HTTP 403', 'github_auth'],
+    ['GitHub qualification read failed HTTP 429', 'github_rate_limit'],
+  ])('classifies %s as %s', (message, expected) => {
+    expect(qualificationFailureClass(new Error(message))).toBe(expected);
+  });
+
+  it('does not classify HTTP 406 as any neighboring GitHub label or the generic catch-all', () => {
+    const failureClass = qualificationFailureClass(new Error('GitHub qualification read failed HTTP 406'));
+    expect(failureClass).not.toBe('github_not_found');
+    expect(failureClass).not.toBe('github_5xx');
+    expect(failureClass).not.toBe('github_auth');
+    expect(failureClass).not.toBe('github_rate_limit');
+    expect(failureClass).not.toBe('panel_failure');
   });
 });
