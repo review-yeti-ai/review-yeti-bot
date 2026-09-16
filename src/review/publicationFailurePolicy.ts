@@ -39,6 +39,18 @@ export function isRecoverableIncompletePanel(evidence: IncompletePanelEvidence):
 export const RECOVERABLE_PANEL_AUTO_RETRY_CAP = 2;
 
 /**
+ * Single source of truth for "does this execution attempt still have an
+ * automatic recoverable-panel retry available." Both the dispatcher's
+ * re-queue gate (`reviewDispatchRepository.requeueRecoverableIncompletePanelFailure`)
+ * and the worker's own "no further automatic retry" exhaustion summary
+ * (`publishingReview.ts`) call this instead of inlining the comparison, so
+ * the two can never drift on what counts as eligible (REL-620).
+ */
+export function isRecoverablePanelRetryEligible(executionAttempt: number): boolean {
+  return Number.isSafeInteger(executionAttempt) && executionAttempt <= RECOVERABLE_PANEL_AUTO_RETRY_CAP;
+}
+
+/**
  * Delay, in milliseconds, before a re-queued recoverable-panel attempt
  * becomes claimable. A transient provider blip (rate limit, momentary
  * timeout) gets a short window to clear instead of an instant re-hit of the

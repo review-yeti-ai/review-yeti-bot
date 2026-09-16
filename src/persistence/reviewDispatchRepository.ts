@@ -3,7 +3,7 @@ import type { WorkerReviewEvidence } from '../review/workerReviewCompletion';
 import { sha256 } from '../review/reviewCore';
 import { deriveReviewRunId } from '../review/reviewAdmission';
 import { assertTerminalDeadlineWindow, TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
-import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS } from '../review/publicationFailurePolicy';
+import { RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS, isRecoverablePanelRetryEligible } from '../review/publicationFailurePolicy';
 import {
   ReviewAdmission,
   ReviewAdmissionInput,
@@ -1281,7 +1281,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
    */
   private async requeueRecoverableIncompletePanelFailure(input: WorkerTerminalFailure, now: number): Promise<void> {
     if (input.diagnostics?.recoverableIncompletePanel !== true) return;
-    if (!Number.isSafeInteger(input.executionAttempt) || input.executionAttempt > RECOVERABLE_PANEL_AUTO_RETRY_CAP) return;
+    if (!isRecoverablePanelRetryEligible(input.executionAttempt)) return;
     const current = await this.queryable.query(
       `SELECT repository_id, installation_id, identity, publication_mode, authoritative_gate_app_id
          FROM review_runs WHERE run_id = $1`,

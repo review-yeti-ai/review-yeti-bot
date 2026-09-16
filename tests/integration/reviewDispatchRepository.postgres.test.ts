@@ -1454,6 +1454,59 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       .resolves.toMatchObject({ runId: admitted.run.runId, executionAttempt: 2 });
   });
 
+  it('never automatically retries a non-app-gate run even when its diagnostics claim recoverable', async () => {
+    const { repository, client } = await createRepository();
+    const base = sameHeadAdmission('non-app-gate-no-auto-retry', 1_000);
+    const input = { ...base, publicationMode: 'disabled' as const };
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'e'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
+    const failure = recoverablePanelFailure(base, admitted.run.runId, claim.executionAttempt);
+
+    // `persistWorkerFailure`'s own authorization fence (identical in shape to
+    // the authoritative-gate case above) hard-requires `publication_mode =
+    // 'app-gate'` before it will ever transition a run to 'failed', so a
+    // disabled-mode run can never reach that status through the public
+    // callback at all -- this is the same outer proof the authoritative-gate
+    // test above makes for its own exclusion.
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest }, 1_003))
+      .resolves.toEqual({ runId: admitted.run.runId, status: 'unauthorized' });
+    const unchanged = await client.query(`SELECT runs.status, outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
+      [admitted.run.runId]);
+    expect(unchanged.rows[0]).toMatchObject({ status: 'queued', outbox_status: 'projected', execution_attempt: 0 });
+
+    // That outer fence is what protects production today, but it is a
+    // separate code path from the requeue guard's own
+    // `publication_mode !== 'app-gate'` exit. Exercise that guard directly so
+    // a future change that lets `markWorkerFailure` transition a non-app-gate
+    // run to 'failed' cannot silently start auto-retrying it: reusing this
+    // exact runId and failure event proves the guard alone -- independent of
+    // the outer fence -- refuses to admit a fresh execution attempt.
+    await (repository as unknown as {
+      requeueRecoverableIncompletePanelFailure: (input: typeof failure, now: number) => Promise<void>;
+    }).requeueRecoverableIncompletePanelFailure(failure, 2_000);
+
+    const retryDeliveryId = `internal-recoverable-panel-retry:${admitted.run.runId}:a${claim.executionAttempt}`;
+    await expect(client.query('SELECT 1 FROM github_deliveries WHERE delivery_id = $1', [retryDeliveryId]))
+      .resolves.toMatchObject({ rows: [] });
+    const stillUnchanged = await client.query(`SELECT runs.status, runs.attempt,
+      outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
+      [admitted.run.runId]);
+    expect(stillUnchanged.rows[0]).toMatchObject({
+      status: 'queued', attempt: 0, outbox_status: 'projected', execution_attempt: 0,
+    });
+    // No fresh execution attempt was ever admitted for this head: the same
+    // claim window that was already projected remains the only one that ever
+    // existed, and no new claimable outbox row exists for it.
+    await expect(repository.claimNext('dispatcher-2', 2_000 + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS, 30_000))
+      .resolves.toBeNull();
+  });
+
   it('stops the automatic retry once the recoverable-panel attempt cap is exhausted', async () => {
     const { repository, client } = await createRepository();
     const input = sameHeadAdmission('recoverable-panel-cap', 1_000);

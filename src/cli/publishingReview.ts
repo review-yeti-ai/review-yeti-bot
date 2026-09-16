@@ -40,7 +40,7 @@ import type { ProviderId } from '../config/schema';
 import { resolveWorkerConfig, PUBLISHING_MAX_TURNS, PUBLISHING_IDLE_TIMEOUT_SECONDS, PUBLISHING_OVERALL_TIMEOUT_SECONDS } from '../config/publishingWorkerConfig';
 import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
-import { isRecoverableIncompletePanel, RECOVERABLE_PANEL_AUTO_RETRY_CAP } from '../review/publicationFailurePolicy';
+import { isRecoverableIncompletePanel, isRecoverablePanelRetryEligible, RECOVERABLE_PANEL_AUTO_RETRY_CAP } from '../review/publicationFailurePolicy';
 import {
   buildWorkerFailureDiagnostics, validateWorkerCompletionEndpoint,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
@@ -589,7 +589,7 @@ export async function runPublishingReviewWorker(
     // (`identity.executionAttempt`), so no cross-process coordination is
     // needed to know whether this is the final word.
     const recoverablePanelExhaustion = panelFailure !== undefined
-      && identity.executionAttempt > RECOVERABLE_PANEL_AUTO_RETRY_CAP
+      && !isRecoverablePanelRetryEligible(identity.executionAttempt)
       ? { attempts: identity.executionAttempt, cap: RECOVERABLE_PANEL_AUTO_RETRY_CAP }
       : undefined;
     if (authoritative && !authoritativeCompletionAttempted) {
