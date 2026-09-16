@@ -2697,7 +2697,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       for (const bad of [0, -1, Number.NaN, 2.5, Number.MAX_SAFE_INTEGER + 1]) {
         await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, bad)).rejects.toThrow('reaper limit must be a positive integer');
       }
-      const run = (await client.query('SELECT status FROM review_runs WHERE run_id = $1', [disabled.runId])).rows[0];
+      const run = (await client.query('SELECT status FROM review_runs WHERE run_id = $1', [disabled.admitted.run.runId])).rows[0];
       expect(run.status).toBe('queued');
     });
 
