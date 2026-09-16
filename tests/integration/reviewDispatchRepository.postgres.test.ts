@@ -24,6 +24,30 @@ import { buildRunSecretName } from '../../src/k8s/reviewJobProjection';
 import type { WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
+import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS } from '../../src/review/publicationFailurePolicy';
+import { requeueRecoverableIncompletePanelFailure } from '../../src/review/recoverablePanelRetry';
+import { logger } from '../../src/utils/logger';
+
+/** Mirrors the production caller (`actionDispatchApi.ts`'s worker-completion
+ * handler): invoke the recoverable-panel-retry service only after
+ * `markWorkerFailure` durably commits a 'failed' transition, against the
+ * exact same repository instance. The orchestration now lives in the
+ * review/dispatch service layer (REL-620 finding 1), not inside
+ * `PostgresReviewDispatchRepository`, so these tests exercise it the same
+ * way the real handler does instead of relying on the repository to trigger
+ * it implicitly. */
+async function markWorkerFailureAndRequeue(
+  repository: PostgresReviewDispatchRepository,
+  input: Parameters<PostgresReviewDispatchRepository['markWorkerFailure']>[0],
+  proof: { workerTokenDigest: string },
+  now: number,
+) {
+  const transition = await repository.markWorkerFailure(input, proof, now);
+  if (transition.status === 'failed') {
+    await requeueRecoverableIncompletePanelFailure({ input, now, repository, logger });
+  }
+  return transition;
+}
 
 function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000) {
   const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
@@ -1050,6 +1074,25 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(repository.claimAbandonedPublishingRuns('reaper-b', 2_002, 1)).resolves.toEqual([]);
   });
 
+  it('admits a valid future availableAt and persists it on the outbox row', async () => {
+    const { repository, client } = await createRepository();
+    const receivedAt = 1_000;
+    const availableAt = receivedAt + 5_000;
+    const input = { ...sameHeadAdmission('future-available-at', receivedAt), availableAt };
+    const admitted = await repository.admit(input);
+    expect(admitted.status).toBe('accepted');
+
+    const outboxRow = (await client.query(
+      'SELECT available_at FROM review_dispatch_outbox WHERE run_id = $1', [admitted.run.runId],
+    )).rows[0];
+    expect(new Date(outboxRow.available_at).getTime()).toBe(availableAt);
+
+    // The delayed row is not claimable until its availableAt elapses.
+    await expect(repository.claimNext('too-early', availableAt - 1, 30_000)).resolves.toBeNull();
+    await expect(repository.claimNext('on-time', availableAt, 30_000))
+      .resolves.toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
+  });
+
   it.each(['failure-existing', 'failure-published'] as const)(
     'acknowledges %s reconciliation at a modern epoch without integer overflow',
     async (outcome) => {
@@ -1407,6 +1450,333 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`, [admitted.run.runId]);
     expect(reconciled.rows[0]).toMatchObject({ status: 'terminal', error_text: 'worker terminal failure: budget_exhausted', outbox_status: 'terminal' });
     await expect(repository.claimAbandonedPublishingRuns('reaper-c', 62_004, 1)).resolves.toEqual([]);
+  });
+
+  // REL-620: an optional lane dying with no findings and no quorum is not a
+  // code verdict. The dispatcher re-queues the exact same head for a fresh
+  // execution attempt through the identical admission path the manual
+  // exact-head refresh uses, bounded by RECOVERABLE_PANEL_AUTO_RETRY_CAP.
+  function recoverablePanelFailure(input: ReturnType<typeof sameHeadAdmission>, runId: string,
+    executionAttempt: number): Parameters<PostgresReviewDispatchRepository['markWorkerFailure']>[0] {
+    return {
+      version: 'WorkerTerminalFailure.v1', runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt,
+      failureClass: 'malformed_output',
+      diagnostics: { reason: 'provider_structured_output_invalid',
+        logTail: 'optional reviewer did not complete', recoverableIncompletePanel: true },
+    };
+  }
+
+  it('automatically re-queues a recoverable-incomplete-panel failure for a fresh execution attempt', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('recoverable-panel-auto-retry', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'a'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
+
+    await expect(markWorkerFailureAndRequeue(repository,
+      recoverablePanelFailure(input, admitted.run.runId, claim.executionAttempt), { workerTokenDigest }, 1_003,
+    )).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
+
+    const requeued = await client.query(`SELECT runs.status, runs.attempt, runs.error_text,
+      outbox.status AS outbox_status, outbox.execution_attempt, outbox.available_at
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(requeued.rows[0]).toMatchObject({ status: 'queued', attempt: 1, outbox_status: 'pending', execution_attempt: 1 });
+    // A run the dispatcher is about to retry is not a durable failure record.
+    expect(requeued.rows[0].error_text).toBeNull();
+    expect(new Date(requeued.rows[0].available_at).getTime()).toBe(1_003 + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS);
+
+    // The short delay is real, not cosmetic: a claim attempt one millisecond
+    // before it elapses sees nothing.
+    await expect(repository.claimNext('too-early', 1_003 + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS - 1, 30_000))
+      .resolves.toBeNull();
+    await expect(repository.claimNext('retry-dispatcher', 1_003 + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS, 30_000))
+      .resolves.toMatchObject({ runId: admitted.run.runId, executionAttempt: 2 });
+  });
+
+  it('durably records the failure and swallows a failed recoverable-panel re-admission', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('recoverable-panel-requeue-admission-fails', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'c'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
+
+    // Poison the exact delivery id the follow-up requeue will use for its own
+    // `admit` call, with no run_id attached. When `requeueRecoverableIncompletePanelFailure`
+    // tries to admit that identical delivery id, its INSERT ... ON CONFLICT DO
+    // NOTHING finds this row already present (0 rows returned), falls through
+    // to the "existing delivery" lookup, and that lookup INNER JOINs on
+    // `run_id` -- which is NULL here, so it finds nothing and `admit` throws
+    // a real "delivery identity conflict" error. This is the same admission
+    // code path a genuine conflict would hit; nothing about `admit` itself is
+    // stubbed.
+    const retryDeliveryId = `internal-recoverable-panel-retry:${admitted.run.runId}:a${claim.executionAttempt}`;
+    await client.query(
+      `INSERT INTO github_deliveries (delivery_id, event_name, repository_id, installation_id, payload_digest, received_at)
+       VALUES ($1, $2, $3, $4, $5, to_timestamp($6 / 1000.0))`,
+      [retryDeliveryId, 'poisoned', input.repositoryId, input.installationId, 'f'.repeat(64), 1_002],
+    );
+
+    const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+
+    // The durable failure transition must still resolve normally: a broken
+    // re-admission attempt is never allowed to surface as a completion-callback
+    // error, since the worker's terminal failure was already committed before
+    // the requeue was even attempted.
+    await expect(markWorkerFailureAndRequeue(repository,
+      recoverablePanelFailure(input, admitted.run.runId, claim.executionAttempt), { workerTokenDigest }, 1_003,
+    )).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
+
+    const failed = await client.query(`SELECT runs.status, runs.error_text,
+      outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(failed.rows[0]).toMatchObject({
+      // The durable failure transition (persistWorkerFailure) already
+      // committed in its own transaction before the requeue was even
+      // attempted, so it is untouched by the requeue's rolled-back admit:
+      // outbox stays 'projected' at the pre-retry execution_attempt (0),
+      // exactly as it would if `requeueRecoverableIncompletePanelFailure`
+      // were never called at all.
+      status: 'failed', error_text: 'worker terminal failure: malformed_output',
+      outbox_status: 'projected', execution_attempt: 0,
+    });
+
+    // The swallowed re-admission error is logged, not thrown or dropped silently.
+    expect(errorLog).toHaveBeenCalledWith('Automatic recoverable-panel retry admission failed', expect.objectContaining({
+      runId: admitted.run.runId,
+      executionAttempt: claim.executionAttempt,
+      reason: expect.stringContaining('delivery identity conflict'),
+    }));
+
+    errorLog.mockRestore();
+  });
+
+  it('never automatically retries a non-app-gate run even when its diagnostics claim recoverable', async () => {
+    const { repository, client } = await createRepository();
+    const base = sameHeadAdmission('non-app-gate-no-auto-retry', 1_000);
+    const input = { ...base, publicationMode: 'disabled' as const };
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'e'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
+    const failure = recoverablePanelFailure(base, admitted.run.runId, claim.executionAttempt);
+
+    // `persistWorkerFailure`'s own authorization fence (identical in shape to
+    // the authoritative-gate case above) hard-requires `publication_mode =
+    // 'app-gate'` before it will ever transition a run to 'failed', so a
+    // disabled-mode run can never reach that status through the public
+    // callback at all -- this is the same outer proof the authoritative-gate
+    // test above makes for its own exclusion.
+    await expect(repository.markWorkerFailure(failure, { workerTokenDigest }, 1_003))
+      .resolves.toEqual({ runId: admitted.run.runId, status: 'unauthorized' });
+    const unchanged = await client.query(`SELECT runs.status, outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
+      [admitted.run.runId]);
+    expect(unchanged.rows[0]).toMatchObject({ status: 'queued', outbox_status: 'projected', execution_attempt: 0 });
+
+    // That outer fence is what protects production today, but it is a
+    // separate code path from the service's own `readRunRetryContext`-derived
+    // `publicationMode !== 'app-gate'` exit. Exercise the service directly,
+    // against the real repository, so a future change that lets
+    // `markWorkerFailure` transition a non-app-gate run to 'failed' cannot
+    // silently start auto-retrying it: reusing this exact runId and failure
+    // event proves the guard alone -- independent of the outer fence --
+    // refuses to admit a fresh execution attempt.
+    await requeueRecoverableIncompletePanelFailure({ input: failure, now: 2_000, repository, logger });
+
+    const retryDeliveryId = `internal-recoverable-panel-retry:${admitted.run.runId}:a${claim.executionAttempt}`;
+    await expect(client.query('SELECT 1 FROM github_deliveries WHERE delivery_id = $1', [retryDeliveryId]))
+      .resolves.toMatchObject({ rows: [] });
+    const stillUnchanged = await client.query(`SELECT runs.status, runs.attempt,
+      outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
+      [admitted.run.runId]);
+    expect(stillUnchanged.rows[0]).toMatchObject({
+      status: 'queued', attempt: 0, outbox_status: 'projected', execution_attempt: 0,
+    });
+    // No fresh execution attempt was ever admitted for this head: the same
+    // claim window that was already projected remains the only one that ever
+    // existed, and no new claimable outbox row exists for it.
+    await expect(repository.claimNext('dispatcher-2', 2_000 + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS, 30_000))
+      .resolves.toBeNull();
+  });
+
+  it('never automatically retries an authoritative-gate run even when its diagnostics claim recoverable', async () => {
+    const { repository, client, gateRepository } = await createRepository();
+    const input = authoritativeAdmission('authoritative-no-auto-retry', 1_000);
+    const admitted = await repository.admit(input);
+    // An authoritative-gate run is only claimable once its check-run gate is
+    // durably bound (dispatchClaimPredicate); mirror the other authoritative
+    // tests in this file that reserve and publish that gate before claiming.
+    await bindPendingGate(gateRepository);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'd'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
+    const failure = recoverablePanelFailure(input, admitted.run.runId, claim.executionAttempt);
+
+    // `persistWorkerFailure`'s own authorization fence hard-requires
+    // `authoritative_gate_app_id IS NULL` before it will ever transition a
+    // run to 'failed' (metadataMatches), so an authoritative-gate run can
+    // never reach `result.status === 'failed'` through the public
+    // `markWorkerFailure` callback at all -- there is no way to observe the
+    // service's own `authoritativeGateAppId != null` exit through that public
+    // path. Exercise the service directly, against the real repository,
+    // exactly as the non-app-gate test above does, so a future change that
+    // let `markWorkerFailure` transition an authoritative-gate run to
+    // 'failed' cannot silently start auto-retrying it too.
+    await requeueRecoverableIncompletePanelFailure({ input: failure, now: 2_000, repository, logger });
+
+    const retryDeliveryId = `internal-recoverable-panel-retry:${admitted.run.runId}:a${claim.executionAttempt}`;
+    await expect(client.query('SELECT 1 FROM github_deliveries WHERE delivery_id = $1', [retryDeliveryId]))
+      .resolves.toMatchObject({ rows: [] });
+    const stillUnchanged = await client.query(`SELECT runs.status, runs.attempt,
+      outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
+      [admitted.run.runId]);
+    expect(stillUnchanged.rows[0]).toMatchObject({
+      status: 'queued', attempt: 0, outbox_status: 'projected', execution_attempt: 0,
+    });
+    // No fresh execution attempt was ever admitted for this head: the same
+    // claim window that was already projected remains the only one that ever
+    // existed, and no new claimable outbox row exists for it.
+    await expect(repository.claimNext('dispatcher-2', 2_000 + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS, 30_000))
+      .resolves.toBeNull();
+  });
+
+  it('reads the exact run retry context the recoverable-panel-retry service needs', async () => {
+    const { repository, gateRepository } = await createRepository();
+
+    await expect(repository.readRunRetryContext(`run_${'0'.repeat(32)}`)).resolves.toBeNull();
+
+    const appGateInput = sameHeadAdmission('retry-context-app-gate', 1_000);
+    const appGateAdmitted = await repository.admit(appGateInput);
+    await expect(repository.readRunRetryContext(appGateAdmitted.run.runId)).resolves.toEqual({
+      publicationMode: 'app-gate',
+      authoritativeGateAppId: null,
+      repositoryId: appGateInput.repositoryId,
+      installationId: appGateInput.installationId,
+      identity: appGateInput.identity,
+    });
+
+    const disabledInput = { ...sameHeadAdmission('retry-context-disabled', 1_000, { prNumber: 43 }), publicationMode: 'disabled' as const };
+    const disabledAdmitted = await repository.admit(disabledInput);
+    await expect(repository.readRunRetryContext(disabledAdmitted.run.runId)).resolves.toMatchObject({
+      publicationMode: 'disabled', authoritativeGateAppId: null,
+    });
+
+    const authoritativeInput = authoritativeAdmission('retry-context-authoritative', 1_000);
+    const authoritativeAdmitted = await repository.admit(authoritativeInput);
+    await bindPendingGate(gateRepository);
+    await expect(repository.readRunRetryContext(authoritativeAdmitted.run.runId)).resolves.toMatchObject({
+      publicationMode: 'app-gate', authoritativeGateAppId: 4385771,
+    });
+  });
+
+  it('stops the automatic retry once the recoverable-panel attempt cap is exhausted', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('recoverable-panel-cap', 1_000);
+    const admitted = await repository.admit(input);
+    const tokens = ['a', 'b', 'c', 'd', 'e'].map((c) => c.repeat(64));
+
+    let claimNow = 1_001;
+    for (let attempt = 1; attempt <= RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1; attempt += 1) {
+      const claim = (await repository.claimNext(`dispatcher-${attempt}`, claimNow, 30_000))!;
+      expect(claim).toMatchObject({ runId: admitted.run.runId, executionAttempt: attempt });
+      const workerTokenDigest = tokens[attempt - 1];
+      await repository.markProjected(
+        claim.runId, claim.leaseOwner, claim.claimAttempt, `worker-a${attempt}`, claimNow + 1, workerTokenDigest,
+      );
+      const failedAt = claimNow + 2;
+      await expect(markWorkerFailureAndRequeue(repository,
+        recoverablePanelFailure(input, admitted.run.runId, attempt), { workerTokenDigest }, failedAt,
+      )).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
+      claimNow = failedAt + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS + 1;
+    }
+
+    // Attempt CAP+1 failed the same recoverable way, but the cap is spent: the
+    // existing terminal behaviour applies exactly as it did before REL-620.
+    const final = await client.query(`SELECT runs.status, runs.error_text,
+      outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(final.rows[0]).toMatchObject({
+      status: 'failed', outbox_status: 'projected', execution_attempt: RECOVERABLE_PANEL_AUTO_RETRY_CAP,
+      error_text: 'worker terminal failure: malformed_output',
+    });
+    await expect(repository.claimNext('dispatcher-final', claimNow + 1_000_000, 30_000)).resolves.toBeNull();
+  });
+
+  it('does not automatically retry a terminal failure whose diagnostics do not mark it recoverable', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('non-recoverable-same-class', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'd'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
+
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+      // Same failure class the recoverable test above uses; only the missing
+      // `recoverableIncompletePanel` marker distinguishes this one, and that
+      // must be enough to keep it out of the automatic retry.
+      failureClass: 'malformed_output',
+      diagnostics: { reason: 'provider_structured_output_invalid', logTail: 'a persona returned invalid JSON' },
+    }, { workerTokenDigest }, 1_003)).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
+
+    const state = await client.query(`SELECT runs.status, outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
+      [admitted.run.runId]);
+    expect(state.rows[0]).toMatchObject({ status: 'failed', outbox_status: 'projected', execution_attempt: 0 });
+    await expect(repository.claimNext('dispatcher-2', 10_000_000, 30_000)).resolves.toBeNull();
+  });
+
+  it('markWorkerFailure refuses to transition an authoritative-gate run to failed, so no auto-retry can occur', async () => {
+    const { repository, client } = await createRepository();
+    const input = authoritativeAdmission('authoritative-no-auto-retry', 1_000);
+    const admitted = await repository.admit(input);
+    const workerTokenDigest = 'f'.repeat(64);
+    // Simulate a bound worker without the gate-reservation machinery a real
+    // authoritative dispatch requires: markWorkerFailure's own authorization
+    // fence is what this test proves, independent of how the row got claimed.
+    await client.query(`UPDATE review_dispatch_outbox SET status = 'claimed', worker_token_digest = $2,
+      lease_owner = 'gate-worker', lease_expires_at = now() + interval '1 hour' WHERE run_id = $1`,
+      [admitted.run.runId, workerTokenDigest]);
+
+    await expect(repository.markWorkerFailure({
+      version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+      owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+      headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+      repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+      configDigest: input.identity.configDigest, executionAttempt: 1,
+      failureClass: 'malformed_output',
+      diagnostics: { reason: 'provider_structured_output_invalid', logTail: 'x', recoverableIncompletePanel: true },
+    }, { workerTokenDigest }, 2_000)).resolves.toEqual({ runId: admitted.run.runId, status: 'unauthorized' });
+
+    const unchanged = await client.query(`SELECT runs.status, outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id) WHERE runs.run_id = $1`,
+      [admitted.run.runId]);
+    expect(unchanged.rows[0]).toMatchObject({ status: 'queued', outbox_status: 'claimed', execution_attempt: 0 });
   });
 
   it('keeps lost-create recovery lookup-only and lease-driven before the original deadline', async () => {

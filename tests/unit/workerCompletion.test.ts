@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseWorkerReviewEvidence, workerReviewEvidenceDigest } from '../../src/review/workerReviewCompletion';
 import {
+  buildDurableWorkerFailureDiagnostics,
   buildWorkerFailureDiagnostics,
   HttpWorkerCompletionAdapter,
   MAX_WORKER_FAILURE_LOG_TAIL_BYTES,
@@ -267,6 +268,29 @@ describe('workerTerminalFailureSchema', () => {
       ...diagnostics, logTail: '🙂'.repeat(MAX_WORKER_FAILURE_LOG_TAIL_BYTES),
     }).success).toBe(false);
     expect(workerFailureDiagnosticsSchema.safeParse({ ...diagnostics, providerStatus: 99 }).success).toBe(false);
+  });
+
+  it('sets recoverableIncompletePanel only when the caller passes it true, and validates it as a bounded boolean', () => {
+    expect(buildWorkerFailureDiagnostics(new Error('provider HTTP 502'), 'provider_error'))
+      .not.toHaveProperty('recoverableIncompletePanel');
+    expect(buildWorkerFailureDiagnostics(new Error('provider HTTP 502'), 'provider_error', { recoverableIncompletePanel: false }))
+      .not.toHaveProperty('recoverableIncompletePanel');
+    expect(buildWorkerFailureDiagnostics(new Error('provider HTTP 502'), 'provider_error', { recoverableIncompletePanel: true }))
+      .toMatchObject({ recoverableIncompletePanel: true });
+    expect(workerFailureDiagnosticsSchema.safeParse({
+      reason: 'provider_request_failed', logTail: 'ok', recoverableIncompletePanel: true,
+    }).success).toBe(true);
+    expect(workerFailureDiagnosticsSchema.safeParse({
+      reason: 'provider_request_failed', logTail: 'ok', recoverableIncompletePanel: 'true',
+    }).success).toBe(false);
+  });
+
+  it('carries recoverableIncompletePanel into the durable diagnostics only when true', () => {
+    expect(buildDurableWorkerFailureDiagnostics('malformed_output', { recoverableIncompletePanel: true }))
+      .toMatchObject({ recoverableIncompletePanel: true });
+    expect(buildDurableWorkerFailureDiagnostics('malformed_output', { recoverableIncompletePanel: false }))
+      .not.toHaveProperty('recoverableIncompletePanel');
+    expect(buildDurableWorkerFailureDiagnostics('malformed_output')).not.toHaveProperty('recoverableIncompletePanel');
   });
 
   it('redacts token, assignment, and free-form provider context before building diagnostics', () => {

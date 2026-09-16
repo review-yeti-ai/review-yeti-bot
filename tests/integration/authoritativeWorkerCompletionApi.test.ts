@@ -49,6 +49,8 @@ function fixture({ authoritative = true, legacy = true } = {}) {
   const authorizeWorkerEvidence = vi.fn(async (event: { runId: string }) => ({ runId: event.runId, status: 'authorized' as const }));
   const oidcVerify = vi.fn();
   const admit = vi.fn();
+  const retryAdmit = vi.fn();
+  const readRunRetryContext = vi.fn().mockResolvedValue(null);
   const resolveInstallationId = vi.fn();
   const now = vi.fn(() => NOW);
   const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
@@ -58,10 +60,11 @@ function fixture({ authoritative = true, legacy = true } = {}) {
   app.use('/api/dispatch', createActionDispatchRouter({
     verifier: { verify: oidcVerify }, admission: { admit }, resolveInstallationId, now,
     authoritativeWorkerCompletion: authoritative ? { verifier: { verify }, repository: { recordWorkerResult }, resolve } : undefined,
-    workerCompletion: legacy ? { verifier: { verify: legacyVerify }, repository: { markWorkerFailure, markWorkerSuccess, authorizeWorkerEvidence } } : undefined,
+    workerCompletion: legacy ? { verifier: { verify: legacyVerify }, repository: { markWorkerFailure, markWorkerSuccess,
+      authorizeWorkerEvidence, admit: retryAdmit, readRunRetryContext } } : undefined,
   }));
   return { app, proof, verify, recordWorkerResult, resolve, now, legacyVerify, markWorkerFailure, markWorkerSuccess,
-    oidcVerify, admit, resolveInstallationId, errorLog, warnLog };
+    oidcVerify, admit, retryAdmit, readRunRetryContext, resolveInstallationId, errorLog, warnLog };
 }
 
 function expectNoPersistence(f: ReturnType<typeof fixture>) {

@@ -1239,6 +1239,75 @@ describe('POST /api/dispatch/completion', () => {
     expect(JSON.stringify(response.body)).not.toMatch(/success|ship|approve/iu);
   });
 
+  // REL-620: the automatic recoverable-panel retry (`recoverablePanelRetry.ts`)
+  // is orchestrated by this handler, the one caller of `markWorkerFailure`,
+  // not by the repository. It must run only after a genuine 'failed'
+  // transition, using the repository's own `admit`/`readRunRetryContext`
+  // surface -- never inferred from the request body alone.
+  it('invokes the recoverable-panel retry service only after a failed transition', async () => {
+    const recoverableFailure = { ...terminalFailure, failureClass: 'malformed_output' as const, diagnostics: {
+      reason: 'provider_structured_output_invalid' as const, logTail: 'optional reviewer did not complete',
+      recoverableIncompletePanel: true,
+    } };
+    const readRunRetryContext = vi.fn(async () => ({
+      publicationMode: 'app-gate' as const, authoritativeGateAppId: null,
+      repositoryId: recoverableFailure.repositoryId, installationId: 555,
+      identity: {
+        owner: recoverableFailure.owner, repo: recoverableFailure.repo, prNumber: recoverableFailure.prNumber,
+        headSha: recoverableFailure.headSha, baseSha: recoverableFailure.baseSha,
+        snapshotDigest: sha256({ owner: recoverableFailure.owner, repo: recoverableFailure.repo }),
+        configDigest: recoverableFailure.configDigest,
+      },
+    }));
+    const admit = vi.fn(async () => ({}) as never);
+    const fixture = completionApp({
+      repository: {
+        markWorkerFailure: vi.fn(async (event: typeof recoverableFailure) => ({ runId: event.runId, status: 'failed' as const })),
+        admit, readRunRetryContext,
+      },
+    });
+
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send(recoverableFailure);
+
+    expect(response.status).toBe(200);
+    expect(readRunRetryContext).toHaveBeenCalledExactlyOnceWith(recoverableFailure.runId);
+    expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      deliveryId: `internal-recoverable-panel-retry:${recoverableFailure.runId}:a${recoverableFailure.executionAttempt}`,
+      publicationMode: 'app-gate',
+      retryRequested: true,
+      retryAfterExecutionAttempt: recoverableFailure.executionAttempt,
+    }));
+  });
+
+  it('never invokes the recoverable-panel retry service for a non-failed transition, even with a recoverable marker', async () => {
+    const recoverableFailure = { ...terminalFailure, failureClass: 'malformed_output' as const, diagnostics: {
+      reason: 'provider_structured_output_invalid' as const, logTail: 'x', recoverableIncompletePanel: true,
+    } };
+    const readRunRetryContext = vi.fn();
+    const admit = vi.fn();
+    const fixture = completionApp({
+      repository: {
+        markWorkerFailure: vi.fn(async (event: typeof recoverableFailure) => ({ runId: event.runId, status: 'already_failed' as const })),
+        admit, readRunRetryContext,
+      },
+    });
+
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/completion')
+      .set('Authorization', 'Bearer ghs_worker_token')
+      .send(recoverableFailure);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      version: 'WorkerTerminalFailureAccepted.v1', runId: recoverableFailure.runId, status: 'already_failed',
+    });
+    expect(readRunRetryContext).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('persists a typed terminal success through the legacy token-bound repository', async () => {
     const fixture = completionApp();
     const response = await request(fixture.instance)
