@@ -27,19 +27,19 @@ import (
 var (
 	// ActiveJobs tracks the number of currently active PR review jobs.
 	ActiveJobs = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "ct_operator_active_jobs",
+		Name: "review_yeti_operator_active_jobs",
 		Help: "Number of currently active PR review jobs.",
 	})
 
 	// QueuedJobs tracks the number of currently queued PR review jobs.
 	QueuedJobs = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "ct_operator_queued_jobs",
+		Name: "review_yeti_operator_queued_jobs",
 		Help: "Number of currently queued PR review jobs waiting for concurrency slots.",
 	})
 
 	// JobDurationSeconds tracks the total duration of PR review jobs in seconds.
 	JobDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "ct_operator_job_duration_seconds",
+		Name:    "review_yeti_operator_job_duration_seconds",
 		Help:    "Duration of PR review jobs in seconds from start to completion.",
 		Buckets: []float64{1, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 	})
@@ -47,7 +47,7 @@ var (
 	// WebhookToJobDurationSeconds tracks the time from durable review receipt
 	// to creation of the receipt-only worker Job.
 	WebhookToJobDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "ct_operator_webhook_to_job_duration_seconds",
+		Name:    "review_yeti_operator_webhook_to_job_duration_seconds",
 		Help:    "Duration from review receipt to worker Job creation in seconds.",
 		Buckets: []float64{0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600, 900},
 	})
@@ -55,7 +55,7 @@ var (
 	// WebhookToCompletionDurationSeconds tracks the time from durable review
 	// receipt to a terminal worker outcome.
 	WebhookToCompletionDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name:    "ct_operator_webhook_to_completion_duration_seconds",
+		Name:    "review_yeti_operator_webhook_to_completion_duration_seconds",
 		Help:    "Duration from review receipt to terminal outcome in seconds.",
 		Buckets: []float64{1, 5, 10, 30, 60, 120, 300, 600, 900, 1800},
 	})
@@ -63,7 +63,7 @@ var (
 	// DeadlineMisses counts terminal outcomes recorded after the immutable
 	// fifteen-minute review deadline.
 	DeadlineMisses = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "ct_operator_deadline_misses_total",
+		Name: "review_yeti_operator_deadline_misses_total",
 		Help: "Number of review outcomes recorded after the fifteen-minute deadline.",
 	})
 

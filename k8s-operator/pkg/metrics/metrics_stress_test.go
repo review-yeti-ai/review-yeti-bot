@@ -70,9 +70,9 @@ func TestEmpirical_MetricRegistration_100Goroutines_Concurrency(t *testing.T) {
 	}
 
 	expectedMetrics := map[string]bool{
-		"ct_operator_active_jobs":          false,
-		"ct_operator_queued_jobs":          false,
-		"ct_operator_job_duration_seconds": false,
+		"review_yeti_operator_active_jobs":          false,
+		"review_yeti_operator_queued_jobs":          false,
+		"review_yeti_operator_job_duration_seconds": false,
 	}
 
 	for _, mf := range metricFamilies {
@@ -130,7 +130,7 @@ func TestEmpirical_MetricsGathering_And_ConcurrentUpdates(t *testing.T) {
 						atomic.AddInt64(&gatherFailures, 1)
 					} else {
 						// Verify expected metric families are returned
-						if findMetricByName(mfs, "ct_operator_active_jobs") == nil {
+						if findMetricByName(mfs, "review_yeti_operator_active_jobs") == nil {
 							atomic.AddInt64(&gatherFailures, 1)
 						}
 					}
@@ -152,9 +152,9 @@ func TestEmpirical_MetricsGathering_And_ConcurrentUpdates(t *testing.T) {
 		t.Fatalf("Failed to gather metrics after concurrent stress test: %v", err)
 	}
 
-	activeMf := findMetricByName(mfs, "ct_operator_active_jobs")
-	queuedMf := findMetricByName(mfs, "ct_operator_queued_jobs")
-	durationMf := findMetricByName(mfs, "ct_operator_job_duration_seconds")
+	activeMf := findMetricByName(mfs, "review_yeti_operator_active_jobs")
+	queuedMf := findMetricByName(mfs, "review_yeti_operator_queued_jobs")
+	durationMf := findMetricByName(mfs, "review_yeti_operator_job_duration_seconds")
 
 	if activeMf == nil || queuedMf == nil || durationMf == nil {
 		t.Fatalf("One or more metric families missing from crmetrics.Registry")
@@ -184,50 +184,50 @@ func TestEmpirical_MetricGathering_ValuesAndNames_Validation(t *testing.T) {
 		t.Fatalf("crmetrics.Registry.Gather() returned error: %v", err)
 	}
 
-	// 1. Verify ct_operator_active_jobs
-	activeMf := findMetricByName(metricFamilies, "ct_operator_active_jobs")
+	// 1. Verify review_yeti_operator_active_jobs
+	activeMf := findMetricByName(metricFamilies, "review_yeti_operator_active_jobs")
 	if activeMf == nil {
-		t.Fatalf("ct_operator_active_jobs metric family missing")
+		t.Fatalf("review_yeti_operator_active_jobs metric family missing")
 	}
 	if activeMf.GetType() != dto.MetricType_GAUGE {
-		t.Errorf("ct_operator_active_jobs expected type GAUGE, got %v", activeMf.GetType())
+		t.Errorf("review_yeti_operator_active_jobs expected type GAUGE, got %v", activeMf.GetType())
 	}
 	if len(activeMf.GetMetric()) == 0 {
-		t.Fatalf("ct_operator_active_jobs has no metrics")
+		t.Fatalf("review_yeti_operator_active_jobs has no metrics")
 	}
 	if val := activeMf.GetMetric()[0].GetGauge().GetValue(); val != float64(testActive) {
-		t.Errorf("ct_operator_active_jobs expected value %f, got %f", float64(testActive), val)
+		t.Errorf("review_yeti_operator_active_jobs expected value %f, got %f", float64(testActive), val)
 	}
 
-	// 2. Verify ct_operator_queued_jobs
-	queuedMf := findMetricByName(metricFamilies, "ct_operator_queued_jobs")
+	// 2. Verify review_yeti_operator_queued_jobs
+	queuedMf := findMetricByName(metricFamilies, "review_yeti_operator_queued_jobs")
 	if queuedMf == nil {
-		t.Fatalf("ct_operator_queued_jobs metric family missing")
+		t.Fatalf("review_yeti_operator_queued_jobs metric family missing")
 	}
 	if queuedMf.GetType() != dto.MetricType_GAUGE {
-		t.Errorf("ct_operator_queued_jobs expected type GAUGE, got %v", queuedMf.GetType())
+		t.Errorf("review_yeti_operator_queued_jobs expected type GAUGE, got %v", queuedMf.GetType())
 	}
 	if len(queuedMf.GetMetric()) == 0 {
-		t.Fatalf("ct_operator_queued_jobs has no metrics")
+		t.Fatalf("review_yeti_operator_queued_jobs has no metrics")
 	}
 	if val := queuedMf.GetMetric()[0].GetGauge().GetValue(); val != float64(testQueued) {
-		t.Errorf("ct_operator_queued_jobs expected value %f, got %f", float64(testQueued), val)
+		t.Errorf("review_yeti_operator_queued_jobs expected value %f, got %f", float64(testQueued), val)
 	}
 
-	// 3. Verify ct_operator_job_duration_seconds
-	durationMf := findMetricByName(metricFamilies, "ct_operator_job_duration_seconds")
+	// 3. Verify review_yeti_operator_job_duration_seconds
+	durationMf := findMetricByName(metricFamilies, "review_yeti_operator_job_duration_seconds")
 	if durationMf == nil {
-		t.Fatalf("ct_operator_job_duration_seconds metric family missing")
+		t.Fatalf("review_yeti_operator_job_duration_seconds metric family missing")
 	}
 	if durationMf.GetType() != dto.MetricType_HISTOGRAM {
-		t.Errorf("ct_operator_job_duration_seconds expected type HISTOGRAM, got %v", durationMf.GetType())
+		t.Errorf("review_yeti_operator_job_duration_seconds expected type HISTOGRAM, got %v", durationMf.GetType())
 	}
 	if len(durationMf.GetMetric()) == 0 {
-		t.Fatalf("ct_operator_job_duration_seconds has no metrics")
+		t.Fatalf("review_yeti_operator_job_duration_seconds has no metrics")
 	}
 	hist := durationMf.GetMetric()[0].GetHistogram()
 	if hist.GetSampleCount() < uint64(len(testDurations)) {
-		t.Errorf("ct_operator_job_duration_seconds expected sample count >= %d, got %d", len(testDurations), hist.GetSampleCount())
+		t.Errorf("review_yeti_operator_job_duration_seconds expected sample count >= %d, got %d", len(testDurations), hist.GetSampleCount())
 	}
 
 	t.Logf("Metric names, types, and values validated successfully via crmetrics.Registry.Gather()")
