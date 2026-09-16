@@ -3,7 +3,7 @@ import { initMetrics, getMetrics, getPrometheusMetrics } from './metrics';
 import { getRecentSpans, clearSpans, formatSpan } from './spans';
 import { telemetryMiddleware } from './middleware';
 
-export function initTelemetry(serviceName = 'ct-review-bot') {
+export function initTelemetry(serviceName = 'review-yeti-bot') {
   initTracer(serviceName);
   initMetrics();
 }

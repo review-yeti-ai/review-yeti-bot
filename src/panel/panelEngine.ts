@@ -1662,6 +1662,8 @@ async function runPersona(
 ): Promise<PersonaLaneResult> {
   return runInSpan(`ct_persona_lane`, async (span) => {
     throwIfPanelAborted(signal);
+    span.setAttribute('review_yeti.persona.id', persona.id);
+    span.setAttribute('review_yeti.persona.required', persona.required);
     span.setAttribute('ct.persona.id', persona.id);
     span.setAttribute('ct.persona.required', persona.required);
 
@@ -1950,6 +1952,18 @@ async function runPersona(
           const hitRate = promptTokens > 0 ? (cachedTokens / promptTokens) : 0;
           const hitPercentage = Math.round(hitRate * 100);
 
+          span.setAttribute('review_yeti.persona.provider', providerId);
+          span.setAttribute('review_yeti.persona.model', result.response.model);
+          span.setAttribute('review_yeti.persona.decision', decision);
+          span.setAttribute('review_yeti.persona.findings_count', findings.length);
+          span.setAttribute('review_yeti.persona.duration_ms', result.durationMs);
+          span.setAttribute('review_yeti.tokens.prompt', promptTokens);
+          span.setAttribute('review_yeti.tokens.completion', completionTokens);
+          span.setAttribute('review_yeti.tokens.total', totalTokens);
+          span.setAttribute('review_yeti.tokens.cached', cachedTokens);
+          span.setAttribute('review_yeti.tokens.cache_hit_percentage', hitPercentage);
+          span.setAttribute('review_yeti.cost_usd', costUSD);
+
           span.setAttribute('ct.persona.provider', providerId);
           span.setAttribute('ct.persona.model', result.response.model);
           span.setAttribute('ct.persona.decision', decision);
@@ -2105,6 +2119,9 @@ export async function executePersonaPanel(options: {
 
     try {
       const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
+      span.setAttribute('review_yeti.repo', repository);
+      span.setAttribute('review_yeti.head_sha', headSha);
+      span.setAttribute('review_yeti.repository_visibility', repositoryVisibility);
       span.setAttribute('ct.repo', repository);
       span.setAttribute('ct.head_sha', headSha);
       span.setAttribute('ct.repository_visibility', repositoryVisibility);
@@ -2127,6 +2144,9 @@ export async function executePersonaPanel(options: {
       });
 
     const budget = evaluateEffortAndBudget(effectiveFiles, config);
+    span.setAttribute('review_yeti.token_budget.effort_tier', budget.effortTier);
+    span.setAttribute('review_yeti.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
+    span.setAttribute('review_yeti.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
     span.setAttribute('ct.token_budget.effort_tier', budget.effortTier);
     span.setAttribute('ct.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
     span.setAttribute('ct.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
@@ -2136,6 +2156,8 @@ export async function executePersonaPanel(options: {
       const isEnabled = storePersona ? storePersona.enabled !== false : persona.enabled;
       return isEnabled && persona.paths.some((pattern) => effectiveFiles.some((file) => pathMatches(pattern, file.path)));
     });
+    span.setAttribute('review_yeti.persona_count', applicable.length);
+    span.setAttribute('review_yeti.quorum_required', config.quorum);
     span.setAttribute('ct.persona_count', applicable.length);
     span.setAttribute('ct.quorum_required', config.quorum);
 
@@ -2263,6 +2285,7 @@ export async function executePersonaPanel(options: {
           retained: narrowed.map((p) => p.id),
         });
         applicable = narrowed;
+        span.setAttribute('review_yeti.persona_count_narrowed', applicable.length);
         span.setAttribute('ct.persona_count_narrowed', applicable.length);
       }
     }
@@ -2306,16 +2329,20 @@ export async function executePersonaPanel(options: {
     let zoektPreCheckResult: ZoektPreCheckResult | undefined;
     let analyzersPreCheckResult: PreCheckSummary | undefined;
     const preChecksConfig = resolvePreChecksConfig(config);
+    const preChecksStartTime = performance.now();
+    let zoektDurationMs = 0;
+    let analyzersDurationMs = 0;
 
     if (preChecksConfig.enabled) {
       const zoektPromise = preChecksConfig.zoekt.enabled
         ? (async () => {
+            const zStart = performance.now();
             try {
               const indexDir = (config as any)?.evidence?.zoekt?.indexDir
                 || preChecksConfig.zoekt.indexDir
                 || process.env.ZOEKT_INDEX_DIR;
 
-              return await raceWithPanelAbort(
+              const res = await raceWithPanelAbort(
                 executeZoektPreCheck({
                   changedFiles: effectiveFiles,
                   config: preChecksConfig.zoekt,
@@ -2324,7 +2351,10 @@ export async function executePersonaPanel(options: {
                 }),
                 signal
               );
+              zoektDurationMs = performance.now() - zStart;
+              return res;
             } catch (err: any) {
+              zoektDurationMs = performance.now() - zStart;
               throwIfPanelAborted(signal);
               logger.warn('Zoekt pre-check failed soft during executePersonaPanel', {
                 repository,
@@ -2337,7 +2367,7 @@ export async function executePersonaPanel(options: {
                 scannedSymbolsCount: 0,
                 matchedSymbolsCount: 0,
                 symbols: [],
-                receipt: { totalQueries: 0, durationMs: 0 },
+                receipt: { totalQueries: 0, durationMs: Math.round(zoektDurationMs) },
               };
             }
           })()
@@ -2345,8 +2375,9 @@ export async function executePersonaPanel(options: {
 
       const analyzersPromise = preChecksConfig.analyzers.enabled
         ? (async () => {
+            const aStart = performance.now();
             try {
-              return await raceWithPanelAbort(
+              const res = await raceWithPanelAbort(
                 runPreCheckAnalyzers({
                   workspaceRoot: options.workspaceRoot || process.env.CT_REVIEW_WORKSPACE_ROOT || process.cwd(),
                   changedFiles: effectiveFiles,
@@ -2355,7 +2386,10 @@ export async function executePersonaPanel(options: {
                 }),
                 signal
               );
+              analyzersDurationMs = performance.now() - aStart;
+              return res;
             } catch (err: any) {
+              analyzersDurationMs = performance.now() - aStart;
               throwIfPanelAborted(signal);
               logger.warn('Analyzers pre-check failed soft during executePersonaPanel', {
                 repository,
@@ -2366,7 +2400,7 @@ export async function executePersonaPanel(options: {
                 enabled: false,
                 status: 'unavailable' as const,
                 reason: err?.message || 'unexpected_error',
-                durationMs: 0,
+                durationMs: Math.round(analyzersDurationMs),
                 analyzersExecuted: 0,
                 hypothesesCount: 0,
                 receipts: [],
@@ -2377,6 +2411,113 @@ export async function executePersonaPanel(options: {
         : Promise.resolve(undefined);
 
       [zoektPreCheckResult, analyzersPreCheckResult] = await Promise.all([zoektPromise, analyzersPromise]);
+    }
+
+    const preChecksTotalDurationMs = performance.now() - preChecksStartTime;
+
+    // Record OpenTelemetry metrics, span attributes, and structured logs for pre-checks
+    const metrics = getMetrics();
+    span.setAttribute('review_yeti.pre_checks.enabled', preChecksConfig.enabled);
+    span.setAttribute('review_yeti.pre_checks.duration_ms', Math.round(preChecksTotalDurationMs));
+
+    if (preChecksConfig.enabled) {
+      metrics.preCheckTotalDuration.record(preChecksTotalDurationMs / 1000, {
+        repository,
+        enabled: 'true',
+      });
+
+      if (zoektPreCheckResult) {
+        const zStatus = zoektPreCheckResult.status || 'ok';
+        const zScanned = zoektPreCheckResult.scannedSymbolsCount || 0;
+        const zMatched = zoektPreCheckResult.matchedSymbolsCount || 0;
+        const zQueries = zoektPreCheckResult.receipt?.totalQueries || 0;
+        const zDuration = zoektPreCheckResult.receipt?.durationMs || Math.round(zoektDurationMs);
+        const zTruncated = Boolean(zoektPreCheckResult.receipt?.truncated);
+        const zHitRate = zScanned > 0 ? Math.round((zMatched / zScanned) * 100) : 0;
+
+        span.setAttribute('review_yeti.pre_checks.zoekt.status', zStatus);
+        span.setAttribute('review_yeti.pre_checks.zoekt.duration_ms', zDuration);
+        span.setAttribute('review_yeti.pre_checks.zoekt.scanned_symbols', zScanned);
+        span.setAttribute('review_yeti.pre_checks.zoekt.matched_symbols', zMatched);
+        span.setAttribute('review_yeti.pre_checks.zoekt.queries_count', zQueries);
+        span.setAttribute('review_yeti.pre_checks.zoekt.hit_rate_pct', zHitRate);
+        span.setAttribute('review_yeti.pre_checks.zoekt.truncated', zTruncated);
+
+        metrics.zoektQueries.add(zQueries, { repository, status: zStatus });
+        metrics.zoektDuration.record(zDuration / 1000, { repository, status: zStatus });
+        metrics.zoektSymbolsScanned.add(zScanned, { repository });
+        metrics.zoektSymbolsMatched.add(zMatched, { repository });
+        if (zTruncated) {
+          metrics.zoektTruncatedTotal.add(1, { repository });
+        }
+
+        logger.info('Pre-check Zoekt symbol discovery completed', {
+          repository,
+          headSha,
+          status: zStatus,
+          scannedSymbols: zScanned,
+          matchedSymbols: zMatched,
+          totalQueries: zQueries,
+          durationMs: zDuration,
+          truncated: zTruncated,
+          hitRate: zHitRate,
+        });
+      } else if (!preChecksConfig.zoekt.enabled) {
+        span.setAttribute('review_yeti.pre_checks.zoekt.status', 'disabled');
+      }
+
+      if (analyzersPreCheckResult) {
+        const aStatus = analyzersPreCheckResult.status || (analyzersPreCheckResult.hypothesesCount === 0 ? 'clean' : 'ok');
+        const aExecuted = analyzersPreCheckResult.analyzersExecuted || 0;
+        const aHypotheses = analyzersPreCheckResult.hypothesesCount || 0;
+        const aDuration = analyzersPreCheckResult.durationMs || Math.round(analyzersDurationMs);
+
+        span.setAttribute('review_yeti.pre_checks.analyzers.status', aStatus);
+        span.setAttribute('review_yeti.pre_checks.analyzers.duration_ms', aDuration);
+        span.setAttribute('review_yeti.pre_checks.analyzers.executed_count', aExecuted);
+        span.setAttribute('review_yeti.pre_checks.analyzers.hypotheses_count', aHypotheses);
+
+        metrics.analyzersDuration.record(aDuration / 1000, { repository, status: aStatus });
+
+        for (const receipt of analyzersPreCheckResult.receipts || []) {
+          const toolStatus = receipt.available ? (receipt.exitStatus === 0 ? 'ok' : 'error') : 'not_installed';
+          metrics.analyzersExecuted.add(1, {
+            repository,
+            tool: receipt.tool,
+            status: toolStatus,
+          });
+        }
+
+        for (const hyp of analyzersPreCheckResult.hypotheses || []) {
+          metrics.analyzerHypotheses.add(1, {
+            repository,
+            tool: hyp.analyzer,
+            category: hyp.category,
+            severity: hyp.severity,
+          });
+        }
+
+        const receiptsSummary = (analyzersPreCheckResult.receipts || []).map((r) => ({
+          tool: r.tool,
+          category: r.category,
+          available: r.available,
+          exitStatus: r.exitStatus,
+          durationMs: r.durationMs,
+          hypothesesCount: r.hypotheses?.length || 0,
+        }));
+
+        logger.info('Pre-check sandbox static analyzers completed', {
+          repository,
+          headSha,
+          status: aStatus,
+          executedCount: aExecuted,
+          hypothesesCount: aHypotheses,
+          durationMs: aDuration,
+          receiptsSummary,
+        });
+      } else if (!preChecksConfig.analyzers.enabled) {
+        span.setAttribute('review_yeti.pre_checks.analyzers.status', 'disabled');
+      }
     }
 
     const settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[] =
@@ -2453,6 +2594,8 @@ export async function executePersonaPanel(options: {
       !entry.result ? [{ id: entry.persona.id, error: entry.error || 'unknown failure' }] : [],
     );
     const distinctProviders = [...new Set(personas.map((lane) => lane.providerId))];
+    span.setAttribute('review_yeti.quorum_distinct', distinctProviders.length);
+    span.setAttribute('review_yeti.quorum_satisfied', distinctProviders.length >= config.quorum);
     span.setAttribute('ct.quorum_distinct', distinctProviders.length);
     span.setAttribute('ct.quorum_satisfied', distinctProviders.length >= config.quorum);
 
@@ -2685,6 +2828,14 @@ export async function executePersonaPanel(options: {
       panelCached += k;
     }
     const panelHitPercentage = panelPrompt > 0 ? Math.round((panelCached / panelPrompt) * 100) : 0;
+
+    span.setAttribute('review_yeti.tokens.prompt', panelPrompt);
+    span.setAttribute('review_yeti.tokens.completion', panelComp);
+    span.setAttribute('review_yeti.tokens.total', panelTotal);
+    span.setAttribute('review_yeti.tokens.cached', panelCached);
+    span.setAttribute('review_yeti.tokens.cache_hit_percentage', panelHitPercentage);
+    span.setAttribute('review_yeti.cost_usd', totalCost);
+    span.setAttribute('review_yeti.duration_ms', totalDuration);
 
     span.setAttribute('ct.tokens.prompt', panelPrompt);
     span.setAttribute('ct.tokens.completion', panelComp);
