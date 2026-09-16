@@ -1477,3 +1477,46 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     expect(query).not.toHaveBeenCalled();
   });
 });
+
+
+describe('authorizeWorkerEvidence', () => {
+  const evidence = {
+    version: 'WorkerReviewEvidence.v1' as const,
+    runId: 'run_' + 'a'.repeat(32), repositoryId: 7, owner: 'o', repo: 'r', prNumber: 1,
+    headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    executionAttempt: 3, checkId: 9, conclusion: 'failure' as const,
+    result: { version: 'WorkerReviewResult.v1' as const, completedAt: '2026-09-16T00:00:00Z', personas: [], coverageComplete: true, quorumSatisfied: true },
+  };
+  const row = {
+    repository_id: 7, owner: 'o', repo: 'r', pr_number: 1, head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40),
+    effective_policy_digest: 'c'.repeat(64), effective_config_digest: 'd'.repeat(64), publication_mode: 'app-gate',
+    authoritative_gate_app_id: null, execution_attempt: 2, worker_token_digest: 'f'.repeat(64),
+  };
+  function repositoryWith(rows: unknown[]) {
+    const release = vi.fn();
+    const query = vi.fn(async (_text: string, _values?: unknown[]) => ({ rows }));
+    return { repository: new PostgresReviewDispatchRepository({ connect: async () => ({ query, release }) } as any), query, release };
+  }
+  const proof = { workerTokenDigest: 'f'.repeat(64) };
+
+  it('authorizes only the bound worker execution, and never writes', async () => {
+    const { repository, query, release } = repositoryWith([row]);
+    expect(await repository.authorizeWorkerEvidence(evidence, proof)).toEqual({ runId: evidence.runId, status: 'authorized' });
+    expect(String(query.mock.calls[0][0])).toMatch(/^\s*SELECT/u);
+    expect(query).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('accepts the attempt the outbox names once the terminal callback has committed', async () => {
+    const { repository } = repositoryWith([{ ...row, execution_attempt: 3 }]);
+    expect((await repository.authorizeWorkerEvidence(evidence, proof)).status).toBe('authorized');
+  });
+
+  it('rejects a foreign token, a different head, a later attempt, an authoritative run, and an unknown run', async () => {
+    expect((await repositoryWith([row]).repository.authorizeWorkerEvidence(evidence, { workerTokenDigest: '0'.repeat(64) })).status).toBe('unauthorized');
+    expect((await repositoryWith([{ ...row, head_sha: 'e'.repeat(40) }]).repository.authorizeWorkerEvidence(evidence, proof)).status).toBe('unauthorized');
+    expect((await repositoryWith([row]).repository.authorizeWorkerEvidence({ ...evidence, executionAttempt: 5 }, proof)).status).toBe('unauthorized');
+    expect((await repositoryWith([{ ...row, authoritative_gate_app_id: 4385771 }]).repository.authorizeWorkerEvidence(evidence, proof)).status).toBe('unauthorized');
+    expect((await repositoryWith([]).repository.authorizeWorkerEvidence(evidence, proof)).status).toBe('ignored');
+  });
+});
