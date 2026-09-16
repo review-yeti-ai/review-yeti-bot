@@ -2735,6 +2735,56 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect((await dispatchState(client, disabled.admitted.run.runId)).run.status).toBe('queued');
     });
 
+    it('leaves a non-app-gate expired queued run alone when it already carries a result digest', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-result-digest', 1_000, 'worker-result-digest');
+      // A disabled-mode row should never legitimately reach this state while
+      // queued, but the guard must hold defensively: a result already exists,
+      // so this sweep must not overwrite it with a deadline retirement.
+      await client.query(
+        'UPDATE review_runs SET result_digest = $2 WHERE run_id = $1',
+        [disabled.admitted.run.runId, 'f'.repeat(64)],
+      );
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(0);
+      const state = await dispatchState(client, disabled.admitted.run.runId);
+      expect(state.run.status).toBe('queued');
+      expect(state.run.result_digest).toBe('f'.repeat(64));
+      expect(state.outbox.status).toBe('projected');
+    });
+
+    it('leaves a non-app-gate expired queued run alone when it already carries an authoritative gate app id', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-authoritative-app-id', 1_000, 'worker-authoritative-app-id');
+      // Same defensive shape: an authoritative gate reservation implies this
+      // row belongs to the app-gate publishing path, not this sweep.
+      await client.query(
+        'UPDATE review_runs SET authoritative_gate_app_id = $2 WHERE run_id = $1',
+        [disabled.admitted.run.runId, 4385771],
+      );
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(0);
+      const state = await dispatchState(client, disabled.admitted.run.runId);
+      expect(state.run.status).toBe('queued');
+      expect(Number(state.run.authoritative_gate_app_id)).toBe(4385771);
+      expect(state.outbox.status).toBe('projected');
+    });
+
+    it('retires a running non-app-gate run past its deadline with a free lease', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-running', 1_000, 'worker-running');
+      await client.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [disabled.admitted.run.runId]);
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(1);
+      const state = await dispatchState(client, disabled.admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal',
+        stage: 'terminal',
+        error_text: 'publication mode disabled: never claimed before its terminal deadline; retired by reaper',
+      });
+      expect(state.outbox.status).toBe('terminal');
+    });
+
     it('honours the limit', async () => {
       const { repository, client } = await createRepository();
       const first = await queueProjected(repository, 'non-pub-limit-1', 1_000, 'worker-limit-1', { prNumber: 51 });
