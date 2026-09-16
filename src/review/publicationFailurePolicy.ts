@@ -41,7 +41,7 @@ export const RECOVERABLE_PANEL_AUTO_RETRY_CAP = 2;
 /**
  * Single source of truth for "does this execution attempt still have an
  * automatic recoverable-panel retry available." Both the dispatcher's
- * re-queue gate (`reviewDispatchRepository.requeueRecoverableIncompletePanelFailure`)
+ * re-queue gate (`recoverablePanelRetry.requeueRecoverableIncompletePanelFailure`)
  * and the worker's own "no further automatic retry" exhaustion summary
  * (`publishingReview.ts`) call this instead of inlining the comparison, so
  * the two can never drift on what counts as eligible (REL-620).

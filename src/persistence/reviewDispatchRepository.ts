@@ -2,8 +2,8 @@ import { timingSafeEqual } from 'node:crypto';
 import type { WorkerReviewEvidence } from '../review/workerReviewCompletion';
 import { sha256 } from '../review/reviewCore';
 import { deriveReviewRunId } from '../review/reviewAdmission';
-import { assertTerminalDeadlineWindow, TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
-import { RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS, isRecoverablePanelRetryEligible } from '../review/publicationFailurePolicy';
+import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
+import type { RunRetryContext } from '../review/recoverablePanelRetry';
 import {
   ReviewAdmission,
   ReviewAdmissionInput,
@@ -287,6 +287,10 @@ export interface ReviewDispatchRepository {
     diagnostics?: WorkerFailureDiagnostics): Promise<boolean>;
   /** Persist a worker's fail-closed terminal outcome without approving the head. */
   markWorkerFailure(input: WorkerTerminalFailure, proof: WorkerCompletionProof, now?: number): Promise<WorkerFailureTransition>;
+  /** Read-only run metadata the recoverable-panel-retry service needs to
+   * decide whether a fresh execution attempt may be re-admitted. Returns
+   * `null` when the run no longer exists. Never transitions the run. */
+  readRunRetryContext(runId: string): Promise<RunRetryContext | null>;
   /** Terminalize a legacy run only after its worker published a green check. */
   markWorkerSuccess(input: WorkerTerminalSuccess, proof: WorkerCompletionProof, now?: number): Promise<WorkerSuccessTransition>;
   /** Whether a WorkerReviewEvidence.v1 is bound to this run's current worker
@@ -1336,65 +1340,33 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     } finally {
       client.release();
     }
-    // Runs strictly after the failure transition committed and its advisory
-    // lock released: `admit` takes that same lock itself, so calling it while
-    // still inside the transaction above would deadlock against itself. A
-    // re-admission failure here must never surface as a completion-callback
-    // error -- the worker's terminal failure is already durably recorded;
-    // losing the automatic retry only means this run needs its exact-head
-    // manual refresh instead, exactly as it did before REL-620.
-    if (result.status === 'failed') {
-      await this.requeueRecoverableIncompletePanelFailure(input, now).catch((error) => {
-        logger.error('Automatic recoverable-panel retry admission failed', {
-          runId: input.runId,
-          executionAttempt: input.executionAttempt,
-          reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
-        });
-      });
-    }
+    // The bounded automatic recoverable-panel retry (REL-620) is a
+    // review/dispatch service decision, not a persistence-layer one: the
+    // caller that owns `markWorkerFailure` orchestration decides whether and
+    // how to re-admit a fresh execution attempt once this transition commits
+    // (see `../review/recoverablePanelRetry`). This method's only
+    // responsibility is the durable failure transition itself.
     return result;
   }
 
-  /**
-   * Bounded automatic recovery for a recoverable-incomplete-panel terminal
-   * failure (REL-620). Re-queues the exact same review identity for a fresh
-   * execution attempt through the identical admission path the manual
-   * exact-head refresh uses (`retryRequested` + `retryAfterExecutionAttempt`),
-   * so the same durable eligibility fence -- an outbox row proving this exact
-   * attempt actually ran -- governs both. A no-op for every other failure
-   * class, for a non-app-gate run, for an authoritative-gate run (its
-   * `authoritative_gate_app_id` is never null, so it is excluded below in
-   * addition to `markWorkerFailure` never transitioning one), and once the
-   * attempt cap is reached.
-   */
-  private async requeueRecoverableIncompletePanelFailure(input: WorkerTerminalFailure, now: number): Promise<void> {
-    if (input.diagnostics?.recoverableIncompletePanel !== true) return;
-    if (!isRecoverablePanelRetryEligible(input.executionAttempt)) return;
+  /** Read-only run metadata the recoverable-panel-retry service needs to
+   * decide whether a fresh execution attempt may be re-admitted. */
+  async readRunRetryContext(runId: string): Promise<RunRetryContext | null> {
     const current = await this.queryable.query(
       `SELECT repository_id, installation_id, identity, publication_mode, authoritative_gate_app_id
          FROM review_runs WHERE run_id = $1`,
-      [input.runId],
+      [runId],
     );
     const row = current.rows[0] as Record<string, unknown> | undefined;
-    if (!row || row.publication_mode !== 'app-gate' || row.authoritative_gate_app_id != null) return;
+    if (!row) return null;
     const identity = typeof row.identity === 'string' ? JSON.parse(row.identity) : row.identity;
-    const receivedAt = now;
-    await this.admit({
-      deliveryId: `internal-recoverable-panel-retry:${input.runId}:a${input.executionAttempt}`,
-      eventName: 'internal_recoverable_panel_retry',
+    return {
+      publicationMode: row.publication_mode as RunRetryContext['publicationMode'],
+      authoritativeGateAppId: row.authoritative_gate_app_id == null ? null : Number(row.authoritative_gate_app_id),
       repositoryId: Number(row.repository_id),
       installationId: Number(row.installation_id),
-      receivedAt,
-      terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
-      payloadDigest: sha256({ runId: input.runId, executionAttempt: input.executionAttempt,
-        reason: 'recoverable_incomplete_panel' }),
-      publicationMode: 'app-gate',
-      centralActionDispatch: false,
-      retryRequested: true,
-      retryAfterExecutionAttempt: input.executionAttempt,
-      availableAt: receivedAt + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS,
       identity,
-    });
+    };
   }
 
   async authorizeWorkerEvidence(input: WorkerReviewEvidence, proof: WorkerCompletionProof): Promise<WorkerEvidenceAuthorization> {

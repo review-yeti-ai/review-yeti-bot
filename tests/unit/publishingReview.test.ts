@@ -828,6 +828,38 @@ describe('runPublishingReviewWorker', () => {
     expect(event.diagnostics).not.toHaveProperty('recoverableIncompletePanel');
   });
 
+  it('omits the recoverable marker when a panel failure reaches the terminal-failure path without satisfying isRecoverableIncompletePanel', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const cc = checkClient();
+    // A raw P1 finding survives arbitration alongside the failed optional
+    // lane, so `isRecoverableIncompletePanel` returns false
+    // (canonicalFindingCount/rawFindingCount !== 0): this run takes the
+    // normal `completeCheck` publish path, not the recoverable-retry branch
+    // (mirrors "does not turn a partial panel with P1 findings..." above).
+    // Force that publish itself to fail so the outer catch's
+    // `reportTerminalFailure(error, checkId)` actually fires -- proving the
+    // marker is genuinely absent from a real terminal-failure report, not
+    // merely untested because the callback was never reached.
+    cc.completeCheck.mockRejectedValueOnce(new Error('synthetic check-publish outage'));
+    const d = deps({
+      completion, checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Finding', body: 'Review this' }] }],
+        optionalFailures: [{ id: 'arch-lane', error: 'provider HTTP 502' }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow(/synthetic check-publish outage/u);
+
+    expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    const event = (completion.reportTerminalFailure.mock.calls[0] as unknown as
+      [{ diagnostics?: Record<string, unknown> }])[0];
+    expect(event.diagnostics).not.toHaveProperty('recoverableIncompletePanel');
+  });
+
   it('reports the exact terminal success only after publishing the green check', async () => {
     const order: string[] = [];
     const completion = {

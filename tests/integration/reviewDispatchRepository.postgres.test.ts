@@ -25,7 +25,29 @@ import type { WorkerReviewCompletion } from '../../src/review/workerReviewComple
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
 import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS } from '../../src/review/publicationFailurePolicy';
+import { requeueRecoverableIncompletePanelFailure } from '../../src/review/recoverablePanelRetry';
 import { logger } from '../../src/utils/logger';
+
+/** Mirrors the production caller (`actionDispatchApi.ts`'s worker-completion
+ * handler): invoke the recoverable-panel-retry service only after
+ * `markWorkerFailure` durably commits a 'failed' transition, against the
+ * exact same repository instance. The orchestration now lives in the
+ * review/dispatch service layer (REL-620 finding 1), not inside
+ * `PostgresReviewDispatchRepository`, so these tests exercise it the same
+ * way the real handler does instead of relying on the repository to trigger
+ * it implicitly. */
+async function markWorkerFailureAndRequeue(
+  repository: PostgresReviewDispatchRepository,
+  input: Parameters<PostgresReviewDispatchRepository['markWorkerFailure']>[0],
+  proof: { workerTokenDigest: string },
+  now: number,
+) {
+  const transition = await repository.markWorkerFailure(input, proof, now);
+  if (transition.status === 'failed') {
+    await requeueRecoverableIncompletePanelFailure({ input, now, repository, logger });
+  }
+  return transition;
+}
 
 function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000) {
   const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
@@ -1458,7 +1480,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
     );
 
-    await expect(repository.markWorkerFailure(
+    await expect(markWorkerFailureAndRequeue(repository,
       recoverablePanelFailure(input, admitted.run.runId, claim.executionAttempt), { workerTokenDigest }, 1_003,
     )).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
 
@@ -1511,7 +1533,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     // re-admission attempt is never allowed to surface as a completion-callback
     // error, since the worker's terminal failure was already committed before
     // the requeue was even attempted.
-    await expect(repository.markWorkerFailure(
+    await expect(markWorkerFailureAndRequeue(repository,
       recoverablePanelFailure(input, admitted.run.runId, claim.executionAttempt), { workerTokenDigest }, 1_003,
     )).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
 
@@ -1566,15 +1588,14 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(unchanged.rows[0]).toMatchObject({ status: 'queued', outbox_status: 'projected', execution_attempt: 0 });
 
     // That outer fence is what protects production today, but it is a
-    // separate code path from the requeue guard's own
-    // `publication_mode !== 'app-gate'` exit. Exercise that guard directly so
-    // a future change that lets `markWorkerFailure` transition a non-app-gate
-    // run to 'failed' cannot silently start auto-retrying it: reusing this
-    // exact runId and failure event proves the guard alone -- independent of
-    // the outer fence -- refuses to admit a fresh execution attempt.
-    await (repository as unknown as {
-      requeueRecoverableIncompletePanelFailure: (input: typeof failure, now: number) => Promise<void>;
-    }).requeueRecoverableIncompletePanelFailure(failure, 2_000);
+    // separate code path from the service's own `readRunRetryContext`-derived
+    // `publicationMode !== 'app-gate'` exit. Exercise the service directly,
+    // against the real repository, so a future change that lets
+    // `markWorkerFailure` transition a non-app-gate run to 'failed' cannot
+    // silently start auto-retrying it: reusing this exact runId and failure
+    // event proves the guard alone -- independent of the outer fence --
+    // refuses to admit a fresh execution attempt.
+    await requeueRecoverableIncompletePanelFailure({ input: failure, now: 2_000, repository, logger });
 
     const retryDeliveryId = `internal-recoverable-panel-retry:${admitted.run.runId}:a${claim.executionAttempt}`;
     await expect(client.query('SELECT 1 FROM github_deliveries WHERE delivery_id = $1', [retryDeliveryId]))
@@ -1613,14 +1634,12 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     // run to 'failed' (metadataMatches), so an authoritative-gate run can
     // never reach `result.status === 'failed'` through the public
     // `markWorkerFailure` callback at all -- there is no way to observe the
-    // requeue guard's own `authoritative_gate_app_id != null` exit through
-    // that public path. Exercise the private guard directly, exactly as the
-    // non-app-gate test above does, so a future change that let
-    // `markWorkerFailure` transition an authoritative-gate run to 'failed'
-    // cannot silently start auto-retrying it too.
-    await (repository as unknown as {
-      requeueRecoverableIncompletePanelFailure: (input: typeof failure, now: number) => Promise<void>;
-    }).requeueRecoverableIncompletePanelFailure(failure, 2_000);
+    // service's own `authoritativeGateAppId != null` exit through that public
+    // path. Exercise the service directly, against the real repository,
+    // exactly as the non-app-gate test above does, so a future change that
+    // let `markWorkerFailure` transition an authoritative-gate run to
+    // 'failed' cannot silently start auto-retrying it too.
+    await requeueRecoverableIncompletePanelFailure({ input: failure, now: 2_000, repository, logger });
 
     const retryDeliveryId = `internal-recoverable-panel-retry:${admitted.run.runId}:a${claim.executionAttempt}`;
     await expect(client.query('SELECT 1 FROM github_deliveries WHERE delivery_id = $1', [retryDeliveryId]))
@@ -1639,6 +1658,35 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       .resolves.toBeNull();
   });
 
+  it('reads the exact run retry context the recoverable-panel-retry service needs', async () => {
+    const { repository, gateRepository } = await createRepository();
+
+    await expect(repository.readRunRetryContext(`run_${'0'.repeat(32)}`)).resolves.toBeNull();
+
+    const appGateInput = sameHeadAdmission('retry-context-app-gate', 1_000);
+    const appGateAdmitted = await repository.admit(appGateInput);
+    await expect(repository.readRunRetryContext(appGateAdmitted.run.runId)).resolves.toEqual({
+      publicationMode: 'app-gate',
+      authoritativeGateAppId: null,
+      repositoryId: appGateInput.repositoryId,
+      installationId: appGateInput.installationId,
+      identity: appGateInput.identity,
+    });
+
+    const disabledInput = { ...sameHeadAdmission('retry-context-disabled', 1_000, { prNumber: 43 }), publicationMode: 'disabled' as const };
+    const disabledAdmitted = await repository.admit(disabledInput);
+    await expect(repository.readRunRetryContext(disabledAdmitted.run.runId)).resolves.toMatchObject({
+      publicationMode: 'disabled', authoritativeGateAppId: null,
+    });
+
+    const authoritativeInput = authoritativeAdmission('retry-context-authoritative', 1_000);
+    const authoritativeAdmitted = await repository.admit(authoritativeInput);
+    await bindPendingGate(gateRepository);
+    await expect(repository.readRunRetryContext(authoritativeAdmitted.run.runId)).resolves.toMatchObject({
+      publicationMode: 'app-gate', authoritativeGateAppId: 4385771,
+    });
+  });
+
   it('stops the automatic retry once the recoverable-panel attempt cap is exhausted', async () => {
     const { repository, client } = await createRepository();
     const input = sameHeadAdmission('recoverable-panel-cap', 1_000);
@@ -1654,7 +1702,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         claim.runId, claim.leaseOwner, claim.claimAttempt, `worker-a${attempt}`, claimNow + 1, workerTokenDigest,
       );
       const failedAt = claimNow + 2;
-      await expect(repository.markWorkerFailure(
+      await expect(markWorkerFailureAndRequeue(repository,
         recoverablePanelFailure(input, admitted.run.runId, attempt), { workerTokenDigest }, failedAt,
       )).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
       claimNow = failedAt + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS + 1;
