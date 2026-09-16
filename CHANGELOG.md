@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.71.0...v1.72.0) (2026-09-16)
+
+
+### Features
+
+* **gate:** report the findings behind a self-published check as evidence for both conclusions ([#811](https://github.com/review-yeti-ai/review-yeti-bot/issues/811)) ([06f5c10](https://github.com/review-yeti-ai/review-yeti-bot/commit/06f5c102fd0d5ff25c45dfcd3ff164ff3c1a95a9))
+
 ## [1.71.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.70.0...v1.71.0) (2026-09-16)
 
 
