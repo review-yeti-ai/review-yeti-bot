@@ -33,8 +33,8 @@ func TestRecordDispatchTimingRecordsAvailableLifecycleDurations(t *testing.T) {
 	completed := jobCreated.Add(7 * time.Second)
 	deadline := received.Add(15 * time.Minute)
 
-	beforeJob := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds")
-	beforeTotal := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds")
+	beforeJob := histogramSampleCount(t, "review_yeti_operator_webhook_to_job_duration_seconds")
+	beforeTotal := histogramSampleCount(t, "review_yeti_operator_webhook_to_completion_duration_seconds")
 	beforeDeadline := testutil.ToFloat64(metrics.DeadlineMisses)
 
 	metrics.RecordDispatchTiming(metrics.DispatchTiming{
@@ -44,10 +44,10 @@ func TestRecordDispatchTimingRecordsAvailableLifecycleDurations(t *testing.T) {
 		TerminalDeadline: deadline,
 	})
 
-	if got := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds"); got != beforeJob+1 {
+	if got := histogramSampleCount(t, "review_yeti_operator_webhook_to_job_duration_seconds"); got != beforeJob+1 {
 		t.Fatalf("webhook-to-job histogram count = %d, want %d", got, beforeJob+1)
 	}
-	if got := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds"); got != beforeTotal+1 {
+	if got := histogramSampleCount(t, "review_yeti_operator_webhook_to_completion_duration_seconds"); got != beforeTotal+1 {
 		t.Fatalf("webhook-to-completion histogram count = %d, want %d", got, beforeTotal+1)
 	}
 	if got := testutil.ToFloat64(metrics.DeadlineMisses); got != beforeDeadline {
@@ -57,8 +57,8 @@ func TestRecordDispatchTimingRecordsAvailableLifecycleDurations(t *testing.T) {
 
 func TestRecordDispatchTimingRejectsNonMonotonicLifecycle(t *testing.T) {
 	received := time.Unix(1_700_000_000, 0).UTC()
-	beforeJob := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds")
-	beforeTotal := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds")
+	beforeJob := histogramSampleCount(t, "review_yeti_operator_webhook_to_job_duration_seconds")
+	beforeTotal := histogramSampleCount(t, "review_yeti_operator_webhook_to_completion_duration_seconds")
 
 	metrics.RecordDispatchTiming(metrics.DispatchTiming{
 		ReceivedAt:       received,
@@ -67,10 +67,10 @@ func TestRecordDispatchTimingRejectsNonMonotonicLifecycle(t *testing.T) {
 		TerminalDeadline: received.Add(15 * time.Minute),
 	})
 
-	if got := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds"); got != beforeJob {
+	if got := histogramSampleCount(t, "review_yeti_operator_webhook_to_job_duration_seconds"); got != beforeJob {
 		t.Fatalf("invalid timing changed webhook-to-job histogram count to %d", got)
 	}
-	if got := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds"); got != beforeTotal {
+	if got := histogramSampleCount(t, "review_yeti_operator_webhook_to_completion_duration_seconds"); got != beforeTotal {
 		t.Fatalf("invalid timing changed webhook-to-completion histogram count to %d", got)
 	}
 }
@@ -132,31 +132,31 @@ func TestUpdateQueueMetrics(t *testing.T) {
 	queuedFound := false
 
 	for _, mf := range metricFamilies {
-		if mf.GetName() == "ct_operator_active_jobs" {
+		if mf.GetName() == "review_yeti_operator_active_jobs" {
 			activeFound = true
 			if len(mf.GetMetric()) > 0 {
 				val := mf.GetMetric()[0].GetGauge().GetValue()
 				if val != float64(activeVal) {
-					t.Errorf("ct_operator_active_jobs expected %d, got %f", activeVal, val)
+					t.Errorf("review_yeti_operator_active_jobs expected %d, got %f", activeVal, val)
 				}
 			}
 		}
-		if mf.GetName() == "ct_operator_queued_jobs" {
+		if mf.GetName() == "review_yeti_operator_queued_jobs" {
 			queuedFound = true
 			if len(mf.GetMetric()) > 0 {
 				val := mf.GetMetric()[0].GetGauge().GetValue()
 				if val != float64(queuedVal) {
-					t.Errorf("ct_operator_queued_jobs expected %d, got %f", queuedVal, val)
+					t.Errorf("review_yeti_operator_queued_jobs expected %d, got %f", queuedVal, val)
 				}
 			}
 		}
 	}
 
 	if !activeFound {
-		t.Errorf("ct_operator_active_jobs metric not found in registry")
+		t.Errorf("review_yeti_operator_active_jobs metric not found in registry")
 	}
 	if !queuedFound {
-		t.Errorf("ct_operator_queued_jobs metric not found in registry")
+		t.Errorf("review_yeti_operator_queued_jobs metric not found in registry")
 	}
 }
 
@@ -176,12 +176,12 @@ func TestRecordJobDuration(t *testing.T) {
 
 	found := false
 	for _, mf := range metricFamilies {
-		if mf.GetName() == "ct_operator_job_duration_seconds" {
+		if mf.GetName() == "review_yeti_operator_job_duration_seconds" {
 			found = true
 			if len(mf.GetMetric()) > 0 {
 				h := mf.GetMetric()[0].GetHistogram()
 				if h.GetSampleCount() == 0 {
-					t.Errorf("Expected sample count > 0 for ct_operator_job_duration_seconds")
+					t.Errorf("Expected sample count > 0 for review_yeti_operator_job_duration_seconds")
 				}
 				if h.GetSampleSum() < 45.5 {
 					t.Errorf("Expected sample sum >= 45.5, got %f", h.GetSampleSum())
@@ -191,7 +191,7 @@ func TestRecordJobDuration(t *testing.T) {
 	}
 
 	if !found {
-		t.Errorf("ct_operator_job_duration_seconds metric not found in registry")
+		t.Errorf("review_yeti_operator_job_duration_seconds metric not found in registry")
 	}
 }
 

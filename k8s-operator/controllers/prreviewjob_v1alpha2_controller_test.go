@@ -399,15 +399,15 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	if err := kube.Status().Update(context.Background(), &worker); err != nil {
 		t.Fatalf("mark worker succeeded: %v", err)
 	}
-	beforeWebhookToJob := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds")
-	beforeWebhookToCompletion := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds")
+	beforeWebhookToJob := histogramSampleCount(t, "review_yeti_operator_webhook_to_job_duration_seconds")
+	beforeWebhookToCompletion := histogramSampleCount(t, "review_yeti_operator_webhook_to_completion_duration_seconds")
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("terminal reconcile: %v", err)
 	}
-	if got := histogramSampleCount(t, "ct_operator_webhook_to_job_duration_seconds"); got != beforeWebhookToJob+1 {
+	if got := histogramSampleCount(t, "review_yeti_operator_webhook_to_job_duration_seconds"); got != beforeWebhookToJob+1 {
 		t.Fatalf("webhook-to-job histogram count = %d, want %d", got, beforeWebhookToJob+1)
 	}
-	if got := histogramSampleCount(t, "ct_operator_webhook_to_completion_duration_seconds"); got != beforeWebhookToCompletion+1 {
+	if got := histogramSampleCount(t, "review_yeti_operator_webhook_to_completion_duration_seconds"); got != beforeWebhookToCompletion+1 {
 		t.Fatalf("webhook-to-completion histogram count = %d, want %d", got, beforeWebhookToCompletion+1)
 	}
 	var updated reviewv1alpha2.PRReviewJob
