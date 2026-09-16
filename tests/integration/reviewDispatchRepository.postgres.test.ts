@@ -2691,6 +2691,16 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       return { admitted, terminalDeadline: admission.terminalDeadline };
     }
 
+    it('rejects a non-positive or non-integer limit before touching any row', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-limit', 1_000, 'worker-limit', {}, true);
+      for (const bad of [0, -1, Number.NaN, 2.5, Number.MAX_SAFE_INTEGER + 1]) {
+        await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, bad)).rejects.toThrow('reaper limit must be a positive integer');
+      }
+      const run = (await client.query('SELECT status FROM review_runs WHERE run_id = $1', [disabled.runId])).rows[0];
+      expect(run.status).toBe('queued');
+    });
+
     it('retires a disabled-mode queued run past its deadline with a projected outbox row, leaving an app-gate row untouched', async () => {
       const { repository, client } = await createRepository();
       const disabled = await queueProjected(repository, 'non-pub-disabled', 1_000, 'worker-disabled', {}, true);
