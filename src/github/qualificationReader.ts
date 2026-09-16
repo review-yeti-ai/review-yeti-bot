@@ -38,6 +38,27 @@ export class GitHubQualificationReadError extends Error {
   }
 }
 
+// The exact message format `safeRequest` below uses for a transport-level
+// GitHub read failure. This is the single source for that message-format
+// contract: every consumer that needs to branch on the HTTP status a
+// GitHubQualificationReadError carries (worker failure classification, diff-
+// too-large detection) parses through `githubQualificationReadStatus` instead
+// of each keeping its own copy of this regex.
+const GITHUB_QUALIFICATION_READ_STATUS_PATTERN = /GitHub qualification read failed HTTP (\d{3})/iu;
+
+/**
+ * Extracts the HTTP status from a GitHubQualificationReadError message, or
+ * `null` when the message does not match the qualification-read failure
+ * format (for example a different GitHubQualificationReadError message, or
+ * an unrelated error).
+ */
+export function githubQualificationReadStatus(message: string): number | null {
+  const match = GITHUB_QUALIFICATION_READ_STATUS_PATTERN.exec(message);
+  if (!match) return null;
+  const status = Number(match[1]);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
 function validateInput(input: SameHeadQualificationInput): { owner: string; repo: string } {
   if (!input.token.startsWith('ghs_')) {
     throw new Error('GitHub qualification token is not an installation token');

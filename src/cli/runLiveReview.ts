@@ -8,7 +8,7 @@ import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { computeAppVerdict } from '../review/reviewAdapters';
 import { CommentPublisher } from '../github/commentPublisher';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
-import { loadSameHeadReviewSource } from '../github/qualificationReader';
+import { githubQualificationReadStatus, loadSameHeadReviewSource } from '../github/qualificationReader';
 import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
@@ -636,15 +636,20 @@ export function qualificationFailureClass(error: unknown): string {
     if (error.status !== undefined && error.status >= 500) return 'provider_5xx';
   }
   const message = error instanceof Error ? error.message : String(error || '');
-  if (/GitHub qualification read failed HTTP 429/iu.test(message)) return 'github_rate_limit';
-  if (/GitHub qualification read failed HTTP (?:5\d\d)/iu.test(message)) return 'github_5xx';
-  if (/GitHub qualification read failed HTTP (?:401|403)/iu.test(message)) return 'github_auth';
-  if (/GitHub qualification read failed HTTP 404/iu.test(message)) return 'github_not_found';
+  // Status parsing goes through the single source of the qualification-read
+  // message-format contract in ../github/qualificationReader rather than a
+  // local copy of the "GitHub qualification read failed HTTP <status>"
+  // pattern per branch.
+  const githubStatus = githubQualificationReadStatus(message);
+  if (githubStatus === 429) return 'github_rate_limit';
+  if (githubStatus !== null && githubStatus >= 500 && githubStatus <= 599) return 'github_5xx';
+  if (githubStatus === 401 || githubStatus === 403) return 'github_auth';
+  if (githubStatus === 404) return 'github_not_found';
   // 406 means the diff cannot be rendered in the requested representation,
   // most commonly because it is too large (over ~20,000 lines or 300 files).
   // That is a permanent property of this pull request head, not a transient
   // GitHub failure -- give it its own label rather than the generic catch-all.
-  if (/GitHub qualification read failed HTTP 406/iu.test(message)) return 'github_diff_not_renderable';
+  if (githubStatus === 406) return 'github_diff_not_renderable';
   if (/projected pull request identity mismatch/iu.test(message)) return 'github_identity_mismatch';
   if (/pull request moved during qualification read/iu.test(message)) return 'github_head_moved';
   if (/diff size is outside qualification bounds/iu.test(message)) return 'github_diff_bounds';

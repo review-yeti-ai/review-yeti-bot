@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadSameHeadReviewSource } from '../../src/github/qualificationReader';
+import { githubQualificationReadStatus, loadSameHeadReviewSource } from '../../src/github/qualificationReader';
 
 const headSha = 'a'.repeat(40);
 const baseSha = 'b'.repeat(40);
@@ -82,5 +82,19 @@ describe('same-head qualification reader', () => {
     expect(error.message).toBe('GitHub qualification read failed HTTP 429');
     expect((error as Error & { githubReads: number }).githubReads).toBe(1);
     expect(error.message).not.toContain('ghs_secret_token');
+  });
+
+  it('round-trips the HTTP status through the exact message the reader throws', async () => {
+    // githubQualificationReadStatus is the single source consumers (worker
+    // failure classification, diff-too-large detection) use to parse the
+    // status back out of a GitHubQualificationReadError message. Exercise the
+    // real throw site here -- not a hand-built error -- so a future wording
+    // change to the "GitHub qualification read failed HTTP <status>" format
+    // in safeRequest breaks this test instead of silently disabling every
+    // downstream status branch.
+    const request = vi.fn().mockRejectedValue(Object.assign(new Error('raw provider response'), { status: 406 }));
+    const error = await loadSameHeadReviewSource(input(), request as any).catch((caught) => caught as Error) as Error;
+    expect(error.message).toBe('GitHub qualification read failed HTTP 406');
+    expect(githubQualificationReadStatus(error.message)).toBe(406);
   });
 });

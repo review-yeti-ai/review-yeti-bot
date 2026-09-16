@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { sha256 } from './reviewCore';
 import type { WorkerReviewEvidence } from './workerReviewCompletion';
+import { githubQualificationReadStatus } from '../github/qualificationReader';
 
 const runId = z.string().regex(/^run_[a-f0-9]{32}$/u);
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -156,19 +157,32 @@ export function redactWorkerFailureLogTail(value: unknown): string {
   return tail;
 }
 
-const GITHUB_QUALIFICATION_READ_STATUS_PATTERN = /GitHub qualification read failed HTTP (\d{3})/iu;
-
 /**
  * GitHub returns 406 Not Acceptable for the diff/patch media types when a pull
  * request's diff cannot be rendered in the requested representation -- most
  * commonly because it is too large (roughly over 20,000 lines or 300 files).
  * That is a permanent property of the pull request head, not an outage, so it
  * gets its own diagnostic reason distinct from the generic worker failure text.
+ * Status parsing goes through the single source of the qualification-read
+ * message-format contract in `../github/qualificationReader` rather than a
+ * local copy of the pattern.
  */
 export function isGithubDiffNotRenderableError(message: string): boolean {
-  const match = GITHUB_QUALIFICATION_READ_STATUS_PATTERN.exec(message);
-  return match !== null && Number(match[1]) === 406;
+  return githubQualificationReadStatus(message) === 406;
 }
+
+/**
+ * The one exported explanation of what a GitHub HTTP 406 qualification-read
+ * failure means for an operator. Both the bounded diagnostic log tail
+ * (`buildWorkerFailureDiagnostics`) and the published check summary
+ * (`renderFailureSummary` in `../cli/publishingReview`) render this same text
+ * instead of each keeping their own copy of the "too large" explanation. Kept
+ * free of the redaction filter's disclosure-boundary words (request/response/
+ * body/content/...) so it survives `redactWorkerFailureLogTail` intact.
+ */
+export const GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION =
+  'GitHub returned HTTP 406: this diff is too large to render as configured (roughly over 20,000 changed lines '
+  + 'or 300 files). This is a permanent property of this head, not an infrastructure outage.';
 
 export function workerFailureReason(failureClass: WorkerTerminalFailure['failureClass']): string {
   return {
@@ -219,17 +233,10 @@ export function buildWorkerFailureDiagnostics(
     ? providerStatus : undefined;
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   if (isGithubDiffNotRenderableError(message)) {
-    // Keep this note free of the redaction filter's disclosure-boundary words
-    // (request/response/body/content/...) so the too-large explanation stays
-    // intact for operators instead of being swallowed by the raw-payload guard
-    // built for provider text.
     return {
       reason: 'github_diff_not_renderable',
       providerStatus: 406,
-      logTail: redactWorkerFailureLogTail(
-        'GitHub returned HTTP 406: this diff is too large to render as configured (roughly over 20,000 changed '
-        + `lines or 300 files). This is a permanent property of this head, not an infrastructure outage. ${message}`,
-      ),
+      logTail: redactWorkerFailureLogTail(`${GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION} ${message}`),
     };
   }
   return {

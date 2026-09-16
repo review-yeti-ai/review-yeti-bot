@@ -42,7 +42,8 @@ import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { isRecoverableIncompletePanel } from '../review/publicationFailurePolicy';
 import {
-  buildWorkerFailureDiagnostics, isGithubDiffNotRenderableError, validateWorkerCompletionEndpoint,
+  buildWorkerFailureDiagnostics, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION, isGithubDiffNotRenderableError,
+  validateWorkerCompletionEndpoint,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
@@ -454,10 +455,8 @@ export function renderFailureSummary(
   // flakiness and retry a review that can never succeed as-is.
   const isGithubDiffNotRenderable = failureClass === 'contract' && diagnostics?.reason === 'github_diff_not_renderable';
   const whatFailed = isGithubDiffNotRenderable
-    ? 'GitHub returned HTTP 406 for this pull request diff: the diff is too large or otherwise not '
-      + 'renderable in the requested representation (roughly over 20,000 lines changed or 300 files). This is a '
-      + 'permanent property of this pull request head, not an infrastructure outage -- retrying will not help. '
-      + 'Split the pull request into smaller changes to get it reviewed.'
+    ? `${GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION} Retrying will not help -- split the pull request into smaller `
+      + 'changes to get it reviewed.'
     : guidance[failureClass];
   const lines = [
     `Review Yeti could not complete a binding review at \`${headSha}\` (failure class \`${failureClass}\`).`,
