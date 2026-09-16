@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.2...v1.72.3) (2026-09-16)
+
+
+### Bug Fixes
+
+* **REL-886:** retry the empty-completion signature against the same alias ([dc22aaf](https://github.com/review-yeti-ai/review-yeti-bot/commit/dc22aaf84e73d98c4fa6da73774afdefef755918))
+
 ## [1.72.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.1...v1.72.2) (2026-09-16)
 
 
