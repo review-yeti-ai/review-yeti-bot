@@ -288,6 +288,78 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     expect(meta?.completionExcerpt).toContain('not fenced at all');
   });
 
+  it('propagates fenceErr-attached usage and model through to optionalFailures (REL-892)', async () => {
+    // Item 3 (REL-892) has two distinct capture sites: `runPersona`'s per-attempt block, and the
+    // `fenceErr` block that fires when the response arrives but cannot be parsed. Only the first
+    // was covered -- the excerpt test above drives this path with `usage: null`, so it proves the
+    // log behaviour while saying nothing about whether the fields attached at the fenceErr site
+    // survive `runPersona`'s catch into the final PanelConfigurationError.
+    //
+    // That propagation is the whole point of the item: it is what distinguishes a lane that
+    // exhausted its token budget from one that died having produced almost nothing. Attaching the
+    // fields to a copy of fenceErr, or reading the wrong property name in the catch, would leave
+    // failures reporting `usage=unavailable` while the usage was in fact observed -- silently, and
+    // in exactly the case an operator is trying to diagnose.
+    const config = buildMinimalConfig();
+    const changedFiles = [{ path: 'src/main.ts' }];
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const allMsg = JSON.stringify(opts.messages);
+      if (allMsg.includes('arbiter')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All good' })}\nCT_REVIEW_END:${nonce}`,
+          usage: null, costUSD: null,
+        };
+      }
+      if (allMsg.includes('moderator')) {
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+          usage: null, costUSD: null,
+        };
+      }
+      if (opts.model === 'deepseek-v4-pro') {
+        // Unparseable, but with REAL usage and a resolved model name that differs from the
+        // requested one -- the shape of a lane that spent its budget and then violated the
+        // structured-output contract.
+        return {
+          model: 'deepseek-v4-pro-2026-09-01',
+          content: 'reasoning ran long and never emitted a fenced object',
+          usage: { prompt: 4096, completion: 65536, total: 69632 },
+          costUSD: null,
+        };
+      }
+      return {
+        model: opts.model,
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+        usage: null, costUSD: null,
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config, changedFiles, repository: 'owner/repo', headSha: 'sha-3d',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    expect(result.optionalFailures).toHaveLength(1);
+    const failed = result.optionalFailures[0] as {
+      id: string;
+      lastKnownUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+      lastKnownModel?: string;
+    };
+    expect(failed.id).toBe('opt-lane');
+    // The decisive assertion: the numbers observed at the fenceErr site reached the caller.
+    expect(failed.lastKnownUsage).toEqual({ promptTokens: 4096, completionTokens: 65536, totalTokens: 69632 });
+    // And the RESOLVED model the provider reported, not the requested alias.
+    expect(failed.lastKnownModel).toBe('deepseek-v4-pro-2026-09-01');
+    // The completion text itself still must not ride along.
+    expect(JSON.stringify(result)).not.toContain('reasoning ran long');
+    expect(failed).not.toHaveProperty('rawCompletionExcerpt');
+  });
+
   it('normalizes APPROVE with validated findings to FINDINGS without discarding evidence', async () => {
     const config = buildMinimalConfig();
     config.personas = [config.personas[0]]; // required sec-lane only
