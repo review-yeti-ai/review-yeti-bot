@@ -392,6 +392,17 @@ function renderCoverageSummary(coverage: PublishingCoverageProjection): string {
   return `Coverage: mode=${coverage.mode}; expected lanes=${expected}; completed lanes=${coverage.completedLaneCount}; failed lanes=${coverage.failedLaneCount}; roster valid=${coverage.rosterValid}; quorum satisfied=${coverage.quorumSatisfied}; full panel complete=${coverage.fullPanelComplete}.`;
 }
 
+// GitHub returns 406 Not Acceptable when a pull request's diff cannot be
+// rendered in the requested representation (most commonly because it is too
+// large -- roughly over 20,000 lines or 300 files). That is a permanent
+// property of the pull request head, i.e. an invalid review input, not an
+// infrastructure failure. The status comes from the structured `httpStatus`
+// field, never from parsing the message. This is the single predicate both
+// the failure class and the diagnostics flag derive from, so they cannot drift.
+export function isGithubDiffNotRenderableError(error: unknown): boolean {
+  return error instanceof GitHubQualificationReadError && error.httpStatus === 406;
+}
+
 export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
   if (error instanceof OpenRouterTimeoutError) return 'timeout';
   if (error instanceof UpstreamCapacityRejectionError) return 'rate_limit';
@@ -403,14 +414,8 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
   }
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
-  // GitHub returns 406 Not Acceptable when a pull request's diff cannot be
-  // rendered in the requested representation (most commonly because it is too
-  // large -- roughly over 20,000 lines or 300 files). That is a permanent
-  // property of the pull request head, i.e. an invalid review input, not an
-  // infrastructure failure, so it classifies as a contract violation rather
-  // than falling through to the internal_error catch-all. The status comes
-  // from the structured `httpStatus` field, not from parsing the message.
-  if (error instanceof GitHubQualificationReadError && error.httpStatus === 406) return 'contract';
+  // A non-renderable diff is a contract violation, not the internal_error catch-all.
+  if (isGithubDiffNotRenderableError(error)) return 'contract';
   if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
   if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
@@ -585,7 +590,7 @@ export async function runPublishingReviewWorker(
     // contradictory terminal failure.
     if (legacySuccessCompletionAttempted) return;
     const failureClass = panelFailure?.failureClass ?? classifyFailure(error);
-    const githubDiffNotRenderable = error instanceof GitHubQualificationReadError && error.httpStatus === 406;
+    const githubDiffNotRenderable = isGithubDiffNotRenderableError(error);
     const diagnostics = buildWorkerFailureDiagnostics(error, failureClass, { githubDiffNotRenderable });
     if (authoritative && !authoritativeCompletionAttempted) {
       try {
