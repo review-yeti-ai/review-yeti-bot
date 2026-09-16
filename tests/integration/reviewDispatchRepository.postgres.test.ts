@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
-import { PostgresReviewDispatchRepository, type ReviewDispatchRepositoryOptions } from '../../src/persistence/reviewDispatchRepository';
+import {
+  PostgresReviewDispatchRepository,
+  PUBLISHABLE_PUBLICATION_MODES,
+  type ReviewDispatchRepositoryOptions,
+} from '../../src/persistence/reviewDispatchRepository';
+import { actionDispatchRequestSchema } from '../../src/review/actionDispatch';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
 import { sha256 } from '../../src/review/reviewCore';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
@@ -2668,5 +2673,227 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(await state()).toEqual(before);
     expect((await client.query("SELECT * FROM github_deliveries WHERE delivery_id = 'stale-legacy'")).rows).toEqual([]);
     expect(before.runs.find((run) => run.run_id === current.run.runId).status).toBe('queued');
+  });
+
+  describe('retireExpiredNonPublishableRuns', () => {
+    function disabledAdmission(deliveryId: string, receivedAt: number, overrides: Parameters<typeof sameHeadAdmission>[2] = {}) {
+      return { ...sameHeadAdmission(deliveryId, receivedAt, overrides), publicationMode: 'disabled' as const };
+    }
+
+    // Mirrors the production defect: a run admitted, claimed, and projected
+    // (a worker was dispatched and reported back) but never reached a
+    // terminal state before its deadline. review_runs.lease_owner is NULL
+    // throughout this path -- only the outbox side is ever leased here --
+    // which is exactly the "free lease" state the reaper must retire.
+    async function queueProjected(
+      repository: PostgresReviewDispatchRepository, deliveryId: string, receivedAt: number, workerId: string,
+      overrides: Parameters<typeof sameHeadAdmission>[2] = {}, disabled = true,
+    ) {
+      const admission = disabled ? disabledAdmission(deliveryId, receivedAt, overrides) : sameHeadAdmission(deliveryId, receivedAt, overrides);
+      const admitted = await repository.admit(admission);
+      const claim = (await repository.claimNext(workerId, receivedAt + 1, 30_000))!;
+      await repository.markProjected(claim.runId, workerId, claim.claimAttempt, `${workerId}-projection`, receivedAt + 2);
+      return { admitted, terminalDeadline: admission.terminalDeadline };
+    }
+
+    it('rejects a non-positive or non-integer limit before touching any row', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-limit', 1_000, 'worker-limit', {}, true);
+      for (const bad of [0, -1, Number.NaN, 2.5, Number.MAX_SAFE_INTEGER + 1]) {
+        await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, bad)).rejects.toThrow('reaper limit must be a positive integer');
+      }
+      const run = (await client.query('SELECT status FROM review_runs WHERE run_id = $1', [disabled.admitted.run.runId])).rows[0];
+      expect(run.status).toBe('queued');
+    });
+
+    it('retires a disabled-mode queued run past its deadline with a projected outbox row, leaving an app-gate row untouched', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-disabled', 1_000, 'worker-disabled', {}, true);
+      const gated = await queueProjected(repository, 'non-pub-app-gate', 1_000, 'worker-gate', { prNumber: 43 }, false);
+
+      const retired = await repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20);
+      expect(retired).toBe(1);
+
+      const disabledState = await dispatchState(client, disabled.admitted.run.runId);
+      expect(disabledState.run).toMatchObject({
+        status: 'terminal',
+        stage: 'terminal',
+        error_text: 'publication mode disabled: never claimed before its terminal deadline; retired by reaper',
+        lease_owner: null,
+      });
+      expect(disabledState.outbox).toMatchObject({ status: 'terminal', lease_owner: null, lease_expires_at: null });
+
+      // The app-gate row sits in the identical shape (queued, projected,
+      // deadline passed) but must be left for claimAbandonedPublishingRuns.
+      const gatedState = await dispatchState(client, gated.admitted.run.runId);
+      expect(gatedState.run.status).toBe('queued');
+      expect(gatedState.outbox.status).toBe('projected');
+    });
+
+    // Guards the exact defect the reviewer flagged: the two reapers must
+    // stay each other's exact complement, by construction, for every mode
+    // the action-dispatch contract can actually admit -- not a second
+    // hardcoded list re-typed in this test that could itself drift from
+    // PUBLISHABLE_PUBLICATION_MODES.
+    it('routes every publication mode admitted by the action-dispatch schema to exactly one reaper', async () => {
+      const { repository, client } = await createRepository();
+      // actionDispatchRequestSchema is wrapped in a superRefine (ZodEffects);
+      // unwrap to the underlying object shape to read the enum without
+      // re-typing its literal values here.
+      const modes = actionDispatchRequestSchema.innerType().shape.publishMode.options;
+      expect(modes.length).toBeGreaterThan(0);
+
+      for (const [index, mode] of modes.entries()) {
+        const receivedAt = 1_000 + index * 1_000_000;
+        const admission = {
+          ...sameHeadAdmission(`partition-${mode}`, receivedAt, { prNumber: 9_000 + index }),
+          publicationMode: mode,
+        };
+        const admitted = await repository.admit(admission);
+        const workerId = `worker-partition-${mode}`;
+        const claim = (await repository.claimNext(workerId, receivedAt + 1, 30_000))!;
+        await repository.markProjected(claim.runId, workerId, claim.claimAttempt, `${workerId}-projection`, receivedAt + 2);
+        const now = admission.terminalDeadline + 1;
+        const isPublishable = (PUBLISHABLE_PUBLICATION_MODES as readonly string[]).includes(mode);
+
+        const retiredCount = await repository.retireExpiredNonPublishableRuns(now, 20);
+        const claimed = await repository.claimAbandonedPublishingRuns(`reaper-partition-${mode}`, now, 20);
+        const claimedRunIds = claimed.map((run) => run.runId);
+
+        if (isPublishable) {
+          expect(retiredCount).toBe(0);
+          expect(claimedRunIds).toContain(admitted.run.runId);
+        } else {
+          expect(retiredCount).toBe(1);
+          expect(claimedRunIds).not.toContain(admitted.run.runId);
+          expect((await dispatchState(client, admitted.run.runId)).run.status).toBe('terminal');
+        }
+      }
+    });
+
+    it('leaves a disabled-mode run alone before its terminal deadline', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-early', 1_000, 'worker-early');
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline - 1, 20)).resolves.toBe(0);
+      expect((await dispatchState(client, disabled.admitted.run.runId)).run.status).toBe('queued');
+    });
+
+    it('leaves a leased disabled-mode run alone', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-leased', 1_000, 'worker-leased');
+      await client.query(
+        "UPDATE review_runs SET lease_owner = 'concurrent-owner', lease_expires_at = to_timestamp(($2 + 60000) / 1000.0) WHERE run_id = $1",
+        [disabled.admitted.run.runId, disabled.terminalDeadline],
+      );
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(0);
+      expect((await dispatchState(client, disabled.admitted.run.runId)).run.status).toBe('queued');
+    });
+
+    // Mirrors claimAbandonedPublishingRuns's own expired-lease-is-unowned
+    // treatment (runs.lease_expires_at <= now) and dispatchClaimPredicate's
+    // identical treatment of the outbox lease: a claimant that died without
+    // releasing its lease must not strand the row past its deadline forever.
+    it('retires a disabled-mode run whose lease already expired (claimant died without releasing it)', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-expired-lease', 1_000, 'worker-expired-lease');
+      await client.query(
+        "UPDATE review_runs SET lease_owner = 'dead-worker', lease_expires_at = to_timestamp(($2 - 60000) / 1000.0) WHERE run_id = $1",
+        [disabled.admitted.run.runId, disabled.terminalDeadline],
+      );
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(1);
+      const state = await dispatchState(client, disabled.admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal',
+        stage: 'terminal',
+        error_text: 'publication mode disabled: never claimed before its terminal deadline; retired by reaper',
+        lease_owner: null,
+        lease_expires_at: null,
+      });
+      expect(state.outbox).toMatchObject({ status: 'terminal', lease_owner: null, lease_expires_at: null });
+    });
+
+    it('leaves a non-app-gate expired queued run alone when it already carries a result digest', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-result-digest', 1_000, 'worker-result-digest');
+      // A disabled-mode row should never legitimately reach this state while
+      // queued, but the guard must hold defensively: a result already exists,
+      // so this sweep must not overwrite it with a deadline retirement.
+      await client.query(
+        'UPDATE review_runs SET result_digest = $2 WHERE run_id = $1',
+        [disabled.admitted.run.runId, 'f'.repeat(64)],
+      );
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(0);
+      const state = await dispatchState(client, disabled.admitted.run.runId);
+      expect(state.run.status).toBe('queued');
+      expect(state.run.result_digest).toBe('f'.repeat(64));
+      expect(state.outbox.status).toBe('projected');
+    });
+
+    it('leaves a non-app-gate expired queued run alone when it already carries an authoritative gate app id', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-authoritative-app-id', 1_000, 'worker-authoritative-app-id');
+      // Same defensive shape: an authoritative gate reservation implies this
+      // row belongs to the app-gate publishing path, not this sweep.
+      await client.query(
+        'UPDATE review_runs SET authoritative_gate_app_id = $2 WHERE run_id = $1',
+        [disabled.admitted.run.runId, 4385771],
+      );
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(0);
+      const state = await dispatchState(client, disabled.admitted.run.runId);
+      expect(state.run.status).toBe('queued');
+      expect(Number(state.run.authoritative_gate_app_id)).toBe(4385771);
+      expect(state.outbox.status).toBe('projected');
+    });
+
+    it('retires a running non-app-gate run past its deadline with a free lease', async () => {
+      const { repository, client } = await createRepository();
+      const disabled = await queueProjected(repository, 'non-pub-running', 1_000, 'worker-running');
+      await client.query("UPDATE review_runs SET status = 'running' WHERE run_id = $1", [disabled.admitted.run.runId]);
+
+      await expect(repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20)).resolves.toBe(1);
+      const state = await dispatchState(client, disabled.admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal',
+        stage: 'terminal',
+        error_text: 'publication mode disabled: never claimed before its terminal deadline; retired by reaper',
+      });
+      expect(state.outbox.status).toBe('terminal');
+    });
+
+    it('honours the limit', async () => {
+      const { repository, client } = await createRepository();
+      const first = await queueProjected(repository, 'non-pub-limit-1', 1_000, 'worker-limit-1', { prNumber: 51 });
+      const second = await queueProjected(repository, 'non-pub-limit-2', 1_000, 'worker-limit-2', { prNumber: 52 });
+      const third = await queueProjected(repository, 'non-pub-limit-3', 1_000, 'worker-limit-3', { prNumber: 53 });
+      const now = first.terminalDeadline + 1;
+
+      const retired = await repository.retireExpiredNonPublishableRuns(now, 2);
+      expect(retired).toBe(2);
+      const statuses = await Promise.all([first, second, third].map(async (entry) =>
+        (await dispatchState(client, entry.admitted.run.runId)).run.status));
+      expect(statuses.filter((status) => status === 'terminal')).toHaveLength(2);
+      expect(statuses.filter((status) => status === 'queued')).toHaveLength(1);
+
+      await expect(repository.retireExpiredNonPublishableRuns(now, 2)).resolves.toBe(1);
+    });
+
+    it('appends a terminal lifecycle event when lifecycle events are enabled', async () => {
+      const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+      const disabled = await queueProjected(repository, 'non-pub-lifecycle', 1_000, 'worker-lifecycle');
+
+      await repository.retireExpiredNonPublishableRuns(disabled.terminalDeadline + 1, 20);
+
+      const events = await lifecycleEvents(client, disabled.admitted.run.runId);
+      const terminalEvent = events.find((event) => event.eventKind === 'review.lifecycle.terminal');
+      expect(terminalEvent?.data).toEqual({
+        policy_digest: 'e'.repeat(64),
+        stage: 'terminal', terminal_class: 'non_publishable_deadline', retry_class: 'reaper',
+      });
+    });
   });
 });
