@@ -156,6 +156,20 @@ export function redactWorkerFailureLogTail(value: unknown): string {
   return tail;
 }
 
+const GITHUB_QUALIFICATION_READ_STATUS_PATTERN = /GitHub qualification read failed HTTP (\d{3})/iu;
+
+/**
+ * GitHub returns 406 Not Acceptable for the diff/patch media types when a pull
+ * request's diff cannot be rendered in the requested representation -- most
+ * commonly because it is too large (roughly over 20,000 lines or 300 files).
+ * That is a permanent property of the pull request head, not an outage, so it
+ * gets its own diagnostic reason distinct from the generic worker failure text.
+ */
+export function isGithubDiffNotRenderableError(message: string): boolean {
+  const match = GITHUB_QUALIFICATION_READ_STATUS_PATTERN.exec(message);
+  return match !== null && Number(match[1]) === 406;
+}
+
 export function workerFailureReason(failureClass: WorkerTerminalFailure['failureClass']): string {
   return {
     contract: 'worker_contract_invalid',
@@ -204,6 +218,20 @@ export function buildWorkerFailureDiagnostics(
   const safeStatus = Number.isInteger(providerStatus) && providerStatus >= 100 && providerStatus <= 599
     ? providerStatus : undefined;
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  if (isGithubDiffNotRenderableError(message)) {
+    // Keep this note free of the redaction filter's disclosure-boundary words
+    // (request/response/body/content/...) so the too-large explanation stays
+    // intact for operators instead of being swallowed by the raw-payload guard
+    // built for provider text.
+    return {
+      reason: 'github_diff_not_renderable',
+      providerStatus: 406,
+      logTail: redactWorkerFailureLogTail(
+        'GitHub returned HTTP 406: this diff is too large to render as configured (roughly over 20,000 changed '
+        + `lines or 300 files). This is a permanent property of this head, not an infrastructure outage. ${message}`,
+      ),
+    };
+  }
   return {
     reason: workerFailureReason(failureClass),
     ...(safeStatus === undefined ? {} : { providerStatus: safeStatus }),

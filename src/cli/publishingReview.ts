@@ -42,7 +42,7 @@ import { loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { isRecoverableIncompletePanel } from '../review/publicationFailurePolicy';
 import {
-  buildWorkerFailureDiagnostics, validateWorkerCompletionEndpoint,
+  buildWorkerFailureDiagnostics, isGithubDiffNotRenderableError, validateWorkerCompletionEndpoint,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
@@ -402,6 +402,13 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
   }
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
+  // GitHub returns 406 Not Acceptable when a pull request's diff cannot be
+  // rendered in the requested representation (most commonly because it is too
+  // large -- roughly over 20,000 lines or 300 files). That is a permanent
+  // property of the pull request head, i.e. an invalid review input, not an
+  // infrastructure failure, so it classifies as a contract violation rather
+  // than falling through to the internal_error catch-all.
+  if (isGithubDiffNotRenderableError(message)) return 'contract';
   if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
   if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
@@ -441,10 +448,21 @@ export function renderFailureSummary(
   if (diagnostics?.reason) detail.push(`reason=\`${diagnostics.reason}\``);
   if (diagnostics?.providerStatus !== undefined) detail.push(`provider_status=${diagnostics.providerStatus}`);
   const tail = (diagnostics?.logTail || '').trim();
+  // GitHub HTTP 406 on the diff read is a permanent, too-large-to-render
+  // property of this pull request head, not an outage -- say so explicitly so
+  // an operator does not read the generic contract guidance as infrastructure
+  // flakiness and retry a review that can never succeed as-is.
+  const isGithubDiffNotRenderable = failureClass === 'contract' && diagnostics?.reason === 'github_diff_not_renderable';
+  const whatFailed = isGithubDiffNotRenderable
+    ? 'GitHub returned HTTP 406 for this pull request diff: the diff is too large or otherwise not '
+      + 'renderable in the requested representation (roughly over 20,000 lines changed or 300 files). This is a '
+      + 'permanent property of this pull request head, not an infrastructure outage -- retrying will not help. '
+      + 'Split the pull request into smaller changes to get it reviewed.'
+    : guidance[failureClass];
   const lines = [
     `Review Yeti could not complete a binding review at \`${headSha}\` (failure class \`${failureClass}\`).`,
     '',
-    `**What failed:** ${guidance[failureClass]}`,
+    `**What failed:** ${whatFailed}`,
     '',
     'This is a failed review, not an approval. The unchanged head is not merge-eligible until a review completes.',
   ];

@@ -1092,6 +1092,28 @@ describe('same-head qualification worker contract', () => {
     expect(JSON.stringify(persisted)).not.toContain('raw-secret-response');
   });
 
+  it('classifies a GitHub HTTP 406 source failure as diff-not-renderable, not a generic panel failure', async () => {
+    const sourceLoader = vi.fn(async () => {
+      throw new Error('GitHub qualification read failed HTTP 406');
+    });
+    await expect(runSameHeadQualificationWorker(
+      sameHeadEnvironment,
+      vi.fn(),
+      { complete: vi.fn() } as any,
+      sourceLoader,
+    )).rejects.toThrow('same-head qualification failed: github_diff_not_renderable');
+    const persisted = JSON.parse(String(fsMocks.writeFile.mock.calls[0][1]));
+    expect(persisted).toMatchObject({
+      profile: 'same-head',
+      status: 'failed',
+      source: 'github-pull-request',
+      failureClass: 'github_diff_not_renderable',
+      githubReads: 0,
+      githubWrites: 0,
+      providerCalls: 0,
+    });
+  });
+
   it('routes same-head qualification before every existing worker mode', async () => {
     const sameHeadRunner = vi.fn(async () => undefined);
     const fullPanelRunner = vi.fn(async () => undefined);

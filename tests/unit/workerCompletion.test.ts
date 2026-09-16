@@ -3,6 +3,7 @@ import { parseWorkerReviewEvidence, workerReviewEvidenceDigest } from '../../src
 import {
   buildWorkerFailureDiagnostics,
   HttpWorkerCompletionAdapter,
+  isGithubDiffNotRenderableError,
   MAX_WORKER_FAILURE_LOG_TAIL_BYTES,
   redactWorkerFailureLogTail,
   validateWorkerCompletionEndpoint,
@@ -275,6 +276,27 @@ describe('workerTerminalFailureSchema', () => {
     expect(buildWorkerFailureDiagnostics(Object.assign(new Error(message), { status: 429 }), 'rate_limit')).toEqual({
       reason: 'provider_rate_limited', providerStatus: 429, logTail: 'HTTP 429 api_key=[REDACTED] [REDACTED] [REDACTED]',
     });
+  });
+
+  it('recognizes a GitHub HTTP 406 qualification-read message as diff-not-renderable', () => {
+    expect(isGithubDiffNotRenderableError('GitHub qualification read failed HTTP 406')).toBe(true);
+  });
+
+  it.each([429, 404, 401, 403, 500, 502])(
+    'does not treat GitHub HTTP %s as diff-not-renderable',
+    (status) => {
+      expect(isGithubDiffNotRenderableError(`GitHub qualification read failed HTTP ${status}`)).toBe(false);
+    },
+  );
+
+  it('gives HTTP 406 on the GitHub qualification read its own reason and provider status', () => {
+    const message = 'GitHub qualification read failed HTTP 406';
+    const diagnostics = buildWorkerFailureDiagnostics(new Error(message), 'contract');
+    expect(diagnostics.reason).toBe('github_diff_not_renderable');
+    expect(diagnostics.providerStatus).toBe(406);
+    expect(diagnostics.logTail).toContain('406');
+    expect(diagnostics.logTail).toContain('too large');
+    expect(diagnostics.logTail).toContain(message);
   });
 
   it('redacts opaque JWT and AWS access-key shapes even without a known token prefix', () => {

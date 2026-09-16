@@ -1138,6 +1138,23 @@ describe('identity and failure classification', () => {
     expect(classifyFailure(new Error('unexpected invariant violation'))).toBe('internal_error');
   });
 
+  it('classifies a GitHub HTTP 406 qualification-read failure as contract, never internal_error', () => {
+    const failureClass = classifyFailure(new Error('GitHub qualification read failed HTTP 406'));
+    expect(failureClass).toBe('contract');
+    expect(failureClass).not.toBe('internal_error');
+  });
+
+  it.each([
+    ['GitHub qualification read failed HTTP 429', 'rate_limit'],
+    ['GitHub qualification read failed HTTP 500', 'internal_error'],
+    ['GitHub qualification read failed HTTP 502', 'internal_error'],
+    ['GitHub qualification read failed HTTP 401', 'auth'],
+    ['GitHub qualification read failed HTTP 403', 'auth'],
+    ['GitHub qualification read failed HTTP 404', 'internal_error'],
+  ])('leaves the existing classification for %s unchanged (%s)', (message, expected) => {
+    expect(classifyFailure(new Error(message))).toBe(expected);
+  });
+
   it.each([
     [new OpenRouterTimeoutError('deadline'), 'timeout'],
     [new OpenRouterConnectionError('socket closed'), 'transport'],
@@ -1614,6 +1631,34 @@ describe('REL-810 follow-up: delivered failure clarity', () => {
     expect(summary).toContain('could not reach the gateway');
     expect(summary).toContain('provider_status=502');
     expect(summary).toContain('not an approval');
+  });
+
+  it('names the HTTP 406 status and the too-large meaning instead of a generic contract message', async () => {
+    const { renderFailureSummary } = await import('../../src/cli/publishingReview');
+    const summary = renderFailureSummary('contract', 'c'.repeat(40), {
+      reason: 'github_diff_not_renderable',
+      providerStatus: 406,
+      logTail: 'GitHub returned HTTP 406: this diff is too large to render as configured '
+        + '(roughly over 20,000 changed lines or 300 files). This is a permanent property of this head, '
+        + 'not an infrastructure outage. GitHub qualification read failed HTTP 406',
+    });
+    expect(summary).toContain('failure class `contract`');
+    expect(summary).toContain('406');
+    expect(summary).toContain('too large');
+    expect(summary).toContain('not an infrastructure outage');
+    expect(summary).toContain('provider_status=406');
+    expect(summary).toContain('reason=`github_diff_not_renderable`');
+    expect(summary).not.toContain('the review contract/configuration was invalid');
+  });
+
+  it('keeps the generic contract guidance for a non-diff-size contract failure', async () => {
+    const { renderFailureSummary } = await import('../../src/cli/publishingReview');
+    const summary = renderFailureSummary('contract', 'd'.repeat(40), {
+      reason: 'worker_contract_invalid',
+      logTail: 'same-head qualification worker contract is invalid',
+    });
+    expect(summary).toContain('the review contract/configuration was invalid');
+    expect(summary).not.toContain('too large');
   });
 });
 

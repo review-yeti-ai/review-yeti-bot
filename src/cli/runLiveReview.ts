@@ -640,6 +640,11 @@ function qualificationFailureClass(error: unknown): string {
   if (/GitHub qualification read failed HTTP (?:5\d\d)/iu.test(message)) return 'github_5xx';
   if (/GitHub qualification read failed HTTP (?:401|403)/iu.test(message)) return 'github_auth';
   if (/GitHub qualification read failed HTTP 404/iu.test(message)) return 'github_not_found';
+  // 406 means the diff cannot be rendered in the requested representation,
+  // most commonly because it is too large (over ~20,000 lines or 300 files).
+  // That is a permanent property of this pull request head, not a transient
+  // GitHub failure -- give it its own label rather than the generic catch-all.
+  if (/GitHub qualification read failed HTTP 406/iu.test(message)) return 'github_diff_not_renderable';
   if (/projected pull request identity mismatch/iu.test(message)) return 'github_identity_mismatch';
   if (/pull request moved during qualification read/iu.test(message)) return 'github_head_moved';
   if (/diff size is outside qualification bounds/iu.test(message)) return 'github_diff_bounds';
