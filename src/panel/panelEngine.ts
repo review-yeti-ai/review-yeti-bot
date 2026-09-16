@@ -1815,7 +1815,10 @@ async function runPersona(
       }
 
       const effectiveEffort = (storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? MAX_INVESTIGATION_TURNS;
+      const effectiveMaxTurns = Math.min(
+        MAX_INVESTIGATION_TURNS,
+        Math.max(1, storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? MAX_INVESTIGATION_TURNS),
+      );
 
       // `review_timeout_s` is the inactivity budget after a stream starts. The
       // request's total timeout is calculated below from the remaining panel /
@@ -1914,12 +1917,12 @@ async function runPersona(
           }
           if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
               || !Array.isArray(result.parsed.findings)) {
-            if ((result.turnsCount ?? 1) >= effectiveMaxTurns || !result.parsed) {
+            if ((result.turnsCount ?? 1) >= effectiveMaxTurns) {
               throw new PanelConfigurationError(
                 `persona ${persona.id} turn budget exhausted without verdict (INCOMPLETE): used ${result.turnsCount ?? effectiveMaxTurns}/${effectiveMaxTurns} investigation turns`,
               );
             }
-            throw new Error('invalid persona response contract');
+            throw new PanelStructuredOutputError('invalid persona response contract');
           }
           // The panel may receive either a unified diff or context-only file content. Strict
           // field validation is safe in both cases; final publication performs diff anchoring when
