@@ -20,6 +20,7 @@ import type { WorkerReviewCompletion } from '../../src/review/workerReviewComple
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
 import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS } from '../../src/review/publicationFailurePolicy';
+import { logger } from '../../src/utils/logger';
 
 function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000) {
   const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
@@ -1452,6 +1453,67 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       .resolves.toBeNull();
     await expect(repository.claimNext('retry-dispatcher', 1_003 + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS, 30_000))
       .resolves.toMatchObject({ runId: admitted.run.runId, executionAttempt: 2 });
+  });
+
+  it('durably records the failure and swallows a failed recoverable-panel re-admission', async () => {
+    const { repository, client } = await createRepository();
+    const input = sameHeadAdmission('recoverable-panel-requeue-admission-fails', 1_000);
+    const admitted = await repository.admit(input);
+    const claim = (await repository.claimNext('dispatcher', 1_001, 30_000))!;
+    const workerTokenDigest = 'c'.repeat(64);
+    await repository.markProjected(
+      claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_002, workerTokenDigest,
+    );
+
+    // Poison the exact delivery id the follow-up requeue will use for its own
+    // `admit` call, with no run_id attached. When `requeueRecoverableIncompletePanelFailure`
+    // tries to admit that identical delivery id, its INSERT ... ON CONFLICT DO
+    // NOTHING finds this row already present (0 rows returned), falls through
+    // to the "existing delivery" lookup, and that lookup INNER JOINs on
+    // `run_id` -- which is NULL here, so it finds nothing and `admit` throws
+    // a real "delivery identity conflict" error. This is the same admission
+    // code path a genuine conflict would hit; nothing about `admit` itself is
+    // stubbed.
+    const retryDeliveryId = `internal-recoverable-panel-retry:${admitted.run.runId}:a${claim.executionAttempt}`;
+    await client.query(
+      `INSERT INTO github_deliveries (delivery_id, event_name, repository_id, installation_id, payload_digest, received_at)
+       VALUES ($1, $2, $3, $4, $5, to_timestamp($6 / 1000.0))`,
+      [retryDeliveryId, 'poisoned', input.repositoryId, input.installationId, 'f'.repeat(64), 1_002],
+    );
+
+    const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+
+    // The durable failure transition must still resolve normally: a broken
+    // re-admission attempt is never allowed to surface as a completion-callback
+    // error, since the worker's terminal failure was already committed before
+    // the requeue was even attempted.
+    await expect(repository.markWorkerFailure(
+      recoverablePanelFailure(input, admitted.run.runId, claim.executionAttempt), { workerTokenDigest }, 1_003,
+    )).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
+
+    const failed = await client.query(`SELECT runs.status, runs.error_text,
+      outbox.status AS outbox_status, outbox.execution_attempt
+      FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1`, [admitted.run.runId]);
+    expect(failed.rows[0]).toMatchObject({
+      // The durable failure transition (persistWorkerFailure) already
+      // committed in its own transaction before the requeue was even
+      // attempted, so it is untouched by the requeue's rolled-back admit:
+      // outbox stays 'projected' at the pre-retry execution_attempt (0),
+      // exactly as it would if `requeueRecoverableIncompletePanelFailure`
+      // were never called at all.
+      status: 'failed', error_text: 'worker terminal failure: malformed_output',
+      outbox_status: 'projected', execution_attempt: 0,
+    });
+
+    // The swallowed re-admission error is logged, not thrown or dropped silently.
+    expect(errorLog).toHaveBeenCalledWith('Automatic recoverable-panel retry admission failed', expect.objectContaining({
+      runId: admitted.run.runId,
+      executionAttempt: claim.executionAttempt,
+      reason: expect.stringContaining('delivery identity conflict'),
+    }));
+
+    errorLog.mockRestore();
   });
 
   it('never automatically retries a non-app-gate run even when its diagnostics claim recoverable', async () => {
