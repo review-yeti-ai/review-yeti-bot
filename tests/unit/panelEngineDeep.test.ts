@@ -713,6 +713,84 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(claudeLaneCalls).toHaveLength(4);
   });
 
+  it('retries once then fails over to fallback provider when persona output violates contract', async () => {
+    const config = buildDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Fallback lane completed' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.model.includes('claude')) {
+        // Primary provider returns parseable JSON with invalid decision contract ('UNKNOWN')
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'UNKNOWN', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-invalid-contract-failover',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    const secLane = result.personas.find((persona) => persona.id === 'sec-lane');
+    expect(secLane?.providerId).toBe('grok');
+    const claudeLaneCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
+      request.metadata?.role === 'persona'
+      && request.metadata?.persona === 'sec-lane'
+      && request.model.includes('claude'));
+    // Each attempt performs the initial prompt plus 1 bounded format correction before failing over.
+    expect(claudeLaneCalls).toHaveLength(4);
+  });
+
+  it('clamps persona maxTurns to MAX_INVESTIGATION_TURNS and reports exhausted budget on limit', async () => {
+    const baseConfig = buildDeepConfig();
+    const config = {
+      ...baseConfig,
+      quorum: 1,
+      // Configure maxTurns to 99, well beyond MAX_INVESTIGATION_TURNS (12)
+      personas: [{ ...baseConfig.personas[0], id: 'budget-lane', providers: ['claude'], maxTurns: 99 }],
+      reviewers: { ...baseConfig.reviewers, fallback: 'none' as const },
+    };
+
+    let turnsCount = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : 'persona');
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'ok' }), usage: null, costUSD: null, raw: {} };
+      }
+      turnsCount++;
+      return {
+        model: opts.model,
+        content: `\`\`\`json\n{"tool": "read_file", "args": {"path": "src/security/auth.ts"}}\n\`\`\``,
+        usage: null,
+        costUSD: null,
+        raw: {},
+      };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-clamp-budget-test',
+      client: mockClient as unknown as OmniRouteClient,
+    })).rejects.toThrow(/turn budget exhausted.*used 15\/15 investigation turns/u);
+
+    expect(turnsCount).toBe(15);
+  });
+
   it('fails closed when persona INCOMPLETE includes unvalidated findings', async () => {
     const baseConfig = buildDeepConfig();
     const config = {
