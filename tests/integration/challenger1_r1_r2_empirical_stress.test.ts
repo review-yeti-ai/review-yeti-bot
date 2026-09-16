@@ -178,14 +178,14 @@ describe('Empirical Challenger Suite: Requirement R1 (Live Queue & OTel Streamin
 
       const prometheusOutput = await getPrometheusMetrics();
 
-      expect(prometheusOutput).toContain('ct_queue_jobs_queued_total');
-      expect(prometheusOutput).toContain('ct_queue_jobs_dispatched_total');
-      expect(prometheusOutput).toContain('ct_queue_active_jobs');
-      expect(prometheusOutput).toContain('ct_queue_queued_jobs');
-      expect(prometheusOutput).toContain('ct_review_tokens_prompt_total');
-      expect(prometheusOutput).toContain('ct_review_tokens_completion_total');
-      expect(prometheusOutput).toContain('ct_review_tokens_total');
-      expect(prometheusOutput).toContain('ct_review_model_cost_usd_total');
+      expect(prometheusOutput).toContain('review_yeti_queue_jobs_queued_total');
+      expect(prometheusOutput).toContain('review_yeti_queue_jobs_dispatched_total');
+      expect(prometheusOutput).toContain('review_yeti_queue_active_jobs');
+      expect(prometheusOutput).toContain('review_yeti_queue_queued_jobs');
+      expect(prometheusOutput).toContain('review_yeti_tokens_prompt_total');
+      expect(prometheusOutput).toContain('review_yeti_tokens_completion_total');
+      expect(prometheusOutput).toContain('review_yeti_tokens_total');
+      expect(prometheusOutput).toContain('review_yeti_model_cost_usd_total');
 
       // Check attribute formatting in Prometheus output
       expect(prometheusOutput).toContain('repository="cisco/cdr"');

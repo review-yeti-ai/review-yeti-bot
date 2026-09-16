@@ -11,9 +11,6 @@ export type AnalyzerName =
   | 'eslint'
   | 'semgrep'
   | 'gitleaks'
-  | 'credo'
-  | 'sobelow'
-  | 'govet'
   | string;
 
 export type AnalyzerCategory = 'linter' | 'security' | 'secrets';
@@ -87,7 +84,7 @@ export interface AnalyzerExecutionOptions {
 export interface AnalyzerRunnerOptions {
   workspaceRoot: string;
   changedFiles: Array<{ path: string; patch?: string; content?: string; status?: string }> | string[];
-  config?: (PreChecksAnalyzersConfig | Partial<PreChecksAnalyzersConfig>) & { heavy_compilers?: boolean };
+  config?: PreChecksAnalyzersConfig | Partial<PreChecksAnalyzersConfig>;
   sandboxRunner?: SandboxRunner;
   spawnImpl?: any;
   timeoutMs?: number;
@@ -141,7 +138,7 @@ const GO_EXTENSIONS = new Set(['.go']);
 
 export function getApplicableAnalyzers(
   filePath: string,
-  config?: Partial<PreChecksAnalyzersConfig> & { heavy_compilers?: boolean }
+  config?: Partial<PreChecksAnalyzersConfig>
 ): string[] {
   const ext = path.extname(filePath).toLowerCase();
   if (BINARY_EXTENSIONS.has(ext)) return [];
@@ -149,36 +146,21 @@ export function getApplicableAnalyzers(
   const linters = config?.linters !== false;
   const security = config?.security !== false;
   const secrets = config?.secrets !== false;
-  const heavyCompilers = (config as any)?.heavy_compilers === true;
 
   const tools: string[] = [];
 
-  if (heavyCompilers) {
-    // Heavy compiler mode: requires compilation toolchains and dependency graphs
-    if (TS_JS_EXTENSIONS.has(ext)) {
-      if (linters) tools.push('eslint');
-      if (security) tools.push('semgrep');
-    } else if (ELIXIR_EXTENSIONS.has(ext)) {
-      if (linters) tools.push('credo');
-      if (security) tools.push('sobelow');
-    } else if (GO_EXTENSIONS.has(ext)) {
-      if (linters) tools.push('govet');
-      if (security) tools.push('semgrep');
-    }
-  } else {
-    // Zero-Compilation Pattern (Default):
-    // Fast AST & structural pattern matching (semgrep, gitleaks, eslint) without
-    // running compilers (`go vet`, `mix credo`, `mix sobelow`) in cold review containers.
-    if (TS_JS_EXTENSIONS.has(ext)) {
-      if (linters) tools.push('eslint');
-      if (security) tools.push('semgrep');
-    } else if (ELIXIR_EXTENSIONS.has(ext)) {
-      if (security) tools.push('semgrep');
-    } else if (GO_EXTENSIONS.has(ext)) {
-      if (security) tools.push('semgrep');
-    } else if (['.py', '.rs', '.rb', '.java', '.c', '.cpp', '.cs', '.php'].includes(ext)) {
-      if (security) tools.push('semgrep');
-    }
+  // Zero-Compilation Pattern:
+  // Fast AST & structural pattern matching (semgrep, gitleaks, eslint) exclusively.
+  // Compile-intensive analyzers (mix credo, mix sobelow, go vet) are strictly removed.
+  if (TS_JS_EXTENSIONS.has(ext)) {
+    if (linters) tools.push('eslint');
+    if (security) tools.push('semgrep');
+  } else if (ELIXIR_EXTENSIONS.has(ext)) {
+    if (security) tools.push('semgrep');
+  } else if (GO_EXTENSIONS.has(ext)) {
+    if (security) tools.push('semgrep');
+  } else if (['.py', '.rs', '.rb', '.java', '.c', '.cpp', '.cs', '.php'].includes(ext)) {
+    if (security) tools.push('semgrep');
   }
 
   if (secrets) {
@@ -445,247 +427,6 @@ export function parseSemgrepOutput(rawOutput: string | unknown, workspaceRoot: s
   return hypotheses;
 }
 
-export function parseCredoOutput(rawOutput: string | unknown, workspaceRoot: string = ''): CandidateHypothesis[] {
-  let data: any;
-  try {
-    data = typeof rawOutput === 'string' ? JSON.parse(rawOutput) : rawOutput;
-  } catch {
-    return [];
-  }
-  const issues = Array.isArray(data?.issues) ? data.issues : [];
-  const hypotheses: CandidateHypothesis[] = [];
-
-  for (const issue of issues) {
-    if (!issue) continue;
-    const ruleId = String(issue.check || 'Credo.Check.General');
-    const relPath = normalizeRepoPath(issue.filename || '', workspaceRoot);
-    const line = Math.max(1, Number(issue.line_no) || 1);
-    const column = issue.column !== undefined && issue.column !== null ? Number(issue.column) : undefined;
-
-    let severity: AnalyzerSeverity = 'warning';
-    const cat = String(issue.category || '').toLowerCase();
-    if (cat === 'warning') {
-      severity = 'warning';
-    } else if (cat === 'refactor' || cat === 'readability' || cat === 'design' || cat === 'consistency') {
-      severity = 'info';
-    } else if (cat === 'error') {
-      severity = 'error';
-    }
-
-    const hyp: CandidateHypothesis = {
-      id: `hyp:credo:${ruleId}:${relPath}:${line}`,
-      analyzer: 'credo',
-      category: 'linter',
-      ruleId,
-      path: relPath,
-      line,
-      message: issue.message || ruleId,
-      severity,
-      confidence: 'medium',
-    };
-    if (column !== undefined) hyp.column = column;
-    if (issue.trigger) hyp.snippet = String(issue.trigger).trim();
-    hypotheses.push(hyp);
-  }
-  return hypotheses;
-}
-
-export function parseSobelowOutput(rawOutput: string | unknown, workspaceRoot: string = ''): CandidateHypothesis[] {
-  let data: any;
-  try {
-    data = typeof rawOutput === 'string' ? JSON.parse(rawOutput) : rawOutput;
-  } catch {
-    return [];
-  }
-  const findingsMap =
-    data?.findings && typeof data.findings === 'object'
-      ? data.findings
-      : data && typeof data === 'object'
-      ? data
-      : {};
-  const hypotheses: CandidateHypothesis[] = [];
-
-  for (const [categoryKey, findings] of Object.entries(findingsMap)) {
-    if (!Array.isArray(findings)) continue;
-    for (const item of findings) {
-      if (!item) continue;
-      const vulnType = String(item.vuln_type || categoryKey || 'sobelow_finding');
-      const ruleId = vulnType;
-      const relPath = normalizeRepoPath(item.file || item.filename || '', workspaceRoot);
-      const line = Math.max(1, Number(item.line) || 1);
-
-      let message = item.type || `Sobelow ${vulnType} vulnerability detected`;
-      if (item.fun_name && item.variable) {
-        message = `${item.type} in ${item.fun_name} (${item.variable})`;
-      } else if (item.fun_name) {
-        message = `${item.type} in ${item.fun_name}`;
-      } else if (item.variable) {
-        message = `${item.type} (${item.variable})`;
-      }
-
-      const rawConf = String(item.confidence || 'medium').toLowerCase();
-      let confidence: AnalyzerConfidence = 'medium';
-      if (rawConf === 'high') confidence = 'high';
-      else if (rawConf === 'low') confidence = 'low';
-
-      const hyp: CandidateHypothesis = {
-        id: `hyp:sobelow:${ruleId}:${relPath}:${line}`,
-        analyzer: 'sobelow',
-        category: 'security',
-        ruleId,
-        path: relPath,
-        line,
-        message,
-        severity: 'error',
-        confidence,
-      };
-      if (item.column !== undefined) hyp.column = Number(item.column);
-      hypotheses.push(hyp);
-    }
-  }
-  return hypotheses;
-}
-
-export function extractTopLevelJsonObjects(text: string): any[] {
-  if (!text || typeof text !== 'string') return [];
-  const trimmed = text.trim();
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object') {
-        return Array.isArray(parsed) ? parsed : [parsed];
-      }
-    } catch {
-      // Fall through to balanced brace scanner if direct parse fails (e.g. concatenated objects)
-    }
-  }
-
-  const results: any[] = [];
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let startIndex = -1;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (char === '\\') {
-        escape = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (char === '{') {
-      if (depth === 0) {
-        startIndex = i;
-      }
-      depth++;
-    } else if (char === '}') {
-      if (depth > 0) {
-        depth--;
-        if (depth === 0 && startIndex !== -1) {
-          const candidate = text.slice(startIndex, i + 1);
-          try {
-            const parsed = JSON.parse(candidate);
-            if (parsed && typeof parsed === 'object') {
-              results.push(parsed);
-            }
-          } catch {
-            // Ignore invalid JSON slices
-          }
-          startIndex = -1;
-        }
-      }
-    }
-  }
-
-  return results;
-}
-
-export function parseGovetOutput(
-  rawInput: string | { stdout?: string; stderr?: string } | unknown,
-  workspaceRoot: string = ''
-): CandidateHypothesis[] {
-  const jsonObjects: any[] = [];
-
-  if (typeof rawInput === 'object' && rawInput !== null && ('stderr' in rawInput || 'stdout' in rawInput)) {
-    const composite = rawInput as { stdout?: string; stderr?: string };
-    if (composite.stderr && typeof composite.stderr === 'string') {
-      jsonObjects.push(...extractTopLevelJsonObjects(composite.stderr));
-    }
-    if (composite.stdout && typeof composite.stdout === 'string') {
-      jsonObjects.push(...extractTopLevelJsonObjects(composite.stdout));
-    }
-  } else if (typeof rawInput === 'string') {
-    jsonObjects.push(...extractTopLevelJsonObjects(rawInput));
-  } else if (rawInput && typeof rawInput === 'object') {
-    if (Array.isArray(rawInput)) {
-      jsonObjects.push(...rawInput);
-    } else {
-      jsonObjects.push(rawInput);
-    }
-  }
-
-  if (jsonObjects.length === 0) return [];
-
-  const hypotheses: CandidateHypothesis[] = [];
-  const seenIds = new Set<string>();
-
-  for (const data of jsonObjects) {
-    if (!data || typeof data !== 'object') continue;
-
-    for (const [pkgName, analyzerGroup] of Object.entries(data)) {
-      if (!analyzerGroup || typeof analyzerGroup !== 'object') continue;
-
-      for (const [analyzerName, diagList] of Object.entries(analyzerGroup as Record<string, unknown>)) {
-        if (!Array.isArray(diagList)) continue;
-
-        for (const diag of diagList) {
-          if (!diag || !diag.posn) continue;
-
-          const posnMatch = String(diag.posn).match(/^(.*?):(\d+)(?::(\d+))?$/);
-          if (!posnMatch) continue;
-
-          const rawFilePath = posnMatch[1];
-          const line = Math.max(1, parseInt(posnMatch[2], 10));
-          const column = posnMatch[3] ? parseInt(posnMatch[3], 10) : undefined;
-          const relPath = normalizeRepoPath(rawFilePath, workspaceRoot);
-          const ruleId = analyzerName;
-
-          const id = `hyp:govet:${ruleId}:${relPath}:${line}`;
-          if (seenIds.has(id)) continue;
-          seenIds.add(id);
-
-          const hyp: CandidateHypothesis = {
-            id,
-            analyzer: 'govet',
-            category: 'linter',
-            ruleId,
-            path: relPath,
-            line,
-            message: diag.message || `go vet ${ruleId} diagnostic`,
-            severity: 'warning',
-            confidence: 'high',
-          };
-          if (column !== undefined) hyp.column = column;
-          hypotheses.push(hyp);
-        }
-      }
-    }
-  }
-  return hypotheses;
-}
-
 export function parseGitleaksOutput(rawOutput: string | unknown, workspaceRoot: string = ''): CandidateHypothesis[] {
   let data: any;
   try {
@@ -760,53 +501,6 @@ export async function runSemgrep(files: string[], options: AnalyzerExecutionOpti
   });
 
   return buildReceipt('semgrep', 'security', res, options.workspaceRoot, files.length, parseSemgrepOutput);
-}
-
-export async function runCredo(files: string[], options: AnalyzerExecutionOptions): Promise<PreCheckAnalyzerReceipt> {
-  const cmd = options.customExecutable || 'credo';
-  const args = ['--strict', '--format=json', ...files];
-  const res = await executeSandboxedCommand(cmd, args, {
-    cwd: options.workspaceRoot,
-    timeoutMs: options.timeoutMs,
-    maxBytes: options.maxBytes,
-    sandboxRunner: options.sandboxRunner,
-    spawnImpl: options.spawnImpl,
-    signal: options.signal,
-  });
-
-  return buildReceipt('credo', 'linter', res, options.workspaceRoot, files.length, parseCredoOutput);
-}
-
-export async function runSobelow(files: string[], options: AnalyzerExecutionOptions): Promise<PreCheckAnalyzerReceipt> {
-  const cmd = options.customExecutable || 'sobelow';
-  const args = ['--dry-run', '--format=json'];
-  const res = await executeSandboxedCommand(cmd, args, {
-    cwd: options.workspaceRoot,
-    timeoutMs: options.timeoutMs,
-    maxBytes: options.maxBytes,
-    sandboxRunner: options.sandboxRunner,
-    spawnImpl: options.spawnImpl,
-    signal: options.signal,
-  });
-
-  return buildReceipt('sobelow', 'security', res, options.workspaceRoot, files.length, parseSobelowOutput);
-}
-
-export async function runGovet(files: string[], options: AnalyzerExecutionOptions): Promise<PreCheckAnalyzerReceipt> {
-  const cmd = options.customExecutable || 'govet';
-  const args = ['-json', ...files];
-  const res = await executeSandboxedCommand(cmd, args, {
-    cwd: options.workspaceRoot,
-    timeoutMs: options.timeoutMs,
-    maxBytes: options.maxBytes,
-    sandboxRunner: options.sandboxRunner,
-    spawnImpl: options.spawnImpl,
-    signal: options.signal,
-  });
-
-  return buildReceipt('govet', 'linter', res, options.workspaceRoot, files.length, (out, root) =>
-    parseGovetOutput({ stdout: res.stdout, stderr: res.stderr }, root)
-  );
 }
 
 export async function runGitleaks(files: string[], options: AnalyzerExecutionOptions): Promise<PreCheckAnalyzerReceipt> {
@@ -966,18 +660,6 @@ export async function runPreCheckAnalyzers(options: AnalyzerRunnerOptions): Prom
   if (fileMap.has('semgrep')) {
     const files = fileMap.get('semgrep')!;
     receipts.push(await runSemgrep(files, { ...execOptions, customExecutable: options.customExecutables?.semgrep }));
-  }
-  if (fileMap.has('credo')) {
-    const files = fileMap.get('credo')!;
-    receipts.push(await runCredo(files, { ...execOptions, customExecutable: options.customExecutables?.credo }));
-  }
-  if (fileMap.has('sobelow')) {
-    const files = fileMap.get('sobelow')!;
-    receipts.push(await runSobelow(files, { ...execOptions, customExecutable: options.customExecutables?.sobelow }));
-  }
-  if (fileMap.has('govet')) {
-    const files = fileMap.get('govet')!;
-    receipts.push(await runGovet(files, { ...execOptions, customExecutable: options.customExecutables?.govet }));
   }
   if (fileMap.has('gitleaks')) {
     const files = fileMap.get('gitleaks')!;

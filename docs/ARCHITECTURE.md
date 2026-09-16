@@ -140,7 +140,7 @@ When integrated with GitHub Branch Protection, a `BLOCK` conclusion marks the re
 
 Review Yeti implements an enterprise-grade telemetry and observability plane across runner and Kubernetes deployments:
 
-1. **Cumulative Prometheus Metrics (REL-817 / v1.60.2)**: All in-memory metric exporters enforce `AggregationTemporality.CUMULATIVE` (1), guaranteeing that counters (`ct_review_requests_total`, `ct_review_errors_total`, `ct_review_tokens_total`, `ct_review_model_cost_usd_total`, `ct_review_reaper_superseded_attempt_total`) increase monotonically without dropping to 0 between scrapes.
+1. **Cumulative Prometheus Metrics (REL-817 / v1.60.2)**: All in-memory metric exporters enforce `AggregationTemporality.CUMULATIVE` (1), guaranteeing that counters (`review_yeti_requests_total`, `review_yeti_errors_total`, `review_yeti_tokens_total`, `review_yeti_model_cost_usd_total`, `review_yeti_review_reaper_superseded_attempt_total`) increase monotonically without dropping to 0 between scrapes.
 2. **Multi-Service Scrape Surface**:
    - `ct-review-action-dispatch` (`:3000/metrics`): Token volumes, USD model costs, and review durations.
    - `ct-review-job-dispatcher` (`:9090/metrics`): Queue depths and reaper recovery events.

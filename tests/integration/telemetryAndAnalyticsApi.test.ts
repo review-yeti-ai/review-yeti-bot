@@ -23,9 +23,10 @@ describe('Telemetry & Typed Analytics REST API Endpoints (Milestones 23 & 24)', 
       const res = await request(app).get('/metrics');
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('text/plain');
-      expect(res.text).toContain('# HELP ct_review_tokens_prompt_total');
-      expect(res.text).toContain('# TYPE ct_review_tokens_prompt_total counter');
-      expect(res.text).toContain('# HELP ct_review_duration_seconds');
+      expect(res.text).toContain('# HELP review_yeti_tokens_prompt_total');
+      expect(res.text).toContain('# TYPE review_yeti_tokens_prompt_total counter');
+      expect(res.text).toContain('# HELP review_yeti_review_duration_seconds');
+      expect(res.text).not.toMatch(/^# HELP ct_/m);
     });
   });
 

@@ -1,3 +1,4 @@
+import { Counter, Histogram, UpDownCounter } from '@opentelemetry/api';
 import {
   MeterProvider,
   AggregationTemporality,
@@ -12,69 +13,36 @@ let meterProvider: MeterProvider | null = null;
 let metricReader: PeriodicExportingMetricReader | null = null;
 
 export interface MetricCounters {
-  tokensPrompt: ReturnType<any>;
-  tokensCompletion: ReturnType<any>;
-  tokensTotal: ReturnType<any>;
-  modelCostUsd: ReturnType<any>;
-  reviewDuration: ReturnType<any>;
-  personaDuration: ReturnType<any>;
-  indexerAstDuration: ReturnType<any>;
-  indexerFilesIndexed: ReturnType<any>;
-  indexerSymbolsExtracted: ReturnType<any>;
-  arbiterVerdicts: ReturnType<any>;
-  jobsQueued: ReturnType<any>;
-  jobsDispatched: ReturnType<any>;
-  reviewReaperDeliveryIdentityMismatches: ReturnType<any>;
-  reviewReaperSupersededAttempts: ReturnType<any>;
-  activeJobs: ReturnType<any>;
-  queuedJobs: ReturnType<any>;
+  tokensPrompt: Counter;
+  tokensCompletion: Counter;
+  tokensTotal: Counter;
+  modelCostUsd: Counter;
+  reviewDuration: Histogram;
+  personaDuration: Histogram;
+  indexerAstDuration: Histogram;
+  indexerFilesIndexed: Counter;
+  indexerSymbolsExtracted: Counter;
+  arbiterVerdicts: Counter;
+  jobsQueued: Counter;
+  jobsDispatched: Counter;
+  reviewReaperDeliveryIdentityMismatches: Counter;
+  reviewReaperSupersededAttempts: Counter;
+  activeJobs: UpDownCounter;
+  queuedJobs: UpDownCounter;
 
   // Pre-checks instruments (Zoekt & Analyzers)
-  zoektQueries: ReturnType<any>;
-  zoektDuration: ReturnType<any>;
-  zoektSymbolsScanned: ReturnType<any>;
-  zoektSymbolsMatched: ReturnType<any>;
-  zoektTruncatedTotal: ReturnType<any>;
-  analyzersExecuted: ReturnType<any>;
-  analyzersDuration: ReturnType<any>;
-  analyzerHypotheses: ReturnType<any>;
-  preCheckTotalDuration: ReturnType<any>;
+  zoektQueries: Counter;
+  zoektDuration: Histogram;
+  zoektSymbolsScanned: Counter;
+  zoektSymbolsMatched: Counter;
+  zoektTruncatedTotal: Counter;
+  analyzersExecuted: Counter;
+  analyzersDuration: Histogram;
+  analyzerHypotheses: Counter;
+  preCheckTotalDuration: Histogram;
 }
 
 let metricsInstance: MetricCounters | null = null;
-
-function createDualCounter(primary: any, legacy?: any) {
-  return {
-    add(value: number, attributes?: Record<string, any>) {
-      primary.add(value, attributes);
-      if (legacy) {
-        legacy.add(value, attributes);
-      }
-    },
-  };
-}
-
-function createDualHistogram(primary: any, legacy?: any) {
-  return {
-    record(value: number, attributes?: Record<string, any>) {
-      primary.record(value, attributes);
-      if (legacy) {
-        legacy.record(value, attributes);
-      }
-    },
-  };
-}
-
-function createDualUpDownCounter(primary: any, legacy?: any) {
-  return {
-    add(value: number, attributes?: Record<string, any>) {
-      primary.add(value, attributes);
-      if (legacy) {
-        legacy.add(value, attributes);
-      }
-    },
-  };
-}
 
 export function initMetrics(): MetricCounters {
   if (metricsInstance) {
@@ -95,27 +63,12 @@ export function initMetrics(): MetricCounters {
         aggregation: new ExplicitBucketHistogramAggregation([0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120]),
       }),
       new View({
-        instrumentName: 'ct_review_duration_seconds',
-        instrumentType: InstrumentType.HISTOGRAM,
-        aggregation: new ExplicitBucketHistogramAggregation([0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120]),
-      }),
-      new View({
         instrumentName: 'review_yeti_persona_execution_duration_seconds',
         instrumentType: InstrumentType.HISTOGRAM,
         aggregation: new ExplicitBucketHistogramAggregation([0.1, 0.5, 1, 2.5, 5, 10, 30, 60]),
       }),
       new View({
-        instrumentName: 'ct_persona_execution_duration_seconds',
-        instrumentType: InstrumentType.HISTOGRAM,
-        aggregation: new ExplicitBucketHistogramAggregation([0.1, 0.5, 1, 2.5, 5, 10, 30, 60]),
-      }),
-      new View({
         instrumentName: 'review_yeti_indexer_ast_duration_seconds',
-        instrumentType: InstrumentType.HISTOGRAM,
-        aggregation: new ExplicitBucketHistogramAggregation([0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]),
-      }),
-      new View({
-        instrumentName: 'ct_indexer_ast_duration_seconds',
         instrumentType: InstrumentType.HISTOGRAM,
         aggregation: new ExplicitBucketHistogramAggregation([0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]),
       }),
@@ -141,134 +94,54 @@ export function initMetrics(): MetricCounters {
   const meter = meterProvider.getMeter('review-yeti-bot');
 
   metricsInstance = {
-    tokensPrompt: createDualCounter(
-      meter.createCounter('review_yeti_tokens_prompt_total', {
-        description: 'Total prompt tokens consumed.',
-      }),
-      meter.createCounter('ct_review_tokens_prompt_total', {
-        description: 'Total prompt tokens consumed.',
-      })
-    ),
-    tokensCompletion: createDualCounter(
-      meter.createCounter('review_yeti_tokens_completion_total', {
-        description: 'Total completion tokens consumed.',
-      }),
-      meter.createCounter('ct_review_tokens_completion_total', {
-        description: 'Total completion tokens consumed.',
-      })
-    ),
-    tokensTotal: createDualCounter(
-      meter.createCounter('review_yeti_tokens_total', {
-        description: 'Cumulative tokens consumed.',
-      }),
-      meter.createCounter('ct_review_tokens_total', {
-        description: 'Cumulative tokens consumed.',
-      })
-    ),
-    modelCostUsd: createDualCounter(
-      meter.createCounter('review_yeti_model_cost_usd_total', {
-        description: 'Cumulative cost in USD.',
-      }),
-      meter.createCounter('ct_review_model_cost_usd_total', {
-        description: 'Cumulative cost in USD.',
-      })
-    ),
-    reviewDuration: createDualHistogram(
-      meter.createHistogram('review_yeti_review_duration_seconds', {
-        description: 'Review pipeline execution duration in seconds.',
-      }),
-      meter.createHistogram('ct_review_duration_seconds', {
-        description: 'Review pipeline execution duration in seconds.',
-      })
-    ),
-    personaDuration: createDualHistogram(
-      meter.createHistogram('review_yeti_persona_execution_duration_seconds', {
-        description: 'Individual persona lane latency.',
-      }),
-      meter.createHistogram('ct_persona_execution_duration_seconds', {
-        description: 'Individual persona lane latency.',
-      })
-    ),
-    indexerAstDuration: createDualHistogram(
-      meter.createHistogram('review_yeti_indexer_ast_duration_seconds', {
-        description: 'AST parsing latency.',
-      }),
-      meter.createHistogram('ct_indexer_ast_duration_seconds', {
-        description: 'AST parsing latency.',
-      })
-    ),
-    indexerFilesIndexed: createDualCounter(
-      meter.createCounter('review_yeti_indexer_files_indexed_total', {
-        description: 'Total files parsed.',
-      }),
-      meter.createCounter('ct_indexer_files_indexed_total', {
-        description: 'Total files parsed.',
-      })
-    ),
-    indexerSymbolsExtracted: createDualCounter(
-      meter.createCounter('review_yeti_indexer_symbols_extracted_total', {
-        description: 'Total symbols extracted.',
-      }),
-      meter.createCounter('ct_indexer_symbols_extracted_total', {
-        description: 'Total symbols extracted.',
-      })
-    ),
-    arbiterVerdicts: createDualCounter(
-      meter.createCounter('review_yeti_arbiter_verdicts_total', {
-        description: 'Arbiter final verdict count.',
-      }),
-      meter.createCounter('ct_arbiter_verdicts_total', {
-        description: 'Arbiter final verdict count.',
-      })
-    ),
-    jobsQueued: createDualCounter(
-      meter.createCounter('review_yeti_queue_jobs_queued_total', {
-        description: 'Total queue jobs queued.',
-      }),
-      meter.createCounter('ct_queue_jobs_queued_total', {
-        description: 'Total queue jobs queued.',
-      })
-    ),
-    jobsDispatched: createDualCounter(
-      meter.createCounter('review_yeti_queue_jobs_dispatched_total', {
-        description: 'Total queue jobs dispatched.',
-      }),
-      meter.createCounter('ct_queue_jobs_dispatched_total', {
-        description: 'Total queue jobs dispatched.',
-      })
-    ),
-    reviewReaperDeliveryIdentityMismatches: createDualCounter(
-      meter.createCounter('review_yeti_review_reaper_delivery_identity_mismatch_total', {
-        description: 'Abandoned review runs quarantined because run and outbox delivery identities differed.',
-      }),
-      meter.createCounter('ct_review_reaper_delivery_identity_mismatch_total', {
-        description: 'Abandoned review runs quarantined because run and outbox delivery identities differed.',
-      })
-    ),
-    reviewReaperSupersededAttempts: createDualCounter(
-      meter.createCounter('review_yeti_review_reaper_superseded_attempt_total', {
-        description: 'Abandoned review attempts retired because a completed newer same-head App check already exists.',
-      }),
-      meter.createCounter('ct_review_reaper_superseded_attempt_total', {
-        description: 'Abandoned review attempts retired because a completed newer same-head App check already exists.',
-      })
-    ),
-    activeJobs: createDualUpDownCounter(
-      meter.createUpDownCounter('review_yeti_queue_active_jobs', {
-        description: 'Current active review jobs.',
-      }),
-      meter.createUpDownCounter('ct_queue_active_jobs', {
-        description: 'Current active review jobs.',
-      })
-    ),
-    queuedJobs: createDualUpDownCounter(
-      meter.createUpDownCounter('review_yeti_queue_queued_jobs', {
-        description: 'Current queued review jobs.',
-      }),
-      meter.createUpDownCounter('ct_queue_queued_jobs', {
-        description: 'Current queued review jobs.',
-      })
-    ),
+    tokensPrompt: meter.createCounter('review_yeti_tokens_prompt_total', {
+      description: 'Total prompt tokens consumed.',
+    }),
+    tokensCompletion: meter.createCounter('review_yeti_tokens_completion_total', {
+      description: 'Total completion tokens consumed.',
+    }),
+    tokensTotal: meter.createCounter('review_yeti_tokens_total', {
+      description: 'Cumulative tokens consumed.',
+    }),
+    modelCostUsd: meter.createCounter('review_yeti_model_cost_usd_total', {
+      description: 'Cumulative cost in USD.',
+    }),
+    reviewDuration: meter.createHistogram('review_yeti_review_duration_seconds', {
+      description: 'Review pipeline execution duration in seconds.',
+    }),
+    personaDuration: meter.createHistogram('review_yeti_persona_execution_duration_seconds', {
+      description: 'Individual persona lane latency.',
+    }),
+    indexerAstDuration: meter.createHistogram('review_yeti_indexer_ast_duration_seconds', {
+      description: 'AST parsing latency.',
+    }),
+    indexerFilesIndexed: meter.createCounter('review_yeti_indexer_files_indexed_total', {
+      description: 'Total files parsed.',
+    }),
+    indexerSymbolsExtracted: meter.createCounter('review_yeti_indexer_symbols_extracted_total', {
+      description: 'Total symbols extracted.',
+    }),
+    arbiterVerdicts: meter.createCounter('review_yeti_arbiter_verdicts_total', {
+      description: 'Arbiter final verdict count.',
+    }),
+    jobsQueued: meter.createCounter('review_yeti_queue_jobs_queued_total', {
+      description: 'Total queue jobs queued.',
+    }),
+    jobsDispatched: meter.createCounter('review_yeti_queue_jobs_dispatched_total', {
+      description: 'Total queue jobs dispatched.',
+    }),
+    reviewReaperDeliveryIdentityMismatches: meter.createCounter('review_yeti_review_reaper_delivery_identity_mismatch_total', {
+      description: 'Abandoned review runs quarantined because run and outbox delivery identities differed.',
+    }),
+    reviewReaperSupersededAttempts: meter.createCounter('review_yeti_review_reaper_superseded_attempt_total', {
+      description: 'Abandoned review attempts retired because a completed newer same-head App check already exists.',
+    }),
+    activeJobs: meter.createUpDownCounter('review_yeti_queue_active_jobs', {
+      description: 'Current active review jobs.',
+    }),
+    queuedJobs: meter.createUpDownCounter('review_yeti_queue_queued_jobs', {
+      description: 'Current queued review jobs.',
+    }),
 
     // Pure review_yeti pre-check instruments (no ct_ prefix)
     zoektQueries: meter.createCounter('review_yeti_zoekt_queries_total', {
@@ -422,24 +295,6 @@ export async function getPrometheusMetrics(): Promise<string> {
     { name: 'review_yeti_review_reaper_superseded_attempt_total', desc: 'Abandoned review attempts retired because a completed newer same-head App check already exists.', type: 'counter' },
     { name: 'review_yeti_queue_active_jobs', desc: 'Current active review jobs.', type: 'gauge' },
     { name: 'review_yeti_queue_queued_jobs', desc: 'Current queued review jobs.', type: 'gauge' },
-
-    // Legacy ct_* instruments for backwards compatibility
-    { name: 'ct_review_tokens_prompt_total', desc: 'Total prompt tokens consumed.', type: 'counter' },
-    { name: 'ct_review_tokens_completion_total', desc: 'Total completion tokens consumed.', type: 'counter' },
-    { name: 'ct_review_tokens_total', desc: 'Cumulative tokens consumed.', type: 'counter' },
-    { name: 'ct_review_model_cost_usd_total', desc: 'Cumulative cost in USD.', type: 'counter' },
-    { name: 'ct_review_duration_seconds', desc: 'Review pipeline execution duration in seconds.', type: 'histogram' },
-    { name: 'ct_persona_execution_duration_seconds', desc: 'Individual persona lane latency.', type: 'histogram' },
-    { name: 'ct_indexer_ast_duration_seconds', desc: 'AST parsing latency.', type: 'histogram' },
-    { name: 'ct_indexer_files_indexed_total', desc: 'Total files parsed.', type: 'counter' },
-    { name: 'ct_indexer_symbols_extracted_total', desc: 'Total symbols extracted.', type: 'counter' },
-    { name: 'ct_arbiter_verdicts_total', desc: 'Arbiter final verdict count.', type: 'counter' },
-    { name: 'ct_queue_jobs_queued_total', desc: 'Total queue jobs queued.', type: 'counter' },
-    { name: 'ct_queue_jobs_dispatched_total', desc: 'Total queue jobs dispatched.', type: 'counter' },
-    { name: 'ct_review_reaper_delivery_identity_mismatch_total', desc: 'Abandoned review runs quarantined because run and outbox delivery identities differed.', type: 'counter' },
-    { name: 'ct_review_reaper_superseded_attempt_total', desc: 'Abandoned review attempts retired because a completed newer same-head App check already exists.', type: 'counter' },
-    { name: 'ct_queue_active_jobs', desc: 'Current active review jobs.', type: 'gauge' },
-    { name: 'ct_queue_queued_jobs', desc: 'Current queued review jobs.', type: 'gauge' },
   ];
 
   for (const inst of knownInstruments) {

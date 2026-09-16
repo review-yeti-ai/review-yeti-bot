@@ -3,9 +3,6 @@ import {
   runPreCheckAnalyzers,
   parseEslintOutput,
   parseSemgrepOutput,
-  parseCredoOutput,
-  parseSobelowOutput,
-  parseGovetOutput,
   parseGitleaksOutput,
   getApplicableAnalyzers,
   formatCandidateHypothesesPrompt,
@@ -167,164 +164,8 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
       });
     });
 
-    // 1.3 Credo Parser
-    it('1.3: parses Credo issues into refactor (info) and warning hypotheses', () => {
-      const credoStdout = JSON.stringify({
-        issues: [
-          {
-            category: 'refactor',
-            check: 'Credo.Check.Refactor.CyclomaticComplexity',
-            filename: 'lib/telecom/call_router.ex',
-            line_no: 54,
-            column: 7,
-            message: 'Function has cyclomatic complexity of 14.',
-          },
-          {
-            category: 'warning',
-            check: 'Credo.Check.Warning.UnusedEnumOperation',
-            filename: 'lib/telecom/call_router.ex',
-            line_no: 82,
-            column: 5,
-            message: 'Unused return value from Enum.map/2.',
-          },
-        ],
-      });
-
-      const hypotheses = parseCredoOutput(credoStdout, defaultWorkspace);
-      expect(hypotheses).toHaveLength(2);
-      expect(hypotheses[0].severity).toBe('info');
-      expect(hypotheses[0].category).toBe('linter');
-      expect(hypotheses[0].id).toBe('hyp:credo:Credo.Check.Refactor.CyclomaticComplexity:lib/telecom/call_router.ex:54');
-      expect(hypotheses[1].severity).toBe('warning');
-      expect(hypotheses[1].id).toBe('hyp:credo:Credo.Check.Warning.UnusedEnumOperation:lib/telecom/call_router.ex:82');
-    });
-
-    // 1.4 Sobelow Parser
-    it('1.4: parses Sobelow categorized findings into security hypotheses with confidence', () => {
-      const sobelowStdout = JSON.stringify({
-        findings: {
-          sql_injection: [
-            {
-              type: 'SQL.Query: SQL Injection',
-              file: 'lib/telecom_web/controllers/report_controller.ex',
-              line: 37,
-              variable: 'params["order_by"]',
-              confidence: 'High',
-              fun_name: 'export_csv/2',
-            },
-          ],
-          traversal: [],
-        },
-      });
-
-      const hypotheses = parseSobelowOutput(sobelowStdout, defaultWorkspace);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0]).toEqual({
-        id: 'hyp:sobelow:sql_injection:lib/telecom_web/controllers/report_controller.ex:37',
-        analyzer: 'sobelow',
-        category: 'security',
-        ruleId: 'sql_injection',
-        path: 'lib/telecom_web/controllers/report_controller.ex',
-        line: 37,
-        message: 'SQL.Query: SQL Injection in export_csv/2 (params["order_by"])',
-        severity: 'error',
-        confidence: 'high',
-      });
-    });
-
-    it('1.4b: parses Sobelow root-level vulnerability keys when data.findings is absent', () => {
-      const rootSobelow = JSON.stringify({
-        sql_injection: [
-          {
-            type: 'SQL.Query: SQL Injection',
-            file: 'lib/telecom_web/controllers/report_controller.ex',
-            line: 37,
-            variable: 'params["order_by"]',
-            confidence: 'High',
-            fun_name: 'export_csv/2',
-          },
-        ],
-      });
-
-      const hypotheses = parseSobelowOutput(rootSobelow, defaultWorkspace);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0].ruleId).toBe('sql_injection');
-      expect(hypotheses[0].path).toBe('lib/telecom_web/controllers/report_controller.ex');
-      expect(hypotheses[0].line).toBe(37);
-      expect(hypotheses[0].confidence).toBe('high');
-    });
-
-    // 1.5 Go Vet Parser (stderr JSON Convention)
-    it('1.5: parses Go Vet diagnostics from stderr stream into linter hypotheses', () => {
-      const govetStderr = JSON.stringify({
-        'command-line-arguments': {
-          printf: [
-            {
-              posn: 'pkg/billing/invoice.go:45:14',
-              message: 'fmt.Sprintf format %s reads arg #1, but call has only 0 args',
-            },
-          ],
-        },
-      });
-
-      // Crucial assertion: Go Vet outputs JSON on stderr, not stdout
-      const hypotheses = parseGovetOutput(govetStderr, defaultWorkspace);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0]).toEqual({
-        id: 'hyp:govet:printf:pkg/billing/invoice.go:45',
-        analyzer: 'govet',
-        category: 'linter',
-        ruleId: 'printf',
-        path: 'pkg/billing/invoice.go',
-        line: 45,
-        column: 14,
-        message: 'fmt.Sprintf format %s reads arg #1, but call has only 0 args',
-        severity: 'warning',
-        confidence: 'high',
-      });
-    });
-
-    it('1.5b: parses multi-package Go Vet concatenated JSON streams', () => {
-      const multiPkg = [
-        '{',
-        '  "pkg/one": {',
-        '    "printf": [{ "posn": "pkg/one/a.go:10:2", "message": "format mismatch" }]',
-        '  }',
-        '}',
-        '{',
-        '  "pkg/two": {',
-        '    "copylocks": [{ "posn": "pkg/two/b.go:20:5", "message": "copies lock value" }]',
-        '  }',
-        '}',
-      ].join('\n');
-
-      const hypotheses = parseGovetOutput(multiPkg, defaultWorkspace);
-      expect(hypotheses).toHaveLength(2);
-      expect(hypotheses[0].ruleId).toBe('printf');
-      expect(hypotheses[0].path).toBe('pkg/one/a.go');
-      expect(hypotheses[1].ruleId).toBe('copylocks');
-      expect(hypotheses[1].path).toBe('pkg/two/b.go');
-    });
-
-    it('1.5c: extracts Go Vet diagnostics from stdout when stderr contains non-JSON compiler warnings', () => {
-      const compositeInput = {
-        stdout: JSON.stringify({
-          'pkg/billing': {
-            printf: [{ posn: 'pkg/billing/inv.go:10:2', message: 'printf mismatch' }],
-          },
-        }),
-        stderr: 'go: downloading github.com/stretchr/testify v1.8.4\n# pkg/billing\n',
-      };
-
-      const hypotheses = parseGovetOutput(compositeInput, defaultWorkspace);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0].ruleId).toBe('printf');
-      expect(hypotheses[0].path).toBe('pkg/billing/inv.go');
-      expect(hypotheses[0].line).toBe(10);
-    });
-
-    // 1.6 Gitleaks Parser with Secret Masking
-    it('1.6: parses Gitleaks JSON leaks into critical secret hypotheses with masked secrets', () => {
+    // 1.3 Gitleaks Parser with Secret Masking
+    it('1.3: parses Gitleaks JSON leaks into critical secret hypotheses with masked secrets', () => {
       const gitleaksStdout = JSON.stringify([
         {
           RuleID: 'slack-webhook-url',
@@ -397,12 +238,6 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
       expect(tools).not.toContain('credo');
       expect(tools).not.toContain('sobelow');
       expect(tools).not.toContain('govet');
-
-      // When heavy_compilers is explicitly enabled, routes to credo and sobelow
-      const heavyTools = getApplicableAnalyzers('lib/billing/account.ex', { ...fullConfig, heavy_compilers: true });
-      expect(heavyTools).toContain('credo');
-      expect(heavyTools).toContain('sobelow');
-      expect(heavyTools).toContain('gitleaks');
     });
 
     it('2.3: routes Go files to semgrep and gitleaks by default (CodeRabbit zero-compilation pattern)', () => {
@@ -412,12 +247,6 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
       expect(tools).not.toContain('ast-grep');
       expect(tools).not.toContain('govet');
       expect(tools).not.toContain('credo');
-
-      // When heavy_compilers is explicitly enabled, routes to govet
-      const heavyTools = getApplicableAnalyzers('pkg/router/server.go', { ...fullConfig, heavy_compilers: true });
-      expect(heavyTools).toContain('govet');
-      expect(heavyTools).toContain('semgrep');
-      expect(heavyTools).toContain('gitleaks');
     });
 
     it('2.4: routes documentation and markdown files exclusively to secrets scanner (gitleaks)', () => {
@@ -597,7 +426,7 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
       expect(mockRunner.executedCommands).toHaveLength(0);
     });
 
-    it('4.2: selective switch linters: false disables eslint, credo, and govet while running semgrep and gitleaks', async () => {
+    it('4.2: selective switch linters: false disables eslint while running semgrep and gitleaks', async () => {
       await runPreCheckAnalyzers({
         workspaceRoot: defaultWorkspace,
         changedFiles: ['src/app.ts', 'pkg/main.go'],
@@ -607,24 +436,22 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
 
       const commands = mockRunner.executedCommands.map((c) => c.command);
       expect(commands.some((c) => c.includes('eslint'))).toBe(false);
-      expect(commands.some((c) => c.includes('govet'))).toBe(false);
       expect(commands.some((c) => c.includes('semgrep'))).toBe(true);
       expect(commands.some((c) => c.includes('gitleaks'))).toBe(true);
     });
 
-    it('4.3: selective switch security: false disables semgrep and sobelow while running linters and gitleaks', async () => {
+    it('4.3: selective switch security: false disables semgrep while running linters and gitleaks', async () => {
       await runPreCheckAnalyzers({
         workspaceRoot: defaultWorkspace,
         changedFiles: ['src/app.ts', 'lib/server.ex'],
-        config: { enabled: true, linters: true, security: false, secrets: true, heavy_compilers: true },
+        config: { enabled: true, linters: true, security: false, secrets: true },
         sandboxRunner: mockRunner,
       });
 
       const commands = mockRunner.executedCommands.map((c) => c.command);
       expect(commands.some((c) => c.includes('semgrep'))).toBe(false);
-      expect(commands.some((c) => c.includes('sobelow'))).toBe(false);
       expect(commands.some((c) => c.includes('eslint'))).toBe(true);
-      expect(commands.some((c) => c.includes('credo'))).toBe(true);
+      expect(commands.some((c) => c.includes('gitleaks'))).toBe(true);
     });
 
     it('4.4: selective switch secrets: false disables gitleaks while preserving linters and security', async () => {
@@ -755,8 +582,8 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
         confidence: 'high',
       },
       {
-        id: 'hyp:sobelow:sql_injection:lib/repo.ex:30',
-        analyzer: 'sobelow',
+        id: 'hyp:semgrep:sql_injection:lib/repo.ex:30',
+        analyzer: 'semgrep',
         category: 'security',
         ruleId: 'sql_injection',
         path: 'lib/repo.ex',
