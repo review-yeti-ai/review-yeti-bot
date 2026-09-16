@@ -38,11 +38,11 @@ import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManag
 import { createDefaultV3Config } from '../config/configLoader';
 import type { ProviderId } from '../config/schema';
 import { resolveWorkerConfig, PUBLISHING_MAX_TURNS, PUBLISHING_IDLE_TIMEOUT_SECONDS, PUBLISHING_OVERALL_TIMEOUT_SECONDS } from '../config/publishingWorkerConfig';
-import { loadSameHeadReviewSource } from '../github/qualificationReader';
+import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { isRecoverableIncompletePanel } from '../review/publicationFailurePolicy';
 import {
-  buildWorkerFailureDiagnostics, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION, isGithubDiffNotRenderableError,
+  buildWorkerFailureDiagnostics, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
   validateWorkerCompletionEndpoint,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
@@ -408,8 +408,9 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
   // large -- roughly over 20,000 lines or 300 files). That is a permanent
   // property of the pull request head, i.e. an invalid review input, not an
   // infrastructure failure, so it classifies as a contract violation rather
-  // than falling through to the internal_error catch-all.
-  if (isGithubDiffNotRenderableError(message)) return 'contract';
+  // than falling through to the internal_error catch-all. The status comes
+  // from the structured `httpStatus` field, not from parsing the message.
+  if (error instanceof GitHubQualificationReadError && error.httpStatus === 406) return 'contract';
   if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
   if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
@@ -584,7 +585,8 @@ export async function runPublishingReviewWorker(
     // contradictory terminal failure.
     if (legacySuccessCompletionAttempted) return;
     const failureClass = panelFailure?.failureClass ?? classifyFailure(error);
-    const diagnostics = buildWorkerFailureDiagnostics(error, failureClass);
+    const githubDiffNotRenderable = error instanceof GitHubQualificationReadError && error.httpStatus === 406;
+    const diagnostics = buildWorkerFailureDiagnostics(error, failureClass, { githubDiffNotRenderable });
     if (authoritative && !authoritativeCompletionAttempted) {
       try {
         await reportReviewResult({ version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),

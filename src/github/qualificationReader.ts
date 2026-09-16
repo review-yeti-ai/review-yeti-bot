@@ -32,31 +32,18 @@ export type GitHubQualificationRequest = (
 ) => Promise<PullRequestResponse>;
 
 export class GitHubQualificationReadError extends Error {
-  constructor(message: string, readonly githubReads: number) {
+  /**
+   * The HTTP status GitHub returned for the failed read, when one was
+   * observed. This is the single source of the status a
+   * GitHubQualificationReadError carries: every consumer that needs to
+   * branch on it (worker failure classification, diff-too-large detection)
+   * reads this field instead of parsing the human-readable `message`. The
+   * message text remains free to change without breaking a consumer.
+   */
+  constructor(message: string, readonly githubReads: number, readonly httpStatus?: number) {
     super(message);
     this.name = 'GitHubQualificationReadError';
   }
-}
-
-// The exact message format `safeRequest` below uses for a transport-level
-// GitHub read failure. This is the single source for that message-format
-// contract: every consumer that needs to branch on the HTTP status a
-// GitHubQualificationReadError carries (worker failure classification, diff-
-// too-large detection) parses through `githubQualificationReadStatus` instead
-// of each keeping its own copy of this regex.
-const GITHUB_QUALIFICATION_READ_STATUS_PATTERN = /GitHub qualification read failed HTTP (\d{3})/iu;
-
-/**
- * Extracts the HTTP status from a GitHubQualificationReadError message, or
- * `null` when the message does not match the qualification-read failure
- * format (for example a different GitHubQualificationReadError message, or
- * an unrelated error).
- */
-export function githubQualificationReadStatus(message: string): number | null {
-  const match = GITHUB_QUALIFICATION_READ_STATUS_PATTERN.exec(message);
-  if (!match) return null;
-  const status = Number(match[1]);
-  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
 }
 
 function validateInput(input: SameHeadQualificationInput): { owner: string; repo: string } {
@@ -95,7 +82,7 @@ async function safeRequest(
   } catch (error) {
     const status = Number((error as { status?: unknown })?.status);
     if (Number.isInteger(status) && status >= 100 && status <= 599) {
-      throw new GitHubQualificationReadError(`GitHub qualification read failed HTTP ${status}`, githubReads);
+      throw new GitHubQualificationReadError(`GitHub qualification read failed HTTP ${status}`, githubReads, status);
     }
     throw new GitHubQualificationReadError('GitHub qualification read failed', githubReads);
   }

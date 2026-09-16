@@ -8,7 +8,7 @@ import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { computeAppVerdict } from '../review/reviewAdapters';
 import { CommentPublisher } from '../github/commentPublisher';
 import { getGitHubAppInstallationToken } from '../github/appAuth';
-import { githubQualificationReadStatus, loadSameHeadReviewSource } from '../github/qualificationReader';
+import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
 import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
@@ -636,11 +636,10 @@ export function qualificationFailureClass(error: unknown): string {
     if (error.status !== undefined && error.status >= 500) return 'provider_5xx';
   }
   const message = error instanceof Error ? error.message : String(error || '');
-  // Status parsing goes through the single source of the qualification-read
-  // message-format contract in ../github/qualificationReader rather than a
-  // local copy of the "GitHub qualification read failed HTTP <status>"
-  // pattern per branch.
-  const githubStatus = githubQualificationReadStatus(message);
+  // The HTTP status comes from the structured `httpStatus` field
+  // GitHubQualificationReadError carries, not by parsing the message --
+  // that field is the single source of the status this error represents.
+  const githubStatus = error instanceof GitHubQualificationReadError ? error.httpStatus ?? null : null;
   if (githubStatus === 429) return 'github_rate_limit';
   if (githubStatus !== null && githubStatus >= 500 && githubStatus <= 599) return 'github_5xx';
   if (githubStatus === 401 || githubStatus === 403) return 'github_auth';

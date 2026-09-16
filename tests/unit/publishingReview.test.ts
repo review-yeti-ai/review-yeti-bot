@@ -12,6 +12,7 @@ import {
   runPublishingReviewWorker,
 } from '../../src/cli/publishingReview';
 import { HttpWorkerCompletionAdapter } from '../../src/review/workerCompletion';
+import { GitHubQualificationReadError } from '../../src/github/qualificationReader';
 import {
   OpenRouterConnectionError,
   OpenRouterResponseError,
@@ -1092,6 +1093,26 @@ describe('runPublishingReviewWorker', () => {
     }));
   });
 
+  it('classifies a real GitHubQualificationReadError HTTP 406 from the source loader as contract with the diff-not-renderable reason', async () => {
+    // End-to-end: the source loader throws the real error type qualificationReader.ts
+    // produces, and reportTerminalFailure -- worker-side, holding the Error object --
+    // must decide the github_diff_not_renderable diagnostic from its structured
+    // httpStatus field, not by parsing the message anywhere downstream.
+    const original = new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 2, 406);
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const d = deps({ completion, sourceLoader: vi.fn().mockRejectedValue(original) });
+    await expect(runPublishingReviewWorker(env(), d)).rejects.toBe(original);
+    expect(d.panelRunner).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      checkId: 4242,
+      failureClass: 'contract',
+      diagnostics: expect.objectContaining({
+        reason: 'github_diff_not_renderable',
+        providerStatus: 406,
+      }),
+    }));
+  });
+
   it('reports a terminal failure when publishing a successful review fails', async () => {
     const original = new Error('check publication timeout');
     const cc = checkClient();
@@ -1139,20 +1160,29 @@ describe('identity and failure classification', () => {
   });
 
   it('classifies a GitHub HTTP 406 qualification-read failure as contract, never internal_error', () => {
-    const failureClass = classifyFailure(new Error('GitHub qualification read failed HTTP 406'));
+    const failureClass = classifyFailure(new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 2, 406));
     expect(failureClass).toBe('contract');
     expect(failureClass).not.toBe('internal_error');
   });
 
+  it('classifies GitHubQualificationReadError from the structured httpStatus field, not the message', () => {
+    // A plain Error carrying the same wording must not be classified as
+    // contract: the 406 branch reads `error.httpStatus`, not a regex over
+    // `error.message`, so wording alone can never trigger it.
+    const failureClass = classifyFailure(new Error('GitHub qualification read failed HTTP 406'));
+    expect(failureClass).not.toBe('contract');
+  });
+
   it.each([
-    ['GitHub qualification read failed HTTP 429', 'rate_limit'],
-    ['GitHub qualification read failed HTTP 500', 'internal_error'],
-    ['GitHub qualification read failed HTTP 502', 'internal_error'],
-    ['GitHub qualification read failed HTTP 401', 'auth'],
-    ['GitHub qualification read failed HTTP 403', 'auth'],
-    ['GitHub qualification read failed HTTP 404', 'internal_error'],
-  ])('leaves the existing classification for %s unchanged (%s)', (message, expected) => {
-    expect(classifyFailure(new Error(message))).toBe(expected);
+    [429, 'rate_limit'],
+    [500, 'internal_error'],
+    [502, 'internal_error'],
+    [401, 'auth'],
+    [403, 'auth'],
+    [404, 'internal_error'],
+  ])('leaves the existing classification for GitHubQualificationReadError HTTP %s unchanged (%s)', (status, expected) => {
+    const message = `GitHub qualification read failed HTTP ${status}`;
+    expect(classifyFailure(new GitHubQualificationReadError(message, 1, status))).toBe(expected);
   });
 
   it.each([

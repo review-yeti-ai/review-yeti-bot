@@ -34,6 +34,7 @@ import {
 } from '../../src/cli/runLiveReview';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { compareQualificationReceipts } from '../../src/qualification/receiptComparison';
+import { GitHubQualificationReadError } from '../../src/github/qualificationReader';
 import type { PanelResult } from '../../src/panel/panelEngine';
 
 const receiptPathLiteral = '/workspace/.review-yeti/receipt.json';
@@ -1072,7 +1073,7 @@ describe('same-head qualification worker contract', () => {
 
   it('persists a classified source failure without leaking GitHub response text', async () => {
     const sourceLoader = vi.fn(async () => {
-      throw new Error('GitHub qualification read failed HTTP 429 raw-secret-response');
+      throw new GitHubQualificationReadError('GitHub qualification read failed HTTP 429 raw-secret-response', 0, 429);
     });
     await expect(runSameHeadQualificationWorker(
       sameHeadEnvironment,
@@ -1095,7 +1096,7 @@ describe('same-head qualification worker contract', () => {
 
   it('classifies a GitHub HTTP 406 source failure as diff-not-renderable, not a generic panel failure', async () => {
     const sourceLoader = vi.fn(async () => {
-      throw new Error('GitHub qualification read failed HTTP 406');
+      throw new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 0, 406);
     });
     await expect(runSameHeadQualificationWorker(
       sameHeadEnvironment,
@@ -1207,24 +1208,36 @@ describe('qualificationFailureClass', () => {
   // same table so a mistyped regex or a misspelled label -- on 406 or on its
   // neighbors -- fails a test instead of only surfacing in production.
   it.each([
-    ['GitHub qualification read failed HTTP 406', 'github_diff_not_renderable'],
-    ['GitHub qualification read failed HTTP 404', 'github_not_found'],
-    ['GitHub qualification read failed HTTP 500', 'github_5xx'],
-    ['GitHub qualification read failed HTTP 502', 'github_5xx'],
-    ['GitHub qualification read failed HTTP 503', 'github_5xx'],
-    ['GitHub qualification read failed HTTP 401', 'github_auth'],
-    ['GitHub qualification read failed HTTP 403', 'github_auth'],
-    ['GitHub qualification read failed HTTP 429', 'github_rate_limit'],
-  ])('classifies %s as %s', (message, expected) => {
-    expect(qualificationFailureClass(new Error(message))).toBe(expected);
+    [406, 'github_diff_not_renderable'],
+    [404, 'github_not_found'],
+    [500, 'github_5xx'],
+    [502, 'github_5xx'],
+    [503, 'github_5xx'],
+    [401, 'github_auth'],
+    [403, 'github_auth'],
+    [429, 'github_rate_limit'],
+  ])('classifies GitHubQualificationReadError HTTP %s as %s', (status, expected) => {
+    const message = `GitHub qualification read failed HTTP ${status}`;
+    expect(qualificationFailureClass(new GitHubQualificationReadError(message, 1, status))).toBe(expected);
   });
 
   it('does not classify HTTP 406 as any neighboring GitHub label or the generic catch-all', () => {
-    const failureClass = qualificationFailureClass(new Error('GitHub qualification read failed HTTP 406'));
+    const failureClass = qualificationFailureClass(
+      new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 1, 406),
+    );
     expect(failureClass).not.toBe('github_not_found');
     expect(failureClass).not.toBe('github_5xx');
     expect(failureClass).not.toBe('github_auth');
     expect(failureClass).not.toBe('github_rate_limit');
     expect(failureClass).not.toBe('panel_failure');
+  });
+
+  it('does not classify a plain Error carrying the same wording as any GitHub status label', () => {
+    // The status must come from the structured `httpStatus` field on
+    // GitHubQualificationReadError, not from parsing `error.message` -- a
+    // look-alike message on an unrelated Error must fall through to the
+    // generic catch-all instead of matching a GitHub status branch.
+    const failureClass = qualificationFailureClass(new Error('GitHub qualification read failed HTTP 406'));
+    expect(failureClass).toBe('panel_failure');
   });
 });

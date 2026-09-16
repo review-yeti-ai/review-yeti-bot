@@ -3,7 +3,6 @@ import { parseWorkerReviewEvidence, workerReviewEvidenceDigest } from '../../src
 import {
   buildWorkerFailureDiagnostics,
   HttpWorkerCompletionAdapter,
-  isGithubDiffNotRenderableError,
   MAX_WORKER_FAILURE_LOG_TAIL_BYTES,
   redactWorkerFailureLogTail,
   validateWorkerCompletionEndpoint,
@@ -278,26 +277,30 @@ describe('workerTerminalFailureSchema', () => {
     });
   });
 
-  it('recognizes a GitHub HTTP 406 qualification-read message as diff-not-renderable', () => {
-    expect(isGithubDiffNotRenderableError('GitHub qualification read failed HTTP 406')).toBe(true);
-  });
-
-  it.each([429, 404, 401, 403, 500, 502])(
-    'does not treat GitHub HTTP %s as diff-not-renderable',
-    (status) => {
-      expect(isGithubDiffNotRenderableError(`GitHub qualification read failed HTTP ${status}`)).toBe(false);
-    },
-  );
-
-  it('gives HTTP 406 on the GitHub qualification read its own reason and provider status', () => {
+  it('gives HTTP 406 on the GitHub qualification read its own reason and provider status when the caller says so', () => {
+    // The caller (publishingReview.ts) holds the original error and decides
+    // whether it is the GitHub-diff-too-large case via the structured
+    // `httpStatus` field on GitHubQualificationReadError; this module has no
+    // dependency on github/ types or message parsing and only trusts the
+    // `githubDiffNotRenderable` flag it is given.
     const message = 'GitHub qualification read failed HTTP 406';
-    const diagnostics = buildWorkerFailureDiagnostics(new Error(message), 'contract');
+    const diagnostics = buildWorkerFailureDiagnostics(new Error(message), 'contract', { githubDiffNotRenderable: true });
     expect(diagnostics.reason).toBe('github_diff_not_renderable');
     expect(diagnostics.providerStatus).toBe(406);
     expect(diagnostics.logTail).toContain('406');
     expect(diagnostics.logTail).toContain('too large');
     expect(diagnostics.logTail).toContain(message);
   });
+
+  it.each([429, 404, 401, 403, 406, 500, 502])(
+    'does not apply the diff-not-renderable reason for HTTP %s unless the caller sets the flag',
+    (status) => {
+      const message = `GitHub qualification read failed HTTP ${status}`;
+      const diagnostics = buildWorkerFailureDiagnostics(new Error(message), 'contract');
+      expect(diagnostics.reason).not.toBe('github_diff_not_renderable');
+      expect(diagnostics.reason).toBe('worker_contract_invalid');
+    },
+  );
 
   it('redacts opaque JWT and AWS access-key shapes even without a known token prefix', () => {
     const jwt = 'eyJaaaaaaaa.bbbbbbbb.cccccccc';
