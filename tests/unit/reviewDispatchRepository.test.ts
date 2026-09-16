@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   PostgresReviewDispatchRepository as DurablePostgresReviewDispatchRepository,
+  PUBLISHABLE_PUBLICATION_MODES,
   type ReviewDispatchRepositoryOptions,
 } from '../../src/persistence/reviewDispatchRepository';
 import { buildLifecycleEvent } from '../../src/persistence/reviewEventRepository';
@@ -1087,8 +1088,9 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     const sql = String(query.mock.calls[0][0]);
     expect(sql).toMatch(/runs.status IN \('queued', 'running'\)/u);
     expect(sql).toMatch(/runs.status = 'failed'/u);
-    expect(sql).toMatch(/publication_mode\s*=\s*'app-gate'/u);
+    expect(sql).toMatch(/publication_mode\s*=\s*ANY\(\$6::text\[\]\)/u);
     expect(sql).toMatch(/terminal_deadline\s*<=\s*to_timestamp\(\$2/u);
+    expect(query.mock.calls[0][1]?.[5]).toEqual([...PUBLISHABLE_PUBLICATION_MODES]);
   });
 
   it('allows a durable failed worker to be reconciled before its original deadline', async () => {
@@ -1097,7 +1099,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     const sql = String(query.mock.calls[0][0]).replace(/\s+/gu, ' ');
     expect(sql).toMatch(/\(\s*runs\.status = 'failed'\s+AND\s+\(\s*\(outbox\.status = 'projected' OR outbox\.worker_token_digest IS NOT NULL\) OR runs\.terminal_deadline <=/u);
     expect(sql).toMatch(/runs\.status IN \('queued', 'running'\)/u);
-    expect(sql).toMatch(/runs\.status = 'failed'[\s\S]*?AND publication_mode = 'app-gate'/u);
+    expect(sql).toMatch(/runs\.status = 'failed'[\s\S]*?AND publication_mode = ANY\(\$6::text\[\]\)/u);
     expect(sql).not.toMatch(/runs\.status IN \([^)]*cancelled|runs\.status IN \([^)]*superseded/u);
     expect(sql).toMatch(/error_text = CASE[\s\S]*?worker terminal failure: %[\s\S]*?THEN runs\.error_text/u);
     expect(sql).toMatch(/runs\.status = 'terminal'[\s\S]*?worker terminal failure: %[\s\S]*?outbox\.status = 'projected'[\s\S]*?runs\.lease_owner IS NOT NULL/u);
@@ -1141,6 +1143,7 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       'reaper-a', 1_700_000_000_000, 20,
       'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
       'publishing run reached its terminal deadline without a verdict; reaped by ',
+      [...PUBLISHABLE_PUBLICATION_MODES],
     ]);
   });
 

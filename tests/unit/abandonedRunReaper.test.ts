@@ -27,6 +27,7 @@ function fixture() {
       _run: AbandonedPublishingRun, _worker: string, _now: number,
       publish: () => Promise<AbandonedCheckRecoveryOutcome>,
     ): Promise<AbandonedRunReconciliation> => ({ reconciled: true, outcome: await publish() })),
+    retireExpiredNonPublishableRuns: vi.fn(async (_now: number, _limit: number): Promise<number> => 0),
   };
   const checkClientFor = vi.fn(async (_run: AbandonedPublishingRun, _signal: AbortSignal) => client);
   const subject = new AbandonedRunReaper({
@@ -43,6 +44,27 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(repository.claimAbandonedPublishingRuns).toHaveBeenCalledWith('reaper-a', 902_000, 5);
     expect(repository.reconcileAbandonedPublishingRun).toHaveBeenCalledWith(run, 'reaper-a', 902_000, expect.any(Function));
     expect(client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal));
+  });
+
+  it('sweeps non-publishable runs past their deadline and reports the count', async () => {
+    const { subject, repository } = fixture();
+    repository.retireExpiredNonPublishableRuns.mockResolvedValueOnce(3);
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 1, failed: 0, retiredNonPublishable: 3 });
+    expect(repository.retireExpiredNonPublishableRuns).toHaveBeenCalledWith(902_000, 5);
+  });
+
+  it('omits retiredNonPublishable from the outcome when nothing was swept', async () => {
+    const { subject, repository } = fixture();
+    repository.retireExpiredNonPublishableRuns.mockResolvedValueOnce(0);
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 1, failed: 0 });
+  });
+
+  it('does not sweep non-publishable runs after cancellation', async () => {
+    const { subject, repository } = fixture();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(subject.runOnce(controller.signal)).resolves.toEqual({ swept: 0, published: 0, failed: 0 });
+    expect(repository.retireExpiredNonPublishableRuns).not.toHaveBeenCalled();
   });
 
   it('reports a delivery-identity quarantine without minting a publisher or counting publication', async () => {

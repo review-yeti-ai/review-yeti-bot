@@ -19,7 +19,8 @@ export interface ReaperCheckClient {
 }
 
 export interface AbandonedRunReaperOptions {
-  repository: Pick<ReviewDispatchRepository, 'claimAbandonedPublishingRuns' | 'reconcileAbandonedPublishingRun'>;
+  repository: Pick<ReviewDispatchRepository,
+    'claimAbandonedPublishingRuns' | 'reconcileAbandonedPublishingRun' | 'retireExpiredNonPublishableRuns'>;
   /** Built per run: the token must be scoped to that run's repository. */
   checkClientFor(run: AbandonedPublishingRun, signal: AbortSignal): Promise<ReaperCheckClient>;
   /** Authenticated with the worker-token owner's App JWT, never PR metadata. */
@@ -37,6 +38,8 @@ export interface AbandonedRunReaperOutcome {
   quarantined?: number;
   /** Obsolete rows retired because a completed newer App check owns the same head. */
   superseded?: number;
+  /** Non-publishable (not 'app-gate') rows past their deadline, retired without touching GitHub. */
+  retiredNonPublishable?: number;
 }
 
 export class AbandonedRunReaper {
@@ -55,6 +58,12 @@ export class AbandonedRunReaper {
   async runOnce(signal?: AbortSignal): Promise<AbandonedRunReaperOutcome> {
     if (signal?.aborted) return { swept: 0, published: 0, failed: 0 };
     const now = this.now();
+    // Non-publishable (not 'app-gate') runs have no App check to fail closed --
+    // claimAbandonedPublishingRuns below only ever claims 'app-gate' rows, so a
+    // 'disabled'-mode run that is never claimed before its deadline would
+    // otherwise stay 'queued'/'running' forever. This sweep only terminalizes;
+    // it never mints a token or calls GitHub.
+    const retiredNonPublishable = await this.options.repository.retireExpiredNonPublishableRuns(now, this.limit);
     const runs = await this.options.repository.claimAbandonedPublishingRuns(this.options.workerId, now, this.limit);
     let published = 0;
     let failed = 0;
@@ -106,12 +115,18 @@ export class AbandonedRunReaper {
         superseded,
       });
     }
+    if (retiredNonPublishable > 0) {
+      logger.warn('Retired non-publishable runs past their terminal deadline', {
+        retiredNonPublishable,
+      });
+    }
     return {
       swept: runs.length,
       published,
       failed,
       ...(quarantined > 0 ? { quarantined } : {}),
       ...(superseded > 0 ? { superseded } : {}),
+      ...(retiredNonPublishable > 0 ? { retiredNonPublishable } : {}),
     };
   }
 }
