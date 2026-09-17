@@ -183,7 +183,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		// immediate TTL collection erase the authoritative outcome between retries.
 		if existing.DeletionTimestamp == nil && !controllerutil.ContainsFinalizer(&existing, terminalOutcomeFinalizer) {
 			controllerutil.AddFinalizer(&existing, terminalOutcomeFinalizer)
-			if err := r.Update(ctx, &existing); err != nil {
+			// NotFound here means the Job (already read live above, moments
+			// earlier) raced a delete before this guard could attach. There is
+			// nothing left to protect, and `existing` still carries the
+			// terminal Status observed by that read, so fall through to
+			// reconcileExistingJob instead of discarding it behind an error
+			// that would otherwise misreport a completed run as
+			// WorkerJobMissing on the next reconcile.
+			if err := r.Update(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
 		}
@@ -364,7 +371,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) releaseOrphanedWorkerObservation(ctx con
 		return nil
 	}
 	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
-	return r.Update(ctx, &worker)
+	// A prior reconcile (or a concurrent one) may already have released this
+	// same finalizer and the Job's own zero success TTL then let Kubernetes
+	// delete it before this Update lands: the cached-then-live read above is
+	// not atomic with this write. The Job being gone means there is nothing
+	// left to release, so NotFound here is success, not a failure to report.
+	return client.IgnoreNotFound(r.Update(ctx, &worker))
 }
 
 func controlledByDeletedReviewName(worker *batchv1.Job, name string) bool {
@@ -396,7 +408,11 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileElapsedDeadline(
 		}
 		if worker.DeletionTimestamp == nil && !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) {
 			controllerutil.AddFinalizer(&worker, terminalOutcomeFinalizer)
-			if err := r.Update(ctx, &worker); err != nil {
+			// Same reasoning as the finalizer-add above in Reconcile's existing-Job
+			// branch: NotFound means the Job already vanished, so there is nothing
+			// left to guard, and the in-memory `worker` still holds the terminal
+			// Status from the live read above for the branches below to use.
+			if err := r.Update(ctx, &worker); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
 		}
@@ -1197,7 +1213,11 @@ func (r *PRReviewJobV1Alpha2Reconciler) releaseTerminalWorkerObservation(
 		return nil
 	}
 	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
-	return r.Update(ctx, &worker)
+	// Same race as releaseOrphanedWorkerObservation: the Job's own shortened
+	// success TTL (patchWorkerSuccessTTL) can let Kubernetes delete it between
+	// the read above and this write. The Job being gone means there is
+	// nothing left to release, so NotFound here is success, not a failure.
+	return client.IgnoreNotFound(r.Update(ctx, &worker))
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (bool, error) {
