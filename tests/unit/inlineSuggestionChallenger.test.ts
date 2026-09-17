@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { formatInlineCommentBody, PersonaFinding } from '../../src/github/commentPublisher';
-import { executePersonaPanel, PanelConfigurationError } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText, PanelConfigurationError } from '../../src/panel/panelEngine';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
 import type { CtReviewConfigV3 } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -239,7 +239,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
     it('parses valid numeric confidence in panelEngine executePersonaPanel', async () => {
       const config = parseAndValidateConfig(policyYaml) as CtReviewConfigV3;
       const complete = vi.fn(async ({ model, messages }: any) => {
-        const prompt = String(messages.at(-1).content);
+        const prompt = extractMessageContentText(messages.at(-1)?.content);
         const nonce = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)![1];
         if (prompt.includes('"role":"moderator"')) {
           return {
@@ -294,7 +294,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
     it('safely ignores non-numeric confidence types (string, boolean, array, null, undefined)', async () => {
       const config = parseAndValidateConfig(policyYaml) as CtReviewConfigV3;
       const complete = vi.fn(async ({ model, messages }: any) => {
-        const prompt = String(messages.at(-1).content);
+        const prompt = extractMessageContentText(messages.at(-1)?.content);
         const nonce = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)![1];
         if (prompt.includes('"role":"moderator"')) {
           return { model, content: fenced(nonce, { decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null };
@@ -354,7 +354,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
     it('handles NaN/null in JSON where NaN becomes null and is dropped by validateFindings', async () => {
       const config = parseAndValidateConfig(policyYaml) as CtReviewConfigV3;
       const complete = vi.fn(async ({ model, messages }: any) => {
-        const prompt = String(messages.at(-1).content);
+        const prompt = extractMessageContentText(messages.at(-1)?.content);
         const nonce = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)![1];
         if (prompt.includes('"role":"moderator"')) {
           return { model, content: fenced(nonce, { decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null };

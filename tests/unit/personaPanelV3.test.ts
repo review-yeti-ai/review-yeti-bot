@@ -110,7 +110,7 @@ describe('version 3 configurable persona panel', () => {
         const fileIndex = prompt.match(/=== PR CHANGED FILES INDEX[^\n]*\n([\s\S]*?)\n\n/)?.[1] || '';
         personaFiles.set(
           personaName,
-          fileIndex.split('\n').filter((line) => line.startsWith('- ')).map((line) => line.slice(2)),
+          fileIndex.split('\n').filter((line) => line.startsWith('- ')).map((line) => line.slice(2).split(' ')[0]),
         );
       }
       if (allContent.includes('arbiter')) {
@@ -164,7 +164,7 @@ describe('version 3 configurable persona panel', () => {
   it('fails closed before moderator or arbiter when a required lane exhausts fallback', async () => {
     const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     const complete = vi.fn(async ({ model, messages }: any) => {
-      const prompt = messages[messages.length - 1].content as string;
+      const prompt = extractMessageContentText(messages[messages.length - 1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       if (prompt.includes('security-tenancy') || prompt.includes('security')) throw new Error('provider outage');
@@ -185,7 +185,7 @@ describe('version 3 configurable persona panel', () => {
     })).rejects.toThrow(PanelConfigurationError);
 
     expect(complete.mock.calls.some(([arg]) =>
-      String(arg.messages.at(-1).content).includes('"role":"arbiter"'),
+      extractMessageContentText(arg.messages.at(-1).content).includes('"role":"arbiter"'),
     )).toBe(false);
   });
 
@@ -193,7 +193,7 @@ describe('version 3 configurable persona panel', () => {
     const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     const complete = vi.fn(async ({ model, messages }: any) => {
       const allContent = JSON.stringify(messages);
-      const prompt = String(messages.at(-1).content);
+      const prompt = extractMessageContentText(messages.at(-1).content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       if (model.includes('grok')) {
@@ -224,7 +224,7 @@ describe('version 3 configurable persona panel', () => {
     const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
     const complete = vi.fn(async ({ model, messages }: any) => {
       const allContent = JSON.stringify(messages);
-      const prompt = String(messages.at(-1).content);
+      const prompt = extractMessageContentText(messages.at(-1).content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       if (allContent.includes('arbiter')) {
@@ -254,7 +254,7 @@ describe('version 3 configurable persona panel', () => {
     const config = parseAndValidateConfig(policy.replace('quorum: 2', 'quorum: 1')) as unknown as CtReviewConfigV3;
     const complete = vi.fn(async ({ model, messages }: any) => {
       const allContent = JSON.stringify(messages);
-      const prompt = String(messages.at(-1).content);
+      const prompt = extractMessageContentText(messages.at(-1).content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'test-nonce';
       if (allContent.includes('arbiter')) {

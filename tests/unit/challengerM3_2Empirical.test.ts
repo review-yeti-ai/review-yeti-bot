@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import * as zoektPreCheckService from '../../src/services/zoektPreCheckService';
 import {
@@ -121,12 +121,13 @@ describe('Challenger M3-2 Empirical Challenge Test Suite', () => {
       complete: vi.fn().mockImplementation(async (payload: { messages: any[] }) => {
         recordedCalls.push(payload);
         for (const msg of payload.messages) {
-          recordedPrompts.push(msg);
+          recordedPrompts.push({ ...msg, content: extractMessageContentText(msg.content) });
         }
 
-        const sysMsg = payload.messages.find((m) => m.role === 'system')?.content || '';
-        const userMsg = payload.messages[payload.messages.length - 1]?.content || '';
-        const nonceMatch = payload.messages.find((m) => m.content?.includes('CT_REVIEW_NONCE:'))?.content.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+        const sysMsg = extractMessageContentText(payload.messages.find((m) => m.role === 'system')?.content || '');
+        const userMsg = extractMessageContentText(payload.messages[payload.messages.length - 1]?.content || '');
+        const allContent = payload.messages.map((m) => extractMessageContentText(m.content)).join('\n');
+        const nonceMatch = allContent.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
         const nonce = nonceMatch ? nonceMatch[1] : 'nonce-emp-123';
 
         // Check if a tool was requested
@@ -226,8 +227,9 @@ describe('Challenger M3-2 Empirical Challenge Test Suite', () => {
         let foundDenial = false;
         for (const call of recordedCalls) {
           for (const msg of call.messages || []) {
-            if (msg.content && msg.content.includes('[PI_TOOL_RESULT]')) {
-              expect(msg.content).toContain(`Tool '${name}' execution rejected: Permission denied.`);
+            const contentText = extractMessageContentText(msg.content);
+            if (contentText.includes('[PI_TOOL_RESULT]')) {
+              expect(contentText).toContain(`Tool '${name}' execution rejected: Permission denied.`);
               foundDenial = true;
             }
           }
@@ -370,8 +372,8 @@ describe('Challenger M3-2 Empirical Challenge Test Suite', () => {
       let apiLanePrompt = '';
 
       for (const call of recordedCalls) {
-        const sys = call.messages.find((m: any) => m.role === 'system')?.content || '';
-        const user = call.messages.find((m: any) => m.role === 'user')?.content || '';
+        const sys = extractMessageContentText(call.messages.find((m: any) => m.role === 'system')?.content || '');
+        const user = extractMessageContentText(call.messages.find((m: any) => m.role === 'user')?.content || '');
         if (sys.includes('security') || sys.includes('sec-lane')) {
           secLanePrompt = user;
         } else if (sys.includes('correctness') || sys.includes('api-lane')) {
