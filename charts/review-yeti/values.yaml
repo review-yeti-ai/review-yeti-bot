@@ -201,6 +201,16 @@ operator:
     # provider account. Keep admission account-wide and leave four slots for
     # other gateway consumers; operators with isolated capacity may raise this.
     maxConcurrentJobs: 1
+    # How long a terminal PRReviewJob (Succeeded/Failed/Expired) is kept
+    # before the operator deletes it -- Kubernetes garbage collection then
+    # cascades the delete to the worker Job it owns (REL-896).
+    terminalRetentionSeconds: 3600
+    # Hard cap applied even when a terminal review's fail-closed GitHub check
+    # publication has been delegated to the dispatcher's trusted reaper and
+    # has not resolved (see reconcileFailurePublication /
+    # DelegatedToTrustedService in the v1alpha2 controller); nothing ever
+    # resolves that state back, so this cap is what actually bounds the leak.
+    terminalMaxRetentionSeconds: 86400
 
   nodeSelector: {}
   tolerations: []
@@ -238,7 +248,15 @@ worker:
     storageClassName: ""
 
   activeDeadlineSeconds: 840
+  # ttlSecondsAfterFinished is the TTL a *succeeded* worker Job is patched
+  # down to once the operator observes success (REL-896). A worker is always
+  # built with failedTtlSecondsAfterFinished first, since the outcome is not
+  # known yet at build time.
   ttlSecondsAfterFinished: 0
+  # failedTtlSecondsAfterFinished keeps a failed worker's Job (and therefore
+  # its Pod/logs) around for one hour by default, instead of the immediate
+  # collection every outcome previously got.
+  failedTtlSecondsAfterFinished: 3600
 
 # Ingress Configuration
 # Exposes the dispatcher endpoint externally to receive webhook requests.

@@ -48,6 +48,10 @@ spec:
               value: {{ .Values.operator.config.healthAddr | quote }}
             - name: REVIEW_YETI_OPERATOR_MAX_CONCURRENT_JOBS
               value: {{ .Values.operator.config.maxConcurrentJobs | quote }}
+            - name: REVIEW_YETI_TERMINAL_RETENTION_SECONDS
+              value: {{ .Values.operator.config.terminalRetentionSeconds | quote }}
+            - name: REVIEW_YETI_TERMINAL_MAX_RETENTION_SECONDS
+              value: {{ .Values.operator.config.terminalMaxRetentionSeconds | quote }}
             {{- if .Values.publishing.gatewayBaseUrl }}
             - name: REVIEW_YETI_GATEWAY_BASE_URL
               value: {{ .Values.publishing.gatewayBaseUrl | quote }}
@@ -82,6 +86,8 @@ spec:
               value: {{ .Values.worker.activeDeadlineSeconds | quote }}
             - name: REVIEW_YETI_WORKER_TTL_AFTER_FINISHED
               value: {{ .Values.worker.ttlSecondsAfterFinished | quote }}
+            - name: REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED
+              value: {{ .Values.worker.failedTtlSecondsAfterFinished | quote }}
           ports:
             - name: metrics
               containerPort: 8080

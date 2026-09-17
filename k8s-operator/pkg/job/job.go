@@ -65,11 +65,38 @@ const (
 	FullPanelQualificationProfile = "full-panel"
 	SameHeadQualificationProfile  = "same-head"
 	ReceiptOnlyWorkerComponent    = "receipt-only-worker"
-	// Jobs are disposable execution records. TTL 0 makes kube delete the Job
-	// as soon as it reaches Complete/Failed. The reusable PR workspace has a
-	// separate, exact 1,800-second idle reclamation policy.
-	JobTTLSeconds       = int32(0)
-	WorkerCPURequest    = "250m"
+	// Jobs are disposable execution records. TTL 0 makes kube delete a
+	// *succeeded* Job as soon as it reaches Complete (see
+	// WorkerSuccessTTLSeconds). A failed Job is built with the longer
+	// WorkerFailedTTLSeconds instead (REL-896) so its Pod and logs survive
+	// long enough to be read; the controller patches the TTL down to this
+	// value once it observes the worker succeeded.
+	JobTTLSeconds = int32(0)
+	// DefaultWorkerFailedTTLAfterFinished keeps a failed worker's Job (and
+	// therefore its Pod/logs) alive for one hour by default instead of the
+	// instant collection every outcome previously got from JobTTLSeconds=0.
+	DefaultWorkerFailedTTLAfterFinished = int32(3600)
+	WorkerTTLAfterFinishedEnv           = "REVIEW_YETI_WORKER_TTL_AFTER_FINISHED"
+	WorkerFailedTTLAfterFinishedEnv     = "REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED"
+	// DefaultTerminalRetentionSeconds is how long a terminal PRReviewJob (see
+	// isTerminalPhase in the controller) is kept before the operator deletes
+	// it, letting Kubernetes garbage collection cascade to the worker Job it
+	// owns. One hour gives an operator time to `kubectl describe`/`get -o
+	// yaml` a finished review before it disappears.
+	DefaultTerminalRetentionSeconds = int64(3600)
+	TerminalRetentionSecondsEnv     = "REVIEW_YETI_TERMINAL_RETENTION_SECONDS"
+	// DefaultTerminalMaxRetentionSeconds bounds how long a terminal review may
+	// be held even while its FailurePublication condition is still Unknown
+	// (DelegatedToTrustedService; see reconcileFailurePublication in the
+	// controller). Nothing in this repository ever resolves that condition
+	// away from Unknown once it is set -- the dispatcher's abandoned-run
+	// reaper (src/review/abandonedRunReaper.ts) reconciles the GitHub check
+	// entirely against PostgreSQL and a fresh App token, and never touches
+	// this Kubernetes object. Without a hard cap, a review whose delegation
+	// never resolves would retain its run Secret forever.
+	DefaultTerminalMaxRetentionSeconds = int64(86400)
+	TerminalMaxRetentionSecondsEnv     = "REVIEW_YETI_TERMINAL_MAX_RETENTION_SECONDS"
+	WorkerCPURequest                   = "250m"
 	WorkerMemoryRequest = "512Mi"
 	WorkerCPULimit      = "1"
 	WorkerMemoryLimit   = "1536Mi"
@@ -163,7 +190,14 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	templateAnnotations := copyStringMap(annotations)
 	one := int32(1)
 	zero := int32(0)
-	ttl := int32FromEnv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", JobTTLSeconds)
+	// Build with the fail-safe (longer) TTL. batch/v1 has exactly one
+	// ttlSecondsAfterFinished field and the outcome is not known yet at build
+	// time, so this Job is built as if it will fail; the controller patches
+	// this down to WorkerSuccessTTLSeconds() once it observes Succeeded
+	// (see reconcileExistingJob). If that patch is ever missed -- crash,
+	// conflict, operator restart -- the Job is still collected after this
+	// longer TTL instead of leaking forever.
+	ttl := WorkerFailedTTLSeconds()
 	active := activeDeadlineSeconds
 	automountToken := false
 	allowPrivilegeEscalation := false
@@ -412,6 +446,22 @@ func configErr(reason string) error {
 	return fmt.Errorf("%w: %s", ErrJobConfiguration, reason)
 }
 
+// IsValidRunSecretName reports whether name matches the run-Secret naming
+// contract this package already enforces on every worker build
+// (secretNamePattern, checked by validateInput below) -- and which the
+// TypeScript dispatcher defines canonically in buildRunSecretName
+// (src/k8s/reviewJobProjection.ts): "ct-review-run-" followed by the run ID's
+// 32 lowercase hex characters, with an optional "-a<N>" execution-attempt
+// suffix. Callers outside this package that need to act on a Secret purely by
+// its declared name -- and must never fall back to a label selector or List
+// to find it -- use this exact check first. The v1alpha2 operator's
+// run-Secret cleanup finalizer (prreviewjob_v1alpha2_controller.go) is the
+// first such caller: it must not delete a Secret whose name it cannot prove
+// is this review's own run Secret.
+func IsValidRunSecretName(name string) bool {
+	return secretNamePattern.MatchString(name)
+}
+
 func validateInput(input Input) error {
 	if input.Review == nil || input.Now.IsZero() || input.Review.Namespace != Namespace {
 		return configErr("review is nil, clock is zero, or namespace is not " + Namespace)
@@ -424,7 +474,7 @@ func validateInput(input Input) error {
 	if !runIDPattern.MatchString(spec.RunID) || len(spec.DeliveryID) == 0 || len(spec.DeliveryID) > 512 || spec.RepositoryID <= 0 ||
 		!repoPattern.MatchString(spec.Repo) || spec.PRNumber <= 0 || !shaPattern.MatchString(spec.HeadSHA) || !shaPattern.MatchString(spec.BaseSHA) ||
 		!digestPattern.MatchString(spec.PolicyDigest) || !digestPattern.MatchString(spec.ConfigDigest) || (spec.PublicationMode != "disabled" && spec.PublicationMode != "app-gate") ||
-		!workerImagePattern.MatchString(spec.WorkerImage) || !secretNamePattern.MatchString(spec.RunSecretName) {
+		!workerImagePattern.MatchString(spec.WorkerImage) || !IsValidRunSecretName(spec.RunSecretName) {
 		return configErr("PRReviewJob spec failed identity validation (run/delivery/repo/PR/sha/digest/publication-mode/image/run-secret)")
 	}
 	if _, err := executionAttemptForSpec(spec); err != nil {
@@ -654,6 +704,48 @@ func int32FromEnv(name string, fallback int32) int32 {
 		return fallback
 	}
 	return int32(parsed)
+}
+
+// Int64FromEnv keeps the same invalid/negative-falls-back-to-default
+// semantics as int32FromEnv, for the wider retention windows (up to 86400s
+// and beyond) that would not always fit an int32 boundary check cleanly.
+func Int64FromEnv(name string, fallback int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || parsed < 0 {
+		return fallback
+	}
+	return parsed
+}
+
+// WorkerSuccessTTLSeconds is the TTL a succeeded worker Job is patched down
+// to once the controller observes its success (default 0: collect
+// immediately, matching the pre-REL-896 behavior for successful runs).
+func WorkerSuccessTTLSeconds() int32 {
+	return int32FromEnv(WorkerTTLAfterFinishedEnv, JobTTLSeconds)
+}
+
+// WorkerFailedTTLSeconds is the TTL a worker Job is built with, so a failed
+// worker's Pod and logs survive for this long even if the controller never
+// observes and patches the outcome.
+func WorkerFailedTTLSeconds() int32 {
+	return int32FromEnv(WorkerFailedTTLAfterFinishedEnv, DefaultWorkerFailedTTLAfterFinished)
+}
+
+// TerminalRetentionSeconds is the delay after a PRReviewJob becomes terminal
+// before the operator deletes it (see reconcileTerminalDeletion).
+func TerminalRetentionSeconds() int64 {
+	return Int64FromEnv(TerminalRetentionSecondsEnv, DefaultTerminalRetentionSeconds)
+}
+
+// TerminalMaxRetentionSeconds is the hard cap applied even when a terminal
+// review's FailurePublication condition is still Unknown (see
+// reconcileTerminalDeletion and reconcileFailurePublication).
+func TerminalMaxRetentionSeconds() int64 {
+	return Int64FromEnv(TerminalMaxRetentionSecondsEnv, DefaultTerminalMaxRetentionSeconds)
 }
 
 func WorkerStorageSize() resource.Quantity {
