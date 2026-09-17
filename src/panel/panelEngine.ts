@@ -2270,7 +2270,7 @@ async function runPersona(
             persona: persona.id,
             providerId,
             requestPolicy,
-            zoektConfig: (config as any)?.pre_checks?.zoekt || (config as any)?.evidence?.zoekt,
+            zoektConfig: mergeZoektToolConfig((config as any)?.pre_checks?.zoekt, (config as any)?.evidence?.zoekt),
             repoFileProvider,
             onFirstToken: (requestPolicy as any)?.onFirstToken,
             signal,
@@ -2581,6 +2581,24 @@ export function isPrunableGeneralLane(persona: { id: string; charter?: string; r
   const hasSpecificGlobs = Array.isArray(persona.paths) && persona.paths.some((pattern) => pattern !== '**/*' && pattern !== '*' && pattern !== '**');
   if (hasSpecificGlobs) return false;
   return true;
+}
+
+/**
+ * REL-677: the panel owns the zoekt tool-config lookup policy. The grounding
+ * stage publishes the index under evidence.zoekt; when that carries an indexDir
+ * it takes precedence over any pre_checks.zoekt pin, and the other knobs merge
+ * with evidence winning. Downstream callers (the publishing worker) therefore
+ * inject ONE surface — evidence.zoekt — and never need to know this policy.
+ */
+function mergeZoektToolConfig(preChecks?: any, evidence?: any): any {
+  if (evidence?.indexDir) {
+    return {
+      ...(preChecks ?? {}),
+      ...(evidence ?? {}),
+      indexDir: evidence.indexDir,
+    };
+  }
+  return preChecks ?? evidence ?? undefined;
 }
 
 export async function executePersonaPanel(options: {

@@ -96,7 +96,7 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     expect(groundingArg.zoektIndexBinaryPath).toBe('/opt/zoekt/zoekt-index');
 
     const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
-    expect(panelArg.config.pre_checks.zoekt.indexDir).toBe('/tmp/fake-index');
+    // Single-surface contract: evidence.zoekt carries the grounding; the panel owns propagation.
     expect(panelArg.config.evidence.zoekt.indexDir).toBe('/tmp/fake-index');
   });
 
@@ -106,7 +106,6 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     await runPublishingReviewWorker(env(), deps(panelRunner, { zoektGrounding: zoektGrounding as never }));
 
     const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
-    expect(panelArg.config.pre_checks?.zoekt?.indexDir).toBeUndefined();
     expect(panelArg.config.evidence?.zoekt?.indexDir).toBeUndefined();
   });
 
@@ -119,7 +118,6 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     // alongside the injected evidence/pre_checks zoekt blocks.
     expect(panelArg.config.reviewers.overall_timeout_s).toBeGreaterThan(0);
     expect(Array.isArray(panelArg.config.personas)).toBe(true);
-    expect(panelArg.config.pre_checks.zoekt.indexDir).toBe('/tmp/fake-index');
     expect(panelArg.config.evidence.zoekt.indexDir).toBe('/tmp/fake-index');
   });
 
@@ -182,14 +180,12 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
       deps(panelRunner, { zoektGrounding: zoektGrounding as never }),
     );
     const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
-    expect(panelArg.config.pre_checks.zoekt.zoektBinaryPath).toBe('/opt/zoekt/zoekt');
     expect(panelArg.config.evidence.zoekt.zoektBinaryPath).toBe('/opt/zoekt/zoekt');
     // A grounded run without ZOEKT_BIN leaves the binary path unset (PATH lookup).
     const panelRunner2 = vi.fn(async () => basePanel());
     const zoektGrounding2 = vi.fn(async () => ({ indexDir: '/tmp/fake-index' }));
     await runPublishingReviewWorker(env(), deps(panelRunner2, { zoektGrounding: zoektGrounding2 as never }));
     const panelArg2 = (panelRunner2.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
-    expect(panelArg2.config.pre_checks.zoekt.zoektBinaryPath).toBeUndefined();
     expect(panelArg2.config.evidence.zoekt.zoektBinaryPath).toBeUndefined();
   });
 

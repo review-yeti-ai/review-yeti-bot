@@ -867,11 +867,10 @@ export async function runPublishingReviewWorker(
       } catch (groundingError: any) {
         zoektScratchRoot = { reason: groundingError?.message || 'zoekt_grounding_error' };
       }
-      // Inject the indexDir into BOTH config paths that consume it:
-      // evidence.zoekt (the symbol pre-check reads it first) and
-      // pre_checks.zoekt (the panel's on-demand code_search_zoekt tool prefers
-      // pre_checks over evidence in its lookup). Injecting both guarantees the
-      // index reaches every consumer regardless of which lookup wins.
+      // Single-surface injection: the panel (panelEngine) owns the zoekt
+      // lookup policy and propagates evidence.zoekt.indexDir to every internal
+      // consumer (symbol pre-check + on-demand code_search_zoekt tool). The
+      // worker never needs to know that policy.
       const zoektIndexDir = zoektGroundingEnabled ? zoektScratchRoot.indexDir : undefined;
       const zoektBinaryOverride = value(env, 'ZOEKT_BIN') ? { zoektBinaryPath: value(env, 'ZOEKT_BIN') } : {};
       const groundedConfig = zoektIndexDir
@@ -881,14 +880,6 @@ export async function runPublishingReviewWorker(
               ...(workerConfig as { evidence?: Record<string, unknown> }).evidence,
               zoekt: {
                 ...((workerConfig as { evidence?: { zoekt?: Record<string, unknown> } }).evidence?.zoekt ?? {}),
-                indexDir: zoektIndexDir,
-                ...zoektBinaryOverride,
-              },
-            },
-            pre_checks: {
-              ...((workerConfig as { pre_checks?: Record<string, unknown> }).pre_checks ?? {}),
-              zoekt: {
-                ...((workerConfig as { pre_checks?: { zoekt?: Record<string, unknown> } }).pre_checks?.zoekt ?? {}),
                 indexDir: zoektIndexDir,
                 ...zoektBinaryOverride,
               },

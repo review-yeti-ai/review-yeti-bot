@@ -114,6 +114,29 @@ describe('createZoektGroundingStage (REL-677)', () => {
     expect(syncRemovals).toHaveLength(0);
   });
 
+  it('catch path uses an injected fs that carries its own promises.rm', async () => {
+    const { created } = fakeFs();
+    const promiseRemovals: string[] = [];
+    const syncRemovals: string[] = [];
+    const fsWithPromises = {
+      mkdtempSync: (prefix: string) => `${prefix}${created.length}`,
+      promises: { rm: async (dir: string) => { promiseRemovals.push(dir); } },
+      rmSync: (dir: string) => { syncRemovals.push(dir); },
+    };
+    const materialize = vi.fn(async () => { throw new Error('ECONNRESET'); });
+    const stage = createZoektGroundingStage({
+      fs: fsWithPromises,
+      materializeReviewWorkdir: materialize,
+      buildZoektIndex: vi.fn(),
+    });
+
+    const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't' });
+    expect(result.reason).toBe('ECONNRESET');
+    // The injected fs's own promises API is preferred over its rmSync.
+    expect(promiseRemovals).toHaveLength(1);
+    expect(syncRemovals).toHaveLength(0);
+  });
+
   it('catch path falls back to the injected fs rmSync when no fsPromises override exists', async () => {
     const { fs, created } = fakeFs();
     const syncRemovals: string[] = [];
