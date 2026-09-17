@@ -80,9 +80,14 @@ describe('KubernetesReviewJobProjector', () => {
         if (name === old.metadata.name) return old;
         throw notFound();
       }),
-      createNamespacedCustomObject: vi.fn(async ({ body }: { body: unknown }) => { created.push(body); }),
+      createNamespacedCustomObject: vi.fn(async ({ body }: { body: unknown }) => {
+        created.push(body);
+        const created2 = body as Record<string, any>;
+        return { ...created2, metadata: { ...created2.metadata, uid: 'uid-attempt-2' } };
+      }),
     };
-    await new KubernetesReviewJobProjector(client).ensure(attemptProjection(2));
+    await expect(new KubernetesReviewJobProjector(client).ensure(attemptProjection(2)))
+      .resolves.toEqual({ uid: 'uid-attempt-2' });
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ metadata: { name: 'ct-review-11111111111111111111111111111111-a2' },
       spec: { executionAttempt: 2, runSecretName: 'ct-review-run-11111111111111111111111111111111-a2' } });
@@ -95,6 +100,7 @@ describe('KubernetesReviewJobProjector', () => {
         metadata: {
           ...projection.metadata,
           resourceVersion: '17',
+          uid: 'uid-existing',
         },
         status: { phase: 'Pending' },
       })),
@@ -102,7 +108,7 @@ describe('KubernetesReviewJobProjector', () => {
     };
     const projector = new KubernetesReviewJobProjector(client);
 
-    await expect(projector.ensure(projection)).resolves.toBeUndefined();
+    await expect(projector.ensure(projection)).resolves.toEqual({ uid: 'uid-existing' });
     expect(client.getNamespacedCustomObject).toHaveBeenCalledWith({
       group: 'review-yeti.ai',
       version: 'v1alpha2',
@@ -116,11 +122,14 @@ describe('KubernetesReviewJobProjector', () => {
   it('creates a missing resource with strict field validation', async () => {
     const client = {
       getNamespacedCustomObject: vi.fn(async () => { throw notFound(); }),
-      createNamespacedCustomObject: vi.fn(async () => projection),
+      createNamespacedCustomObject: vi.fn(async () => ({
+        ...projection,
+        metadata: { ...projection.metadata, uid: 'uid-created' },
+      })),
     };
     const projector = new KubernetesReviewJobProjector(client);
 
-    await expect(projector.ensure(projection)).resolves.toBeUndefined();
+    await expect(projector.ensure(projection)).resolves.toEqual({ uid: 'uid-created' });
     expect(client.createNamespacedCustomObject).toHaveBeenCalledWith({
       group: 'review-yeti.ai',
       version: 'v1alpha2',
@@ -136,18 +145,19 @@ describe('KubernetesReviewJobProjector', () => {
     const client = {
       getNamespacedCustomObject: vi.fn()
         .mockRejectedValueOnce(notFound())
-        .mockResolvedValueOnce(projection),
+        .mockResolvedValueOnce({ ...projection, metadata: { ...projection.metadata, uid: 'uid-raced' } }),
       createNamespacedCustomObject: vi.fn(async () => { throw conflict(); }),
     };
     const projector = new KubernetesReviewJobProjector(client);
 
-    await expect(projector.ensure(projection)).resolves.toBeUndefined();
+    await expect(projector.ensure(projection)).resolves.toEqual({ uid: 'uid-raced' });
     expect(client.getNamespacedCustomObject).toHaveBeenCalledTimes(2);
   });
 
   it.each([1, 2_147_483_647])('accepts a GET-existing legacy CR at attempt %i without mutation', async (attempt) => {
     const expected = attemptProjection(attempt);
     const existing = legacyProjection(expected);
+    (existing as any).metadata = { ...existing.metadata, uid: 'uid-legacy-get' };
     const before = JSON.stringify(existing);
     const client = {
       getNamespacedCustomObject: vi.fn(async () => existing),
@@ -155,7 +165,7 @@ describe('KubernetesReviewJobProjector', () => {
     };
     const projector = new KubernetesReviewJobProjector(client);
 
-    await expect(projector.ensure(expected)).resolves.toBeUndefined();
+    await expect(projector.ensure(expected)).resolves.toEqual({ uid: 'uid-legacy-get' });
     expect(JSON.stringify(existing)).toBe(before);
     expect(existing.spec).not.toHaveProperty('executionAttempt');
     expect(client.createNamespacedCustomObject).not.toHaveBeenCalled();
@@ -164,6 +174,7 @@ describe('KubernetesReviewJobProjector', () => {
   it.each([1, 2, 2_147_483_647])('accepts a 409 reread of a legacy CR at attempt %i without mutation', async (attempt) => {
     const expected = attemptProjection(attempt);
     const existing = legacyProjection(expected);
+    (existing as any).metadata = { ...existing.metadata, uid: 'uid-legacy-reread' };
     const before = JSON.stringify(existing);
     const client = {
       getNamespacedCustomObject: vi.fn()
@@ -173,7 +184,7 @@ describe('KubernetesReviewJobProjector', () => {
     };
     const projector = new KubernetesReviewJobProjector(client);
 
-    await expect(projector.ensure(expected)).resolves.toBeUndefined();
+    await expect(projector.ensure(expected)).resolves.toEqual({ uid: 'uid-legacy-reread' });
     expect(JSON.stringify(existing)).toBe(before);
     expect(existing.spec).not.toHaveProperty('executionAttempt');
     expect(client.getNamespacedCustomObject).toHaveBeenCalledTimes(2);
@@ -212,9 +223,10 @@ describe('KubernetesReviewJobProjector', () => {
     const expected = attemptProjection(1);
     expected.spec.runSecretName += '-a1';
     const existing = legacyProjection(expected);
+    (existing as any).metadata = { ...existing.metadata, uid: 'uid-legacy-a1' };
     const before = JSON.stringify(existing);
     const client = { getNamespacedCustomObject: vi.fn(async () => existing), createNamespacedCustomObject: vi.fn() };
-    await expect(new KubernetesReviewJobProjector(client).ensure(expected)).resolves.toBeUndefined();
+    await expect(new KubernetesReviewJobProjector(client).ensure(expected)).resolves.toEqual({ uid: 'uid-legacy-a1' });
     expect(JSON.stringify(existing)).toBe(before);
     await expect(new KubernetesReviewJobProjector(client).ensure({
       ...expected, spec: { ...expected.spec, runnerMode: 'prebaked' },
@@ -260,6 +272,41 @@ describe('KubernetesReviewJobProjector', () => {
 
     await expect(projector.ensure(projection)).rejects.toThrow('existing PRReviewJob conflicts with the durable projection');
     expect(client.createNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  describe('REL-896 uid extraction for the run Secret ownerReference', () => {
+    it.each([
+      ['missing metadata.uid', { ...projection, metadata: { ...projection.metadata } }],
+      ['non-string uid', { ...projection, metadata: { ...projection.metadata, uid: 42 } }],
+      ['empty uid', { ...projection, metadata: { ...projection.metadata, uid: '' } }],
+    ])('rejects an existing resource with %s instead of returning an unusable uid', async (_reason, existing) => {
+      const client = {
+        getNamespacedCustomObject: vi.fn(async () => existing),
+        createNamespacedCustomObject: vi.fn(),
+      };
+      await expect(new KubernetesReviewJobProjector(client).ensure(projection))
+        .rejects.toThrow('Kubernetes PRReviewJob get failed');
+    });
+
+    it('rejects a create response with no uid instead of returning one', async () => {
+      const client = {
+        getNamespacedCustomObject: vi.fn(async () => { throw notFound(); }),
+        createNamespacedCustomObject: vi.fn(async () => projection),
+      };
+      await expect(new KubernetesReviewJobProjector(client).ensure(projection))
+        .rejects.toThrow('Kubernetes PRReviewJob create failed');
+    });
+
+    it('rejects a 409 reread response with no uid instead of returning one', async () => {
+      const client = {
+        getNamespacedCustomObject: vi.fn()
+          .mockRejectedValueOnce(notFound())
+          .mockResolvedValueOnce(projection),
+        createNamespacedCustomObject: vi.fn(async () => { throw conflict(); }),
+      };
+      await expect(new KubernetesReviewJobProjector(client).ensure(projection))
+        .rejects.toThrow('Kubernetes PRReviewJob get failed');
+    });
   });
 
   it('does not classify untrusted text as a Kubernetes status code', () => {

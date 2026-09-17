@@ -27,6 +27,7 @@ export interface MetricCounters {
   jobsDispatched: Counter;
   reviewReaperDeliveryIdentityMismatches: Counter;
   reviewReaperSupersededAttempts: Counter;
+  runSecretOwnerReferenceAttachFailures: Counter;
   activeJobs: UpDownCounter;
   queuedJobs: UpDownCounter;
 
@@ -135,6 +136,9 @@ export function initMetrics(): MetricCounters {
     }),
     reviewReaperSupersededAttempts: meter.createCounter('review_yeti_review_reaper_superseded_attempt_total', {
       description: 'Abandoned review attempts retired because a completed newer same-head App check already exists.',
+    }),
+    runSecretOwnerReferenceAttachFailures: meter.createCounter('review_yeti_run_secret_owner_reference_attach_failure_total', {
+      description: 'Run Secret ownerReference attach attempts (REL-896) that failed and were tolerated; cleanup remains bounded by the existing reapers.',
     }),
     activeJobs: meter.createUpDownCounter('review_yeti_queue_active_jobs', {
       description: 'Current active review jobs.',

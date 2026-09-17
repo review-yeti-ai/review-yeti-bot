@@ -4,6 +4,8 @@ import { ReviewJobDispatchEngine } from '../../src/k8s/reviewJobDispatchEngine';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import { logger } from '../../src/utils/logger';
+import { getMetrics } from '../../src/telemetry/metrics';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const now = receivedAt + 60_000;
@@ -37,7 +39,7 @@ function fixture(overrides: Record<string, any> = {}) {
     markTerminal: vi.fn(async () => true),
     ...overrides.repository,
   };
-  const projector = { ensure: vi.fn(async () => undefined), ...overrides.projector };
+  const projector = { ensure: vi.fn(async () => ({ uid: 'uid-1' })), ...overrides.projector };
   const runSecretProvisioner = overrides.runSecretProvisioner === null
     ? undefined
     : { provision: vi.fn(async () => ({ workerTokenDigest: 'f'.repeat(64) })), ...overrides.runSecretProvisioner };
@@ -361,6 +363,107 @@ describe('ReviewJobDispatchEngine', () => {
     const { engine, projector } = fixture({ repository: { claimNext: vi.fn(async () => null) } });
     await expect(engine.runOnce()).resolves.toEqual({ status: 'idle' });
     expect(projector.ensure).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReviewJobDispatchEngine run Secret ownerReference attach (REL-896)', () => {
+  function appGateFixture(overrides: Record<string, any> = {}) {
+    return fixture({
+      ...overrides,
+      repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })), ...overrides.repository },
+      projector: { ensure: vi.fn(async () => ({ uid: 'uid-created-1' })), ...overrides.projector },
+      runSecretProvisioner: { attachOwnerReference: vi.fn(), ...overrides.runSecretProvisioner },
+    });
+  }
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("attaches the PRReviewJob ownerReference to the run Secret using ensure()'s uid", async () => {
+    const { engine, projector, repository, runSecretProvisioner } = appGateFixture();
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'projected', runId: claim.runId, projectionName: `ct-review-${'1'.repeat(32)}`,
+    });
+    expect(runSecretProvisioner!.attachOwnerReference).toHaveBeenCalledExactlyOnceWith({
+      runId: claim.runId,
+      secretName: `ct-review-run-${'1'.repeat(32)}`,
+      namespace: 'ct-review-qualification',
+      owner: {
+        apiVersion: 'review-yeti.ai/v1alpha2',
+        kind: 'PRReviewJob',
+        name: `ct-review-${'1'.repeat(32)}`,
+        uid: 'uid-created-1',
+      },
+    });
+    // The Secret must already have a uid-bearing owner to point at before the
+    // dispatch acknowledges the row as projected.
+    expect((projector.ensure as any).mock.invocationCallOrder[0])
+      .toBeLessThan((runSecretProvisioner!.attachOwnerReference as any).mock.invocationCallOrder[0]);
+    expect((runSecretProvisioner!.attachOwnerReference as any).mock.invocationCallOrder[0])
+      .toBeLessThan((repository.markProjected as any).mock.invocationCallOrder[0]);
+  });
+
+  it('never attempts to attach an ownerReference for a disabled (non-publishing) claim', async () => {
+    const attach = vi.fn();
+    const { engine } = fixture({ runSecretProvisioner: { attachOwnerReference: attach } });
+    await expect(engine.runOnce()).resolves.toMatchObject({ status: 'projected' });
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it('skips the attach call and still projects when the provisioner does not implement it', async () => {
+    // The deployed dispatcher Role may not yet grant `patch` on secrets; an
+    // older-shaped provisioner must not block dispatch.
+    const { engine, repository } = appGateFixture({ runSecretProvisioner: { attachOwnerReference: undefined } });
+    await expect(engine.runOnce()).resolves.toMatchObject({ status: 'projected' });
+    expect(repository.markProjected).toHaveBeenCalledOnce();
+  });
+
+  it('skips the attach call without crashing when ensure() reports no uid', async () => {
+    const attach = vi.fn();
+    const { engine, repository } = appGateFixture({
+      projector: { ensure: vi.fn(async () => undefined as any) },
+      runSecretProvisioner: { attachOwnerReference: attach },
+    });
+    await expect(engine.runOnce()).resolves.toMatchObject({ status: 'projected' });
+    expect(attach).not.toHaveBeenCalled();
+    expect(repository.markProjected).toHaveBeenCalledOnce();
+  });
+
+  it('fails soft on a 403 from the attach call: still projects, logs a warning, and counts the metric', async () => {
+    const forbidden = Object.assign(new Error('forbidden'), { code: 403 });
+    const attach = vi.fn(async () => { throw forbidden; });
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const metricAdd = vi.spyOn(getMetrics().runSecretOwnerReferenceAttachFailures, 'add');
+    const { engine, repository } = appGateFixture({ runSecretProvisioner: { attachOwnerReference: attach } });
+
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'projected', runId: claim.runId, projectionName: `ct-review-${'1'.repeat(32)}`,
+    });
+
+    expect(repository.markProjected).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('ownerReference'),
+      expect.objectContaining({ runId: claim.runId, secretName: `ct-review-run-${'1'.repeat(32)}`, statusCode: 403 }),
+    );
+    // Never log or count anything that could carry token material -- only the
+    // fixed stage label, run identity, and a structured status code.
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('forbidden');
+    expect(metricAdd).toHaveBeenCalledWith(1);
+  });
+
+  it('re-attempts a previously failed ownerReference attach when the same claim is reprocessed', async () => {
+    // A lease-lost reclaim or redispatch of the same run calls ensure() again and
+    // must retry a previously failed attach; idempotency for an already-correct
+    // owner lives inside attachOwnerReference itself, not gated by a flag here.
+    const attach = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('forbidden'), { code: 403 }))
+      .mockResolvedValueOnce(undefined);
+    vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const { engine } = appGateFixture({ runSecretProvisioner: { attachOwnerReference: attach } });
+
+    await expect(engine.runOnce()).resolves.toMatchObject({ status: 'projected' });
+    await expect(engine.runOnce()).resolves.toMatchObject({ status: 'projected' });
+
+    expect(attach).toHaveBeenCalledTimes(2);
   });
 });
 

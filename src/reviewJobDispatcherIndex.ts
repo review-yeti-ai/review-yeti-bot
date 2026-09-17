@@ -69,6 +69,18 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
           }),
           readNamespacedSecret: (request: { namespace: string; name: string }) =>
             core.readNamespacedSecret({ namespace: request.namespace, name: request.name }),
+          // REL-896: a metadata-only merge patch (ownerReferences), never `data`
+          // or `stringData`. The generated client defaults an object body to
+          // strategic-merge-patch+json; Kubernetes' built-in mergeKey for
+          // ownerReferences is `uid`, so this adds/updates by uid rather than
+          // clobbering an unrelated owner some other component might set.
+          patchNamespacedSecret: (request: { namespace: string; name: string; body: unknown; fieldManager: string }) =>
+            core.patchNamespacedSecret({
+              namespace: request.namespace,
+              name: request.name,
+              body: request.body,
+              fieldManager: request.fieldManager,
+            }),
           deleteNamespacedSecret: (request: { namespace: string; name: string }) =>
             core.deleteNamespacedSecret({ namespace: request.namespace, name: request.name }),
         };

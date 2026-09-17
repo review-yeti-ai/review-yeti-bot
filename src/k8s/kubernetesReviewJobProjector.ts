@@ -121,15 +121,34 @@ function apiFailure(operation: 'get' | 'create', error: unknown): Error {
   return new Error(`Kubernetes PRReviewJob ${operation} failed${status ? ` with status ${status}` : ''}`);
 }
 
+function extractUid(value: unknown): string | undefined {
+  const uid = record(record(value)?.metadata)?.uid;
+  return typeof uid === 'string' && uid ? uid : undefined;
+}
+
+/**
+ * REL-896: the caller attaches an ownerReference from the run Secret to this
+ * resource so Kubernetes cascade-deletes the Secret once the PRReviewJob is
+ * retired, instead of relying solely on the shell reapers. That requires the
+ * resource's own uid, which only exists once the API server has accepted it --
+ * so it is read from whichever response (get or create) this call already made,
+ * never a wasted extra round trip.
+ */
+function requireUid(value: unknown, operation: 'get' | 'create'): string {
+  const uid = extractUid(value);
+  if (!uid) throw apiFailure(operation, new Error('Kubernetes response is missing metadata.uid'));
+  return uid;
+}
+
 export class KubernetesReviewJobProjector implements ReviewJobProjector {
   constructor(private readonly client: NamespacedCustomObjectClient) {}
 
-  async ensure(projection: PRReviewJobProjection): Promise<void> {
+  async ensure(projection: PRReviewJobProjection): Promise<{ uid: string }> {
     const request = identity(projection);
     try {
       const existing = await this.client.getNamespacedCustomObject(request);
       assertExact(existing, projection);
-      return;
+      return { uid: requireUid(existing, 'get') };
     } catch (error) {
       if (kubernetesStatusCode(error) !== 404) {
         if (error instanceof Error && [projectionConflictMessage, projectionTerminalMessage].includes(error.message)) {
@@ -140,7 +159,7 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
     }
 
     try {
-      await this.client.createNamespacedCustomObject({
+      const created = await this.client.createNamespacedCustomObject({
         group: GROUP,
         version: VERSION,
         namespace: projection.metadata.namespace,
@@ -149,11 +168,13 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
         fieldManager: 'review-yeti-job-dispatcher',
         fieldValidation: 'Strict',
       });
+      return { uid: requireUid(created, 'create') };
     } catch (error) {
       if (kubernetesStatusCode(error) !== 409) throw apiFailure('create', error);
       try {
         const raced = await this.client.getNamespacedCustomObject(request);
         assertExact(raced, projection);
+        return { uid: requireUid(raced, 'get') };
       } catch (rereadError) {
         if (rereadError instanceof Error && [projectionConflictMessage, projectionTerminalMessage].includes(rereadError.message)) {
           throw rereadError;

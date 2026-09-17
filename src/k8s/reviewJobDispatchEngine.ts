@@ -1,14 +1,22 @@
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
 import type { ReviewDispatchClaim } from '../review/reviewRun';
+import { kubernetesStatusCode } from './kubernetesReviewJobProjector';
 import {
   buildReviewJobProjection,
   type PRReviewJobProjection,
   type RunnerMode,
 } from './reviewJobProjection';
+import { getMetrics } from '../telemetry/metrics';
+import { logger } from '../utils/logger';
 
 export interface ReviewJobProjector {
-  /** Ensure is idempotent for metadata.name and must reject a conflicting existing resource. */
-  ensure(projection: PRReviewJobProjection): Promise<void>;
+  /**
+   * Ensure is idempotent for metadata.name and must reject a conflicting existing
+   * resource. Returns the resource's Kubernetes uid -- from the create response on
+   * the fresh path, from the read response on the already-exists path -- so a
+   * caller can attach an ownerReference to it (REL-896).
+   */
+  ensure(projection: PRReviewJobProjection): Promise<{ uid: string }>;
 }
 
 /**
@@ -26,6 +34,22 @@ export interface RunSecretProvisioner {
     owner: string;
     repo: string;
   }): Promise<{ workerTokenDigest: string }>;
+  /**
+   * REL-896: attach an ownerReference from the now-created PRReviewJob to this
+   * run's Secret so Kubernetes cascade-deletes it once the CR is retired, instead
+   * of relying solely on the shell reapers. Optional because the deployed Role
+   * may not yet grant `patch` on secrets; absent, the caller skips the call
+   * entirely and the existing reapers remain the only cleanup path.
+   *
+   * A failure here must never fail the dispatch or block markProjected -- the
+   * caller logs and counts it, then proceeds. See runOnce() for that handling.
+   */
+  attachOwnerReference?(request: {
+    runId: string;
+    secretName: string;
+    namespace: string;
+    owner: { apiVersion: string; kind: string; name: string; uid: string };
+  }): Promise<void>;
 }
 
 export interface ReviewJobDispatchEngineOptions {
@@ -188,8 +212,9 @@ export class ReviewJobDispatchEngine {
       }
     }
 
+    let ensured: { uid: string } | undefined;
     try {
-      await this.options.projector.ensure(projection);
+      ensured = await this.options.projector.ensure(projection);
     } catch {
       const reason = 'projection' as const;
       const retryNow = this.now();
@@ -204,6 +229,44 @@ export class ReviewJobDispatchEngine {
       return released
         ? { status: 'retry', runId: claim.runId, availableAt, reason }
         : { status: 'lease-lost', runId: claim.runId };
+    }
+
+    // REL-896: the run Secret is written before the PRReviewJob (fail-closed
+    // ordering above), so it has no owner until this point -- Kubernetes never
+    // garbage-collects it on its own. Attach one now that the CR's uid exists.
+    // This call is deliberately unconditional on every runOnce() for an app-gate
+    // claim: reprocessing the same row (a lease-lost reclaim, a redispatch) calls
+    // ensure() again and re-attempts a previously failed attach, with idempotency
+    // and foreign-owner protection handled inside attachOwnerReference itself.
+    //
+    // A failure here is bounded by the existing shell reapers, not by this
+    // dispatch: it must never fail the dispatch or block markProjected, because
+    // the deployed dispatcher Role may not yet grant `patch` on secrets.
+    if (projection.spec.publicationMode === 'app-gate') {
+      const uid = ensured && typeof ensured === 'object' ? ensured.uid : undefined;
+      const attach = this.options.runSecretProvisioner?.attachOwnerReference;
+      if (attach && typeof uid === 'string' && uid) {
+        try {
+          await attach({
+            runId: claim.runId,
+            secretName: projection.spec.runSecretName,
+            namespace: this.options.namespace,
+            owner: {
+              apiVersion: projection.apiVersion,
+              kind: projection.kind,
+              name: projection.metadata.name,
+              uid,
+            },
+          });
+        } catch (error) {
+          logger.warn('Failed to attach PRReviewJob ownerReference to run Secret; leaving cleanup to the reaper (REL-896)', {
+            runId: claim.runId,
+            secretName: projection.spec.runSecretName,
+            statusCode: kubernetesStatusCode(error),
+          });
+          getMetrics().runSecretOwnerReferenceAttachFailures.add(1);
+        }
+      }
     }
 
     const projected = workerTokenDigest

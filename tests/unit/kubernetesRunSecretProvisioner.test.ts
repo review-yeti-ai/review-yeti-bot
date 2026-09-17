@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { KubernetesRunSecretProvisioner, PUBLISH_TOKEN_KEY, READ_TOKEN_KEY } from '../../src/k8s/kubernetesRunSecretProvisioner';
 import { sha256 } from '../../src/review/reviewCore';
+import { logger } from '../../src/utils/logger';
 
 const request = {
   runId: `run_${'1'.repeat(32)}`,
@@ -28,6 +29,7 @@ function provisioner(over: Record<string, any> = {}) {
   const client = {
     createNamespacedSecret: vi.fn(async () => undefined),
     readNamespacedSecret: vi.fn(async () => { throw { code: 404 }; }),
+    patchNamespacedSecret: vi.fn(async () => undefined),
     ...over.client,
   };
   const mintToken = over.mintToken || vi.fn(async () => ({
@@ -325,7 +327,10 @@ describe('KubernetesRunSecretProvisioner', () => {
   });
 
   it('requires App credentials at construction', () => {
-    const client = { createNamespacedSecret: vi.fn(), readNamespacedSecret: vi.fn(), deleteNamespacedSecret: vi.fn() };
+    const client = {
+      createNamespacedSecret: vi.fn(), readNamespacedSecret: vi.fn(),
+      patchNamespacedSecret: vi.fn(), deleteNamespacedSecret: vi.fn(),
+    };
     expect(() => new KubernetesRunSecretProvisioner({ client, appId: '', privateKey: 'k' }))
       .toThrow(/requires GitHub App credentials/u);
   });
@@ -346,5 +351,122 @@ describe('KubernetesRunSecretProvisioner', () => {
     const expected = expect.objectContaining({ owner: 'calltelemetry', repo: 'ct-meta' });
     expect(mintToken).toHaveBeenCalledWith(expected);
     expect(mintReadToken).toHaveBeenCalledWith(expected);
+  });
+
+  describe('attachOwnerReference (REL-896)', () => {
+    const owner = {
+      apiVersion: 'review-yeti.ai/v1alpha2',
+      kind: 'PRReviewJob',
+      name: `ct-review-${'1'.repeat(32)}`,
+      uid: 'uid-1',
+    };
+    const desiredOwnerReference = { ...owner, controller: false, blockOwnerDeletion: false };
+    const attachRequest = { runId: request.runId, secretName: request.secretName, namespace: request.namespace, owner };
+
+    it('patches the Secret with the PRReviewJob ownerReference when none exists yet', async () => {
+      const { subject, client } = provisioner({
+        client: { readNamespacedSecret: vi.fn(async () => ({
+          metadata: { name: request.secretName, namespace: request.namespace },
+        })) },
+      });
+      await subject.attachOwnerReference(attachRequest);
+      expect(client.patchNamespacedSecret).toHaveBeenCalledExactlyOnceWith({
+        namespace: request.namespace,
+        name: request.secretName,
+        body: { metadata: { ownerReferences: [desiredOwnerReference] } },
+        fieldManager: 'ct-review-job-dispatcher',
+      });
+    });
+
+    it('sends a patch body that carries no Secret data', async () => {
+      const { subject, client } = provisioner({
+        client: { readNamespacedSecret: vi.fn(async () => trustedSecret()) },
+      });
+      await subject.attachOwnerReference(attachRequest);
+      const body = (client.patchNamespacedSecret.mock.calls[0][0] as any).body;
+      expect(body).not.toHaveProperty('data');
+      expect(body).not.toHaveProperty('stringData');
+      expect(JSON.stringify(body)).not.toContain('ghs_');
+    });
+
+    it('is idempotent: makes no patch call when the Secret already carries exactly this owner', async () => {
+      const { subject, client } = provisioner({
+        client: { readNamespacedSecret: vi.fn(async () => ({
+          metadata: { name: request.secretName, namespace: request.namespace, ownerReferences: [desiredOwnerReference] },
+        })) },
+      });
+      await subject.attachOwnerReference(attachRequest);
+      expect(client.patchNamespacedSecret).not.toHaveBeenCalled();
+    });
+
+    it('leaves a Secret alone and logs when it already has a different PRReviewJob owner uid', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const { subject, client } = provisioner({
+        client: { readNamespacedSecret: vi.fn(async () => ({
+          metadata: {
+            name: request.secretName, namespace: request.namespace,
+            ownerReferences: [{ ...desiredOwnerReference, uid: 'uid-foreign' }],
+          },
+        })) },
+      });
+      await subject.attachOwnerReference(attachRequest);
+      expect(client.patchNamespacedSecret).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('different'),
+        expect.objectContaining({ runId: request.runId, secretName: request.secretName }),
+      );
+      warn.mockRestore();
+    });
+
+    it('preserves an unrelated existing ownerReference while adding this one', async () => {
+      const unrelated = { apiVersion: 'v1', kind: 'ConfigMap', name: 'unrelated', uid: 'uid-unrelated' };
+      const { subject, client } = provisioner({
+        client: { readNamespacedSecret: vi.fn(async () => ({
+          metadata: { name: request.secretName, namespace: request.namespace, ownerReferences: [unrelated] },
+        })) },
+      });
+      await subject.attachOwnerReference(attachRequest);
+      const body = (client.patchNamespacedSecret.mock.calls[0][0] as any).body;
+      expect(body.metadata.ownerReferences).toEqual([unrelated, desiredOwnerReference]);
+    });
+
+    it('handles a Secret response wrapped in a body property', async () => {
+      const { subject, client } = provisioner({
+        client: { readNamespacedSecret: vi.fn(async () => ({
+          body: { metadata: { name: request.secretName, namespace: request.namespace } },
+        })) },
+      });
+      await subject.attachOwnerReference(attachRequest);
+      expect(client.patchNamespacedSecret).toHaveBeenCalledOnce();
+    });
+
+    it('propagates a 403 from the patch call without swallowing it', async () => {
+      const forbidden = Object.assign(new Error('forbidden'), { code: 403 });
+      const { subject } = provisioner({
+        client: {
+          readNamespacedSecret: vi.fn(async () => ({ metadata: { name: request.secretName, namespace: request.namespace } })),
+          patchNamespacedSecret: vi.fn(async () => { throw forbidden; }),
+        },
+      });
+      await expect(subject.attachOwnerReference(attachRequest)).rejects.toThrow(/forbidden/u);
+    });
+
+    it('propagates a read failure without ever calling patch', async () => {
+      const notFoundError = Object.assign(new Error('not found'), { code: 404 });
+      const { subject, client } = provisioner({
+        client: { readNamespacedSecret: vi.fn(async () => { throw notFoundError; }) },
+      });
+      await expect(subject.attachOwnerReference(attachRequest)).rejects.toThrow(/not found/u);
+      expect(client.patchNamespacedSecret).not.toHaveBeenCalled();
+    });
+
+    it('refuses a secret name outside the run-scoped pattern before reading or patching', async () => {
+      const { subject, client } = provisioner();
+      await expect(subject.attachOwnerReference({
+        ...attachRequest, secretName: 'ct-review-action-dispatch-runtime',
+      })).rejects.toThrow(/run-scoped pattern/u);
+      expect(client.readNamespacedSecret).not.toHaveBeenCalled();
+      expect(client.patchNamespacedSecret).not.toHaveBeenCalled();
+    });
   });
 });

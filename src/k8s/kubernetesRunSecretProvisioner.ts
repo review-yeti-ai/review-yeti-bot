@@ -3,6 +3,7 @@ import type { RunSecretProvisioner } from './reviewJobDispatchEngine';
 import { deriveRunSecretExecutionAttempt } from './reviewJobProjection';
 import { getGitHubAppRepositoryPublishToken, getGitHubAppRepositoryReadToken } from '../github/appAuth';
 import { sha256 } from '../review/reviewCore';
+import { logger } from '../utils/logger';
 
 export const PUBLISH_TOKEN_KEY = 'GITHUB_PUBLISH_TOKEN';
 // The operator wires GH_TOKEN from this key, non-optionally, for the publishing
@@ -21,6 +22,18 @@ export interface CoreSecretClient {
   readNamespacedSecret(request: {
     namespace: string;
     name: string;
+  }): Promise<unknown>;
+  /**
+   * REL-896: the only verb this adds beyond REL-586's original get/create pair.
+   * Scoped to a JSON-merge-style metadata patch; the caller never sends `data`
+   * or `stringData` through it, so a deployed Role granting only this verb still
+   * cannot read or overwrite the token material.
+   */
+  patchNamespacedSecret(request: {
+    namespace: string;
+    name: string;
+    body: unknown;
+    fieldManager: string;
   }): Promise<unknown>;
 }
 
@@ -133,6 +146,82 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
     }
     return { workerTokenDigest: sha256(minted.token) };
   }
+
+  /**
+   * REL-896: attach an ownerReference from the run's PRReviewJob to this run's
+   * Secret so Kubernetes cascade-deletes it once the CR is retired, instead of
+   * relying solely on the shell reapers.
+   *
+   * Idempotent by inspection rather than by unconditional patch: an unrelated
+   * concurrent call (a retried dispatch, a redispatched claim) must not send a
+   * second patch once the Secret already carries the exact owner, and a Secret
+   * that already has a DIFFERENT owner uid is left untouched rather than
+   * adopted -- that would silently reassign cascade-deletion authority away
+   * from whatever set it. Only ownerReferences metadata is read and written;
+   * this never touches `data`/`stringData`, so a Role granting only this verb
+   * still cannot see or overwrite token material.
+   *
+   * Throws on any read or patch failure; the caller (ReviewJobDispatchEngine)
+   * treats that as fail-soft and must not fail the dispatch or block
+   * markProjected on it, because the deployed Role may not yet grant `patch`
+   * on secrets.
+   */
+  async attachOwnerReference(request: {
+    runId: string;
+    secretName: string;
+    namespace: string;
+    owner: { apiVersion: string; kind: string; name: string; uid: string };
+  }): Promise<void> {
+    if (deriveRunSecretExecutionAttempt(request.runId, request.secretName) === undefined) {
+      throw new Error('run secret name does not match the expected run-scoped pattern');
+    }
+
+    const response = await this.options.client.readNamespacedSecret({
+      namespace: request.namespace,
+      name: request.secretName,
+    });
+    const secret = (response as { body?: unknown }).body ?? response;
+    const metadata = asRecord(asRecord(secret)?.metadata);
+    const existingOwners = Array.isArray(metadata?.ownerReferences) ? metadata!.ownerReferences : [];
+
+    const desiredOwner = {
+      apiVersion: request.owner.apiVersion,
+      kind: request.owner.kind,
+      name: request.owner.name,
+      uid: request.owner.uid,
+      controller: false,
+      blockOwnerDeletion: false,
+    };
+    const matching = existingOwners.find((entry) => {
+      const owner = asRecord(entry);
+      return owner?.apiVersion === desiredOwner.apiVersion
+        && owner?.kind === desiredOwner.kind
+        && owner?.name === desiredOwner.name;
+    });
+    if (matching) {
+      const matchingOwner = asRecord(matching);
+      if (matchingOwner?.uid === desiredOwner.uid) return; // already correct: no call
+      // A different uid means some other PRReviewJob (or reconciler) already
+      // owns this Secret name. Never reassign cascade-deletion authority here.
+      logger.warn('Run Secret already has a different PRReviewJob owner; leaving it alone (REL-896)', {
+        runId: request.runId,
+        secretName: request.secretName,
+        namespace: request.namespace,
+      });
+      return;
+    }
+
+    await this.options.client.patchNamespacedSecret({
+      namespace: request.namespace,
+      name: request.secretName,
+      body: { metadata: { ownerReferences: [...existingOwners, desiredOwner] } },
+      fieldManager: this.fieldManager,
+    });
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
 }
 
 async function readExistingRunSecret(

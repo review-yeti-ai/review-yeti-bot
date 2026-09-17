@@ -32,12 +32,18 @@ rules:
   #
   # `get` and `create` are the minimum verbs for split-write recovery. Reads are
   # accepted only for the exact run-derived name and then identity-checked in the
-  # dispatcher before its publish-token digest is bound. `delete` or `patch` remain
-  # forbidden because Kubernetes cannot scope those verbs to one Secret name and
-  # they could reach the App private key, gateway credential, or ingress TLS key.
+  # dispatcher before its publish-token digest is bound. `delete` remains
+  # forbidden because Kubernetes cannot scope it to one Secret name and it could
+  # reach the App private key, gateway credential, or ingress TLS key.
+  #
+  # REL-896: `patch` is scoped by the dispatcher to a metadata-only ownerReferences
+  # merge (never `data`/`stringData`) so Kubernetes cascade-deletes a run Secret
+  # with its PRReviewJob instead of relying solely on the shell reapers. RBAC
+  # cannot restrict `patch` to that one field path, but the dispatcher process
+  # never sends anything else through it -- see kubernetesRunSecretProvisioner.ts.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "create"]
+    verbs: ["get", "create", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
