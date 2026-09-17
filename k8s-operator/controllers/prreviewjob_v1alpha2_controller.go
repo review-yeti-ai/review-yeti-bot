@@ -91,7 +91,15 @@ type PRReviewJobV1Alpha2Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=delete
+// Reconcile converts optimistic-concurrency write conflicts into a quiet,
+// metric-counted requeue (REL-903). The single shared policy lives in
+// conflictRequeue.go so the v1alpha1 and v1alpha2 reconcilers cannot diverge.
 func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	result, err := r.reconcile(ctx, req)
+	return conflictRequeue(result, err)
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
 	err := r.getCachedThenLive(ctx, req.NamespacedName, &review)
 	if err != nil {
