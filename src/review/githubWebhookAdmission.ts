@@ -34,6 +34,22 @@ const pullRequestWebhook = z.object({
   }).passthrough(),
 }).passthrough();
 
+// REL-896: a closed PR (merged or not) carries neither an open state nor a
+// draft flag, so it cannot satisfy pullRequestWebhook above -- it is parsed
+// and routed separately, before that schema ever sees it.
+const closedPullRequestWebhook = z.object({
+  action: z.literal('closed'),
+  number: positiveInteger,
+  installation: z.object({ id: positiveInteger }).passthrough(),
+  repository: githubWebhookRepositorySchema,
+  pull_request: z.object({
+    number: positiveInteger,
+    state: z.literal('closed'),
+    merged: z.boolean(),
+    base: z.object({ repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough() }).passthrough(),
+  }).passthrough(),
+}).passthrough();
+
 const REFRESH_ACTION_IDENTIFIER = REVIEW_REFRESH_ACTION.identifier;
 const refreshExternalId = z.string()
   .regex(/^run_[a-f0-9]{32}:a[1-9][0-9]*$/u)
@@ -93,7 +109,7 @@ const refreshCheckRunWebhook = z.discriminatedUnion('action', [z.object({
 
 export interface GitHubWebhookAdmissionOptions {
   config: GitHubWebhookConfig;
-  admission: Pick<ReviewDispatchRepository, 'admit'>;
+  admission: Pick<ReviewDispatchRepository, 'admit' | 'terminalizeRunsForClosedPullRequest'>;
   authoritativePublishing?: AuthoritativeReviewAdmission;
   now?: () => number;
   mergeGroupGate?(payload: unknown): Promise<{ checkId: number; conclusion: 'success' | 'failure'; constituents: number }>;
@@ -227,6 +243,51 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       };
     }
     if (eventName !== 'pull_request') return { status: 'ignored', reason: 'unsupported_event' };
+    const rawAction = event.body && typeof event.body === 'object' && !Array.isArray(event.body)
+      ? (event.body as Record<string, unknown>).action : undefined;
+    // REL-896: a closed PR (merged or not) has no open/draft invariant to
+    // check and admits nothing new -- it only terminalizes whatever is still
+    // in flight. Route it before the opened/synchronize/reopened/
+    // ready_for_review schema below, whose behaviour stays byte-for-byte
+    // unchanged for every other action.
+    if (rawAction === 'closed') {
+      const parsedClosed = closedPullRequestWebhook.safeParse(event.body);
+      if (!parsedClosed.success) return { status: 'ignored', reason: 'unsupported_pull_request_state' };
+      const closedPayload = parsedClosed.data;
+      let closedEnrolled;
+      try { closedEnrolled = requireEnrolledGitHubWebhookRepository(closedPayload.repository, options.config); }
+      catch (error) {
+        if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+        throw error;
+      }
+      const { owner: closedOwner, repo: closedRepo } = closedEnrolled;
+      if (closedPayload.number !== closedPayload.pull_request.number
+        || closedPayload.pull_request.base.repo.full_name !== closedPayload.repository.full_name) {
+        return { status: 'ignored', reason: 'not_enrolled' };
+      }
+      const closedReceivedAt = now();
+      const closed = await options.admission.terminalizeRunsForClosedPullRequest({
+        repositoryId: closedPayload.repository.id,
+        owner: closedOwner,
+        repo: closedRepo,
+        prNumber: closedPayload.pull_request.number,
+        merged: closedPayload.pull_request.merged,
+        now: closedReceivedAt,
+        deliveryId: `github-webhook:${delivery}`,
+      });
+      if (closed.terminalizedRunIds.length === 0) {
+        // Idempotent no-op: either a redelivery of a close already processed,
+        // or a PR with no in-flight run at all. Never an error.
+        return { status: 'ignored', reason: 'no_in_flight_runs', deliveryId: delivery, prNumber: closedPayload.pull_request.number };
+      }
+      return {
+        status: 'accepted',
+        deliveryId: delivery,
+        prNumber: closedPayload.pull_request.number,
+        reason: 'pull_request_closed',
+        terminalized: closed.terminalizedRunIds.length,
+      };
+    }
     const parsed = pullRequestWebhook.safeParse(event.body);
     if (!parsed.success) return { status: 'ignored', reason: 'unsupported_pull_request_state' };
     const payload = parsed.data;

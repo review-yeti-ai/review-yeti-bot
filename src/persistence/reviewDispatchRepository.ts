@@ -89,6 +89,25 @@ export const PUBLISHABLE_PUBLICATION_MODES = ['app-gate'] as const;
 export const NON_PUBLISHABLE_DEADLINE_ERROR_TEXT =
   'publication mode disabled: never claimed before its terminal deadline; retired by reaper';
 
+/**
+ * REL-896: a pull request that closes (merged or not) while its review run is
+ * still queued/running has no further use for that run. Left alone it waits
+ * for the ordinary terminal deadline and claimAbandonedPublishingRuns then
+ * mints a fail-closed GitHub check on a PR that is no longer open. These two
+ * error texts are deliberately distinct from every prefix or exact string
+ * claimAbandonedPublishingRuns and retireExpiredNonPublishableRuns key on
+ * (RECOVERY_UNCONFIRMED_ERROR_TEXT, the reapedPrefix, WORKER_TERMINAL_FAILURE_PREFIX),
+ * and terminalizeRunsForClosedPullRequest always leaves the row in status
+ * 'terminal' rather than 'queued'/'running'/'failed' -- both reapers'
+ * candidate predicates require one of those other statuses (or a matching
+ * text) before they touch a row, so a closed-PR row is invisible to both by
+ * construction and never gets a check minted for it.
+ */
+export const PULL_REQUEST_CLOSED_ERROR_TEXT =
+  'pull request closed before the review completed';
+export const PULL_REQUEST_MERGED_ERROR_TEXT =
+  'pull request merged before the review completed';
+
 /** Lease cadence for lookup-only recovery after a check-create response is lost. */
 export const ABANDONED_RECOVERY_LEASE_MS = 60_000;
 
@@ -336,6 +355,28 @@ export interface ReviewDispatchRepository {
    * terminalizes the run and its outbox row. Returns the number retired.
    */
   retireExpiredNonPublishableRuns(now: number, limit: number): Promise<number>;
+  /**
+   * REL-896: terminalize every queued/running run for this exact repository
+   * + pull request when the pull request closes (merged or not). Excludes
+   * authoritative-gate rows (`authoritative_gate_app_id IS NOT NULL`), which
+   * have their own reaper and publication lifecycle in reviewGateRepository.
+   * Never mints or fails a GitHub check -- a closed PR needs no check at
+   * all, unlike claimAbandonedPublishingRuns. Idempotent: a redelivered
+   * close, or a PR with no matching in-flight run, matches zero rows and
+   * returns an empty list rather than throwing.
+   */
+  terminalizeRunsForClosedPullRequest(input: {
+    repositoryId: number;
+    owner: string;
+    repo: string;
+    prNumber: number;
+    merged: boolean;
+    now: number;
+    /** The webhook delivery that triggered this closure; accepted for the
+     * caller's audit trail but not persisted -- idempotency here is
+     * structural (only 'queued'/'running' rows ever match), not delivery-keyed. */
+    deliveryId: string;
+  }): Promise<{ terminalizedRunIds: string[] }>;
 }
 
 export interface WorkerFailureTransition {
@@ -1019,6 +1060,86 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       }
       return result.rows.length;
     });
+  }
+
+  /**
+   * REL-896: a closed (merged or not) pull request has no further use for an
+   * in-flight review run. This mirrors admit()'s own supersede CTE -- same
+   * per-repository/PR advisory lock (so a concurrent admit()/markWorkerFailure/
+   * markWorkerSuccess for this PR cannot interleave with this transition),
+   * same unconditional outbox terminalization regardless of the outbox's
+   * current lease/claim state. A worker still executing when the PR closes
+   * is not interrupted mid-request; its eventual markWorkerSuccess/
+   * markWorkerFailure/evidence callback simply finds the run already
+   * 'terminal' and is rejected as already_failed/conflict/unauthorized by
+   * those methods' own status guards, never resurrecting it.
+   *
+   * Joining review_dispatch_outbox scopes this to rows the outbox-based
+   * dispatch flow created via admit(); the separate legacy in-process path
+   * (src/app.ts / PostgresReviewRunRepository) never inserts an outbox row,
+   * so a legacy row for the same owner/repo/pr_number (out of scope per
+   * REL-896) can never match here.
+   */
+  async terminalizeRunsForClosedPullRequest(input: {
+    repositoryId: number;
+    owner: string;
+    repo: string;
+    prNumber: number;
+    merged: boolean;
+    now: number;
+    deliveryId: string;
+  }): Promise<{ terminalizedRunIds: string[] }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        reviewDispatchPrLockKey(input.repositoryId, input.prNumber),
+      ]);
+      const errorText = input.merged ? PULL_REQUEST_MERGED_ERROR_TEXT : PULL_REQUEST_CLOSED_ERROR_TEXT;
+      const result = await client.query(
+        `WITH candidate AS (
+           SELECT runs.run_id
+             FROM review_runs runs
+             JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+            WHERE runs.owner = $1 AND runs.repo = $2 AND runs.pr_number = $3
+              AND runs.repository_id = $4
+              AND runs.status IN ('queued', 'running')
+              -- Authoritative-gate rows have their own reaper and
+              -- publication lifecycle (reviewGateRepository); a closed PR
+              -- does not terminalize them here.
+              AND runs.authoritative_gate_app_id IS NULL
+         ), closed AS (
+           UPDATE review_runs AS runs
+              SET status = 'terminal', stage = 'terminal',
+                  error_text = $6::text, lease_owner = NULL, lease_expires_at = NULL,
+                  updated_at = to_timestamp($5 / 1000.0)
+             FROM candidate
+            WHERE runs.run_id = candidate.run_id
+           RETURNING runs.run_id
+         )
+         UPDATE review_dispatch_outbox AS outbox
+            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                updated_at = to_timestamp($5 / 1000.0)
+           FROM closed
+          WHERE outbox.run_id = closed.run_id
+         RETURNING outbox.run_id`,
+        [input.owner, input.repo, input.prNumber, input.repositoryId, input.now, errorText],
+      );
+      for (const row of result.rows as Record<string, unknown>[]) {
+        await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', input.now, {
+          stage: 'terminal',
+          terminal_class: input.merged ? 'pull_request_merged' : 'pull_request_closed',
+          retry_class: 'pull_request_closed',
+        });
+      }
+      await client.query('COMMIT');
+      return { terminalizedRunIds: result.rows.map((row: Record<string, unknown>) => String(row.run_id)) };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   /** Hold the exact attempt's row locks through bounded GitHub publication.

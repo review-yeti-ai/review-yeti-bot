@@ -3400,4 +3400,225 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       });
     });
   });
+
+  describe('terminalizeRunsForClosedPullRequest (REL-896)', () => {
+    const closedInput = (input: Parameters<PostgresReviewDispatchRepository['admit']>[0], merged: boolean, now: number) => ({
+      repositoryId: input.repositoryId,
+      owner: input.identity.owner,
+      repo: input.identity.repo,
+      prNumber: input.identity.prNumber,
+      merged,
+      now,
+      deliveryId: 'github-webhook:close-delivery',
+    });
+
+    it('terminalizes a queued run and its outbox row when the PR is closed without merging', async () => {
+      const { repository, client } = await createRepository();
+      const input = sameHeadAdmission('closed-queued', 1_000);
+      const admitted = await repository.admit(input);
+
+      const result = await repository.terminalizeRunsForClosedPullRequest(closedInput(input, false, 2_000));
+
+      expect(result.terminalizedRunIds).toEqual([admitted.run.runId]);
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal', stage: 'terminal',
+        error_text: 'pull request closed before the review completed',
+        lease_owner: null, lease_expires_at: null,
+      });
+      expect(state.outbox).toMatchObject({ status: 'terminal', lease_owner: null, lease_expires_at: null });
+    });
+
+    it('terminalizes a claimed (leased) run and its outbox row when the PR is merged', async () => {
+      const { repository, client } = await createRepository();
+      const input = sameHeadAdmission('closed-merged', 1_000);
+      const admitted = await repository.admit(input);
+      const claim = (await repository.claimNext('worker-merged', 1_001, 30_000))!;
+      expect(claim).not.toBeNull();
+
+      const result = await repository.terminalizeRunsForClosedPullRequest(closedInput(input, true, 2_000));
+
+      expect(result.terminalizedRunIds).toEqual([admitted.run.runId]);
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal', stage: 'terminal',
+        error_text: 'pull request merged before the review completed',
+        lease_owner: null, lease_expires_at: null,
+      });
+      // The outbox held a live claim lease from claimNext; closing the PR
+      // clears it unconditionally, exactly like admit()'s own supersede CTE
+      // does for a superseded run's outbox row.
+      expect(state.outbox).toMatchObject({ status: 'terminal', lease_owner: null, lease_expires_at: null });
+    });
+
+    it('leaves an authoritative-gate run untouched', async () => {
+      const { repository, client } = await createRepository();
+      const input = authoritativeAdmission('closed-authoritative', 1_000);
+      const admitted = await repository.admit(input);
+      expect(Number((await dispatchState(client, admitted.run.runId)).run.authoritative_gate_app_id)).toBe(4385771);
+
+      const result = await repository.terminalizeRunsForClosedPullRequest({
+        repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+        merged: false, now: 2_000, deliveryId: 'github-webhook:close-authoritative',
+      });
+
+      expect(result.terminalizedRunIds).toEqual([]);
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run.status).toBe('queued');
+      expect(state.run.error_text).toBeNull();
+    });
+
+    it("leaves another PR's run untouched", async () => {
+      const { repository, client } = await createRepository();
+      const closing = await repository.admit(sameHeadAdmission('closed-this-pr', 1_000, { prNumber: 42 }));
+      const other = await repository.admit(sameHeadAdmission('closed-other-pr', 1_000, { prNumber: 43 }));
+
+      const result = await repository.terminalizeRunsForClosedPullRequest({
+        repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+        merged: false, now: 2_000, deliveryId: 'github-webhook:close-this-pr',
+      });
+
+      expect(result.terminalizedRunIds).toEqual([closing.run.runId]);
+      expect((await dispatchState(client, other.run.runId)).run.status).toBe('queued');
+    });
+
+    it('is invisible to the abandoned-publishing reaper after its original deadline passes: no check is ever minted', async () => {
+      const { repository, client } = await createRepository();
+      const input = sameHeadAdmission('closed-reaper-immune', 1_000);
+      const admitted = await repository.admit(input);
+
+      await repository.terminalizeRunsForClosedPullRequest(closedInput(input, false, 1_500));
+
+      const claimed = await repository.claimAbandonedPublishingRuns('reaper-after-close', input.terminalDeadline + 1, 20);
+      expect(claimed.map((run) => run.runId)).not.toContain(admitted.run.runId);
+      const retired = await repository.retireExpiredNonPublishableRuns(input.terminalDeadline + 1, 20);
+      expect(retired).toBe(0);
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal',
+        error_text: 'pull request closed before the review completed',
+      });
+    });
+
+    it('ignores a late worker failure callback for the closed run without crashing or resurrecting it', async () => {
+      const { repository, client } = await createRepository();
+      const input = sameHeadAdmission('closed-late-failure', 1_000);
+      const admitted = await repository.admit(input);
+      const claim = (await repository.claimNext('worker-late-failure', 1_001, 30_000))!;
+      const workerTokenDigest = 'a'.repeat(64);
+      expect(await repository.bindWorkerTokenDigest(
+        claim.runId, claim.leaseOwner, claim.claimAttempt, workerTokenDigest, 1_002,
+      )).toBe(true);
+
+      await repository.terminalizeRunsForClosedPullRequest(closedInput(input, false, 1_500));
+
+      await expect(repository.markWorkerFailure({
+        version: 'WorkerTerminalFailure.v1', runId: admitted.run.runId,
+        owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+        headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+        repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+        configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+        failureClass: 'provider_error',
+      }, { workerTokenDigest }, 2_000)).resolves.toEqual({ runId: admitted.run.runId, status: 'already_failed' });
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal',
+        error_text: 'pull request closed before the review completed',
+      });
+    });
+
+    it('ignores a late worker success callback for the closed run without crashing or resurrecting it', async () => {
+      const { repository, client } = await createRepository();
+      const input = sameHeadAdmission('closed-late-success', 1_000);
+      const admitted = await repository.admit(input);
+      const claim = (await repository.claimNext('worker-late-success', 1_001, 30_000))!;
+      const workerTokenDigest = 'a'.repeat(64);
+      expect(await repository.bindWorkerTokenDigest(
+        claim.runId, claim.leaseOwner, claim.claimAttempt, workerTokenDigest, 1_002,
+      )).toBe(true);
+
+      await repository.terminalizeRunsForClosedPullRequest(closedInput(input, true, 1_500));
+
+      await expect(repository.markWorkerSuccess({
+        version: 'WorkerTerminalSuccess.v1', runId: admitted.run.runId,
+        owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+        headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+        repositoryId: input.repositoryId, policyDigest: input.effectivePolicyDigest!,
+        configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+        checkId: 999,
+      }, { workerTokenDigest }, 2_000)).resolves.toEqual({ runId: admitted.run.runId, status: 'conflict' });
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'terminal',
+        error_text: 'pull request merged before the review completed',
+      });
+    });
+
+    it('is a no-op that returns an empty list for a redelivered close (idempotent)', async () => {
+      const { repository, client } = await createRepository();
+      const input = sameHeadAdmission('closed-redelivered', 1_000);
+      const admitted = await repository.admit(input);
+
+      const first = await repository.terminalizeRunsForClosedPullRequest(closedInput(input, false, 1_500));
+      expect(first.terminalizedRunIds).toEqual([admitted.run.runId]);
+      const afterFirst = await dispatchState(client, admitted.run.runId);
+
+      const second = await repository.terminalizeRunsForClosedPullRequest(closedInput(input, false, 1_600));
+      expect(second.terminalizedRunIds).toEqual([]);
+      expect(await dispatchState(client, admitted.run.runId)).toEqual(afterFirst);
+    });
+
+    it('is a no-op that returns an empty list for a PR with no in-flight runs', async () => {
+      const { repository } = await createRepository();
+      const result = await repository.terminalizeRunsForClosedPullRequest({
+        repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 999,
+        merged: false, now: 1_000, deliveryId: 'github-webhook:close-nothing',
+      });
+      expect(result.terminalizedRunIds).toEqual([]);
+    });
+
+    it('reopens with a fresh claimable run on the same head after a close', async () => {
+      const { repository } = await createRepository();
+      const input = sameHeadAdmission('closed-reopen-original', 1_000);
+      const admitted = await repository.admit(input);
+      await repository.terminalizeRunsForClosedPullRequest(closedInput(input, false, 1_500));
+
+      // The GitHub 'reopened' action goes through the ordinary pull_request
+      // admission path (createGitHubWebhookAdmissionHandler), which calls
+      // admit() with no retryRequested flag -- exactly sameHeadAdmission here.
+      // Because the identity (owner/repo/prNumber/headSha/baseSha/configDigest)
+      // is unchanged, this resolves to the SAME identity_digest/run_id, and
+      // admit()'s retry_eligibility CTE already treats any 'terminal' row as
+      // retry-eligible when retryRequested is not set.
+      const reopened = await repository.admit(sameHeadAdmission('closed-reopen-redelivery', 2_000));
+
+      expect(reopened.run).toMatchObject({ runId: admitted.run.runId, status: 'queued', attempt: 1 });
+      const claim = await repository.claimNext('worker-reopen', 2_001, 30_000);
+      expect(claim).toMatchObject({ runId: admitted.run.runId });
+    });
+
+    it('appends a terminal lifecycle event distinguishing merged from closed', async () => {
+      const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+      const mergedInput = sameHeadAdmission('closed-lifecycle-merged', 1_000);
+      const merged = await repository.admit(mergedInput);
+      const unmergedInput = sameHeadAdmission('closed-lifecycle-unmerged', 1_000, { prNumber: 51 });
+      const closed = await repository.admit(unmergedInput);
+
+      await repository.terminalizeRunsForClosedPullRequest(closedInput(mergedInput, true, 2_000));
+      await repository.terminalizeRunsForClosedPullRequest(closedInput(unmergedInput, false, 2_000));
+
+      const mergedEvents = await lifecycleEvents(client, merged.run.runId);
+      expect(mergedEvents.find((event) => event.eventKind === 'review.lifecycle.terminal')?.data).toEqual({
+        policy_digest: 'e'.repeat(64),
+        stage: 'terminal', terminal_class: 'pull_request_merged', retry_class: 'pull_request_closed',
+      });
+      const closedEvents = await lifecycleEvents(client, closed.run.runId);
+      expect(closedEvents.find((event) => event.eventKind === 'review.lifecycle.terminal')?.data).toEqual({
+        policy_digest: 'e'.repeat(64),
+        stage: 'terminal', terminal_class: 'pull_request_closed', retry_class: 'pull_request_closed',
+      });
+    });
+  });
 });
