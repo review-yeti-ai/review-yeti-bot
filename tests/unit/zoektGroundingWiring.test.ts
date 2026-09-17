@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { runPublishingReviewWorker, zoektGroundingEnabledFor } from '../../src/cli/publishingReview';
+import { mergeZoektToolConfig } from '../../src/panel/panelEngine';
 import * as zoektGroundingModule from '../../src/mcp/zoektGrounding';
 
 const HEAD = 'a'.repeat(40);
@@ -72,6 +73,26 @@ describe('zoektGroundingEnabledFor — the three-conjunct gate (REL-677)', () =>
     expect(zoektGroundingEnabledFor(baseEnv, disabledConfig)).toBe(false);
     expect(zoektGroundingEnabledFor(baseEnv, {})).toBe(true);
     expect(zoektGroundingEnabledFor(baseEnv, { pre_checks: { zoekt: { enabled: true } } })).toBe(true);
+  });
+});
+
+describe('mergeZoektToolConfig — the panel-owned lookup policy (REL-677)', () => {
+  it('an evidence indexDir takes precedence and is re-pinned, with knobs merged', () => {
+    const merged = mergeZoektToolConfig(
+      { enabled: true, maxCalls: 12, indexDir: '/stale-pin' },
+      { indexDir: '/fresh-grounding', zoektBinaryPath: '/opt/zoekt/zoekt' },
+    );
+    expect(merged.indexDir).toBe('/fresh-grounding');
+    expect(merged.enabled).toBe(true);
+    expect(merged.maxCalls).toBe(12);
+    expect(merged.zoektBinaryPath).toBe('/opt/zoekt/zoekt');
+  });
+
+  it('without an evidence indexDir it falls back to preChecks, then evidence, then undefined', () => {
+    const preChecks = { enabled: true, indexDir: '/pinned' };
+    expect(mergeZoektToolConfig(preChecks, { maxCalls: 5 }).indexDir).toBe('/pinned');
+    expect(mergeZoektToolConfig(undefined, { enabled: true }).enabled).toBe(true);
+    expect(mergeZoektToolConfig(undefined, undefined)).toBeUndefined();
   });
 });
 

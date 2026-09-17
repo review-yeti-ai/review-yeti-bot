@@ -2590,7 +2590,7 @@ export function isPrunableGeneralLane(persona: { id: string; charter?: string; r
  * with evidence winning. Downstream callers (the publishing worker) therefore
  * inject ONE surface — evidence.zoekt — and never need to know this policy.
  */
-function mergeZoektToolConfig(preChecks?: any, evidence?: any): any {
+export function mergeZoektToolConfig(preChecks?: any, evidence?: any): any {
   if (evidence?.indexDir) {
     return {
       ...(preChecks ?? {}),

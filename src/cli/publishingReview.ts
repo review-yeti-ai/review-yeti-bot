@@ -845,12 +845,14 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
-    const panelDeadline = createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal);
     // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
-    // removed in the finally below; the index never outlives this review run.
+    // removed in the finally below; the index never outlives this review run. Grounding
+    // runs BEFORE the panel deadline starts — its own stage budgets bound the tarball
+    // fetch and index build, so grounding never eats the panel's timeout.
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
     const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
+    const panelDeadline = createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal);
     let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
     try {
       // A throwing grounding dep still fails soft: grounding is evidence
