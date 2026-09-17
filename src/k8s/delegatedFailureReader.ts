@@ -9,13 +9,13 @@ const PLURAL = 'prreviewjobs';
 
 /**
  * Set by `reconcileFailurePublication`
- * (`k8s-operator/controllers/prreviewjob_v1alpha2_controller.go:537-544`) once
+ * (`k8s-operator/controllers/prreviewjob_v1alpha2_controller.go:620-684`) once
  * the operator has stopped the worker Job and delegated exact-identity
  * publication to this trusted service. Its `Reason` is always this constant;
  * the specific operator classification (`WorkerFailed` / `DeadlineExpired` /
- * `WorkerJobMissing`) lives on the `Ready` condition instead, set once by
- * `startFailurePublication` (same file, lines 463-470) and never mutated
- * again.
+ * `WorkerJobMissing` / `WorkerContractRejected`) lives on the `Ready`
+ * condition instead, set once by `startFailurePublication` (same file, lines
+ * 588-618) and never mutated again.
  */
 const FAILURE_PUBLICATION_CONDITION_TYPE = 'FailurePublication';
 const FAILURE_PUBLICATION_DELEGATED_REASON = 'DelegatedToTrustedService';
@@ -47,17 +47,23 @@ export const DELEGATED_FAILURE_LIST_PAGE_SIZE = 100;
 export const MAX_DELEGATED_FAILURE_LIST_PAGES = 10;
 
 /** Maps the Go operator's `Ready` condition `Reason` (see
- * `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` lines 138,
- * 345, 350, 437) to the bounded diagnostic reason this service persists.
- * `WorkerContractMismatch` (line 996) and any other future reason are
- * deliberately left unmapped: an unrecognized reason is not surfaced as a
- * candidate, so an unknown operator classification degrades to the existing
- * deadline-based reaper path rather than being guessed at.
+ * `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` lines 166, 218,
+ * 313, 441, 544) to the bounded diagnostic reason this service persists.
+ * `InvalidProjection` (line 166) is the same class as `WorkerContractRejected`:
+ * the operator refused the projection before any worker existed, so it shares
+ * that bounded reason rather than leaving the pull request without a check
+ * until the terminal deadline. `WorkerContractMismatch` (line 1347) and any
+ * other future reason are deliberately left unmapped: an unrecognized
+ * reason is not surfaced as a candidate, so an unknown operator
+ * classification degrades to the existing deadline-based reaper path rather
+ * than being guessed at.
  */
 const READY_REASON_TO_DELEGATED_FAILURE_REASON: Readonly<Record<string, DelegatedFailureReason>> = {
   WorkerFailed: 'worker_failed',
   DeadlineExpired: 'worker_deadline_exceeded',
   WorkerJobMissing: 'worker_job_missing',
+  WorkerContractRejected: 'worker_contract_rejected',
+  InvalidProjection: 'worker_contract_rejected',
 };
 
 export interface DelegatedFailureCandidate {

@@ -795,6 +795,7 @@ describe('REL-896 delegated-failure fail-closed summary text', () => {
     ['worker_failed', 'The Kubernetes operator observed the publishing worker fail'],
     ['worker_deadline_exceeded', 'The Kubernetes operator observed the publishing worker exceed its deadline'],
     ['worker_job_missing', 'The Kubernetes operator observed the publishing worker Job disappear'],
+    ['worker_contract_rejected', "The Kubernetes operator rejected the publishing worker's configuration"],
   ] as const)('renders distinct operator-observed text for %s', async (reason, expectedPrefix) => {
     const summary = await patchedSummary({ ...run, delegatedReason: reason });
     expect(summary).toBe(
@@ -804,12 +805,12 @@ describe('REL-896 delegated-failure fail-closed summary text', () => {
     );
   });
 
-  it('renders three distinct summaries for the three known reasons', async () => {
+  it('renders four distinct summaries for the four known reasons', async () => {
     const summaries = await Promise.all(
-      (['worker_failed', 'worker_deadline_exceeded', 'worker_job_missing'] as const)
+      (['worker_failed', 'worker_deadline_exceeded', 'worker_job_missing', 'worker_contract_rejected'] as const)
         .map((reason) => patchedSummary({ ...run, delegatedReason: reason })),
     );
-    expect(new Set(summaries).size).toBe(3);
+    expect(new Set(summaries).size).toBe(4);
   });
 
   it('renders the existing generic text unchanged when no delegatedReason is present', async () => {
