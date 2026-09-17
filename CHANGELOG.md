@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.75.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.74.0...v1.75.0) (2026-09-17)
+
+
+### Features
+
+* **REL-677:** wire zoekt index-at-review-time grounding into the publishing worker ([#846](https://github.com/review-yeti-ai/review-yeti-bot/issues/846)) ([8b1ef87](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b1ef8723553d5a9bf73c498b86a30743a4b05b8))
+
 ## [1.74.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.73.3...v1.74.0) (2026-09-17)
 
 
