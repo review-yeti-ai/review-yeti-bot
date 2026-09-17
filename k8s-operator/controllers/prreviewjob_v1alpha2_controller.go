@@ -1084,6 +1084,25 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileRunSecretDeletion(
 		default:
 			return ctrl.Result{}, err
 		}
+	} else {
+		// The TS dispatcher (buildRunSecretName, src/k8s/reviewJobProjection.ts)
+		// and this package's regex (job.IsValidRunSecretName) are two independent
+		// implementations of the same naming contract; ciOperatorTestEnforcement
+		// and the golden fixture in pkg/job/testdata/run_secret_names.json exist
+		// to keep them in lockstep, but a name that predates the contract, or a
+		// future drift neither test catches before rollout, must not disappear
+		// silently -- it means this review's run Secret is never deleted by
+		// anyone. Surface it the same way as the Forbidden branch above (log +
+		// warning Event) instead of leaking it quietly, then still release the
+		// finalizer: a permanently non-terminable PRReviewJob is worse than one
+		// leaked Secret.
+		err := fmt.Errorf("run Secret name %q does not match the run-secret naming contract", review.Spec.RunSecretName)
+		log.FromContext(ctx).Error(err, "run Secret name failed the naming contract; removing the cleanup finalizer without deleting it",
+			"secret", review.Spec.RunSecretName, "namespace", review.Namespace, "review", review.Name)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(review, corev1.EventTypeWarning, "RunSecretNameInvalid",
+				"spec.runSecretName %q does not match the run-secret naming contract; the run-secret cleanup finalizer was removed without deleting a Secret", review.Spec.RunSecretName)
+		}
 	}
 	controllerutil.RemoveFinalizer(review, runSecretCleanupFinalizer)
 	if err := r.Update(ctx, review); err != nil {

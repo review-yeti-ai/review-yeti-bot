@@ -240,7 +240,8 @@ func TestPRReviewJobV1Alpha2ReconcilerNonMatchingRunSecretNameDeletesNothing(t *
 			return c.Delete(ctx, obj, opts...)
 		},
 	})
-	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: wrapped, Scheme: scheme, Now: func() time.Time { return now }}
+	recorder := record.NewFakeRecorder(10)
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: wrapped, Scheme: scheme, Now: func() time.Time { return now }, Recorder: recorder}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
 
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
@@ -254,6 +255,17 @@ func TestPRReviewJobV1Alpha2ReconcilerNonMatchingRunSecretNameDeletesNothing(t *
 	}
 	if err := kube.Get(context.Background(), req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("review must still lose its finalizer and be deleted even when no secret delete happens, got err=%v", err)
+	}
+	// A naming-contract mismatch must not be a silent leak: it means nobody
+	// will ever delete this run's Secret, so it has to be visible in the
+	// cluster the same way a Forbidden delete already is.
+	select {
+	case event := <-recorder.Events:
+		if event == "" {
+			t.Fatal("a naming-contract mismatch recorded an empty warning Event")
+		}
+	default:
+		t.Fatal("a run Secret name that fails the naming contract must be surfaced as a warning Event")
 	}
 }
 
