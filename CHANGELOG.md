@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.5...v1.72.6) (2026-09-17)
+
+
+### Bug Fixes
+
+* **REL-896:** terminalize in-flight review runs when a pull request closes ([#827](https://github.com/review-yeti-ai/review-yeti-bot/issues/827)) ([4fa0d2b](https://github.com/review-yeti-ai/review-yeti-bot/commit/4fa0d2b29752faa76a78b7ea02c0699fa7921650))
+
 ## [1.72.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.4...v1.72.5) (2026-09-17)
 
 
