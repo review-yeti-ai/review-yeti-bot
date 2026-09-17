@@ -460,6 +460,16 @@ export function isGithubDiffNotRenderableError(error: unknown): boolean {
  * to `classifyWorkerFailureMessage` in `../review/workerCompletion`, the single shared
  * implementation `classifyPersonaAttemptFailure` (`../panel/panelEngine`) also delegates to, so
  * that regex ladder exists in exactly one place instead of two that can drift (REL-892 finding).
+ *
+ * The typed `OpenRouterTimeoutError`/`UpstreamCapacityRejectionError`/`OpenRouterConnectionError`/
+ * `OpenRouterResponseError` branches below duplicate `classifyPersonaAttemptFailure`'s
+ * (`../panel/panelEngine`) verbatim. That duplication is intentional and has been raised and
+ * re-affirmed across two review rounds (REL-892 finding 4) -- see the matching note on
+ * `classifyPersonaAttemptFailure` for the full reasoning: `instanceof`/status checks against a
+ * concrete gateway error class cannot drift the way a regex ladder can, and consolidating this
+ * typed mapping into `../review/workerCompletion` would force that boundary module to import
+ * gateway error classes it documents itself as deliberately free of. Do not move this typed ladder
+ * into `workerCompletion.ts`.
  */
 export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
   if (error instanceof OpenRouterTimeoutError) return 'timeout';

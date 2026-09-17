@@ -468,6 +468,58 @@ describe('runPublishingReviewWorker', () => {
     expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash` (resolved `ollama/glm-5.3-flash-2026-07-15`).');
   });
 
+  it('omits the resolved-model clause when the resolved model equals the requested one (REL-892)', async () => {
+    // Counterfactual for this test: change `renderTransportSummary`'s guard from
+    // `resolvedModel && resolvedModel !== requestedModel` to just `resolvedModel` and this test
+    // fails -- the summary would then read `bifrost \`ollama/glm-5.3-flash\` (resolved
+    // \`ollama/glm-5.3-flash\`)`, a redundant clause implying the alias and the served model
+    // differ when they do not.
+    const cc = checkClient();
+    const d = deps({
+      checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        // Reports the exact same string configured as REVIEW_MODEL -- resolved is defined but
+        // identical to requested, the branch the equal-model finding calls out as untested.
+        personas: [{ id: 'sec-lane', findings: [], model: 'ollama/glm-5.3-flash' }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })),
+    });
+
+    await runPublishingReviewWorker(env(), d as never);
+
+    const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash`.');
+    expect(summary).not.toContain('(resolved');
+  });
+
+  it('omits the resolved-model clause when no lane ever reported a resolved model (REL-892)', async () => {
+    // The other way to reach the "omit" branch: `resolvedModel` is `undefined` rather than equal
+    // to the requested model -- no completed lane reported one and no failed lane carried a
+    // `lastKnownModel`. Distinct from the sibling test above, which covers the equal-but-defined
+    // case; together they exercise both ways `resolvedModel && resolvedModel !== requestedModel`
+    // can evaluate to false.
+    const cc = checkClient();
+    const d = deps({
+      checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })),
+    });
+
+    await runPublishingReviewWorker(env(), d as never);
+
+    const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash`.');
+    expect(summary).not.toContain('(resolved');
+  });
+
   it('reports a failed lane with no observed usage as unavailable rather than a fabricated number', async () => {
     const cc = checkClient();
     const d = deps({

@@ -8,7 +8,10 @@ import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
 import { classifyWorkerFailureMessage, redactWorkerFailureLogTail } from '../review/workerCompletion';
-import type { WorkerFailureClass } from '../review/workerCompletion';
+// From the neutral `../types/workerFailure` module, not `../review/workerCompletion`: this file
+// is otherwise the panel-domain side of the same boundary `../panel/types` was fixed for
+// (REL-892 finding 3), so it uses the same neutral import for the type.
+import type { WorkerFailureClass } from '../types/workerFailure';
 import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
@@ -1008,6 +1011,24 @@ export function isRetryablePanelError(error: unknown): boolean {
  * `classifyWorkerFailureMessage` in `../review/workerCompletion`, the single shared implementation
  * `classifyFailure` (`../cli/publishingReview`) also delegates to, so that regex ladder exists in
  * exactly one place instead of two that can drift (REL-892 finding).
+ *
+ * The typed `OpenRouterTimeoutError`/`UpstreamCapacityRejectionError`/`OpenRouterConnectionError`/
+ * `OpenRouterResponseError` branches above duplicate `classifyFailure`'s verbatim, and that
+ * duplication is intentional -- raised and re-affirmed across two review rounds (REL-892 finding
+ * 4), not an oversight to fold away:
+ *   (a) each branch is an `instanceof`/status check against a concrete gateway error class, which
+ *       cannot silently change meaning between call sites the way two independently-maintained
+ *       regex ladders could. There is no drift risk here to buy back by deduplicating, unlike the
+ *       message-pattern remainder above.
+ *   (b) `../review/workerCompletion` (the boundary module the regex ladder above already lives
+ *       in, and the natural place a shared typed ladder would otherwise go) documents itself as
+ *       free of any dependency on gateway transport types. Folding this typed mapping in would
+ *       force it to import these four classes from `../gateway/openRouterClient`, breaking that
+ *       documented boundary to remove eight duplicated lines.
+ * Do not move this typed ladder into `workerCompletion.ts`. A future extraction is legitimate only
+ * if it lands in a module both this file and `../cli/publishingReview` already depend on without
+ * adding a new dependency edge (e.g. a small helper inside `../gateway/`) -- never into a
+ * `../review/*` boundary module.
  */
 /** `error.message` when `error` is an `Error`, otherwise its string form. Exists so call sites
  * that only know their caught value as `unknown` (as they must, to keep the compiler honest

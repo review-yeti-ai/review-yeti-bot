@@ -1,26 +1,20 @@
 import { z } from 'zod';
 import { sha256 } from './reviewCore';
 import type { WorkerReviewEvidence } from './workerReviewCompletion';
+// `workerFailureClasses`/`WorkerFailureClass` live in the neutral `../types/workerFailure` module
+// (REL-892 finding 3) so the panel domain (`../panel/types`, `../panel/panelEngine`) can use them
+// without importing this boundary module. Re-exported here so existing callers that import them
+// from this path (e.g. `../review/workerReviewCompletion`) keep working unchanged.
+import { workerFailureClasses, type WorkerFailureClass } from '../types/workerFailure';
+
+export { workerFailureClasses };
+export type { WorkerFailureClass };
 
 const runId = z.string().regex(/^run_[a-f0-9]{32}$/u);
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const positiveInteger = z.number().int().positive().safe();
 export const MAX_WORKER_FAILURE_LOG_TAIL_BYTES = 2_048;
-
-export const workerFailureClasses = [
-  'contract',
-  'timeout',
-  'budget_exhausted',
-  'auth',
-  'rate_limit',
-  'transport',
-  'provider_error',
-  'malformed_output',
-  'internal_error',
-] as const;
-
-export type WorkerFailureClass = typeof workerFailureClasses[number];
 
 export const workerFailureDiagnosticsSchema = z.object({
   /** Stable, non-secret category for operators and recovery automation. */
