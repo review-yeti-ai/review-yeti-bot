@@ -256,3 +256,89 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     });
   });
 
+  describe('read_file line slicing in tool exploration', () => {
+    it('slices requested line range correctly with 1-based index and clamping', async () => {
+      let capturedToolResult = '';
+      const mockClient = {
+        complete: vi.fn().mockImplementation(async (payload: any) => {
+          const userMsg = payload.messages[payload.messages.length - 1];
+          const text = typeof userMsg?.content === 'string'
+            ? userMsg.content
+            : Array.isArray(userMsg?.content)
+              ? userMsg.content.map((b: any) => b.text || '').join('\n')
+              : '';
+
+          const allText = payload.messages
+            .map((m: any) =>
+              typeof m?.content === 'string'
+                ? m.content
+                : Array.isArray(m?.content)
+                  ? m.content.map((b: any) => b.text || '').join('\n')
+                  : ''
+            )
+            .join('\n');
+
+          const nonceMatch = allText.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+          const nonce = nonceMatch ? nonceMatch[1] : 'nonce-123';
+
+          if (allText.includes('SHIP|FIX_FIRST|BLOCK')) {
+            return {
+              id: 'resp_arbiter',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All good' })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          if (allText.includes('RECONCILED')) {
+            return {
+              id: 'resp_mod',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          if (text.includes('[PI_TOOL_RESULT]')) {
+            if (!capturedToolResult) capturedToolResult = text;
+            return {
+              id: 'resp_finish',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ role: 'persona', decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          // First turn: invoke read_file with lines 2 to 3
+          return {
+            id: 'resp_tool',
+            model: 'test-model',
+            content: '```json\n{"tool": "read_file", "args": {"path": "src/multi.ts", "startLine": 2, "endLine": 3}}\n```',
+            usage: { prompt: 10, completion: 10, total: 20 },
+          };
+        }),
+      };
+
+      const multilineContent = [
+        'line 1: header',
+        'line 2: important logic',
+        'line 3: edge case',
+        'line 4: footer',
+      ].join('\n');
+
+      const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+      await executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'src/multi.ts', patch: multilineContent }],
+        repository: 'test/repo',
+        headSha: 'abc1234',
+        client: mockClient as any,
+      });
+
+      expect(capturedToolResult).toContain("Lines 2-3 of 4 for 'src/multi.ts':");
+      expect(capturedToolResult).toContain('line 2: important logic\nline 3: edge case');
+      expect(capturedToolResult).not.toContain('line 1: header');
+      expect(capturedToolResult).not.toContain('line 4: footer');
+    });
+  });
+

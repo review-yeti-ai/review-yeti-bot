@@ -1021,6 +1021,41 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         // Phantom path must not be present
         expect(result?.domainLanes?.['phantom/ghost_file.ts']).toBeUndefined();
       });
+
+      it('prevents model anti-evasion demotion of executable code into docs_assets', async () => {
+        const mockClient = {
+          complete: vi.fn().mockResolvedValue({
+            content: JSON.stringify({
+              fastShip: false,
+              selectedPersonas: ['perf-lane'],
+              effortTier: 'medium',
+              rationale: 'Review needed.',
+              domainLanes: {
+                'src/workers/task.ts': 'docs_assets', // Model attempt to evade review on executable code
+              },
+            }),
+            usage: { prompt: 100, completion: 50, total: 150 },
+          }),
+        };
+
+        const config = buildTestConfig();
+        const result = await classifyReviewScope({
+          changedFiles: [
+            { path: 'src/workers/task.ts', patch: '+ export class TaskQueue {}' },
+          ],
+          repository: 'calltelemetry/ai-workspace',
+          headSha: 'sha-anti-evasion',
+          candidatePersonas: [
+            { id: 'perf-lane', charter: 'builtin:performance', required: false, paths: ['**/*'] },
+          ],
+          config,
+          client: mockClient as any,
+        });
+
+        expect(result).not.toBeNull();
+        // Model demotion to docs_assets must be rejected; heuristic system_runtime retained
+        expect(result?.domainLanes?.['src/workers/task.ts']).toBe('system_runtime');
+      });
     });
   });
 });

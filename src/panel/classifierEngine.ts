@@ -25,7 +25,7 @@ export const DOMAIN_LANES: readonly DomainLane[] = [
 export const DOMAIN_LANE_PERSONA_AFFINITY: Record<DomainLane, string[]> = {
   security_auth: ['sec-lane', 'security', 'policy-lane'],
   data_persistence: ['db-lane', 'database', 'correctness-lane', 'correctness'],
-  api_contracts: ['contract-lane', 'contract', 'correctness-lane', 'correctness'],
+  api_contracts: ['contract-lane', 'contract', 'correctness-lane', 'correctness', 'qual-lane'],
   system_runtime: ['devops-lane', 'devops', 'arch-lane', 'architecture', 'perf-lane', 'performance', 'finops-lane'],
   ui_frontend: ['qual-lane', 'correctness-lane', 'correctness'],
   docs_assets: ['qual-lane'],

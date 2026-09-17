@@ -1402,10 +1402,8 @@ async function invoke(
       ]),
   ].join('\n');
 
-  // Prompt caching: emit cache_control on both static prefix and dynamic suffix.
-  // Because dynamicSuffix contains fixed schemas and role evidence that are 100% stable
-  // across all turns of this persona invocation, caching both blocks guarantees prefix
-  // cache hits on Turns 2..N across providers that support prompt caching.
+  // Prompt caching: always emit structured content blocks with ephemeral cache_control on the
+  // static prefix, provider- and model-agnostic.
   const userContent: OpenRouterContentBlock[] = [
     {
       type: 'text',
@@ -1415,7 +1413,6 @@ async function invoke(
     {
       type: 'text',
       text: dynamicSuffix,
-      cache_control: { type: 'ephemeral' },
     },
   ];
 

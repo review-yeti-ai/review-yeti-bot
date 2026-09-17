@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import path from 'node:path';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import {
   runPreCheckAnalyzers,
   filterHypothesesForPersona,
@@ -141,7 +141,7 @@ function createRecordingMockClient() {
 
   const mockClient = {
     complete: vi.fn().mockImplementation(async (payload: any) => {
-      const contentStr = (payload.messages || []).map((m: any) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n');
+      const contentStr = (payload.messages || []).map((m: any) => extractMessageContentText(m.content)).join('\n');
 
       const isModerator = payload.metadata?.role === 'moderator' || payload.persona === 'moderator' || contentStr.includes('role":"moderator"') || contentStr.includes('Role: MODERATOR');
       const isArbiter = payload.metadata?.role === 'arbiter' || payload.persona === 'arbiter' || contentStr.includes('role":"arbiter"') || contentStr.includes('Role: ARBITER') || contentStr.includes('ARBITER FINAL VERDICT') || contentStr.includes('SHIP, FIX_FIRST, or BLOCK');
@@ -152,7 +152,10 @@ function createRecordingMockClient() {
       recordedCalls.push({
         role,
         persona,
-        messages: payload.messages || [],
+        messages: (payload.messages || []).map((m: any) => ({
+          ...m,
+          content: extractMessageContentText(m.content),
+        })),
       });
 
       const nonceMatch = contentStr.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
