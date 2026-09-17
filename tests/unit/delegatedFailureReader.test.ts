@@ -387,8 +387,37 @@ describe('DelegatedFailureReader server-side pagination (REL-896)', () => {
       (firstPageItems[0].spec as { runId: string }).runId,
       (firstPageItems[1].spec as { runId: string }).runId,
     ]);
-    // The cap was already satisfied by page one; the third item never needed fetching,
-    // but the reader does not need to skip fetching page two to honour the cap correctly.
+    // The cap was already satisfied by page one, so page two is never requested.
+    expect(listNamespacedCustomObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops paging on the page where the cap is reached and never requests the rest', async () => {
+    const run = (digit: string) => prReviewJob({ runId: `run_${digit.repeat(32)}` });
+    const listNamespacedCustomObject = vi.fn()
+      .mockResolvedValueOnce(page([run('1'), run('2')], 'cursor-a'))
+      .mockResolvedValueOnce(page([run('3'), run('4')], 'cursor-b'))
+      .mockResolvedValueOnce(page([run('5')]));
+    const reader = new DelegatedFailureReader({
+      client: { listNamespacedCustomObject }, namespace: 'ct-review-system', maxCandidates: 3,
+    });
+    const candidates = await reader.listCandidates();
+    expect(candidates.map((candidate) => candidate.runId)).toEqual([
+      `run_${'1'.repeat(32)}`, `run_${'2'.repeat(32)}`, `run_${'3'.repeat(32)}`,
+    ]);
+    expect(listNamespacedCustomObject).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps paging past a page of non-delegated resources, which do not count toward the cap', async () => {
+    const notDelegated = prReviewJob({ failurePublication: { reason: 'SomethingElse' } });
+    const delegated = prReviewJob({ runId: `run_${'9'.repeat(32)}` });
+    const listNamespacedCustomObject = vi.fn()
+      .mockResolvedValueOnce(page([notDelegated, notDelegated], 'cursor-n'))
+      .mockResolvedValueOnce(page([delegated]));
+    const reader = new DelegatedFailureReader({
+      client: { listNamespacedCustomObject }, namespace: 'ct-review-system', maxCandidates: 1,
+    });
+    const candidates = await reader.listCandidates();
+    expect(candidates.map((candidate) => candidate.runId)).toEqual([`run_${'9'.repeat(32)}`]);
     expect(listNamespacedCustomObject).toHaveBeenCalledTimes(2);
   });
 });

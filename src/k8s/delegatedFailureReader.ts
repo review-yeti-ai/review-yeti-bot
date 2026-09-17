@@ -229,7 +229,7 @@ export class DelegatedFailureReader {
     if (now - this.lastListedAt < this.pollIntervalMs) return this.cached;
     this.lastListedAt = now;
     try {
-      const items: unknown[] = [];
+      const candidates: DelegatedFailureCandidate[] = [];
       let cursor: string | undefined;
       // Server-side pagination via `limit` + `metadata.continue`, bounded by
       // MAX_DELEGATED_FAILURE_LIST_PAGES so a runaway continue chain still
@@ -241,7 +241,10 @@ export class DelegatedFailureReader {
           group: GROUP, version: VERSION, namespace: this.namespace, plural: PLURAL,
           limit: DELEGATED_FAILURE_LIST_PAGE_SIZE, ...(cursor ? { _continue: cursor } : {}),
         });
-        items.push(...extractItems(response));
+        // Extract per page and stop as soon as the candidate cap is met, so a
+        // full first page never costs further API-server round-trips.
+        candidates.push(...extractCandidates(extractItems(response), this.maxCandidates - candidates.length));
+        if (candidates.length >= this.maxCandidates) break;
         cursor = continueToken(response);
         if (!cursor) break;
         if (page >= MAX_DELEGATED_FAILURE_LIST_PAGES) {
@@ -249,7 +252,7 @@ export class DelegatedFailureReader {
           break;
         }
       }
-      this.cached = extractCandidates(items, this.maxCandidates);
+      this.cached = candidates;
     } catch (error) {
       this.cached = [];
       this.warnRateLimited(error, now);
