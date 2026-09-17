@@ -7,11 +7,15 @@ import { OpenRouterConnectionError, OpenRouterContentBlock, OpenRouterMessage, O
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
-import { classifyWorkerFailureMessage, redactWorkerFailureLogTail } from '../review/workerCompletion';
+import { classifyWorkerFailureMessage } from '../review/workerCompletion';
 // From the neutral `../types/workerFailure` module, not `../review/workerCompletion`: this file
 // is otherwise the panel-domain side of the same boundary `../panel/types` was fixed for
 // (REL-892 finding 3), so it uses the same neutral import for the type.
 import type { WorkerFailureClass } from '../types/workerFailure';
+// From the neutral `../utils/workerFailureLogRedaction` module, not `../review/workerCompletion`:
+// this file is the panel-domain side of the same gateway/review boundary
+// `../gateway/omniRouteClient` and `../gateway/openRouterClient` were fixed for (REL-892 finding 1).
+import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
@@ -2256,7 +2260,13 @@ async function runPersona(
             break;
           }
           if (isExplicitUpstreamRejection(error)) {
-            logger.warn(`[Persona: ${persona.id}] Fast failover: provider '${providerId}' capacity rejected (${panelErrorMessage(error)}); failing over to next provider...`);
+            logger.warn(`[Persona: ${persona.id}] Fast failover: provider '${providerId}' capacity rejected; failing over to next provider...`, {
+              persona: persona.id,
+              provider: providerId,
+              // Bounded/redacted: an upstream capacity-rejection message can echo back
+              // provider-side prompt or response fragments. Never log it raw (REL-892).
+              error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+            });
             errors.push(`${providerId}: ${panelErrorMessage(error)}`);
             lastFailureClass = 'rate_limit';
             if (config.reviewers.fallback === 'none') break;
@@ -2291,7 +2301,16 @@ async function runPersona(
             break;
           }
           if (attempts < maxAttempts && isRetryablePanelError(error)) {
-            logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts}): ${panelErrorMessage(error)}`);
+            logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts})`, {
+              persona: persona.id,
+              provider: providerId,
+              attempt: attempts,
+              maxAttempts,
+              // Bounded/redacted: this is the raw error that matched the retryable-error
+              // signature (e.g. "fetch failed", a 5xx) and may still carry a provider
+              // response fragment alongside it (REL-892).
+              error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+            });
             await panelDelay(1000, signal);
             continue;
           }
@@ -2833,7 +2852,17 @@ export async function executePersonaPanel(options: {
       }
       const reason: unknown = res.reason;
       const errorMsg = panelErrorMessage(reason);
-      logger.warn('Persona execution failed', { persona: persona.id, error: errorMsg });
+      logger.warn('Persona execution failed', {
+        persona: persona.id,
+        // Bounded, non-secret classification: the constructor name of whatever was rejected
+        // (e.g. "OpenRouterResponseError"), never the free-form message itself.
+        errorType: reason instanceof Error ? reason.constructor.name : typeof reason,
+        // `errorMsg` is raw provider/persona failure text and must never reach the log sink
+        // directly -- it can carry prompt or response content. The returned `error` below
+        // intentionally keeps the raw value: downstream consumers apply their own
+        // redaction/bounding before anything leaves this process (REL-892).
+        error: redactWorkerFailureLogTail(errorMsg),
+      });
       // Bounded, numeric-only telemetry from the lane's last provider response, if one was
       // received before it failed closed, plus the coded reason `runPersona` assigned at the
       // exact point it observed the terminal failure. `reason` is the thrown
