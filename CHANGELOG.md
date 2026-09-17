@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.73.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.73.1...v1.73.2) (2026-09-17)
+
+
+### Bug Fixes
+
+* **REL-896:** tolerate a missing worker Job when releasing or adding its finalizer ([#842](https://github.com/review-yeti-ai/review-yeti-bot/issues/842)) ([563bcb2](https://github.com/review-yeti-ai/review-yeti-bot/commit/563bcb21648404b06196058a4bcea31e33fb53ae))
+
 ## [1.73.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.73.0...v1.73.1) (2026-09-17)
 
 
