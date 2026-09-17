@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.9...v1.72.10) (2026-09-17)
+
+
+### Bug Fixes
+
+* **REL-896:** reaper acts on the operator's delegated-failure signal before the deadline ([#832](https://github.com/review-yeti-ai/review-yeti-bot/issues/832)) ([46fe175](https://github.com/review-yeti-ai/review-yeti-bot/commit/46fe1757516a93c24b7bfd3f4b012283d0ce5678))
+
 ## [1.72.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.8...v1.72.9) (2026-09-17)
 
 
