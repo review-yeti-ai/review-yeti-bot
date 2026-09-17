@@ -46,7 +46,10 @@ metadata:
 rules:
   - apiGroups: ["review-yeti.ai"]
     resources: ["prreviewjobs"]
-    verbs: ["get", "list", "watch", "update", "patch"]
+    # "delete" (REL-896) lets the operator remove a terminal PRReviewJob after
+    # its retention window; Kubernetes garbage collection then cascades to
+    # the worker Job it owns.
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
   - apiGroups: ["review-yeti.ai"]
     resources: ["prreviewjobs/status"]
     verbs: ["get", "update", "patch"]

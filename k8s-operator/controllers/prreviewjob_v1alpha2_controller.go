@@ -68,7 +68,7 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	Publishing job.PublishingConfig
 }
 
-// +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -354,6 +354,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileElapsedDeadline(
 		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
 	}
 	r.recordDispatchTiming(review, now)
+	// Expiry has no worker Job to source a timestamp from (or the worker is
+	// intentionally stopped above), unlike the Succeeded/Failed paths in
+	// reconcileExistingJob which already set CompletionTime from the Job's own
+	// terminal timestamp. Setting it here too means reconcileTerminalDeletion
+	// never needs the metadata.creationTimestamp fallback for an Expired
+	// review created after this change.
+	completed := metav1.NewTime(now)
+	review.Status.CompletionTime = &completed
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
 }
 
@@ -431,12 +439,43 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	}
 	r.recordDispatchTiming(review, completed.Time)
 	if worker.Status.Succeeded > 0 {
+		if err := r.patchWorkerSuccessTTL(ctx, worker); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", workerMessage(review, "completed"))
 	}
 	if review.Spec.PublicationMode == job.PublicationModeAppGate {
 		return r.startFailurePublication(ctx, review, "WorkerFailed", workerMessage(review, "failed"))
 	}
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, "WorkerFailed", workerMessage(review, "failed"))
+}
+
+// patchWorkerSuccessTTL lowers a succeeded worker Job's TTL from the fail-safe
+// value job.BuildWorkerJob built it with (job.WorkerFailedTTLSeconds, so a
+// failed Job's Pod and logs would still survive) down to the success TTL
+// (job.WorkerSuccessTTLSeconds, default 0). batch/v1 exposes exactly one
+// ttlSecondsAfterFinished field and the outcome is unknown at build time, so
+// this patch is how a successful run reclaims immediately without changing
+// how long a failed one is kept. ttlSecondsAfterFinished is mutable on an
+// already-finished Job -- the TTL-after-finished controller re-reads it
+// continuously rather than treating it as immutable Job-spec identity like
+// selector/template -- so patching it here, after Succeeded is observed, is
+// safe. It does not race the terminal-outcome finalizer: that finalizer is
+// only removed once the parent review reaches a terminal phase
+// (releaseTerminalWorkerObservation), which runs strictly after this patch on
+// a later reconcile, so a delete triggered by a just-shortened TTL still
+// blocks on the finalizer until this controller is ready to let it go.
+func (r *PRReviewJobV1Alpha2Reconciler) patchWorkerSuccessTTL(ctx context.Context, worker *batchv1.Job) error {
+	successTTL := job.WorkerSuccessTTLSeconds()
+	if worker.Spec.TTLSecondsAfterFinished != nil && *worker.Spec.TTLSecondsAfterFinished == successTTL {
+		return nil
+	}
+	patch := client.MergeFrom(worker.DeepCopy())
+	worker.Spec.TTLSecondsAfterFinished = &successTTL
+	if err := r.Patch(ctx, worker, patch); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 func failurePublicationPending(review *reviewv1alpha2.PRReviewJob) bool {
@@ -852,17 +891,17 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	}
 
 	if review.Spec.RunnerMode != "generic" {
-		return ctrl.Result{}, nil
+		return r.reconcileTerminalDeletion(ctx, review)
 	}
 
 	pvcName := workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
 	if pvcName == "" {
-		return ctrl.Result{}, nil
+		return r.reconcileTerminalDeletion(ctx, review)
 	}
 	var pvc corev1.PersistentVolumeClaim
 	if err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: pvcName}, &pvc); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+			return r.reconcileTerminalDeletion(ctx, review)
 		}
 		return ctrl.Result{}, err
 	}
@@ -896,7 +935,96 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 	}
+	return r.reconcileTerminalDeletion(ctx, review)
+}
+
+// reconcileTerminalDeletion runs only once reconcileTerminalWorkspace has
+// nothing left to reclaim (idle Pod/lease, PVC already gone or reclaimed).
+// It deletes the terminal PRReviewJob after REVIEW_YETI_TERMINAL_RETENTION_SECONDS
+// has elapsed since the review became terminal (job.TerminalRetentionSeconds,
+// default 3600s); this controller owns the worker Job via a controller
+// reference, so ordinary Kubernetes garbage collection cascades the delete to
+// it (and, transitively, to its Pod) without any extra client call here.
+//
+// A pending failure-publication delegation is a deliberate exception. Once
+// reconcileFailurePublication sets FailurePublication to Unknown with reason
+// DelegatedToTrustedService, responsibility for publishing the GitHub check
+// has moved to the dispatcher's abandoned-run reaper
+// (src/review/abandonedRunReaper.ts), which reconciles the check entirely
+// against PostgreSQL and GitHub using its own fresh App token -- it never
+// reads or patches this Kubernetes object. Nothing in this repository ever
+// transitions FailurePublication away from Unknown once it is set, so relying
+// on that condition to resolve before deleting would leak this review (and
+// the run Secret its spec.RunSecretName names, which the reaper may still
+// need to read) forever. REVIEW_YETI_TERMINAL_MAX_RETENTION_SECONDS
+// (job.TerminalMaxRetentionSeconds, default 86400s) is the hard cap: past it,
+// deletion proceeds even though delegation is still outstanding, so this gate
+// can bound but never permanently prevent cleanup.
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalDeletion(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (ctrl.Result, error) {
+	now := r.clock()
+	terminalAt := terminalObservedAt(review)
+	deleteAt := terminalAt.Add(time.Duration(job.TerminalRetentionSeconds()) * time.Second)
+
+	if failurePublicationDelegated(review) {
+		hardCapAt := terminalAt.Add(time.Duration(job.TerminalMaxRetentionSeconds()) * time.Second)
+		if now.Before(hardCapAt) {
+			remaining := hardCapAt.Sub(now)
+			if now.Before(deleteAt) {
+				if untilRetention := deleteAt.Sub(now); untilRetention < remaining {
+					remaining = untilRetention
+				}
+			}
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+		return r.deleteTerminalReview(ctx, review)
+	}
+
+	if now.Before(deleteAt) {
+		return ctrl.Result{RequeueAfter: deleteAt.Sub(now)}, nil
+	}
+	return r.deleteTerminalReview(ctx, review)
+}
+
+// deleteTerminalReview tolerates NotFound: a prior reconcile's Delete call may
+// already have removed the review, and a repeated attempt (retry, requeue
+// race) must not surface that as an error.
+func (r *PRReviewJobV1Alpha2Reconciler) deleteTerminalReview(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (ctrl.Result, error) {
+	if err := r.Delete(ctx, review); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
+}
+
+// failurePublicationDelegated reports whether responsibility for this
+// review's fail-closed GitHub check has been handed to the dispatcher's
+// trusted reaper. failurePublicationPending (checked earlier in Reconcile)
+// only recognizes the ConditionFalse "not yet delegated" state and routes
+// those reviews into reconcileFailurePublication instead of here; by the time
+// a review reaches reconcileTerminalDeletion, this condition -- if present at
+// all -- can only be ConditionUnknown (see reconcileFailurePublication, the
+// only writer that ever sets it after creation, and the DelegatedToTrusted
+// Service comment on why it never resolves further).
+func failurePublicationDelegated(review *reviewv1alpha2.PRReviewJob) bool {
+	condition := meta.FindStatusCondition(review.Status.Conditions, failurePublicationCondition)
+	return condition != nil && condition.Status == metav1.ConditionUnknown
+}
+
+// terminalObservedAt is the time retention windows are measured from. The
+// Succeeded/Failed paths in reconcileExistingJob and the Expired path in
+// reconcileElapsedDeadline all set status.completionTime, so this is the
+// normal case; metadata.creationTimestamp is the fallback for a terminal
+// resource that somehow never got one (a legacy object persisted by an
+// operator build older than this change, or one of the narrow
+// startFailurePublication call sites that fail closed before any worker
+// terminal timestamp is observable).
+func terminalObservedAt(review *reviewv1alpha2.PRReviewJob) time.Time {
+	if review.Status.CompletionTime != nil && !review.Status.CompletionTime.Time.IsZero() {
+		return review.Status.CompletionTime.Time
+	}
+	return review.CreationTimestamp.Time
 }
 
 // releaseTerminalWorkerObservation runs only after the parent CR already has a

@@ -48,6 +48,12 @@ func v1alpha2Review(now time.Time) *reviewv1alpha2.PRReviewJob {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "ct-review-11111111111111111111111111111111",
 			Namespace: "ct-review-system",
+			// A real API server always stamps this on create; set it explicitly so
+			// terminalObservedAt's metadata.creationTimestamp fallback (used only
+			// when status.completionTime is unset) is exercised the same way here
+			// as it would be against a live cluster, instead of the fake client's
+			// zero-value default.
+			CreationTimestamp: metav1.NewTime(now),
 		},
 		Spec: reviewv1alpha2.PRReviewJobSpec{
 			RunID:            "run_11111111111111111111111111111111",
@@ -443,6 +449,10 @@ func TestPRReviewJobV1Alpha2ReconcilerImmediatelyReclaimsIdleWorkspaceAfterTermi
 	// REL-732 changed the idle window to zero. The terminal state still needs
 	// the collector's exact lease/Pod safety checks, but no thirty-minute wait.
 	currentNow := lastUsed
+	// REL-896: pin an explicit terminal retention so this test's "immediate"
+	// claim is about the PVC/lease reclaim, not the (separate) review
+	// deletion requeue that reconcileTerminalDeletion now also schedules.
+	t.Setenv("REVIEW_YETI_TERMINAL_RETENTION_SECONDS", "120")
 	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: v1alpha2Scheme(t), Now: func() time.Time { return currentNow }}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
 
@@ -450,8 +460,8 @@ func TestPRReviewJobV1Alpha2ReconcilerImmediatelyReclaimsIdleWorkspaceAfterTermi
 	if err != nil {
 		t.Fatalf("reconcile immediately after terminal review: %v", err)
 	}
-	if result.RequeueAfter != 0 {
-		t.Fatalf("requeue after reclamation = %s, want zero", result.RequeueAfter)
+	if result.RequeueAfter != 120*time.Second {
+		t.Fatalf("requeue after reclamation = %s, want the 120s terminal retention window", result.RequeueAfter)
 	}
 	var reclaimed corev1.PersistentVolumeClaim
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: pvc.Name}, &reclaimed); !apierrors.IsNotFound(err) {

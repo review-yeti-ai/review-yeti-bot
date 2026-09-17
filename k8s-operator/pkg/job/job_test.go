@@ -338,8 +338,11 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if result.Spec.Completions == nil || *result.Spec.Completions != 1 || result.Spec.Parallelism == nil || *result.Spec.Parallelism != 1 {
 		t.Fatalf("job cardinality = completions %v parallelism %v, want one", result.Spec.Completions, result.Spec.Parallelism)
 	}
-	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
-		t.Fatalf("job TTL = %v, want 0", result.Spec.TTLSecondsAfterFinished)
+	// REL-896: a Job is built with the fail-safe (longer) TTL since the
+	// outcome is not yet known; the controller patches this down to the
+	// success TTL once it observes the worker succeeded.
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != job.DefaultWorkerFailedTTLAfterFinished {
+		t.Fatalf("job TTL = %v, want %d (fail-safe default)", result.Spec.TTLSecondsAfterFinished, job.DefaultWorkerFailedTTLAfterFinished)
 	}
 	if len(result.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("containers = %d, want one", len(result.Spec.Template.Spec.Containers))
@@ -941,7 +944,10 @@ func TestBuildWorkerJobStampsTheSharedComponent(t *testing.T) {
 }
 
 func TestBuildWorkerJobHonorsLifecycleEnv(t *testing.T) {
-	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "300")
+	// REL-896: the Job is always built with the fail-safe TTL env, not the
+	// success one -- REVIEW_YETI_WORKER_TTL_AFTER_FINISHED only takes effect
+	// via the controller's success patch (see the controller test suite).
+	t.Setenv("REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED", "300")
 	t.Setenv("REVIEW_YETI_WORKER_CPU_REQUEST", "500m")
 	t.Setenv("REVIEW_YETI_WORKER_MEMORY_REQUEST", "768Mi")
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
@@ -964,28 +970,28 @@ func TestBuildWorkerJobHonorsLifecycleEnv(t *testing.T) {
 }
 
 func TestBuildWorkerJobFallsBackOnInvalidLifecycleEnv(t *testing.T) {
-	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "-5")
+	t.Setenv("REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED", "-5")
 	t.Setenv("REVIEW_YETI_WORKER_CPU_LIMIT", "banana")
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	result, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
-		t.Fatalf("job TTL = %v, want 0 fallback from negative env", result.Spec.TTLSecondsAfterFinished)
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != job.DefaultWorkerFailedTTLAfterFinished {
+		t.Fatalf("job TTL = %v, want %d fallback from negative env", result.Spec.TTLSecondsAfterFinished, job.DefaultWorkerFailedTTLAfterFinished)
 	}
 	limitCPU := result.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU]
 	if limitCPU.String() != "1" {
 		t.Fatalf("cpu limit = %s, want 1 fallback from unparseable env", limitCPU.String())
 	}
 
-	t.Setenv("REVIEW_YETI_WORKER_TTL_AFTER_FINISHED", "nope")
+	t.Setenv("REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED", "nope")
 	result, err = job.BuildWorkerJob(buildInput(reviewFixture(now), now))
 	if err != nil {
 		t.Fatalf("build invalid ttl: %v", err)
 	}
-	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != 0 {
-		t.Fatalf("job TTL = %v, want 0 fallback from unparseable env", result.Spec.TTLSecondsAfterFinished)
+	if result.Spec.TTLSecondsAfterFinished == nil || *result.Spec.TTLSecondsAfterFinished != job.DefaultWorkerFailedTTLAfterFinished {
+		t.Fatalf("job TTL = %v, want %d fallback from unparseable env", result.Spec.TTLSecondsAfterFinished, job.DefaultWorkerFailedTTLAfterFinished)
 	}
 }
 
