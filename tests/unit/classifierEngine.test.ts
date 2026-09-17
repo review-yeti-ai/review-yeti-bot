@@ -4,6 +4,10 @@ import {
   containsExecutableOrSensitiveCode,
   escapeXmlAttr,
   sanitizeDiffExcerpt,
+  classifyPathByHeuristic,
+  classifyDomainLanesByHeuristic,
+  DOMAIN_LANE_PERSONA_AFFINITY,
+  PERSONA_DOMAIN_AFFINITY,
 } from '../../src/panel/classifierEngine';
 import { buildFastShipPanelResult } from '../../src/panel/fastShipResult';
 import { executePersonaPanel, isPrunableGeneralLane, extractMessageContentText } from '../../src/panel/panelEngine';
@@ -897,6 +901,114 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
             })
           );
         });
+      });
+    });
+
+    describe('Domain Lane Classification & Persona Affinity', () => {
+      it('classifies file paths into appropriate domain lanes using deterministic heuristics', () => {
+        // Docs & assets
+        expect(classifyPathByHeuristic('README.md')).toBe('docs_assets');
+        expect(classifyPathByHeuristic('docs/architecture.md')).toBe('docs_assets');
+        expect(classifyPathByHeuristic('assets/logo.png')).toBe('docs_assets');
+        expect(classifyPathByHeuristic('LICENSE')).toBe('docs_assets');
+
+        // Security & Auth
+        expect(classifyPathByHeuristic('src/auth/tokenValidator.ts')).toBe('security_auth');
+        expect(classifyPathByHeuristic('lib/cdrcisco/oauth/client.ex')).toBe('security_auth');
+        expect(classifyPathByHeuristic('config/rbac_roles.yaml')).toBe('security_auth');
+        expect(classifyPathByHeuristic('clusters/prod/netpol/isolate.yaml')).toBe('security_auth');
+
+        // Data & Persistence
+        expect(classifyPathByHeuristic('priv/repo/migrations/20260917_create_users.exs')).toBe('data_persistence');
+        expect(classifyPathByHeuristic('src/db/schema.prisma')).toBe('data_persistence');
+        expect(classifyPathByHeuristic('lib/cdrcisco/models/telemetry_event.ex')).toBe('data_persistence');
+        expect(classifyPathByHeuristic('queries/cagg_rollup.sql')).toBe('data_persistence');
+
+        // API & Contracts
+        expect(classifyPathByHeuristic('lib/web/controllers/cdr_controller.ex')).toBe('api_contracts');
+        expect(classifyPathByHeuristic('src/api/routes/metrics.ts')).toBe('api_contracts');
+        expect(classifyPathByHeuristic('proto/telemetry.proto')).toBe('api_contracts');
+        expect(classifyPathByHeuristic('specs/openapi.json')).toBe('api_contracts');
+
+        // UI & Frontend
+        expect(classifyPathByHeuristic('src/components/Dashboard.tsx')).toBe('ui_frontend');
+        expect(classifyPathByHeuristic('src/views/Settings.vue')).toBe('ui_frontend');
+        expect(classifyPathByHeuristic('static/css/theme.css')).toBe('ui_frontend');
+
+        // System Runtime
+        expect(classifyPathByHeuristic('src/panel/panelEngine.ts')).toBe('system_runtime');
+        expect(classifyPathByHeuristic('k8s/deployment.yaml')).toBe('system_runtime');
+        expect(classifyPathByHeuristic('Dockerfile')).toBe('system_runtime');
+        expect(classifyPathByHeuristic('scripts/deploy.sh')).toBe('system_runtime');
+      });
+
+      it('classifies a batch of changed files with classifyDomainLanesByHeuristic', () => {
+        const files = [
+          { path: 'src/auth/jwt.ts' },
+          { path: 'priv/repo/migrations/init.exs' },
+          { path: 'src/api/router.ts' },
+          { path: 'src/components/Button.tsx' },
+          { path: 'docs/guide.md' },
+          { path: 'src/workers/queue.ts' },
+        ];
+        const lanes = classifyDomainLanesByHeuristic(files);
+        expect(lanes['src/auth/jwt.ts']).toBe('security_auth');
+        expect(lanes['priv/repo/migrations/init.exs']).toBe('data_persistence');
+        expect(lanes['src/api/router.ts']).toBe('api_contracts');
+        expect(lanes['src/components/Button.tsx']).toBe('ui_frontend');
+        expect(lanes['docs/guide.md']).toBe('docs_assets');
+        expect(lanes['src/workers/queue.ts']).toBe('system_runtime');
+      });
+
+      it('maps persona IDs to domain affinities correctly', () => {
+        expect(PERSONA_DOMAIN_AFFINITY['sec-lane']).toEqual(['security_auth']);
+        expect(PERSONA_DOMAIN_AFFINITY['db-lane']).toEqual(['data_persistence']);
+        expect(PERSONA_DOMAIN_AFFINITY['contract-lane']).toEqual(['api_contracts']);
+        expect(PERSONA_DOMAIN_AFFINITY['devops-lane']).toEqual(['system_runtime']);
+        expect(DOMAIN_LANE_PERSONA_AFFINITY.security_auth).toContain('sec-lane');
+        expect(DOMAIN_LANE_PERSONA_AFFINITY.data_persistence).toContain('db-lane');
+      });
+
+      it('includes domainLanes in classifyReviewScope result with model enrichment and heuristic protection', async () => {
+        const mockClient = {
+          complete: vi.fn().mockResolvedValue({
+            content: JSON.stringify({
+              fastShip: false,
+              selectedPersonas: ['sec-lane', 'db-lane'],
+              effortTier: 'medium',
+              rationale: 'Auth and DB changes require review.',
+              domainLanes: {
+                'src/workers/task.ts': 'system_runtime',
+                'src/auth/token.ts': 'ui_frontend', // Model hallucination: heuristic must protect security_auth
+              },
+            }),
+            usage: { prompt: 100, completion: 50, total: 150 },
+          }),
+        };
+
+        const config = buildTestConfig();
+        const result = await classifyReviewScope({
+          changedFiles: [
+            { path: 'src/auth/token.ts', patch: '+ export function verifyToken() {}' },
+            { path: 'src/workers/task.ts', patch: '+ export class TaskQueue {}' },
+            { path: 'docs/readme.md', patch: '+ update' },
+          ],
+          repository: 'calltelemetry/ai-workspace',
+          headSha: 'sha-domain-lanes',
+          candidatePersonas: [
+            { id: 'sec-lane', charter: 'builtin:security', required: true, paths: ['**/*'] },
+            { id: 'db-lane', charter: 'builtin:database', required: false, paths: ['**/*'] },
+          ],
+          config,
+          client: mockClient as any,
+        });
+
+        expect(result).not.toBeNull();
+        expect(result?.domainLanes).toBeDefined();
+        // Heuristic protected security_auth over model hallucination
+        expect(result?.domainLanes?.['src/auth/token.ts']).toBe('security_auth');
+        expect(result?.domainLanes?.['src/workers/task.ts']).toBe('system_runtime');
+        expect(result?.domainLanes?.['docs/readme.md']).toBe('docs_assets');
       });
     });
   });

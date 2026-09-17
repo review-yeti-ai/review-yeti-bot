@@ -29,7 +29,15 @@ import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { ASTParser } from '../indexer/astParser';
 import { matchOne } from '../pipeline/domainIndex';
-import { classifyReviewScope, ClassifierResult, containsExecutableOrSensitiveCode } from './classifierEngine';
+import {
+  classifyReviewScope,
+  ClassifierResult,
+  containsExecutableOrSensitiveCode,
+  DomainLane,
+  classifyPathByHeuristic,
+  classifyDomainLanesByHeuristic,
+  PERSONA_DOMAIN_AFFINITY,
+} from './classifierEngine';
 import { buildFastShipPanelResult } from './fastShipResult';
 export type {
   FindingSeverity,
@@ -1110,14 +1118,73 @@ export function buildCompactFileList(
   return entries.join('\n') || 'None';
 }
 
-export function buildDiffSection(
+export function computeDiffStats(patch?: string): { additions: number; deletions: number } {
+  if (!patch) return { additions: 0, deletions: 0 };
+  let additions = 0;
+  let deletions = 0;
+  const lines = patch.split('\n');
+  for (const line of lines) {
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      additions++;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      deletions++;
+    }
+  }
+  return { additions, deletions };
+}
+
+export function buildCompactDiffManifest(
   changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>,
-  options?: { baseSha?: string; headSha?: string }
+  options?: {
+    baseSha?: string;
+    headSha?: string;
+    domainLanes?: Record<string, DomainLane>;
+    persona?: string;
+  }
 ): string {
-  const compactFileList = buildCompactFileList(changedFiles);
   const baseSha = options?.baseSha || '';
   const headSha = options?.headSha || '';
   const range = baseSha && headSha ? `${baseSha}...${headSha}` : headSha || 'HEAD';
+  const persona = options?.persona || '';
+  const personaAffinities: DomainLane[] = persona ? (PERSONA_DOMAIN_AFFINITY[persona] || []) : [];
+  const maxChars = resolveMaxFileDiffChars();
+
+  const domainLanes = options?.domainLanes || classifyDomainLanesByHeuristic(changedFiles);
+
+  // Group and count domain lanes
+  const laneCounts: Record<string, number> = {};
+  for (const f of changedFiles) {
+    const fPath = f.path || f.filePath || '';
+    if (!fPath) continue;
+    const lane = domainLanes[fPath] || classifyPathByHeuristic(fPath);
+    laneCounts[lane] = (laneCounts[lane] || 0) + 1;
+  }
+
+  const laneSummaryLines = Object.entries(laneCounts).map(([lane, count]) => {
+    const isPersonaLane = personaAffinities.includes(lane as DomainLane);
+    return `- ${lane}: ${count} file${count === 1 ? '' : 's'}${isPersonaLane ? ' (★ YOUR LANE FOCUS)' : ''}`;
+  });
+
+  const fileEntries = changedFiles.map((f: any) => {
+    const filePath = f.path || f.filePath || 'unknown';
+    if (isOversizedFileDiff(f, maxChars)) {
+      return `- ${filePath} (SKIPPED: ${filePatchChars(f)} chars > max-file-diff-chars ${maxChars})`;
+    }
+    const lane = domainLanes[filePath] || classifyPathByHeuristic(filePath);
+    const isAffinity = personaAffinities.includes(lane as DomainLane);
+    const stats = computeDiffStats(f.patch);
+    const statStr = f.patch ? ` (+${stats.additions}, -${stats.deletions} lines)` : '';
+    return `- ${filePath} [${lane}]${isAffinity ? ' (★ YOUR LANE)' : ''}${statStr}`;
+  });
+
+  const personaFocusSection = persona && personaAffinities.length > 0
+    ? [
+        `=== YOUR ASSIGNED DOMAIN FOCUS ===`,
+        `Persona: '${persona}' | Domain Lane Affinities: [${personaAffinities.join(', ')}]`,
+        `Prioritize in-depth analysis on files marked (★ YOUR LANE).`,
+        ``,
+      ]
+    : [];
 
   return [
     `=== GIT RANGE (no diff payload is inlined; explore this yourself) ===`,
@@ -1125,13 +1192,39 @@ export function buildDiffSection(
     ...(baseSha ? [`Base SHA: ${baseSha}`] : []),
     ...(headSha ? [`Head SHA: ${headSha}`] : []),
     ``,
+    ...(laneSummaryLines.length > 0
+      ? [
+          `=== DOMAIN LANE BREAKDOWN ===`,
+          ...laneSummaryLines,
+          ``,
+        ]
+      : []),
+    ...personaFocusSection,
     `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`,
-    compactFileList,
+    fileEntries.join('\n') || 'None',
     ``,
-    `Use get_diff, read_file, view_file, search_code, or zoekt on these paths.`,
+    `=== SWARM EXPLORATION & TARGETED PULL PROTOCOL ===`,
+    `Zero raw diff hunks are pre-rendered in this prompt to eliminate token load bloat.`,
+    `Each persona in this container reviews independently based on their domain lane.`,
+    `Fetch diff hunks or inspect source context on-demand using:`,
+    `- get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}`,
+    `- read_file: {"tool": "read_file", "args": {"path": "<path>", "startLine": 1, "endLine": 80}}`,
+    `- zoekt / symbol_search: to audit cross-file symbols across the repository.`,
     `Do not assume file contents from this list. Fetch the commit diffs yourself.`,
     `SKIPPED paths are larger than max-file-diff-chars; do not request their payloads.`,
   ].join('\n');
+}
+
+export function buildDiffSection(
+  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>,
+  options?: {
+    baseSha?: string;
+    headSha?: string;
+    domainLanes?: Record<string, DomainLane>;
+    persona?: string;
+  }
+): string {
+  return buildCompactDiffManifest(changedFiles, options);
 }
 
 async function invoke(
@@ -1188,8 +1281,13 @@ async function invoke(
   const branchStr = (payload.branch as string) || '';
   const prNumberStr = payload.prNumber ? `#${payload.prNumber}` : '';
   const repositoryVisibility = normalizeRepositoryVisibility(payload.repositoryVisibility);
-
-  const diffSection = buildDiffSection(changedFiles, { baseSha: baseShaStr, headSha: shaStr });
+  const domainLanes = (payload.domainLanes as Record<string, DomainLane> | undefined) || classifyDomainLanesByHeuristic(changedFiles);
+  const diffSection = buildDiffSection(changedFiles, {
+    baseSha: baseShaStr,
+    headSha: shaStr,
+    domainLanes,
+    persona: personaName,
+  });
   // The compact scope above owns file context. The fenced compatibility
   // example must not re-embed raw patches and bypass size/skip boundaries.
   // Keep moderator/arbiter evidence and all other role-specific context.
@@ -1824,7 +1922,8 @@ async function runPersona(
   gitContext?: { baseSha?: string; branch?: string; prNumber?: number },
   signal?: AbortSignal,
   remainingPanelTimeoutMs?: () => number,
-  preCheckEvidence?: { zoekt?: ZoektPreCheckResult; [key: string]: any }
+  preCheckEvidence?: { zoekt?: ZoektPreCheckResult; [key: string]: any },
+  domainLanes?: Record<string, DomainLane>
 ) {
   return runInSpan(`review_yeti_persona_lane`, async (span) => {
     throwIfPanelAborted(signal);
@@ -2026,6 +2125,7 @@ async function runPersona(
             prNumber: gitContext?.prNumber,
             repositoryVisibility,
             changedFiles: scopedFiles,
+            domainLanes,
             pathInstructions: config.path_instructions,
             rules: [...(config.rules || []), ...memoryRules],
             preCheckEvidence: scopedPreCheckEvidence,
@@ -2555,6 +2655,8 @@ export async function executePersonaPanel(options: {
       }
     }
 
+    const domainLanes = classifierResult?.domainLanes || classifyDomainLanesByHeuristic(effectiveFiles);
+
     let memoryRules: string[] = [];
     let memoryStore: PRMemoryStore | undefined;
     try {
@@ -2829,6 +2931,7 @@ export async function executePersonaPanel(options: {
                     ...(analyzersPreCheckResult ? { analyzers: analyzersPreCheckResult } : {}),
                   }
                 : undefined,
+              domainLanes,
             );
             return { persona, result, error: undefined };
           } finally {

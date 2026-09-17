@@ -5,11 +5,58 @@ import { PanelRequestPolicy } from './types';
 import { logger } from '../utils/logger';
 import { getMetrics } from '../telemetry';
 
+export type DomainLane =
+  | 'security_auth'
+  | 'data_persistence'
+  | 'api_contracts'
+  | 'system_runtime'
+  | 'ui_frontend'
+  | 'docs_assets';
+
+export const DOMAIN_LANES: readonly DomainLane[] = [
+  'security_auth',
+  'data_persistence',
+  'api_contracts',
+  'system_runtime',
+  'ui_frontend',
+  'docs_assets',
+] as const;
+
+export const DOMAIN_LANE_PERSONA_AFFINITY: Record<DomainLane, string[]> = {
+  security_auth: ['sec-lane', 'security', 'policy-lane'],
+  data_persistence: ['db-lane', 'database', 'correctness-lane', 'correctness'],
+  api_contracts: ['contract-lane', 'contract', 'correctness-lane', 'correctness'],
+  system_runtime: ['devops-lane', 'devops', 'arch-lane', 'architecture', 'perf-lane', 'performance', 'finops-lane'],
+  ui_frontend: ['qual-lane', 'correctness-lane', 'correctness'],
+  docs_assets: ['qual-lane'],
+};
+
+export const PERSONA_DOMAIN_AFFINITY: Record<string, DomainLane[]> = {
+  'sec-lane': ['security_auth'],
+  'security': ['security_auth'],
+  'policy-lane': ['security_auth', 'system_runtime'],
+  'db-lane': ['data_persistence'],
+  'database': ['data_persistence'],
+  'contract-lane': ['api_contracts'],
+  'contract': ['api_contracts'],
+  'devops-lane': ['system_runtime'],
+  'devops': ['system_runtime'],
+  'arch-lane': ['system_runtime', 'api_contracts', 'data_persistence'],
+  'architecture': ['system_runtime', 'api_contracts', 'data_persistence'],
+  'correctness-lane': ['api_contracts', 'data_persistence', 'system_runtime', 'ui_frontend'],
+  'correctness': ['api_contracts', 'data_persistence', 'system_runtime', 'ui_frontend'],
+  'perf-lane': ['system_runtime', 'data_persistence'],
+  'performance': ['system_runtime', 'data_persistence'],
+  'qual-lane': ['ui_frontend', 'docs_assets', 'api_contracts'],
+  'finops-lane': ['system_runtime'],
+};
+
 export interface ClassifierResult {
   fastShip: boolean;
   selectedPersonas: string[];
   effortTier: 'low' | 'medium' | 'high';
   rationale: string;
+  domainLanes?: Record<string, DomainLane>;
   usage?: TokensUsed | null;
   costUSD?: number | null;
   durationMs?: number;
@@ -313,6 +360,144 @@ export function containsExecutableOrSensitiveCode(
   return false;
 }
 
+/**
+ * Classify a changed file path into a primary domain lane using deterministic heuristics.
+ * Zero-token, instant, fail-closed classification.
+ */
+export function classifyPathByHeuristic(filePath: string): DomainLane {
+  const p = (filePath || '').toLowerCase().replace(/\\/g, '/').trim();
+  if (!p) return 'system_runtime';
+
+  const baseName = p.split('/').pop() || p;
+  const dotIdx = baseName.lastIndexOf('.');
+  const ext = dotIdx >= 0 ? baseName.slice(dotIdx) : '';
+
+  // 1. Docs and static non-executable assets
+  if (
+    SAFE_DOC_OR_ASSET_EXTENSIONS.has(ext) ||
+    SAFE_STANDALONE_FILENAMES.has(baseName) ||
+    SAFE_TXT_BASENAMES.has(baseName) ||
+    p.startsWith('docs/') ||
+    p.includes('/docs/') ||
+    ext === '.svg' ||
+    ext === '.pdf' ||
+    ext === '.eps'
+  ) {
+    return 'docs_assets';
+  }
+
+  // 2. Security & Auth (tokens, keys, auth controllers, crypto, policies, netpols)
+  if (
+    p.includes('auth') ||
+    p.includes('oauth') ||
+    p.includes('token') ||
+    p.includes('secret') ||
+    p.includes('cert') ||
+    p.includes('crypto') ||
+    p.includes('rbac') ||
+    p.includes('permission') ||
+    p.includes('guard') ||
+    p.includes('firewall') ||
+    p.includes('netpol') ||
+    p.includes('security') ||
+    p.includes('credential') ||
+    p.includes('password') ||
+    p.includes('keychain') ||
+    p.includes('id_rsa') ||
+    p.includes('id_ed25519') ||
+    baseName === '.npmrc' ||
+    baseName === '.pypirc' ||
+    p.includes('policy') ||
+    p.includes('policies')
+  ) {
+    return 'security_auth';
+  }
+
+  // 3. Database & Data Persistence (SQL, migrations, Ecto schemas, Prisma, models)
+  if (
+    p.includes('/repo/') ||
+    p.includes('/schema/') ||
+    p.includes('/schemas/') ||
+    p.includes('/migration/') ||
+    p.includes('/migrations/') ||
+    p.includes('/db/') ||
+    p.includes('/database/') ||
+    p.includes('/sql/') ||
+    p.includes('/entity/') ||
+    p.includes('/entities/') ||
+    p.includes('/models/') ||
+    p.includes('/model/') ||
+    p.includes('/timescale/') ||
+    p.includes('/cagg/') ||
+    p.includes('priv/repo/') ||
+    ext === '.sql' ||
+    ext === '.prisma' ||
+    ext === '.cql'
+  ) {
+    return 'data_persistence';
+  }
+
+  // 4. API & Contracts (REST, GraphQL, Protobuf, OpenAPI, router)
+  if (
+    p.includes('/api/') ||
+    p.includes('/routes/') ||
+    p.includes('/router/') ||
+    p.includes('/controllers/') ||
+    p.includes('/controller/') ||
+    p.includes('/endpoints/') ||
+    p.includes('/proto/') ||
+    p.includes('/contracts/') ||
+    ext === '.proto' ||
+    ext === '.graphql' ||
+    baseName.includes('openapi') ||
+    baseName.includes('swagger')
+  ) {
+    return 'api_contracts';
+  }
+
+  // 5. UI & Frontend (Components, styling, templates, views)
+  if (
+    p.includes('/assets/') ||
+    p.includes('/static/') ||
+    p.includes('/web/') ||
+    p.includes('/ui/') ||
+    p.includes('/components/') ||
+    p.includes('/pages/') ||
+    p.includes('/views/') ||
+    p.includes('/styles/') ||
+    p.includes('/css/') ||
+    ext === '.tsx' ||
+    ext === '.jsx' ||
+    ext === '.vue' ||
+    ext === '.svelte' ||
+    ext === '.css' ||
+    ext === '.scss' ||
+    ext === '.sass' ||
+    ext === '.less' ||
+    ext === '.html'
+  ) {
+    return 'ui_frontend';
+  }
+
+  // 6. System Runtime (default for backend logic, infra, build, orchestration)
+  return 'system_runtime';
+}
+
+/**
+ * Classify a batch of changed files into domain lanes.
+ */
+export function classifyDomainLanesByHeuristic(
+  files: Array<{ path?: string; filePath?: string }>
+): Record<string, DomainLane> {
+  const result: Record<string, DomainLane> = {};
+  for (const f of files) {
+    const rawPath = f.path || f.filePath || '';
+    if (!rawPath) continue;
+    result[rawPath] = classifyPathByHeuristic(rawPath);
+  }
+  return result;
+}
+
 function extractJson(text: string): any {
   const cleaned = text.trim();
   try {
@@ -377,13 +562,16 @@ Your task is to analyze the PR changed files and candidate review personas to de
    - If fastShip is true, this can be empty [].
 3. "effortTier": 'low' | 'medium' | 'high' based on change complexity.
 4. "rationale": (string) A concise 1-2 sentence explanation.
+5. "domainLanes": (optional object) Map each changed file path to its primary domain lane:
+   "security_auth" | "data_persistence" | "api_contracts" | "system_runtime" | "ui_frontend" | "docs_assets".
 
 You MUST respond strictly with a JSON object in this format:
 {
   "fastShip": boolean,
   "selectedPersonas": string[],
   "effortTier": "low" | "medium" | "high",
-  "rationale": "string"
+  "rationale": "string",
+  "domainLanes": { "path/to/file": "domain_lane" }
 }`;
 
 /**
@@ -493,6 +681,22 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
       effectiveFastShip = false;
     }
 
+    // Compute domain lanes (heuristic baseline with LLM enhancement)
+    const heuristicLanes = classifyDomainLanesByHeuristic(options.changedFiles);
+    const domainLanes: Record<string, DomainLane> = { ...heuristicLanes };
+    if (parsed.domainLanes && typeof parsed.domainLanes === 'object' && !Array.isArray(parsed.domainLanes)) {
+      const validLanes = new Set(DOMAIN_LANES);
+      for (const [fPath, lane] of Object.entries(parsed.domainLanes)) {
+        if (typeof lane === 'string' && validLanes.has(lane as DomainLane)) {
+          // Keep security_auth and docs_assets heuristic overrides if heuristic was deterministic
+          if (heuristicLanes[fPath] === 'security_auth' || heuristicLanes[fPath] === 'docs_assets') {
+            continue;
+          }
+          domainLanes[fPath] = lane as DomainLane;
+        }
+      }
+    }
+
     const durationMs = Date.now() - startTime;
 
     try {
@@ -512,6 +716,7 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
       selectedPersonas,
       effortTier,
       rationale,
+      domainLanes,
       usage: response.usage || null,
       costUSD: response.costUSD || null,
       durationMs,

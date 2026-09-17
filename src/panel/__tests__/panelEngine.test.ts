@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   buildCompactFileList,
+  buildCompactDiffManifest,
   buildDiffSection,
+  computeDiffStats,
   executePersonaPanel,
   isRetryablePanelError,
   MAX_INLINE_DIFF_CHARS,
@@ -175,3 +177,82 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       expect(buildCompactFileList([])).toBe('None');
     });
   });
+
+  describe('buildCompactDiffManifest & Domain Lane Partitioning', () => {
+    it('computes diff stats additions and deletions accurately', () => {
+      const patch = [
+        '--- a/src/app.ts',
+        '+++ b/src/app.ts',
+        '@@ -1,3 +1,4 @@',
+        ' context',
+        '-old line 1',
+        '-old line 2',
+        '+new line 1',
+        '+new line 2',
+        '+new line 3',
+        ' trailing context',
+      ].join('\n');
+
+      const stats = computeDiffStats(patch);
+      expect(stats.additions).toBe(3);
+      expect(stats.deletions).toBe(2);
+    });
+
+    it('partitions files into domain lanes with breakdown and line stats', () => {
+      const files = [
+        { path: 'src/auth/jwt.ts', patch: '+ export function sign() {}\n- old()' },
+        { path: 'priv/repo/migrations/init.sql', patch: '+ CREATE TABLE users();' },
+        { path: 'docs/architecture.md', patch: '+ # Architecture' },
+      ];
+
+      const manifest = buildCompactDiffManifest(files, {
+        baseSha: 'base123',
+        headSha: 'head456',
+      });
+
+      expect(manifest).toContain('=== GIT RANGE');
+      expect(manifest).toContain('git diff base123...head456');
+      expect(manifest).toContain('=== DOMAIN LANE BREAKDOWN ===');
+      expect(manifest).toContain('- security_auth: 1 file');
+      expect(manifest).toContain('- data_persistence: 1 file');
+      expect(manifest).toContain('- docs_assets: 1 file');
+      expect(manifest).toContain('=== PR CHANGED FILES INDEX (3 file(s)) ===');
+      expect(manifest).toContain('- src/auth/jwt.ts [security_auth] (+1, -1 lines)');
+      expect(manifest).toContain('- priv/repo/migrations/init.sql [data_persistence] (+1, -0 lines)');
+      expect(manifest).toContain('- docs/architecture.md [docs_assets] (+1, -0 lines)');
+      expect(manifest).toContain('=== SWARM EXPLORATION & TARGETED PULL PROTOCOL ===');
+      expect(manifest).toContain('Zero raw diff hunks are pre-rendered in this prompt');
+    });
+
+    it('highlights persona lane affinity with (★ YOUR LANE) for sec-lane', () => {
+      const files = [
+        { path: 'src/auth/guard.ts', patch: '+ function check() {}' },
+        { path: 'src/components/Header.tsx', patch: '+ <header/>' },
+      ];
+
+      const manifest = buildCompactDiffManifest(files, {
+        persona: 'sec-lane',
+      });
+
+      expect(manifest).toContain('=== YOUR ASSIGNED DOMAIN FOCUS ===');
+      expect(manifest).toContain("Persona: 'sec-lane' | Domain Lane Affinities: [security_auth]");
+      expect(manifest).toContain('- src/auth/guard.ts [security_auth] (★ YOUR LANE) (+1, -0 lines)');
+      expect(manifest).toContain('- src/components/Header.tsx [ui_frontend] (+1, -0 lines)');
+      expect(manifest).not.toContain('Header.tsx [ui_frontend] (★ YOUR LANE)');
+    });
+
+    it('highlights persona lane affinity for db-lane', () => {
+      const files = [
+        { path: 'src/auth/guard.ts', patch: '+ check' },
+        { path: 'priv/repo/migrations/2026_add_col.exs', patch: '+ alter table' },
+      ];
+
+      const manifest = buildCompactDiffManifest(files, {
+        persona: 'db-lane',
+      });
+
+      expect(manifest).toContain("Persona: 'db-lane' | Domain Lane Affinities: [data_persistence]");
+      expect(manifest).toContain('- priv/repo/migrations/2026_add_col.exs [data_persistence] (★ YOUR LANE) (+1, -0 lines)');
+    });
+  });
+
