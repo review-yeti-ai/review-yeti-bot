@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.72.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.8...v1.72.9) (2026-09-17)
+
+
+### Bug Fixes
+
+* **panel:** redact provider error text before it reaches the log sink (REL-892) ([#826](https://github.com/review-yeti-ai/review-yeti-bot/issues/826)) ([ecf8bb3](https://github.com/review-yeti-ai/review-yeti-bot/commit/ecf8bb304befb1f790be44868c383204c62211fd))
+* **tests:** unconditionally unstub fetch after OmniRouteClient redaction tests ([ecf8bb3](https://github.com/review-yeti-ai/review-yeti-bot/commit/ecf8bb304befb1f790be44868c383204c62211fd))
+
 ## [1.72.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.7...v1.72.8) (2026-09-17)
 
 
