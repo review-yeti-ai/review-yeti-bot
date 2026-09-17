@@ -884,6 +884,80 @@ function parseNativeJsonObject<T>(content: string, expectedNonce: string): T {
  * contracts explicit so malformed structured output gets one bounded corrective turn and then
  * fails closed.
  */
+
+/** Enum members the persona/moderator/arbiter role contracts accept. */
+const ROLE_ENUMS: Record<string, { field: string; allowed: string[] }> = {
+  persona: { field: 'decision', allowed: ['APPROVE', 'FINDINGS', 'INCOMPLETE'] },
+  moderator: { field: 'decision', allowed: ['RECONCILED'] },
+  arbiter: {
+    field: 'verdict',
+    allowed: ['SHIP', 'FIX_FIRST', 'BLOCK', 'APPROVE', 'PASSED', 'SUCCESS', 'REJECT', 'FAILED'],
+  },
+};
+
+const FINDING_SEVERITIES = ['P0', 'P1', 'P2'];
+
+/**
+ * Case-only enum repair. Returns the upper-cased member when `value` case-insensitively matches
+ * an allowed member, else null. Semantic synonyms are deliberately NOT mapped: a value that is
+ * not an exact (modulo case) enum member is a contract violation and must go through the
+ * corrective turn, not be silently reinterpreted here.
+ */
+function normalizeEnumCase(value: unknown, allowed: readonly string[]): string | null {
+  if (typeof value !== 'string') return null;
+  const upper = value.trim().toUpperCase();
+  return allowed.includes(upper) ? upper : null;
+}
+
+/** Coerce an exact-integer string scalar; anything else is left untouched. */
+function normalizeIntegerString(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  return Number.parseInt(trimmed, 10);
+}
+
+/**
+ * Deterministic repair for the observed provider drift signatures (REL-888): some OpenAI-compatible
+ * lanes honor the JSON *structure* but return enum members in the wrong case (e.g. `decision:
+ * "approve"`, `severity: "p1"`) or numeric scalars as integer strings. The semantic value is
+ * exact, so case/number coercion in place saves a corrective provider turn and keeps the
+ * failover budget for genuinely broken output. Returns true when anything was normalized.
+ */
+export function normalizeDriftedStructuredOutput(role: string, value: any): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  let changed = false;
+
+  const roleEnum = ROLE_ENUMS[role];
+  if (roleEnum) {
+    const normalized = normalizeEnumCase(value[roleEnum.field], roleEnum.allowed);
+    if (normalized !== null && value[roleEnum.field] !== normalized) {
+      value[roleEnum.field] = normalized;
+      changed = true;
+    }
+  }
+
+  if (Array.isArray(value.findings)) {
+    for (const finding of value.findings) {
+      if (!finding || typeof finding !== 'object' || Array.isArray(finding)) continue;
+      const severity = normalizeEnumCase(finding.severity, FINDING_SEVERITIES);
+      if (severity !== null && finding.severity !== severity) {
+        finding.severity = severity;
+        changed = true;
+      }
+      for (const lineField of ['line', 'startLine'] as const) {
+        if (finding[lineField] === null || finding[lineField] === undefined) continue;
+        const coerced = normalizeIntegerString(finding[lineField]);
+        if (coerced !== null && finding[lineField] !== coerced) {
+          finding[lineField] = coerced;
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 function structuredOutputContractError(role: string, value: any, allowIncomplete = false): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return `${role} response must be a JSON object`;
   if (role === 'persona') {
@@ -1441,6 +1515,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       const candidate = nativeJsonMode
         ? parseNativeJsonObject(response.content, requestNonce)
         : parseFenced(response.content, requestNonce);
+      normalizeDriftedStructuredOutput(role, candidate);
       let contractError = structuredOutputContractError(role, candidate, nativeJsonMode);
       if (!contractError && options?.validateParsed) {
         try {
