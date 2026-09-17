@@ -360,10 +360,12 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     expect(failed).not.toHaveProperty('rawCompletionExcerpt');
   });
 
-  it('normalizes APPROVE with validated findings to FINDINGS without discarding evidence', async () => {
+  it('rejects contradictory APPROVE-with-findings via the corrective turn; evidence is preserved', async () => {
     const config = buildMinimalConfig();
     config.personas = [config.personas[0]]; // required sec-lane only
     const changedFiles = [{ path: 'src/main.ts' }];
+    const finding = { severity: 'P0', path: 'src/main.ts', line: 1, title: 'Err', body: 'Err' };
+    let personaAttempts = 0;
 
     mockClient.complete.mockImplementation(async (opts: any) => {
       const prompt = extractMessageContentText(opts.messages[1].content);
@@ -383,18 +385,30 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
           model: opts.model,
           content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({
             decision: 'RECONCILED',
-            findings: [{ severity: 'P0', path: 'src/main.ts', line: 1, title: 'Err', body: 'Err' }],
+            findings: [finding],
           })}\nCT_REVIEW_END:${nonce}`,
           usage: null,
           costUSD: null,
         };
       }
 
+      personaAttempts += 1;
+      if (personaAttempts === 1) {
+        // Contradictory and invalid (REL-888): approval + defect. The persona contract
+        // must reject this and spend its bounded corrective turn resolving it — the
+        // previous silent downgrade to FINDINGS let a contradictory approval pass.
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [finding] })}\nCT_REVIEW_END:${nonce}`,
+          usage: null,
+          costUSD: null,
+        };
+      }
       return {
         model: opts.model,
         content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({
-          decision: 'APPROVE',
-          findings: [{ severity: 'P0', path: 'src/main.ts', line: 1, title: 'Err', body: 'Err' }],
+          decision: 'FINDINGS',
+          findings: [finding],
         })}\nCT_REVIEW_END:${nonce}`,
         usage: null,
         costUSD: null,
@@ -409,6 +423,7 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
       client: mockClient as unknown as OmniRouteClient,
     });
 
+    expect(personaAttempts).toBe(2);
     expect(result.personas).toHaveLength(1);
     expect(result.personas[0]).toMatchObject({
       decision: 'FINDINGS',
