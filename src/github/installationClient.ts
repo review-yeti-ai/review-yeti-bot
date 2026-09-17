@@ -19,14 +19,18 @@ import type { DelegatedFailureReason } from '../review/workerCompletion';
  * (see `src/k8s/delegatedFailureReader.ts` and
  * `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go`
  * `startFailurePublication` reasons `WorkerFailed` / `DeadlineExpired` /
- * `WorkerJobMissing`), rendered into the fail-closed check summary so an
- * operator reading GitHub can tell these apart from the generic "no verdict"
- * text used when no operator signal was involved.
+ * `WorkerJobMissing` / `WorkerContractRejected`), rendered into the
+ * fail-closed check summary so an operator reading GitHub can tell these
+ * apart from the generic "no verdict" text used when no operator signal was
+ * involved. Every sentence here is static and bounded -- never the operator's
+ * raw `err.Error()` -- so a rejected worker contract can never leak
+ * configuration detail onto a public GitHub check.
  */
 const DELEGATED_FAILURE_REASON_SUMMARY: Record<DelegatedFailureReason, string> = {
   worker_failed: 'The Kubernetes operator observed the publishing worker fail',
   worker_deadline_exceeded: 'The Kubernetes operator observed the publishing worker exceed its deadline',
   worker_job_missing: 'The Kubernetes operator observed the publishing worker Job disappear',
+  worker_contract_rejected: "The Kubernetes operator rejected the publishing worker's configuration",
 };
 import {
   RECOVERABLE_FAILURE_TITLES,

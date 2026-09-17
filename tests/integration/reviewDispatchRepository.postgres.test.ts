@@ -3472,6 +3472,55 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(state.outbox.status).toBe('terminal');
       expect(state.run.failure_diagnostics).toMatchObject({ reason: 'worker_failed', failureClass: 'internal_error' });
     });
+
+    // REL-896 follow-up: a `WorkerContractRejected` review never gets past
+    // BuildWorkerJob, so the outbox never advances beyond its first
+    // dispatch attempt (execution_attempt stays 0, the returned claim
+    // attempt is 1, and the run itself never leaves 'queued'). This is
+    // exactly the "first-attempt contract rejection" shape -- projected
+    // dispatch, queued run, no worker completion row, no active lease --
+    // that the delegated branch at claimAbandonedPublishingRuns must accept;
+    // admitClaimedAndProjected already reproduces it unmodified.
+    it('claims a first-attempt worker_contract_rejected candidate before its terminal deadline', async () => {
+      const { repository, client } = await createRepository();
+      const run = await admitClaimedAndProjected(
+        repository, 'delegated-contract-rejected', 1_000, 'worker-delegated-contract-rejected',
+      );
+      const beforeDeadline = run.terminalDeadline - 1;
+      expect(run.claim.executionAttempt).toBe(1);
+
+      const [claimed] = await repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 20, [
+        { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt, reason: 'worker_contract_rejected' },
+      ]);
+      expect(claimed).toMatchObject({
+        runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt,
+        delegatedReason: 'worker_contract_rejected',
+      });
+      const state = await dispatchState(client, run.admitted.run.runId);
+      expect(state.run.status).toBe('terminal');
+      expect(state.outbox.status).toBe('projected');
+
+      await expect(repository.reconcileAbandonedPublishingRun(claimed, 'reaper-delegated', beforeDeadline + 1,
+        async () => 'failure-published')).resolves.toEqual({ reconciled: true, outcome: 'failure-published' });
+      const reconciled = await dispatchState(client, run.admitted.run.runId);
+      expect(reconciled.run.failure_diagnostics).toMatchObject({
+        reason: 'worker_contract_rejected',
+        failureClass: 'internal_error',
+      });
+    });
+
+    it('does not claim a worker_contract_rejected candidate whose executionAttempt no longer matches the outbox', async () => {
+      const { repository, client } = await createRepository();
+      const run = await admitClaimedAndProjected(
+        repository, 'delegated-contract-rejected-stale', 1_000, 'worker-delegated-contract-rejected-stale',
+      );
+      const beforeDeadline = run.terminalDeadline - 1;
+
+      await expect(repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 20, [
+        { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt + 1, reason: 'worker_contract_rejected' },
+      ])).resolves.toEqual([]);
+      expect((await dispatchState(client, run.admitted.run.runId)).run.status).toBe('queued');
+    });
   });
 
   describe('terminalizeRunsForClosedPullRequest (REL-896)', () => {

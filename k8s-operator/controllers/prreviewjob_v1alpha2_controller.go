@@ -159,6 +159,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	now := r.clock()
 	if err := validateProjectionWindow(&review); err != nil {
+		// Same class as WorkerContractRejected below: the projection is rejected
+		// before any worker Job is ever built, so an app-gate review must still be
+		// delegated rather than left for the 30-minute deadline reaper to notice.
+		if review.Spec.PublicationMode == job.PublicationModeAppGate {
+			return r.startFailurePublication(ctx, &review, "InvalidProjection", err.Error())
+		}
 		return ctrl.Result{}, r.fail(ctx, &review, "InvalidProjection", err.Error())
 	}
 	if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageReceived, review.Spec.ReceivedAt); err != nil {
@@ -298,6 +304,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		// stranded behind an invalid projection.
 		if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
 			return ctrl.Result{}, releaseErr
+		}
+		// An app-gate review that will never have a worker still owes the
+		// dispatcher a verdict. Route it through the same delegation as
+		// WorkerJobMissing above instead of a plain fail, or the terminal
+		// deadline reaper is the only thing left to notice it, 30 minutes later.
+		if review.Spec.PublicationMode == job.PublicationModeAppGate {
+			return r.startFailurePublication(ctx, &review, "WorkerContractRejected", err.Error())
 		}
 		return ctrl.Result{}, r.fail(ctx, &review, "WorkerContractRejected", err.Error())
 	}
@@ -626,15 +639,37 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 		return ctrl.Result{}, err
 	}
 
-	// A contract mismatch may leave an untrusted owned Job running. Stop only the
-	// exact child after the pending obligation is durable; if deletion is lost,
-	// this reconcile retries it without ever recreating the worker.
+	// A contract mismatch or a still-running worker past its deadline may leave
+	// an untrusted or stuck Job running. Stop only the exact child after the
+	// pending obligation is durable; if deletion is lost, this reconcile
+	// retries it without ever recreating the worker. A Job that has already
+	// finished (WorkerFailed's BackoffLimitExceeded, most commonly) has
+	// nothing left running to stop, and its Pod/exit-status logs are the only
+	// surviving evidence of the failure this review reports -- deleting it
+	// would destroy that evidence roughly a minute later instead of letting
+	// its own ttlSecondsAfterFinished (REVIEW_YETI_WORKER_FAILED_TTL_AFTER_
+	// FINISHED) collect it on schedule.
 	if worker != nil {
 		if !metav1.IsControlledBy(worker, review) {
 			return ctrl.Result{}, errors.New("refusing to stop a worker Job not controlled by the failed review")
 		}
-		if worker.DeletionTimestamp == nil {
-			if err := r.Delete(ctx, worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
+		if !workerJobFinished(worker) {
+			if worker.DeletionTimestamp == nil {
+				if err := r.Delete(ctx, worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			}
+		} else if controllerutil.ContainsFinalizer(worker, terminalOutcomeFinalizer) {
+			// This finalizer only ever existed to hold the Job open long enough
+			// for its terminal result to be durably copied into the parent
+			// status -- which has already happened by the time a review reaches
+			// failure publication. Retaining the Job instead of deleting it
+			// must not also retain the finalizer: nothing else in this operator
+			// will ever release it for a review that stays terminal, and the
+			// TTL controller's own delete would otherwise hang on it forever.
+			base := worker.DeepCopy()
+			controllerutil.RemoveFinalizer(worker, terminalOutcomeFinalizer)
+			if err := r.Patch(ctx, worker, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
 		}
@@ -755,6 +790,26 @@ func observeTiming(review *reviewv1alpha2.PRReviewJob, stage reviewv1alpha2.Disp
 		review.Status.Timing = &reviewv1alpha2.DispatchTimingStatus{}
 	}
 	return review.Status.Timing.Observe(stage, at)
+}
+
+// workerJobFinished reports whether a Job has reached a terminal outcome and
+// therefore has nothing left running to stop. This path also handles a
+// WorkerContractMismatch, where the child's spec cannot be trusted, so the
+// failed-Pod counter alone proves nothing: it counts Pods, and a Job that was
+// altered to allow retries can have a failed Pod while another attempt is
+// running or about to start. Only the Job controller's own terminal condition
+// is accepted outright; the counter is accepted only when no Pod is active and
+// the Job cannot retry (backoffLimit 0, the only value this operator creates).
+func workerJobFinished(worker *batchv1.Job) bool {
+	for _, condition := range worker.Status.Conditions {
+		if (condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	if worker.Status.Active > 0 || worker.Status.Failed == 0 {
+		return false
+	}
+	return worker.Spec.BackoffLimit != nil && *worker.Spec.BackoffLimit == 0
 }
 
 func terminalWorkerTime(worker *batchv1.Job, fallback time.Time) metav1.Time {
