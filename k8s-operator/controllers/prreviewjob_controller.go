@@ -66,7 +66,18 @@ func (r *PRReviewJobReconciler) syncMetrics() {
 	}
 }
 
+// Reconcile converts optimistic-concurrency write conflicts into a quiet,
+// metric-counted requeue (REL-903), mirroring the v1alpha2 controller.
 func (r *PRReviewJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	result, err := r.reconcile(ctx, req)
+	if err != nil && errors.IsConflict(err) {
+		metrics.ReconcileConflicts.Inc()
+		return ctrl.Result{RequeueAfter: conflictRequeueBackoff}, nil
+	}
+	return result, err
+}
+
+func (r *PRReviewJobReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	var job reviewv1alpha1.PRReviewJob

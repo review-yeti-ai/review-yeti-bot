@@ -67,6 +67,17 @@ var (
 		Help: "Number of review outcomes recorded after the fifteen-minute deadline.",
 	})
 
+	// ReconcileConflicts counts optimistic-concurrency (HTTP 409) write conflicts
+	// on PRReviewJob and worker Job objects. Sibling writers (dispatcher, reaper,
+	// lifecycle reconciler) legitimately mutate the same objects during job
+	// transitions; each conflict is retried quietly via requeue, so the counter
+	// is the durable signal for churn that used to surface only as ERROR log
+	// spam (REL-903).
+	ReconcileConflicts = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "review_yeti_operator_reconcile_conflicts_total",
+		Help: "Optimistic-concurrency write conflicts retried by the PRReviewJob reconciler.",
+	})
+
 	registerOnce sync.Once
 )
 
@@ -81,6 +92,7 @@ func RegisterMetrics() {
 			WebhookToJobDurationSeconds,
 			WebhookToCompletionDurationSeconds,
 			DeadlineMisses,
+			ReconcileConflicts,
 		)
 	})
 }

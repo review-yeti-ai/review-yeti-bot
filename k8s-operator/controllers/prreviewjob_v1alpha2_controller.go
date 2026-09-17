@@ -91,7 +91,32 @@ type PRReviewJobV1Alpha2Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=delete
+// conflictRequeueBackoff is the quiet requeue delay for optimistic-concurrency
+// write conflicts. The controller-runtime default backoff would retry the same
+// object anyway, but only after logging the error at ERROR level with a full
+// stacktrace every time.
+const conflictRequeueBackoff = 2 * time.Second
+
+// Reconcile converts optimistic-concurrency write conflicts into a quiet,
+// metric-counted requeue (REL-903).
+//
+// The dispatcher, reaper, and lifecycle reconciler legitimately mutate the same
+// PRReviewJob and worker Job objects during job transitions; every writer loses
+// the occasional race and controller-runtime would retry it regardless. Surfacing
+// those races as ERROR-level reconciler errors with stacktraces buries real
+// failures. A conflict here changes nothing about review semantics: the object
+// was concurrently modified, the retry will re-read the latest state, and the
+// outcome that another writer already recorded stays authoritative.
 func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	result, err := r.reconcile(ctx, req)
+	if err != nil && apierrors.IsConflict(err) {
+		operatorMetrics.ReconcileConflicts.Inc()
+		return ctrl.Result{RequeueAfter: conflictRequeueBackoff}, nil
+	}
+	return result, err
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
 	err := r.getCachedThenLive(ctx, req.NamespacedName, &review)
 	if err != nil {
