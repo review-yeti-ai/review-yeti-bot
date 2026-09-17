@@ -377,6 +377,10 @@ func TestAdversarialMultiRunSamePRNoPVCLeakage(t *testing.T) {
 // TestAdversarialTerminalReconcileProtectsWorkspaceWhilePodIsActive verifies that
 // reconcileTerminalWorkspace waits for active pods to terminate before finishing terminal cleanup.
 func TestAdversarialTerminalReconcileProtectsWorkspaceWhilePodIsActive(t *testing.T) {
+	// REL-896: pin retention to zero so this test's "terminal cleanup complete"
+	// assertion (RequeueAfter == 0) stays about the pod-active gate under test,
+	// not the (separately tested) terminal-deletion retention window.
+	t.Setenv("REVIEW_YETI_TERMINAL_RETENTION_SECONDS", "0")
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
 	review := v1alpha2Review(now)
