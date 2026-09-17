@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.73.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.11...v1.73.0) (2026-09-17)
+
+
+### Features
+
+* **panel:** partition changed files into domain lanes and provide zero-diff pull manifest ([9e67b3b](https://github.com/review-yeti-ai/review-yeti-bot/commit/9e67b3b06865c8ff3a7482c762d3a3dd14ee368a))
+
 ## [1.72.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.10...v1.72.11) (2026-09-17)
 
 
