@@ -3303,6 +3303,27 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(state.outbox.status).toBe('projected');
     });
 
+    it('never claims a non-publishable (disabled-mode) run through the delegated branch', async () => {
+      // The publication-mode gate sits after the whole OR group, so it must
+      // cover the delegated branch too: a disabled-mode run has no App check to
+      // fail closed and belongs to retireExpiredNonPublishableRuns, not here.
+      const { repository, client } = await createRepository();
+      const admission = { ...sameHeadAdmission('delegated-disabled-mode', 1_000), publicationMode: 'disabled' as const };
+      const admitted = await repository.admit(admission);
+      const claim = (await repository.claimNext('worker-delegated-disabled', 1_001, 30_000))!;
+      await repository.markProjected(claim.runId, 'worker-delegated-disabled', claim.claimAttempt, 'worker-delegated-disabled-projection', 1_002);
+      // Drop the projection lease so only the mode gate can be what refuses it.
+      await client.query('UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL WHERE run_id = $1', [admitted.run.runId]);
+
+      const claimed = await repository.claimAbandonedPublishingRuns('reaper-delegated', admission.terminalDeadline - 1, 20, [
+        { runId: admitted.run.runId, executionAttempt: claim.executionAttempt, reason: 'worker_failed' },
+      ]);
+      expect(claimed).toEqual([]);
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run.status).not.toBe('terminal');
+      expect(state.run.failure_diagnostics ?? {}).not.toMatchObject({ reason: 'worker_failed' });
+    });
+
     it('does not claim a stale candidate whose executionAttempt no longer matches the outbox', async () => {
       const { repository, client } = await createRepository();
       const run = await admitClaimedAndProjected(repository, 'delegated-stale-attempt', 1_000, 'worker-delegated-stale');

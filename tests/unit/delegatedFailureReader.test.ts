@@ -149,6 +149,33 @@ describe('DelegatedFailureReader condition matching', () => {
     expect(candidates).toEqual([expect.objectContaining({ runId: RUN_ID, executionAttempt: 2 })]);
   });
 
+  it('falls back to the Ready condition\'s lastTransitionTime when FailurePublication has none', async () => {
+    const { reader } = readerWith([prReviewJob({
+      failurePublication: { lastTransitionTime: undefined as unknown as string },
+      ready: { lastTransitionTime: '2026-09-17T01:02:03.000Z' },
+    })]);
+    const candidates = await reader.listCandidates();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].observedAt).toBe(Date.parse('2026-09-17T01:02:03.000Z'));
+  });
+
+  it('drops a candidate that has no usable observation time on either condition', async () => {
+    const { reader } = readerWith([prReviewJob({
+      failurePublication: { lastTransitionTime: undefined as unknown as string },
+      ready: { lastTransitionTime: 'not-a-date' },
+    })]);
+    await expect(reader.listCandidates()).resolves.toEqual([]);
+  });
+
+  it('falls back to the Ready condition\'s message when the FailurePublication message is empty', async () => {
+    const { reader } = readerWith([prReviewJob({
+      failurePublication: { message: '' },
+      ready: { message: 'worker pod was OOMKilled' },
+    })]);
+    const candidates = await reader.listCandidates();
+    expect(candidates).toEqual([expect.objectContaining({ message: 'worker pod was OOMKilled' })]);
+  });
+
   it('ignores a resource whose execution attempt cannot be resolved at all', async () => {
     const { reader } = readerWith([prReviewJob({ executionAttempt: undefined, runSecretName: 'garbage' })]);
     await expect(reader.listCandidates()).resolves.toEqual([]);
