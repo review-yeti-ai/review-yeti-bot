@@ -3,6 +3,7 @@ import { parseWorkerReviewEvidence, workerReviewEvidenceDigest } from '../../src
 import {
   buildDurableWorkerFailureDiagnostics,
   buildWorkerFailureDiagnostics,
+  classifyWorkerFailureMessage,
   HttpWorkerCompletionAdapter,
   MAX_WORKER_FAILURE_LOG_TAIL_BYTES,
   redactWorkerFailureLogTail,
@@ -473,5 +474,53 @@ describe('WorkerReviewEvidence.v1', () => {
     expect(calls[0].url).toBe('https://dispatch.example.invalid/completion');
     expect(calls[0].auth).toBe('Bearer ghs_test');
     expect(calls[0].body).toEqual(evidence);
+  });
+});
+
+// REL-892: `classifyWorkerFailureMessage` is the single shared message/status-pattern
+// implementation both `classifyFailure` (../cli/publishingReview) and
+// `classifyPersonaAttemptFailure` (../panel/panelEngine) delegate their non-typed-error
+// remainder to, replacing what used to be two independently-drifting regex ladders. Each branch
+// here is exercised directly against the shared function; `publishingReview.test.ts` and
+// `panelFailureClassification.test.ts` separately confirm each call site's typed `instanceof`
+// pre-checks still take priority and that both call sites still agree with this table.
+describe('classifyWorkerFailureMessage', () => {
+  it.each([
+    ['turn budget exhausted', 'budget_exhausted'],
+    ['persona sec-lane exceeded total retry/execution budget of 900s', 'budget_exhausted'],
+    ['request timed out', 'timeout'],
+    ['OpenRouter compatibility response exceeded total deadline of 300000ms', 'timeout'],
+    ['virtual key not found', 'auth'],
+    ['401 unauthorized', 'auth'],
+    ['403 forbidden', 'auth'],
+    ['429 rate limit exceeded', 'rate_limit'],
+    ['upstream rate limit hit', 'rate_limit'],
+    ['ENOTFOUND api.example.invalid', 'transport'],
+    ['ECONNREFUSED', 'transport'],
+    ['EAI_AGAIN', 'transport'],
+    ['fetch failed', 'transport'],
+    ['invalid native JSON response object', 'malformed_output'],
+    ['invalid or missing native JSON nonce', 'malformed_output'],
+    ['native JSON response must be an object', 'malformed_output'],
+    ['invalid findings contract at index 0', 'malformed_output'],
+    ['APPROVE cannot contain findings', 'malformed_output'],
+    ['FINDINGS requires at least one finding', 'malformed_output'],
+    ['nonce-fenced structured output rejected', 'malformed_output'],
+    ['persona sec-lane reported INCOMPLETE without a completed review', 'malformed_output'],
+    ['An optional reviewer did not complete.', 'malformed_output'],
+    ['gateway returned an unexpected payload', 'provider_error'],
+    ['provider request rejected', 'provider_error'],
+    ['model overloaded', 'provider_error'],
+    ['unexpected invariant violation', 'internal_error'],
+  ])('classifies %s as %s', (message, expected) => {
+    expect(classifyWorkerFailureMessage(new Error(message))).toBe(expected);
+  });
+
+  it('classifies a non-Error thrown value by its string form', () => {
+    expect(classifyWorkerFailureMessage('429 rate limit')).toBe('rate_limit');
+  });
+
+  it('defaults to internal_error for a message matching no pattern', () => {
+    expect(classifyWorkerFailureMessage(new Error('something odd happened'))).toBe('internal_error');
   });
 });
