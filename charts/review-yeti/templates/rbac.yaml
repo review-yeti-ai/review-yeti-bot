@@ -46,7 +46,10 @@ metadata:
 rules:
   - apiGroups: ["review-yeti.ai"]
     resources: ["prreviewjobs"]
-    verbs: ["get", "list", "watch", "update", "patch"]
+    # "delete" (REL-896) lets the operator remove a terminal PRReviewJob after
+    # its retention window; Kubernetes garbage collection then cascades to
+    # the worker Job it owns.
+    verbs: ["get", "list", "watch", "update", "patch", "delete"]
   - apiGroups: ["review-yeti.ai"]
     resources: ["prreviewjobs/status"]
     verbs: ["get", "update", "patch"]
@@ -65,6 +68,18 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # REL-896: delete-only. The dispatcher creates each run Secret before its
+  # PRReviewJob exists (so it can never carry an ownerReference), and the
+  # dispatcher's own RBAC stops at get/create on Secrets -- it must never
+  # gain patch, which would let a compromised dispatcher (it already holds
+  # the GitHub App key) overwrite any credential Secret in the namespace.
+  # The operator instead holds a run-Secret cleanup finalizer on the
+  # PRReviewJob and deletes the named Secret when that resource is deleted;
+  # delete-only means this identity can never plant or read a credential.
+  # Do not add get, list, watch, update, or patch here.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

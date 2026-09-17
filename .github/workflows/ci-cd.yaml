@@ -143,6 +143,35 @@ jobs:
       - name: Typecheck (src, tests, scripts)
         run: npm run lint:src
 
+  operator-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    # REL-896. `k8s-operator/` is a Go module with its own controller tests, but no workflow ever
+    # ran them: the only place Go was touched in CI was the `go build` inside Dockerfile.operator,
+    # so a reconciler regression could ship with a fully green PR. This job runs vet and the
+    # operator tests in the SAME digest-pinned Go image Dockerfile.operator builds the shipped
+    # binary with, so CI exercises the toolchain that ships and no separate Go version can drift
+    # (tests/unit/ciOperatorTestEnforcement.test.ts pins both the commands and the image match).
+    # The controller tests use controller-runtime's fake client: no cluster, no envtest binaries.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    container:
+      image: golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+    defaults:
+      run:
+        working-directory: k8s-operator
+    env:
+      GOFLAGS: -buildvcs=false
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Vet the operator module
+        run: go vet ./...
+
+      - name: Test the operator module
+        run: go test -count=1 ./...
+
   legacy-runtime:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest

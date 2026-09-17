@@ -31,10 +31,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
@@ -49,6 +51,16 @@ const (
 	workerCreationReserved           = "WorkerCreationReserved"
 	terminalOutcomeFinalizer         = "review-yeti.ai/terminal-outcome"
 	failurePublicationCondition      = "FailurePublication"
+	// runSecretCleanupFinalizer guards the per-run Secret named by
+	// spec.runSecretName. The TypeScript dispatcher creates that Secret before
+	// this resource exists (so it can never carry an ownerReference back to a
+	// PRReviewJob that isn't admitted yet), and its own RBAC intentionally
+	// stops at get/create on Secrets: a patch verb would let a compromised
+	// dispatcher process (it already holds the GitHub App key) overwrite any
+	// credential Secret in the namespace, not just its own run Secret. A
+	// finalizer plus a delete-only operator identity is the accepted
+	// alternative -- delete cannot be used to plant or read a credential.
+	runSecretCleanupFinalizer = "review-yeti.ai/run-secret-cleanup"
 )
 
 // PRReviewJobV1Alpha2Reconciler is the disabled-by-default receipt-only
@@ -66,14 +78,19 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	// every app-gate review -- deliberately, since this lane fails closed and a
 	// half-configured transport must not reach a running worker.
 	Publishing job.PublishingConfig
+	// Recorder is optional. When set, a Forbidden run-Secret delete surfaces as
+	// a warning Event on the PRReviewJob in addition to the log line; nil is
+	// tolerated so unit tests do not need to wire a fake recorder.
+	Recorder record.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=delete
 func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
 	err := r.getCachedThenLive(ctx, req.NamespacedName, &review)
@@ -82,6 +99,26 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, r.releaseOrphanedWorkerObservation(ctx, req)
 		}
 		return ctrl.Result{}, err
+	}
+
+	// A terminating PRReviewJob (deleted by this controller's own
+	// reconcileTerminalDeletion, or by anything else -- kubectl, a namespace
+	// teardown) must not re-enter the normal admission/execution machinery
+	// below. Route it to the run-Secret cleanup path and return; every other
+	// branch in this function assumes a review that is not being deleted.
+	if review.DeletionTimestamp != nil {
+		return r.reconcileRunSecretDeletion(ctx, &review)
+	}
+	// Attach the cleanup guard as early as possible so no admission window
+	// exists where a review could be deleted (by anyone) before the finalizer
+	// is recorded. This mirrors -- but is independent of -- how the worker Job
+	// below acquires terminalOutcomeFinalizer: added inline, no early return,
+	// because reconcile must still make forward progress in the same pass.
+	if review.Spec.RunSecretName != "" && !controllerutil.ContainsFinalizer(&review, runSecretCleanupFinalizer) {
+		controllerutil.AddFinalizer(&review, runSecretCleanupFinalizer)
+		if err := r.Update(ctx, &review); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if failurePublicationPending(&review) {
@@ -354,6 +391,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileElapsedDeadline(
 		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
 	}
 	r.recordDispatchTiming(review, now)
+	// Expiry has no worker Job to source a timestamp from (or the worker is
+	// intentionally stopped above), unlike the Succeeded/Failed paths in
+	// reconcileExistingJob which already set CompletionTime from the Job's own
+	// terminal timestamp. Setting it here too means reconcileTerminalDeletion
+	// never needs the metadata.creationTimestamp fallback for an Expired
+	// review created after this change.
+	completed := metav1.NewTime(now)
+	review.Status.CompletionTime = &completed
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
 }
 
@@ -431,12 +476,43 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	}
 	r.recordDispatchTiming(review, completed.Time)
 	if worker.Status.Succeeded > 0 {
+		if err := r.patchWorkerSuccessTTL(ctx, worker); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", workerMessage(review, "completed"))
 	}
 	if review.Spec.PublicationMode == job.PublicationModeAppGate {
 		return r.startFailurePublication(ctx, review, "WorkerFailed", workerMessage(review, "failed"))
 	}
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, "WorkerFailed", workerMessage(review, "failed"))
+}
+
+// patchWorkerSuccessTTL lowers a succeeded worker Job's TTL from the fail-safe
+// value job.BuildWorkerJob built it with (job.WorkerFailedTTLSeconds, so a
+// failed Job's Pod and logs would still survive) down to the success TTL
+// (job.WorkerSuccessTTLSeconds, default 0). batch/v1 exposes exactly one
+// ttlSecondsAfterFinished field and the outcome is unknown at build time, so
+// this patch is how a successful run reclaims immediately without changing
+// how long a failed one is kept. ttlSecondsAfterFinished is mutable on an
+// already-finished Job -- the TTL-after-finished controller re-reads it
+// continuously rather than treating it as immutable Job-spec identity like
+// selector/template -- so patching it here, after Succeeded is observed, is
+// safe. It does not race the terminal-outcome finalizer: that finalizer is
+// only removed once the parent review reaches a terminal phase
+// (releaseTerminalWorkerObservation), which runs strictly after this patch on
+// a later reconcile, so a delete triggered by a just-shortened TTL still
+// blocks on the finalizer until this controller is ready to let it go.
+func (r *PRReviewJobV1Alpha2Reconciler) patchWorkerSuccessTTL(ctx context.Context, worker *batchv1.Job) error {
+	successTTL := job.WorkerSuccessTTLSeconds()
+	if worker.Spec.TTLSecondsAfterFinished != nil && *worker.Spec.TTLSecondsAfterFinished == successTTL {
+		return nil
+	}
+	patch := client.MergeFrom(worker.DeepCopy())
+	worker.Spec.TTLSecondsAfterFinished = &successTTL
+	if err := r.Patch(ctx, worker, patch); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 func failurePublicationPending(review *reviewv1alpha2.PRReviewJob) bool {
@@ -852,17 +928,17 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	}
 
 	if review.Spec.RunnerMode != "generic" {
-		return ctrl.Result{}, nil
+		return r.reconcileTerminalDeletion(ctx, review)
 	}
 
 	pvcName := workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
 	if pvcName == "" {
-		return ctrl.Result{}, nil
+		return r.reconcileTerminalDeletion(ctx, review)
 	}
 	var pvc corev1.PersistentVolumeClaim
 	if err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: pvcName}, &pvc); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+			return r.reconcileTerminalDeletion(ctx, review)
 		}
 		return ctrl.Result{}, err
 	}
@@ -896,7 +972,172 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 	}
+	return r.reconcileTerminalDeletion(ctx, review)
+}
+
+// reconcileTerminalDeletion runs only once reconcileTerminalWorkspace has
+// nothing left to reclaim (idle Pod/lease, PVC already gone or reclaimed).
+// It deletes the terminal PRReviewJob after REVIEW_YETI_TERMINAL_RETENTION_SECONDS
+// has elapsed since the review became terminal (job.TerminalRetentionSeconds,
+// default 3600s); this controller owns the worker Job via a controller
+// reference, so ordinary Kubernetes garbage collection cascades the delete to
+// it (and, transitively, to its Pod) without any extra client call here.
+//
+// A pending failure-publication delegation is a deliberate exception. Once
+// reconcileFailurePublication sets FailurePublication to Unknown with reason
+// DelegatedToTrustedService, responsibility for publishing the GitHub check
+// has moved to the dispatcher's abandoned-run reaper
+// (src/review/abandonedRunReaper.ts), which reconciles the check entirely
+// against PostgreSQL and GitHub using its own fresh App token -- it never
+// reads or patches this Kubernetes object. Nothing in this repository ever
+// transitions FailurePublication away from Unknown once it is set, so relying
+// on that condition to resolve before deleting would leak this review (and
+// the run Secret its spec.RunSecretName names, which the reaper may still
+// need to read) forever. REVIEW_YETI_TERMINAL_MAX_RETENTION_SECONDS
+// (job.TerminalMaxRetentionSeconds, default 86400s) is the hard cap: past it,
+// deletion proceeds even though delegation is still outstanding, so this gate
+// can bound but never permanently prevent cleanup.
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalDeletion(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (ctrl.Result, error) {
+	now := r.clock()
+	terminalAt := terminalObservedAt(review)
+	deleteAt := terminalAt.Add(time.Duration(job.TerminalRetentionSeconds()) * time.Second)
+
+	if failurePublicationDelegated(review) {
+		hardCapAt := terminalAt.Add(time.Duration(job.TerminalMaxRetentionSeconds()) * time.Second)
+		if now.Before(hardCapAt) {
+			remaining := hardCapAt.Sub(now)
+			if now.Before(deleteAt) {
+				if untilRetention := deleteAt.Sub(now); untilRetention < remaining {
+					remaining = untilRetention
+				}
+			}
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+		return r.deleteTerminalReview(ctx, review)
+	}
+
+	if now.Before(deleteAt) {
+		return ctrl.Result{RequeueAfter: deleteAt.Sub(now)}, nil
+	}
+	return r.deleteTerminalReview(ctx, review)
+}
+
+// deleteTerminalReview tolerates NotFound: a prior reconcile's Delete call may
+// already have removed the review, and a repeated attempt (retry, requeue
+// race) must not surface that as an error.
+func (r *PRReviewJobV1Alpha2Reconciler) deleteTerminalReview(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (ctrl.Result, error) {
+	if err := r.Delete(ctx, review); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
+}
+
+// reconcileRunSecretDeletion runs once metadata.deletionTimestamp is set on a
+// PRReviewJob, whether that deletion was initiated by deleteTerminalReview
+// above or by anything else (kubectl delete, a namespace teardown, a future
+// operator path). It is the only place in this controller that deletes a
+// Secret, and it only ever does so by the exact name spec.runSecretName
+// declares -- never by label selector or List -- and only when that name
+// matches the run-secret naming contract (job.IsValidRunSecretName, the same
+// check BuildWorkerJob's validateInput already enforces before ever wiring
+// the name into a worker Pod spec). A PRReviewJob admitted before this
+// contract existed, or one an operator build let through with an invalid
+// name, must not cause any Secret deletion; it only loses its finalizer.
+//
+// A real Kubernetes API server keeps this object present-but-terminating
+// (DeletionTimestamp set, finalizers non-empty) until every finalizer is
+// removed, so this function's own Update -- once it removes the finalizer --
+// is what actually lets deletion complete. Delete errors other than NotFound
+// and Forbidden are returned so the object retries and is never orphaned
+// mid-cleanup. Forbidden is a deliberate exception: the deployed Role may not
+// yet grant `delete` on secrets (chart rollout ordering, a stale binding), and
+// a stuck finalizer would wedge this PRReviewJob -- and eventually block
+// namespace deletion -- forever. One leaked short-lived run Secret is judged
+// strictly cheaper than that, so Forbidden is logged and (when a Recorder is
+// configured) surfaced as a warning Event, and cleanup proceeds as if the
+// Secret were already gone.
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileRunSecretDeletion(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(review, runSecretCleanupFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	if job.IsValidRunSecretName(review.Spec.RunSecretName) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: review.Spec.RunSecretName, Namespace: review.Namespace},
+		}
+		switch err := r.Delete(ctx, secret); {
+		case err == nil, apierrors.IsNotFound(err):
+			// Deleted, or a prior reconcile (or the reaper, or an operator) already
+			// removed it -- either way there is nothing left to clean up.
+		case apierrors.IsForbidden(err):
+			log.FromContext(ctx).Error(err, "operator lacks delete permission on the run Secret; removing the cleanup finalizer without deleting it",
+				"secret", review.Spec.RunSecretName, "namespace", review.Namespace, "review", review.Name)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(review, corev1.EventTypeWarning, "RunSecretDeleteForbidden",
+					"operator RBAC does not grant delete on Secret %s; the run-secret cleanup finalizer was removed without deleting it", review.Spec.RunSecretName)
+			}
+		default:
+			return ctrl.Result{}, err
+		}
+	} else {
+		// The TS dispatcher (buildRunSecretName, src/k8s/reviewJobProjection.ts)
+		// and this package's regex (job.IsValidRunSecretName) are two independent
+		// implementations of the same naming contract; ciOperatorTestEnforcement
+		// and the golden fixture in pkg/job/testdata/run_secret_names.json exist
+		// to keep them in lockstep, but a name that predates the contract, or a
+		// future drift neither test catches before rollout, must not disappear
+		// silently -- it means this review's run Secret is never deleted by
+		// anyone. Surface it the same way as the Forbidden branch above (log +
+		// warning Event) instead of leaking it quietly, then still release the
+		// finalizer: a permanently non-terminable PRReviewJob is worse than one
+		// leaked Secret.
+		err := fmt.Errorf("run Secret name %q does not match the run-secret naming contract", review.Spec.RunSecretName)
+		log.FromContext(ctx).Error(err, "run Secret name failed the naming contract; removing the cleanup finalizer without deleting it",
+			"secret", review.Spec.RunSecretName, "namespace", review.Namespace, "review", review.Name)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(review, corev1.EventTypeWarning, "RunSecretNameInvalid",
+				"spec.runSecretName %q does not match the run-secret naming contract; the run-secret cleanup finalizer was removed without deleting a Secret", review.Spec.RunSecretName)
+		}
+	}
+	controllerutil.RemoveFinalizer(review, runSecretCleanupFinalizer)
+	if err := r.Update(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// failurePublicationDelegated reports whether responsibility for this
+// review's fail-closed GitHub check has been handed to the dispatcher's
+// trusted reaper. failurePublicationPending (checked earlier in Reconcile)
+// only recognizes the ConditionFalse "not yet delegated" state and routes
+// those reviews into reconcileFailurePublication instead of here; by the time
+// a review reaches reconcileTerminalDeletion, this condition -- if present at
+// all -- can only be ConditionUnknown (see reconcileFailurePublication, the
+// only writer that ever sets it after creation, and the DelegatedToTrusted
+// Service comment on why it never resolves further).
+func failurePublicationDelegated(review *reviewv1alpha2.PRReviewJob) bool {
+	condition := meta.FindStatusCondition(review.Status.Conditions, failurePublicationCondition)
+	return condition != nil && condition.Status == metav1.ConditionUnknown
+}
+
+// terminalObservedAt is the time retention windows are measured from. The
+// Succeeded/Failed paths in reconcileExistingJob and the Expired path in
+// reconcileElapsedDeadline all set status.completionTime, so this is the
+// normal case; metadata.creationTimestamp is the fallback for a terminal
+// resource that somehow never got one (a legacy object persisted by an
+// operator build older than this change, or one of the narrow
+// startFailurePublication call sites that fail closed before any worker
+// terminal timestamp is observable).
+func terminalObservedAt(review *reviewv1alpha2.PRReviewJob) time.Time {
+	if review.Status.CompletionTime != nil && !review.Status.CompletionTime.Time.IsZero() {
+		return review.Status.CompletionTime.Time
+	}
+	return review.CreationTimestamp.Time
 }
 
 // releaseTerminalWorkerObservation runs only after the parent CR already has a

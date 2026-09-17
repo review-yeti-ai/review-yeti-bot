@@ -93,6 +93,7 @@ func runOperator() error {
 		Scheme:            mgr.GetScheme(),
 		MaxConcurrentJobs: maxConcurrentJobs,
 		Publishing:        publishingConfigFromEnv(),
+		Recorder:          mgr.GetEventRecorderFor("ct-review-yeti-operator"),
 	}
 	if err := v1alpha2.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup v1alpha2 reconciler: %w", err)

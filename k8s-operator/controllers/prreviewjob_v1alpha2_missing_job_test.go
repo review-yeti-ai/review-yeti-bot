@@ -496,6 +496,21 @@ func TestDeletedReviewDoesNotStrandWorkerObservationFinalizer(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The review now also carries the REL-896 run-secret cleanup finalizer
+	// (added on the very first reconcile inside missingJobFixture, since the
+	// fixture's review has a valid spec.runSecretName), so this external
+	// Delete only sets metadata.deletionTimestamp -- it does not remove the
+	// review outright. The next reconcile clears that finalizer (there is no
+	// run Secret object in this fixture, so the delete is a tolerated
+	// NotFound) and, in doing so, lets the review actually disappear; only
+	// the reconcile after that observes the NotFound and releases the
+	// worker's observation finalizer via releaseOrphanedWorkerObservation.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(ctx, req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("review must be fully deleted once its run-secret cleanup finalizer clears, got err=%v", err)
+	}
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
@@ -918,8 +933,12 @@ func TestMissingWorkerJobNeverReplaysAnAdmittedExecution(t *testing.T) {
 					t.Fatal(err)
 				}
 				worker := storedWorker(t, kube, req)
-				if worker.Spec.TTLSecondsAfterFinished == nil || *worker.Spec.TTLSecondsAfterFinished != 0 {
-					t.Fatal("expected immediate-GC fixture")
+				// REL-896: workers are built with the fail-safe (failed) TTL by
+				// default; this fixture simulates GC racing ahead of the
+				// controller's own observation regardless of the exact TTL value,
+				// via the explicit deleteLegacyWorker call below.
+				if worker.Spec.TTLSecondsAfterFinished == nil || *worker.Spec.TTLSecondsAfterFinished != job.DefaultWorkerFailedTTLAfterFinished {
+					t.Fatal("expected fail-safe TTL fixture")
 				}
 				completed := r.Now().Add(time.Minute)
 				r.Now = func() time.Time { return completed }
