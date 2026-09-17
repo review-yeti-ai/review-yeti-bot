@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.7...v1.72.8) (2026-09-17)
+
+
+### Bug Fixes
+
+* **REL-896:** operator owns PRReviewJob and run-Secret cleanup natively; CI runs the operator tests ([#828](https://github.com/review-yeti-ai/review-yeti-bot/issues/828)) ([21b734d](https://github.com/review-yeti-ai/review-yeti-bot/commit/21b734ddd3c264a5439bb63e68209dbe307ce8f6))
+
 ## [1.72.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.6...v1.72.7) (2026-09-17)
 
 
