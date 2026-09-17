@@ -1,6 +1,10 @@
 import { ProviderId } from '../config/schema';
 import { OpenRouterRequest, TokensUsed } from '../gateway/openRouterClient';
 import { RepositoryVisibility } from '../review/repositoryVisibility';
+// Imported from the neutral `../types/workerFailure` module, not `../review/workerCompletion`
+// (REL-892 finding 3): a panel domain type must not reach into the worker-completion/HTTP
+// boundary module for a plain value type. See `../types/workerFailure` for the full rationale.
+import type { WorkerFailureClass } from '../types/workerFailure';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -24,6 +28,18 @@ export interface PanelFinding {
   recommendation?: string;
   fixOptions?: FixOption[];
   isArchitectural?: boolean;
+}
+
+/**
+ * Bounded, structured token usage carried alongside a failed lane. This is
+ * strictly numeric -- no provider prompt/response text -- so it is safe to
+ * publish on a fail-closed check even though the lane's free-form error
+ * string is not.
+ */
+export interface LaneTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 }
 
 export interface PersonaLaneResult {
@@ -51,7 +67,24 @@ export interface PanelResult {
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];
-  optionalFailures: Array<{ id: string; error: string }>;
+  optionalFailures: Array<{
+    id: string;
+    error: string;
+    /** Last observed token usage and resolved model for this lane before it failed closed, when
+     * a provider response was received on at least one attempt. Never populated from an attempt
+     * that never reached the provider (e.g. a local/transport error before any response). */
+    lastKnownUsage?: LaneTokenUsage;
+    lastKnownModel?: string;
+    /**
+     * Coded classification of why this lane failed, assigned by `runPersona` at the exact point
+     * it observed the terminal error for the lane -- authoritative over any later re-derivation
+     * from the free-form `error` string (REL-892 finding 2). Optional so a lane that failed
+     * before this classification existed in the code path still degrades safely; a consumer must
+     * fall back to `classifyFailure(error)` when this is undefined, never treat its absence as a
+     * class of its own.
+     */
+    failureClass?: WorkerFailureClass;
+  }>;
   /** Final path/config/classifier-selected roster used by the panel execution. */
   applicablePersonaIds?: string[];
   zeroLaneNonEvidence?: boolean;
