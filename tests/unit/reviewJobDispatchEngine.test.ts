@@ -6,6 +6,7 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { logger } from '../../src/utils/logger';
 import { getMetrics } from '../../src/telemetry/metrics';
+import { KubernetesRunSecretProvisioner } from '../../src/k8s/kubernetesRunSecretProvisioner';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const now = receivedAt + 60_000;
@@ -377,6 +378,45 @@ describe('ReviewJobDispatchEngine run Secret ownerReference attach (REL-896)', (
   }
 
   afterEach(() => { vi.restoreAllMocks(); });
+
+  it('attaches through the REAL provisioner class: the method keeps its `this` binding (no detached call)', async () => {
+    // Every other test here uses a plain vi.fn() for attachOwnerReference, which
+    // has no `this`. The production provisioner is a class whose method reads
+    // this.options.client; calling it detached throws, the fail-soft catch
+    // swallows it, and the Secret is never owned. Wire the real class in.
+    const client = {
+      createNamespacedSecret: vi.fn(),
+      readNamespacedSecret: vi.fn(async () => ({ metadata: { name: `ct-review-run-${'1'.repeat(32)}` } })),
+      patchNamespacedSecret: vi.fn(async () => ({})),
+    };
+    const real = new KubernetesRunSecretProvisioner({ client: client as never, appId: '123', privateKey: 'key' });
+    vi.spyOn(real, 'provision').mockResolvedValue({ workerTokenDigest: 'f'.repeat(64) } as never);
+    const repository = {
+      claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })),
+      markProjected: vi.fn(async () => true),
+      bindWorkerTokenDigest: vi.fn(async () => true),
+      releaseForRetry: vi.fn(async () => true),
+      markTerminal: vi.fn(async () => true),
+    };
+    const engine = new ReviewJobDispatchEngine({
+      repository: repository as never,
+      projector: { ensure: vi.fn(async () => ({ uid: 'uid-real-1' })) } as never,
+      runSecretProvisioner: real,
+      workerId: 'dispatcher-a',
+      workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
+      namespace: 'ct-review-qualification',
+      now: () => now,
+      leaseMs: 30_000,
+      retryDelayMs: 5_000,
+    });
+    await expect(engine.runOnce()).resolves.toEqual(expect.objectContaining({ status: 'projected' }));
+    expect(client.patchNamespacedSecret).toHaveBeenCalledTimes(1);
+    const patch = (client.patchNamespacedSecret.mock.calls as unknown as Array<[{ body: { metadata: { ownerReferences: Array<Record<string, unknown>> } } }]>)[0][0];
+    expect(patch.body.metadata.ownerReferences).toEqual([expect.objectContaining({ kind: 'PRReviewJob', uid: 'uid-real-1', controller: false })]);
+    // Metadata only: the patch must never carry Secret payload keys.
+    expect(Object.keys(patch.body)).toEqual(['metadata']);
+    expect(Object.keys(patch.body.metadata)).toEqual(['ownerReferences']);
+  });
 
   it("attaches the PRReviewJob ownerReference to the run Secret using ensure()'s uid", async () => {
     const { engine, projector, repository, runSecretProvisioner } = appGateFixture();

@@ -244,10 +244,13 @@ export class ReviewJobDispatchEngine {
     // the deployed dispatcher Role may not yet grant `patch` on secrets.
     if (projection.spec.publicationMode === 'app-gate') {
       const uid = ensured && typeof ensured === 'object' ? ensured.uid : undefined;
-      const attach = this.options.runSecretProvisioner?.attachOwnerReference;
-      if (attach && typeof uid === 'string' && uid) {
+      // Call through the provisioner object: attachOwnerReference is a class
+      // method that reads `this`, so a detached reference would throw and the
+      // fail-soft catch below would hide it forever.
+      const provisioner = this.options.runSecretProvisioner;
+      if (provisioner?.attachOwnerReference && typeof uid === 'string' && uid) {
         try {
-          await attach({
+          await provisioner.attachOwnerReference({
             runId: claim.runId,
             secretName: projection.spec.runSecretName,
             namespace: this.options.namespace,
