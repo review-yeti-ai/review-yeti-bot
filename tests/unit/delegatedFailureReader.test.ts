@@ -421,3 +421,63 @@ describe('DelegatedFailureReader server-side pagination (REL-896)', () => {
     expect(listNamespacedCustomObject).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('DelegatedFailureReader remaining input and lifecycle branches (REL-896)', () => {
+  it.each([
+    ['status has no conditions', { status: { phase: 'Failed' } }],
+    ['conditions is not an array', { status: { phase: 'Failed', conditions: { type: 'FailurePublication' } } }],
+    ['status is missing entirely', { status: undefined }],
+  ])('ignores a resource when %s', async (_label, patch) => {
+    const { reader } = readerWith([{ ...prReviewJob({}), ...patch }]);
+    await expect(reader.listCandidates()).resolves.toEqual([]);
+  });
+
+  it.each([
+    ['a number', 12345],
+    ['missing', undefined],
+    ['not the run_<32 hex> shape', 'run_NOT-HEX'],
+  ])('ignores a resource whose spec.runId is %s', async (_label, runId) => {
+    const { reader } = readerWith([prReviewJob({ runId })]);
+    await expect(reader.listCandidates()).resolves.toEqual([]);
+  });
+
+  it('yields an empty message when neither condition carries one', async () => {
+    const { reader } = readerWith([prReviewJob({
+      failurePublication: { message: undefined as unknown as string },
+      ready: { message: undefined as unknown as string },
+    })]);
+    const candidates = await reader.listCandidates();
+    expect(candidates).toEqual([expect.objectContaining({ runId: RUN_ID, message: '' })]);
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -5],
+    ['fractional', 2.5],
+    ['NaN', Number.NaN],
+  ])('falls back to the default candidate cap when maxCandidates is %s, never to a cap that disables the signal', async (_label, maxCandidates) => {
+    const many = Array.from({ length: DEFAULT_MAX_DELEGATED_FAILURE_CANDIDATES + 10 }, (_unused, index) =>
+      prReviewJob({ runId: `run_${index.toString(16).padStart(32, '0')}` }));
+    const { reader } = readerWith(many, { maxCandidates });
+    const candidates = await reader.listCandidates();
+    expect(candidates).toHaveLength(DEFAULT_MAX_DELEGATED_FAILURE_CANDIDATES);
+  });
+
+  it('warns once per failed poll and again on the next poll, never more than once per interval', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    let clock = 1_000_000;
+    const listNamespacedCustomObject = vi.fn(async () => { throw Object.assign(new Error('Forbidden'), { statusCode: 403 }); });
+    const reader = new DelegatedFailureReader({
+      client: { listNamespacedCustomObject }, namespace: 'ct-review-system', now: () => clock, pollIntervalMs: 15_000,
+    });
+    await reader.listCandidates();
+    await reader.listCandidates(); // inside the interval: served from cache, no list, no warning
+    expect(listNamespacedCustomObject).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    clock += 15_000;
+    await reader.listCandidates();
+    expect(listNamespacedCustomObject).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+});

@@ -211,7 +211,6 @@ export class DelegatedFailureReader {
   private readonly maxCandidates: number;
   private readonly now: () => number;
   private lastListedAt = -Infinity;
-  private lastWarnAt = -Infinity;
   private cached: DelegatedFailureCandidate[] = [];
 
   constructor(options: DelegatedFailureReaderOptions) {
@@ -248,30 +247,30 @@ export class DelegatedFailureReader {
         cursor = continueToken(response);
         if (!cursor) break;
         if (page >= MAX_DELEGATED_FAILURE_LIST_PAGES) {
-          this.warnPageCapExceeded(now, page);
+          this.warnPageCapExceeded(page);
           break;
         }
       }
       this.cached = candidates;
     } catch (error) {
       this.cached = [];
-      this.warnRateLimited(error, now);
+      this.warnListFailed(error);
     }
     return this.cached;
   }
 
-  private warnPageCapExceeded(now: number, pages: number): void {
-    if (now - this.lastWarnAt < this.pollIntervalMs) return;
-    this.lastWarnAt = now;
+  // Both warnings below are rate-limited by construction: listCandidates() serves
+  // the cache until a full poll interval has passed, so at most one list attempt,
+  // and therefore at most one warning, happens per interval. A second guard here
+  // would be unreachable.
+  private warnPageCapExceeded(pages: number): void {
     logger.warn(
       'Delegated PRReviewJob failure signal list exceeded the page cap; using the candidates paged in so far',
       { pages },
     );
   }
 
-  private warnRateLimited(error: unknown, now: number): void {
-    if (now - this.lastWarnAt < this.pollIntervalMs) return;
-    this.lastWarnAt = now;
+  private warnListFailed(error: unknown): void {
     const status = kubernetesStatusCode(error);
     logger.warn('Failed to list delegated PRReviewJob failure signals; deadline-based reaping is unaffected', {
       ...(status === undefined ? {} : { status }),
