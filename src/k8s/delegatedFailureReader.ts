@@ -147,8 +147,13 @@ function extractCandidate(item: unknown): DelegatedFailureCandidate | undefined 
 }
 
 function extractCandidates(response: unknown, maxCandidates: number): DelegatedFailureCandidate[] {
-  const items = record(response)?.items;
-  if (!Array.isArray(items)) return [];
+  // The 1.x Kubernetes client returns the list object itself; older clients
+  // and some adapters wrap it in `{ body }`. Accept both. Anything else is NOT
+  // an empty list: throw so the caller's fail-soft path logs it, because a
+  // silently empty result here would disable the signal without a trace.
+  const top = record(response);
+  const items = Array.isArray(top?.items) ? top!.items : record(top?.body)?.items;
+  if (!Array.isArray(items)) throw new Error('unexpected PRReviewJob list response shape');
   const candidates: DelegatedFailureCandidate[] = [];
   for (const item of items) {
     if (candidates.length >= maxCandidates) break;

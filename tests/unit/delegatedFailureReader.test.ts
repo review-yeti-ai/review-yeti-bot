@@ -221,3 +221,26 @@ describe('DelegatedFailureReader construction', () => {
     })).toThrow('namespace is required');
   });
 });
+
+describe('DelegatedFailureReader list response shape (REL-896)', () => {
+  it('accepts a list wrapped in { body } as well as the bare list object', async () => {
+    const listNamespacedCustomObject = vi.fn(async () => ({ body: { items: [prReviewJob({})] } }));
+    const reader = new DelegatedFailureReader({ client: { listNamespacedCustomObject }, namespace: 'ct-review-system' });
+    const candidates = await reader.listCandidates();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ runId: RUN_ID });
+  });
+
+  it.each([
+    ['a non-object', 'nope'],
+    ['an object without items', { kind: 'Status', code: 200 }],
+    ['items that is not an array', { items: { 0: 'x' } }],
+  ])('treats %s as a failure to log, never as a silently empty list', async (_label, response) => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const listNamespacedCustomObject = vi.fn(async () => response);
+    const reader = new DelegatedFailureReader({ client: { listNamespacedCustomObject }, namespace: 'ct-review-system' });
+    await expect(reader.listCandidates()).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});
