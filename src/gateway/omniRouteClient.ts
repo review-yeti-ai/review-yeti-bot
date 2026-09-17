@@ -1,5 +1,6 @@
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { logger } from '../utils/logger';
+import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 
 export class GatewayConnectionError extends Error {
   constructor(message: string) {
@@ -292,7 +293,7 @@ export class OmniRouteClient {
       if (networkErr.message?.startsWith('OmniRoute HTTP')) {
         throw networkErr;
       }
-      logger.error('OmniRoute network failure or timeout', { error: networkErr.message, model: request.model });
+      logger.error('OmniRoute network failure or timeout', { error: redactWorkerFailureLogTail(networkErr.message), model: request.model });
       throw new OmniRouteConnectionError(`OmniRoute connection failure for model ${request.model}: ${networkErr.message}`);
     }
 
