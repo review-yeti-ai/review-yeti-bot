@@ -114,10 +114,37 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	// is recorded. This mirrors -- but is independent of -- how the worker Job
 	// below acquires terminalOutcomeFinalizer: added inline, no early return,
 	// because reconcile must still make forward progress in the same pass.
+	//
+	// This must be a metadata-only merge patch (client.MergeFrom), never a
+	// full Update: the CRD enforces `self == oldSelf` on spec, and a full
+	// Update round-trips the stored spec through the current Go types, which
+	// can change its serialized shape (fields without omitempty gain zero
+	// values, unknown fields are dropped) even when nothing in spec logically
+	// changed. That exact round-trip drift made a full Update here fail in
+	// production against a legacy-shaped resource with "PRReviewJob spec is
+	// immutable". A MergeFrom patch body is the JSON diff between the pre-
+	// and post-mutation object; since only metadata.finalizers changed here,
+	// spec is entirely absent from the diff and the API server never
+	// evaluates the immutability rule against it.
 	if review.Spec.RunSecretName != "" && !controllerutil.ContainsFinalizer(&review, runSecretCleanupFinalizer) {
+		base := review.DeepCopy()
 		controllerutil.AddFinalizer(&review, runSecretCleanupFinalizer)
-		if err := r.Update(ctx, &review); err != nil {
-			return ctrl.Result{}, err
+		if err := r.Patch(ctx, &review, client.MergeFrom(base)); err != nil {
+			// A failure to attach this guard must not block the review: the
+			// run Secret it protects only leaks until the out-of-band
+			// retention sweep reclaims it (bounded), whereas returning an
+			// error here would stall admission -- and the worker Job with it
+			// -- indefinitely. Undo the in-memory mutation so the rest of
+			// this reconcile observes the finalizer state that actually
+			// persisted, log it, emit a warning Event when a recorder is
+			// wired, and keep reconciling.
+			controllerutil.RemoveFinalizer(&review, runSecretCleanupFinalizer)
+			log.FromContext(ctx).Error(err, "failed to attach run-secret cleanup finalizer; continuing reconciliation without it",
+				"review", review.Name, "namespace", review.Namespace)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(&review, corev1.EventTypeWarning, "RunSecretFinalizerAttachFailed",
+					"failed to attach the run-secret cleanup finalizer; the run Secret will not be cleaned up by this controller unless a later reconcile succeeds: %v", err)
+			}
 		}
 	}
 
@@ -1104,8 +1131,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileRunSecretDeletion(
 				"spec.runSecretName %q does not match the run-secret naming contract; the run-secret cleanup finalizer was removed without deleting a Secret", review.Spec.RunSecretName)
 		}
 	}
+	// Metadata-only merge patch, not a full Update -- see the matching
+	// comment where this finalizer is added in Reconcile for why a full
+	// Update on this resource can fail closed against the CRD's spec
+	// immutability rule even when the request never intended to touch spec.
+	base := review.DeepCopy()
 	controllerutil.RemoveFinalizer(review, runSecretCleanupFinalizer)
-	if err := r.Update(ctx, review); err != nil {
+	if err := r.Patch(ctx, review, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
