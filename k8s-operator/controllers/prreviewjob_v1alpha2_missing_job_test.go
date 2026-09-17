@@ -841,6 +841,64 @@ func TestRetryingWorkerJobWithAFailedPodIsStillStoppedDuringFailureDelegation(t 
 	}
 }
 
+// The Job controller sets its terminal condition a moment after the failed-Pod
+// counter, so a reconcile can see the counter alone. That counter proves the
+// Job is finished only when it cannot retry: pin both sides of that rule.
+func TestFailedPodCounterAloneFinishesAWorkerJobOnlyWhenItCannotRetry(t *testing.T) {
+	retries := int32(3)
+	for _, test := range []struct {
+		name         string
+		backoffLimit func(current *int32) *int32
+		wantRetained bool
+	}{
+		{name: "backoffLimit 0 as the operator builds it", backoffLimit: func(current *int32) *int32 { return current }, wantRetained: true},
+		{name: "backoffLimit altered to allow retries", backoffLimit: func(*int32) *int32 { return &retries }, wantRetained: false},
+		{name: "backoffLimit removed", backoffLimit: func(*int32) *int32 { return nil }, wantRetained: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			worker := storedWorker(t, kube, req)
+			if worker.Spec.BackoffLimit == nil || *worker.Spec.BackoffLimit != 0 {
+				t.Fatalf("fixture worker backoffLimit = %v, want the operator's 0", worker.Spec.BackoffLimit)
+			}
+			worker.Spec.BackoffLimit = test.backoffLimit(worker.Spec.BackoffLimit)
+			if err := kube.Update(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+			worker = storedWorker(t, kube, req)
+			// No JobFailed condition yet, and nothing active.
+			worker.Status.Failed = 1
+			if err := kube.Status().Update(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+			review := storedReview(t, kube, req)
+			review.Status.Phase = reviewv1alpha2.PhaseFailed
+			meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+				Type: "Ready", Status: metav1.ConditionTrue, Reason: "WorkerFailed",
+				ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+			})
+			meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+				Type: "FailurePublication", Status: metav1.ConditionFalse, Reason: "WorkerFailed",
+				ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+			})
+			if err := kube.Status().Update(ctx, review); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatal(err)
+			}
+			if retained := storedWorker(t, kube, req).DeletionTimestamp == nil; retained != test.wantRetained {
+				t.Fatalf("worker Job retained = %v, want %v", retained, test.wantRetained)
+			}
+		})
+	}
+}
+
 func TestMissingAppGateWorkerDelegatesFailureWithoutReplayingOrPublishing(t *testing.T) {
 	ctx := context.Background()
 	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})

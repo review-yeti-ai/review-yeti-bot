@@ -658,6 +658,47 @@ func TestPRReviewJobV1Alpha2ReconcilerDelegatesAppGateWorkerContractRejection(t 
 	}
 }
 
+// An invalid projection window is rejected before anything is built, the same
+// class as a rejected worker contract: an app-gate review must be delegated so
+// the pull request gets a failed check promptly rather than at its deadline.
+func TestPRReviewJobV1Alpha2ReconcilerDelegatesAppGateInvalidProjection(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.UID = types.UID("app-gate-invalid-projection")
+	review.Spec.PublicationMode = "app-gate"
+	review.Spec.TerminalDeadline = metav1.NewTime(now.Add(time.Duration(job.MaxTerminalDeadlineSeconds)*time.Second + time.Second))
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
+	for attempt := 0; attempt < 5; attempt++ {
+		if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("reconcile %d: %v", attempt, err)
+		}
+		if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("reconcile %d: no worker Job should exist for an invalid projection, got err=%v", attempt, err)
+		}
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed", updated.Status.Phase)
+	}
+	ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "InvalidProjection" {
+		t.Fatalf("Ready condition = %#v, want reason InvalidProjection", ready)
+	}
+	publication := meta.FindStatusCondition(updated.Status.Conditions, "FailurePublication")
+	if publication == nil || publication.Status != metav1.ConditionUnknown || publication.Reason != "DelegatedToTrustedService" {
+		t.Fatalf("FailurePublication condition = %#v, want Unknown/DelegatedToTrustedService", publication)
+	}
+}
+
 func TestPRReviewJobV1Alpha2ReconcilerExpiresBeforeCreatingResources(t *testing.T) {
 	received := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	now := received.Add(15 * time.Minute)
