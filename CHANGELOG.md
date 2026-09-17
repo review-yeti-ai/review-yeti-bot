@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.72.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.6...v1.72.7) (2026-09-17)
+
+
+### Bug Fixes
+
+* **review:** restore structured failure telemetry on recoverable panel failures ([#821](https://github.com/review-yeti-ai/review-yeti-bot/issues/821)) ([2aa73e8](https://github.com/review-yeti-ai/review-yeti-bot/commit/2aa73e827e6417874c1eda551b9dc71aacb21f53))
+
+## [1.72.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.5...v1.72.6) (2026-09-17)
+
+
+### Bug Fixes
+
+* **REL-896:** terminalize in-flight review runs when a pull request closes ([#827](https://github.com/review-yeti-ai/review-yeti-bot/issues/827)) ([4fa0d2b](https://github.com/review-yeti-ai/review-yeti-bot/commit/4fa0d2b29752faa76a78b7ea02c0699fa7921650))
+
 ## [1.72.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.4...v1.72.5) (2026-09-17)
 
 
