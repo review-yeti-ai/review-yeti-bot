@@ -792,21 +792,24 @@ func observeTiming(review *reviewv1alpha2.PRReviewJob, stage reviewv1alpha2.Disp
 	return review.Status.Timing.Observe(stage, at)
 }
 
-// workerJobFinished reports whether a Job has already reached a terminal
-// outcome (including BackoffLimitExceeded), as opposed to merely being
-// unobserved-active. Mirrors the two signals terminalWorkerTime already
-// trusts -- the status counters and the JobComplete/JobFailed condition --
-// so a finished Job is never mistaken for one still worth stopping.
+// workerJobFinished reports whether a Job has reached a terminal outcome and
+// therefore has nothing left running to stop. This path also handles a
+// WorkerContractMismatch, where the child's spec cannot be trusted, so the
+// failed-Pod counter alone proves nothing: it counts Pods, and a Job that was
+// altered to allow retries can have a failed Pod while another attempt is
+// running or about to start. Only the Job controller's own terminal condition
+// is accepted outright; the counter is accepted only when no Pod is active and
+// the Job cannot retry (backoffLimit 0, the only value this operator creates).
 func workerJobFinished(worker *batchv1.Job) bool {
-	if worker.Status.Succeeded > 0 || worker.Status.Failed > 0 {
-		return true
-	}
 	for _, condition := range worker.Status.Conditions {
 		if (condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) && condition.Status == corev1.ConditionTrue {
 			return true
 		}
 	}
-	return false
+	if worker.Status.Active > 0 || worker.Status.Failed == 0 {
+		return false
+	}
+	return worker.Spec.BackoffLimit != nil && *worker.Spec.BackoffLimit == 0
 }
 
 func terminalWorkerTime(worker *batchv1.Job, fallback time.Time) metav1.Time {

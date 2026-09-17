@@ -47,10 +47,13 @@ export const DELEGATED_FAILURE_LIST_PAGE_SIZE = 100;
 export const MAX_DELEGATED_FAILURE_LIST_PAGES = 10;
 
 /** Maps the Go operator's `Ready` condition `Reason` (see
- * `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` lines 218,
+ * `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` lines 166, 218,
  * 313, 441, 544) to the bounded diagnostic reason this service persists.
- * `WorkerContractMismatch` (line 1305), `InvalidProjection` (line 166), and
- * any other future reason are deliberately left unmapped: an unrecognized
+ * `InvalidProjection` (line 166) is the same class as `WorkerContractRejected`:
+ * the operator refused the projection before any worker existed, so it shares
+ * that bounded reason rather than leaving the pull request without a check
+ * until the terminal deadline. `WorkerContractMismatch` (line 1347) and any
+ * other future reason are deliberately left unmapped: an unrecognized
  * reason is not surfaced as a candidate, so an unknown operator
  * classification degrades to the existing deadline-based reaper path rather
  * than being guessed at.
@@ -60,6 +63,7 @@ const READY_REASON_TO_DELEGATED_FAILURE_REASON: Readonly<Record<string, Delegate
   DeadlineExpired: 'worker_deadline_exceeded',
   WorkerJobMissing: 'worker_job_missing',
   WorkerContractRejected: 'worker_contract_rejected',
+  InvalidProjection: 'worker_contract_rejected',
 };
 
 export interface DelegatedFailureCandidate {

@@ -798,6 +798,49 @@ func TestActiveWorkerJobIsStillStoppedDuringFailureDelegation(t *testing.T) {
 	}
 }
 
+func TestRetryingWorkerJobWithAFailedPodIsStillStoppedDuringFailureDelegation(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	// A failed Pod is not a finished Job. This child was altered to allow
+	// retries (the contract-mismatch shape), so one attempt has failed while
+	// another is still running; it must be stopped, not retained.
+	retries := int32(3)
+	worker := storedWorker(t, kube, req)
+	worker.Spec.BackoffLimit = &retries
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	worker = storedWorker(t, kube, req)
+	worker.Status.Failed = 1
+	worker.Status.Active = 1
+	if err := kube.Status().Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "WorkerContractMismatch",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: "FailurePublication", Status: metav1.ConditionFalse, Reason: "WorkerContractMismatch",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	if err := kube.Status().Update(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if stopped := storedWorker(t, kube, req); stopped.DeletionTimestamp == nil {
+		t.Fatal("a retrying worker Job with one failed Pod was retained instead of stopped")
+	}
+}
+
 func TestMissingAppGateWorkerDelegatesFailureWithoutReplayingOrPublishing(t *testing.T) {
 	ctx := context.Background()
 	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
@@ -1409,4 +1452,3 @@ func TestAppGatePublicationWorkerStatusMessages(t *testing.T) {
 		t.Fatalf("expected 'app-gate publishing worker Job completed', got: %#v", ready)
 	}
 }
-
