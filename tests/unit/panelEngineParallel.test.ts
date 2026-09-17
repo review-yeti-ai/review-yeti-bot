@@ -1,6 +1,6 @@
 import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, vi } from 'vitest';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { ReviewModelClient, OpenRouterResponse } from '../../src/gateway/openRouterClient';
@@ -71,7 +71,7 @@ describe('Panel Engine Parallel Execution', () => {
         activeConcurrentCalls--;
         const match = request.messages[0].content.match(/CT_REVIEW_BEGIN:([^\s\n]+)/);
         const nonce = match ? match[1] : 'nonce123';
-        const isArbiter = request.messages[0].content.includes('Role: ARBITER') || request.messages[1]?.content?.includes('Role: ARBITER');
+        const isArbiter = request.messages[0].content.includes('Role: ARBITER') || extractMessageContentText(request.messages[1]?.content).includes('Role: ARBITER');
         const jsonBody = isArbiter
           ? '{"verdict":"SHIP","rationale":"clean"}'
           : '{"decision":"APPROVE","findings":[],"rationale":"clean"}';
@@ -121,7 +121,7 @@ describe('Panel Engine Parallel Execution', () => {
 
         const match = request.messages[0].content.match(/CT_REVIEW_BEGIN:([^\s\n]+)/);
         const nonce = match ? match[1] : 'nonce123';
-        const isArbiter = request.messages[0].content.includes('Role: ARBITER') || request.messages[1]?.content?.includes('Role: ARBITER');
+        const isArbiter = request.messages[0].content.includes('Role: ARBITER') || extractMessageContentText(request.messages[1]?.content).includes('Role: ARBITER');
         const jsonBody = isArbiter
           ? '{"verdict":"SHIP","rationale":"clean"}'
           : '{"decision":"APPROVE","findings":[],"rationale":"clean"}';

@@ -62,7 +62,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
 
       // Mock completion for LLM calls during panel execution
       vi.spyOn(mockClient, 'complete').mockImplementation(async (opts: OmniRouteRequest): Promise<OmniRouteResponse> => {
-        const prompt = opts.messages?.[1]?.content || '';
+        const prompt = extractMessageContentText(opts.messages?.[1]?.content || '');
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([^\s]+)/);
         const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
         const allMsg = JSON.stringify(opts.messages);

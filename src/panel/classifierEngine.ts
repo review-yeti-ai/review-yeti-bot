@@ -5,11 +5,59 @@ import { PanelRequestPolicy } from './types';
 import { logger } from '../utils/logger';
 import { getMetrics } from '../telemetry';
 
+export type DomainLane =
+  | 'security_auth'
+  | 'data_persistence'
+  | 'api_contracts'
+  | 'system_runtime'
+  | 'ui_frontend'
+  | 'docs_assets';
+
+export const DOMAIN_LANES: readonly DomainLane[] = [
+  'security_auth',
+  'data_persistence',
+  'api_contracts',
+  'system_runtime',
+  'ui_frontend',
+  'docs_assets',
+] as const;
+
+export const PERSONA_DOMAIN_AFFINITY: Record<string, DomainLane[]> = {
+  'sec-lane': ['security_auth'],
+  'security': ['security_auth'],
+  'policy-lane': ['security_auth', 'system_runtime'],
+  'db-lane': ['data_persistence'],
+  'database': ['data_persistence'],
+  'contract-lane': ['api_contracts'],
+  'contract': ['api_contracts'],
+  'devops-lane': ['system_runtime'],
+  'devops': ['system_runtime'],
+  'arch-lane': ['system_runtime', 'api_contracts', 'data_persistence'],
+  'architecture': ['system_runtime', 'api_contracts', 'data_persistence'],
+  'correctness-lane': ['api_contracts', 'data_persistence', 'system_runtime', 'ui_frontend'],
+  'correctness': ['api_contracts', 'data_persistence', 'system_runtime', 'ui_frontend'],
+  'perf-lane': ['system_runtime', 'data_persistence'],
+  'performance': ['system_runtime', 'data_persistence'],
+  'qual-lane': ['ui_frontend', 'docs_assets', 'api_contracts'],
+  'finops-lane': ['system_runtime'],
+};
+
+export const DOMAIN_LANE_PERSONA_AFFINITY: Record<DomainLane, string[]> = DOMAIN_LANES.reduce(
+  (acc, lane) => {
+    acc[lane] = Object.entries(PERSONA_DOMAIN_AFFINITY)
+      .filter(([_, lanes]) => lanes.includes(lane))
+      .map(([personaId]) => personaId);
+    return acc;
+  },
+  {} as Record<DomainLane, string[]>,
+);
+
 export interface ClassifierResult {
   fastShip: boolean;
   selectedPersonas: string[];
   effortTier: 'low' | 'medium' | 'high';
   rationale: string;
+  domainLanes?: Record<string, DomainLane>;
   usage?: TokensUsed | null;
   costUSD?: number | null;
   durationMs?: number;
@@ -313,6 +361,157 @@ export function containsExecutableOrSensitiveCode(
   return false;
 }
 
+/**
+ * Classify a changed file path into a primary domain lane using deterministic heuristics.
+ * Zero-token, instant, fail-closed classification.
+ */
+export function classifyPathByHeuristic(filePath: string): DomainLane {
+  const p = (filePath || '').toLowerCase().replace(/\\/g, '/').trim();
+  if (!p) return 'system_runtime';
+
+  const baseName = p.split('/').pop() || p;
+  const dotIdx = baseName.lastIndexOf('.');
+  const ext = dotIdx >= 0 ? baseName.slice(dotIdx) : '';
+
+  // 1. Explicit secrets, keys, credentials, and environment files
+  if (
+    p.includes('.env') ||
+    baseName === '.npmrc' ||
+    baseName === '.pypirc' ||
+    p.includes('id_rsa') ||
+    p.includes('id_ed25519') ||
+    ext === '.crt' ||
+    ext === '.pem' ||
+    ext === '.key' ||
+    /(^|\/|\.|_|-)(secret|credential|password|keychain)($|\/|\.|_|-)/i.test(p)
+  ) {
+    return 'security_auth';
+  }
+
+  // Pure docs and assets: if under docs/ or an asset/markdown extension, non-executable files belong in docs_assets
+  const isDocOrAsset =
+    (p.startsWith('docs/') || p.startsWith('documentation/') || p.startsWith('assets/')) &&
+    !/\.(sh|bash|py|rb|js|ts|pl)$/i.test(baseName);
+  if (isDocOrAsset && (SAFE_DOC_OR_ASSET_EXTENSIONS.has(ext) || ext === '')) {
+    return 'docs_assets';
+  }
+
+  // 2. Security & Auth logic (tokens, keys, auth controllers, crypto, policies, netpols, Elixir plugs/routers/sessions)
+  if (
+    /(^|\/|\.|_|-)(auth|oauth|crypto|rbac|permission|firewall|netpol|security|session|login|jwt|cookie|csrf|cors|sanitize|middleware|webhook|hmac|sso|sudo|guard|policy|policies)($|\/|\.|_|-)/i.test(p) ||
+    baseName === 'router.ex' ||
+    p.endsWith('/router.ex') ||
+    p.includes('/plug/') ||
+    p.includes('/plugs/') ||
+    baseName.includes('plug') ||
+    /(^|\/|\.|_|-)(token|tokens|cert|certs|certificate|certificates)($|\/|\.|_|-)/i.test(p)
+  ) {
+    return 'security_auth';
+  }
+
+  // 2. Database & Data Persistence (SQL, migrations, Ecto schemas, Prisma, models)
+  if (
+    p.includes('/repo/') ||
+    p.includes('/schema/') ||
+    p.includes('/schemas/') ||
+    p.includes('/migration/') ||
+    p.includes('/migrations/') ||
+    p.includes('/db/') ||
+    p.includes('/database/') ||
+    p.includes('/sql/') ||
+    p.includes('/entity/') ||
+    p.includes('/entities/') ||
+    p.includes('/models/') ||
+    p.includes('/model/') ||
+    p.includes('/timescale/') ||
+    p.includes('/cagg/') ||
+    p.includes('priv/repo/') ||
+    ext === '.sql' ||
+    ext === '.prisma' ||
+    ext === '.cql'
+  ) {
+    return 'data_persistence';
+  }
+
+  // 3. API & Contracts (REST, GraphQL, Protobuf, OpenAPI, router)
+  if (
+    p.includes('/api/') ||
+    p.includes('/routes/') ||
+    p.includes('/router/') ||
+    p.includes('/controllers/') ||
+    p.includes('/controller/') ||
+    p.includes('/endpoints/') ||
+    p.includes('/proto/') ||
+    p.includes('/contracts/') ||
+    ext === '.proto' ||
+    ext === '.graphql' ||
+    baseName.includes('openapi') ||
+    baseName.includes('swagger')
+  ) {
+    return 'api_contracts';
+  }
+
+  // 4. UI & Frontend (Components, styling, templates, views, Phoenix LiveView/HEEx)
+  if (
+    p.includes('/assets/') ||
+    p.includes('/static/') ||
+    p.includes('/web/') ||
+    p.includes('/ui/') ||
+    p.includes('/components/') ||
+    p.includes('/pages/') ||
+    p.includes('/views/') ||
+    p.includes('/styles/') ||
+    p.includes('/css/') ||
+    p.includes('/live/') ||
+    ext === '.tsx' ||
+    ext === '.jsx' ||
+    ext === '.vue' ||
+    ext === '.svelte' ||
+    ext === '.heex' ||
+    ext === '.leex' ||
+    ext === '.eex' ||
+    ext === '.css' ||
+    ext === '.scss' ||
+    ext === '.sass' ||
+    ext === '.less' ||
+    ext === '.html'
+  ) {
+    return 'ui_frontend';
+  }
+
+  // 5. Docs and static non-executable assets
+  if (
+    SAFE_DOC_OR_ASSET_EXTENSIONS.has(ext) ||
+    SAFE_STANDALONE_FILENAMES.has(baseName) ||
+    SAFE_TXT_BASENAMES.has(baseName) ||
+    p.startsWith('docs/') ||
+    p.includes('/docs/') ||
+    ext === '.svg' ||
+    ext === '.pdf' ||
+    ext === '.eps'
+  ) {
+    return 'docs_assets';
+  }
+
+  // 6. System & Runtime (Default fallback)
+  return 'system_runtime';
+}
+
+/**
+ * Classify a batch of changed files into domain lanes.
+ */
+export function classifyDomainLanesByHeuristic(
+  files: Array<{ path?: string; filePath?: string }>
+): Record<string, DomainLane> {
+  const result: Record<string, DomainLane> = {};
+  for (const f of files) {
+    const rawPath = f.path || f.filePath || '';
+    if (!rawPath) continue;
+    result[rawPath] = classifyPathByHeuristic(rawPath);
+  }
+  return result;
+}
+
 function extractJson(text: string): any {
   const cleaned = text.trim();
   try {
@@ -377,13 +576,16 @@ Your task is to analyze the PR changed files and candidate review personas to de
    - If fastShip is true, this can be empty [].
 3. "effortTier": 'low' | 'medium' | 'high' based on change complexity.
 4. "rationale": (string) A concise 1-2 sentence explanation.
+5. "domainLanes": (optional object) Map each changed file path to its primary domain lane:
+   "security_auth" | "data_persistence" | "api_contracts" | "system_runtime" | "ui_frontend" | "docs_assets".
 
 You MUST respond strictly with a JSON object in this format:
 {
   "fastShip": boolean,
   "selectedPersonas": string[],
   "effortTier": "low" | "medium" | "high",
-  "rationale": "string"
+  "rationale": "string",
+  "domainLanes": { "path/to/file": "domain_lane" }
 }`;
 
 /**
@@ -493,6 +695,30 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
       effectiveFastShip = false;
     }
 
+    // Compute domain lanes (heuristic baseline with LLM enhancement)
+    const heuristicLanes = classifyDomainLanesByHeuristic(options.changedFiles);
+    const domainLanes: Record<string, DomainLane> = { ...heuristicLanes };
+    if (parsed.domainLanes && typeof parsed.domainLanes === 'object' && !Array.isArray(parsed.domainLanes)) {
+      const validLanes = new Set(DOMAIN_LANES);
+      for (const [fPath, lane] of Object.entries(parsed.domainLanes)) {
+        // Reject phantom paths not in the changed files set
+        if (!Object.prototype.hasOwnProperty.call(heuristicLanes, fPath)) {
+          continue;
+        }
+        if (typeof lane === 'string' && validLanes.has(lane as DomainLane)) {
+          // 1. Fail-closed security: Never allow LLM to demote out of security_auth
+          if (heuristicLanes[fPath] === 'security_auth' && lane !== 'security_auth') {
+            continue;
+          }
+          // 2. Anti-evasion: Never allow LLM to demote non-docs code into docs_assets
+          if (lane === 'docs_assets' && heuristicLanes[fPath] !== 'docs_assets') {
+            continue;
+          }
+          domainLanes[fPath] = lane as DomainLane;
+        }
+      }
+    }
+
     const durationMs = Date.now() - startTime;
 
     try {
@@ -512,6 +738,7 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
       selectedPersonas,
       effortTier,
       rationale,
+      domainLanes,
       usage: response.usage || null,
       costUSD: response.costUSD || null,
       durationMs,

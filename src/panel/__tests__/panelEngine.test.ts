@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   buildCompactFileList,
+  buildCompactDiffManifest,
   buildDiffSection,
+  computeDiffStats,
   executePersonaPanel,
   isRetryablePanelError,
   MAX_INLINE_DIFF_CHARS,
@@ -175,3 +177,201 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       expect(buildCompactFileList([])).toBe('None');
     });
   });
+
+  describe('buildCompactDiffManifest & Domain Lane Partitioning', () => {
+    it('computes diff stats additions and deletions accurately', () => {
+      const patch = [
+        '--- a/src/app.ts',
+        '+++ b/src/app.ts',
+        '@@ -1,3 +1,4 @@',
+        ' context',
+        '-old line 1',
+        '-old line 2',
+        '+new line 1',
+        '+new line 2',
+        '+new line 3',
+        ' trailing context',
+      ].join('\n');
+
+      const stats = computeDiffStats(patch);
+      expect(stats.additions).toBe(3);
+      expect(stats.deletions).toBe(2);
+    });
+
+    it('partitions files into domain lanes with breakdown and line stats', () => {
+      const files = [
+        { path: 'src/auth/jwt.ts', patch: '+ export function sign() {}\n- old()' },
+        { path: 'priv/repo/migrations/init.sql', patch: '+ CREATE TABLE users();' },
+        { path: 'docs/architecture.md', patch: '+ # Architecture' },
+      ];
+
+      const manifest = buildCompactDiffManifest(files, {
+        baseSha: 'base123',
+        headSha: 'head456',
+      });
+
+      expect(manifest).toContain('=== GIT RANGE');
+      expect(manifest).toContain('git diff base123...head456');
+      expect(manifest).toContain('=== DOMAIN LANE BREAKDOWN ===');
+      expect(manifest).toContain('- security_auth: 1 file');
+      expect(manifest).toContain('- data_persistence: 1 file');
+      expect(manifest).toContain('- docs_assets: 1 file');
+      expect(manifest).toContain('=== PR CHANGED FILES INDEX (3 file(s)) ===');
+      expect(manifest).toContain('- src/auth/jwt.ts [security_auth] (+1, -1 lines)');
+      expect(manifest).toContain('- priv/repo/migrations/init.sql [data_persistence] (+1, -0 lines)');
+      expect(manifest).toContain('- docs/architecture.md [docs_assets] (+1, -0 lines)');
+      expect(manifest).toContain('=== SWARM EXPLORATION & TARGETED PULL PROTOCOL ===');
+      expect(manifest).toContain('Zero raw diff hunks are pre-rendered in this prompt');
+    });
+
+    it('highlights persona lane affinity with (★ YOUR LANE) for sec-lane', () => {
+      const files = [
+        { path: 'src/auth/guard.ts', patch: '+ function check() {}' },
+        { path: 'src/components/Header.tsx', patch: '+ <header/>' },
+      ];
+
+      const manifest = buildCompactDiffManifest(files, {
+        persona: 'sec-lane',
+      });
+
+      expect(manifest).toContain('=== YOUR ASSIGNED DOMAIN FOCUS ===');
+      expect(manifest).toContain("Persona: 'sec-lane' | Domain Lane Affinities: [security_auth]");
+      expect(manifest).toContain('- src/auth/guard.ts [security_auth] (★ YOUR LANE) (+1, -0 lines)');
+      expect(manifest).toContain('- src/components/Header.tsx [ui_frontend] (+1, -0 lines)');
+      expect(manifest).not.toContain('Header.tsx [ui_frontend] (★ YOUR LANE)');
+    });
+
+    it('accurately counts boundary diff lines including deleted SQL comments (-- ) and added increments (++ ) without swallowing them', () => {
+      const patch = [
+        'diff --git a/migrations/schema.sql b/migrations/schema.sql',
+        '--- a/migrations/schema.sql',
+        '+++ b/migrations/schema.sql',
+        '@@ -1,5 +1,5 @@',
+        '-- old line with comment',
+        '--- legacy SQL comment to remove',
+        '+++counterVar',
+        '+ /* new comment */',
+        ' unchanged line',
+      ].join('\n');
+
+      const stats = computeDiffStats(patch);
+      expect(stats.deletions).toBe(2);
+      expect(stats.additions).toBe(2);
+    });
+
+    it('highlights persona lane affinity for db-lane', () => {
+      const files = [
+        { path: 'src/auth/guard.ts', patch: '+ check' },
+        { path: 'priv/repo/migrations/2026_add_col.exs', patch: '+ alter table' },
+      ];
+
+      const manifest = buildCompactDiffManifest(files, {
+        persona: 'db-lane',
+      });
+
+      expect(manifest).toContain("Persona: 'db-lane' | Domain Lane Affinities: [data_persistence]");
+      expect(manifest).toContain('- priv/repo/migrations/2026_add_col.exs [data_persistence] (★ YOUR LANE) (+1, -0 lines)');
+    });
+
+    it('handles oversized files by emitting SKIPPED entries in buildCompactDiffManifest', () => {
+      const hugePatch = '@@ -1,1 +1,2 @@\n+' + 'x'.repeat(600_000);
+      const files = [
+        { path: 'src/huge.json', patch: hugePatch },
+        { path: 'src/small.ts', patch: '+ const a = 1;' },
+      ];
+
+      const manifest = buildCompactDiffManifest(files);
+      expect(manifest).toContain('(SKIPPED:');
+      expect(manifest).toContain('chars > max-file-diff-chars');
+      expect(manifest).toContain('- src/huge.json (SKIPPED:');
+      expect(manifest).toContain('- src/small.ts [system_runtime] (+1, -0 lines)');
+      expect(manifest).not.toContain(hugePatch);
+    });
+  });
+
+  describe('read_file line slicing in tool exploration', () => {
+    it('slices requested line range correctly with 1-based index and clamping', async () => {
+      let capturedToolResult = '';
+      const mockClient = {
+        complete: vi.fn().mockImplementation(async (payload: any) => {
+          const userMsg = payload.messages[payload.messages.length - 1];
+          const text = typeof userMsg?.content === 'string'
+            ? userMsg.content
+            : Array.isArray(userMsg?.content)
+              ? userMsg.content.map((b: any) => b.text || '').join('\n')
+              : '';
+
+          const allText = payload.messages
+            .map((m: any) =>
+              typeof m?.content === 'string'
+                ? m.content
+                : Array.isArray(m?.content)
+                  ? m.content.map((b: any) => b.text || '').join('\n')
+                  : ''
+            )
+            .join('\n');
+
+          const nonceMatch = allText.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+          const nonce = nonceMatch ? nonceMatch[1] : 'nonce-123';
+
+          if (allText.includes('SHIP|FIX_FIRST|BLOCK')) {
+            return {
+              id: 'resp_arbiter',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All good' })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          if (allText.includes('RECONCILED')) {
+            return {
+              id: 'resp_mod',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          if (text.includes('[PI_TOOL_RESULT]')) {
+            if (!capturedToolResult) capturedToolResult = text;
+            return {
+              id: 'resp_finish',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ role: 'persona', decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          // First turn: invoke read_file with lines 2 to 3
+          return {
+            id: 'resp_tool',
+            model: 'test-model',
+            content: '```json\n{"tool": "read_file", "args": {"path": "src/multi.ts", "startLine": 2, "endLine": 3}}\n```',
+            usage: { prompt: 10, completion: 10, total: 20 },
+          };
+        }),
+      };
+
+      const multilineContent = [
+        'line 1: header',
+        'line 2: important logic',
+        'line 3: edge case',
+        'line 4: footer',
+      ].join('\n');
+
+      const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+      await executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'src/multi.ts', patch: multilineContent }],
+        repository: 'test/repo',
+        headSha: 'abc1234',
+        client: mockClient as any,
+      });
+
+      expect(capturedToolResult).toContain("Lines 2-3 of 4 for 'src/multi.ts':");
+      expect(capturedToolResult).toContain('line 2: important logic\nline 3: edge case');
+      expect(capturedToolResult).not.toContain('line 1: header');
+      expect(capturedToolResult).not.toContain('line 4: footer');
+    });
+  });
+

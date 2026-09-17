@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../app';
+import { extractMessageContentText } from '../../panel/panelEngine';
 
 function setupOmniRouteFetchMock() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init?: any) => {
@@ -8,7 +9,7 @@ function setupOmniRouteFetchMock() {
     if (urlStr.includes('/v1/chat/completions')) {
       const body = JSON.parse(init?.body || '{}');
       const messages = body.messages || [];
-      const promptText = messages.map((m: any) => m.content).join('\n');
+      const promptText = messages.map((m: any) => extractMessageContentText(m.content)).join('\n');
       const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
       const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
 
