@@ -141,6 +141,11 @@ export class K8sJobDispatcher {
                   { name: 'BASE_SHA', value: options.baseSha || '' },
                   { name: 'JOB_ID', value: options.jobId },
                   { name: 'OPENROUTER_BASE_URL', value: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' },
+                  // REL-904: forward the OTLP metrics push endpoint so ephemeral workers
+                  // can push lane/provider attribution to the otel-collector before exit.
+                  ...(process.env.REVIEW_YETI_OTEL_METRICS_ENDPOINT
+                    ? [{ name: 'REVIEW_YETI_OTEL_METRICS_ENDPOINT', value: process.env.REVIEW_YETI_OTEL_METRICS_ENDPOINT }]
+                    : []),
                   {
                     name: 'OPENROUTER_API_KEY',
                     valueFrom: {
