@@ -488,7 +488,17 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     });
 
     expect(result.personas.map((persona) => persona.id)).toEqual(['completed-lane']);
-    expect(result.optionalFailures).toEqual([{ id: 'incomplete-lane', error: expect.stringContaining('INCOMPLETE') }]);
+    // The lane received a real (if contract-violating) response on every attempt, so the failure
+    // carries the resolved model it was served even though it never produced usable findings.
+    // `failureClass` is the coded reason `runPersona` assigns at the exact point it observed this
+    // terminal `PanelStructuredOutputError` (REL-892 finding 2) -- authoritative over any later
+    // re-derivation of the class from `error`'s free-form text at the publishing layer.
+    expect(result.optionalFailures).toEqual([{
+      id: 'incomplete-lane',
+      error: expect.stringContaining('INCOMPLETE'),
+      lastKnownModel: expect.any(String),
+      failureClass: 'malformed_output',
+    }]);
     expect(result.applicablePersonaIds).toEqual(['completed-lane', 'incomplete-lane']);
   });
 
@@ -1549,6 +1559,83 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
         headSha: 'head-sha-timeout-cap-test',
         client: mockClient as unknown as OmniRouteClient,
       })).rejects.toThrow(/exceeded total retry\/execution budget of 2700s/);
+    } finally {
+      vi.spyOn(Date, 'now').mockRestore();
+    }
+  });
+
+  it('surfaces budget_exhausted as the optional lane\'s coded failureClass (REL-892 finding 2)', async () => {
+    // Counterfactual for this test: delete the `lastFailureClass = 'budget_exhausted';`
+    // assignment at the budget-exhaustion branch inside `runPersona`'s catch block (leaving the
+    // `break` in place) and this test fails -- `optionalFailures[0].failureClass` falls through to
+    // `classifyFailure(error)`'s generic message-based guess instead of the coded reason the
+    // engine itself observed, which is exactly the distinction (budget exhaustion vs. malformed
+    // output vs. a generic provider failure) REL-892 exists to make reliable.
+    //
+    // `budget-lane` must be optional so its terminal failure reaches `optionalFailures` instead of
+    // aborting the whole panel as a required-persona failure (which discards `failureClass` -- see
+    // the sibling test above). `completed-lane` is required and satisfies quorum=1 on its own so
+    // the panel still returns normally instead of throwing on a distinct-provider shortfall.
+    const config = ctReviewConfigV3Schema.parse({
+      version: 3,
+      profile: 'assertive',
+      quorum: 1,
+      personas: [
+        { id: 'completed-lane', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['claude'] },
+        { id: 'budget-lane', enabled: true, required: false, charter: 'builtin:correctness', paths: ['**'], providers: ['grok'] },
+      ],
+      reviewers: {
+        execution: 'personas',
+        fallback: 'none',
+        overall_timeout_s: 120,
+        providers: [
+          { id: 'claude', enabled: true, model: 'claude-5-sonnet', effort: 'low', review_timeout_s: 30, arbiter_timeout_s: 30 },
+          { id: 'grok', enabled: true, model: 'deepseek-v4-pro', effort: 'low', review_timeout_s: 30, arbiter_timeout_s: 30 },
+        ],
+        arbiter: { order: ['claude'] },
+      },
+      path_instructions: [],
+      rules: [],
+    });
+
+    // Only `budget-lane`'s own provider call jumps the clock, and only once its own request has
+    // actually been dispatched -- `completed-lane`'s lane captures its start time and completes
+    // entirely before this flips, so its own success path never observes the jump.
+    let budgetLaneDispatched = false;
+    const realNow = Date.now;
+    const baseTime = realNow();
+    vi.spyOn(Date, 'now').mockImplementation(() => (budgetLaneDispatched ? baseTime + 2_701_000 : baseTime));
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      if (opts.persona === 'budget-lane') {
+        budgetLaneDispatched = true;
+        throw new Error('fetch failed: ECONNRESET');
+      }
+      const prompt = extractMessageContentText(opts.messages?.[1]?.content || opts.messages?.[0]?.content);
+      const nonce = (typeof prompt === 'string' ? prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) : null)?.[1].trim() || 'test-nonce';
+      const body = opts.persona === 'arbiter'
+        ? { verdict: 'SHIP', rationale: 'Completed lane has no findings' }
+        : opts.persona === 'moderator'
+          ? { decision: 'RECONCILED', findings: [] }
+          : { decision: 'APPROVE', findings: [] };
+      return { model: opts.model, content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(body)}\nCT_REVIEW_END:${nonce}`, usage: null, costUSD: null, raw: {} };
+    });
+
+    try {
+      const result = await executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
+        repository: 'calltelemetry/repo',
+        headSha: 'head-sha-budget-exhausted-optional',
+        client: mockClient as unknown as OmniRouteClient,
+      });
+
+      expect(result.personas.map((persona) => persona.id)).toEqual(['completed-lane']);
+      expect(result.optionalFailures).toEqual([{
+        id: 'budget-lane',
+        error: expect.stringContaining('exceeded total retry/execution budget'),
+        failureClass: 'budget_exhausted',
+      }]);
     } finally {
       vi.spyOn(Date, 'now').mockRestore();
     }

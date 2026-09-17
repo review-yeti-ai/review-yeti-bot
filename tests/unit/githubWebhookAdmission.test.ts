@@ -61,6 +61,22 @@ function rerequestPayload(overrides: Record<string, unknown> = {}) {
   return { ...body, action: 'rerequested', ...overrides };
 }
 
+function closedPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    action: 'closed', number: 42,
+    installation: { id: 456 },
+    repository: {
+      id: 614653796, name: 'dashboard', full_name: 'calltelemetry/dashboard',
+      owner: { id: 57884877, login: 'calltelemetry' },
+    },
+    pull_request: {
+      number: 42, state: 'closed', merged: false,
+      base: { repo: { full_name: 'calltelemetry/dashboard' } },
+    },
+    ...overrides,
+  };
+}
+
 function fixture(admissionEnabled = true) {
   const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: `run_${'1'.repeat(32)}` } }));
   const onEvent = createGitHubWebhookAdmissionHandler({
@@ -84,6 +100,36 @@ function signed(body: unknown, delivery = 'delivery-123') {
   const raw = JSON.stringify(body);
   const signature = `sha256=${createHmac('sha256', SECRET).update(raw).digest('hex')}`;
   return { raw, signature, delivery };
+}
+
+function closedFixture(terminalizedRunIds: string[] = [`run_${'1'.repeat(32)}`]) {
+  const admit = vi.fn();
+  const terminalizeRunsForClosedPullRequest = vi.fn(async () => ({ terminalizedRunIds }));
+  const onEvent = createGitHubWebhookAdmissionHandler({
+    config: {
+      secret: SECRET, admissionEnabled: true,
+      repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
+    },
+    admission: { admit, terminalizeRunsForClosedPullRequest } as any,
+    now: () => NOW,
+  });
+  const instance = createActionDispatchApp({
+    verifier: { verify: vi.fn() } as any,
+    admission: { admit: vi.fn() } as any,
+    resolveInstallationId: vi.fn(), databaseReady: vi.fn(async () => true),
+    allowAppGate: true, githubWebhook: { secret: SECRET, onEvent },
+  });
+  return { instance, admit, terminalizeRunsForClosedPullRequest };
+}
+
+async function postWebhook(instance: ReturnType<typeof closedFixture>['instance'], body: unknown, delivery: string) {
+  const auth = signed(body, delivery);
+  return request(instance).post('/api/webhooks/github')
+    .set('Content-Type', 'application/json')
+    .set('X-GitHub-Event', 'pull_request')
+    .set('X-GitHub-Delivery', auth.delivery)
+    .set('X-Hub-Signature-256', auth.signature)
+    .send(auth.raw);
 }
 
 describe('native GitHub App webhook admission', () => {
@@ -770,5 +816,107 @@ describe('native GitHub App webhook admission', () => {
     const admitted = (admit as any).mock.calls[0][0];
     expect(admitted).not.toHaveProperty('authoritativeGate');
     expect(admitted).not.toHaveProperty('effectivePolicyDigest');
+  });
+});
+
+describe('pull request closed admission (REL-896)', () => {
+  it('terminalizes in-flight runs when a PR is merged', async () => {
+    const f = closedFixture();
+    const body = closedPayload({ pull_request: {
+      number: 42, state: 'closed', merged: true, base: { repo: { full_name: 'calltelemetry/dashboard' } },
+    } });
+    const response = await postWebhook(f.instance, body, 'delivery-closed-merged');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'accepted', deliveryId: 'delivery-closed-merged', prNumber: 42,
+      reason: 'pull_request_closed', terminalized: 1,
+    });
+    expect(f.terminalizeRunsForClosedPullRequest).toHaveBeenCalledExactlyOnceWith({
+      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      merged: true, now: NOW, deliveryId: 'github-webhook:delivery-closed-merged',
+    });
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the top-level number disagrees with pull_request.number', { number: 43 }],
+    ['the base repository disagrees with the delivering repository', { pull_request: {
+      number: 42, state: 'closed', merged: true, base: { repo: { full_name: 'calltelemetry/other' } },
+    } }],
+  ])('ignores a closed payload as not_enrolled when %s, terminalizing nothing', async (_label, overrides) => {
+    const f = closedFixture();
+    const response = await postWebhook(f.instance, closedPayload(overrides), 'delivery-closed-mismatch');
+    expect(response.body).toMatchObject({ status: 'ignored', reason: 'not_enrolled' });
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the merged flag is missing', { pull_request: {
+      number: 42, state: 'closed', base: { repo: { full_name: 'calltelemetry/dashboard' } },
+    } }],
+    ['the base repository name is malformed', { pull_request: {
+      number: 42, state: 'closed', merged: false, base: { repo: { full_name: 42 } },
+    } }],
+  ])('ignores a malformed closed payload as unsupported_pull_request_state when %s', async (_label, overrides) => {
+    const f = closedFixture();
+    const response = await postWebhook(f.instance, closedPayload(overrides), 'delivery-closed-malformed');
+    expect(response.body).toMatchObject({ status: 'ignored', reason: 'unsupported_pull_request_state' });
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('terminalizes in-flight runs when a PR is closed without merging', async () => {
+    const f = closedFixture();
+    const response = await postWebhook(f.instance, closedPayload(), 'delivery-closed-unmerged');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'accepted', deliveryId: 'delivery-closed-unmerged', prNumber: 42,
+      reason: 'pull_request_closed', terminalized: 1,
+    });
+    expect(f.terminalizeRunsForClosedPullRequest).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      merged: false,
+    }));
+  });
+
+  it('returns an ignored-style result, never an error, for a redelivered close with nothing left in flight', async () => {
+    const f = closedFixture([]);
+    const response = await postWebhook(f.instance, closedPayload(), 'delivery-closed-redelivered');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'ignored', reason: 'no_in_flight_runs', deliveryId: 'delivery-closed-redelivered', prNumber: 42,
+    });
+    expect(f.terminalizeRunsForClosedPullRequest).toHaveBeenCalledOnce();
+  });
+
+  it('returns an ignored-style result, never an error, for a close with no in-flight runs at all', async () => {
+    const f = closedFixture([]);
+    const response = await postWebhook(f.instance, closedPayload(), 'delivery-closed-no-runs');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'ignored', reason: 'no_in_flight_runs', deliveryId: 'delivery-closed-no-runs', prNumber: 42,
+    });
+  });
+
+  it('still ignores an unknown/unsupported pull_request action without terminalizing anything', async () => {
+    const f = closedFixture();
+    const body = payload({ action: 'labeled' });
+    const response = await postWebhook(f.instance, body, 'delivery-unsupported-action');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ignored', reason: 'unsupported_pull_request_state' });
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('ignores a closed delivery for a repository outside the direct App enrollment', async () => {
+    const f = closedFixture();
+    const body = closedPayload({ repository: {
+      id: 999999, name: 'other', full_name: 'calltelemetry/other',
+      owner: { id: 57884877, login: 'calltelemetry' },
+    } });
+    const response = await postWebhook(f.instance, body, 'delivery-closed-unenrolled');
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ status: 'ignored', reason: 'not_enrolled' });
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
   });
 });

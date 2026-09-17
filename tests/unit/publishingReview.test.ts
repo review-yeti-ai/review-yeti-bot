@@ -382,6 +382,167 @@ describe('runPublishingReviewWorker', () => {
       .not.toContain('do-not-publish');
   });
 
+  it('carries transport, telemetry, and per-lane identity/usage on a recoverable panel failure (REL-892)', async () => {
+    // Counterfactual for this test: revert the `panelEvidence` block added to the
+    // `recoverablePanelFailure` branch of `runPublishingReviewWorker` in
+    // src/cli/publishingReview.ts (the object passed as the third argument to
+    // `reportTerminalFailure`) and this test fails -- the summary reverts to only a failure
+    // class, reason, and coverage line, which is exactly the "nothing actionable" gap REL-892
+    // exists to close.
+    //
+    // The completed lane's `model` and the failed lane's `lastKnownModel` are deliberately
+    // DISTINCT values here (REL-892 finding 1): `resolvedTransportModel` prefers a completed
+    // lane's reported model over a failed lane's last-known one, and a fixture where both lanes
+    // report the same string cannot tell that preference apart from the fallback. See the
+    // sibling test below for the fallback itself (no completed lane reports a model at all).
+    const cc = checkClient();
+    const d = deps({
+      checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{
+          id: 'sec-lane', findings: [], turnsCount: 2, toolCalls: [{ tool: 'grep_search' }],
+          promptTokens: 10, completionTokens: 5, totalTokens: 15, durationMs: 100,
+          model: 'ollama/glm-5.3-flash-2026-08-01',
+        }],
+        optionalFailures: [{
+          id: 'arch-lane',
+          error: 'provider HTTP 502 do-not-publish raw payload',
+          lastKnownUsage: { promptTokens: 48_000, completionTokens: 200, totalTokens: 48_200 },
+          lastKnownModel: 'ollama/glm-5.3-flash-2026-07-15',
+        }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+        arbiter: { verdict: 'SHIP' },
+      })),
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.conclusion).toBe('failure');
+    expect(cc.completeCheck).toHaveBeenCalledTimes(1);
+    const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+
+    // Item 4: the requested (possibly aliased) model and the completed lane's resolved model both
+    // appear -- and it is the COMPLETED lane's model that wins, not the failed lane's, even though
+    // the failed lane also carried a (different) last-known model.
+    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash` (resolved `ollama/glm-5.3-flash-2026-08-01`).');
+    expect(summary).not.toContain('resolved `ollama/glm-5.3-flash-2026-07-15`');
+    // Item 1: aggregate telemetry survives onto the failure path, not just the success path.
+    expect(summary).toContain('Telemetry: 2 turns, 1 tool calls, 15 tokens across 1 lanes (100ms).');
+    // Item 2 + 3: the failed lane is named, classified, and carries its own last-known token usage
+    // and model -- independent of, and different from, the completed lane's resolved model above.
+    expect(summary).toContain('Failed lane(s):');
+    expect(summary).toContain('`arch-lane`: failure class `provider_error`');
+    expect(summary).toContain('usage=48000+200=48200 tokens');
+    expect(summary).toContain('model=`ollama/glm-5.3-flash-2026-07-15`');
+    // The redaction this change must preserve: the lane's free-form error text never appears.
+    expect(summary).not.toContain('do-not-publish raw payload');
+    expect(JSON.stringify(cc.completeCheck.mock.calls)).not.toContain('do-not-publish raw payload');
+  });
+
+  it('falls back to a failed lane\'s last-known model when no completed lane reported one (REL-892)', async () => {
+    // Proves the second half of `resolvedTransportModel`'s contract: when every completed lane's
+    // `model` is absent (e.g. a fully-failed panel where the only lane to ever reach a provider is
+    // the one that failed closed), the failed lane's `lastKnownModel` must still surface on the
+    // published check instead of the transport line silently omitting the resolved model.
+    const cc = checkClient();
+    const d = deps({
+      checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        // Completed, but reports no `model` of its own -- nothing for the primary source to find.
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [{
+          id: 'arch-lane',
+          error: 'provider HTTP 502 do-not-publish raw payload',
+          lastKnownModel: 'ollama/glm-5.3-flash-2026-07-15',
+        }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+        arbiter: { verdict: 'SHIP' },
+      })),
+    });
+
+    await runPublishingReviewWorker(env(), d as never);
+
+    const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash` (resolved `ollama/glm-5.3-flash-2026-07-15`).');
+  });
+
+  it('omits the resolved-model clause when the resolved model equals the requested one (REL-892)', async () => {
+    // Counterfactual for this test: change `renderTransportSummary`'s guard from
+    // `resolvedModel && resolvedModel !== requestedModel` to just `resolvedModel` and this test
+    // fails -- the summary would then read `bifrost \`ollama/glm-5.3-flash\` (resolved
+    // \`ollama/glm-5.3-flash\`)`, a redundant clause implying the alias and the served model
+    // differ when they do not.
+    const cc = checkClient();
+    const d = deps({
+      checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        // Reports the exact same string configured as REVIEW_MODEL -- resolved is defined but
+        // identical to requested, the branch the equal-model finding calls out as untested.
+        personas: [{ id: 'sec-lane', findings: [], model: 'ollama/glm-5.3-flash' }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })),
+    });
+
+    await runPublishingReviewWorker(env(), d as never);
+
+    const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash`.');
+    expect(summary).not.toContain('(resolved');
+  });
+
+  it('omits the resolved-model clause when no lane ever reported a resolved model (REL-892)', async () => {
+    // The other way to reach the "omit" branch: `resolvedModel` is `undefined` rather than equal
+    // to the requested model -- no completed lane reported one and no failed lane carried a
+    // `lastKnownModel`. Distinct from the sibling test above, which covers the equal-but-defined
+    // case; together they exercise both ways `resolvedModel && resolvedModel !== requestedModel`
+    // can evaluate to false.
+    const cc = checkClient();
+    const d = deps({
+      checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })),
+    });
+
+    await runPublishingReviewWorker(env(), d as never);
+
+    const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash`.');
+    expect(summary).not.toContain('(resolved');
+  });
+
+  it('reports a failed lane with no observed usage as unavailable rather than a fabricated number', async () => {
+    const cc = checkClient();
+    const d = deps({
+      checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        // No lastKnownUsage/lastKnownModel: this lane never reached the provider (e.g. a local
+        // transport error before any response), so there is nothing to report.
+        optionalFailures: [{ id: 'arch-lane', error: 'ENOTFOUND upstream-provider.example do-not-publish' }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+        arbiter: { verdict: 'SHIP' },
+      })),
+    });
+
+    await runPublishingReviewWorker(env(), d as never);
+
+    const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('`arch-lane`: failure class `transport`');
+    expect(summary).toContain('usage=unavailable');
+    expect(summary).not.toContain('do-not-publish');
+  });
+
   it('marks the automatic retry exhausted once the final permitted attempt still cannot complete', async () => {
     const completion = { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}) };
     const cc = checkClient();
