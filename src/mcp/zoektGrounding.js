@@ -31,6 +31,7 @@ function createZoektGroundingStage(overrides = {}) {
   const materialize = overrides.materializeReviewWorkdir || require('./zoektWorkdirMaterializer').materializeReviewWorkdir;
   const buildIndex = overrides.buildZoektIndex || require('./zoektIndexBuilder').buildZoektIndex;
   const fsImpl = overrides.fs || fs;
+  const fsPromisesImpl = overrides.fsPromises || (fs.promises || undefined);
   const osImpl = overrides.os || os;
   const pathImpl = overrides.path || path;
 
@@ -64,7 +65,12 @@ function createZoektGroundingStage(overrides = {}) {
       return { indexDir, scratchDir };
     } catch (error) {
       if (scratchDir) {
-        try { fsImpl.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* fail-soft */ }
+        try {
+          // Async deletion — a materialized checkout plus shards can be tens
+          // of thousands of files; sync rm would block the caller's loop.
+          if (fsPromisesImpl?.rm) await fsPromisesImpl.rm(scratchDir, { recursive: true, force: true });
+          else fsImpl.rmSync(scratchDir, { recursive: true, force: true });
+        } catch { /* fail-soft */ }
       }
       return { indexDir: undefined, reason: (error && error.message) || 'zoekt_grounding_error' };
     }

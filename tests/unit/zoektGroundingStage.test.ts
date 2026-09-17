@@ -77,7 +77,8 @@ describe('createZoektGroundingStage (REL-677)', () => {
   it('throws never: an exploding materializer resolves to a reason and removes the scratch', async () => {
     const { fs, created, removed } = fakeFs();
     const materialize = vi.fn(async () => { throw new Error('ECONNRESET'); });
-    const stage = createZoektGroundingStage({ fs, materializeReviewWorkdir: materialize, buildZoektIndex: vi.fn() });
+    const fsPromises = { rm: async (dir: string) => { removed.push(dir); } };
+    const stage = createZoektGroundingStage({ fs, fsPromises, materializeReviewWorkdir: materialize, buildZoektIndex: vi.fn() });
 
     const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't' });
     expect(result.indexDir).toBeUndefined();

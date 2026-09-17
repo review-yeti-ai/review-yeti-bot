@@ -1216,8 +1216,13 @@ export async function runPublishingReviewWorker(
     } finally {
       panelDeadline.cleanup();
       if (zoektScratchRoot.scratchDir) {
-        const { rmSync } = await import('node:fs');
-        try { rmSync(zoektScratchRoot.scratchDir, { recursive: true, force: true }); } catch { /* fail-soft */ }
+        try {
+          // Async deletion: the scratch tree holds a full repo checkout plus
+          // index shards (potentially 10k+ files) — sync rm would block the
+          // worker event loop for the whole delete.
+          const { rm } = await import('node:fs/promises');
+          await rm(zoektScratchRoot.scratchDir, { recursive: true, force: true });
+        } catch { /* fail-soft */ }
       }
     }
   } catch (error) {
