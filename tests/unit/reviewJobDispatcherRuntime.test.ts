@@ -3,6 +3,7 @@ import {
   reviewJobDispatcherConfigFromEnv,
   runReviewJobDispatcherLoop,
 } from '../../src/k8s/reviewJobDispatcherRuntime';
+import { DEFAULT_DELEGATED_FAILURE_POLL_MS, MIN_DELEGATED_FAILURE_POLL_MS } from '../../src/k8s/delegatedFailureReader';
 
 const workerImage = `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:${'e'.repeat(64)}`;
 
@@ -76,6 +77,23 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
       REVIEW_JOB_WORKER_IMAGE: workerImage,
       HOSTNAME: 'dispatcher-abc123',
     };
+
+    // reviewJobDispatcherConfigFromEnv must stay self-contained: reviewRuntimeUpgrade.test.ts
+    // extracts its source text into a resolver-less sandbox, so it cannot import the reader's
+    // constants and carries the same numbers as literals. These assertions are the drift guard:
+    // change the reader's default or floor without the config (or the reverse) and this fails.
+    it('resolves an unset poll interval to the reader\'s exported default', () => {
+      expect(reviewJobDispatcherConfigFromEnv(base).delegatedFailurePollMs).toBe(DEFAULT_DELEGATED_FAILURE_POLL_MS);
+    });
+
+    it('accepts exactly the reader\'s exported floor and falls back to its default just below it', () => {
+      expect(reviewJobDispatcherConfigFromEnv({
+        ...base, REVIEW_DELEGATED_FAILURE_POLL_MS: String(MIN_DELEGATED_FAILURE_POLL_MS),
+      }).delegatedFailurePollMs).toBe(MIN_DELEGATED_FAILURE_POLL_MS);
+      expect(reviewJobDispatcherConfigFromEnv({
+        ...base, REVIEW_DELEGATED_FAILURE_POLL_MS: String(MIN_DELEGATED_FAILURE_POLL_MS - 1),
+      }).delegatedFailurePollMs).toBe(DEFAULT_DELEGATED_FAILURE_POLL_MS);
+    });
 
     it('defaults to 15000ms when unset', () => {
       expect(reviewJobDispatcherConfigFromEnv(base).delegatedFailurePollMs).toBe(15_000);
