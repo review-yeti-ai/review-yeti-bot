@@ -892,12 +892,106 @@ function parseNativeJsonObject<T>(content: string, expectedNonce: string): T {
  * contracts explicit so malformed structured output gets one bounded corrective turn and then
  * fails closed.
  */
+
+/**
+ * Single source of truth for the persona/moderator/arbiter role contracts: the field each role
+ * decides on and the enum members it accepts. Both the deterministic drift normalizer and
+ * `structuredOutputContractError` consume this, so the contracts cannot drift apart.
+ */
+const ROLE_CONTRACT_ENUMS: Record<string, { field: string; allowed: readonly string[] }> = {
+  persona: { field: 'decision', allowed: ['APPROVE', 'FINDINGS', 'INCOMPLETE'] },
+  moderator: { field: 'decision', allowed: ['RECONCILED'] },
+  arbiter: {
+    field: 'verdict',
+    allowed: ['SHIP', 'FIX_FIRST', 'BLOCK', 'APPROVE', 'PASSED', 'SUCCESS', 'REJECT', 'FAILED'],
+  },
+};
+
+const FINDING_SEVERITIES = ['P0', 'P1', 'P2'] as const;
+
+/**
+ * The persona decision invariant (REL-888): findings mean do-not-approve. A response is
+ * contradictory — and invalid — when it approves while enumerating defects, or claims FINDINGS
+ * without any. Both the corrective-turn validator and the final-result fail-closed path call
+ * this so the invariant is encoded exactly once.
+ */
+export function personaDecisionContractError(decision: unknown, findings: ReadonlyArray<unknown>): string | null {
+  if (decision === 'FINDINGS' && findings.length === 0) {
+    return 'FINDINGS requires at least one finding';
+  }
+  if (decision === 'APPROVE' && findings.length > 0) {
+    return 'APPROVE is contradictory with findings: findings mean do-not-approve. Return decision FINDINGS carrying the findings, or APPROVE with an empty findings array.';
+  }
+  return null;
+}
+
+/**
+ * Case-only enum repair. Returns the upper-cased member when `value` case-insensitively matches
+ * an allowed member, else null. Semantic synonyms are deliberately NOT mapped: a value that is
+ * not an exact (modulo case) enum member is a contract violation and must go through the
+ * corrective turn, not be silently reinterpreted here.
+ */
+function normalizeEnumCase(value: unknown, allowed: readonly string[]): string | null {
+  if (typeof value !== 'string') return null;
+  const upper = value.trim().toUpperCase();
+  return allowed.includes(upper) ? upper : null;
+}
+
+/** Coerce an exact-integer string scalar; anything else is left untouched. */
+function normalizeIntegerString(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  return Number.parseInt(trimmed, 10);
+}
+
+/**
+ * Deterministic repair for the observed provider drift signatures (REL-888): some OpenAI-compatible
+ * lanes honor the JSON *structure* but return enum members in the wrong case (e.g. `decision:
+ * "approve"`, `severity: "p1"`) or numeric scalars as integer strings. The semantic value is
+ * exact, so case/number coercion in place saves a corrective provider turn and keeps the
+ * failover budget for genuinely broken output. Returns true when anything was normalized.
+ */
+export function normalizeDriftedStructuredOutput(role: string, value: any): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  let changed = false;
+
+  const roleEnum = ROLE_CONTRACT_ENUMS[role];
+  if (roleEnum) {
+    const normalized = normalizeEnumCase(value[roleEnum.field], roleEnum.allowed);
+    if (normalized !== null && value[roleEnum.field] !== normalized) {
+      value[roleEnum.field] = normalized;
+      changed = true;
+    }
+  }
+
+  if (Array.isArray(value.findings)) {
+    for (const finding of value.findings) {
+      if (!finding || typeof finding !== 'object' || Array.isArray(finding)) continue;
+      const severity = normalizeEnumCase(finding.severity, FINDING_SEVERITIES);
+      if (severity !== null && finding.severity !== severity) {
+        finding.severity = severity;
+        changed = true;
+      }
+      for (const lineField of ['line', 'startLine'] as const) {
+        if (finding[lineField] === null || finding[lineField] === undefined) continue;
+        const coerced = normalizeIntegerString(finding[lineField]);
+        if (coerced !== null && finding[lineField] !== coerced) {
+          finding[lineField] = coerced;
+          changed = true;
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 function structuredOutputContractError(role: string, value: any, allowIncomplete = false): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return `${role} response must be a JSON object`;
   if (role === 'persona') {
-    const allowedDecisions = allowIncomplete
-      ? ['APPROVE', 'FINDINGS', 'INCOMPLETE']
-      : ['APPROVE', 'FINDINGS'];
+    const allowedDecisions = ROLE_CONTRACT_ENUMS.persona.allowed.filter(
+      (member) => allowIncomplete || member !== 'INCOMPLETE',
+    );
     if (!allowedDecisions.includes(value.decision)) return 'persona response must include top-level decision';
     if (!Array.isArray(value.findings)) return 'persona response must include top-level findings array';
     if (value.decision === 'INCOMPLETE' && value.findings.length > 0) {
@@ -906,12 +1000,12 @@ function structuredOutputContractError(role: string, value: any, allowIncomplete
     return null;
   }
   if (role === 'moderator') {
-    if (value.decision !== 'RECONCILED') return 'moderator response must include decision RECONCILED';
+    if (!ROLE_CONTRACT_ENUMS.moderator.allowed.includes(value.decision)) return 'moderator response must include decision RECONCILED';
     if (!Array.isArray(value.findings)) return 'moderator response must include top-level findings array';
     return null;
   }
   if (role === 'arbiter') {
-    if (!['SHIP', 'FIX_FIRST', 'BLOCK', 'APPROVE', 'PASSED', 'SUCCESS', 'REJECT', 'FAILED'].includes(value.verdict)) {
+    if (!ROLE_CONTRACT_ENUMS.arbiter.allowed.includes(value.verdict)) {
       return 'arbiter response must include top-level verdict';
     }
     if (typeof value.rationale !== 'string' || !value.rationale.trim()) return 'arbiter response must include non-empty rationale';
@@ -1541,6 +1635,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       const candidate = nativeJsonMode
         ? parseNativeJsonObject(response.content, requestNonce)
         : parseFenced(response.content, requestNonce);
+      normalizeDriftedStructuredOutput(role, candidate);
       let contractError = structuredOutputContractError(role, candidate, nativeJsonMode);
       if (!contractError && options?.validateParsed) {
         try {
@@ -2182,10 +2277,7 @@ async function runPersona(
             validateParsed: (candidate) => {
               try {
                 const findings = validateFindings((candidate as any)?.findings);
-                if ((candidate as any)?.decision === 'FINDINGS' && findings.length === 0) {
-                  return 'FINDINGS requires at least one finding';
-                }
-                return null;
+                return personaDecisionContractError((candidate as any)?.decision, findings);
               } catch (error: any) {
                 return error instanceof Error ? error.message : String(error);
               }
@@ -2225,16 +2317,19 @@ async function runPersona(
           // field validation is safe in both cases; final publication performs diff anchoring when
           // patch metadata is available, so do not reject a valid finding solely on fixture shape.
           let findings = validateFindings(result.parsed.findings);
-          if (result.parsed.decision === 'FINDINGS' && findings.length === 0) {
-            throw new Error('FINDINGS requires at least one finding');
+          const decisionContractError = personaDecisionContractError(result.parsed.decision, findings);
+          if (decisionContractError) {
+            // DECISION INVARIANT (REL-888): findings mean do-not-approve. A contradictory
+            // response (APPROVE carrying findings, or FINDINGS without any) is invalid — never
+            // silently reinterpreted. The persona contract rejects it during the run with one
+            // bounded corrective turn; reaching this point means the contradiction survived
+            // the correction budget, so fail closed.
+            throw new PanelStructuredOutputError(
+              `persona ${persona.id}: ${decisionContractError}`,
+            );
           }
-          const decision: 'APPROVE' | 'FINDINGS' = findings.length > 0
-            ? 'FINDINGS'
-            : result.parsed.decision as 'APPROVE' | 'FINDINGS';
+          const decision: 'APPROVE' | 'FINDINGS' = result.parsed.decision as 'APPROVE' | 'FINDINGS';
           throwIfPanelAborted(signal);
-          if (decision !== result.parsed.decision) {
-            logger.warn(`[Persona: ${persona.id}] Normalized APPROVE with validated findings to FINDINGS.`);
-          }
 
           const promptTokens = result.response.usage?.prompt || 0;
           const completionTokens = result.response.usage?.completion || 0;
