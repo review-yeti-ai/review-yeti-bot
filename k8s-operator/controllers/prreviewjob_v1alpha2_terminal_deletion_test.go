@@ -95,6 +95,17 @@ func TestPRReviewJobV1Alpha2ReconcilerDeletesTerminalReviewAfterRetentionForEver
 			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 				t.Fatalf("reconcile terminal review past retention: %v", err)
 			}
+			// The first reconcile both attaches the REL-896 run-secret cleanup
+			// finalizer (spec.runSecretName is set in this fixture) and issues the
+			// retention Delete in the same pass; against a finalized object the
+			// fake client (like a real API server) only stamps
+			// metadata.deletionTimestamp instead of removing it. A second
+			// reconcile observes that deletionTimestamp, deletes the (absent,
+			// tolerated-NotFound) run Secret, and removes the finalizer -- which is
+			// what actually lets the object disappear.
+			if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+				t.Fatalf("reconcile terminal review to process its run-secret cleanup finalizer: %v", err)
+			}
 			if err := kube.Get(context.Background(), req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); !apierrors.IsNotFound(err) {
 				t.Fatalf("terminal review past its retention window must be deleted, got err=%v", err)
 			}
@@ -113,9 +124,21 @@ func TestPRReviewJobV1Alpha2ReconcilerDeleteIsIdempotentAndTolerantOfNotFound(t 
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
 
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
-		t.Fatalf("first delete: %v", err)
+		t.Fatalf("first reconcile: attach run-secret finalizer and issue the retention Delete: %v", err)
 	}
-	// The review is already gone; Reconcile's own NotFound handling
+	if err := kube.Get(context.Background(), req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); err != nil {
+		t.Fatalf("review with a run-secret cleanup finalizer must survive the first Delete call (deletionTimestamp only), got err=%v", err)
+	}
+	// Second reconcile observes deletionTimestamp, tolerates the absent (never
+	// created in this fixture) run Secret as NotFound, and removes the
+	// finalizer -- which is what actually lets the review disappear.
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("second reconcile: process the run-secret cleanup finalizer: %v", err)
+	}
+	if err := kube.Get(context.Background(), req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("review must be fully deleted once its run-secret cleanup finalizer clears, got err=%v", err)
+	}
+	// The review is now already gone; Reconcile's own NotFound handling
 	// (releaseOrphanedWorkerObservation) takes over from here, but re-running
 	// against the exact same request must still not error.
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
@@ -163,6 +186,13 @@ func TestPRReviewJobV1Alpha2ReconcilerUsesCreationTimestampFallbackWhenCompletio
 
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("reconcile legacy terminal review without completionTime: %v", err)
+	}
+	// The run-secret cleanup finalizer (attached on this same first reconcile,
+	// since the fixture carries a valid spec.runSecretName) means the retention
+	// Delete only marks deletionTimestamp; a second reconcile clears the
+	// finalizer and lets the object actually disappear.
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile legacy terminal review to process its run-secret cleanup finalizer: %v", err)
 	}
 	if err := kube.Get(context.Background(), req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("legacy terminal review whose creationTimestamp is past retention must be deleted via the fallback, got err=%v", err)
@@ -245,8 +275,75 @@ func TestPRReviewJobV1Alpha2ReconcilerDeletesAtHardCapDespitePendingPublication(
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("reconcile hard-capped pending-publication review: %v", err)
 	}
+	// The run-secret cleanup finalizer (attached on this same first reconcile)
+	// means the hard-cap Delete only marks deletionTimestamp; a second
+	// reconcile clears the finalizer and lets the object actually disappear.
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile hard-capped pending-publication review to process its run-secret cleanup finalizer: %v", err)
+	}
 	if err := kube.Get(context.Background(), req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("review must be deleted once the hard cap elapses even with FailurePublication still Unknown, got err=%v", err)
+	}
+}
+
+// TestPRReviewJobV1Alpha2ReconcilerDelegatedRequeueUsesHardCapWhenItIsSmaller
+// is a review-finding regression test (REL-896 PR #828): reconcileTerminalDeletion's
+// delegated branch requeues after min(time until the hard cap, time until
+// ordinary retention), but no prior test exercised the branch where the hard
+// cap is the smaller of the two. Here retention (3600s) is far larger than
+// the hard cap (600s), and `now` is before both, so the minimum must be the
+// hard cap.
+func TestPRReviewJobV1Alpha2ReconcilerDelegatedRequeueUsesHardCapWhenItIsSmaller(t *testing.T) {
+	t.Setenv("REVIEW_YETI_TERMINAL_RETENTION_SECONDS", "3600")
+	t.Setenv("REVIEW_YETI_TERMINAL_MAX_RETENTION_SECONDS", "600")
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	// terminalAt == now: both the 3600s retention deadline and the 600s hard
+	// cap are still entirely ahead of `now`.
+	completed := metav1.NewTime(now)
+	review := pendingFailurePublicationReview(now, completed)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	res, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile delegated review with a smaller hard cap than retention: %v", err)
+	}
+	if res.RequeueAfter != 600*time.Second {
+		t.Fatalf("RequeueAfter = %s, want the 600s hard cap (the smaller of the two windows)", res.RequeueAfter)
+	}
+	if err := kube.Get(context.Background(), req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); err != nil {
+		t.Fatalf("review must still exist while the smaller (hard cap) window has not elapsed: %v", err)
+	}
+}
+
+// TestPRReviewJobV1Alpha2ReconcilerDelegatedRequeueUsesRetentionRemainderWhenItIsSmaller
+// is the mirror regression test: retention (60s) is far smaller than the hard
+// cap (86400s), and `now` is before retention, so the minimum must be the
+// ordinary retention remainder, not the hard cap.
+func TestPRReviewJobV1Alpha2ReconcilerDelegatedRequeueUsesRetentionRemainderWhenItIsSmaller(t *testing.T) {
+	t.Setenv("REVIEW_YETI_TERMINAL_RETENTION_SECONDS", "60")
+	t.Setenv("REVIEW_YETI_TERMINAL_MAX_RETENTION_SECONDS", "86400")
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	// terminalAt == now: both the 60s retention deadline and the 86400s hard
+	// cap are still entirely ahead of `now`.
+	completed := metav1.NewTime(now)
+	review := pendingFailurePublicationReview(now, completed)
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	res, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile delegated review with a smaller retention than hard cap: %v", err)
+	}
+	if res.RequeueAfter != 60*time.Second {
+		t.Fatalf("RequeueAfter = %s, want the 60s retention remainder (the smaller of the two windows)", res.RequeueAfter)
+	}
+	if err := kube.Get(context.Background(), req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); err != nil {
+		t.Fatalf("review must still exist while the smaller (retention) window has not elapsed: %v", err)
 	}
 }
 

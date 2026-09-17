@@ -1085,3 +1085,55 @@ func TestBuildWorkerJobGenericRequiresPVC(t *testing.T) {
 		t.Fatalf("BuildWorkerJob error = %v, want ErrJobConfiguration for empty PVC name in generic mode", err)
 	}
 }
+
+// TestIsValidRunSecretName exercises job.IsValidRunSecretName directly.
+// REL-896's v1alpha2 operator run-secret cleanup finalizer uses this exact
+// check to decide whether a Secret it is about to delete is provably this
+// review's own run Secret (see reconcileRunSecretDeletion in
+// prreviewjob_v1alpha2_controller.go); a false positive here would let the
+// operator's delete-only RBAC grant remove an arbitrary Secret by name.
+func TestIsValidRunSecretName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"ct-review-run-11111111111111111111111111111111", true},
+		{"ct-review-run-abcdef0123456789abcdef0123456789", true},
+		// Canonical retry suffix: a positive int32 execution attempt.
+		{"ct-review-run-11111111111111111111111111111111-a2", true},
+		{"ct-review-run-11111111111111111111111111111111-a1", true},
+		{"ct-review-run-11111111111111111111111111111111-a2147483647", true},
+		// Empty name.
+		{"", false},
+		// Missing prefix.
+		{"11111111111111111111111111111111", false},
+		{"review-run-11111111111111111111111111111111", false},
+		// Wrong hex length (short and long).
+		{"ct-review-run-1111111111111111111111111111111", false},
+		{"ct-review-run-111111111111111111111111111111111", false},
+		// Uppercase hex is rejected -- the contract is lowercase-only.
+		{"ct-review-run-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", false},
+		// Non-hex characters.
+		{"ct-review-run-1111111111111111111111111111111g", false},
+		// Attempt suffix of zero or a leading zero is not a positive integer
+		// in the canonical shape the pattern accepts.
+		{"ct-review-run-11111111111111111111111111111111-a0", false},
+		{"ct-review-run-11111111111111111111111111111111-a01", false},
+		// Non-numeric or malformed suffix.
+		{"ct-review-run-11111111111111111111111111111111-a", false},
+		{"ct-review-run-11111111111111111111111111111111-b2", false},
+		{"ct-review-run-11111111111111111111111111111111-a2x", false},
+		// An unrelated credential Secret name must never match.
+		{"review-yeti-gateway-credentials", false},
+		// A prefix match is not enough -- must be the full name.
+		{"ct-review-run-11111111111111111111111111111111-extra", false},
+		{"prefix-ct-review-run-11111111111111111111111111111111", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := job.IsValidRunSecretName(test.name); got != test.want {
+				t.Fatalf("IsValidRunSecretName(%q) = %v, want %v", test.name, got, test.want)
+			}
+		})
+	}
+}

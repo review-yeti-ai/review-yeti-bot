@@ -446,6 +446,22 @@ func configErr(reason string) error {
 	return fmt.Errorf("%w: %s", ErrJobConfiguration, reason)
 }
 
+// IsValidRunSecretName reports whether name matches the run-Secret naming
+// contract this package already enforces on every worker build
+// (secretNamePattern, checked by validateInput below) -- and which the
+// TypeScript dispatcher defines canonically in buildRunSecretName
+// (src/k8s/reviewJobProjection.ts): "ct-review-run-" followed by the run ID's
+// 32 lowercase hex characters, with an optional "-a<N>" execution-attempt
+// suffix. Callers outside this package that need to act on a Secret purely by
+// its declared name -- and must never fall back to a label selector or List
+// to find it -- use this exact check first. The v1alpha2 operator's
+// run-Secret cleanup finalizer (prreviewjob_v1alpha2_controller.go) is the
+// first such caller: it must not delete a Secret whose name it cannot prove
+// is this review's own run Secret.
+func IsValidRunSecretName(name string) bool {
+	return secretNamePattern.MatchString(name)
+}
+
 func validateInput(input Input) error {
 	if input.Review == nil || input.Now.IsZero() || input.Review.Namespace != Namespace {
 		return configErr("review is nil, clock is zero, or namespace is not " + Namespace)
@@ -458,7 +474,7 @@ func validateInput(input Input) error {
 	if !runIDPattern.MatchString(spec.RunID) || len(spec.DeliveryID) == 0 || len(spec.DeliveryID) > 512 || spec.RepositoryID <= 0 ||
 		!repoPattern.MatchString(spec.Repo) || spec.PRNumber <= 0 || !shaPattern.MatchString(spec.HeadSHA) || !shaPattern.MatchString(spec.BaseSHA) ||
 		!digestPattern.MatchString(spec.PolicyDigest) || !digestPattern.MatchString(spec.ConfigDigest) || (spec.PublicationMode != "disabled" && spec.PublicationMode != "app-gate") ||
-		!workerImagePattern.MatchString(spec.WorkerImage) || !secretNamePattern.MatchString(spec.RunSecretName) {
+		!workerImagePattern.MatchString(spec.WorkerImage) || !IsValidRunSecretName(spec.RunSecretName) {
 		return configErr("PRReviewJob spec failed identity validation (run/delivery/repo/PR/sha/digest/publication-mode/image/run-secret)")
 	}
 	if _, err := executionAttemptForSpec(spec); err != nil {

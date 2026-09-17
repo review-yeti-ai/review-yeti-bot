@@ -496,6 +496,21 @@ func TestDeletedReviewDoesNotStrandWorkerObservationFinalizer(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The review now also carries the REL-896 run-secret cleanup finalizer
+	// (added on the very first reconcile inside missingJobFixture, since the
+	// fixture's review has a valid spec.runSecretName), so this external
+	// Delete only sets metadata.deletionTimestamp -- it does not remove the
+	// review outright. The next reconcile clears that finalizer (there is no
+	// run Secret object in this fixture, so the delete is a tolerated
+	// NotFound) and, in doing so, lets the review actually disappear; only
+	// the reconcile after that observes the NotFound and releases the
+	// worker's observation finalizer via releaseOrphanedWorkerObservation.
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(ctx, req.NamespacedName, &reviewv1alpha2.PRReviewJob{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("review must be fully deleted once its run-secret cleanup finalizer clears, got err=%v", err)
+	}
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}

@@ -31,10 +31,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
@@ -49,6 +51,16 @@ const (
 	workerCreationReserved           = "WorkerCreationReserved"
 	terminalOutcomeFinalizer         = "review-yeti.ai/terminal-outcome"
 	failurePublicationCondition      = "FailurePublication"
+	// runSecretCleanupFinalizer guards the per-run Secret named by
+	// spec.runSecretName. The TypeScript dispatcher creates that Secret before
+	// this resource exists (so it can never carry an ownerReference back to a
+	// PRReviewJob that isn't admitted yet), and its own RBAC intentionally
+	// stops at get/create on Secrets: a patch verb would let a compromised
+	// dispatcher process (it already holds the GitHub App key) overwrite any
+	// credential Secret in the namespace, not just its own run Secret. A
+	// finalizer plus a delete-only operator identity is the accepted
+	// alternative -- delete cannot be used to plant or read a credential.
+	runSecretCleanupFinalizer = "review-yeti.ai/run-secret-cleanup"
 )
 
 // PRReviewJobV1Alpha2Reconciler is the disabled-by-default receipt-only
@@ -66,6 +78,10 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	// every app-gate review -- deliberately, since this lane fails closed and a
 	// half-configured transport must not reach a running worker.
 	Publishing job.PublishingConfig
+	// Recorder is optional. When set, a Forbidden run-Secret delete surfaces as
+	// a warning Event on the PRReviewJob in addition to the log line; nil is
+	// tolerated so unit tests do not need to wire a fake recorder.
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch;delete
@@ -74,6 +90,7 @@ type PRReviewJobV1Alpha2Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=delete
 func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
 	err := r.getCachedThenLive(ctx, req.NamespacedName, &review)
@@ -82,6 +99,26 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, r.releaseOrphanedWorkerObservation(ctx, req)
 		}
 		return ctrl.Result{}, err
+	}
+
+	// A terminating PRReviewJob (deleted by this controller's own
+	// reconcileTerminalDeletion, or by anything else -- kubectl, a namespace
+	// teardown) must not re-enter the normal admission/execution machinery
+	// below. Route it to the run-Secret cleanup path and return; every other
+	// branch in this function assumes a review that is not being deleted.
+	if review.DeletionTimestamp != nil {
+		return r.reconcileRunSecretDeletion(ctx, &review)
+	}
+	// Attach the cleanup guard as early as possible so no admission window
+	// exists where a review could be deleted (by anyone) before the finalizer
+	// is recorded. This mirrors -- but is independent of -- how the worker Job
+	// below acquires terminalOutcomeFinalizer: added inline, no early return,
+	// because reconcile must still make forward progress in the same pass.
+	if review.Spec.RunSecretName != "" && !controllerutil.ContainsFinalizer(&review, runSecretCleanupFinalizer) {
+		controllerutil.AddFinalizer(&review, runSecretCleanupFinalizer)
+		if err := r.Update(ctx, &review); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if failurePublicationPending(&review) {
@@ -993,6 +1030,63 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalDeletion(
 // race) must not surface that as an error.
 func (r *PRReviewJobV1Alpha2Reconciler) deleteTerminalReview(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (ctrl.Result, error) {
 	if err := r.Delete(ctx, review); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileRunSecretDeletion runs once metadata.deletionTimestamp is set on a
+// PRReviewJob, whether that deletion was initiated by deleteTerminalReview
+// above or by anything else (kubectl delete, a namespace teardown, a future
+// operator path). It is the only place in this controller that deletes a
+// Secret, and it only ever does so by the exact name spec.runSecretName
+// declares -- never by label selector or List -- and only when that name
+// matches the run-secret naming contract (job.IsValidRunSecretName, the same
+// check BuildWorkerJob's validateInput already enforces before ever wiring
+// the name into a worker Pod spec). A PRReviewJob admitted before this
+// contract existed, or one an operator build let through with an invalid
+// name, must not cause any Secret deletion; it only loses its finalizer.
+//
+// A real Kubernetes API server keeps this object present-but-terminating
+// (DeletionTimestamp set, finalizers non-empty) until every finalizer is
+// removed, so this function's own Update -- once it removes the finalizer --
+// is what actually lets deletion complete. Delete errors other than NotFound
+// and Forbidden are returned so the object retries and is never orphaned
+// mid-cleanup. Forbidden is a deliberate exception: the deployed Role may not
+// yet grant `delete` on secrets (chart rollout ordering, a stale binding), and
+// a stuck finalizer would wedge this PRReviewJob -- and eventually block
+// namespace deletion -- forever. One leaked short-lived run Secret is judged
+// strictly cheaper than that, so Forbidden is logged and (when a Recorder is
+// configured) surfaced as a warning Event, and cleanup proceeds as if the
+// Secret were already gone.
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileRunSecretDeletion(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(review, runSecretCleanupFinalizer) {
+		return ctrl.Result{}, nil
+	}
+	if job.IsValidRunSecretName(review.Spec.RunSecretName) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: review.Spec.RunSecretName, Namespace: review.Namespace},
+		}
+		switch err := r.Delete(ctx, secret); {
+		case err == nil, apierrors.IsNotFound(err):
+			// Deleted, or a prior reconcile (or the reaper, or an operator) already
+			// removed it -- either way there is nothing left to clean up.
+		case apierrors.IsForbidden(err):
+			log.FromContext(ctx).Error(err, "operator lacks delete permission on the run Secret; removing the cleanup finalizer without deleting it",
+				"secret", review.Spec.RunSecretName, "namespace", review.Namespace, "review", review.Name)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(review, corev1.EventTypeWarning, "RunSecretDeleteForbidden",
+					"operator RBAC does not grant delete on Secret %s; the run-secret cleanup finalizer was removed without deleting it", review.Spec.RunSecretName)
+			}
+		default:
+			return ctrl.Result{}, err
+		}
+	}
+	controllerutil.RemoveFinalizer(review, runSecretCleanupFinalizer)
+	if err := r.Update(ctx, review); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
