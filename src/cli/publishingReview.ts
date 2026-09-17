@@ -23,6 +23,8 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted } from '../panel/panelEngine';
+import { buildZoektIndex } from '../mcp/zoektIndexBuilder';
+import { materializeReviewWorkdir } from '../mcp/zoektWorkdirMaterializer';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
@@ -560,6 +562,66 @@ export interface PublishingReviewDeps {
   now?: () => number;
   /** Worker/runtime shutdown signal; linked to the panel's configured deadline. */
   signal?: AbortSignal;
+  /**
+   * REL-677 / ADR 0329: index-at-review-time zoekt grounding. Injectable for tests; the default
+   * implementation materializes a read-only tarball of the head SHA and builds a throwaway index.
+   */
+  zoektGrounding?: typeof defaultZoektGrounding;
+}
+
+/**
+ * REL-677 / ADR 0329: build the whole-repo zoekt index for this review's exact head SHA into a
+ * scratch directory. Fail-soft by contract: every failure mode resolves to `{ indexDir: undefined }`
+ * and the panel runs exactly as it did without zoekt. Never throws.
+ */
+async function defaultZoektGrounding(input: {
+  repository: string;
+  headSha: string;
+  token: string | undefined;
+  enabled: boolean;
+  signal?: AbortSignal;
+}): Promise<{ indexDir?: string; scratchDir?: string; reason?: string }> {
+  if (!input.enabled || !input.token) return { reason: 'disabled_or_unauthenticated' };
+  // The zoekt modules are CommonJS with loose runtime shapes; pin the contract here.
+  const materialize = materializeReviewWorkdir as unknown as (args: {
+    repository: string; headSha: string; token: string; destDir: string; signal?: AbortSignal;
+  }) => Promise<{ status: string; reason?: string; workdir?: string }>;
+  const buildIndex = buildZoektIndex as unknown as (args: {
+    workdir: string; indexDir: string; config?: { zoektIndexBinaryPath?: string };
+  }) => Promise<{ status: string; reason?: string; shardCount?: number }>;
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const os = await import('node:os');
+  let scratchDir: string | undefined;
+  try {
+    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-zoekt-'));
+    const workdir = path.join(scratchDir, 'src');
+    const indexDir = path.join(scratchDir, 'index');
+    const materialized = await materialize({
+      repository: input.repository,
+      headSha: input.headSha,
+      token: input.token,
+      destDir: workdir,
+      signal: input.signal,
+    });
+    if (materialized.status !== 'ok') {
+      return { indexDir: undefined, scratchDir, reason: `materialize_${materialized.status}` };
+    }
+    const built = await buildIndex({
+      workdir,
+      indexDir,
+      config: { zoektIndexBinaryPath: process.env.ZOEKT_INDEX_BIN || 'zoekt-index' },
+    });
+    if (built.status !== 'ok') {
+      return { indexDir: undefined, scratchDir, reason: `build_${built.status}` };
+    }
+    return { indexDir, scratchDir };
+  } catch (error: any) {
+    if (scratchDir) {
+      try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* fail-soft */ }
+    }
+    return { indexDir: undefined, reason: error?.message || 'zoekt_grounding_error' };
+  }
 }
 
 /**
@@ -823,10 +885,61 @@ export async function runPublishingReviewWorker(
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
     const panelDeadline = createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal);
+    // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
+    // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
+    // removed in the finally below; the index never outlives this review run.
+    const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
+    let zoektScratchRoot: Awaited<ReturnType<typeof defaultZoektGrounding>> = {};
     try {
+      // A throwing grounding dep still fails soft: grounding is evidence
+      // enrichment, never a precondition of the review.
+      // Opt-in by deployment env (ZOEKT_GROUNDING_ENABLED=true): index-at-review-time
+      // grounding performs one bounded GitHub tarball fetch per review, so it must never
+      // activate implicitly for deployments (or test harnesses) that did not ask for it.
+      // The kill switch forces it off without a redeploy.
+      const zoektGroundingEnabled = value(env, 'ZOEKT_GROUNDING_ENABLED') === 'true'
+        && value(env, 'ZOEKT_GROUNDING_DISABLED') !== 'true'
+        && (workerConfig as { pre_checks?: { zoekt?: { enabled?: boolean } } })?.pre_checks?.zoekt?.enabled !== false;
+      try {
+        zoektScratchRoot = await zoektGrounding({
+          repository: identity.repo,
+          headSha: identity.headSha,
+          token: value(env, 'GH_TOKEN'),
+          enabled: zoektGroundingEnabled,
+          signal: deps.signal,
+        });
+      } catch (groundingError: any) {
+        zoektScratchRoot = { reason: groundingError?.message || 'zoekt_grounding_error' };
+      }
+      // Inject the indexDir into BOTH config paths that consume it: the symbol
+      // pre-check (pre_checks.zoekt) and the panel's on-demand full-repository
+      // search (evidence.zoekt) — the latter only when pre_checks.zoekt is absent.
+      const zoektIndexDir = zoektGroundingEnabled ? zoektScratchRoot.indexDir : undefined;
+      const zoektBinaryOverride = process.env.ZOEKT_BIN ? { zoektBinaryPath: process.env.ZOEKT_BIN } : {};
+      const groundedConfig = zoektIndexDir
+        ? {
+            ...workerConfig,
+            evidence: {
+              ...(workerConfig as { evidence?: Record<string, unknown> }).evidence,
+              zoekt: {
+                ...((workerConfig as { evidence?: { zoekt?: Record<string, unknown> } }).evidence?.zoekt ?? {}),
+                indexDir: zoektIndexDir,
+                ...zoektBinaryOverride,
+              },
+            },
+            pre_checks: {
+              ...((workerConfig as { pre_checks?: Record<string, unknown> }).pre_checks ?? {}),
+              zoekt: {
+                ...((workerConfig as { pre_checks?: { zoekt?: Record<string, unknown> } }).pre_checks?.zoekt ?? {}),
+                indexDir: zoektIndexDir,
+                ...zoektBinaryOverride,
+              },
+            },
+          }
+        : workerConfig;
       const panelResult = await raceWithPanelAbort(
         Promise.resolve().then(() => panelRunner({
-          config: workerConfig,
+          config: groundedConfig,
           changedFiles,
           repository: identity.repo,
           headSha: identity.headSha,
@@ -1152,6 +1265,10 @@ export async function runPublishingReviewWorker(
     };
     } finally {
       panelDeadline.cleanup();
+      if (zoektScratchRoot.scratchDir) {
+        const { rmSync } = await import('node:fs');
+        try { rmSync(zoektScratchRoot.scratchDir, { recursive: true, force: true }); } catch { /* fail-soft */ }
+      }
     }
   } catch (error) {
     await reportTerminalFailure(error, checkId);
