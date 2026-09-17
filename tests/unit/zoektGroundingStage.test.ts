@@ -79,16 +79,40 @@ describe('createZoektGroundingStage (REL-677)', () => {
     expect(build).toHaveBeenCalledTimes(1);
   });
 
-  it('throws never: an exploding materializer resolves to a reason and removes the scratch', async () => {
-    const { fs, created, removed } = fakeFs();
+  it('catch path prefers the injected fsPromises.rm branch (async deletion observable)', async () => {
+    const { fs, created } = fakeFs();
+    const promiseRemovals: string[] = [];
+    const syncRemovals: string[] = [];
+    const fsWithSyncOnly = { ...fs, rmSync: (dir: string) => { syncRemovals.push(dir); } };
     const materialize = vi.fn(async () => { throw new Error('ECONNRESET'); });
-    const fsPromises = { rm: async (dir: string) => { removed.push(dir); } };
-    const stage = createZoektGroundingStage({ fs, fsPromises, materializeReviewWorkdir: materialize, buildZoektIndex: vi.fn() });
+    const stage = createZoektGroundingStage({
+      fs: fsWithSyncOnly,
+      fsPromises: { rm: async (dir: string) => { promiseRemovals.push(dir); } },
+      materializeReviewWorkdir: materialize,
+      buildZoektIndex: vi.fn(),
+    });
 
     const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't' });
     expect(result.indexDir).toBeUndefined();
     expect(result.reason).toBe('ECONNRESET');
-    expect(created).toHaveLength(1);
-    expect(removed).toEqual(created); // catch path removes the scratch tree
+    // The explicit fsPromises override is authoritative: async rm ran, sync rm did not.
+    expect(promiseRemovals).toEqual(created);
+    expect(syncRemovals).toHaveLength(0);
+  });
+
+  it('catch path falls back to the injected fs rmSync when no fsPromises override exists', async () => {
+    const { fs, created } = fakeFs();
+    const syncRemovals: string[] = [];
+    const fsWithSyncOnly = { ...fs, rmSync: (dir: string) => { syncRemovals.push(dir); } };
+    const materialize = vi.fn(async () => { throw new Error('ECONNRESET'); });
+    const stage = createZoektGroundingStage({
+      fs: fsWithSyncOnly,
+      materializeReviewWorkdir: materialize,
+      buildZoektIndex: vi.fn(),
+    });
+
+    const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't' });
+    expect(result.reason).toBe('ECONNRESET');
+    expect(syncRemovals).toEqual(created);
   });
 });

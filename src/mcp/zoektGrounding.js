@@ -32,8 +32,14 @@ const path = require('path');
  */
 async function removeScratchTree(scratchDir, deps = {}) {
   if (!scratchDir) return;
-  // An injected fs is authoritative for its own seam resolution: a fake with
-  // no .promises must fall through to ITS rmSync, never the real fs.promises.
+  // Deletion-seam precedence, each branch observable: an explicit fsPromises
+  // override wins; an injected fs's own .promises comes next; an injected fs
+  // without promises uses its rmSync; no injection falls back to the real
+  // fs.promises.
+  if (deps.fsPromises?.rm) {
+    try { await deps.fsPromises.rm(scratchDir, { recursive: true, force: true }); } catch { /* fail-soft */ }
+    return;
+  }
   const fsImpl = deps.fs;
   if (fsImpl) {
     try {
@@ -54,6 +60,7 @@ function createZoektGroundingStage(overrides = {}) {
   const materialize = overrides.materializeReviewWorkdir || require('./zoektWorkdirMaterializer').materializeReviewWorkdir;
   const buildIndex = overrides.buildZoektIndex || require('./zoektIndexBuilder').buildZoektIndex;
   const fsImpl = overrides.fs || fs;
+  const fsPromisesOverride = overrides.fsPromises;
   const osImpl = overrides.os || os;
   const pathImpl = overrides.path || path;
   const indexBinaryPath = overrides.zoektIndexBinaryPath || 'zoekt-index';
@@ -86,9 +93,10 @@ function createZoektGroundingStage(overrides = {}) {
       return { indexDir, scratchDir };
     } catch (error) {
       // Catch path owns its own cleanup: the caller never received a receipt,
-      // so nothing else knows this scratch tree exists. Uses the injected fs
-      // seams (a fake fs has no .promises, so the rmSync seam applies).
-      await removeScratchTree(scratchDir, { fs: fsImpl, fsPromises: fsImpl.promises });
+      // so nothing else knows this scratch tree exists. An explicit fsPromises
+      // override is authoritative; otherwise the injected fs's own resolution
+      // applies.
+      await removeScratchTree(scratchDir, { fs: fsImpl, fsPromises: fsPromisesOverride });
       return { indexDir: undefined, reason: (error && error.message) || 'zoekt_grounding_error' };
     }
   };

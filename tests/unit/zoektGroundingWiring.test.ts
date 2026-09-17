@@ -141,6 +141,25 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     expect(panelArg.config.evidence?.zoekt?.indexDir).toBeUndefined();
   });
 
+  it('injects ZOEKT_BIN into both config paths when grounding succeeds', async () => {
+    const panelRunner = vi.fn(async () => basePanel());
+    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch' }));
+    await runPublishingReviewWorker(
+      env({ ZOEKT_BIN: '/opt/zoekt/zoekt' }),
+      deps(panelRunner, { zoektGrounding: zoektGrounding as never }),
+    );
+    const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
+    expect(panelArg.config.pre_checks.zoekt.zoektBinaryPath).toBe('/opt/zoekt/zoekt');
+    expect(panelArg.config.evidence.zoekt.zoektBinaryPath).toBe('/opt/zoekt/zoekt');
+    // A grounded run without ZOEKT_BIN leaves the binary path unset (PATH lookup).
+    const panelRunner2 = vi.fn(async () => basePanel());
+    const zoektGrounding2 = vi.fn(async () => ({ indexDir: '/tmp/fake-index' }));
+    await runPublishingReviewWorker(env(), deps(panelRunner2, { zoektGrounding: zoektGrounding2 as never }));
+    const panelArg2 = (panelRunner2.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
+    expect(panelArg2.config.pre_checks.zoekt.zoektBinaryPath).toBeUndefined();
+    expect(panelArg2.config.evidence.zoekt.zoektBinaryPath).toBeUndefined();
+  });
+
   it('skips grounding entirely under the ZOEKT_GROUNDING_DISABLED kill switch', async () => {
     const panelRunner = vi.fn(async () => basePanel());
     const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/unused' }));
