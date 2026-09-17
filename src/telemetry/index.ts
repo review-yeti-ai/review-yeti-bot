@@ -1,5 +1,5 @@
 import { initTracer, getTracer, runInSpan } from './tracer';
-import { initMetrics, getMetrics, getPrometheusMetrics } from './metrics';
+import { initMetrics, getMetrics, getPrometheusMetrics, flushMetrics, resolveOtlpMetricsEndpoint } from './metrics';
 import { getRecentSpans, clearSpans, formatSpan } from './spans';
 import { telemetryMiddleware } from './middleware';
 
@@ -15,6 +15,8 @@ export {
   initMetrics,
   getMetrics,
   getPrometheusMetrics,
+  flushMetrics,
+  resolveOtlpMetricsEndpoint,
   getRecentSpans,
   clearSpans,
   formatSpan,
