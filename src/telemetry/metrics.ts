@@ -8,11 +8,46 @@ import {
   View,
   InstrumentType,
 } from '@opentelemetry/sdk-metrics';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
 
-let meterProvider: MeterProvider | null = null;
+let metricsInstance: MetricCounters | null = null;
 let metricReader: PeriodicExportingMetricReader | null = null;
+let otlpReader: PeriodicExportingMetricReader | null = null;
+let meterProvider: MeterProvider | null = null;
 
-export interface MetricCounters {
+/**
+ * REL-904: resolve the OTLP push endpoint for ephemeral workers.
+ *
+ * Worker pods are short-lived Kubernetes Jobs and cannot be scraped; the only way
+ * their lane/provider telemetry reaches VictoriaMetrics is a one-shot OTLP push to
+ * the otel-collector before process exit. The endpoint is opt-in via env so local
+ * and dispatcher processes stay push-free unless configured.
+ */
+export function resolveOtlpMetricsEndpoint(env: NodeJS.ProcessEnv = process.env): string | null {
+  const value = String(env.REVIEW_YETI_OTEL_METRICS_ENDPOINT || env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT || '').trim();
+  return value.length > 0 ? value : null;
+}
+
+/** Best-effort one-shot export of accumulated metrics before a worker pod exits. */
+export async function flushMetrics(timeoutMs = 5000): Promise<void> {
+  const readers = [otlpReader, metricReader].filter((reader): reader is PeriodicExportingMetricReader => reader !== null);
+  if (readers.length === 0) return;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(() => resolve(), timeoutMs);
+    timer.unref();
+  });
+  try {
+    await Promise.race([
+      Promise.all(readers.map((reader) => reader.forceFlush())),
+      timeout,
+    ]);
+  } catch (_) {
+    // Telemetry must never fail a review: swallow export errors after the timeout guard.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}export interface MetricCounters {
   tokensPrompt: Counter;
   tokensCompletion: Counter;
   tokensTotal: Counter;
@@ -33,6 +68,8 @@ export interface MetricCounters {
   reviewReaperRetiredNonPublishable: Counter;
   /** REL-896: runs claimed via the operator's delegated-failure signal rather than terminal_deadline. */
   reviewReaperDelegated: Counter;
+  /** REL-904: terminal lane outcomes for lane/provider attribution. */
+  laneOutcomes: Counter;
   activeJobs: UpDownCounter;
   queuedJobs: UpDownCounter;
 
@@ -48,9 +85,7 @@ export interface MetricCounters {
   preCheckTotalDuration: Histogram;
 }
 
-let metricsInstance: MetricCounters | null = null;
-
-export function initMetrics(): MetricCounters {
+export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounters {
   if (metricsInstance) {
     return metricsInstance;
   }
@@ -60,6 +95,23 @@ export function initMetrics(): MetricCounters {
     exporter,
     exportIntervalMillis: 60000,
   });
+
+  const readers: PeriodicExportingMetricReader[] = [metricReader];
+
+  // REL-904: ephemeral workers push lane/provider metrics to the otel-collector so
+  // VictoriaMetrics can attribute lane outcomes after the pod is reaped. The
+  // collector is already scraped on :8889, so a successful push is sufficient --
+  // no per-worker scrape target exists or is wanted.
+  const otlpEndpoint = resolveOtlpMetricsEndpoint(env);
+  if (otlpEndpoint) {
+    otlpReader = new PeriodicExportingMetricReader({
+      exporter: new OTLPMetricExporter({ url: otlpEndpoint }),
+      // Short-lived jobs: export shortly after the first measurement so the
+      // end-of-run flush has durable data even if forceFlush is interrupted.
+      exportIntervalMillis: 15000,
+    });
+    readers.push(otlpReader);
+  }
 
   meterProvider = new MeterProvider({
     views: [
@@ -94,7 +146,7 @@ export function initMetrics(): MetricCounters {
         aggregation: new ExplicitBucketHistogramAggregation([0.1, 0.5, 1, 2.5, 5, 10, 30, 60]),
       }),
     ],
-    readers: [metricReader],
+    readers,
   });
 
   const meter = meterProvider.getMeter('review-yeti-bot');
@@ -156,6 +208,9 @@ export function initMetrics(): MetricCounters {
     }),
     reviewReaperDelegated: meter.createCounter('review_yeti_review_reaper_delegated_total', {
       description: 'Abandoned publishing runs claimed via the Kubernetes operator delegated-failure signal (REL-896) rather than terminal_deadline.',
+    }),
+    laneOutcomes: meter.createCounter('review_yeti_lane_outcome_total', {
+      description: 'Persona lane terminal outcomes tagged by persona, outcome, failure class, and transport (REL-904 lane/provider attribution).',
     }),
     activeJobs: meter.createUpDownCounter('review_yeti_queue_active_jobs', {
       description: 'Current active review jobs.',
@@ -316,6 +371,7 @@ export async function getPrometheusMetrics(): Promise<string> {
     { name: 'review_yeti_review_reaper_superseded_attempt_total', desc: 'Abandoned review attempts retired because a completed newer same-head App check already exists.', type: 'counter' },
     { name: 'review_yeti_queue_active_jobs', desc: 'Current active review jobs.', type: 'gauge' },
     { name: 'review_yeti_queue_queued_jobs', desc: 'Current queued review jobs.', type: 'gauge' },
+    { name: 'review_yeti_lane_outcome_total', desc: 'Persona lane terminal outcomes tagged by persona, outcome, failure class, and transport (REL-904).', type: 'counter' },
   ];
 
   for (const inst of knownInstruments) {

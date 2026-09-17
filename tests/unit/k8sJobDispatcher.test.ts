@@ -1,7 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { K8sJobDispatcher } from '../../src/k8s/k8sJobDispatcher';
 
 describe('K8sJobDispatcher Unit Tests', () => {
+  afterEach(() => {
+    delete process.env.REVIEW_YETI_OTEL_METRICS_ENDPOINT;
+  });
+
   it('generates clean K8s compliant names for jobs and PVCs', () => {
     const dispatcher = new K8sJobDispatcher('ct-review-system');
     const names = dispatcher.getNames('calltelemetry', 'cisco-cdr', 3058, 'a8f192b3c4d5e6f7');
@@ -47,5 +51,39 @@ describe('K8sJobDispatcher Unit Tests', () => {
 
     const volume = job.spec?.template?.spec?.volumes?.[0];
     expect(volume?.persistentVolumeClaim?.claimName).toBe('pvc-test-pr101');
+  });
+});
+
+describe('K8sJobDispatcher worker env forwarding (REL-904)', () => {
+  it('forwards the OTLP metrics endpoint to the worker when configured', () => {
+    process.env.REVIEW_YETI_OTEL_METRICS_ENDPOINT = 'http://otel-collector.observability.svc.cluster.local:4318/v1/metrics';
+    const dispatcher = new K8sJobDispatcher('ct-review-system');
+    const job = dispatcher.buildJobManifest('job-test-pr102', 'pvc-test-pr102', {
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      prNumber: 3059,
+      headSha: 'b8f192b3c4d5e6f7',
+      jobId: 'job_test_124',
+    });
+    const forwarded = job.spec?.template?.spec?.containers?.[0]?.env?.find(
+      (entry) => entry.name === 'REVIEW_YETI_OTEL_METRICS_ENDPOINT',
+    );
+    expect(forwarded).toMatchObject({ value: 'http://otel-collector.observability.svc.cluster.local:4318/v1/metrics' });
+  });
+
+  it('omits the OTLP endpoint entirely when unset (no push, no env leak)', () => {
+    delete process.env.REVIEW_YETI_OTEL_METRICS_ENDPOINT;
+    const dispatcher = new K8sJobDispatcher('ct-review-system');
+    const job = dispatcher.buildJobManifest('job-test-pr103', 'pvc-test-pr103', {
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      prNumber: 3060,
+      headSha: 'c8f192b3c4d5e6f7',
+      jobId: 'job_test_125',
+    });
+    const forwarded = job.spec?.template?.spec?.containers?.[0]?.env?.find(
+      (entry) => entry.name === 'REVIEW_YETI_OTEL_METRICS_ENDPOINT',
+    );
+    expect(forwarded).toBeUndefined();
   });
 });

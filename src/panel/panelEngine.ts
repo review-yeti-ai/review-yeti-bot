@@ -2306,6 +2306,10 @@ async function runPersona(
             metrics.tokensTotal.add(totalTokens, { persona: persona.id, provider: providerId, model: result.response.model });
             metrics.modelCostUsd.add(costUSD, { persona: persona.id, provider: providerId, model: result.response.model });
             metrics.personaDuration.record(result.durationMs / 1000, { persona: persona.id, provider: providerId, model: result.response.model, decision });
+            // REL-904 lane/provider attribution: a completed lane is one observable
+            // outcome; transport is the provider boundary id (e.g. bifrost), so a
+            // single query answers "is this failing lanes or providers".
+            metrics.laneOutcomes.add(1, { persona: persona.id, outcome: 'completed', failure_class: '', transport: providerId || 'unknown' });
           } catch (_) {}
 
           let personaMermaidDiagram: string | undefined = undefined;
@@ -3005,6 +3009,18 @@ export async function executePersonaPanel(options: {
       const lastKnownUsage: LaneTokenUsage | undefined = reason instanceof PanelConfigurationError ? reason.lastKnownUsage : undefined;
       const lastKnownModel: string | undefined = reason instanceof PanelConfigurationError ? reason.lastKnownModel : undefined;
       const failureClass: WorkerFailureClass | undefined = reason instanceof PanelConfigurationError ? reason.failureClass : undefined;
+      // REL-904 lane/provider attribution: the coded failure class (auth, rate_limit,
+      // transport, provider_error, ...) is what separates a provider outage from a lane
+      // logic defect. Attributes stay in the closed workerFailureClasses vocabulary.
+      try {
+        const metrics = getMetrics();
+        metrics.laneOutcomes.add(1, {
+          persona: persona.id,
+          outcome: 'failed',
+          failure_class: failureClass || 'unknown',
+          transport: 'unknown',
+        });
+      } catch (_) {}
       return { persona, result: undefined, error: errorMsg, lastKnownUsage, lastKnownModel, failureClass };
     });
     const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
