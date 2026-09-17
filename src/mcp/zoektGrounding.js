@@ -14,9 +14,13 @@ const path = require('path');
 // lifecycle, failure mapping, and cleanup contract live here so every consumer (the publishing
 // worker today, any future caller tomorrow) shares one tested implementation.
 //
-// Failure contract: the returned stage NEVER throws. Every failure shape resolves to
-// `{ indexDir: undefined, scratchDir?, reason }`, and the scratch tree is removed on the
-// catch path. Callers treat "no indexDir" as "panel runs exactly as without zoekt".
+// Failure contract: the returned stage NEVER throws. Cleanup ownership is split by
+// shape: on UNEXPECTED errors (the catch path) the stage removes the scratch tree
+// itself and returns only `{ indexDir: undefined, reason }`; on MAPPED failures
+// (materialize/build returning a non-ok status) the receipt retains `scratchDir`
+// so the caller's own finally can remove it through removeScratchTree — one
+// deletion seam, one owner per path. Callers treat "no indexDir" as "panel runs
+// exactly as without zoekt".
 //
 // This module never accepts model input: repository/head/token come from the review's own
 // immutable identity, and the injectable materialize/build implementations are

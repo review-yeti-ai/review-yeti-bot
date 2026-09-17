@@ -178,6 +178,12 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     );
     const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
     expect(panelArg.config.evidence?.zoekt?.indexDir).toBeUndefined();
+    // Fail-soft also means fail-quiet: the thrown grounding error is internal
+    // diagnostics and must never leak into the published check output.
+    for (const call of (d.checkClient.completeCheck.mock.calls as unknown as unknown[][])) {
+      const body = JSON.stringify(call[0]);
+      expect(body).not.toContain('zoekt-index binary missing');
+    }
   });
 
   it('does not ground by default — the deployment must opt in via ZOEKT_GROUNDING_ENABLED', async () => {

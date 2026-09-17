@@ -41,9 +41,12 @@ describe('createZoektGroundingStage (REL-677)', () => {
     const build = vi.fn();
     const stage = createZoektGroundingStage({ fs, materializeReviewWorkdir: materialize, buildZoektIndex: build });
 
-    const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't' });
+    const abortSignal = new AbortController().signal;
+    const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't', signal: abortSignal });
     expect(result).toEqual({ indexDir: undefined, scratchDir: expect.any(String), reason: 'materialize_fetch_failed' });
     expect(build).not.toHaveBeenCalled();
+    // Cancellation seam: the stage forwards its signal to the materializer.
+    expect((materialize.mock.calls[0] as unknown as unknown[])[0]).toMatchObject({ signal: abortSignal });
     // No index was produced: the caller's finally owns scratch removal; the
     // stage must NOT remove the scratch on mapped failure paths because the
     // receipt references it.
