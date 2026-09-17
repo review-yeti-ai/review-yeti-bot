@@ -23,7 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted } from '../panel/panelEngine';
-import { defaultZoektGrounding } from '../mcp/zoektGrounding';
+import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
@@ -571,6 +571,7 @@ export interface PublishingReviewDeps {
     token: string | undefined;
     enabled: boolean;
     signal?: AbortSignal;
+    zoektIndexBinaryPath?: string;
   }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string }>;
 }
 
@@ -623,6 +624,16 @@ async function lookupRepositoryVisibility(input: { owner: string; repo: string; 
   const octokit = new Octokit({ auth: input.token });
   const { data } = await octokit.request('GET /repos/{owner}/{repo}', { owner: input.owner, repo: input.repo });
   return repositoryVisibilityFrom(data);
+}
+
+/** REL-677: the three-conjunct zoekt grounding gate, extracted so every kill path is unit-testable. */
+export function zoektGroundingEnabledFor(
+  env: NodeJS.ProcessEnv,
+  config: unknown,
+): boolean {
+  return value(env, 'ZOEKT_GROUNDING_ENABLED') === 'true'
+    && value(env, 'ZOEKT_GROUNDING_DISABLED') !== 'true'
+    && (config as { pre_checks?: { zoekt?: { enabled?: boolean } } })?.pre_checks?.zoekt?.enabled !== false;
 }
 
 export async function runPublishingReviewWorker(
@@ -839,17 +850,11 @@ export async function runPublishingReviewWorker(
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
     // removed in the finally below; the index never outlives this review run.
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
+    const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
     let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
     try {
       // A throwing grounding dep still fails soft: grounding is evidence
       // enrichment, never a precondition of the review.
-      // Opt-in by deployment env (ZOEKT_GROUNDING_ENABLED=true): index-at-review-time
-      // grounding performs one bounded GitHub tarball fetch per review, so it must never
-      // activate implicitly for deployments (or test harnesses) that did not ask for it.
-      // The kill switch forces it off without a redeploy.
-      const zoektGroundingEnabled = value(env, 'ZOEKT_GROUNDING_ENABLED') === 'true'
-        && value(env, 'ZOEKT_GROUNDING_DISABLED') !== 'true'
-        && (workerConfig as { pre_checks?: { zoekt?: { enabled?: boolean } } })?.pre_checks?.zoekt?.enabled !== false;
       try {
         zoektScratchRoot = await zoektGrounding({
           repository: identity.repo,
@@ -857,6 +862,7 @@ export async function runPublishingReviewWorker(
           token: value(env, 'GH_TOKEN'),
           enabled: zoektGroundingEnabled,
           signal: deps.signal,
+          zoektIndexBinaryPath: value(env, 'ZOEKT_INDEX_BIN') || undefined,
         });
       } catch (groundingError: any) {
         zoektScratchRoot = { reason: groundingError?.message || 'zoekt_grounding_error' };
@@ -865,7 +871,7 @@ export async function runPublishingReviewWorker(
       // pre-check (pre_checks.zoekt) and the panel's on-demand full-repository
       // search (evidence.zoekt) — the latter only when pre_checks.zoekt is absent.
       const zoektIndexDir = zoektGroundingEnabled ? zoektScratchRoot.indexDir : undefined;
-      const zoektBinaryOverride = process.env.ZOEKT_BIN ? { zoektBinaryPath: process.env.ZOEKT_BIN } : {};
+      const zoektBinaryOverride = value(env, 'ZOEKT_BIN') ? { zoektBinaryPath: value(env, 'ZOEKT_BIN') } : {};
       const groundedConfig = zoektIndexDir
         ? {
             ...workerConfig,
@@ -1215,15 +1221,9 @@ export async function runPublishingReviewWorker(
     };
     } finally {
       panelDeadline.cleanup();
-      if (zoektScratchRoot.scratchDir) {
-        try {
-          // Async deletion: the scratch tree holds a full repo checkout plus
-          // index shards (potentially 10k+ files) — sync rm would block the
-          // worker event loop for the whole delete.
-          const { rm } = await import('node:fs/promises');
-          await rm(zoektScratchRoot.scratchDir, { recursive: true, force: true });
-        } catch { /* fail-soft */ }
-      }
+      // One shared deletion contract (async, fail-soft) — the worker must not
+      // hand-roll its own rm for the scratch tree.
+      await removeScratchTree(zoektScratchRoot.scratchDir);
     }
   } catch (error) {
     await reportTerminalFailure(error, checkId);

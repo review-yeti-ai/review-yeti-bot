@@ -64,10 +64,15 @@ describe('createZoektGroundingStage (REL-677)', () => {
   it('returns the indexDir on success and passes bounded args through', async () => {
     const { fs, created } = fakeFs();
     const materialize = vi.fn(async (args: any) => { expect(args.destDir.endsWith('/src')).toBe(true); return { status: 'ok' }; });
-    const build = vi.fn(async (args: any) => { expect(args.indexDir.endsWith('/index')).toBe(true); return { status: 'ok', shardCount: 2 }; });
+    const build = vi.fn(async (args: any) => {
+      expect(args.indexDir.endsWith('/index')).toBe(true);
+      // Binary path is caller-resolved input, never process.env (seams contract).
+      expect(args.config.zoektIndexBinaryPath).toBe('/opt/zoekt/zoekt-index');
+      return { status: 'ok', shardCount: 2 };
+    });
     const stage = createZoektGroundingStage({ fs, materializeReviewWorkdir: materialize, buildZoektIndex: build });
 
-    const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't' });
+    const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't', zoektIndexBinaryPath: '/opt/zoekt/zoekt-index' });
     expect(result.indexDir).toBe(result.scratchDir && `${result.scratchDir}/index`);
     expect(created).toHaveLength(1);
     expect(materialize).toHaveBeenCalledTimes(1);

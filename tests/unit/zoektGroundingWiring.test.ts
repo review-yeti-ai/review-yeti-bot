@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
-import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { runPublishingReviewWorker, zoektGroundingEnabledFor } from '../../src/cli/publishingReview';
+import * as zoektGroundingModule from '../../src/mcp/zoektGrounding';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -51,6 +52,29 @@ function deps(panelRunner: ReturnType<typeof vi.fn>, over: Record<string, unknow
   };
 }
 
+describe('zoektGroundingEnabledFor — the three-conjunct gate (REL-677)', () => {
+  const baseEnv = { NODE_ENV: 'test', ZOEKT_GROUNDING_ENABLED: 'true' } as NodeJS.ProcessEnv;
+  const enabledConfig = { pre_checks: { zoekt: { enabled: true } } };
+  const disabledConfig = { pre_checks: { zoekt: { enabled: false } } };
+
+  it('requires the deployment opt-in', () => {
+    expect(zoektGroundingEnabledFor({ NODE_ENV: 'test' } as NodeJS.ProcessEnv, enabledConfig)).toBe(false);
+    expect(zoektGroundingEnabledFor({ NODE_ENV: 'test', ZOEKT_GROUNDING_ENABLED: 'true' } as NodeJS.ProcessEnv, enabledConfig)).toBe(true);
+  });
+
+  it('honors the no-redeploy kill switch', () => {
+    expect(zoektGroundingEnabledFor(
+      { NODE_ENV: 'test', ZOEKT_GROUNDING_ENABLED: 'true', ZOEKT_GROUNDING_DISABLED: 'true' } as NodeJS.ProcessEnv, enabledConfig,
+    )).toBe(false);
+  });
+
+  it('honors the config-level opt-out (pre_checks.zoekt.enabled === false)', () => {
+    expect(zoektGroundingEnabledFor(baseEnv, disabledConfig)).toBe(false);
+    expect(zoektGroundingEnabledFor(baseEnv, {})).toBe(true);
+    expect(zoektGroundingEnabledFor(baseEnv, { pre_checks: { zoekt: { enabled: true } } })).toBe(true);
+  });
+});
+
 describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
   it('injects the grounded indexDir into both pre_checks.zoekt and evidence.zoekt', async () => {
     const panelRunner = vi.fn(async () => basePanel());
@@ -77,6 +101,18 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
     expect(panelArg.config.pre_checks?.zoekt?.indexDir).toBeUndefined();
     expect(panelArg.config.evidence?.zoekt?.indexDir).toBeUndefined();
+  });
+
+  it('removes the grounding scratch tree in the worker finally (shared deletion contract)', async () => {
+    const panelRunner = vi.fn(async () => basePanel());
+    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch' }));
+    const removeSpy = vi.spyOn(zoektGroundingModule, 'removeScratchTree').mockResolvedValue(undefined);
+    try {
+      await runPublishingReviewWorker(env(), deps(panelRunner, { zoektGrounding: zoektGrounding as never }));
+      expect(removeSpy).toHaveBeenCalledWith('/tmp/fake-scratch');
+    } finally {
+      removeSpy.mockRestore();
+    }
   });
 
   it('fails soft when the grounding dep throws — the review still completes', async () => {
