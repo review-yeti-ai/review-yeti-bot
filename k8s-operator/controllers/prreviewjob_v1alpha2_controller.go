@@ -134,11 +134,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 			// run Secret it protects only leaks until the out-of-band
 			// retention sweep reclaims it (bounded), whereas returning an
 			// error here would stall admission -- and the worker Job with it
-			// -- indefinitely. Undo the in-memory mutation so the rest of
-			// this reconcile observes the finalizer state that actually
-			// persisted, log it, emit a warning Event when a recorder is
-			// wired, and keep reconciling.
-			controllerutil.RemoveFinalizer(&review, runSecretCleanupFinalizer)
+			// -- indefinitely. Log it, emit a warning Event when a recorder
+			// is wired, and keep reconciling. The in-memory finalizer is
+			// deliberately left alone: nothing later in this pass reads it
+			// (the only readers are in the deletion path, which returns
+			// before this branch), and every later write to the review goes
+			// through the status subresource, which ignores metadata, so it
+			// can never be persisted by accident. The next reconcile re-reads
+			// the stored object and retries the patch.
 			log.FromContext(ctx).Error(err, "failed to attach run-secret cleanup finalizer; continuing reconciliation without it",
 				"review", review.Name, "namespace", review.Namespace)
 			if r.Recorder != nil {
