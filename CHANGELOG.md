@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.73.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.73.2...v1.73.3) (2026-09-17)
+
+
+### Bug Fixes
+
+* **operator:** publish pre-worker rejections promptly and keep failed worker Jobs for their TTL (REL-896) ([#847](https://github.com/review-yeti-ai/review-yeti-bot/issues/847)) ([18057b9](https://github.com/review-yeti-ai/review-yeti-bot/commit/18057b9e264cbb2ee7b5108fa156370223139625))
+
 ## [1.73.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.73.1...v1.73.2) (2026-09-17)
 
 
