@@ -781,6 +781,63 @@ describe('abandoned check exact App/attempt failure publication', () => {
   });
 });
 
+describe('REL-896 delegated-failure fail-closed summary text', () => {
+  const patchedSummary = async (delegatedRun: AbandonedPublishingRun) => {
+    const visible = { ...exactCheck, status: 'queued', conclusion: null };
+    const { client, fetchImplementation } = fixture([visible], visible);
+    await expect(client.failAbandonedCheck(delegatedRun, 4385771, signal())).resolves.toBe('failure-published');
+    const patches = fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+    expect(patches).toHaveLength(1);
+    return JSON.parse(String(patches[0][1]?.body)).output.summary as string;
+  };
+
+  it.each([
+    ['worker_failed', 'The Kubernetes operator observed the publishing worker fail'],
+    ['worker_deadline_exceeded', 'The Kubernetes operator observed the publishing worker exceed its deadline'],
+    ['worker_job_missing', 'The Kubernetes operator observed the publishing worker Job disappear'],
+  ] as const)('renders distinct operator-observed text for %s', async (reason, expectedPrefix) => {
+    const summary = await patchedSummary({ ...run, delegatedReason: reason });
+    expect(summary).toBe(
+      `${expectedPrefix} for \`${run.headSha}\` before a durable verdict was recorded.\n\n`
+        + 'This is a failed review rather than an approval.\n\n'
+        + 'Re-run the governed review workflow to request a fresh attempt.',
+    );
+  });
+
+  it('renders three distinct summaries for the three known reasons', async () => {
+    const summaries = await Promise.all(
+      (['worker_failed', 'worker_deadline_exceeded', 'worker_job_missing'] as const)
+        .map((reason) => patchedSummary({ ...run, delegatedReason: reason })),
+    );
+    expect(new Set(summaries).size).toBe(3);
+  });
+
+  it('renders the existing generic text unchanged when no delegatedReason is present', async () => {
+    const summary = await patchedSummary(run);
+    expect(summary).toBe(
+      `No durable verdict was recorded for \`${run.headSha}\` before its terminal deadline.\n\n`
+        + 'The worker may have started; this is a failed review rather than an approval.\n\n'
+        + 'Re-run the governed review workflow to request a fresh attempt.',
+    );
+  });
+
+  it('falls back to the existing generic text for an unrecognized delegated reason string', async () => {
+    const summary = await patchedSummary({
+      ...run,
+      // Cast: simulates a future operator reason value not yet known to this
+      // build's DELEGATED_FAILURE_REASON_SUMMARY map (see the `as
+      // DelegatedFailureReason` assertion on the DB read in
+      // reviewDispatchRepository.ts, which does not validate the value).
+      delegatedReason: 'worker_evicted_by_a_future_operator' as AbandonedPublishingRun['delegatedReason'],
+    });
+    expect(summary).toBe(
+      `No durable verdict was recorded for \`${run.headSha}\` before its terminal deadline.\n\n`
+        + 'The worker may have started; this is a failed review rather than an approval.\n\n'
+        + 'Re-run the governed review workflow to request a fresh attempt.',
+    );
+  });
+});
+
 describe('abandoned reaper with the actual GitHub publication adapter', () => {
   it('retires the exact audited historical empty-identity check once without changing the newer check', async () => {
     const newerOfficialCheck = {

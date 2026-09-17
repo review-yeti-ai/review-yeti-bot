@@ -15,6 +15,7 @@ import {
 import {
   buildDurableWorkerFailureDiagnostics,
   workerTerminalSuccessDigest,
+  type DelegatedFailureReason,
   type WorkerCompletionProof, type WorkerFailureDiagnostics, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { buildAuthoritativeReviewIdentity } from '../review/authoritativeReviewIdentity';
@@ -260,6 +261,25 @@ export interface AbandonedPublishingRun {
   recoveryOnly?: boolean;
   /** Claim-time evidence that the run and outbox point at different deliveries. */
   deliveryIdentityMismatch?: boolean;
+  /**
+   * REL-896: set only when this claim matched a candidate from the Go
+   * operator's delegated-failure signal (see
+   * `src/k8s/delegatedFailureReader.ts`) rather than an expired
+   * `terminal_deadline`. Carries the operator's exact classification so the
+   * published check and persisted diagnostics can report it instead of the
+   * generic deadline text.
+   */
+  delegatedReason?: DelegatedFailureReason;
+}
+
+/** A run the Go operator has already observed failing, killed, missing, or
+ * past deadline -- see `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go`
+ * `reconcileFailurePublication` -- offered to `claimAbandonedPublishingRuns`
+ * so it may claim the exact attempt before `terminal_deadline` elapses. */
+export interface DelegatedFailureCandidateInput {
+  runId: string;
+  executionAttempt: number;
+  reason: DelegatedFailureReason;
 }
 
 const ABANDONED_CHECK_RECOVERY_OUTCOMES = [
@@ -316,8 +336,16 @@ export interface ReviewDispatchRepository {
    * execution: same token digest and coordinates a terminal callback must
    * present. Read-only; it never transitions the run. */
   authorizeWorkerEvidence(input: WorkerReviewEvidence, proof: WorkerCompletionProof): Promise<WorkerEvidenceAuthorization>;
-  /** REL-586: reconcile owned publishing failures immediately, then expired runs. */
-  claimAbandonedPublishingRuns(workerId: string, now: number, limit: number): Promise<AbandonedPublishingRun[]>;
+  /**
+   * REL-586: reconcile owned publishing failures immediately, then expired
+   * runs. REL-896: an optional bounded list of operator-delegated candidates
+   * (runId + the exact executionAttempt the CR observed) makes a queued or
+   * running run eligible even before its terminal_deadline elapses -- but
+   * only for that exact attempt; a stale candidate from a superseded attempt
+   * never matches.
+   */
+  claimAbandonedPublishingRuns(workerId: string, now: number, limit: number,
+    delegated?: DelegatedFailureCandidateInput[]): Promise<AbandonedPublishingRun[]>;
   reconcileAbandonedPublishingRun(run: AbandonedPublishingRun, workerId: string, now: number,
     publish: () => Promise<AbandonedCheckRecoveryOutcome>): Promise<AbandonedRunReconciliation>;
   /**
@@ -844,20 +872,50 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     workerId: string,
     now: number,
     limit: number,
+    delegated?: DelegatedFailureCandidateInput[],
   ): Promise<AbandonedPublishingRun[]> {
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('reaper limit must be a positive integer');
+    const delegatedRunIds: string[] = [];
+    const delegatedExecutionAttempts: number[] = [];
+    const delegatedReasons: string[] = [];
+    for (const candidate of delegated || []) {
+      delegatedRunIds.push(candidate.runId);
+      delegatedExecutionAttempts.push(candidate.executionAttempt);
+      delegatedReasons.push(candidate.reason);
+    }
     // A failure to reach GitHub must remain retryable. Claim with a short lease;
     // only successful reconciliation removes the pending-publication marker.
     return this.inTransaction(async (client) => {
       const result = await client.query(
-        `WITH candidate AS (
+        `WITH delegated_candidate AS (
+         -- DISTINCT ON collapses a duplicate (run_id, execution_attempt) pair
+         -- in the caller's candidate list (e.g. two DelegatedFailureReader
+         -- poll pages observing the same resource) down to one row before
+         -- the LEFT JOIN below. Note this is about *which reason* is
+         -- attached to the claim, not about claiming the run twice: even
+         -- without DISTINCT ON, Postgres's UPDATE ... FROM only applies one
+         -- (unspecified) matching FROM row per target row, so a duplicate
+         -- input never fans out into two claimed rows -- it just makes the
+         -- surviving reason arbitrary and unpredictable. WITH ORDINALITY +
+         -- the explicit ORDER BY replace that arbitrary pick with a
+         -- deterministic one: the candidate earliest in the caller-supplied
+         -- array order (i.e. the one DelegatedFailureReader.listCandidates()
+         -- paged in first) wins.
+         SELECT DISTINCT ON (run_id, execution_attempt) run_id, execution_attempt, reason
+           FROM unnest($7::text[], $8::integer[], $9::text[])
+             WITH ORDINALITY AS delegated_candidate(run_id, execution_attempt, reason, ordinal)
+          ORDER BY run_id, execution_attempt, ordinal
+       ), candidate AS (
          SELECT runs.run_id,
                 runs.error_text = $4::text
                   AS recovery_only,
                 runs.delivery_id IS DISTINCT FROM outbox.delivery_id
-                  AS delivery_identity_mismatch
+                  AS delivery_identity_mismatch,
+                delegated_candidate.reason AS delegated_reason
            FROM review_runs runs
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+           LEFT JOIN delegated_candidate ON delegated_candidate.run_id = runs.run_id
+             AND delegated_candidate.execution_attempt = outbox.execution_attempt + 1
           WHERE (
             -- A worker callback or token-bound dispatcher terminalization is
             -- already a durable fail-closed outcome. Publish its required check now;
@@ -869,6 +927,17 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             ))
             OR (runs.status IN ('queued', 'running')
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
+            -- REL-896: the Go operator has already observed the publishing
+            -- worker fail, get killed, disappear, or outlive its deadline and
+            -- delegated fail-closed publication to this reaper (see
+            -- k8s-operator/controllers/prreviewjob_v1alpha2_controller.go
+            -- reconcileFailurePublication). Claiming here -- gated to the
+            -- exact executionAttempt the operator observed -- is strictly
+            -- additive: every other predicate in this WHERE clause (mode,
+            -- result digest, authoritative gate, lease) still applies, and a
+            -- stale signal from a superseded attempt can never match because
+            -- the join above requires the current outbox execution_attempt.
+            OR (runs.status IN ('queued', 'running') AND delegated_candidate.reason IS NOT NULL)
             OR (runs.status = 'terminal' AND runs.error_text LIKE
               $5::text || '%'
               AND runs.terminal_deadline <= to_timestamp($2 / 1000.0))
@@ -903,7 +972,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 updated_at = to_timestamp($2 / 1000.0)
            FROM candidate WHERE outbox.run_id = candidate.run_id
          RETURNING outbox.run_id, outbox.execution_attempt, candidate.recovery_only,
-                   candidate.delivery_identity_mismatch
+                   candidate.delivery_identity_mismatch, candidate.delegated_reason
        )
        UPDATE review_runs AS runs
           SET status = 'terminal', updated_at = to_timestamp($2 / 1000.0),
@@ -920,9 +989,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
        RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
                  runs.delivery_id, runs.received_at, runs.terminal_deadline,
                  retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only,
-                 retired.delivery_identity_mismatch`,
+                 retired.delivery_identity_mismatch, retired.delegated_reason`,
       [workerId, now, limit, RECOVERY_UNCONFIRMED_ERROR_TEXT,
-        ABANDONED_PUBLISHING_ERROR_TEXT.reapedPrefix, PUBLISHABLE_PUBLICATION_MODES as unknown as string[]],
+        ABANDONED_PUBLISHING_ERROR_TEXT.reapedPrefix, PUBLISHABLE_PUBLICATION_MODES as unknown as string[],
+        delegatedRunIds, delegatedExecutionAttempts, delegatedReasons],
     );
       for (const row of result.rows as Record<string, unknown>[]) {
         await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', now,
@@ -940,6 +1010,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         terminalDeadline: milliseconds(row.terminal_deadline) || 0,
         recoveryOnly: row.recovery_only === true,
         ...(row.delivery_identity_mismatch === true ? { deliveryIdentityMismatch: true } : {}),
+        ...(typeof row.delegated_reason === 'string'
+          ? { delegatedReason: row.delegated_reason as DelegatedFailureReason } : {}),
       }));
     });
   }
@@ -1268,6 +1340,18 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           [run.runId, now, run.deliveryId, run.executionAttempt],
         );
       }
+      // REL-896: a run claimed via the operator's delegated-failure signal
+      // (see claimAbandonedPublishingRuns) carries the operator's exact
+      // WorkerFailed/DeadlineExpired/WorkerJobMissing classification instead
+      // of the generic deadline text. Persist it as a structured reason so
+      // operators can tell these apart, but never overwrite the diagnostics
+      // of a run that actually succeeded.
+      const delegatedDiagnostics = run.delegatedReason && outcome !== 'authoritative-success'
+        ? JSON.stringify(buildDurableWorkerFailureDiagnostics('internal_error', {
+          reason: run.delegatedReason,
+          logTail: `operator-delegated failure: ${run.delegatedReason}`,
+        }, run.executionAttempt))
+        : null;
       await client.query(
         `UPDATE review_runs SET lease_owner = NULL,
            lease_expires_at = CASE WHEN $3 = 'creation-unconfirmed'
@@ -1281,9 +1365,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
              WHEN error_text LIKE '${WORKER_TERMINAL_FAILURE_PREFIX}%' THEN error_text
              ELSE $5::text
            END,
+           failure_diagnostics = CASE WHEN $6::jsonb IS NOT NULL THEN $6::jsonb ELSE failure_diagnostics END,
            updated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
         [run.runId, now, outcome, RECOVERY_UNCONFIRMED_ERROR_TEXT,
-          ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled],
+          ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled, delegatedDiagnostics],
       );
       if (outcome === 'authoritative-success') {
         await this.appendLifecycle(client, run.runId, 'review.lifecycle.terminal', now,

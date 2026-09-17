@@ -1163,6 +1163,8 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
       'publishing run reached its terminal deadline without a verdict; reaped by ',
       [...PUBLISHABLE_PUBLICATION_MODES],
+      // REL-896: no delegated candidates offered this cycle.
+      [], [], [],
     ]);
   });
 
@@ -1192,6 +1194,48 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, 20)).resolves.toMatchObject([
       { runId: swept.run_id, recoveryOnly: true },
     ]);
+  });
+
+  describe('REL-896 delegated-failure candidates', () => {
+    it('binds a candidate list into the unnest join without touching any existing predicate', async () => {
+      const { repository, query } = repositoryWith([swept]);
+      await repository.claimAbandonedPublishingRuns('reaper-a', 1_700_000_000_000, 20, [
+        { runId: swept.run_id, executionAttempt: 2, reason: 'worker_failed' },
+      ]);
+      const sql = String(query.mock.calls[0][0]);
+      // Additive only: every predicate the deadline-only tests above pin must
+      // still be present verbatim.
+      expect(sql).toMatch(/runs\.status IN \('queued', 'running'\)\s+AND runs\.terminal_deadline <= to_timestamp\(\$2/u);
+      expect(sql).toMatch(/publication_mode = ANY\(\$6::text\[\]\)/u);
+      expect(sql).toMatch(/FOR UPDATE OF runs, outbox SKIP LOCKED/u);
+      // The new branch: eligible before terminal_deadline, gated on the exact
+      // outbox execution_attempt via the join, never widening any other clause.
+      expect(sql).toMatch(/runs\.status IN \('queued', 'running'\) AND delegated_candidate\.reason IS NOT NULL/u);
+      expect(sql).toMatch(/delegated_candidate\.execution_attempt = outbox\.execution_attempt \+ 1/u);
+      expect(query.mock.calls[0][1]).toEqual([
+        'reaper-a', 1_700_000_000_000, 20,
+        'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
+        'publishing run reached its terminal deadline without a verdict; reaped by ',
+        [...PUBLISHABLE_PUBLICATION_MODES],
+        [swept.run_id], [2], ['worker_failed'],
+      ]);
+    });
+
+    it('maps the claimed delegated_reason column onto the returned run', async () => {
+      const { repository } = repositoryWith([{ ...swept, delegated_reason: 'worker_deadline_exceeded' }]);
+      await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, 20, [
+        { runId: swept.run_id, executionAttempt: 2, reason: 'worker_deadline_exceeded' },
+      ])).resolves.toEqual([expect.objectContaining({
+        runId: swept.run_id,
+        delegatedReason: 'worker_deadline_exceeded',
+      })]);
+    });
+
+    it('omits delegatedReason when the row was claimed by the ordinary deadline path', async () => {
+      const { repository } = repositoryWith([{ ...swept, delegated_reason: null }]);
+      const [claimed] = await repository.claimAbandonedPublishingRuns('reaper-a', 1, 20);
+      expect(claimed.delegatedReason).toBeUndefined();
+    });
   });
 
   it('marks a delivery identity mismatch as a terminal quarantine without invoking publication', async () => {
@@ -1420,10 +1464,53 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
       swept.run_id, 902_000, 'creation-unconfirmed',
       'publishing run reached its terminal deadline without a verdict; failure creation unconfirmed',
       'publishing run reached its terminal deadline without a verdict; failure reconciled',
+      // REL-896: no delegatedReason on this run, so no diagnostics overwrite.
+      null,
     ]);
     expect(String(update?.[0])).toMatch(/60000/u);
     expect(transactionQuery).toHaveBeenCalledWith('COMMIT');
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('REL-896: persists the operator-delegated reason as structured failure diagnostics', async () => {
+    const transactionQuery = vi.fn(async (sql: string, _values?: unknown[]) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release }),
+    } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000, delegatedReason: 'worker_job_missing',
+    }, 'reaper-a', 902_000, async () => 'failure-published')).resolves.toEqual({
+      reconciled: true, outcome: 'failure-published',
+    });
+    const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
+    expect(String(update?.[0])).toMatch(/failure_diagnostics = CASE WHEN \$6::jsonb IS NOT NULL THEN \$6::jsonb ELSE failure_diagnostics END/u);
+    const diagnostics = JSON.parse(String(update?.[1]?.[5]));
+    expect(diagnostics).toMatchObject({ reason: 'worker_job_missing', failureClass: 'internal_error' });
+  });
+
+  it('REL-896: never overwrites diagnostics for a delegated candidate that actually succeeded', async () => {
+    const transactionQuery = vi.fn(async (sql: string, _values?: unknown[]) => {
+      if (/SELECT runs\.run_id/u.test(sql)) return { rows: [{ run_id: swept.run_id }] };
+      return { rows: [] };
+    });
+    const repository = new PostgresReviewDispatchRepository({
+      connect: async () => ({ query: transactionQuery, release: vi.fn() }),
+    } as never);
+    await expect(repository.reconcileAbandonedPublishingRun({
+      runId: swept.run_id, owner: swept.owner, repo: swept.repo, prNumber: swept.pr_number,
+      headSha: swept.head_sha, deliveryId: swept.delivery_id, executionAttempt: swept.execution_attempt,
+      receivedAt: 1_000, terminalDeadline: 901_000, delegatedReason: 'worker_failed',
+    }, 'reaper-a', 902_000, async () => 'authoritative-success')).resolves.toEqual({
+      reconciled: true, outcome: 'authoritative-success',
+    });
+    const update = transactionQuery.mock.calls.find(([sql]) => /UPDATE review_runs SET lease_owner/u.test(String(sql)));
+    expect(update?.[1]?.[5]).toBeNull();
   });
 
   it('synchronizes an observed authoritative success into the durable run state', async () => {
