@@ -159,6 +159,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	now := r.clock()
 	if err := validateProjectionWindow(&review); err != nil {
+		// Same class as WorkerContractRejected below: the projection is rejected
+		// before any worker Job is ever built, so an app-gate review must still be
+		// delegated rather than left for the 30-minute deadline reaper to notice.
+		if review.Spec.PublicationMode == job.PublicationModeAppGate {
+			return r.startFailurePublication(ctx, &review, "InvalidProjection", err.Error())
+		}
 		return ctrl.Result{}, r.fail(ctx, &review, "InvalidProjection", err.Error())
 	}
 	if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageReceived, review.Spec.ReceivedAt); err != nil {
@@ -298,6 +304,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 		// stranded behind an invalid projection.
 		if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
 			return ctrl.Result{}, releaseErr
+		}
+		// An app-gate review that will never have a worker still owes the
+		// dispatcher a verdict. Route it through the same delegation as
+		// WorkerJobMissing above instead of a plain fail, or the terminal
+		// deadline reaper is the only thing left to notice it, 30 minutes later.
+		if review.Spec.PublicationMode == job.PublicationModeAppGate {
+			return r.startFailurePublication(ctx, &review, "WorkerContractRejected", err.Error())
 		}
 		return ctrl.Result{}, r.fail(ctx, &review, "WorkerContractRejected", err.Error())
 	}

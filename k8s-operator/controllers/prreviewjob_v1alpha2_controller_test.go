@@ -596,6 +596,68 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesLeaseWhenWorkerContractIsRejected(
 	}
 }
 
+// REL-896: unlike the receipt-only case above, an app-gate review whose worker
+// Job cannot even be built still owes the dispatcher a durable verdict -- a
+// plain fail leaves the terminal deadline reaper as the only thing left to
+// notice it, 30 minutes later. BuildWorkerJob's validatePublishing refuses to
+// build with no publishing transport configured, so leaving Publishing unset
+// deterministically reproduces a rejected worker contract with no Job ever
+// created.
+func TestPRReviewJobV1Alpha2ReconcilerDelegatesAppGateWorkerContractRejection(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.UID = types.UID("app-gate-contract-rejected")
+	review.Spec.PublicationMode = "app-gate"
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	// PVC creation, the rejected build, and the failure-publication delegation
+	// each take their own reconcile pass; run enough passes to reach stability.
+	for attempt := 0; attempt < 5; attempt++ {
+		if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("reconcile %d: %v", attempt, err)
+		}
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed", updated.Status.Phase)
+	}
+	ready := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != "WorkerContractRejected" {
+		t.Fatalf("Ready condition = %#v, want reason WorkerContractRejected", ready)
+	}
+	publication := meta.FindStatusCondition(updated.Status.Conditions, "FailurePublication")
+	if publication == nil || publication.Status != metav1.ConditionUnknown || publication.Reason != "DelegatedToTrustedService" {
+		t.Fatalf("FailurePublication condition = %#v, want Unknown/DelegatedToTrustedService", publication)
+	}
+
+	if _, err := workspace.NewLeaseManager(kube).Acquire(context.Background(), review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, "run_22222222222222222222222222222222", now.Add(15*time.Minute), now.Add(time.Second)); err != nil {
+		t.Fatalf("lease remained held after rejected worker contract: %v", err)
+	}
+
+	workerKey := types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}
+	if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("no worker Job should ever exist for a rejected contract, got err=%v", err)
+	}
+
+	// Further reconciles must be stable: no error, and no attempt to rebuild
+	// the worker Job now that its contract was already rejected.
+	for i := 0; i < 3; i++ {
+		if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("stabilizing reconcile %d: %v", i, err)
+		}
+		if err := kube.Get(context.Background(), workerKey, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("stabilizing reconcile %d created a worker Job: %v", i, err)
+		}
+	}
+}
+
 func TestPRReviewJobV1Alpha2ReconcilerExpiresBeforeCreatingResources(t *testing.T) {
 	received := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	now := received.Add(15 * time.Minute)

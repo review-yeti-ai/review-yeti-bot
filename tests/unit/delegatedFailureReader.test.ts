@@ -89,6 +89,7 @@ describe('DelegatedFailureReader condition matching', () => {
     ['WorkerFailed', 'worker_failed'],
     ['DeadlineExpired', 'worker_deadline_exceeded'],
     ['WorkerJobMissing', 'worker_job_missing'],
+    ['WorkerContractRejected', 'worker_contract_rejected'],
   ] as const)('maps the Ready condition reason %s to %s', async (readyReason, expected) => {
     const { reader } = readerWith([prReviewJob({ ready: { reason: readyReason } })]);
     const candidates = await reader.listCandidates();
