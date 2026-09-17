@@ -61,6 +61,20 @@ describe('createZoektGroundingStage (REL-677)', () => {
     expect(result.indexDir).toBeUndefined();
   });
 
+  it('retains scratchDir on the build-failure receipt so the caller can clean it up', async () => {
+    const { fs } = fakeFs();
+    const materialize = vi.fn(async () => ({ status: 'ok' }));
+    const build = vi.fn(async () => ({ status: 'index_dir_uncreatable' }));
+    const stage = createZoektGroundingStage({ fs, materializeReviewWorkdir: materialize, buildZoektIndex: build });
+
+    const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't' });
+    // Mirrors the materialize-failure sibling: the receipt carries scratchDir
+    // so the caller's finally owns removal — omitting it would leak the tree.
+    expect(result.scratchDir).toEqual(expect.any(String));
+    expect(result.indexDir).toBeUndefined();
+    expect(result.reason).toBe('build_index_dir_uncreatable');
+  });
+
   it('returns the indexDir on success and passes bounded args through', async () => {
     const { fs, created } = fakeFs();
     const materialize = vi.fn(async (args: any) => { expect(args.destDir.endsWith('/src')).toBe(true); return { status: 'ok' }; });

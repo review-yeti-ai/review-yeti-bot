@@ -110,6 +110,32 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     expect(panelArg.config.evidence?.zoekt?.indexDir).toBeUndefined();
   });
 
+  it('groundedConfig is additive: non-zoekt config fields survive the injection', async () => {
+    const panelRunner = vi.fn(async () => basePanel());
+    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch' }));
+    await runPublishingReviewWorker(env(), deps(panelRunner, { zoektGrounding: zoektGrounding as never }));
+    const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
+    // The spread must be additive: reviewers/personas (from resolveWorkerConfig) survive
+    // alongside the injected evidence/pre_checks zoekt blocks.
+    expect(panelArg.config.reviewers.overall_timeout_s).toBeGreaterThan(0);
+    expect(Array.isArray(panelArg.config.personas)).toBe(true);
+    expect(panelArg.config.pre_checks.zoekt.indexDir).toBe('/tmp/fake-index');
+    expect(panelArg.config.evidence.zoekt.indexDir).toBe('/tmp/fake-index');
+  });
+
+  it('removes the scratch tree even when the panel throws (finally path)', async () => {
+    const panelRunner = vi.fn(async () => { throw new Error('panel exploded'); });
+    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch' }));
+    const removeSpy = vi.spyOn(zoektGroundingModule, 'removeScratchTree').mockResolvedValue(undefined);
+    try {
+      await expect(runPublishingReviewWorker(env(), deps(panelRunner, { zoektGrounding: zoektGrounding as never })))
+        .rejects.toThrow('panel exploded');
+      expect(removeSpy).toHaveBeenCalledWith('/tmp/fake-scratch');
+    } finally {
+      removeSpy.mockRestore();
+    }
+  });
+
   it('removes the grounding scratch tree in the worker finally (shared deletion contract)', async () => {
     const panelRunner = vi.fn(async () => basePanel());
     const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch' }));
