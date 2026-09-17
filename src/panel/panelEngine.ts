@@ -2131,6 +2131,9 @@ async function runPersona(
                 if ((candidate as any)?.decision === 'FINDINGS' && findings.length === 0) {
                   return 'FINDINGS requires at least one finding';
                 }
+                if ((candidate as any)?.decision === 'APPROVE' && findings.length > 0) {
+                  return 'APPROVE is contradictory with findings: findings mean do-not-approve. Return decision FINDINGS carrying the findings, or APPROVE with an empty findings array.';
+                }
                 return null;
               } catch (error: any) {
                 return error instanceof Error ? error.message : String(error);
@@ -2174,13 +2177,19 @@ async function runPersona(
           if (result.parsed.decision === 'FINDINGS' && findings.length === 0) {
             throw new Error('FINDINGS requires at least one finding');
           }
-          const decision: 'APPROVE' | 'FINDINGS' = findings.length > 0
-            ? 'FINDINGS'
-            : result.parsed.decision as 'APPROVE' | 'FINDINGS';
-          throwIfPanelAborted(signal);
-          if (decision !== result.parsed.decision) {
-            logger.warn(`[Persona: ${persona.id}] Normalized APPROVE with validated findings to FINDINGS.`);
+          if (result.parsed.decision === 'APPROVE' && findings.length > 0) {
+            // DECISION INVARIANT (REL-888): findings mean do-not-approve. An APPROVE response
+            // carrying findings is contradictory and invalid — it must never be silently
+            // reinterpreted (the previous behavior downgraded APPROVE to FINDINGS, letting a
+            // contradictory approval pass as a completed review). The persona contract rejects
+            // this during the run with one bounded corrective turn; reaching this point means
+            // the contradiction survived the correction budget, so fail closed.
+            throw new PanelStructuredOutputError(
+              `persona ${persona.id} returned APPROVE with ${findings.length} finding(s): contradictory and invalid`,
+            );
           }
+          const decision: 'APPROVE' | 'FINDINGS' = result.parsed.decision as 'APPROVE' | 'FINDINGS';
+          throwIfPanelAborted(signal);
 
           const promptTokens = result.response.usage?.prompt || 0;
           const completionTokens = result.response.usage?.completion || 0;
