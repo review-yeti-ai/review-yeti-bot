@@ -23,6 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted } from '../panel/panelEngine';
+import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
@@ -560,6 +561,18 @@ export interface PublishingReviewDeps {
   now?: () => number;
   /** Worker/runtime shutdown signal; linked to the panel's configured deadline. */
   signal?: AbortSignal;
+  /**
+   * REL-677 / ADR 0329: index-at-review-time zoekt grounding. Injectable for tests; the default
+   * implementation materializes a read-only tarball of the head SHA and builds a throwaway index.
+   */
+  zoektGrounding?: (input: {
+    repository: string;
+    headSha: string;
+    token: string | undefined;
+    enabled: boolean;
+    signal?: AbortSignal;
+    zoektIndexBinaryPath?: string;
+  }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string }>;
 }
 
 /**
@@ -611,6 +624,16 @@ async function lookupRepositoryVisibility(input: { owner: string; repo: string; 
   const octokit = new Octokit({ auth: input.token });
   const { data } = await octokit.request('GET /repos/{owner}/{repo}', { owner: input.owner, repo: input.repo });
   return repositoryVisibilityFrom(data);
+}
+
+/** REL-677: the three-conjunct zoekt grounding gate, extracted so every kill path is unit-testable. */
+export function zoektGroundingEnabledFor(
+  env: NodeJS.ProcessEnv,
+  config: unknown,
+): boolean {
+  return value(env, 'ZOEKT_GROUNDING_ENABLED') === 'true'
+    && value(env, 'ZOEKT_GROUNDING_DISABLED') !== 'true'
+    && (config as { pre_checks?: { zoekt?: { enabled?: boolean } } })?.pre_checks?.zoekt?.enabled !== false;
 }
 
 export async function runPublishingReviewWorker(
@@ -822,11 +845,52 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
+    // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
+    // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
+    // removed in the finally below; the index never outlives this review run. Grounding
+    // runs BEFORE the panel deadline starts — its own stage budgets bound the tarball
+    // fetch and index build, so grounding never eats the panel's timeout.
+    const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
+    const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
     const panelDeadline = createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal);
+    let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
     try {
+      // A throwing grounding dep still fails soft: grounding is evidence
+      // enrichment, never a precondition of the review.
+      try {
+        zoektScratchRoot = await zoektGrounding({
+          repository: identity.repo,
+          headSha: identity.headSha,
+          token: value(env, 'GH_TOKEN'),
+          enabled: zoektGroundingEnabled,
+          signal: deps.signal,
+          zoektIndexBinaryPath: value(env, 'ZOEKT_INDEX_BIN') || undefined,
+        });
+      } catch (groundingError: any) {
+        zoektScratchRoot = { reason: groundingError?.message || 'zoekt_grounding_error' };
+      }
+      // Single-surface injection: the panel (panelEngine) owns the zoekt
+      // lookup policy and propagates evidence.zoekt.indexDir to every internal
+      // consumer (symbol pre-check + on-demand code_search_zoekt tool). The
+      // worker never needs to know that policy.
+      const zoektIndexDir = zoektGroundingEnabled ? zoektScratchRoot.indexDir : undefined;
+      const zoektBinaryOverride = value(env, 'ZOEKT_BIN') ? { zoektBinaryPath: value(env, 'ZOEKT_BIN') } : {};
+      const groundedConfig = zoektIndexDir
+        ? {
+            ...workerConfig,
+            evidence: {
+              ...(workerConfig as { evidence?: Record<string, unknown> }).evidence,
+              zoekt: {
+                ...((workerConfig as { evidence?: { zoekt?: Record<string, unknown> } }).evidence?.zoekt ?? {}),
+                indexDir: zoektIndexDir,
+                ...zoektBinaryOverride,
+              },
+            },
+          }
+        : workerConfig;
       const panelResult = await raceWithPanelAbort(
         Promise.resolve().then(() => panelRunner({
-          config: workerConfig,
+          config: groundedConfig,
           changedFiles,
           repository: identity.repo,
           headSha: identity.headSha,
@@ -1152,6 +1216,9 @@ export async function runPublishingReviewWorker(
     };
     } finally {
       panelDeadline.cleanup();
+      // One shared deletion contract (async, fail-soft) — the worker must not
+      // hand-roll its own rm for the scratch tree.
+      await removeScratchTree(zoektScratchRoot.scratchDir);
     }
   } catch (error) {
     await reportTerminalFailure(error, checkId);
