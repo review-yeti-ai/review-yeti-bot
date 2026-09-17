@@ -667,15 +667,135 @@ func TestFailedWorkerDelegatesFailClosedPublicationBeforeTerminalEvidenceIsRelea
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
+	// REL-896: this worker was already marked for deletion by the test above
+	// (simulating some other actor removing it) and is finished (Failed,
+	// BackoffLimitExceeded), so reconcileFailurePublication now releases its
+	// terminal-outcome finalizer in this same pass instead of waiting for a
+	// later reconcileTerminalWorkspace pass -- its terminal result was already
+	// durably copied into the parent status by the reconcile above, and a
+	// Job that is both finished and already terminating has no live evidence
+	// left to retain. That finalizer release completes the deletion the test
+	// started, so the tombstoned Job is gone by the end of this reconcile.
 	assertFailureDelegated(t, storedReview(t, kube, req))
 	assertFailurePublisherAbsent(t, kube, req)
-	if !containsString(storedWorker(t, kube, req).Finalizers, "review-yeti.ai/terminal-outcome") {
-		t.Fatal("delegation status was not durable before terminal worker evidence was released")
-	}
+	assertWorkerAbsent(t, kube, req)
+
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
 	assertWorkerAbsent(t, kube, req)
+}
+
+// REL-896: a worker Job that already reached BackoffLimitExceeded has nothing
+// left running to stop, and its Pod/exit-status are the only surviving
+// evidence of why the review failed. reconcileFailurePublication must retain
+// it -- untouched, with its own ttlSecondsAfterFinished intact -- instead of
+// deleting it, which previously destroyed that evidence about a minute after
+// the review reported WorkerFailed. The FailurePublication pending state is
+// set directly (mirroring TestFailurePublicationRefusesToStopForeignWorker)
+// so this test exercises reconcileFailurePublication in isolation.
+func TestFinishedFailedWorkerJobIsRetainedForItsTTLDuringFailureDelegation(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	originalTTL := worker.Spec.TTLSecondsAfterFinished
+	if originalTTL == nil {
+		t.Fatal("worker Job was built without a ttlSecondsAfterFinished to preserve")
+	}
+	worker.Status.Failed = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+		Reason: "BackoffLimitExceeded", LastTransitionTime: metav1.NewTime(r.Now()),
+	}}
+	if err := kube.Status().Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "WorkerFailed",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: "FailurePublication", Status: metav1.ConditionFalse, Reason: "WorkerFailed",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	if err := kube.Status().Update(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	assertFailureDelegated(t, storedReview(t, kube, req))
+	assertFailurePublisherAbsent(t, kube, req)
+
+	retained := storedWorker(t, kube, req)
+	if retained.DeletionTimestamp != nil {
+		t.Fatal("finished failed worker Job was deleted instead of retained for its TTL")
+	}
+	if retained.Spec.TTLSecondsAfterFinished == nil || *retained.Spec.TTLSecondsAfterFinished != *originalTTL {
+		t.Fatalf("ttlSecondsAfterFinished changed = %v, want unchanged %v", retained.Spec.TTLSecondsAfterFinished, originalTTL)
+	}
+	if containsString(retained.Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatal("terminal-outcome finalizer was retained on an already-durable, no-longer-guarded finished Job")
+	}
+
+	// Further reconciles must be stable: no error, no recreated worker, and
+	// the retained evidence Job must not be touched again.
+	for i := 0; i < 2; i++ {
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("stabilizing reconcile %d: %v", i, err)
+		}
+	}
+	stillRetained := storedWorker(t, kube, req)
+	if stillRetained.DeletionTimestamp != nil {
+		t.Fatal("a later reconcile deleted the retained finished worker Job")
+	}
+	if stillRetained.ResourceVersion != retained.ResourceVersion {
+		t.Fatalf("a later reconcile mutated the retained worker Job: resourceVersion %s -> %s", retained.ResourceVersion, stillRetained.ResourceVersion)
+	}
+}
+
+// REL-896 counterpoint: an active (still-running, not yet finished) worker
+// Job on the exact same failure-delegation path must still be stopped, the
+// same as before this change.
+func TestActiveWorkerJobIsStillStoppedDuringFailureDelegation(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately leave the worker Job's status empty (no Succeeded/Failed
+	// count, no JobComplete/JobFailed condition, no active Pod): this is the
+	// "still active" shape workerJobFinished must not classify as finished.
+	review := storedReview(t, kube, req)
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "WorkerFailed",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type: "FailurePublication", Status: metav1.ConditionFalse, Reason: "WorkerFailed",
+		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(r.Now()),
+	})
+	if err := kube.Status().Update(ctx, review); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	stopped := storedWorker(t, kube, req)
+	if stopped.DeletionTimestamp == nil {
+		t.Fatal("active worker Job was not stopped during failure delegation")
+	}
+	if !containsString(stopped.Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatal("active worker Job's evidence guard was released before it finished terminating")
+	}
 }
 
 func TestMissingAppGateWorkerDelegatesFailureWithoutReplayingOrPublishing(t *testing.T) {

@@ -639,15 +639,37 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 		return ctrl.Result{}, err
 	}
 
-	// A contract mismatch may leave an untrusted owned Job running. Stop only the
-	// exact child after the pending obligation is durable; if deletion is lost,
-	// this reconcile retries it without ever recreating the worker.
+	// A contract mismatch or a still-running worker past its deadline may leave
+	// an untrusted or stuck Job running. Stop only the exact child after the
+	// pending obligation is durable; if deletion is lost, this reconcile
+	// retries it without ever recreating the worker. A Job that has already
+	// finished (WorkerFailed's BackoffLimitExceeded, most commonly) has
+	// nothing left running to stop, and its Pod/exit-status logs are the only
+	// surviving evidence of the failure this review reports -- deleting it
+	// would destroy that evidence roughly a minute later instead of letting
+	// its own ttlSecondsAfterFinished (REVIEW_YETI_WORKER_FAILED_TTL_AFTER_
+	// FINISHED) collect it on schedule.
 	if worker != nil {
 		if !metav1.IsControlledBy(worker, review) {
 			return ctrl.Result{}, errors.New("refusing to stop a worker Job not controlled by the failed review")
 		}
-		if worker.DeletionTimestamp == nil {
-			if err := r.Delete(ctx, worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
+		if !workerJobFinished(worker) {
+			if worker.DeletionTimestamp == nil {
+				if err := r.Delete(ctx, worker, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			}
+		} else if controllerutil.ContainsFinalizer(worker, terminalOutcomeFinalizer) {
+			// This finalizer only ever existed to hold the Job open long enough
+			// for its terminal result to be durably copied into the parent
+			// status -- which has already happened by the time a review reaches
+			// failure publication. Retaining the Job instead of deleting it
+			// must not also retain the finalizer: nothing else in this operator
+			// will ever release it for a review that stays terminal, and the
+			// TTL controller's own delete would otherwise hang on it forever.
+			base := worker.DeepCopy()
+			controllerutil.RemoveFinalizer(worker, terminalOutcomeFinalizer)
+			if err := r.Patch(ctx, worker, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
 			}
 		}
@@ -768,6 +790,23 @@ func observeTiming(review *reviewv1alpha2.PRReviewJob, stage reviewv1alpha2.Disp
 		review.Status.Timing = &reviewv1alpha2.DispatchTimingStatus{}
 	}
 	return review.Status.Timing.Observe(stage, at)
+}
+
+// workerJobFinished reports whether a Job has already reached a terminal
+// outcome (including BackoffLimitExceeded), as opposed to merely being
+// unobserved-active. Mirrors the two signals terminalWorkerTime already
+// trusts -- the status counters and the JobComplete/JobFailed condition --
+// so a finished Job is never mistaken for one still worth stopping.
+func workerJobFinished(worker *batchv1.Job) bool {
+	if worker.Status.Succeeded > 0 || worker.Status.Failed > 0 {
+		return true
+	}
+	for _, condition := range worker.Status.Conditions {
+		if (condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) && condition.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func terminalWorkerTime(worker *batchv1.Job, fallback time.Time) metav1.Time {
