@@ -838,6 +838,34 @@ describe('pull request closed admission (REL-896)', () => {
     expect(f.admit).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['the top-level number disagrees with pull_request.number', { number: 43 }],
+    ['the base repository disagrees with the delivering repository', { pull_request: {
+      number: 42, state: 'closed', merged: true, base: { repo: { full_name: 'calltelemetry/other' } },
+    } }],
+  ])('ignores a closed payload as not_enrolled when %s, terminalizing nothing', async (_label, overrides) => {
+    const f = closedFixture();
+    const response = await postWebhook(f.instance, closedPayload(overrides), 'delivery-closed-mismatch');
+    expect(response.body).toMatchObject({ status: 'ignored', reason: 'not_enrolled' });
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the merged flag is missing', { pull_request: {
+      number: 42, state: 'closed', base: { repo: { full_name: 'calltelemetry/dashboard' } },
+    } }],
+    ['the base repository name is malformed', { pull_request: {
+      number: 42, state: 'closed', merged: false, base: { repo: { full_name: 42 } },
+    } }],
+  ])('ignores a malformed closed payload as unsupported_pull_request_state when %s', async (_label, overrides) => {
+    const f = closedFixture();
+    const response = await postWebhook(f.instance, closedPayload(overrides), 'delivery-closed-malformed');
+    expect(response.body).toMatchObject({ status: 'ignored', reason: 'unsupported_pull_request_state' });
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
   it('terminalizes in-flight runs when a PR is closed without merging', async () => {
     const f = closedFixture();
     const response = await postWebhook(f.instance, closedPayload(), 'delivery-closed-unmerged');
