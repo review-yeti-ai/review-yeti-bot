@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.4...v1.72.5) (2026-09-17)
+
+
+### Bug Fixes
+
+* **test:** stop reviewRunLifecycle reaper test colliding on the advisory-lock keyspace ([#824](https://github.com/review-yeti-ai/review-yeti-bot/issues/824)) ([345577b](https://github.com/review-yeti-ai/review-yeti-bot/commit/345577badc1c8363cbe159f1ec6034dd27eee13e))
+
 ## [1.72.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.3...v1.72.4) (2026-09-16)
 
 
