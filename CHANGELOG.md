@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.73.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.73.0...v1.73.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **REL-888:** normalize case-only structured-output drift before the corrective turn ([#838](https://github.com/review-yeti-ai/review-yeti-bot/issues/838)) ([c10a8a4](https://github.com/review-yeti-ai/review-yeti-bot/commit/c10a8a438bce8ad424104b50593cb0cf61bf4e48))
+
 ## [1.73.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.11...v1.73.0) (2026-09-17)
 
 
