@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.72.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.4...v1.72.5) (2026-09-17)
+
+
+### Bug Fixes
+
+* **test:** stop reviewRunLifecycle reaper test colliding on the advisory-lock keyspace ([#824](https://github.com/review-yeti-ai/review-yeti-bot/issues/824)) ([345577b](https://github.com/review-yeti-ai/review-yeti-bot/commit/345577badc1c8363cbe159f1ec6034dd27eee13e))
+
+## [1.72.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.3...v1.72.4) (2026-09-16)
+
+
+### Bug Fixes
+
+* **review:** automatically retry a recoverable-incomplete-panel failure [no-linear] ([#815](https://github.com/review-yeti-ai/review-yeti-bot/issues/815)) ([37c4990](https://github.com/review-yeti-ai/review-yeti-bot/commit/37c4990a035d53169af6f1a16e33691b98f2aa31))
+
+## [1.72.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.2...v1.72.3) (2026-09-16)
+
+
+### Bug Fixes
+
+* **REL-886:** retry the empty-completion signature against the same alias ([dc22aaf](https://github.com/review-yeti-ai/review-yeti-bot/commit/dc22aaf84e73d98c4fa6da73774afdefef755918))
+
 ## [1.72.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.1...v1.72.2) (2026-09-16)
 
 

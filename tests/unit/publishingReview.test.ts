@@ -365,8 +365,19 @@ describe('runPublishingReviewWorker', () => {
     expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       version: 'WorkerTerminalFailure.v1', runId: env().REVIEW_RUN_ID,
       headSha: HEAD, baseSha: BASE, executionAttempt: 2, checkId: 4242, failureClass: 'provider_error',
+      // REL-620: the dispatcher's bounded automatic retry reads this exact bit
+      // off the callback -- it must be present and true for a genuinely
+      // recoverable-incomplete panel, and attempt 2 (== the retry cap) is
+      // still eligible, so the summary must not yet say the lane is exhausted.
+      diagnostics: expect.objectContaining({ recoverableIncompletePanel: true }),
     }));
     expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
+    // Pin the publish call first so the negative assertion below cannot pass
+    // vacuously against an absent summary.
+    expect(cc.completeCheck).toHaveBeenCalledTimes(1);
+    const publishedSummary = ((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary;
+    expect(typeof publishedSummary).toBe('string');
+    expect(publishedSummary as string).not.toContain('no further automatic retry');
     expect(JSON.stringify([receipt, cc.completeCheck.mock.calls, completion.reportTerminalFailure.mock.calls]))
       .not.toContain('do-not-publish');
   });
@@ -478,6 +489,30 @@ describe('runPublishingReviewWorker', () => {
     expect(summary).toContain('`arch-lane`: failure class `transport`');
     expect(summary).toContain('usage=unavailable');
     expect(summary).not.toContain('do-not-publish');
+  });
+
+  it('marks the automatic retry exhausted once the final permitted attempt still cannot complete', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}) };
+    const cc = checkClient();
+    // Attempt 3 is one past RECOVERABLE_PANEL_AUTO_RETRY_CAP (2): the dispatcher
+    // will not queue attempt 4, so this exact worker execution is the final word.
+    const d = deps({ checkClient: cc, completion, panelRunner: vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane', 'arch-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      optionalFailures: [{ id: 'arch-lane', error: 'provider HTTP 502' }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+      arbiter: { verdict: 'SHIP' },
+    })) });
+
+    await runPublishingReviewWorker(env({ REVIEW_EXECUTION_ATTEMPT: '3' }), d as never);
+
+    expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      executionAttempt: 3, diagnostics: expect.objectContaining({ recoverableIncompletePanel: true }),
+    }));
+    const summary = String((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0]
+      && ((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('failed 3 time(s)');
+    expect(summary).toContain('no further automatic retry will occur');
   });
 
   it('keeps the returned panel failed when failure publication and callback acknowledgement both fail', async () => {
@@ -893,6 +928,45 @@ describe('runPublishingReviewWorker', () => {
       checkId: 4242,
       failureClass: 'malformed_output',
     }));
+    // REL-620: same failureClass ('malformed_output') as the recoverable-panel
+    // case above, but this failure never went through `isRecoverableIncompletePanel`
+    // -- it is a hard throw before any panel evidence exists -- so the marker
+    // the dispatcher's automatic retry reads must be absent, not merely false.
+    const event = (completion.reportTerminalFailure.mock.calls[0] as unknown as
+      [{ diagnostics?: Record<string, unknown> }])[0];
+    expect(event.diagnostics).not.toHaveProperty('recoverableIncompletePanel');
+  });
+
+  it('omits the recoverable marker when a panel failure reaches the terminal-failure path without satisfying isRecoverableIncompletePanel', async () => {
+    const completion = { reportTerminalFailure: vi.fn(async () => {}) };
+    const cc = checkClient();
+    // A raw P1 finding survives arbitration alongside the failed optional
+    // lane, so `isRecoverableIncompletePanel` returns false
+    // (canonicalFindingCount/rawFindingCount !== 0): this run takes the
+    // normal `completeCheck` publish path, not the recoverable-retry branch
+    // (mirrors "does not turn a partial panel with P1 findings..." above).
+    // Force that publish itself to fail so the outer catch's
+    // `reportTerminalFailure(error, checkId)` actually fires -- proving the
+    // marker is genuinely absent from a real terminal-failure report, not
+    // merely untested because the callback was never reached.
+    cc.completeCheck.mockRejectedValueOnce(new Error('synthetic check-publish outage'));
+    const d = deps({
+      completion, checkClient: cc,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane', 'arch-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Finding', body: 'Review this' }] }],
+        optionalFailures: [{ id: 'arch-lane', error: 'provider HTTP 502' }],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow(/synthetic check-publish outage/u);
+
+    expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    const event = (completion.reportTerminalFailure.mock.calls[0] as unknown as
+      [{ diagnostics?: Record<string, unknown> }])[0];
+    expect(event.diagnostics).not.toHaveProperty('recoverableIncompletePanel');
   });
 
   it('reports the exact terminal success only after publishing the green check', async () => {

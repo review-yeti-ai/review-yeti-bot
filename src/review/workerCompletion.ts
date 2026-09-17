@@ -32,6 +32,16 @@ export const workerFailureDiagnosticsSchema = z.object({
     (value) => Buffer.byteLength(value, 'utf8') <= MAX_WORKER_FAILURE_LOG_TAIL_BYTES,
     `logTail must be at most ${MAX_WORKER_FAILURE_LOG_TAIL_BYTES} UTF-8 bytes`,
   ),
+  /**
+   * Set by the publishing worker exactly when `isRecoverableIncompletePanel`
+   * classified this failure (REL-620): an optional lane died and nothing else
+   * found anything, so the incompleteness -- not the code -- is what failed.
+   * The dispatcher trusts this bearer-authenticated bounded boolean the same
+   * way it already trusts `failureClass`; it never re-derives the panel
+   * evidence itself. Omitted or false means the failure is not eligible for
+   * the bounded automatic retry, regardless of `failureClass`.
+   */
+  recoverableIncompletePanel: z.boolean().optional(),
 }).strict();
 
 export type WorkerFailureDiagnostics = z.infer<typeof workerFailureDiagnosticsSchema>;
@@ -234,11 +244,20 @@ export function buildDurableWorkerFailureDiagnostics(
     ...(safeProviderStatus === undefined ? {} : { providerStatus: safeProviderStatus }),
     logTail,
     ...(executionAttempt === undefined ? {} : { executionAttempt }),
+    // Re-derive from the worker's own boolean rather than trusting an
+    // arbitrary passthrough: this is the one bit the dispatcher's automatic
+    // retry decision reads, so it is normalized to a strict boolean here the
+    // same way every other durable field on this object is.
+    ...(diagnostics?.recoverableIncompletePanel === true ? { recoverableIncompletePanel: true } : {}),
   };
 }
 
 /**
  * Build the redacted diagnostic emitted by the publishing worker.
+ * `options.recoverableIncompletePanel` must be set only when the caller
+ * already classified this exact failure with `isRecoverableIncompletePanel`
+ * -- it is never inferred from `failureClass` or the error text here, so a
+ * future failure class cannot silently become auto-retryable by accident.
  *
  * This module has no dependency on GitHub transport types: a caller that
  * already holds the original error (and can check it against
@@ -250,7 +269,7 @@ export function buildDurableWorkerFailureDiagnostics(
 export function buildWorkerFailureDiagnostics(
   error: unknown,
   failureClass: WorkerTerminalFailure['failureClass'],
-  options?: { githubDiffNotRenderable?: boolean },
+  options?: { githubDiffNotRenderable?: boolean; recoverableIncompletePanel?: boolean },
 ): WorkerFailureDiagnostics {
   const providerStatus = error && typeof error === 'object' && 'status' in error
     ? Number((error as { status?: unknown }).status)
@@ -269,6 +288,7 @@ export function buildWorkerFailureDiagnostics(
     reason: workerFailureReason(failureClass),
     ...(safeStatus === undefined ? {} : { providerStatus: safeStatus }),
     logTail: redactWorkerFailureLogTail(message || workerFailureReason(failureClass)),
+    ...(options?.recoverableIncompletePanel === true ? { recoverableIncompletePanel: true } : {}),
   };
 }
 

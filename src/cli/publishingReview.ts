@@ -40,7 +40,7 @@ import type { ProviderId } from '../config/schema';
 import { resolveWorkerConfig, PUBLISHING_MAX_TURNS, PUBLISHING_IDLE_TIMEOUT_SECONDS, PUBLISHING_OVERALL_TIMEOUT_SECONDS } from '../config/publishingWorkerConfig';
 import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
-import { isRecoverableIncompletePanel } from '../review/publicationFailurePolicy';
+import { isRecoverableIncompletePanel, isRecoverablePanelRetryEligible, RECOVERABLE_PANEL_AUTO_RETRY_CAP } from '../review/publicationFailurePolicy';
 import {
   buildWorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
   validateWorkerCompletionEndpoint,
@@ -486,6 +486,13 @@ export function renderFailureSummary(
   failureClass: WorkerTerminalFailure['failureClass'],
   headSha: string,
   diagnostics?: { reason?: string; providerStatus?: number; logTail?: string },
+  /**
+   * Present only once the bounded automatic retry (REL-620) has exhausted its
+   * cap for a recoverable-incomplete-panel failure. `attempts` is this exact
+   * execution's attempt number, so the operator reads a real count, not a
+   * repeated constant.
+   */
+  recoverablePanelExhaustion?: { attempts: number; cap: number },
 ): string {
   const guidance: Record<WorkerTerminalFailure['failureClass'], string> = {
     budget_exhausted:
@@ -522,6 +529,11 @@ export function renderFailureSummary(
   ];
   if (detail.length > 0) lines.push('', `Failure detail: ${detail.join(' ')}`);
   if (tail) lines.push('', `Diagnostic: \`${tail.slice(0, 500)}\``);
+  if (recoverablePanelExhaustion) {
+    lines.push('', `This optional review lane failed ${recoverablePanelExhaustion.attempts} time(s) `
+      + `(automatic retry cap of ${recoverablePanelExhaustion.cap} additional attempt(s) reached); `
+      + 'no further automatic retry will occur.');
+  }
   return lines.join('\n');
 }
 
@@ -654,7 +666,22 @@ export async function runPublishingReviewWorker(
     if (legacySuccessCompletionAttempted) return;
     const failureClass = panelFailure?.failureClass ?? classifyFailure(error);
     const githubDiffNotRenderable = isGithubDiffNotRenderableError(error);
-    const diagnostics = buildWorkerFailureDiagnostics(error, failureClass, { githubDiffNotRenderable });
+    // The recoverable marker is the one bit the dispatcher's bounded
+    // automatic retry (REL-620) reads off this event; it is set exactly when
+    // this call came from the `isRecoverableIncompletePanel` branch below,
+    // never inferred from `failureClass` alone.
+    const diagnostics = buildWorkerFailureDiagnostics(error, failureClass, {
+      githubDiffNotRenderable,
+      recoverableIncompletePanel: panelFailure !== undefined,
+    });
+    // The dispatcher retries attempts 1..CAP; the attempt that fails as
+    // CAP+1 is the exhausted one this exact worker execution is running as
+    // (`identity.executionAttempt`), so no cross-process coordination is
+    // needed to know whether this is the final word.
+    const recoverablePanelExhaustion = panelFailure !== undefined
+      && !isRecoverablePanelRetryEligible(identity.executionAttempt)
+      ? { attempts: identity.executionAttempt, cap: RECOVERABLE_PANEL_AUTO_RETRY_CAP }
+      : undefined;
     if (authoritative && !authoritativeCompletionAttempted) {
       try {
         await reportReviewResult({ version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
@@ -675,7 +702,7 @@ export async function runPublishingReviewWorker(
           conclusion: 'failure',
           title: 'Review Yeti: review did not complete',
           summary: [
-            renderFailureSummary(failureClass, identity.headSha, diagnostics),
+            renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
             ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : []),
             ...(panelFailure?.panelEvidence
               ? [

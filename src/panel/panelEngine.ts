@@ -1031,6 +1031,38 @@ export function classifyPersonaAttemptFailure(error: unknown): WorkerFailureClas
   return classifyWorkerFailureMessage(error);
 }
 
+/**
+ * True only for the specific "HTTP 200, no usable completion content" signature
+ * openRouterClient.ts throws (tagged status 502 so isRetryablePanelError's
+ * generic 5xx branch above also treats it as retryable -- that classification
+ * is correct and unchanged).
+ *
+ * REL-886: this failure differs from an actual 5xx in one important way -- the
+ * request *succeeded*; only the content was empty. A configured review model
+ * such as `bifrost/pr-reviewer` is a Bifrost surge-router alias, not a single
+ * fixed backend: it already resolves to a primary backend with its own
+ * configured `fallbacks` at the gateway. Retrying the exact same alias call
+ * re-enters that routing and gives it another chance to land on a different
+ * backend -- that re-entry *is* the failover for this failure mode, owned at
+ * the layer that already owns model-level failover. There is no signal that a
+ * third or fourth attempt against the alias is any less likely to succeed than
+ * the second, so this failure mode gets its own, larger retry budget
+ * (EMPTY_COMPLETION_MAX_ATTEMPTS below) instead of sharing the generic
+ * transient-error budget -- without ever adding a second provider entry.
+ */
+export function isEmptyCompletionError(error: unknown): boolean {
+  return error instanceof OpenRouterResponseError && /empty completion content/i.test(error.message);
+}
+
+/** REL-886: attempts allotted to the same provider/alias specifically for the
+ * empty-completion signature, separate from and larger than the generic
+ * transient-error `maxAttempts` retry budget below. */
+export const EMPTY_COMPLETION_MAX_ATTEMPTS = 4;
+/** Short pause between empty-completion retries against the same alias. Long
+ * enough to let a stateful surge router reconsider its backend pick; short
+ * enough that four attempts stay well inside the persona's overall budget. */
+export const EMPTY_COMPLETION_RETRY_DELAY_MS = 1000;
+
 export const MAX_INLINE_DIFF_CHARS = 0;
 
 export function buildCompactFileList(
@@ -1913,7 +1945,10 @@ async function runPersona(
       }
 
       const effectiveEffort = (storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      const effectiveMaxTurns = storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? MAX_INVESTIGATION_TURNS;
+      const effectiveMaxTurns = Math.min(
+        MAX_INVESTIGATION_TURNS,
+        Math.max(1, storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? MAX_INVESTIGATION_TURNS),
+      );
 
       // `review_timeout_s` is the inactivity budget after a stream starts. The
       // request's total timeout is calculated below from the remaining panel /
@@ -1923,8 +1958,13 @@ async function runPersona(
 
       let attempts = 0;
       const maxAttempts = 2;
+      // REL-886: the empty-completion signature gets its own, larger, separately
+      // tracked retry budget (see isEmptyCompletionError above) so it is not
+      // capped by the generic transient-error `maxAttempts`. The loop itself is
+      // therefore unconditional; every exit path below is an explicit `break`.
+      let emptyCompletionAttempts = 0;
 
-      while (attempts < maxAttempts) {
+      for (;;) {
         throwIfPanelAborted(signal);
         const elapsedMs = Date.now() - personaStartedAt;
         const remainingPersonaBudgetMs = MAX_PERSONA_BUDGET_MS - elapsedMs;
@@ -2020,12 +2060,12 @@ async function runPersona(
           }
           if (!result.parsed || !['APPROVE', 'FINDINGS'].includes(result.parsed.decision)
               || !Array.isArray(result.parsed.findings)) {
-            if ((result.turnsCount ?? 1) >= effectiveMaxTurns || !result.parsed) {
+            if ((result.turnsCount ?? 1) >= effectiveMaxTurns) {
               throw new PanelConfigurationError(
                 `persona ${persona.id} turn budget exhausted without verdict (INCOMPLETE): used ${result.turnsCount ?? effectiveMaxTurns}/${effectiveMaxTurns} investigation turns`,
               );
             }
-            throw new Error('invalid persona response contract');
+            throw new PanelStructuredOutputError('invalid persona response contract');
           }
           // The panel may receive either a unified diff or context-only file content. Strict
           // field validation is safe in both cases; final publication performs diff anchoring when
@@ -2199,6 +2239,34 @@ async function runPersona(
             errors.push(`${providerId}: ${panelErrorMessage(error)}`);
             lastFailureClass = 'rate_limit';
             if (config.reviewers.fallback === 'none') break;
+            break;
+          }
+          // REL-886: give the empty-completion signature its own, larger budget
+          // against this same provider/alias before falling through to the
+          // generic transient-error retry below. `providerId` never changes
+          // here -- re-issuing the request against the same alias is the
+          // failover for this failure mode (see isEmptyCompletionError above).
+          if (isEmptyCompletionError(error)) {
+            emptyCompletionAttempts++;
+            errors.push(`${providerId}: ${panelErrorMessage(error)}`);
+            if (emptyCompletionAttempts < EMPTY_COMPLETION_MAX_ATTEMPTS) {
+              logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' returned an empty completion (attempt ${emptyCompletionAttempts}/${EMPTY_COMPLETION_MAX_ATTEMPTS}); retrying the same alias so its own routing can select a different backend.`);
+              await panelDelay(EMPTY_COMPLETION_RETRY_DELAY_MS, signal);
+              continue;
+            }
+            logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' returned an empty completion on every attempt (${emptyCompletionAttempts}/${EMPTY_COMPLETION_MAX_ATTEMPTS}); failing closed.`);
+            bus.publishEvent({
+              jobId: effectiveJobId,
+              timestamp: new Date().toISOString(),
+              type: 'llm:error',
+              persona: persona.id,
+              data: {
+                provider: providerId,
+                model: targetModel,
+                error: panelErrorMessage(error),
+                status: 'ERROR',
+              },
+            });
             break;
           }
           if (attempts < maxAttempts && isRetryablePanelError(error)) {

@@ -83,6 +83,16 @@ export interface ReviewAdmissionInput {
    * this generation; replaying an older signed action is therefore a no-op.
    */
   retryAfterExecutionAttempt?: number;
+  /**
+   * Service-controlled dispatch delay for a re-queued attempt's outbox row.
+   * Defaults to `receivedAt` (immediately claimable) when omitted, which is
+   * every caller except the dispatcher's own bounded automatic retry after a
+   * recoverable-incomplete-panel failure (REL-620): that path sets this a
+   * short distance in the future so a transient provider blip gets a moment
+   * to clear before the identical dependency is hit again. Never decoded
+   * from an unverified request.
+   */
+  availableAt?: number;
   /** Service-resolved only; never decoded from an Action/worker request. */
   authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
 }
