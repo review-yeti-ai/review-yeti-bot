@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // REL-892: `src/gateway/omniRouteClient.ts`'s `OmniRouteClient.complete()` logs a raw
 // network-failure/timeout message when the underlying `fetch()` call rejects
@@ -37,6 +37,12 @@ describe('REL-892: OmniRouteClient network-failure log redaction', () => {
     mocks.debug.mockClear();
   });
 
+  // Unconditional: a failing assertion between `vi.stubGlobal('fetch', ...)` and the end of
+  // an `it` block must not leak the fetch stub into a later test in this file or run.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('never emits the raw secret-shaped fetch failure text to the log sink', async () => {
     const mockFetch = vi.fn().mockRejectedValue(new TypeError(NETWORK_ERROR_MESSAGE));
     vi.stubGlobal('fetch', mockFetch);
@@ -53,8 +59,6 @@ describe('REL-892: OmniRouteClient network-failure log redaction', () => {
     const serializedMeta = JSON.stringify(meta);
     expect(serializedMeta).not.toContain(SECRET_TOKEN);
     expect(serializedMeta).not.toContain('Bearer');
-
-    vi.unstubAllGlobals();
   });
 
   it('preserves the target model and a useful failure classification in the redacted log line', async () => {
@@ -77,7 +81,5 @@ describe('REL-892: OmniRouteClient network-failure log redaction', () => {
     // the message (what failed and why), just not the credential.
     expect(String(meta.error)).toContain('ETIMEDOUT');
     expect(String(meta.error)).toContain('[REDACTED]');
-
-    vi.unstubAllGlobals();
   });
 });

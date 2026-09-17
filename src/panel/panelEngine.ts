@@ -7,11 +7,15 @@ import { OpenRouterConnectionError, OpenRouterContentBlock, OpenRouterMessage, O
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
-import { classifyWorkerFailureMessage, redactWorkerFailureLogTail } from '../review/workerCompletion';
+import { classifyWorkerFailureMessage } from '../review/workerCompletion';
 // From the neutral `../types/workerFailure` module, not `../review/workerCompletion`: this file
 // is otherwise the panel-domain side of the same boundary `../panel/types` was fixed for
 // (REL-892 finding 3), so it uses the same neutral import for the type.
 import type { WorkerFailureClass } from '../types/workerFailure';
+// From the neutral `../utils/workerFailureLogRedaction` module, not `../review/workerCompletion`:
+// this file is the panel-domain side of the same gateway/review boundary
+// `../gateway/omniRouteClient` and `../gateway/openRouterClient` were fixed for (REL-892 finding 1).
+import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';

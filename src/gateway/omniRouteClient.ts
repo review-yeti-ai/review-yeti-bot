@@ -1,6 +1,6 @@
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { logger } from '../utils/logger';
-import { redactWorkerFailureLogTail } from '../review/workerCompletion';
+import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 
 export class GatewayConnectionError extends Error {
   constructor(message: string) {
