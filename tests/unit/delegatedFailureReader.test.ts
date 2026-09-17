@@ -129,6 +129,26 @@ describe('DelegatedFailureReader condition matching', () => {
     expect(candidates).toEqual([expect.objectContaining({ runId: RUN_ID, executionAttempt: 2 })]);
   });
 
+  it('prefers spec.executionAttempt over the attempt implied by the run-secret name when they disagree', async () => {
+    // The resource's own spec.executionAttempt is the operator's exact observed
+    // attempt and is what the exact-attempt claim gate depends on; a name-derived
+    // value must never override it. The default fixture secret name implies 2.
+    const { reader } = readerWith([prReviewJob({ executionAttempt: 3 })]);
+    const candidates = await reader.listCandidates();
+    expect(candidates).toEqual([expect.objectContaining({ runId: RUN_ID, executionAttempt: 3 })]);
+  });
+
+  it.each([
+    ['zero', 0],
+    ['negative', -1],
+    ['fractional', 2.5],
+    ['a numeric string', '3'],
+  ])('falls back to the name-derived attempt when spec.executionAttempt is %s', async (_label, executionAttempt) => {
+    const { reader } = readerWith([prReviewJob({ executionAttempt })]);
+    const candidates = await reader.listCandidates();
+    expect(candidates).toEqual([expect.objectContaining({ runId: RUN_ID, executionAttempt: 2 })]);
+  });
+
   it('ignores a resource whose execution attempt cannot be resolved at all', async () => {
     const { reader } = readerWith([prReviewJob({ executionAttempt: undefined, runSecretName: 'garbage' })]);
     await expect(reader.listCandidates()).resolves.toEqual([]);
