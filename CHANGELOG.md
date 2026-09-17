@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.10...v1.72.11) (2026-09-17)
+
+
+### Bug Fixes
+
+* **REL-896:** patch PRReviewJob finalizers as metadata only; the spec is immutable server-side ([#837](https://github.com/review-yeti-ai/review-yeti-bot/issues/837)) ([814c84f](https://github.com/review-yeti-ai/review-yeti-bot/commit/814c84faf721e53f3f5b57b25c464e4b4909906b))
+
 ## [1.72.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.9...v1.72.10) (2026-09-17)
 
 
