@@ -20,7 +20,7 @@ import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
 import { LiveStreamBus } from '../live/liveStreamBus';
-import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT, getModelFamily } from '../personas/redTeamPersona';
+import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../personas/redTeamPersona';
 import { dashboardStore } from '../persistence/dashboardStore';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { generatePRSummary } from '../review/summaryEngine';
@@ -1167,10 +1167,10 @@ export function buildCompactDiffManifest(
 
   const fileEntries = changedFiles.map((f: any) => {
     const filePath = f.path || f.filePath || 'unknown';
-    if (isOversizedFileDiff(f, maxChars)) {
-      return `- ${filePath} (SKIPPED: ${filePatchChars(f)} chars > max-file-diff-chars ${maxChars})`;
-    }
     const lane = domainLanes[filePath] || classifyPathByHeuristic(filePath);
+    if (isOversizedFileDiff(f, maxChars)) {
+      return `- ${filePath} (SKIPPED: ${filePatchChars(f)} chars > max-file-diff-chars ${maxChars}) [${lane}]`;
+    }
     const isAffinity = personaAffinities.includes(lane as DomainLane);
     const stats = computeDiffStats(f.patch);
     const statStr = f.patch ? ` (+${stats.additions}, -${stats.deletions} lines)` : '';
@@ -1380,7 +1380,11 @@ async function invoke(
           'Valid final response example:',
           structuredOutputExample(role, requestNonce, payload),
           ...(role === 'persona'
-            ? ['If evidence shows no defects or diff context is limited, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation, return APPROVE with findings [] and note caveats in your explanation.']
+            ? [
+                nativeJsonMode
+                  ? 'If evidence shows no defects and diff context was verified, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation of security or critical invariants, return decision INCOMPLETE with findings [] and explain the missing context.'
+                  : 'If evidence shows no defects or diff context is limited, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation, return APPROVE with findings [] and note caveats in your explanation.',
+              ]
             : []),
           'The reserved final turn is terminal: do not request a tool there; render the final result or fail closed.',
       ]
@@ -1392,23 +1396,19 @@ async function invoke(
       ]),
   ].join('\n');
 
-  const fullPromptText = `${staticPrefix}\n\n${dynamicSuffix}`;
-  const isAnthropic = getModelFamily(model) === 'anthropic';
-
-  let userContent: string | OpenRouterContentBlock[] = fullPromptText;
-  if (isAnthropic) {
-    userContent = [
-      {
-        type: 'text',
-        text: staticPrefix,
-        cache_control: { type: 'ephemeral' },
-      },
-      {
-        type: 'text',
-        text: dynamicSuffix,
-      },
-    ];
-  }
+  // Prompt caching: always emit structured content blocks with ephemeral cache_control on the
+  // static prefix, provider- and model-agnostic.
+  const userContent: OpenRouterContentBlock[] = [
+    {
+      type: 'text',
+      text: staticPrefix,
+      cache_control: { type: 'ephemeral' },
+    },
+    {
+      type: 'text',
+      text: dynamicSuffix,
+    },
+  ];
 
   const started = Date.now();
 
@@ -1480,20 +1480,6 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         responseFormat: nativeFinalTurn && strictNativeFinalMode ? roleResponseFormat : { type: 'json_object' },
       }
       : baseRequestPolicy;
-    // Prompt compaction on turns 2+ (ADR 0501 / Concept B): Stop resending raw diff blocks
-    if (iter >= 1 && diffSection && messages[1] && typeof messages[1].content === 'string') {
-      const compactFileList = buildCompactFileList(changedFiles, { includeLineCounts: true });
-      const compactDiffIndex = [
-        `=== PR CHANGED FILES (COMPACT INDEX) ===`,
-        compactFileList,
-        `(Full diff omitted on subsequent turns. Use read_file, get_diff, or code_search_zoekt.)`,
-      ].join('\n');
-      const targetBlock = `=== PR CHANGED FILES & DIFF SCOPE ===\n${diffSection}`;
-      if (messages[1].content.includes(targetBlock)) {
-        messages[1].content = messages[1].content.replace(targetBlock, compactDiffIndex);
-      }
-    }
-
     const requestPersona = options?.persona || personaName;
     const effectiveOnFirstToken = options?.onFirstToken ?? (turnRequestPolicy as any)?.onFirstToken;
     const requestMessages = nativeJsonMode
@@ -1561,7 +1547,10 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       structuredCorrectionAttempts += 1;
       if (nativeJsonMode) nativeFinalizationRequested = true;
       messages.push({ role: 'assistant', content: response.content });
-      messages.push({ role: 'user', content: structuredOutputCorrection(role, requestNonce, contractError, nativeJsonMode, payload) });
+      messages.push({
+        role: 'user',
+        content: structuredOutputCorrection(role, requestNonce, contractError, nativeJsonMode, payload),
+      });
       continue;
     } catch (fenceErr: unknown) {
       if (iter + 1 >= maxTurns) {

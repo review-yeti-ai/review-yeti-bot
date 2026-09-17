@@ -372,48 +372,71 @@ export function classifyPathByHeuristic(filePath: string): DomainLane {
   const dotIdx = baseName.lastIndexOf('.');
   const ext = dotIdx >= 0 ? baseName.slice(dotIdx) : '';
 
-  // 1. Docs and static non-executable assets
-  if (
-    SAFE_DOC_OR_ASSET_EXTENSIONS.has(ext) ||
-    SAFE_STANDALONE_FILENAMES.has(baseName) ||
-    SAFE_TXT_BASENAMES.has(baseName) ||
-    p.startsWith('docs/') ||
-    p.includes('/docs/') ||
-    ext === '.svg' ||
-    ext === '.pdf' ||
-    ext === '.eps'
-  ) {
-    return 'docs_assets';
-  }
-
-  // 2. Security & Auth (tokens, keys, auth controllers, crypto, policies, netpols)
+  // 1. Security & Auth (tokens, keys, auth controllers, crypto, policies, netpols, Elixir plugs/routers/sessions)
+  // Evaluated FIRST to guarantee credentials/secrets under docs or scripts are never demoted.
   if (
     p.includes('auth') ||
     p.includes('oauth') ||
-    p.includes('token') ||
     p.includes('secret') ||
-    p.includes('cert') ||
-    p.includes('crypto') ||
-    p.includes('rbac') ||
-    p.includes('permission') ||
-    p.includes('guard') ||
-    p.includes('firewall') ||
-    p.includes('netpol') ||
-    p.includes('security') ||
     p.includes('credential') ||
     p.includes('password') ||
     p.includes('keychain') ||
     p.includes('id_rsa') ||
     p.includes('id_ed25519') ||
+    p.includes('crypto') ||
+    p.includes('rbac') ||
+    p.includes('permission') ||
+    p.includes('firewall') ||
+    p.includes('netpol') ||
+    p.includes('security') ||
+    p.includes('session') ||
+    p.includes('login') ||
+    p.includes('jwt') ||
+    p.includes('cookie') ||
+    p.includes('csrf') ||
+    p.includes('cors') ||
+    p.includes('sanitize') ||
+    p.includes('escape') ||
+    p.includes('middleware') ||
+    p.includes('webhook') ||
+    p.includes('hmac') ||
+    p.includes('sso') ||
+    p.includes('tenant') ||
+    p.includes('sudo') ||
+    p.includes('.env') ||
     baseName === '.npmrc' ||
     baseName === '.pypirc' ||
-    p.includes('policy') ||
-    p.includes('policies')
+    baseName === 'router.ex' ||
+    p.endsWith('/router.ex') ||
+    p.includes('/plug/') ||
+    p.includes('/plugs/') ||
+    baseName.includes('plug') ||
+    /\btoken\b/.test(baseName) ||
+    p.includes('/token/') ||
+    p.includes('/tokens/') ||
+    p.includes('auth_token') ||
+    p.includes('access_token') ||
+    p.includes('refresh_token') ||
+    p.includes('api_token') ||
+    /\bcert\b/.test(baseName) ||
+    p.includes('/cert/') ||
+    p.includes('/certs/') ||
+    p.includes('/certificates/') ||
+    ext === '.crt' ||
+    ext === '.pem' ||
+    ext === '.key' ||
+    /\bguard\b/.test(baseName) ||
+    p.includes('/guard/') ||
+    p.includes('/guards/') ||
+    /\bpolicy\b/.test(baseName) ||
+    /\bpolicies\b/.test(baseName) ||
+    p.includes('/policy/') ||
+    p.includes('/policies/')
   ) {
     return 'security_auth';
   }
 
-  // 3. Database & Data Persistence (SQL, migrations, Ecto schemas, Prisma, models)
+  // 2. Database & Data Persistence (SQL, migrations, Ecto schemas, Prisma, models)
   if (
     p.includes('/repo/') ||
     p.includes('/schema/') ||
@@ -437,7 +460,7 @@ export function classifyPathByHeuristic(filePath: string): DomainLane {
     return 'data_persistence';
   }
 
-  // 4. API & Contracts (REST, GraphQL, Protobuf, OpenAPI, router)
+  // 3. API & Contracts (REST, GraphQL, Protobuf, OpenAPI, router)
   if (
     p.includes('/api/') ||
     p.includes('/routes/') ||
@@ -455,7 +478,7 @@ export function classifyPathByHeuristic(filePath: string): DomainLane {
     return 'api_contracts';
   }
 
-  // 5. UI & Frontend (Components, styling, templates, views)
+  // 4. UI & Frontend (Components, styling, templates, views, Phoenix LiveView/HEEx)
   if (
     p.includes('/assets/') ||
     p.includes('/static/') ||
@@ -466,10 +489,14 @@ export function classifyPathByHeuristic(filePath: string): DomainLane {
     p.includes('/views/') ||
     p.includes('/styles/') ||
     p.includes('/css/') ||
+    p.includes('/live/') ||
     ext === '.tsx' ||
     ext === '.jsx' ||
     ext === '.vue' ||
     ext === '.svelte' ||
+    ext === '.heex' ||
+    ext === '.leex' ||
+    ext === '.eex' ||
     ext === '.css' ||
     ext === '.scss' ||
     ext === '.sass' ||
@@ -479,7 +506,21 @@ export function classifyPathByHeuristic(filePath: string): DomainLane {
     return 'ui_frontend';
   }
 
-  // 6. System Runtime (default for backend logic, infra, build, orchestration)
+  // 5. Docs and static non-executable assets
+  if (
+    SAFE_DOC_OR_ASSET_EXTENSIONS.has(ext) ||
+    SAFE_STANDALONE_FILENAMES.has(baseName) ||
+    SAFE_TXT_BASENAMES.has(baseName) ||
+    p.startsWith('docs/') ||
+    p.includes('/docs/') ||
+    ext === '.svg' ||
+    ext === '.pdf' ||
+    ext === '.eps'
+  ) {
+    return 'docs_assets';
+  }
+
+  // 6. System & Runtime (Default fallback)
   return 'system_runtime';
 }
 
@@ -688,8 +729,12 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
       const validLanes = new Set(DOMAIN_LANES);
       for (const [fPath, lane] of Object.entries(parsed.domainLanes)) {
         if (typeof lane === 'string' && validLanes.has(lane as DomainLane)) {
-          // Keep security_auth and docs_assets heuristic overrides if heuristic was deterministic
-          if (heuristicLanes[fPath] === 'security_auth' || heuristicLanes[fPath] === 'docs_assets') {
+          // 1. Fail-closed security: Never allow LLM to demote out of security_auth
+          if (heuristicLanes[fPath] === 'security_auth' && lane !== 'security_auth') {
+            continue;
+          }
+          // 2. Anti-evasion: Never allow LLM to demote non-docs code into docs_assets
+          if (lane === 'docs_assets' && heuristicLanes[fPath] !== 'docs_assets') {
             continue;
           }
           domainLanes[fPath] = lane as DomainLane;
