@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { executePersonaPanel, PanelConfigurationError } from '../../panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText, PanelConfigurationError } from '../../panel/panelEngine';
 import { OmniRouteClient, GatewayConnectionError } from '../../gateway/omniRouteClient';
 import { parseAndValidateConfig } from '../../config/configLoader';
 import { CtReviewConfigV3 } from '../../config/schema';
@@ -103,7 +103,7 @@ describe('PanelEngine — Error Propagation & Non-fallback Verification', () => 
       if (allMsg.includes('"persona":"opt-lane"') || allMsg.includes('opt-lane')) {
         throw new GatewayConnectionError('Connection refused for optional lane');
       }
-      const prompt = req.messages[req.messages.length - 1].content;
+      const prompt = extractMessageContentText(req.messages[req.messages.length - 1].content);
       const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
       const nonce = nonceMatch ? nonceMatch[1] : 'nonce';
       if (allMsg.includes('arbiter')) {
@@ -135,7 +135,7 @@ describe('PanelEngine — Error Propagation & Non-fallback Verification', () => 
     (config.personas[0] as any).maxTurns = 2;
     const calls: string[] = [];
     const mockComplete = vi.fn().mockImplementation(async (req: any) => {
-      const allMessages = req.messages.map((message: any) => message.content).join('\n');
+      const allMessages = req.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
       const nonce = allMessages.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)?.[1] || 'nonce';
       const role = allMessages.includes('Role: ARBITER')
         ? 'arbiter'
@@ -171,13 +171,13 @@ describe('PanelEngine — Error Propagation & Non-fallback Verification', () => 
     expect(result.arbiter.verdict).toBe('SHIP');
     expect(calls).toEqual(['persona', 'moderator', 'arbiter', 'arbiter']);
     expect(mockComplete).toHaveBeenCalledTimes(4);
-    expect(mockComplete.mock.calls[3][0].messages.at(-1).content).toContain('STRUCTURED_OUTPUT_CORRECTION');
+    expect(extractMessageContentText(mockComplete.mock.calls[3][0].messages.at(-1).content)).toContain('STRUCTURED_OUTPUT_CORRECTION');
   });
 
   it('fails closed after one structured-output correction instead of looping provider calls', async () => {
     const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
     const mockComplete = vi.fn().mockImplementation(async (req: any) => {
-      const allMessages = req.messages.map((message: any) => message.content).join('\n');
+      const allMessages = req.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
       const nonce = allMessages.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)?.[1] || 'nonce';
       const role = allMessages.includes('Role: ARBITER')
         ? 'arbiter'
@@ -206,6 +206,6 @@ describe('PanelEngine — Error Propagation & Non-fallback Verification', () => 
       client: { complete: mockComplete } as any,
     })).rejects.toThrow(/arbiter failed closed.*invalid or missing verdict/i);
     expect(mockComplete).toHaveBeenCalledTimes(4);
-    expect(mockComplete.mock.calls[3][0].messages.at(-1).content).toContain('STRUCTURED_OUTPUT_CORRECTION');
+    expect(extractMessageContentText(mockComplete.mock.calls[3][0].messages.at(-1).content)).toContain('STRUCTURED_OUTPUT_CORRECTION');
   });
 });

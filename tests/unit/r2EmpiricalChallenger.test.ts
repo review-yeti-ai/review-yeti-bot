@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
 describe('Requirement R2 Empirical Challenger Test Suite', () => {
@@ -35,8 +35,9 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
     const mockClient: OmniRouteClient = {
       complete: vi.fn().mockImplementation(async ({ messages }: { messages: any[] }) => {
         const sysMsg = messages.find((m) => m.role === 'system')?.content || '';
-        const userMsg = messages[messages.length - 1]?.content || '';
-        const nonceMatch = messages.find((m) => m.content?.includes('CT_REVIEW_NONCE:'))?.content.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+        const userMsg = extractMessageContentText(messages[messages.length - 1]?.content || '');
+        const allText = messages.map((m) => extractMessageContentText(m?.content)).join('\n');
+        const nonceMatch = allText.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
         const nonce = nonceMatch ? nonceMatch[1] : 'nonce-123';
 
         if (sysMsg.includes('correctness') || sysMsg.includes('Persona')) {
@@ -112,7 +113,7 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
       let toolResultMessage: any = null;
       for (const call of calls) {
         const msgs = call[0]?.messages || [];
-        const found = msgs.find((m: any) => m.content && m.content.includes('[PI_TOOL_RESULT]'));
+        const found = msgs.find((m: any) => extractMessageContentText(m.content).includes('[PI_TOOL_RESULT]'));
         if (found) {
           toolResultMessage = found;
           break;
@@ -120,8 +121,9 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
       }
       
       expect(toolResultMessage).toBeDefined();
-      expect(toolResultMessage.content).toContain(`Tool '${disallowedTool}' execution rejected: Permission denied.`);
-      expect(toolResultMessage.content).toContain('Reviewer personas are restricted strictly to read-only code, search, and MCP tools.');
+      const toolText = extractMessageContentText(toolResultMessage.content);
+      expect(toolText).toContain(`Tool '${disallowedTool}' execution rejected: Permission denied.`);
+      expect(toolText).toContain('Reviewer personas are restricted strictly to read-only code, search, and MCP tools.');
     };
 
     it('rejects disallowed tool: write_file with explicit security permission denied', async () => {
@@ -173,7 +175,7 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
       let toolResultMessage: any = null;
       for (const call of calls) {
         const msgs = call[0]?.messages || [];
-        const found = msgs.find((m: any) => m.content && m.content.includes('[PI_TOOL_RESULT]'));
+        const found = msgs.find((m: any) => extractMessageContentText(m.content).includes('[PI_TOOL_RESULT]'));
         if (found) {
           toolResultMessage = found;
           break;
@@ -181,9 +183,10 @@ describe('Requirement R2 Empirical Challenger Test Suite', () => {
       }
 
       expect(toolResultMessage).toBeDefined();
-      expect(toolResultMessage.content).not.toContain('Permission denied');
-      expect(toolResultMessage.content).toContain(`Tool '${toolName}' execution result:`);
-      expect(toolResultMessage.content).toContain(expectedOutputSubstring);
+      const toolText = extractMessageContentText(toolResultMessage.content);
+      expect(toolText).not.toContain('Permission denied');
+      expect(toolText).toContain(`Tool '${toolName}' execution result:`);
+      expect(toolText).toContain(expectedOutputSubstring);
     };
 
     it('executes view_file cleanly', async () => {

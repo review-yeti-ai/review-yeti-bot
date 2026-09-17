@@ -20,7 +20,7 @@ import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
 import { LiveStreamBus } from '../live/liveStreamBus';
-import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT, getModelFamily } from '../personas/redTeamPersona';
+import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../personas/redTeamPersona';
 import { dashboardStore } from '../persistence/dashboardStore';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { generatePRSummary } from '../review/summaryEngine';
@@ -29,7 +29,15 @@ import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { ASTParser } from '../indexer/astParser';
 import { matchOne } from '../pipeline/domainIndex';
-import { classifyReviewScope, ClassifierResult, containsExecutableOrSensitiveCode } from './classifierEngine';
+import {
+  classifyReviewScope,
+  ClassifierResult,
+  containsExecutableOrSensitiveCode,
+  DomainLane,
+  classifyPathByHeuristic,
+  classifyDomainLanesByHeuristic,
+  PERSONA_DOMAIN_AFFINITY,
+} from './classifierEngine';
 import { buildFastShipPanelResult } from './fastShipResult';
 export type {
   FindingSeverity,
@@ -1110,14 +1118,87 @@ export function buildCompactFileList(
   return entries.join('\n') || 'None';
 }
 
-export function buildDiffSection(
+export function computeDiffStats(patch?: string): { additions: number; deletions: number } {
+  if (!patch) return { additions: 0, deletions: 0 };
+  let additions = 0;
+  let deletions = 0;
+  const lines = patch.split('\n');
+  const hasHunkHeaders = lines.some((l) => l.startsWith('@@'));
+  let inHunk = !hasHunkHeaders;
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) {
+      continue;
+    }
+    if (!hasHunkHeaders && (line.startsWith('+++ ') || line.startsWith('--- '))) {
+      continue;
+    }
+    if (line.startsWith('+')) {
+      additions++;
+    } else if (line.startsWith('-')) {
+      deletions++;
+    }
+  }
+  return { additions, deletions };
+}
+
+export function buildCompactDiffManifest(
   changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>,
-  options?: { baseSha?: string; headSha?: string }
+  options?: {
+    baseSha?: string;
+    headSha?: string;
+    domainLanes?: Record<string, DomainLane>;
+    persona?: string;
+  }
 ): string {
-  const compactFileList = buildCompactFileList(changedFiles);
   const baseSha = options?.baseSha || '';
   const headSha = options?.headSha || '';
   const range = baseSha && headSha ? `${baseSha}...${headSha}` : headSha || 'HEAD';
+  const persona = options?.persona || '';
+  const personaAffinities: DomainLane[] = persona ? (PERSONA_DOMAIN_AFFINITY[persona] || []) : [];
+  const maxChars = resolveMaxFileDiffChars();
+
+  const domainLanes = options?.domainLanes || classifyDomainLanesByHeuristic(changedFiles);
+
+  // Group and count domain lanes
+  const laneCounts: Record<string, number> = {};
+  for (const f of changedFiles) {
+    const fPath = f.path || f.filePath || '';
+    if (!fPath) continue;
+    const lane = domainLanes[fPath] || classifyPathByHeuristic(fPath);
+    laneCounts[lane] = (laneCounts[lane] || 0) + 1;
+  }
+
+  const laneSummaryLines = Object.entries(laneCounts).map(([lane, count]) => {
+    const isPersonaLane = personaAffinities.includes(lane as DomainLane);
+    return `- ${lane}: ${count} file${count === 1 ? '' : 's'}${isPersonaLane ? ' (★ YOUR LANE FOCUS)' : ''}`;
+  });
+
+  const fileEntries = changedFiles.map((f: any) => {
+    const filePath = f.path || f.filePath || 'unknown';
+    const lane = domainLanes[filePath] || classifyPathByHeuristic(filePath);
+    if (isOversizedFileDiff(f, maxChars)) {
+      return `- ${filePath} (SKIPPED: ${filePatchChars(f)} chars > max-file-diff-chars ${maxChars}) [${lane}]`;
+    }
+    const isAffinity = personaAffinities.includes(lane as DomainLane);
+    const stats = computeDiffStats(f.patch);
+    const statStr = f.patch ? ` (+${stats.additions}, -${stats.deletions} lines)` : '';
+    return `- ${filePath} [${lane}]${isAffinity ? ' (★ YOUR LANE)' : ''}${statStr}`;
+  });
+
+  const personaFocusSection = persona && personaAffinities.length > 0
+    ? [
+        `=== YOUR ASSIGNED DOMAIN FOCUS ===`,
+        `Persona: '${persona}' | Domain Lane Affinities: [${personaAffinities.join(', ')}]`,
+        `Prioritize in-depth analysis on files marked (★ YOUR LANE).`,
+        `Advisory guidance: (★ YOUR LANE) indicates domain affinity, not an exclusive review filter. Review all files relevant to your role charter.`,
+        ``,
+      ]
+    : [];
 
   return [
     `=== GIT RANGE (no diff payload is inlined; explore this yourself) ===`,
@@ -1125,13 +1206,39 @@ export function buildDiffSection(
     ...(baseSha ? [`Base SHA: ${baseSha}`] : []),
     ...(headSha ? [`Head SHA: ${headSha}`] : []),
     ``,
+    ...(laneSummaryLines.length > 0
+      ? [
+          `=== DOMAIN LANE BREAKDOWN ===`,
+          ...laneSummaryLines,
+          ``,
+        ]
+      : []),
+    ...personaFocusSection,
     `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`,
-    compactFileList,
+    fileEntries.join('\n') || 'None',
     ``,
-    `Use get_diff, read_file, view_file, search_code, or zoekt on these paths.`,
+    `=== SWARM EXPLORATION & TARGETED PULL PROTOCOL ===`,
+    `Zero raw diff hunks are pre-rendered in this prompt to eliminate token load bloat.`,
+    `Each persona in this container reviews independently based on their domain lane.`,
+    `Fetch diff hunks or inspect source context on-demand using:`,
+    `- get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}`,
+    `- read_file: {"tool": "read_file", "args": {"path": "<path>", "startLine": 1, "endLine": 80}}`,
+    `- zoekt / symbol_search: to audit cross-file symbols across the repository.`,
     `Do not assume file contents from this list. Fetch the commit diffs yourself.`,
     `SKIPPED paths are larger than max-file-diff-chars; do not request their payloads.`,
   ].join('\n');
+}
+
+export function buildDiffSection(
+  changedFiles: Array<{ path?: string; filePath?: string; patch?: string; content?: string }>,
+  options?: {
+    baseSha?: string;
+    headSha?: string;
+    domainLanes?: Record<string, DomainLane>;
+    persona?: string;
+  }
+): string {
+  return buildCompactDiffManifest(changedFiles, options);
 }
 
 async function invoke(
@@ -1188,16 +1295,25 @@ async function invoke(
   const branchStr = (payload.branch as string) || '';
   const prNumberStr = payload.prNumber ? `#${payload.prNumber}` : '';
   const repositoryVisibility = normalizeRepositoryVisibility(payload.repositoryVisibility);
-
-  const diffSection = buildDiffSection(changedFiles, { baseSha: baseShaStr, headSha: shaStr });
+  const domainLanes = (payload.domainLanes as Record<string, DomainLane> | undefined) || classifyDomainLanesByHeuristic(changedFiles);
+  const diffSection = buildDiffSection(changedFiles, {
+    baseSha: baseShaStr,
+    headSha: shaStr,
+    domainLanes,
+    persona: personaName,
+  });
   // The compact scope above owns file context. The fenced compatibility
   // example must not re-embed raw patches and bypass size/skip boundaries.
-  // Keep moderator/arbiter evidence and all other role-specific context.
+  // Deduplicate payload: rules, preCheckEvidence, and domainLanes are already
+  // rendered as prose in the static prefix. Removing them from the raw JSON dump
+  // eliminates thousands of redundant tokens on every turn.
   const promptPayload = { ...payload };
   delete promptPayload.changedFiles;
-  // Native mode has its own output schema, but still needs the actual role inputs.
-  // Keep these separate so neither the schema example nor a missing ledger can be
-  // mistaken for review evidence. Raw patches remain behind the scoped tool boundary.
+  if (role === 'persona') {
+    delete promptPayload.rules;
+    delete promptPayload.preCheckEvidence;
+    delete promptPayload.domainLanes;
+  }
   const nativeRoleInput = { ...promptPayload };
   delete nativeRoleInput.outputSchema;
 
@@ -1282,7 +1398,9 @@ async function invoke(
           'Valid final response example:',
           structuredOutputExample(role, requestNonce, payload),
           ...(role === 'persona'
-            ? ['If evidence shows no defects or diff context is limited, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation, return APPROVE with findings [] and note caveats in your explanation.']
+            ? [
+                'If evidence shows no defects and diff context was verified, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation, note caveats in your explanation before deciding.',
+              ]
             : []),
           'The reserved final turn is terminal: do not request a tool there; render the final result or fail closed.',
       ]
@@ -1294,23 +1412,19 @@ async function invoke(
       ]),
   ].join('\n');
 
-  const fullPromptText = `${staticPrefix}\n\n${dynamicSuffix}`;
-  const isAnthropic = getModelFamily(model) === 'anthropic';
-
-  let userContent: string | OpenRouterContentBlock[] = fullPromptText;
-  if (isAnthropic) {
-    userContent = [
-      {
-        type: 'text',
-        text: staticPrefix,
-        cache_control: { type: 'ephemeral' },
-      },
-      {
-        type: 'text',
-        text: dynamicSuffix,
-      },
-    ];
-  }
+  // Prompt caching: always emit structured content blocks with ephemeral cache_control on the
+  // static prefix, provider- and model-agnostic.
+  const userContent: OpenRouterContentBlock[] = [
+    {
+      type: 'text',
+      text: staticPrefix,
+      cache_control: { type: 'ephemeral' },
+    },
+    {
+      type: 'text',
+      text: dynamicSuffix,
+    },
+  ];
 
   const started = Date.now();
 
@@ -1382,20 +1496,6 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         responseFormat: nativeFinalTurn && strictNativeFinalMode ? roleResponseFormat : { type: 'json_object' },
       }
       : baseRequestPolicy;
-    // Prompt compaction on turns 2+ (ADR 0501 / Concept B): Stop resending raw diff blocks
-    if (iter >= 1 && diffSection && messages[1] && typeof messages[1].content === 'string') {
-      const compactFileList = buildCompactFileList(changedFiles, { includeLineCounts: true });
-      const compactDiffIndex = [
-        `=== PR CHANGED FILES (COMPACT INDEX) ===`,
-        compactFileList,
-        `(Full diff omitted on subsequent turns. Use read_file, get_diff, or code_search_zoekt.)`,
-      ].join('\n');
-      const targetBlock = `=== PR CHANGED FILES & DIFF SCOPE ===\n${diffSection}`;
-      if (messages[1].content.includes(targetBlock)) {
-        messages[1].content = messages[1].content.replace(targetBlock, compactDiffIndex);
-      }
-    }
-
     const requestPersona = options?.persona || personaName;
     const effectiveOnFirstToken = options?.onFirstToken ?? (turnRequestPolicy as any)?.onFirstToken;
     const requestMessages = nativeJsonMode
@@ -1463,7 +1563,10 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       structuredCorrectionAttempts += 1;
       if (nativeJsonMode) nativeFinalizationRequested = true;
       messages.push({ role: 'assistant', content: response.content });
-      messages.push({ role: 'user', content: structuredOutputCorrection(role, requestNonce, contractError, nativeJsonMode, payload) });
+      messages.push({
+        role: 'user',
+        content: structuredOutputCorrection(role, requestNonce, contractError, nativeJsonMode, payload),
+      });
       continue;
     } catch (fenceErr: unknown) {
       if (iter + 1 >= maxTurns) {
@@ -1509,6 +1612,22 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         } else {
           toolOutput = `Tool '${tName}' execution result:\n`;
           if (isCodeReading) {
+            const rawStart = toolCall.args?.startLine ?? toolCall.args?.start_line;
+            const rawEnd = toolCall.args?.endLine ?? toolCall.args?.end_line;
+            const reqStart = typeof rawStart === 'number' && Number.isFinite(rawStart) && rawStart > 0 ? Math.floor(rawStart) : undefined;
+            const reqEnd = typeof rawEnd === 'number' && Number.isFinite(rawEnd) && rawEnd > 0 ? Math.floor(rawEnd) : undefined;
+
+            const sliceLines = (text: string): { content: string; start: number; end: number; total: number; sliced: boolean } => {
+              const lines = text.split('\n');
+              const total = lines.length;
+              if (reqStart === undefined && reqEnd === undefined) {
+                return { content: text, start: 1, end: total, total, sliced: false };
+              }
+              const start = Math.max(1, Math.min(total, reqStart ?? 1));
+              const end = Math.max(start, Math.min(total, reqEnd ?? total));
+              return { content: lines.slice(start - 1, end).join('\n'), start, end, total, sliced: true };
+            };
+
             const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
             if (matched) {
               toolScope = 'changed-patches-only';
@@ -1518,11 +1637,15 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
                 toolOutput += `SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`;
               } else {
                 const raw = matched.patch || matched.content || 'File present in PR scope.';
-                const truncated = raw.length > REPO_READ_FILE_MAX_CHARS;
-                const shown = truncated ? raw.slice(0, REPO_READ_FILE_MAX_CHARS) : raw;
+                const sliced = sliceLines(raw);
+                const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
+                const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+                const prefixNote = sliced.sliced
+                  ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
+                  : '';
                 toolOutput += truncated
-                  ? `Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${raw.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
-                  : shown;
+                  ? `${prefixNote}Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
+                  : `${prefixNote}${shown}`;
               }
             } else if (options?.repoFileProvider) {
               try {
@@ -1530,12 +1653,16 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
                 if (content !== null) {
                   toolScope = 'full-repository';
                   isExhaustive = true;
-                  const truncated = content.length > REPO_READ_FILE_MAX_CHARS;
-                  const shown = truncated ? content.slice(0, REPO_READ_FILE_MAX_CHARS) : content;
+                  const sliced = sliceLines(content);
+                  const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
+                  const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+                  const prefixNote = sliced.sliced
+                    ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
+                    : '';
                   toolOutput += `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. `
                     + (truncated
-                      ? `Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${content.length} characters:\n${shown}\n[... content truncated: ${content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
-                      : `Full current content:\n${shown}`);
+                      ? `${prefixNote}Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters:\n${shown}\n[... content truncated: ${sliced.content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
+                      : `${prefixNote}Full current content:\n${shown}`);
                 } else {
                   toolScope = 'full-repository';
                   isExhaustive = true;
@@ -1824,7 +1951,8 @@ async function runPersona(
   gitContext?: { baseSha?: string; branch?: string; prNumber?: number },
   signal?: AbortSignal,
   remainingPanelTimeoutMs?: () => number,
-  preCheckEvidence?: { zoekt?: ZoektPreCheckResult; [key: string]: any }
+  preCheckEvidence?: { zoekt?: ZoektPreCheckResult; [key: string]: any },
+  domainLanes?: Record<string, DomainLane>
 ) {
   return runInSpan(`review_yeti_persona_lane`, async (span) => {
     throwIfPanelAborted(signal);
@@ -2026,6 +2154,7 @@ async function runPersona(
             prNumber: gitContext?.prNumber,
             repositoryVisibility,
             changedFiles: scopedFiles,
+            domainLanes,
             pathInstructions: config.path_instructions,
             rules: [...(config.rules || []), ...memoryRules],
             preCheckEvidence: scopedPreCheckEvidence,
@@ -2555,6 +2684,8 @@ export async function executePersonaPanel(options: {
       }
     }
 
+    const domainLanes = classifierResult?.domainLanes || classifyDomainLanesByHeuristic(effectiveFiles);
+
     let memoryRules: string[] = [];
     let memoryStore: PRMemoryStore | undefined;
     try {
@@ -2829,6 +2960,7 @@ export async function executePersonaPanel(options: {
                     ...(analyzersPreCheckResult ? { analyzers: analyzersPreCheckResult } : {}),
                   }
                 : undefined,
+              domainLanes,
             );
             return { persona, result, error: undefined };
           } finally {

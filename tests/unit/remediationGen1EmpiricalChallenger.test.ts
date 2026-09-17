@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { getProviderIdForModel, isModelEnabled, ALL_CANONICAL_PROVIDERS } from '../../src/lib/model-filtering';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
 import { CtReviewConfigV3 } from '../../src/config/schema';
@@ -80,7 +80,7 @@ describe('Remediation Gen1 Targeted Empirical Challenger Suite', () => {
 
       const capturedPrompts: string[] = [];
       const mockComplete = vi.fn().mockImplementation(async (req: any) => {
-        const prompt = req.messages[req.messages.length - 1].content;
+        const prompt = extractMessageContentText(req.messages[req.messages.length - 1].content);
         capturedPrompts.push(prompt);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
         const nonce = nonceMatch ? nonceMatch[1] : 'nonce';

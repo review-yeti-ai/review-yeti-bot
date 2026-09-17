@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 
 describe('Milestone 1 Empirical Adversarial Challenger Suite', () => {
@@ -34,9 +34,10 @@ describe('Milestone 1 Empirical Adversarial Challenger Suite', () => {
   const createMockClientWithToolCall = (toolName: string, args: any = {}) => {
     const mockClient: OmniRouteClient = {
       complete: vi.fn().mockImplementation(async ({ messages }: { messages: any[] }) => {
-        const sysMsg = messages.find((m) => m.role === 'system')?.content || '';
-        const userMsg = messages[messages.length - 1]?.content || '';
-        const nonceMatch = messages.find((m) => m.content?.includes('CT_REVIEW_NONCE:'))?.content.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+        const sysMsg = extractMessageContentText(messages.find((m) => m.role === 'system')?.content);
+        const userMsg = extractMessageContentText(messages[messages.length - 1]?.content);
+        const allText = messages.map((m) => extractMessageContentText(m.content)).join('\n');
+        const nonceMatch = allText.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
         const nonce = nonceMatch ? nonceMatch[1] : 'nonce-123';
 
         if (sysMsg.includes('correctness') || sysMsg.includes('Persona')) {
@@ -260,9 +261,10 @@ describe('Milestone 1 Empirical Adversarial Challenger Suite', () => {
 
       const mockClient: OmniRouteClient = {
         complete: vi.fn().mockImplementation(async ({ messages }: { messages: any[] }) => {
-          const sysMsg = messages.find((m) => m.role === 'system')?.content || '';
-          const lastMsg = messages[messages.length - 1]?.content || '';
-          const nonceMatch = messages.find((m) => m.content?.includes('CT_REVIEW_NONCE:'))?.content.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+          const sysMsg = extractMessageContentText(messages.find((m) => m.role === 'system')?.content);
+          const lastMsg = extractMessageContentText(messages[messages.length - 1]?.content);
+          const allText = messages.map((m) => extractMessageContentText(m.content)).join('\n');
+          const nonceMatch = allText.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
           const nonce = nonceMatch ? nonceMatch[1] : 'nonce-rec';
 
           if (sysMsg.includes('correctness') || sysMsg.includes('Persona')) {
@@ -335,8 +337,9 @@ describe('Milestone 1 Empirical Adversarial Challenger Suite', () => {
       let turn = 0;
       const mockClient: OmniRouteClient = {
         complete: vi.fn().mockImplementation(async ({ messages }: { messages: any[] }) => {
-          const sysMsg = messages.find((m) => m.role === 'system')?.content || '';
-          const nonceMatch = messages.find((m) => m.content?.includes('CT_REVIEW_NONCE:'))?.content.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+          const sysMsg = extractMessageContentText(messages.find((m) => m.role === 'system')?.content);
+          const allText = messages.map((m) => extractMessageContentText(m.content)).join('\n');
+          const nonceMatch = allText.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
           const nonce = nonceMatch ? nonceMatch[1] : 'nonce-multi';
 
           if (sysMsg.includes('correctness') || sysMsg.includes('Persona')) {
@@ -422,11 +425,12 @@ describe('Milestone 1 Empirical Adversarial Challenger Suite', () => {
       let capturedToolResult = '';
       const mockClient: OmniRouteClient = {
         complete: vi.fn().mockImplementation(async ({ messages, responseFormat }: { messages: any[]; responseFormat?: any }) => {
-          const sysMsg = messages.find((m) => m.role === 'system')?.content || '';
-          const lastMsg = messages[messages.length - 1]?.content || '';
+          const sysMsg = extractMessageContentText(messages.find((m) => m.role === 'system')?.content);
+          const lastMsg = extractMessageContentText(messages[messages.length - 1]?.content);
+          const allText = messages.map((m) => extractMessageContentText(m.content)).join('\n');
           const nonceMatch = sysMsg.match(/exact top-level nonce "([a-f0-9-]+)"/)
             || lastMsg.match(/exact top-level nonce "([a-f0-9-]+)"/)
-            || lastMsg.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+            || allText.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
           const nonce = nonceMatch ? nonceMatch[1] : 'nonce-native';
 
           if (sysMsg.includes('review arbiter')) {

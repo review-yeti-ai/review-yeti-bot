@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runReviewPipeline } from '../../src/app';
 import { ParsedPRPayload } from '../../src/github/eventHandler';
+import { extractMessageContentText } from '../../src/panel/panelEngine';
 import { logger } from '../../src/utils/logger';
 
 const POLICY = `
@@ -74,7 +75,7 @@ function json(body: unknown, status = 200): Response {
 
 function fencedCompletion(request: any): Response {
   const model = String(request.model);
-  const prompt = String(request.messages?.[1]?.content || '');
+  const prompt = extractMessageContentText(request.messages?.[1]?.content || '');
   const requestNonce = /CT_REVIEW_NONCE:([^\n]+)/.exec(prompt)?.[1];
   if (!requestNonce) return json({ error: 'nonce absent' }, 400);
   let value: unknown;
