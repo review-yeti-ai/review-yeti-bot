@@ -210,18 +210,20 @@ describe('zero-replica review job dispatcher deployment', () => {
     }
   });
 
-  it('grants only namespaced get/create access to the v1alpha2 projection resource', () => {
+  it('grants namespaced get/list/create on prreviewjobs and get/create on run secrets', () => {
     const docs = documents();
     const role = docs.find((document) => document.kind === 'Role');
     expect(role).toBeDefined();
     expect(role!.metadata.namespace).toBe('ct-review-system');
     // Exact. Dynamic run-Secret recovery needs namespace-level get/create.
-    // This does not grant list, patch or delete over credentials in this namespace.
+    // REL-896 adds `list` on prreviewjobs only, for the delegated-failure
+    // reader; secrets remain get/create only -- no list, patch, or delete
+    // over credentials in this namespace.
     expect(role!.rules).toEqual([
       {
         apiGroups: ['review-yeti.ai'],
         resources: ['prreviewjobs'],
-        verbs: ['get', 'create'],
+        verbs: ['get', 'list', 'create'],
       },
       {
         apiGroups: [''],

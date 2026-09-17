@@ -27,6 +27,13 @@ export interface MetricCounters {
   jobsDispatched: Counter;
   reviewReaperDeliveryIdentityMismatches: Counter;
   reviewReaperSupersededAttempts: Counter;
+  reviewReaperSwept: Counter;
+  reviewReaperPublished: Counter;
+  reviewReaperFailed: Counter;
+  reviewReaperSuperseded: Counter;
+  reviewReaperRetiredNonPublishable: Counter;
+  /** REL-896: runs claimed via the operator's delegated-failure signal rather than terminal_deadline. */
+  reviewReaperDelegated: Counter;
   activeJobs: UpDownCounter;
   queuedJobs: UpDownCounter;
 
@@ -135,6 +142,24 @@ export function initMetrics(): MetricCounters {
     }),
     reviewReaperSupersededAttempts: meter.createCounter('review_yeti_review_reaper_superseded_attempt_total', {
       description: 'Abandoned review attempts retired because a completed newer same-head App check already exists.',
+    }),
+    reviewReaperSwept: meter.createCounter('review_yeti_review_reaper_swept_total', {
+      description: 'Abandoned publishing runs claimed by the reaper per cycle, before reconciliation.',
+    }),
+    reviewReaperPublished: meter.createCounter('review_yeti_review_reaper_published_total', {
+      description: 'Abandoned publishing runs for which the reaper published a fail-closed check.',
+    }),
+    reviewReaperFailed: meter.createCounter('review_yeti_review_reaper_failed_total', {
+      description: 'Abandoned publishing run reconciliations that could not be completed this cycle.',
+    }),
+    reviewReaperSuperseded: meter.createCounter('review_yeti_review_reaper_superseded_total', {
+      description: 'Abandoned publishing runs retired per cycle because a newer same-head App check already exists.',
+    }),
+    reviewReaperRetiredNonPublishable: meter.createCounter('review_yeti_review_reaper_retired_non_publishable_total', {
+      description: 'Queued or running runs retired because their publication mode has no App check to fail closed.',
+    }),
+    reviewReaperDelegated: meter.createCounter('review_yeti_review_reaper_delegated_total', {
+      description: 'Abandoned publishing runs claimed via the Kubernetes operator delegated-failure signal (REL-896) rather than terminal_deadline.',
     }),
     activeJobs: meter.createUpDownCounter('review_yeti_queue_active_jobs', {
       description: 'Current active review jobs.',

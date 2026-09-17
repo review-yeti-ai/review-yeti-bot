@@ -3266,4 +3266,138 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       });
     });
   });
+
+  // REL-896: the Go operator's PRReviewJob controller observes a publishing
+  // worker Job fail, get killed, disappear, or outlive its deadline and
+  // delegates fail-closed publication to this reaper (see
+  // k8s-operator/controllers/prreviewjob_v1alpha2_controller.go
+  // reconcileFailurePublication). These tests exercise the exact-attempt
+  // eligibility claimAbandonedPublishingRuns grants a matching candidate
+  // BEFORE terminal_deadline, and prove every existing predicate (lease,
+  // authoritative gate, exact attempt) still applies unchanged.
+  describe('claimAbandonedPublishingRuns delegated-failure candidates (REL-896)', () => {
+    async function admitClaimedAndProjected(
+      repository: PostgresReviewDispatchRepository, deliveryId: string, receivedAt: number, workerId: string,
+      overrides: Parameters<typeof sameHeadAdmission>[2] = {},
+    ) {
+      const admission = sameHeadAdmission(deliveryId, receivedAt, overrides);
+      const admitted = await repository.admit(admission);
+      const claim = (await repository.claimNext(workerId, receivedAt + 1, 30_000))!;
+      await repository.markProjected(claim.runId, workerId, claim.claimAttempt, `${workerId}-projection`, receivedAt + 2);
+      return { admitted, claim, terminalDeadline: admission.terminalDeadline };
+    }
+
+    it('claims a delegated candidate well before its terminal deadline', async () => {
+      const { repository, client } = await createRepository();
+      const run = await admitClaimedAndProjected(repository, 'delegated-early', 1_000, 'worker-delegated-early');
+      const beforeDeadline = run.terminalDeadline - 1;
+
+      const [claimed] = await repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 20, [
+        { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt, reason: 'worker_failed' },
+      ]);
+      expect(claimed).toMatchObject({
+        runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt, delegatedReason: 'worker_failed',
+      });
+      const state = await dispatchState(client, run.admitted.run.runId);
+      expect(state.run.status).toBe('terminal');
+      expect(state.outbox.status).toBe('projected');
+    });
+
+    it('does not claim a stale candidate whose executionAttempt no longer matches the outbox', async () => {
+      const { repository, client } = await createRepository();
+      const run = await admitClaimedAndProjected(repository, 'delegated-stale-attempt', 1_000, 'worker-delegated-stale');
+      const beforeDeadline = run.terminalDeadline - 1;
+
+      // The candidate claims attempt 2 happened; the outbox is still on
+      // attempt 1. A stale resource from a superseded attempt must never
+      // kill the current one.
+      await expect(repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 20, [
+        { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt + 1, reason: 'worker_failed' },
+      ])).resolves.toEqual([]);
+      expect((await dispatchState(client, run.admitted.run.runId)).run.status).toBe('queued');
+    });
+
+    it('does not claim a delegated candidate whose lease is still live', async () => {
+      const { repository, client } = await createRepository();
+      const run = await admitClaimedAndProjected(repository, 'delegated-leased', 1_000, 'worker-delegated-leased');
+      const beforeDeadline = run.terminalDeadline - 1;
+      await client.query(
+        "UPDATE review_runs SET lease_owner = 'concurrent-owner', lease_expires_at = to_timestamp(($2 + 60000) / 1000.0) WHERE run_id = $1",
+        [run.admitted.run.runId, beforeDeadline],
+      );
+
+      await expect(repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 20, [
+        { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt, reason: 'worker_failed' },
+      ])).resolves.toEqual([]);
+      expect((await dispatchState(client, run.admitted.run.runId)).run.status).toBe('queued');
+    });
+
+    it('does not claim a delegated candidate reserved by an authoritative gate', async () => {
+      const { repository, client } = await createRepository();
+      const run = await admitClaimedAndProjected(repository, 'delegated-authoritative', 1_000, 'worker-delegated-authoritative');
+      const beforeDeadline = run.terminalDeadline - 1;
+      await client.query(
+        'UPDATE review_runs SET authoritative_gate_app_id = $2 WHERE run_id = $1',
+        [run.admitted.run.runId, 4385771],
+      );
+
+      await expect(repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 20, [
+        { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt, reason: 'worker_failed' },
+      ])).resolves.toEqual([]);
+      expect((await dispatchState(client, run.admitted.run.runId)).run.status).toBe('queued');
+    });
+
+    it('leaves a non-delegated run alone before its deadline, exactly as the pre-REL-896 reaper did', async () => {
+      const { repository, client } = await createRepository();
+      const run = await admitClaimedAndProjected(repository, 'non-delegated-early', 1_000, 'worker-non-delegated', { prNumber: 61 });
+      const beforeDeadline = run.terminalDeadline - 1;
+
+      // An unrelated candidate in the same call must never widen eligibility
+      // for a run it does not name.
+      await expect(repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 20, [
+        { runId: `run_${'9'.repeat(32)}`, executionAttempt: 1, reason: 'worker_failed' },
+      ])).resolves.toEqual([]);
+      expect((await dispatchState(client, run.admitted.run.runId)).run.status).toBe('queued');
+    });
+
+    it('claims several delegated candidates in one call, bounded by limit', async () => {
+      const { repository, client } = await createRepository();
+      const first = await admitClaimedAndProjected(repository, 'delegated-limit-1', 1_000, 'worker-delegated-limit-1', { prNumber: 71 });
+      const second = await admitClaimedAndProjected(repository, 'delegated-limit-2', 1_000, 'worker-delegated-limit-2', { prNumber: 72 });
+      const third = await admitClaimedAndProjected(repository, 'delegated-limit-3', 1_000, 'worker-delegated-limit-3', { prNumber: 73 });
+      const beforeDeadline = first.terminalDeadline - 1;
+      const candidates = [first, second, third].map((run) => ({
+        runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt, reason: 'worker_deadline_exceeded' as const,
+      }));
+
+      const claimed = await repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 2, candidates);
+      expect(claimed).toHaveLength(2);
+      const statuses = await Promise.all([first, second, third].map(async (run) =>
+        (await dispatchState(client, run.admitted.run.runId)).run.status));
+      expect(statuses.filter((status) => status === 'terminal')).toHaveLength(2);
+      expect(statuses.filter((status) => status === 'queued')).toHaveLength(1);
+
+      const remainder = await repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 2, candidates);
+      expect(remainder).toHaveLength(1);
+    });
+
+    it('persists the operator reason as structured failure diagnostics once reconciled', async () => {
+      const { repository, client } = await createRepository();
+      const run = await admitClaimedAndProjected(repository, 'delegated-diagnostics', 1_000, 'worker-delegated-diagnostics');
+      const beforeDeadline = run.terminalDeadline - 1;
+
+      const [claimed] = await repository.claimAbandonedPublishingRuns('reaper-delegated', beforeDeadline, 20, [
+        { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt, reason: 'worker_job_missing' },
+      ]);
+      await expect(repository.reconcileAbandonedPublishingRun(claimed, 'reaper-delegated', beforeDeadline + 1,
+        async () => 'failure-published')).resolves.toEqual({ reconciled: true, outcome: 'failure-published' });
+
+      const state = await dispatchState(client, run.admitted.run.runId);
+      expect(state.run.status).toBe('terminal');
+      expect(state.run.failure_diagnostics).toMatchObject({
+        reason: 'worker_job_missing',
+        failureClass: 'internal_error',
+      });
+    });
+  });
 });
