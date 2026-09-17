@@ -1,6 +1,19 @@
 # syntax=docker/dockerfile:1.7
 ARG NODE_BASE_IMAGE
 
+# REL-677: pinned zoekt build (index-at-review-time grounding, ADR 0329).
+# ZOEKT_REF is a full commit SHA — never a moving tag — so the worker image is
+# reproducible. Both binaries the review pipeline needs are built: zoekt-index
+# (indexer) and zoekt (bounded search CLI with -jsonl).
+FROM golang:1.26.5-alpine AS zoekt
+ARG ZOEKT_REF=153817f643cde8b229ee388c1dddbcf07f4798af
+RUN apk add --no-cache git ca-certificates \
+ && git clone https://github.com/sourcegraph/zoekt /src \
+ && cd /src \
+ && git checkout "${ZOEKT_REF}" \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/zoekt-index ./cmd/zoekt-index \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/zoekt ./cmd/zoekt
+
 FROM ${NODE_BASE_IMAGE} AS build
 WORKDIR /src
 COPY package.json package-lock.json ./
@@ -27,6 +40,10 @@ RUN printf '%s\n' 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99
  && rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99snapshot
 WORKDIR /app
 COPY --from=build --chown=node:node /out/ /app/
+COPY --from=zoekt --chown=root:root /out/zoekt-index /usr/local/bin/zoekt-index
+COPY --from=zoekt --chown=root:root /out/zoekt /usr/local/bin/zoekt
+ENV ZOEKT_INDEX_BIN=/usr/local/bin/zoekt-index \
+    ZOEKT_BIN=/usr/local/bin/zoekt
 # Use a numeric identity so Kubernetes can verify runAsNonRoot before the
 # container starts. The Node base image's `node` account is uid/gid 1000.
 USER 1000:1000
