@@ -6,6 +6,7 @@ import { scanRepositoryStack } from '../../src/onboarding/stackScanner';
 import { generateCtReviewConfig } from '../../src/onboarding/configGenerator';
 import { createApp } from '../../src/app';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
+import { extractMessageContentText } from '../../src/panel/panelEngine';
 
 describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
   const currentRepoPath = path.resolve(__dirname, '../../');
@@ -128,13 +129,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
         if (urlStr.includes('/v1/chat/completions')) {
           const body = JSON.parse(init?.body || '{}');
           const messages = body.messages || [];
-          const promptText = messages.map((m: any) =>
-            typeof m.content === 'string'
-              ? m.content
-              : Array.isArray(m.content)
-                ? m.content.map((b: any) => b.text || '').join('\n')
-                : ''
-          ).join('\n');
+          const promptText = messages.map((m: any) => extractMessageContentText(m.content)).join('\n');
           const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
           const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
           let mockObj: any = { decision: 'APPROVE', findings: [], verdict: 'SHIP', rationale: 'Verified' };
@@ -199,13 +194,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
         if (urlStr.includes('/v1/chat/completions')) {
           const body = JSON.parse(init?.body || '{}');
           const messages = body.messages || [];
-          const promptText = messages.map((m: any) =>
-            typeof m.content === 'string'
-              ? m.content
-              : Array.isArray(m.content)
-                ? m.content.map((b: any) => b.text || '').join('\n')
-                : ''
-          ).join('\n');
+          const promptText = messages.map((m: any) => extractMessageContentText(m.content)).join('\n');
           const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
           const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
           let mockObj: any = { decision: 'APPROVE', findings: [], verdict: 'SHIP', rationale: 'Verified' };

@@ -986,7 +986,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
               effortTier: 'medium',
               rationale: 'Auth and DB changes require review.',
               domainLanes: {
-                'src/workers/task.ts': 'system_runtime',
+                'src/workers/task.ts': 'data_persistence', // Model enrichment: promotes runtime task queue to data_persistence
                 'src/auth/token.ts': 'ui_frontend', // Model hallucination: heuristic must protect security_auth
                 'phantom/ghost_file.ts': 'security_auth', // Phantom path not in changedFiles: must be rejected
               },
@@ -1016,7 +1016,8 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         expect(result?.domainLanes).toBeDefined();
         // Heuristic protected security_auth over model hallucination
         expect(result?.domainLanes?.['src/auth/token.ts']).toBe('security_auth');
-        expect(result?.domainLanes?.['src/workers/task.ts']).toBe('system_runtime');
+        // Valid model enrichment accepted: promoted from system_runtime to data_persistence
+        expect(result?.domainLanes?.['src/workers/task.ts']).toBe('data_persistence');
         expect(result?.domainLanes?.['docs/readme.md']).toBe('docs_assets');
         // Phantom path must not be present
         expect(result?.domainLanes?.['phantom/ghost_file.ts']).toBeUndefined();

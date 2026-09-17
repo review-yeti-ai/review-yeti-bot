@@ -1123,8 +1123,18 @@ export function computeDiffStats(patch?: string): { additions: number; deletions
   let additions = 0;
   let deletions = 0;
   const lines = patch.split('\n');
+  const hasHunkHeaders = lines.some((l) => l.startsWith('@@'));
+  let inHunk = !hasHunkHeaders;
+
   for (const line of lines) {
-    if (line.startsWith('+++ ') || line.startsWith('--- ') || line.startsWith('@@')) {
+    if (line.startsWith('@@')) {
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) {
+      continue;
+    }
+    if (!hasHunkHeaders && (line.startsWith('+++ ') || line.startsWith('--- '))) {
       continue;
     }
     if (line.startsWith('+')) {

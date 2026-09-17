@@ -241,6 +241,24 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       expect(manifest).not.toContain('Header.tsx [ui_frontend] (★ YOUR LANE)');
     });
 
+    it('accurately counts boundary diff lines including deleted SQL comments (-- ) and added increments (++ ) without swallowing them', () => {
+      const patch = [
+        'diff --git a/migrations/schema.sql b/migrations/schema.sql',
+        '--- a/migrations/schema.sql',
+        '+++ b/migrations/schema.sql',
+        '@@ -1,5 +1,5 @@',
+        '-- old line with comment',
+        '--- legacy SQL comment to remove',
+        '+++counterVar',
+        '+ /* new comment */',
+        ' unchanged line',
+      ].join('\n');
+
+      const stats = computeDiffStats(patch);
+      expect(stats.deletions).toBe(2);
+      expect(stats.additions).toBe(2);
+    });
+
     it('highlights persona lane affinity for db-lane', () => {
       const files = [
         { path: 'src/auth/guard.ts', patch: '+ check' },
@@ -253,6 +271,21 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
 
       expect(manifest).toContain("Persona: 'db-lane' | Domain Lane Affinities: [data_persistence]");
       expect(manifest).toContain('- priv/repo/migrations/2026_add_col.exs [data_persistence] (★ YOUR LANE) (+1, -0 lines)');
+    });
+
+    it('handles oversized files by emitting SKIPPED entries in buildCompactDiffManifest', () => {
+      const hugePatch = '@@ -1,1 +1,2 @@\n+' + 'x'.repeat(600_000);
+      const files = [
+        { path: 'src/huge.json', patch: hugePatch },
+        { path: 'src/small.ts', patch: '+ const a = 1;' },
+      ];
+
+      const manifest = buildCompactDiffManifest(files);
+      expect(manifest).toContain('(SKIPPED:');
+      expect(manifest).toContain('chars > max-file-diff-chars');
+      expect(manifest).toContain('- src/huge.json (SKIPPED:');
+      expect(manifest).toContain('- src/small.ts [system_runtime] (+1, -0 lines)');
+      expect(manifest).not.toContain(hugePatch);
     });
   });
 

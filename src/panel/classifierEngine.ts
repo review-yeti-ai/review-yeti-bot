@@ -22,15 +22,6 @@ export const DOMAIN_LANES: readonly DomainLane[] = [
   'docs_assets',
 ] as const;
 
-export const DOMAIN_LANE_PERSONA_AFFINITY: Record<DomainLane, string[]> = {
-  security_auth: ['sec-lane', 'security', 'policy-lane'],
-  data_persistence: ['db-lane', 'database', 'correctness-lane', 'correctness'],
-  api_contracts: ['contract-lane', 'contract', 'correctness-lane', 'correctness', 'qual-lane'],
-  system_runtime: ['devops-lane', 'devops', 'arch-lane', 'architecture', 'perf-lane', 'performance', 'finops-lane'],
-  ui_frontend: ['qual-lane', 'correctness-lane', 'correctness'],
-  docs_assets: ['qual-lane'],
-};
-
 export const PERSONA_DOMAIN_AFFINITY: Record<string, DomainLane[]> = {
   'sec-lane': ['security_auth'],
   'security': ['security_auth'],
@@ -50,6 +41,16 @@ export const PERSONA_DOMAIN_AFFINITY: Record<string, DomainLane[]> = {
   'qual-lane': ['ui_frontend', 'docs_assets', 'api_contracts'],
   'finops-lane': ['system_runtime'],
 };
+
+export const DOMAIN_LANE_PERSONA_AFFINITY: Record<DomainLane, string[]> = DOMAIN_LANES.reduce(
+  (acc, lane) => {
+    acc[lane] = Object.entries(PERSONA_DOMAIN_AFFINITY)
+      .filter(([_, lanes]) => lanes.includes(lane))
+      .map(([personaId]) => personaId);
+    return acc;
+  },
+  {} as Record<DomainLane, string[]>,
+);
 
 export interface ClassifierResult {
   fastShip: boolean;
