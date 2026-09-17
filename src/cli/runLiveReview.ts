@@ -28,7 +28,7 @@ import {
 } from './publishingReview';
 import { GitHubInstallationClient } from '../github/installationClient';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
-import { flushMetrics, resolveOtlpMetricsEndpoint } from '../telemetry/metrics';
+import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -1778,10 +1778,11 @@ export async function runWorker(
 /**
  * REL-904: one-shot OTLP push of accumulated lane/provider metrics before the
  * ephemeral worker pod exits. Best-effort and timeout-bounded: telemetry failure
- * must never change a review outcome. A no-op when no OTLP endpoint is configured.
+ * must never change a review outcome. The single endpoint gate lives in
+ * initMetrics (readers exist only when configured), so this is a safe no-op when
+ * the OTLP endpoint is unset.
  */
 async function flushWorkerTelemetry(): Promise<void> {
-  if (!resolveOtlpMetricsEndpoint()) return;
   await flushMetrics();
 }
 

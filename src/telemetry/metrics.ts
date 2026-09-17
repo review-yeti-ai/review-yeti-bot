@@ -29,8 +29,16 @@ export function resolveOtlpMetricsEndpoint(env: NodeJS.ProcessEnv = process.env)
 }
 
 /** Best-effort one-shot export of accumulated metrics before a worker pod exits. */
-export async function flushMetrics(timeoutMs = 5000): Promise<void> {
-  const readers = [otlpReader, metricReader].filter((reader): reader is PeriodicExportingMetricReader => reader !== null);
+export async function flushMetrics(
+  timeoutMs = 5000,
+  readersOverride?: Array<{ forceFlush: () => Promise<void> }>,
+): Promise<void> {
+  // REL-904: the single OTLP gate lives in initMetrics -- readers only exist when
+  // an endpoint is configured -- so flushing is safe to call unconditionally and
+  // is a no-op with nothing to export. `readersOverride` lets tests inject spy
+  // readers to exercise the with-readers branch without a collector.
+  const readers: Array<{ forceFlush: () => Promise<void> }> = readersOverride ??
+    [otlpReader, metricReader].filter((reader): reader is PeriodicExportingMetricReader => reader !== null);
   if (readers.length === 0) return;
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<void>((resolve) => {
@@ -47,7 +55,9 @@ export async function flushMetrics(timeoutMs = 5000): Promise<void> {
   } finally {
     if (timer) clearTimeout(timer);
   }
-}export interface MetricCounters {
+}
+
+export interface MetricCounters {
   tokensPrompt: Counter;
   tokensCompletion: Counter;
   tokensTotal: Counter;
