@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.74.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.73.3...v1.74.0) (2026-09-17)
+
+
+### Features
+
+* **REL-903:** quiet, metric-counted requeue for reconciler write conflicts ([#845](https://github.com/review-yeti-ai/review-yeti-bot/issues/845)) ([6c75429](https://github.com/review-yeti-ai/review-yeti-bot/commit/6c7542935e274f2fa4ee9a200fb4c350ee49f393))
+
 ## [1.73.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.73.2...v1.73.3) (2026-09-17)
 
 
