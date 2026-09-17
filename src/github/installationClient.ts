@@ -12,6 +12,22 @@ import type {
   AbandonedCheckRecoveryOutcome,
   AbandonedPublishingRun,
 } from '../persistence/reviewDispatchRepository';
+import type { DelegatedFailureReason } from '../review/workerCompletion';
+
+/**
+ * REL-896: human-readable text for each operator-delegated failure reason
+ * (see `src/k8s/delegatedFailureReader.ts` and
+ * `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go`
+ * `startFailurePublication` reasons `WorkerFailed` / `DeadlineExpired` /
+ * `WorkerJobMissing`), rendered into the fail-closed check summary so an
+ * operator reading GitHub can tell these apart from the generic "no verdict"
+ * text used when no operator signal was involved.
+ */
+const DELEGATED_FAILURE_REASON_SUMMARY: Record<DelegatedFailureReason, string> = {
+  worker_failed: 'The Kubernetes operator observed the publishing worker fail',
+  worker_deadline_exceeded: 'The Kubernetes operator observed the publishing worker exceed its deadline',
+  worker_job_missing: 'The Kubernetes operator observed the publishing worker Job disappear',
+};
 import {
   RECOVERABLE_FAILURE_TITLES,
   REVIEW_REFRESH_ACTION,
@@ -536,14 +552,19 @@ export class GitHubInstallationClient {
         }
         return checks;
       };
+      const delegatedSummary = run.delegatedReason ? DELEGATED_FAILURE_REASON_SUMMARY[run.delegatedReason] : undefined;
       const failure = {
         status: 'completed', conclusion: 'failure', completed_at: new Date(this.now()).toISOString(),
         actions: [REVIEW_REFRESH_ACTION],
         output: {
           title: 'Review Yeti: review did not complete',
-          summary: `No durable verdict was recorded for \`${run.headSha}\` before its terminal deadline.\n\n`
-            + 'The worker may have started; this is a failed review rather than an approval.\n\n'
-            + 'Re-run the governed review workflow to request a fresh attempt.',
+          summary: delegatedSummary
+            ? `${delegatedSummary} for \`${run.headSha}\` before a durable verdict was recorded.\n\n`
+              + 'This is a failed review rather than an approval.\n\n'
+              + 'Re-run the governed review workflow to request a fresh attempt.'
+            : `No durable verdict was recorded for \`${run.headSha}\` before its terminal deadline.\n\n`
+              + 'The worker may have started; this is a failed review rather than an approval.\n\n'
+              + 'Re-run the governed review workflow to request a fresh attempt.',
         },
       };
       const reconcileCandidate = async (candidate: any): Promise<AbandonedCheckRecoveryOutcome> => {

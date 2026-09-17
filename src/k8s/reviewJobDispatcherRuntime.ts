@@ -16,6 +16,19 @@ const workerImagePattern = new RegExp(
 );
 const hostnamePattern = /^[a-z0-9](?:[a-z0-9.-]{0,198}[a-z0-9])?$/u;
 
+/**
+ * REL-896 defaults for the two env vars below: the reaper limit default
+ * matches the pre-REL-896 hardcoded reaper claim size (1; see the comment on
+ * `AbandonedRunReaper` construction in `reviewJobDispatcherIndex.ts` for why),
+ * and the poll default matches `DEFAULT_DELEGATED_FAILURE_POLL_MS` /
+ * `MIN_DELEGATED_FAILURE_POLL_MS` in `./delegatedFailureReader.ts`. These are
+ * literals inside `reviewJobDispatcherConfigFromEnv` below, not named
+ * constants it references: `tests/unit/reviewRuntimeUpgrade.test.ts` extracts
+ * that function's exact source text into an isolated VM sandbox with no
+ * module resolver, and an external identifier there fails closed with "is
+ * not defined" rather than silently drifting. `reviewJobDispatcherRuntime.test.ts`
+ * pins the resulting behavior (1 / 1 / 100 and 15000 / 5000).
+ */
 export interface ReviewJobDispatcherConfig {
   namespace: 'ct-review-system';
   workerImage: string;
@@ -24,6 +37,16 @@ export interface ReviewJobDispatcherConfig {
   idleDelayMs: 1_000;
   activeDelayMs: 50;
   errorDelayMs: 5_000;
+  /** REL-896: number of abandoned publishing runs claimed per reaper cycle.
+   * Clamped to [MIN_ABANDONED_REAPER_LIMIT, MAX_ABANDONED_REAPER_LIMIT];
+   * an invalid or absent REVIEW_ABANDONED_REAPER_LIMIT falls back to
+   * DEFAULT_ABANDONED_REAPER_LIMIT rather than failing startup, since this
+   * only bounds sweep throughput and never changes claim safety. */
+  abandonedReaperLimit: number;
+  /** REL-896: minimum milliseconds between PRReviewJob list polls for the
+   * operator's delegated-failure signal. See
+   * `../k8s/delegatedFailureReader.ts` for the floor and default. */
+  delegatedFailurePollMs: number;
 }
 
 export function reviewJobDispatcherConfigFromEnv(
@@ -60,6 +83,22 @@ export function reviewJobDispatcherConfigFromEnv(
   if (!hostnamePattern.test(hostname)) {
     throw new Error('HOSTNAME must be a valid dispatcher pod identity');
   }
+  // Inlined rather than a shared helper: this function's exact source text is
+  // extracted and re-run in an isolated VM sandbox by
+  // tests/unit/reviewRuntimeUpgrade.test.ts, which has no module resolver.
+  // An invalid or absent value falls back to the default rather than failing
+  // startup -- both env vars only bound sweep throughput/poll cost, never
+  // claim safety.
+  const boundedIntEnv = (raw: string | undefined, fallback: number, min: number, max: number): number => {
+    if (raw === undefined || raw.trim() === '') return fallback;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value < min || value > max) return fallback;
+    return value;
+  };
+  const abandonedReaperLimit = boundedIntEnv(environment.REVIEW_ABANDONED_REAPER_LIMIT, 1, 1, 100);
+  const delegatedFailurePollMs = boundedIntEnv(
+    environment.REVIEW_DELEGATED_FAILURE_POLL_MS, 15_000, 5_000, Number.MAX_SAFE_INTEGER,
+  );
   return {
     namespace: 'ct-review-system',
     workerImage,
@@ -68,6 +107,8 @@ export function reviewJobDispatcherConfigFromEnv(
     idleDelayMs: 1_000,
     activeDelayMs: 50,
     errorDelayMs: 5_000,
+    abandonedReaperLimit,
+    delegatedFailurePollMs,
   };
 }
 

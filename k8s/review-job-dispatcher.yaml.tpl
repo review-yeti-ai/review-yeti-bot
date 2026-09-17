@@ -26,7 +26,13 @@ metadata:
 rules:
   - apiGroups: ["review-yeti.ai"]
     resources: ["prreviewjobs"]
-    verbs: ["get", "create"]
+    # REL-896: `list` lets the abandoned-run reaper read the Go operator's
+    # delegated-failure signal (FailurePublication condition) directly off
+    # the CR so it can claim an exact attempt before terminal_deadline
+    # instead of only after. Still no `watch`, `update`, `patch`, or `delete`
+    # -- this component only ever reads the resource and its own two
+    # existing verbs create/get it for run-secret recovery.
+    verbs: ["get", "list", "create"]
   # REL-586: provisions one Secret per publishing run, holding tokens minted from
   # the installed GitHub App and scoped to that run's repository.
   #

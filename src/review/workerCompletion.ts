@@ -23,6 +23,28 @@ const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const positiveInteger = z.number().int().positive().safe();
 
+/**
+ * REL-896: the Go operator's PRReviewJob controller observes a publishing
+ * worker Job fail, disappear, or outlive its deadline and records exactly one
+ * of these on the `Ready` condition's `Reason` before delegating publication
+ * to the dispatcher's abandoned-run reaper (see
+ * `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go`:
+ * `startFailurePublication`, called with `"WorkerFailed"`, `"DeadlineExpired"`,
+ * or `"WorkerJobMissing"`). These are the durable, bounded diagnostic
+ * `reason` values the TypeScript side normalizes those operator reasons into
+ * -- see `src/k8s/delegatedFailureReader.ts`. `worker_deadline_exceeded`
+ * intentionally reuses the same word `workerFailureReason('timeout')` already
+ * emits below: both describe the same condition observed by a different
+ * component.
+ */
+export const delegatedFailureReasons = [
+  'worker_failed',
+  'worker_deadline_exceeded',
+  'worker_job_missing',
+] as const;
+
+export type DelegatedFailureReason = typeof delegatedFailureReasons[number];
+
 export const workerFailureDiagnosticsSchema = z.object({
   /** Stable, non-secret category for operators and recovery automation. */
   reason: z.string().regex(/^[a-z][a-z0-9_.:-]{0,127}$/u),
