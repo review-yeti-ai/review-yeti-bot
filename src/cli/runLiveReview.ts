@@ -28,6 +28,7 @@ import {
 } from './publishingReview';
 import { GitHubInstallationClient } from '../github/installationClient';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
+import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
@@ -1757,6 +1758,7 @@ export async function runWorker(
       repositoryId: receipt.repositoryId,
       prNumber: receipt.prNumber,
     });
+    await flushWorkerTelemetry();
     return;
   }
   // REL-586 / ADR 0527: the publishing lane must be dispatched before the legacy
@@ -1766,17 +1768,34 @@ export async function runWorker(
   // the wrong provider.
   if (isPublishingReviewWorker(env)) {
     await publishingRunner(env);
+    await flushWorkerTelemetry();
     return;
   }
-  return liveRunner(env);
+  await liveRunner(env);
+  await flushWorkerTelemetry();
+}
+
+/**
+ * REL-904: one-shot OTLP push of accumulated lane/provider metrics before the
+ * ephemeral worker pod exits. Best-effort and timeout-bounded: telemetry failure
+ * must never change a review outcome. The single endpoint gate lives in
+ * initMetrics (readers exist only when configured), so this is a safe no-op when
+ * the OTLP endpoint is unset.
+ */
+async function flushWorkerTelemetry(): Promise<void> {
+  await flushMetrics();
 }
 
 if (require.main === module) {
   const command = process.argv.includes('--self-test')
     ? runWorkerSelfTest().then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
     : runWorker();
-  command.catch((err) => {
+  command.catch(async (err) => {
     logger.error('Failed live ct-review-bot review dispatch', { error: err.message });
+    try {
+      // REL-904: the failed worker still emits its lane-outcome counters on the way out.
+      await flushWorkerTelemetry();
+    } catch (_) {}
     process.exit(1);
   });
 }
