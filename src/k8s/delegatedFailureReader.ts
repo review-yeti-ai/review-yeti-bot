@@ -31,6 +31,21 @@ export const MIN_DELEGATED_FAILURE_POLL_MS = 5_000;
  * independent of the caller's overall reaper `limit`. */
 export const DEFAULT_MAX_DELEGATED_FAILURE_CANDIDATES = 50;
 
+/** Server-side page size for each `list` call, so one poll never reads the
+ * whole namespace in a single unbounded request. */
+export const DELEGATED_FAILURE_LIST_PAGE_SIZE = 100;
+
+/**
+ * Hard stop on pages followed per poll via `metadata.continue`. In practice
+ * the operator deletes terminal `PRReviewJob` resources after a retention
+ * window (sibling PR #828), so the namespace this lists stays small and this
+ * bound is not expected to bite. It exists so a runaway continue chain -- or
+ * a namespace that outgrows that retention assumption -- degrades to "log
+ * once and use the candidates already paged in" rather than an unbounded
+ * fetch loop against the API server.
+ */
+export const MAX_DELEGATED_FAILURE_LIST_PAGES = 10;
+
 /** Maps the Go operator's `Ready` condition `Reason` (see
  * `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` lines 138,
  * 345, 350, 437) to the bounded diagnostic reason this service persists.
@@ -59,6 +74,8 @@ export interface DelegatedFailureListClient {
     version: string;
     namespace: string;
     plural: string;
+    limit?: number;
+    _continue?: string;
   }): Promise<unknown>;
 }
 
@@ -146,7 +163,7 @@ function extractCandidate(item: unknown): DelegatedFailureCandidate | undefined 
   return { runId, executionAttempt, reason, message, observedAt };
 }
 
-function extractCandidates(response: unknown, maxCandidates: number): DelegatedFailureCandidate[] {
+function extractItems(response: unknown): unknown[] {
   // The 1.x Kubernetes client returns the list object itself; older clients
   // and some adapters wrap it in `{ body }`. Accept both. Anything else is NOT
   // an empty list: throw so the caller's fail-soft path logs it, because a
@@ -154,6 +171,19 @@ function extractCandidates(response: unknown, maxCandidates: number): DelegatedF
   const top = record(response);
   const items = Array.isArray(top?.items) ? top!.items : record(top?.body)?.items;
   if (!Array.isArray(items)) throw new Error('unexpected PRReviewJob list response shape');
+  return items;
+}
+
+function continueToken(response: unknown): string | undefined {
+  // Same bare-vs-`{ body }` shape as extractItems above: metadata.continue
+  // lives alongside items either at the top level or nested under `body`.
+  const top = record(response);
+  const metadata = record(top?.metadata) ?? record(record(top?.body)?.metadata);
+  const token = metadata?.continue;
+  return typeof token === 'string' && token ? token : undefined;
+}
+
+function extractCandidates(items: unknown[], maxCandidates: number): DelegatedFailureCandidate[] {
   const candidates: DelegatedFailureCandidate[] = [];
   for (const item of items) {
     if (candidates.length >= maxCandidates) break;
@@ -199,15 +229,41 @@ export class DelegatedFailureReader {
     if (now - this.lastListedAt < this.pollIntervalMs) return this.cached;
     this.lastListedAt = now;
     try {
-      const response = await this.client.listNamespacedCustomObject({
-        group: GROUP, version: VERSION, namespace: this.namespace, plural: PLURAL,
-      });
-      this.cached = extractCandidates(response, this.maxCandidates);
+      const items: unknown[] = [];
+      let cursor: string | undefined;
+      // Server-side pagination via `limit` + `metadata.continue`, bounded by
+      // MAX_DELEGATED_FAILURE_LIST_PAGES so a runaway continue chain still
+      // terminates. No label/field selector: the operator does not label
+      // delegated resources, so a selector nothing sets would silently
+      // disable the signal rather than narrow it.
+      for (let page = 1; ; page += 1) {
+        const response = await this.client.listNamespacedCustomObject({
+          group: GROUP, version: VERSION, namespace: this.namespace, plural: PLURAL,
+          limit: DELEGATED_FAILURE_LIST_PAGE_SIZE, ...(cursor ? { _continue: cursor } : {}),
+        });
+        items.push(...extractItems(response));
+        cursor = continueToken(response);
+        if (!cursor) break;
+        if (page >= MAX_DELEGATED_FAILURE_LIST_PAGES) {
+          this.warnPageCapExceeded(now, page);
+          break;
+        }
+      }
+      this.cached = extractCandidates(items, this.maxCandidates);
     } catch (error) {
       this.cached = [];
       this.warnRateLimited(error, now);
     }
     return this.cached;
+  }
+
+  private warnPageCapExceeded(now: number, pages: number): void {
+    if (now - this.lastWarnAt < this.pollIntervalMs) return;
+    this.lastWarnAt = now;
+    logger.warn(
+      'Delegated PRReviewJob failure signal list exceeded the page cap; using the candidates paged in so far',
+      { pages },
+    );
   }
 
   private warnRateLimited(error: unknown, now: number): void {

@@ -156,7 +156,10 @@ export class AbandonedRunReaper {
     metrics.reviewReaperSwept.add(runs.length);
     metrics.reviewReaperPublished.add(published);
     metrics.reviewReaperFailed.add(failed);
-    if (superseded > 0) metrics.reviewReaperSuperseded.add(superseded);
+    // No separate per-cycle "superseded" counter here: reviewDispatchRepository.ts's
+    // reconcileAbandonedPublishingRun already increments reviewReaperSupersededAttempts
+    // exactly once per retirement, at the point the outcome commits. Adding an
+    // aggregate here as well would count the same retirement twice.
     if (retiredNonPublishable > 0) metrics.reviewReaperRetiredNonPublishable.add(retiredNonPublishable);
     if (delegated > 0) metrics.reviewReaperDelegated.add(delegated);
 

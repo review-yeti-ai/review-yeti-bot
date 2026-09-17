@@ -17,15 +17,17 @@ const workerImagePattern = new RegExp(
 const hostnamePattern = /^[a-z0-9](?:[a-z0-9.-]{0,198}[a-z0-9])?$/u;
 
 /**
- * REL-896 defaults for the two env vars below: matches the pre-REL-896
- * hardcoded reaper claim size (10) and `DEFAULT_DELEGATED_FAILURE_POLL_MS` /
+ * REL-896 defaults for the two env vars below: the reaper limit default
+ * matches the pre-REL-896 hardcoded reaper claim size (1; see the comment on
+ * `AbandonedRunReaper` construction in `reviewJobDispatcherIndex.ts` for why),
+ * and the poll default matches `DEFAULT_DELEGATED_FAILURE_POLL_MS` /
  * `MIN_DELEGATED_FAILURE_POLL_MS` in `./delegatedFailureReader.ts`. These are
  * literals inside `reviewJobDispatcherConfigFromEnv` below, not named
  * constants it references: `tests/unit/reviewRuntimeUpgrade.test.ts` extracts
  * that function's exact source text into an isolated VM sandbox with no
  * module resolver, and an external identifier there fails closed with "is
  * not defined" rather than silently drifting. `reviewJobDispatcherRuntime.test.ts`
- * pins the resulting behavior (10 / 1 / 100 and 15000 / 5000).
+ * pins the resulting behavior (1 / 1 / 100 and 15000 / 5000).
  */
 export interface ReviewJobDispatcherConfig {
   namespace: 'ct-review-system';
@@ -93,7 +95,7 @@ export function reviewJobDispatcherConfigFromEnv(
     if (!Number.isSafeInteger(value) || value < min || value > max) return fallback;
     return value;
   };
-  const abandonedReaperLimit = boundedIntEnv(environment.REVIEW_ABANDONED_REAPER_LIMIT, 10, 1, 100);
+  const abandonedReaperLimit = boundedIntEnv(environment.REVIEW_ABANDONED_REAPER_LIMIT, 1, 1, 100);
   const delegatedFailurePollMs = boundedIntEnv(
     environment.REVIEW_DELEGATED_FAILURE_POLL_MS, 15_000, 5_000, Number.MAX_SAFE_INTEGER,
   );

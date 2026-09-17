@@ -30,7 +30,6 @@ export interface MetricCounters {
   reviewReaperSwept: Counter;
   reviewReaperPublished: Counter;
   reviewReaperFailed: Counter;
-  reviewReaperSuperseded: Counter;
   reviewReaperRetiredNonPublishable: Counter;
   /** REL-896: runs claimed via the operator's delegated-failure signal rather than terminal_deadline. */
   reviewReaperDelegated: Counter;
@@ -151,9 +150,6 @@ export function initMetrics(): MetricCounters {
     }),
     reviewReaperFailed: meter.createCounter('review_yeti_review_reaper_failed_total', {
       description: 'Abandoned publishing run reconciliations that could not be completed this cycle.',
-    }),
-    reviewReaperSuperseded: meter.createCounter('review_yeti_review_reaper_superseded_total', {
-      description: 'Abandoned publishing runs retired per cycle because a newer same-head App check already exists.',
     }),
     reviewReaperRetiredNonPublishable: meter.createCounter('review_yeti_review_reaper_retired_non_publishable_total', {
       description: 'Queued or running runs retired because their publication mode has no App check to fail closed.',

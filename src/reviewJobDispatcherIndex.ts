@@ -127,8 +127,14 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     repository,
     workerId: config.workerId,
     publisherAppId: publisher.id,
-    // REL-896: bounded and env-tunable so a backlog drains without a single
-    // stuck attempt starving dispatch (was a hardcoded 1).
+    // REL-896: defaults to 1 (see f84caf14 -- "One attempt per loop keeps the
+    // sweep bounded without starving dispatch"). The reaper is awaited
+    // serially before the dispatch engine on every loop, and each reap mints
+    // a publish token and calls GitHub, so a larger default would add
+    // unbounded per-loop latency ahead of dispatch. Now env-tunable via
+    // REVIEW_ABANDONED_REAPER_LIMIT (clamped to [1, 100]) so an operator can
+    // raise it temporarily to drain a large backlog after an outage, without
+    // a code change.
     limit: config.abandonedReaperLimit,
     delegatedFailureReader,
     checkClientFor: async (run, signal) => {

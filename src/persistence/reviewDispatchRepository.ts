@@ -888,12 +888,23 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     return this.inTransaction(async (client) => {
       const result = await client.query(
         `WITH delegated_candidate AS (
-         -- DISTINCT ON defends against a duplicate (run_id, execution_attempt)
-         -- pair in the caller's candidate list; it must never fan the join
-         -- below into more than one row per outbox attempt.
+         -- DISTINCT ON collapses a duplicate (run_id, execution_attempt) pair
+         -- in the caller's candidate list (e.g. two DelegatedFailureReader
+         -- poll pages observing the same resource) down to one row before
+         -- the LEFT JOIN below. Note this is about *which reason* is
+         -- attached to the claim, not about claiming the run twice: even
+         -- without DISTINCT ON, Postgres's UPDATE ... FROM only applies one
+         -- (unspecified) matching FROM row per target row, so a duplicate
+         -- input never fans out into two claimed rows -- it just makes the
+         -- surviving reason arbitrary and unpredictable. WITH ORDINALITY +
+         -- the explicit ORDER BY replace that arbitrary pick with a
+         -- deterministic one: the candidate earliest in the caller-supplied
+         -- array order (i.e. the one DelegatedFailureReader.listCandidates()
+         -- paged in first) wins.
          SELECT DISTINCT ON (run_id, execution_attempt) run_id, execution_attempt, reason
            FROM unnest($7::text[], $8::integer[], $9::text[])
-             AS delegated_candidate(run_id, execution_attempt, reason)
+             WITH ORDINALITY AS delegated_candidate(run_id, execution_attempt, reason, ordinal)
+          ORDER BY run_id, execution_attempt, ordinal
        ), candidate AS (
          SELECT runs.run_id,
                 runs.error_text = $4::text

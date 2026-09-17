@@ -3399,6 +3399,58 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         failureClass: 'internal_error',
       });
     });
+
+    it('collapses a duplicate (runId, executionAttempt) candidate pair to exactly one claim, deterministically, with no duplicated persisted state', async () => {
+      const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
+      const run = await admitClaimedAndProjected(
+        repository, 'delegated-duplicate-candidate', 1_000, 'worker-delegated-duplicate',
+      );
+      const beforeDeadline = run.terminalDeadline - 1;
+      const identity = { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt };
+
+      // The same (runId, executionAttempt) pair listed twice with two
+      // different reasons -- e.g. two DelegatedFailureReader poll pages
+      // observing the same resource in different transient states. Postgres's
+      // UPDATE ... FROM semantics already guarantee exactly one claimed row
+      // here even without the CTE's DISTINCT ON (only one, unspecified,
+      // matching FROM row is ever applied per target row) -- so the row-count
+      // assertion below is defense in depth, not the primary risk. What
+      // DISTINCT ON (+ WITH ORDINALITY's deterministic ORDER BY) actually
+      // fixes is *which* reason survives: without it, the surviving
+      // delegated_reason on this one claimed row is an arbitrary, unpredictable
+      // pick between the two candidates rather than the earliest-supplied one.
+      const claimed = await repository.claimAbandonedPublishingRuns('reaper-duplicate-candidate', beforeDeadline, 20, [
+        { ...identity, reason: 'worker_failed' },
+        { ...identity, reason: 'worker_deadline_exceeded' },
+      ]);
+
+      expect(claimed).toHaveLength(1);
+      // Deterministic winner: the CTE orders by `WITH ORDINALITY` position in
+      // the caller-supplied array, so the first-listed reason ('worker_failed')
+      // wins over the later duplicate ('worker_deadline_exceeded').
+      expect(claimed[0]).toMatchObject({ runId: run.admitted.run.runId, delegatedReason: 'worker_failed' });
+
+      // Not duplicated at claim time: the run/outbox pair was touched by
+      // exactly one row from the CTE, not fanned out into two updates, so
+      // there is exactly one 'publishing_deadline' terminal lifecycle event
+      // (claimAbandonedPublishingRuns appends one per RETURNING row).
+      const claimState = await dispatchState(client, run.admitted.run.runId);
+      expect(claimState.run.status).toBe('terminal');
+      expect(claimState.outbox.status).toBe('projected');
+      const claimEvents = (await lifecycleEvents(client, run.admitted.run.runId))
+        .filter((event) => event.eventKind === 'review.lifecycle.terminal' && event.data.terminal_class === 'publishing_deadline');
+      expect(claimEvents).toHaveLength(1);
+
+      await expect(repository.reconcileAbandonedPublishingRun(claimed[0], 'reaper-duplicate-candidate', beforeDeadline + 1,
+        async () => 'failure-published')).resolves.toEqual({ reconciled: true, outcome: 'failure-published' });
+
+      // Not duplicated at reconcile time either: a single failure_diagnostics
+      // object bound to the winning reason, not two conflicting writes.
+      const state = await dispatchState(client, run.admitted.run.runId);
+      expect(state.run.status).toBe('terminal');
+      expect(state.outbox.status).toBe('terminal');
+      expect(state.run.failure_diagnostics).toMatchObject({ reason: 'worker_failed', failureClass: 'internal_error' });
+    });
   });
 
   describe('terminalizeRunsForClosedPullRequest (REL-896)', () => {

@@ -21,7 +21,7 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
       idleDelayMs: 1_000,
       activeDelayMs: 50,
       errorDelayMs: 5_000,
-      abandonedReaperLimit: 10,
+      abandonedReaperLimit: 1,
       delegatedFailurePollMs: 15_000,
     });
   });
@@ -41,7 +41,7 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
       idleDelayMs: 1_000,
       activeDelayMs: 50,
       errorDelayMs: 5_000,
-      abandonedReaperLimit: 10,
+      abandonedReaperLimit: 1,
       delegatedFailurePollMs: 15_000,
     });
   });
@@ -54,8 +54,8 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
       HOSTNAME: 'dispatcher-abc123',
     };
 
-    it('defaults to 10 when unset', () => {
-      expect(reviewJobDispatcherConfigFromEnv(base).abandonedReaperLimit).toBe(10);
+    it('defaults to 1 when unset', () => {
+      expect(reviewJobDispatcherConfigFromEnv(base).abandonedReaperLimit).toBe(1);
     });
 
     it('accepts an explicit value inside [1, 100]', () => {
@@ -65,7 +65,7 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
     });
 
     it.each(['0', '-1', '101', '1.5', 'abc', ''])('falls back to the default for an invalid value (%s)', (raw) => {
-      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_ABANDONED_REAPER_LIMIT: raw }).abandonedReaperLimit).toBe(10);
+      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_ABANDONED_REAPER_LIMIT: raw }).abandonedReaperLimit).toBe(1);
     });
   });
 

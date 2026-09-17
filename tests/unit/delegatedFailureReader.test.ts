@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_MAX_DELEGATED_FAILURE_CANDIDATES,
+  DELEGATED_FAILURE_LIST_PAGE_SIZE,
   DelegatedFailureReader,
+  MAX_DELEGATED_FAILURE_LIST_PAGES,
   MIN_DELEGATED_FAILURE_POLL_MS,
   resolveDelegatedFailurePollMs,
 } from '../../src/k8s/delegatedFailureReader';
@@ -49,7 +51,7 @@ function prReviewJob(overrides: {
 }
 
 function readerWith(items: unknown[], options: { now?: () => number; pollIntervalMs?: number; maxCandidates?: number } = {}) {
-  const listNamespacedCustomObject = vi.fn(async () => ({ items }));
+  const listNamespacedCustomObject = vi.fn(async (_request: Record<string, unknown>) => ({ items }));
   const reader = new DelegatedFailureReader({
     client: { listNamespacedCustomObject },
     namespace: 'ct-review-system',
@@ -71,12 +73,16 @@ describe('resolveDelegatedFailurePollMs', () => {
 });
 
 describe('DelegatedFailureReader condition matching', () => {
-  it('lists prreviewjobs in the exact group/version/namespace/plural', async () => {
+  it('lists prreviewjobs in the exact group/version/namespace/plural, with a bounded page size and no selector', async () => {
     const { reader, listNamespacedCustomObject } = readerWith([]);
     await reader.listCandidates();
     expect(listNamespacedCustomObject).toHaveBeenCalledWith({
       group: 'review-yeti.ai', version: 'v1alpha2', namespace: 'ct-review-system', plural: 'prreviewjobs',
+      limit: DELEGATED_FAILURE_LIST_PAGE_SIZE,
     });
+    const [request] = listNamespacedCustomObject.mock.calls[0];
+    expect(request).not.toHaveProperty('labelSelector');
+    expect(request).not.toHaveProperty('fieldSelector');
   });
 
   it.each([
@@ -242,5 +248,100 @@ describe('DelegatedFailureReader list response shape (REL-896)', () => {
     await expect(reader.listCandidates()).resolves.toEqual([]);
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+});
+
+describe('DelegatedFailureReader server-side pagination (REL-896)', () => {
+  function page(items: unknown[], continueToken?: string) {
+    return { items, metadata: continueToken ? { continue: continueToken } : {} };
+  }
+
+  it('stops after a single page when the response carries no continue token', async () => {
+    const listNamespacedCustomObject = vi.fn(async (_request: Record<string, unknown>) => page([prReviewJob({})]));
+    const reader = new DelegatedFailureReader({ client: { listNamespacedCustomObject }, namespace: 'ct-review-system' });
+    const candidates = await reader.listCandidates();
+    expect(candidates).toHaveLength(1);
+    expect(listNamespacedCustomObject).toHaveBeenCalledTimes(1);
+    expect(listNamespacedCustomObject.mock.calls[0][0]).not.toHaveProperty('_continue');
+  });
+
+  it('follows multiple pages in order, passing the continue token back on the next request', async () => {
+    const first = prReviewJob({ runId: `run_${'1'.repeat(32)}` });
+    const second = prReviewJob({ runId: `run_${'2'.repeat(32)}` });
+    const listNamespacedCustomObject = vi.fn()
+      .mockResolvedValueOnce(page([first], 'cursor-1'))
+      .mockResolvedValueOnce(page([second]));
+    const reader = new DelegatedFailureReader({ client: { listNamespacedCustomObject }, namespace: 'ct-review-system' });
+    const candidates = await reader.listCandidates();
+    expect(candidates.map((candidate) => candidate.runId)).toEqual([
+      (first.spec as { runId: string }).runId,
+      (second.spec as { runId: string }).runId,
+    ]);
+    expect(listNamespacedCustomObject).toHaveBeenCalledTimes(2);
+    expect(listNamespacedCustomObject.mock.calls[0][0]).not.toHaveProperty('_continue');
+    expect(listNamespacedCustomObject.mock.calls[1][0]).toMatchObject({ _continue: 'cursor-1' });
+  });
+
+  it('stops at the page cap, warns once, and returns the candidates paged in so far', async () => {
+    const items = Array.from({ length: MAX_DELEGATED_FAILURE_LIST_PAGES }, (_, index) =>
+      prReviewJob({ runId: `run_${String(index).padStart(32, '0')}` }));
+    // Never returns an empty continue token, so only the page cap can stop this.
+    const listNamespacedCustomObject = vi.fn(async (request: { _continue?: string }) => {
+      const pageIndex = request._continue ? Number(request._continue) : 0;
+      return page([items[pageIndex]], String(pageIndex + 1));
+    });
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const reader = new DelegatedFailureReader({ client: { listNamespacedCustomObject }, namespace: 'ct-review-system' });
+      const candidates = await reader.listCandidates();
+      expect(listNamespacedCustomObject).toHaveBeenCalledTimes(MAX_DELEGATED_FAILURE_LIST_PAGES);
+      expect(candidates).toHaveLength(MAX_DELEGATED_FAILURE_LIST_PAGES);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        'Delegated PRReviewJob failure signal list exceeded the page cap; using the candidates paged in so far',
+        { pages: MAX_DELEGATED_FAILURE_LIST_PAGES },
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('paginates a { body: { items, metadata } } wrapped response too', async () => {
+    const first = prReviewJob({ runId: `run_${'3'.repeat(32)}` });
+    const second = prReviewJob({ runId: `run_${'4'.repeat(32)}` });
+    const listNamespacedCustomObject = vi.fn()
+      .mockResolvedValueOnce({ body: page([first], 'cursor-body-1') })
+      .mockResolvedValueOnce({ body: page([second]) });
+    const reader = new DelegatedFailureReader({ client: { listNamespacedCustomObject }, namespace: 'ct-review-system' });
+    const candidates = await reader.listCandidates();
+    expect(candidates.map((candidate) => candidate.runId)).toEqual([
+      (first.spec as { runId: string }).runId,
+      (second.spec as { runId: string }).runId,
+    ]);
+    expect(listNamespacedCustomObject).toHaveBeenCalledTimes(2);
+    expect(listNamespacedCustomObject.mock.calls[1][0]).toMatchObject({ _continue: 'cursor-body-1' });
+  });
+
+  it('still honours the candidate cap across multiple pages', async () => {
+    const firstPageItems = [
+      prReviewJob({ runId: `run_${'5'.repeat(32)}` }),
+      prReviewJob({ runId: `run_${'6'.repeat(32)}` }),
+    ];
+    const secondPageItems = [prReviewJob({ runId: `run_${'7'.repeat(32)}` })];
+    const listNamespacedCustomObject = vi.fn()
+      .mockResolvedValueOnce(page(firstPageItems, 'cursor-cap-1'))
+      .mockResolvedValueOnce(page(secondPageItems));
+    const reader = new DelegatedFailureReader({
+      client: { listNamespacedCustomObject }, namespace: 'ct-review-system', maxCandidates: 2,
+    });
+    const candidates = await reader.listCandidates();
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((candidate) => candidate.runId)).toEqual([
+      (firstPageItems[0].spec as { runId: string }).runId,
+      (firstPageItems[1].spec as { runId: string }).runId,
+    ]);
+    // The cap was already satisfied by page one; the third item never needed fetching,
+    // but the reader does not need to skip fetching page two to honour the cap correctly.
+    expect(listNamespacedCustomObject).toHaveBeenCalledTimes(2);
   });
 });
