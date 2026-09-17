@@ -12,9 +12,10 @@ const state = vi.hoisted(() => ({
   close: vi.fn(async () => {}),
   reap: vi.fn<(signal: AbortSignal) => Promise<void>>(),
   loop: vi.fn<typeof runReviewJobDispatcherLoop>(),
+  k8sList: vi.fn(async () => ({ items: [] as unknown[] })),
 }));
 vi.mock('@kubernetes/client-node', () => ({ CustomObjectsApi: class {}, CoreV1Api: class {}, KubeConfig: class {
-  loadFromCluster() {} makeApiClient() { return {}; }
+  loadFromCluster() {} makeApiClient() { return { listNamespacedCustomObject: state.k8sList }; }
 } }));
 vi.mock('../../src/github/appAuth', () => ({ getGitHubAppIdentity: state.identity, getGitHubAppRepositoryPublishToken: state.mint }));
 vi.mock('../../src/persistence/postgresStore', () => ({ PostgresStore: class {
@@ -48,6 +49,7 @@ beforeEach(() => {
     await state.reaperOptions!.checkClientFor({ owner: 'calltelemetry', repo: 'ct-release' }, signal);
   });
   state.close.mockReset().mockImplementation(async () => { state.events.push('close'); });
+  state.k8sList.mockReset().mockResolvedValue({ items: [] });
   vi.stubEnv('REVIEW_JOB_DISPATCH_ENABLED', 'true');
   vi.stubEnv('REVIEW_JOB_NAMESPACE', 'ct-review-system');
   vi.stubEnv('REVIEW_JOB_WORKER_IMAGE', `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`);
@@ -67,6 +69,24 @@ function expectIdleCompletionPool(): void {
 }
 
 describe('dispatcher publishing ownership composition', () => {
+  it('wires the real delegated-failure reader into the reaper with the configured namespace and poll interval (REL-896)', async () => {
+    // Every unit of REL-896 is tested in isolation with injected fakes; this is
+    // the only place the feature is assembled. Without this, deleting the
+    // `delegatedFailureReader` line from the entrypoint would silently revert
+    // production to deadline-only reaping with a fully green suite.
+    vi.spyOn(process, 'once').mockReturnValue(process);
+    vi.stubEnv('REVIEW_DELEGATED_FAILURE_POLL_MS', '20000');
+    await import('../../src/reviewJobDispatcherIndex');
+    await vi.waitFor(() => expect(state.close).toHaveBeenCalled());
+    const reader = state.reaperOptions!.delegatedFailureReader;
+    expect(reader, 'the reaper must receive a delegated-failure reader').toBeDefined();
+    expect(reader.pollIntervalMs).toBe(20_000);
+    await expect(reader.listCandidates()).resolves.toEqual([]);
+    expect(state.k8sList).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      group: 'review-yeti.ai', version: 'v1alpha2', namespace: 'ct-review-system', plural: 'prreviewjobs',
+    }));
+  });
+
   it('uses the same authenticated App for worker secrets and reaping, and awaits reaping before dispatch/DB close', async () => {
     // Do not install real process signal handlers from a service entrypoint.
     vi.spyOn(process, 'once').mockReturnValue(process);

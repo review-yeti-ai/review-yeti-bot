@@ -202,3 +202,78 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(() => new AbandonedRunReaper({ ...options, workerId: 'reaper', publisherAppId: 0 })).toThrow('App id');
   });
 });
+
+describe('AbandonedRunReaper REL-896 delegated-failure signal', () => {
+  it('passes the reader candidates through as the fourth claim argument', async () => {
+    const { repository, subject } = fixture();
+    const candidates = [{ runId: run.runId, executionAttempt: 1, reason: 'worker_failed' as const }];
+    const delegatedFailureReader = { listCandidates: vi.fn(async () => candidates) };
+    const withReader = new AbandonedRunReaper({
+      repository, checkClientFor: vi.fn(async () => ({
+        failAbandonedCheck: vi.fn(async () => 'failure-published' as const),
+      })), workerId: 'reaper-a', publisherAppId: 4385771, now: () => 902_000, limit: 5, delegatedFailureReader,
+    });
+    await withReader.runOnce();
+    expect(delegatedFailureReader.listCandidates).toHaveBeenCalledOnce();
+    expect(repository.claimAbandonedPublishingRuns).toHaveBeenCalledWith('reaper-a', 902_000, 5, candidates);
+  });
+
+  it('passes an empty candidate array rather than skipping the call when the reader found nothing', async () => {
+    const { repository } = fixture();
+    const delegatedFailureReader = { listCandidates: vi.fn(async () => []) };
+    const withReader = new AbandonedRunReaper({
+      repository, checkClientFor: vi.fn(async () => ({
+        failAbandonedCheck: vi.fn(async () => 'failure-published' as const),
+      })), workerId: 'reaper-a', publisherAppId: 4385771, now: () => 902_000, limit: 5, delegatedFailureReader,
+    });
+    await withReader.runOnce();
+    expect(repository.claimAbandonedPublishingRuns).toHaveBeenCalledWith('reaper-a', 902_000, 5, []);
+  });
+
+  it('never calls the reader and keeps the exact pre-REL-896 3-argument call when none is configured', async () => {
+    const { subject, repository } = fixture();
+    await subject.runOnce();
+    expect(repository.claimAbandonedPublishingRuns).toHaveBeenCalledWith('reaper-a', 902_000, 5);
+    expect(repository.claimAbandonedPublishingRuns.mock.calls[0]).toHaveLength(3);
+  });
+
+  it('counts and reports runs claimed via the delegated signal separately from the deadline sweep', async () => {
+    const { repository, subject } = fixture();
+    const delegated = { ...run, runId: `run_${'2'.repeat(32)}`, delegatedReason: 'worker_deadline_exceeded' as const };
+    repository.claimAbandonedPublishingRuns.mockResolvedValue([run, delegated]);
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 2, published: 2, failed: 0, delegated: 1 });
+  });
+
+  it('omits delegated from the outcome when nothing claimed carried the operator signal', async () => {
+    const { subject } = fixture();
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 1, failed: 0 });
+  });
+
+  it('increments the reaper counters that mirror the outcome', async () => {
+    const { subject, repository } = fixture();
+    repository.retireExpiredNonPublishableRuns.mockResolvedValueOnce(2);
+    const delegated = { ...run, runId: `run_${'3'.repeat(32)}`, delegatedReason: 'worker_job_missing' as const };
+    repository.claimAbandonedPublishingRuns.mockResolvedValue([run, delegated]);
+    const { getMetrics } = await import('../../src/telemetry/metrics');
+    const metrics = getMetrics();
+    const swept = vi.spyOn(metrics.reviewReaperSwept, 'add');
+    const published = vi.spyOn(metrics.reviewReaperPublished, 'add');
+    const failed = vi.spyOn(metrics.reviewReaperFailed, 'add');
+    const retired = vi.spyOn(metrics.reviewReaperRetiredNonPublishable, 'add');
+    const delegatedMetric = vi.spyOn(metrics.reviewReaperDelegated, 'add');
+    try {
+      await subject.runOnce();
+      expect(swept).toHaveBeenCalledWith(2);
+      expect(published).toHaveBeenCalledWith(2);
+      expect(failed).toHaveBeenCalledWith(0);
+      expect(retired).toHaveBeenCalledWith(2);
+      expect(delegatedMetric).toHaveBeenCalledWith(1);
+    } finally {
+      swept.mockRestore();
+      published.mockRestore();
+      failed.mockRestore();
+      retired.mockRestore();
+      delegatedMetric.mockRestore();
+    }
+  });
+});

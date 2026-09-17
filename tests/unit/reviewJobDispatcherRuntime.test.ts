@@ -3,6 +3,7 @@ import {
   reviewJobDispatcherConfigFromEnv,
   runReviewJobDispatcherLoop,
 } from '../../src/k8s/reviewJobDispatcherRuntime';
+import { DEFAULT_DELEGATED_FAILURE_POLL_MS, MIN_DELEGATED_FAILURE_POLL_MS } from '../../src/k8s/delegatedFailureReader';
 
 const workerImage = `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:${'e'.repeat(64)}`;
 
@@ -21,6 +22,8 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
       idleDelayMs: 1_000,
       activeDelayMs: 50,
       errorDelayMs: 5_000,
+      abandonedReaperLimit: 1,
+      delegatedFailurePollMs: 15_000,
     });
   });
 
@@ -39,6 +42,70 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
       idleDelayMs: 1_000,
       activeDelayMs: 50,
       errorDelayMs: 5_000,
+      abandonedReaperLimit: 1,
+      delegatedFailurePollMs: 15_000,
+    });
+  });
+
+  describe('REL-896 REVIEW_ABANDONED_REAPER_LIMIT', () => {
+    const base = {
+      REVIEW_JOB_DISPATCH_ENABLED: 'true',
+      REVIEW_JOB_NAMESPACE: 'ct-review-system',
+      REVIEW_JOB_WORKER_IMAGE: workerImage,
+      HOSTNAME: 'dispatcher-abc123',
+    };
+
+    it('defaults to 1 when unset', () => {
+      expect(reviewJobDispatcherConfigFromEnv(base).abandonedReaperLimit).toBe(1);
+    });
+
+    it('accepts an explicit value inside [1, 100]', () => {
+      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_ABANDONED_REAPER_LIMIT: '1' }).abandonedReaperLimit).toBe(1);
+      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_ABANDONED_REAPER_LIMIT: '100' }).abandonedReaperLimit).toBe(100);
+      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_ABANDONED_REAPER_LIMIT: '37' }).abandonedReaperLimit).toBe(37);
+    });
+
+    it.each(['0', '-1', '101', '1.5', 'abc', ''])('falls back to the default for an invalid value (%s)', (raw) => {
+      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_ABANDONED_REAPER_LIMIT: raw }).abandonedReaperLimit).toBe(1);
+    });
+  });
+
+  describe('REL-896 REVIEW_DELEGATED_FAILURE_POLL_MS', () => {
+    const base = {
+      REVIEW_JOB_DISPATCH_ENABLED: 'true',
+      REVIEW_JOB_NAMESPACE: 'ct-review-system',
+      REVIEW_JOB_WORKER_IMAGE: workerImage,
+      HOSTNAME: 'dispatcher-abc123',
+    };
+
+    // reviewJobDispatcherConfigFromEnv must stay self-contained: reviewRuntimeUpgrade.test.ts
+    // extracts its source text into a resolver-less sandbox, so it cannot import the reader's
+    // constants and carries the same numbers as literals. These assertions are the drift guard:
+    // change the reader's default or floor without the config (or the reverse) and this fails.
+    it('resolves an unset poll interval to the reader\'s exported default', () => {
+      expect(reviewJobDispatcherConfigFromEnv(base).delegatedFailurePollMs).toBe(DEFAULT_DELEGATED_FAILURE_POLL_MS);
+    });
+
+    it('accepts exactly the reader\'s exported floor and falls back to its default just below it', () => {
+      expect(reviewJobDispatcherConfigFromEnv({
+        ...base, REVIEW_DELEGATED_FAILURE_POLL_MS: String(MIN_DELEGATED_FAILURE_POLL_MS),
+      }).delegatedFailurePollMs).toBe(MIN_DELEGATED_FAILURE_POLL_MS);
+      expect(reviewJobDispatcherConfigFromEnv({
+        ...base, REVIEW_DELEGATED_FAILURE_POLL_MS: String(MIN_DELEGATED_FAILURE_POLL_MS - 1),
+      }).delegatedFailurePollMs).toBe(DEFAULT_DELEGATED_FAILURE_POLL_MS);
+    });
+
+    it('defaults to 15000ms when unset', () => {
+      expect(reviewJobDispatcherConfigFromEnv(base).delegatedFailurePollMs).toBe(15_000);
+    });
+
+    it('accepts an explicit value at or above the 5000ms floor', () => {
+      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_DELEGATED_FAILURE_POLL_MS: '5000' }).delegatedFailurePollMs).toBe(5_000);
+      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_DELEGATED_FAILURE_POLL_MS: '30000' }).delegatedFailurePollMs).toBe(30_000);
+    });
+
+    it.each(['0', '4999', '-1', 'abc', ''])('falls back to the default below the floor or when invalid (%s)', (raw) => {
+      expect(reviewJobDispatcherConfigFromEnv({ ...base, REVIEW_DELEGATED_FAILURE_POLL_MS: raw }).delegatedFailurePollMs).toBe(15_000);
     });
   });
 

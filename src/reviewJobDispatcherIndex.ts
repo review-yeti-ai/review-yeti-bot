@@ -19,6 +19,7 @@ import { logger } from './utils/logger';
 import { getGitHubAppIdentity, getGitHubAppRepositoryPublishToken } from './github/appAuth';
 import { GitHubInstallationClient } from './github/installationClient';
 import { AbandonedRunReaper } from './review/abandonedRunReaper';
+import { DelegatedFailureReader } from './k8s/delegatedFailureReader';
 import { initTelemetry } from './telemetry';
 import {
   closeDispatcherMetricsServer,
@@ -112,12 +113,30 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     : undefined;
 
   const controller = new AbortController();
+  // REL-896: reads the Go operator's delegated-failure signal directly off the
+  // PRReviewJob CR so the reaper can claim before terminal_deadline. Fails
+  // soft on its own (see DelegatedFailureReader) -- a missing `list` RBAC
+  // grant or any other list error degrades to the pre-REL-896 deadline-only
+  // path, never to a crash.
+  const delegatedFailureReader = new DelegatedFailureReader({
+    client: customObjects,
+    namespace: config.namespace,
+    pollIntervalMs: config.delegatedFailurePollMs,
+  });
   const reaper = publisher ? new AbandonedRunReaper({
     repository,
     workerId: config.workerId,
     publisherAppId: publisher.id,
-    // One attempt per loop keeps the sweep bounded without starving dispatch.
-    limit: 1,
+    // REL-896: defaults to 1 (see f84caf14 -- "One attempt per loop keeps the
+    // sweep bounded without starving dispatch"). The reaper is awaited
+    // serially before the dispatch engine on every loop, and each reap mints
+    // a publish token and calls GitHub, so a larger default would add
+    // unbounded per-loop latency ahead of dispatch. Now env-tunable via
+    // REVIEW_ABANDONED_REAPER_LIMIT (clamped to [1, 100]) so an operator can
+    // raise it temporarily to drain a large backlog after an outage, without
+    // a code change.
+    limit: config.abandonedReaperLimit,
+    delegatedFailureReader,
     checkClientFor: async (run, signal) => {
       const minted = await getGitHubAppRepositoryPublishToken({
         appId, privateKey, owner: run.owner, repo: run.repo, signal,

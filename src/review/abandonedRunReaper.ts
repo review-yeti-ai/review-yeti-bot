@@ -2,9 +2,17 @@ import type {
   AbandonedCheckRecoveryOutcome,
   AbandonedPublishingRun,
   AbandonedRunReconciliation,
+  DelegatedFailureCandidateInput,
   ReviewDispatchRepository,
 } from '../persistence/reviewDispatchRepository';
+import { getMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
+
+/** Narrow interface so the reaper depends only on the read it needs, not the
+ * concrete `DelegatedFailureReader` class (`../k8s/delegatedFailureReader`). */
+export interface DelegatedFailureCandidateSource {
+  listCandidates(): Promise<DelegatedFailureCandidateInput[]>;
+}
 
 /**
  * Reconciles publishing attempts that expired without a durable verdict.
@@ -28,6 +36,14 @@ export interface AbandonedRunReaperOptions {
   workerId: string;
   now?: () => number;
   limit?: number;
+  /**
+   * REL-896: optional source of the Go operator's delegated-failure signal.
+   * When present, its candidates make a queued/running run eligible for
+   * claim before terminal_deadline. Omitted entirely, behavior is byte-for-byte
+   * the pre-REL-896 deadline-only reaper (no fourth argument is even passed
+   * to claimAbandonedPublishingRuns).
+   */
+  delegatedFailureReader?: DelegatedFailureCandidateSource;
 }
 
 export interface AbandonedRunReaperOutcome {
@@ -40,6 +56,8 @@ export interface AbandonedRunReaperOutcome {
   superseded?: number;
   /** Non-publishable (not 'app-gate') rows past their deadline, retired without touching GitHub. */
   retiredNonPublishable?: number;
+  /** Claimed because the operator's delegated-failure signal matched, not terminal_deadline. */
+  delegated?: number;
 }
 
 export class AbandonedRunReaper {
@@ -64,7 +82,17 @@ export class AbandonedRunReaper {
     // otherwise stay 'queued'/'running' forever. This sweep only terminalizes;
     // it never mints a token or calls GitHub.
     const retiredNonPublishable = await this.options.repository.retireExpiredNonPublishableRuns(now, this.limit);
-    const runs = await this.options.repository.claimAbandonedPublishingRuns(this.options.workerId, now, this.limit);
+    // No reader configured keeps the exact pre-REL-896 3-argument call; a
+    // configured reader always passes its (possibly empty) candidate list so
+    // an eligible signal is never skipped by an unlucky poll-interval gap.
+    const delegatedCandidates = this.options.delegatedFailureReader
+      ? await this.options.delegatedFailureReader.listCandidates()
+      : undefined;
+    const runs = delegatedCandidates
+      ? await this.options.repository.claimAbandonedPublishingRuns(
+        this.options.workerId, now, this.limit, delegatedCandidates,
+      )
+      : await this.options.repository.claimAbandonedPublishingRuns(this.options.workerId, now, this.limit);
     let published = 0;
     let failed = 0;
     let quarantined = 0;
@@ -106,6 +134,8 @@ export class AbandonedRunReaper {
       }
     }
 
+    const delegated = runs.filter((run) => run.delegatedReason !== undefined).length;
+
     if (runs.length > 0) {
       logger.warn('Reaped publishing runs that never produced a verdict', {
         swept: runs.length,
@@ -113,6 +143,7 @@ export class AbandonedRunReaper {
         failed,
         quarantined,
         superseded,
+        ...(delegated > 0 ? { delegated } : {}),
       });
     }
     if (retiredNonPublishable > 0) {
@@ -120,6 +151,18 @@ export class AbandonedRunReaper {
         retiredNonPublishable,
       });
     }
+
+    const metrics = getMetrics();
+    metrics.reviewReaperSwept.add(runs.length);
+    metrics.reviewReaperPublished.add(published);
+    metrics.reviewReaperFailed.add(failed);
+    // No separate per-cycle "superseded" counter here: reviewDispatchRepository.ts's
+    // reconcileAbandonedPublishingRun already increments reviewReaperSupersededAttempts
+    // exactly once per retirement, at the point the outcome commits. Adding an
+    // aggregate here as well would count the same retirement twice.
+    if (retiredNonPublishable > 0) metrics.reviewReaperRetiredNonPublishable.add(retiredNonPublishable);
+    if (delegated > 0) metrics.reviewReaperDelegated.add(delegated);
+
     return {
       swept: runs.length,
       published,
@@ -127,6 +170,7 @@ export class AbandonedRunReaper {
       ...(quarantined > 0 ? { quarantined } : {}),
       ...(superseded > 0 ? { superseded } : {}),
       ...(retiredNonPublishable > 0 ? { retiredNonPublishable } : {}),
+      ...(delegated > 0 ? { delegated } : {}),
     };
   }
 }
