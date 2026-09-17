@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -12,7 +12,25 @@ import { sha256 } from '../../src/review/reviewCore';
 const databaseUrl = (process.env.REVIEW_YETI_TEST_DATABASE_URL ||
   'postgresql://review_test@127.0.0.1:55493/review_test').trim();
 const LIFECYCLE_OPTIONS = { lifecycleEvents: 'enabled' as const };
-const REPOSITORY_ID = 123;
+// `reapExpiredLeases` serializes per-PR work with `pg_try_advisory_xact_lock(
+// hashtextextended('review-dispatch:<repositoryId>:<prNumber>', 0))`. That
+// key is scoped to the whole Postgres connection/database, not to this
+// file's per-run `search_path` schema -- unlike the tables, the advisory
+// lock namespace is NOT test-isolated. Every `*.postgres.test.ts` file in
+// this suite runs as its own concurrent process (vitest `fileParallelism`)
+// against the one shared database, and several of them (e.g.
+// reviewCiRepository, reviewDispatchRepository, reviewRunAdmissionCompatibility)
+// also hardcode `repositoryId = 123` with small PR numbers (42/43/44) and
+// hold that exact advisory lock mid-transaction. When one of those
+// neighbours held `review-dispatch:123:43` at the instant this suite's
+// reaper ran its non-blocking try-lock for the same pair, the candidate was
+// silently skipped -- reaping 1 lease instead of 2 even though the skipped
+// run lived in a completely unrelated schema. Reproduced locally by running
+// this file alongside those neighbours under fileParallelism (`expected 1 to
+// be 2`), and seen in CI on the v1.69.0 and v1.72.4 release-benchmark runs.
+// A repository id outside every other fixture's hardcoded id space removes
+// the collision without touching the production locking contract.
+const REPOSITORY_ID = 100_000_000 + randomInt(1_000_000_000);
 const POLICY_DIGEST = 'd'.repeat(64);
 const RECEIVED_AT = 1_000;
 
