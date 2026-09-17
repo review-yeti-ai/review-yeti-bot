@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.72.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.6...v1.72.7) (2026-09-17)
+
+
+### Bug Fixes
+
+* **review:** restore structured failure telemetry on recoverable panel failures ([#821](https://github.com/review-yeti-ai/review-yeti-bot/issues/821)) ([2aa73e8](https://github.com/review-yeti-ai/review-yeti-bot/commit/2aa73e827e6417874c1eda551b9dc71aacb21f53))
+
 ## [1.72.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.72.5...v1.72.6) (2026-09-17)
 
 
