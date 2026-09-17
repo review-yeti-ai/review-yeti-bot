@@ -1,5 +1,6 @@
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { logger } from '../utils/logger';
+import { redactWorkerFailureLogTail } from '../review/workerCompletion';
 
 export class OpenRouterConnectionError extends Error {
   constructor(message: string) {
@@ -1762,7 +1763,9 @@ export class OpenRouterClient implements ReviewModelClient {
         }
         if (isTransientGatewayError(error) && attempt < maxRetries) {
           const delay = calculateFullJitterDelay(attempt, initialRetryDelayMs, maxRetryDelayMs, random);
-          logger.warn(`OpenRouter transient failure (${error.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`);
+          logger.warn(`OpenRouter transient failure, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})...`, {
+            error: redactWorkerFailureLogTail(error.message),
+          });
           await raceWithAbort(sleep(delay), request.signal);
           continue;
         }
@@ -2106,7 +2109,7 @@ export class OpenRouterClient implements ReviewModelClient {
           || streamAbortController.signal.aborted) {
           classifiedError = new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`, 'request');
         } else {
-          logger.error('OpenRouter SDK network failure or timeout', { error: sdkMessage, model: request.model });
+          logger.error('OpenRouter SDK network failure or timeout', { error: redactWorkerFailureLogTail(sdkMessage), model: request.model });
           classifiedError = new OpenRouterConnectionError(`OpenRouter SDK connection failure for model ${request.model}: ${sdkMessage}`);
         }
       }

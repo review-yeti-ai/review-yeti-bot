@@ -7,6 +7,7 @@ import { OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRoute
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
+import { redactWorkerFailureLogTail } from '../review/workerCompletion';
 import { runInSpan, getMetrics } from '../telemetry';
 import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
@@ -2069,7 +2070,13 @@ async function runPersona(
             break;
           }
           if (isExplicitUpstreamRejection(error)) {
-            logger.warn(`[Persona: ${persona.id}] Fast failover: provider '${providerId}' capacity rejected (${error?.message || error}); failing over to next provider...`);
+            logger.warn(`[Persona: ${persona.id}] Fast failover: provider '${providerId}' capacity rejected; failing over to next provider...`, {
+              persona: persona.id,
+              provider: providerId,
+              // Bounded/redacted: an upstream capacity-rejection message can echo back
+              // provider-side prompt or response fragments. Never log it raw.
+              error: redactWorkerFailureLogTail(error?.message ?? String(error)),
+            });
             errors.push(`${providerId}: ${error?.message || String(error)}`);
             if (config.reviewers.fallback === 'none') break;
             break;
@@ -2103,7 +2110,16 @@ async function runPersona(
             break;
           }
           if (attempts < maxAttempts && isRetryablePanelError(error)) {
-            logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts}): ${error.message}`);
+            logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts})`, {
+              persona: persona.id,
+              provider: providerId,
+              attempt: attempts,
+              maxAttempts,
+              // Bounded/redacted: this is the raw error that made the retryable-error
+              // regex match (e.g. "fetch failed", a 5xx) and may still carry a
+              // provider response fragment alongside that signature.
+              error: redactWorkerFailureLogTail(error.message),
+            });
             await panelDelay(1000, signal);
             continue;
           }
@@ -2626,7 +2642,19 @@ export async function executePersonaPanel(options: {
         return res.value;
       }
       const errorMsg = res.reason?.message || String(res.reason);
-      logger.warn('Persona execution failed', { persona: persona.id, error: errorMsg });
+      logger.warn('Persona execution failed', {
+        persona: persona.id,
+        // Bounded, non-secret classification: the constructor name of whatever was
+        // rejected (e.g. "OpenRouterResponseError", "OpenRouterTimeoutError"), never
+        // the free-form message itself.
+        errorType: res.reason instanceof Error ? res.reason.constructor.name : typeof res.reason,
+        // `errorMsg` is the raw, unredacted provider/persona failure text and must
+        // never reach the log sink directly -- it can carry prompt or response
+        // content. `entry.error` below intentionally keeps the raw value: downstream
+        // consumers (failure classification, the published check summary) already
+        // apply their own redaction/bounding before anything leaves this process.
+        error: redactWorkerFailureLogTail(errorMsg),
+      });
       return { persona, result: undefined, error: errorMsg };
     });
     const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
