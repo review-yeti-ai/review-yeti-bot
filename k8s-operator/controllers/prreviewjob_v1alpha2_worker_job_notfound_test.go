@@ -252,3 +252,50 @@ func TestReconcileElapsedDeadlineToleratesFinalizerAddNotFound(t *testing.T) {
 		t.Fatalf("phase = %s, want Succeeded from the Status already captured by the live read even though the deadline had elapsed", after.Status.Phase)
 	}
 }
+
+// The finalizer-ADD sites tolerate ONLY NotFound. Any other error (a Conflict,
+// an unavailable API server) must still surface, because silently skipping the
+// terminal-outcome finalizer would let TTL collection erase a worker's outcome
+// before it is copied into the review's status.
+func TestReconcileAdoptFinalizerAddSurfacesTransientUpdateError(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := runningReviewWithWorker(t, "disabled")
+
+	worker := storedWorker(t, kube, req)
+	worker.Finalizers = nil
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatalf("strip finalizer to model a legacy-adopted worker Job: %v", err)
+	}
+	markWorkerSucceeded(t, kube, storedWorker(t, kube, req), metav1.NewTime(r.Now()))
+
+	transient := errors.New("etcd unavailable")
+	r.Client = interceptWorkerJobUpdate(kube.(client.WithWatch), transient)
+
+	if _, err := r.Reconcile(ctx, req); !errors.Is(err, transient) {
+		t.Fatalf("Reconcile returned %v, want the transient finalizer-add error surfaced", err)
+	}
+	if review := storedReview(t, kube, req); review.Status.Phase == reviewv1alpha2.PhaseSucceeded {
+		t.Fatal("the review must not reach Succeeded while the terminal-outcome finalizer could not be attached")
+	}
+}
+
+func TestReconcileElapsedDeadlineFinalizerAddSurfacesTransientUpdateError(t *testing.T) {
+	ctx := context.Background()
+	r, kube, req := runningReviewWithWorker(t, "disabled")
+
+	worker := storedWorker(t, kube, req)
+	worker.Finalizers = nil
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatalf("strip finalizer to model a legacy-adopted worker Job: %v", err)
+	}
+	markWorkerSucceeded(t, kube, storedWorker(t, kube, req), metav1.NewTime(r.Now()))
+
+	review := storedReview(t, kube, req)
+	r.Now = func() time.Time { return review.Spec.TerminalDeadline.Add(time.Second) }
+	transient := errors.New("etcd unavailable")
+	r.Client = interceptWorkerJobUpdate(kube.(client.WithWatch), transient)
+
+	if _, err := r.Reconcile(ctx, req); !errors.Is(err, transient) {
+		t.Fatalf("Reconcile returned %v, want the transient finalizer-add error surfaced after the deadline elapsed", err)
+	}
+}
