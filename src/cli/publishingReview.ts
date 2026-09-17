@@ -867,9 +867,11 @@ export async function runPublishingReviewWorker(
       } catch (groundingError: any) {
         zoektScratchRoot = { reason: groundingError?.message || 'zoekt_grounding_error' };
       }
-      // Inject the indexDir into BOTH config paths that consume it: the symbol
-      // pre-check (pre_checks.zoekt) and the panel's on-demand full-repository
-      // search (evidence.zoekt) — the latter only when pre_checks.zoekt is absent.
+      // Inject the indexDir into BOTH config paths that consume it:
+      // evidence.zoekt (the symbol pre-check reads it first) and
+      // pre_checks.zoekt (the panel's on-demand code_search_zoekt tool prefers
+      // pre_checks over evidence in its lookup). Injecting both guarantees the
+      // index reaches every consumer regardless of which lookup wins.
       const zoektIndexDir = zoektGroundingEnabled ? zoektScratchRoot.indexDir : undefined;
       const zoektBinaryOverride = value(env, 'ZOEKT_BIN') ? { zoektBinaryPath: value(env, 'ZOEKT_BIN') } : {};
       const groundedConfig = zoektIndexDir

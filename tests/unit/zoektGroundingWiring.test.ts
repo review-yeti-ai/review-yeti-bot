@@ -79,7 +79,11 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
   it('injects the grounded indexDir into both pre_checks.zoekt and evidence.zoekt', async () => {
     const panelRunner = vi.fn(async () => basePanel());
     const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch' }));
-    await runPublishingReviewWorker(env(), deps(panelRunner, { zoektGrounding: zoektGrounding as never }));
+    const signal = new AbortController().signal;
+    await runPublishingReviewWorker(
+      env({ ZOEKT_INDEX_BIN: '/opt/zoekt/zoekt-index' }),
+      deps(panelRunner, { zoektGrounding: zoektGrounding as never, signal }),
+    );
 
     expect(zoektGrounding).toHaveBeenCalledTimes(1);
     const groundingArg = (zoektGrounding.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
@@ -87,6 +91,9 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     expect(groundingArg.headSha).toBe(HEAD);
     expect(groundingArg.token).toBe('ghs_test');
     expect(groundingArg.enabled).toBe(true);
+    // Cancellation and binary-path seams are forwarded, not dropped.
+    expect(groundingArg.signal).toBe(signal);
+    expect(groundingArg.zoektIndexBinaryPath).toBe('/opt/zoekt/zoekt-index');
 
     const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
     expect(panelArg.config.pre_checks.zoekt.indexDir).toBe('/tmp/fake-index');
