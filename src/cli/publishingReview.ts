@@ -23,8 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted } from '../panel/panelEngine';
-import { buildZoektIndex } from '../mcp/zoektIndexBuilder';
-import { materializeReviewWorkdir } from '../mcp/zoektWorkdirMaterializer';
+import { defaultZoektGrounding } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
@@ -566,62 +565,13 @@ export interface PublishingReviewDeps {
    * REL-677 / ADR 0329: index-at-review-time zoekt grounding. Injectable for tests; the default
    * implementation materializes a read-only tarball of the head SHA and builds a throwaway index.
    */
-  zoektGrounding?: typeof defaultZoektGrounding;
-}
-
-/**
- * REL-677 / ADR 0329: build the whole-repo zoekt index for this review's exact head SHA into a
- * scratch directory. Fail-soft by contract: every failure mode resolves to `{ indexDir: undefined }`
- * and the panel runs exactly as it did without zoekt. Never throws.
- */
-async function defaultZoektGrounding(input: {
-  repository: string;
-  headSha: string;
-  token: string | undefined;
-  enabled: boolean;
-  signal?: AbortSignal;
-}): Promise<{ indexDir?: string; scratchDir?: string; reason?: string }> {
-  if (!input.enabled || !input.token) return { reason: 'disabled_or_unauthenticated' };
-  // The zoekt modules are CommonJS with loose runtime shapes; pin the contract here.
-  const materialize = materializeReviewWorkdir as unknown as (args: {
-    repository: string; headSha: string; token: string; destDir: string; signal?: AbortSignal;
-  }) => Promise<{ status: string; reason?: string; workdir?: string }>;
-  const buildIndex = buildZoektIndex as unknown as (args: {
-    workdir: string; indexDir: string; config?: { zoektIndexBinaryPath?: string };
-  }) => Promise<{ status: string; reason?: string; shardCount?: number }>;
-  const fs = await import('node:fs');
-  const path = await import('node:path');
-  const os = await import('node:os');
-  let scratchDir: string | undefined;
-  try {
-    scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-zoekt-'));
-    const workdir = path.join(scratchDir, 'src');
-    const indexDir = path.join(scratchDir, 'index');
-    const materialized = await materialize({
-      repository: input.repository,
-      headSha: input.headSha,
-      token: input.token,
-      destDir: workdir,
-      signal: input.signal,
-    });
-    if (materialized.status !== 'ok') {
-      return { indexDir: undefined, scratchDir, reason: `materialize_${materialized.status}` };
-    }
-    const built = await buildIndex({
-      workdir,
-      indexDir,
-      config: { zoektIndexBinaryPath: process.env.ZOEKT_INDEX_BIN || 'zoekt-index' },
-    });
-    if (built.status !== 'ok') {
-      return { indexDir: undefined, scratchDir, reason: `build_${built.status}` };
-    }
-    return { indexDir, scratchDir };
-  } catch (error: any) {
-    if (scratchDir) {
-      try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch { /* fail-soft */ }
-    }
-    return { indexDir: undefined, reason: error?.message || 'zoekt_grounding_error' };
-  }
+  zoektGrounding?: (input: {
+    repository: string;
+    headSha: string;
+    token: string | undefined;
+    enabled: boolean;
+    signal?: AbortSignal;
+  }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string }>;
 }
 
 /**
@@ -889,7 +839,7 @@ export async function runPublishingReviewWorker(
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
     // removed in the finally below; the index never outlives this review run.
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
-    let zoektScratchRoot: Awaited<ReturnType<typeof defaultZoektGrounding>> = {};
+    let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
     try {
       // A throwing grounding dep still fails soft: grounding is evidence
       // enrichment, never a precondition of the review.
