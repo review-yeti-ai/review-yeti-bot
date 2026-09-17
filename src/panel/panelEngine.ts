@@ -1124,9 +1124,12 @@ export function computeDiffStats(patch?: string): { additions: number; deletions
   let deletions = 0;
   const lines = patch.split('\n');
   for (const line of lines) {
-    if (line.startsWith('+') && !line.startsWith('+++')) {
+    if (line.startsWith('+++ ') || line.startsWith('--- ') || line.startsWith('@@')) {
+      continue;
+    }
+    if (line.startsWith('+')) {
       additions++;
-    } else if (line.startsWith('-') && !line.startsWith('---')) {
+    } else if (line.startsWith('-')) {
       deletions++;
     }
   }
@@ -1182,6 +1185,7 @@ export function buildCompactDiffManifest(
         `=== YOUR ASSIGNED DOMAIN FOCUS ===`,
         `Persona: '${persona}' | Domain Lane Affinities: [${personaAffinities.join(', ')}]`,
         `Prioritize in-depth analysis on files marked (★ YOUR LANE).`,
+        `Advisory guidance: (★ YOUR LANE) indicates domain affinity, not an exclusive review filter. Review all files relevant to your role charter.`,
         ``,
       ]
     : [];
@@ -1290,12 +1294,16 @@ async function invoke(
   });
   // The compact scope above owns file context. The fenced compatibility
   // example must not re-embed raw patches and bypass size/skip boundaries.
-  // Keep moderator/arbiter evidence and all other role-specific context.
+  // Deduplicate payload: rules, preCheckEvidence, and domainLanes are already
+  // rendered as prose in the static prefix. Removing them from the raw JSON dump
+  // eliminates thousands of redundant tokens on every turn.
   const promptPayload = { ...payload };
   delete promptPayload.changedFiles;
-  // Native mode has its own output schema, but still needs the actual role inputs.
-  // Keep these separate so neither the schema example nor a missing ledger can be
-  // mistaken for review evidence. Raw patches remain behind the scoped tool boundary.
+  if (role === 'persona') {
+    delete promptPayload.rules;
+    delete promptPayload.preCheckEvidence;
+    delete promptPayload.domainLanes;
+  }
   const nativeRoleInput = { ...promptPayload };
   delete nativeRoleInput.outputSchema;
 
@@ -1381,9 +1389,7 @@ async function invoke(
           structuredOutputExample(role, requestNonce, payload),
           ...(role === 'persona'
             ? [
-                nativeJsonMode
-                  ? 'If evidence shows no defects and diff context was verified, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation of security or critical invariants, return decision INCOMPLETE with findings [] and explain the missing context.'
-                  : 'If evidence shows no defects or diff context is limited, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation, return APPROVE with findings [] and note caveats in your explanation.',
+                'If evidence shows no defects and diff context was verified, return decision APPROVE with findings [] rather than inventing a finding. If evidence is insufficient for full evaluation, note caveats in your explanation before deciding.',
               ]
             : []),
           'The reserved final turn is terminal: do not request a tool there; render the final result or fail closed.',
@@ -1396,8 +1402,10 @@ async function invoke(
       ]),
   ].join('\n');
 
-  // Prompt caching: always emit structured content blocks with ephemeral cache_control on the
-  // static prefix, provider- and model-agnostic.
+  // Prompt caching: emit cache_control on both static prefix and dynamic suffix.
+  // Because dynamicSuffix contains fixed schemas and role evidence that are 100% stable
+  // across all turns of this persona invocation, caching both blocks guarantees prefix
+  // cache hits on Turns 2..N across providers that support prompt caching.
   const userContent: OpenRouterContentBlock[] = [
     {
       type: 'text',
@@ -1407,6 +1415,7 @@ async function invoke(
     {
       type: 'text',
       text: dynamicSuffix,
+      cache_control: { type: 'ephemeral' },
     },
   ];
 
@@ -1596,6 +1605,22 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         } else {
           toolOutput = `Tool '${tName}' execution result:\n`;
           if (isCodeReading) {
+            const rawStart = toolCall.args?.startLine ?? toolCall.args?.start_line;
+            const rawEnd = toolCall.args?.endLine ?? toolCall.args?.end_line;
+            const reqStart = typeof rawStart === 'number' && Number.isFinite(rawStart) && rawStart > 0 ? Math.floor(rawStart) : undefined;
+            const reqEnd = typeof rawEnd === 'number' && Number.isFinite(rawEnd) && rawEnd > 0 ? Math.floor(rawEnd) : undefined;
+
+            const sliceLines = (text: string): { content: string; start: number; end: number; total: number; sliced: boolean } => {
+              const lines = text.split('\n');
+              const total = lines.length;
+              if (reqStart === undefined && reqEnd === undefined) {
+                return { content: text, start: 1, end: total, total, sliced: false };
+              }
+              const start = Math.max(1, Math.min(total, reqStart ?? 1));
+              const end = Math.max(start, Math.min(total, reqEnd ?? total));
+              return { content: lines.slice(start - 1, end).join('\n'), start, end, total, sliced: true };
+            };
+
             const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
             if (matched) {
               toolScope = 'changed-patches-only';
@@ -1605,11 +1630,15 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
                 toolOutput += `SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`;
               } else {
                 const raw = matched.patch || matched.content || 'File present in PR scope.';
-                const truncated = raw.length > REPO_READ_FILE_MAX_CHARS;
-                const shown = truncated ? raw.slice(0, REPO_READ_FILE_MAX_CHARS) : raw;
+                const sliced = sliceLines(raw);
+                const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
+                const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+                const prefixNote = sliced.sliced
+                  ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
+                  : '';
                 toolOutput += truncated
-                  ? `Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${raw.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
-                  : shown;
+                  ? `${prefixNote}Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
+                  : `${prefixNote}${shown}`;
               }
             } else if (options?.repoFileProvider) {
               try {
@@ -1617,12 +1646,16 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
                 if (content !== null) {
                   toolScope = 'full-repository';
                   isExhaustive = true;
-                  const truncated = content.length > REPO_READ_FILE_MAX_CHARS;
-                  const shown = truncated ? content.slice(0, REPO_READ_FILE_MAX_CHARS) : content;
+                  const sliced = sliceLines(content);
+                  const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
+                  const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+                  const prefixNote = sliced.sliced
+                    ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
+                    : '';
                   toolOutput += `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. `
                     + (truncated
-                      ? `Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${content.length} characters:\n${shown}\n[... content truncated: ${content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
-                      : `Full current content:\n${shown}`);
+                      ? `${prefixNote}Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters:\n${shown}\n[... content truncated: ${sliced.content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
+                      : `${prefixNote}Full current content:\n${shown}`);
                 } else {
                   toolScope = 'full-repository';
                   isExhaustive = true;

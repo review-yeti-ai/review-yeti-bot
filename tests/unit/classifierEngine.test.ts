@@ -969,7 +969,15 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         expect(DOMAIN_LANE_PERSONA_AFFINITY.data_persistence).toContain('db-lane');
       });
 
-      it('includes domainLanes in classifyReviewScope result with model enrichment and heuristic protection', async () => {
+      it('avoids substring false positives for security keywords', () => {
+        expect(classifyPathByHeuristic('src/workers/processor.ex')).not.toBe('security_auth');
+        expect(classifyPathByHeuristic('src/courses/lessons.ex')).not.toBe('security_auth');
+        expect(classifyPathByHeuristic('src/models/associations.ts')).not.toBe('security_auth');
+        expect(classifyPathByHeuristic('src/helpers/escape_hatch.ex')).not.toBe('security_auth');
+        expect(classifyPathByHeuristic('docs/authors.md')).toBe('docs_assets');
+      });
+
+      it('includes domainLanes in classifyReviewScope result with model enrichment, heuristic protection, and phantom path filtering', async () => {
         const mockClient = {
           complete: vi.fn().mockResolvedValue({
             content: JSON.stringify({
@@ -980,6 +988,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
               domainLanes: {
                 'src/workers/task.ts': 'system_runtime',
                 'src/auth/token.ts': 'ui_frontend', // Model hallucination: heuristic must protect security_auth
+                'phantom/ghost_file.ts': 'security_auth', // Phantom path not in changedFiles: must be rejected
               },
             }),
             usage: { prompt: 100, completion: 50, total: 150 },
@@ -1009,6 +1018,8 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         expect(result?.domainLanes?.['src/auth/token.ts']).toBe('security_auth');
         expect(result?.domainLanes?.['src/workers/task.ts']).toBe('system_runtime');
         expect(result?.domainLanes?.['docs/readme.md']).toBe('docs_assets');
+        // Phantom path must not be present
+        expect(result?.domainLanes?.['phantom/ghost_file.ts']).toBeUndefined();
       });
     });
   });

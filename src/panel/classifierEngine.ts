@@ -372,66 +372,38 @@ export function classifyPathByHeuristic(filePath: string): DomainLane {
   const dotIdx = baseName.lastIndexOf('.');
   const ext = dotIdx >= 0 ? baseName.slice(dotIdx) : '';
 
-  // 1. Security & Auth (tokens, keys, auth controllers, crypto, policies, netpols, Elixir plugs/routers/sessions)
-  // Evaluated FIRST to guarantee credentials/secrets under docs or scripts are never demoted.
+  // 1. Explicit secrets, keys, credentials, and environment files
   if (
-    p.includes('auth') ||
-    p.includes('oauth') ||
-    p.includes('secret') ||
-    p.includes('credential') ||
-    p.includes('password') ||
-    p.includes('keychain') ||
-    p.includes('id_rsa') ||
-    p.includes('id_ed25519') ||
-    p.includes('crypto') ||
-    p.includes('rbac') ||
-    p.includes('permission') ||
-    p.includes('firewall') ||
-    p.includes('netpol') ||
-    p.includes('security') ||
-    p.includes('session') ||
-    p.includes('login') ||
-    p.includes('jwt') ||
-    p.includes('cookie') ||
-    p.includes('csrf') ||
-    p.includes('cors') ||
-    p.includes('sanitize') ||
-    p.includes('escape') ||
-    p.includes('middleware') ||
-    p.includes('webhook') ||
-    p.includes('hmac') ||
-    p.includes('sso') ||
-    p.includes('tenant') ||
-    p.includes('sudo') ||
     p.includes('.env') ||
     baseName === '.npmrc' ||
     baseName === '.pypirc' ||
+    p.includes('id_rsa') ||
+    p.includes('id_ed25519') ||
+    ext === '.crt' ||
+    ext === '.pem' ||
+    ext === '.key' ||
+    /(^|\/|\.|_|-)(secret|credential|password|keychain)($|\/|\.|_|-)/i.test(p)
+  ) {
+    return 'security_auth';
+  }
+
+  // Pure docs and assets: if under docs/ or an asset/markdown extension, non-executable files belong in docs_assets
+  const isDocOrAsset =
+    (p.startsWith('docs/') || p.startsWith('documentation/') || p.startsWith('assets/')) &&
+    !/\.(sh|bash|py|rb|js|ts|pl)$/i.test(baseName);
+  if (isDocOrAsset && (SAFE_DOC_OR_ASSET_EXTENSIONS.has(ext) || ext === '')) {
+    return 'docs_assets';
+  }
+
+  // 2. Security & Auth logic (tokens, keys, auth controllers, crypto, policies, netpols, Elixir plugs/routers/sessions)
+  if (
+    /(^|\/|\.|_|-)(auth|oauth|crypto|rbac|permission|firewall|netpol|security|session|login|jwt|cookie|csrf|cors|sanitize|middleware|webhook|hmac|sso|sudo|guard|policy|policies)($|\/|\.|_|-)/i.test(p) ||
     baseName === 'router.ex' ||
     p.endsWith('/router.ex') ||
     p.includes('/plug/') ||
     p.includes('/plugs/') ||
     baseName.includes('plug') ||
-    /\btoken\b/.test(baseName) ||
-    p.includes('/token/') ||
-    p.includes('/tokens/') ||
-    p.includes('auth_token') ||
-    p.includes('access_token') ||
-    p.includes('refresh_token') ||
-    p.includes('api_token') ||
-    /\bcert\b/.test(baseName) ||
-    p.includes('/cert/') ||
-    p.includes('/certs/') ||
-    p.includes('/certificates/') ||
-    ext === '.crt' ||
-    ext === '.pem' ||
-    ext === '.key' ||
-    /\bguard\b/.test(baseName) ||
-    p.includes('/guard/') ||
-    p.includes('/guards/') ||
-    /\bpolicy\b/.test(baseName) ||
-    /\bpolicies\b/.test(baseName) ||
-    p.includes('/policy/') ||
-    p.includes('/policies/')
+    /(^|\/|\.|_|-)(token|tokens|cert|certs|certificate|certificates)($|\/|\.|_|-)/i.test(p)
   ) {
     return 'security_auth';
   }
@@ -728,6 +700,10 @@ export async function classifyReviewScope(options: ClassifyScopeOptions): Promis
     if (parsed.domainLanes && typeof parsed.domainLanes === 'object' && !Array.isArray(parsed.domainLanes)) {
       const validLanes = new Set(DOMAIN_LANES);
       for (const [fPath, lane] of Object.entries(parsed.domainLanes)) {
+        // Reject phantom paths not in the changed files set
+        if (!Object.prototype.hasOwnProperty.call(heuristicLanes, fPath)) {
+          continue;
+        }
         if (typeof lane === 'string' && validLanes.has(lane as DomainLane)) {
           // 1. Fail-closed security: Never allow LLM to demote out of security_auth
           if (heuristicLanes[fPath] === 'security_auth' && lane !== 'security_auth') {

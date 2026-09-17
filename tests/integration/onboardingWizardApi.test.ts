@@ -3,6 +3,7 @@ import request from 'supertest';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { createApp } from '../../src/app';
+import { extractMessageContentText } from '../../src/panel/panelEngine';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
 
 describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => {
@@ -471,7 +472,7 @@ describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => 
         if (urlStr.includes('/v1/chat/completions')) {
           const body = JSON.parse(init?.body || '{}');
           const messages = body.messages || [];
-          const promptText = messages.map((m: any) => m.content).join('\n');
+          const promptText = messages.map((m: any) => extractMessageContentText(m.content)).join('\n');
           const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
           const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
           let mockObj: any = { decision: 'APPROVE', findings: [], verdict: 'SHIP', rationale: 'Verified' };
@@ -534,7 +535,7 @@ describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => 
         if (urlStr.includes('/v1/chat/completions')) {
           const body = JSON.parse(init?.body || '{}');
           const messages = body.messages || [];
-          const promptText = messages.map((m: any) => m.content).join('\n');
+          const promptText = messages.map((m: any) => extractMessageContentText(m.content)).join('\n');
           const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
           const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
           let mockObj: any = { decision: 'APPROVE', findings: [], verdict: 'SHIP', rationale: 'Verified' };
@@ -582,7 +583,7 @@ describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => 
         if (urlStr.includes('/v1/chat/completions')) {
           const body = JSON.parse(init?.body || '{}');
           const messages = body.messages || [];
-          const promptText = messages.map((m: any) => m.content).join('\n');
+          const promptText = messages.map((m: any) => extractMessageContentText(m.content)).join('\n');
           const nonceMatch = promptText.match(/CT_REVIEW_NONCE:([a-f0-9\-]+)/);
           const reqNonce = nonceMatch ? nonceMatch[1] : 'mock-nonce';
           let mockObj: any = { decision: 'APPROVE', findings: [], verdict: 'SHIP', rationale: 'Verified' };
