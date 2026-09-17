@@ -40,6 +40,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
+	"strings"
 	"testing"
 	"time"
 
@@ -261,11 +264,25 @@ func TestPRReviewJobV1Alpha2ReconcilerCreatesWorkerJobDespiteFailedFinalizerAdd(
 			return c.Patch(ctx, obj, patch, opts...)
 		},
 	})
-	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: wrapped, Scheme: scheme, Now: func() time.Time { return now }}
+	recorder := record.NewFakeRecorder(8)
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: wrapped, Scheme: scheme, Recorder: recorder, Now: func() time.Time { return now }}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
 
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("a failed finalizer-add patch must not fail reconciliation: %v", err)
+	}
+	// The warning Event is the only operator-facing signal, besides logs, that
+	// this run Secret's cleanup is no longer guaranteed.
+	select {
+	case event := <-recorder.Events:
+		if !strings.HasPrefix(event, corev1.EventTypeWarning+" RunSecretFinalizerAttachFailed ") {
+			t.Fatalf("event = %q, want a Warning with reason RunSecretFinalizerAttachFailed", event)
+		}
+		if !strings.Contains(event, failure.Error()) {
+			t.Fatalf("event = %q, want it to carry the underlying error %q", event, failure.Error())
+		}
+	default:
+		t.Fatal("expected a RunSecretFinalizerAttachFailed warning Event when the finalizer-add patch fails")
 	}
 	if finalizerAddAttempts == 0 {
 		t.Fatal("expected the reconciler to attempt the finalizer-add patch")
