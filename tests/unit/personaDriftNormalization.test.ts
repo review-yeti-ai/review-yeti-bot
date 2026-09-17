@@ -191,6 +191,64 @@ describe('persona decision contract (REL-888)', () => {
       repository: 'calltelemetry/ct-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
-    })).rejects.toThrow(PanelConfigurationError);
+    })).rejects.toThrow(/contradictory with findings/);
+  });
+
+  it('normalizes a case-drifted moderator decision through the real panel flow', async () => {
+    const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
+    const complete = vi.fn(async ({ model, messages, metadata }: any) => {
+      const nonce = personaNonceFrom(messages);
+      const role = callRole({ metadata });
+      if (role === 'arbiter') {
+        return { model, content: fenced(nonce, { verdict: 'ship', rationale: 'ok' }), usage: null, costUSD: null };
+      }
+      if (role === 'moderator') {
+        return { model, content: fenced(nonce, { decision: 'reconciled', findings: [] }), usage: null, costUSD: null };
+      }
+      return { model, content: fenced(nonce, { decision: 'APPROVE', findings: [] }), usage: null, costUSD: null };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/auth.ts', patch: '+const safe = true;' }],
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'abc123',
+      client: { complete } as unknown as OmniRouteClient,
+    });
+
+    // Moderator and arbiter ride the same call-site normalizer: case-drifted
+    // role enums are repaired before their contracts are checked.
+    expect(result.moderator.decision).toBe('RECONCILED');
+    expect(result.arbiter.verdict).toBe('SHIP');
+  });
+
+  it('case-drifted approve with findings materializes the contradiction and spends the corrective turn', async () => {
+    const config = parseAndValidateConfig(policy) as unknown as CtReviewConfigV3;
+    const personaResponses: any[] = [
+      // Case drift turns 'approve' into APPROVE — which then contradicts the
+      // attached finding. The normalizer must NOT hide that: the contract check
+      // rejects the materialized contradiction and the corrective turn resolves it.
+      { decision: 'approve', findings: [{ severity: 'P1', path: 'src/a.ts', line: 3, startLine: null, title: 't', body: 'b' }] },
+      { decision: 'FINDINGS', findings: [{ severity: 'P1', path: 'src/a.ts', line: 3, startLine: null, title: 't', body: 'b' }] },
+    ];
+    const complete = vi.fn(async ({ model, messages, metadata }: any) => {
+      const nonce = personaNonceFrom(messages);
+      const role = callRole({ metadata });
+      if (role === 'arbiter') return infraResponses(model, nonce).arbiter;
+      if (role === 'moderator') return infraResponses(model, nonce).moderator;
+      return { model, content: fenced(nonce, personaResponses.shift() ?? { decision: 'APPROVE', findings: [] }), usage: null, costUSD: null };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/auth.ts', patch: '+const unsafe = true;' }],
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'abc123',
+      client: { complete } as unknown as OmniRouteClient,
+    });
+
+    expect(result.personas[0].decision).toBe('FINDINGS');
+    expect(result.personas[0].findings[0].severity).toBe('P1');
+    expect(complete.mock.calls.filter(([arg]: any[]) => callRole(arg) === 'persona').length).toBe(2);
   });
 });

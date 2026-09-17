@@ -885,8 +885,12 @@ function parseNativeJsonObject<T>(content: string, expectedNonce: string): T {
  * fails closed.
  */
 
-/** Enum members the persona/moderator/arbiter role contracts accept. */
-const ROLE_ENUMS: Record<string, { field: string; allowed: string[] }> = {
+/**
+ * Single source of truth for the persona/moderator/arbiter role contracts: the field each role
+ * decides on and the enum members it accepts. Both the deterministic drift normalizer and
+ * `structuredOutputContractError` consume this, so the contracts cannot drift apart.
+ */
+const ROLE_CONTRACT_ENUMS: Record<string, { field: string; allowed: readonly string[] }> = {
   persona: { field: 'decision', allowed: ['APPROVE', 'FINDINGS', 'INCOMPLETE'] },
   moderator: { field: 'decision', allowed: ['RECONCILED'] },
   arbiter: {
@@ -895,7 +899,23 @@ const ROLE_ENUMS: Record<string, { field: string; allowed: string[] }> = {
   },
 };
 
-const FINDING_SEVERITIES = ['P0', 'P1', 'P2'];
+const FINDING_SEVERITIES = ['P0', 'P1', 'P2'] as const;
+
+/**
+ * The persona decision invariant (REL-888): findings mean do-not-approve. A response is
+ * contradictory — and invalid — when it approves while enumerating defects, or claims FINDINGS
+ * without any. Both the corrective-turn validator and the final-result fail-closed path call
+ * this so the invariant is encoded exactly once.
+ */
+export function personaDecisionContractError(decision: unknown, findings: ReadonlyArray<unknown>): string | null {
+  if (decision === 'FINDINGS' && findings.length === 0) {
+    return 'FINDINGS requires at least one finding';
+  }
+  if (decision === 'APPROVE' && findings.length > 0) {
+    return 'APPROVE is contradictory with findings: findings mean do-not-approve. Return decision FINDINGS carrying the findings, or APPROVE with an empty findings array.';
+  }
+  return null;
+}
 
 /**
  * Case-only enum repair. Returns the upper-cased member when `value` case-insensitively matches
@@ -928,7 +948,7 @@ export function normalizeDriftedStructuredOutput(role: string, value: any): bool
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   let changed = false;
 
-  const roleEnum = ROLE_ENUMS[role];
+  const roleEnum = ROLE_CONTRACT_ENUMS[role];
   if (roleEnum) {
     const normalized = normalizeEnumCase(value[roleEnum.field], roleEnum.allowed);
     if (normalized !== null && value[roleEnum.field] !== normalized) {
@@ -961,9 +981,9 @@ export function normalizeDriftedStructuredOutput(role: string, value: any): bool
 function structuredOutputContractError(role: string, value: any, allowIncomplete = false): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return `${role} response must be a JSON object`;
   if (role === 'persona') {
-    const allowedDecisions = allowIncomplete
-      ? ['APPROVE', 'FINDINGS', 'INCOMPLETE']
-      : ['APPROVE', 'FINDINGS'];
+    const allowedDecisions = ROLE_CONTRACT_ENUMS.persona.allowed.filter(
+      (member) => allowIncomplete || member !== 'INCOMPLETE',
+    );
     if (!allowedDecisions.includes(value.decision)) return 'persona response must include top-level decision';
     if (!Array.isArray(value.findings)) return 'persona response must include top-level findings array';
     if (value.decision === 'INCOMPLETE' && value.findings.length > 0) {
@@ -972,12 +992,12 @@ function structuredOutputContractError(role: string, value: any, allowIncomplete
     return null;
   }
   if (role === 'moderator') {
-    if (value.decision !== 'RECONCILED') return 'moderator response must include decision RECONCILED';
+    if (!ROLE_CONTRACT_ENUMS.moderator.allowed.includes(value.decision)) return 'moderator response must include decision RECONCILED';
     if (!Array.isArray(value.findings)) return 'moderator response must include top-level findings array';
     return null;
   }
   if (role === 'arbiter') {
-    if (!['SHIP', 'FIX_FIRST', 'BLOCK', 'APPROVE', 'PASSED', 'SUCCESS', 'REJECT', 'FAILED'].includes(value.verdict)) {
+    if (!ROLE_CONTRACT_ENUMS.arbiter.allowed.includes(value.verdict)) {
       return 'arbiter response must include top-level verdict';
     }
     if (typeof value.rationale !== 'string' || !value.rationale.trim()) return 'arbiter response must include non-empty rationale';
@@ -2128,13 +2148,7 @@ async function runPersona(
             validateParsed: (candidate) => {
               try {
                 const findings = validateFindings((candidate as any)?.findings);
-                if ((candidate as any)?.decision === 'FINDINGS' && findings.length === 0) {
-                  return 'FINDINGS requires at least one finding';
-                }
-                if ((candidate as any)?.decision === 'APPROVE' && findings.length > 0) {
-                  return 'APPROVE is contradictory with findings: findings mean do-not-approve. Return decision FINDINGS carrying the findings, or APPROVE with an empty findings array.';
-                }
-                return null;
+                return personaDecisionContractError((candidate as any)?.decision, findings);
               } catch (error: any) {
                 return error instanceof Error ? error.message : String(error);
               }
@@ -2174,18 +2188,15 @@ async function runPersona(
           // field validation is safe in both cases; final publication performs diff anchoring when
           // patch metadata is available, so do not reject a valid finding solely on fixture shape.
           let findings = validateFindings(result.parsed.findings);
-          if (result.parsed.decision === 'FINDINGS' && findings.length === 0) {
-            throw new Error('FINDINGS requires at least one finding');
-          }
-          if (result.parsed.decision === 'APPROVE' && findings.length > 0) {
-            // DECISION INVARIANT (REL-888): findings mean do-not-approve. An APPROVE response
-            // carrying findings is contradictory and invalid — it must never be silently
-            // reinterpreted (the previous behavior downgraded APPROVE to FINDINGS, letting a
-            // contradictory approval pass as a completed review). The persona contract rejects
-            // this during the run with one bounded corrective turn; reaching this point means
-            // the contradiction survived the correction budget, so fail closed.
+          const decisionContractError = personaDecisionContractError(result.parsed.decision, findings);
+          if (decisionContractError) {
+            // DECISION INVARIANT (REL-888): findings mean do-not-approve. A contradictory
+            // response (APPROVE carrying findings, or FINDINGS without any) is invalid — never
+            // silently reinterpreted. The persona contract rejects it during the run with one
+            // bounded corrective turn; reaching this point means the contradiction survived
+            // the correction budget, so fail closed.
             throw new PanelStructuredOutputError(
-              `persona ${persona.id} returned APPROVE with ${findings.length} finding(s): contradictory and invalid`,
+              `persona ${persona.id}: ${decisionContractError}`,
             );
           }
           const decision: 'APPROVE' | 'FINDINGS' = result.parsed.decision as 'APPROVE' | 'FINDINGS';
