@@ -250,7 +250,7 @@ describe('createAuthoritativeReviewService wiring', () => {
   });
 
   it('uses only configured policy/transport and shares the resolver, not admission options, with completion', async () => {
-    vi.stubEnv('BIFROST_BASE_URL', 'https://mutable.example.invalid/v1');
+    vi.stubEnv('OPENAI_BASE_URL', 'https://mutable.example.invalid/v1');
     vi.stubEnv('REVIEW_MODEL', 'mutable-model');
     vi.stubEnv('REVIEW_PERSONAS', 'licensing');
     const before = { ...process.env };

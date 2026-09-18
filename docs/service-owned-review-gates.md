@@ -178,7 +178,7 @@ It requires all of these service-owned inputs:
   `repo`, `ref`, and `path`. The service resolves the configured ref, then reads
   and fingerprints the policy file at its immutable SHA. Candidate inputs cannot
   choose this source.
-- Explicit credential-free `BIFROST_BASE_URL` and `REVIEW_MODEL`, matching workers.
+- Explicit credential-free `OPENAI_BASE_URL` and `REVIEW_MODEL`, matching workers.
 - Optional `AUTHORITATIVE_REVIEW_TICK_MS`: 1,000–60,000; default 5,000. These are
   service reconciliation ticks, not scheduled CI jobs or parked runners.
 
