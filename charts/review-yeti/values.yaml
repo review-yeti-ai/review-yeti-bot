@@ -309,6 +309,18 @@ publishing:
   completionUrl: ""
   gatewaySecretName: "review-yeti-gateway-credentials"
   gatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY"
+  # REL-677 / ADR 0329: index-at-review-time Zoekt grounding, on by default for the app-gate
+  # lane. The operator (k8s-operator/pkg/job/job.go, k8s-operator/main.go) forwards this value
+  # verbatim to the worker -- and *only* when it is set to something -- so leaving it empty here
+  # opts a deployment out entirely rather than defaulting to enabled; that "unset stays unset"
+  # contract is deliberate and covered by TestPublishingConfigFromEnvReadsZoektPassthrough and
+  # TestBuildWorkerJobForwardsZoektGroundingEnvOnlyWhenSet, so it is not something to change here.
+  # Set to "false" to opt back out without removing the line (the worker's `ZOEKT_GROUNDING_ENABLED
+  # === 'true'` check is strict, so any other value behaves as off).
+  zoektGroundingEnabled: "true"
+  # Kill switch: forwarded verbatim alongside zoektGroundingEnabled above when non-empty; empty by
+  # default so it never overrides the enabled value unless explicitly set.
+  zoektGroundingDisabled: ""
   # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
   # which already defines that component's ServiceAccount, Role, RoleBinding and
   # Deployment. Defining them here too would give the same resources two owners.
