@@ -41,6 +41,7 @@ import {
   SENSITIVE_PATH_PATTERNS,
 } from './classifierEngine';
 import { buildFastShipPanelResult } from './fastShipResult';
+import { compactMessageWindow, MessageWindowPolicy } from './messageWindow';
 
 export const DEFAULT_CANONICAL_DOMAIN_PRIORITY: readonly DomainLane[] = [
   'security_auth',
@@ -106,6 +107,16 @@ export const MAX_INVESTIGATION_TURNS = 15;
 export const TURN_IDLE_MS = 180_000;
 /** Outer persona budget: 15 turns × 3 minutes. Not a mid-stream hard stop. */
 export const MAX_PERSONA_BUDGET_MS = MAX_INVESTIGATION_TURNS * TURN_IDLE_MS;
+
+/**
+ * Turn-window compaction (see `./messageWindow.ts`) defaults OFF: it is a no-op change until
+ * deliberately enabled per-run via panel config (`turn_window_compaction: true`) or globally via
+ * this env var. Resolved once per persona/moderator/arbiter invocation, never mid-loop.
+ */
+export function resolveTurnWindowCompactionEnabled(config?: { turn_window_compaction?: boolean }): boolean {
+  if (config?.turn_window_compaction === true) return true;
+  return process.env.ENABLE_TURN_WINDOW_COMPACTION === '1';
+}
 
 /** Skip PR file patches larger than this. Plumbed from policy `max_file_diff_chars`. */
 export function resolveMaxFileDiffChars(): number {
@@ -1757,6 +1768,12 @@ async function invoke(
     zoektConfig?: any;
     onFirstToken?: () => void;
     signal?: AbortSignal;
+    /**
+     * Turn-window compaction for this invocation's tool loop (see `./messageWindow.ts`). Absent or
+     * `enabled: false` (the default) is a no-op -- `messages` is sent whole every turn exactly as
+     * before this option existed.
+     */
+    compaction?: { enabled?: boolean } & MessageWindowPolicy;
   }
 ): Promise<{
   response: OpenRouterResponse;
@@ -2043,13 +2060,20 @@ async function invoke(
       : baseRequestPolicy;
     const requestPersona = options?.persona || personaName;
     const effectiveOnFirstToken = options?.onFirstToken ?? (turnRequestPolicy as any)?.onFirstToken;
+    // Recomputed fresh from the full append-only `messages` record every turn -- never sent-once
+    // and reused, and never a mutation of `messages` itself. Disabled (the default) is a
+    // structural no-op: `compactMessageWindow` returns `messages` unchanged, with `[0]`/`[1]`
+    // reference-identical, in every path below (see `./messageWindow.ts`).
+    const activeMessages = options?.compaction?.enabled
+      ? compactMessageWindow(messages, { activeTurns: options.compaction.activeTurns, toolCalls })
+      : messages;
     const requestMessages = nativeJsonMode
-      ? withNativeTurnDirective(messages, nativeAdjudication
+      ? withNativeTurnDirective(activeMessages, nativeAdjudication
         ? `NATIVE TURN ${iter + 1} OF ${maxTurns}; REMAINING TURNS: ${maxTurns - iter - 1}. Use the supplied role evidence and return exactly one final JSON object matching the role contract with exact top-level nonce "${requestNonce}". Do not request tools.`
         : nativeFinalTurn
         ? `NATIVE TURN ${iter + 1} OF ${maxTurns}; REMAINING TURNS: ${maxTurns - iter - 1}. This is the terminal finalization turn. Do not request a tool. Return exactly one unfenced JSON object that matches the role-specific final contract${strictNativeFinalMode ? ' and strict schema' : ''} and has exact top-level nonce "${requestNonce}".`
         : `NATIVE TURN ${iter + 1} OF ${maxTurns}; REMAINING TURNS: ${maxTurns - iter - 1}. Review the inlined diffs and evidence. If sufficient, return your complete final JSON result with exact top-level nonce "${requestNonce}" NOW. Otherwise, request an allowed read-only tool as {"tool":"tool_name","args":{}}.`,)
-      : messages;
+      : activeMessages;
     const turnStartedAt = Date.now();
     let totalPromptChars = 0;
     for (const msg of requestMessages) {
@@ -2788,6 +2812,7 @@ async function runPersona(
             repoFileProvider,
             onFirstToken: (requestPolicy as any)?.onFirstToken,
             signal,
+            compaction: { enabled: resolveTurnWindowCompactionEnabled(config as { turn_window_compaction?: boolean }) },
             validateParsed: (candidate) => {
               try {
                 const findings = validateFindings((candidate as any)?.findings);
