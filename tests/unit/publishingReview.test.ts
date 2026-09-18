@@ -1956,6 +1956,17 @@ describe('full-repository grounding (repoFileProvider)', () => {
   });
 });
 
+// Positive counterpart to the "no disabled-status sample" negative assertion below: reads the
+// actual recorded sample count for one status label off the Prometheus export, not just whether
+// the metric *type* is registered (initMetrics registers the type unconditionally, independent of
+// whether `.record(...)` was ever called -- see the histogram-type test further down). Returns 0
+// when no sample with this status has landed yet so callers can assert an exact before/after delta
+// without depending on what earlier tests in this file recorded.
+function histogramCountForStatus(text: string, status: string): number {
+  const match = text.match(new RegExp(`review_yeti_zoekt_index_build_duration_seconds_count\\{[^}]*status="${status}"[^}]*\\}\\s+(\\d+(?:\\.\\d+)?)`, 'u'));
+  return match ? Number(match[1]) : 0;
+}
+
 describe('REL-677 zoekt index-build telemetry', () => {
   beforeEach(() => {
     initTelemetry('review-yeti-bot');
@@ -1964,9 +1975,13 @@ describe('REL-677 zoekt index-build telemetry', () => {
 
   it('records a review_yeti_zoekt_index_build span, separate from lane time, when grounding is enabled', async () => {
     const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-zoekt-index' }));
+    // Deterministic duration: `now()` is called for startedAt, buildStart, the build-end
+    // measurement, then completedAt (in that order) on this success path.
+    const now = vi.fn().mockReturnValueOnce(1_000).mockReturnValueOnce(2_000).mockReturnValueOnce(2_042).mockReturnValue(3_000);
+    const before = histogramCountForStatus(await getPrometheusMetrics(), 'ok');
     await runPublishingReviewWorker(
       env({ ZOEKT_GROUNDING_ENABLED: 'true' }),
-      deps({ zoektGrounding: zoektGrounding as never }) as never,
+      deps({ zoektGrounding: zoektGrounding as never, now }) as never,
     );
 
     expect(zoektGrounding).toHaveBeenCalledTimes(1);
@@ -1975,11 +1990,17 @@ describe('REL-677 zoekt index-build telemetry', () => {
     expect(buildSpan).toBeDefined();
     expect(buildSpan?.attributes['review_yeti.zoekt_index_build.enabled']).toBe(true);
     expect(buildSpan?.attributes['review_yeti.zoekt_index_build.status']).toBe('ok');
-    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.duration_ms']).toBeGreaterThanOrEqual(0);
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.duration_ms']).toBe(42);
+    // Positive assertion the prior round was missing: the histogram must actually have
+    // recorded a sample for this run, not merely have its type registered (that happens
+    // unconditionally in initMetrics, independent of this code path ever executing).
+    const after = histogramCountForStatus(await getPrometheusMetrics(), 'ok');
+    expect(after).toBe(before + 1);
   });
 
   it('reports a non-ok status on the span when the index build fails, without failing the review', async () => {
     const zoektGrounding = vi.fn(async () => ({ reason: 'build_failed' }));
+    const before = histogramCountForStatus(await getPrometheusMetrics(), 'build_failed');
     const receipt = await runPublishingReviewWorker(
       env({ ZOEKT_GROUNDING_ENABLED: 'true' }),
       deps({ zoektGrounding: zoektGrounding as never }) as never,
@@ -1989,6 +2010,10 @@ describe('REL-677 zoekt index-build telemetry', () => {
     const spans = getRecentSpans();
     const buildSpan = spans.find((s) => s.name === 'review_yeti_zoekt_index_build');
     expect(buildSpan?.attributes['review_yeti.zoekt_index_build.status']).toBe('build_failed');
+    // Same positive assertion for the failure-status path: a failed build still records its
+    // cost (it still consumed materialize/build wall time), tagged by its own status label.
+    const after = histogramCountForStatus(await getPrometheusMetrics(), 'build_failed');
+    expect(after).toBe(before + 1);
   });
 
   it('marks the span disabled and records no index-build cost when grounding is off', async () => {
