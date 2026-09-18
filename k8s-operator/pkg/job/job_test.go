@@ -789,13 +789,13 @@ func TestBuildWorkerJobAppGateIsNotReceiptOnly(t *testing.T) {
 	if envValue(container, "REVIEW_RECEIPT_ONLY") != "" {
 		t.Fatalf("app-gate job must not be receipt-only")
 	}
-	if envValue(container, "BIFROST_BASE_URL") != "https://gateway.example.invalid/v1" {
-		t.Fatalf("gateway base url = %q", envValue(container, "BIFROST_BASE_URL"))
+	if envValue(container, "OPENAI_BASE_URL") != "https://gateway.example.invalid/v1" {
+		t.Fatalf("gateway base url = %q", envValue(container, "OPENAI_BASE_URL"))
 	}
 	if envValue(container, "REVIEW_MODEL") != "ollama/glm-5.3-flash" {
 		t.Fatalf("review model = %q", envValue(container, "REVIEW_MODEL"))
 	}
-	if !hasEnv(container, "BIFROST_PR_REVIEW_API_KEY") || !hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
+	if !hasEnv(container, "OPENAI_API_KEY") || !hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
 		t.Fatalf("app-gate job is missing its gateway key or publish token")
 	}
 }
@@ -813,7 +813,7 @@ func TestBuildWorkerJobDisabledStaysReceiptOnly(t *testing.T) {
 	if envValue(container, "REVIEW_RECEIPT_ONLY") != "true" {
 		t.Fatalf("disabled job must stay receipt-only")
 	}
-	if hasEnv(container, "BIFROST_PR_REVIEW_API_KEY") || hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
+	if hasEnv(container, "OPENAI_API_KEY") || hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
 		t.Fatalf("receipt-only job must not receive publishing credentials")
 	}
 }

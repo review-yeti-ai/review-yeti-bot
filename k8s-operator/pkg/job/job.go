@@ -282,7 +282,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		// ReceiptOnlyEnv -- that is the single reason every real dispatch previously
 		// produced a receipt-only pod that made no provider or GitHub call.
 		//
-		// Bifrost is the only admitted transport. The worker requires the base URL,
+		// OpenAI-compatible gateway is the only admitted transport. The worker requires the base URL,
 		// model and key with no defaults, so an incomplete configuration must refuse
 		// the Job here rather than emit one that fails at runtime: a fail-closed lane
 		// turns a misconfiguration into a failed check on every pull request.
@@ -290,10 +290,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			return nil, err
 		}
 		env = append(env,
-			corev1.EnvVar{Name: "BIFROST_BASE_URL", Value: input.Publishing.GatewayBaseURL},
+			corev1.EnvVar{Name: "OPENAI_BASE_URL", Value: input.Publishing.GatewayBaseURL},
 			corev1.EnvVar{Name: "REVIEW_MODEL", Value: input.Publishing.Model},
 			corev1.EnvVar{
-				Name: "BIFROST_PR_REVIEW_API_KEY",
+				Name: "OPENAI_API_KEY",
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: input.Publishing.GatewaySecretName},
 					Key:                  input.Publishing.GatewaySecretKey,

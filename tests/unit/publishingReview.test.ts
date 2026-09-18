@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
-  bifrostTransport,
   classifyFailure,
-  createBifrostPublishingConfig,
+  createOpenAIPublishingConfig,
   isGithubDiffNotRenderableError,
   isPublishingReviewWorker,
+  openaiTransport,
   parseChangedFiles,
   publishingConclusion,
   publishingReviewIdentity,
@@ -40,8 +40,8 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    BIFROST_BASE_URL: 'https://gateway.example.invalid/v1',
-    BIFROST_PR_REVIEW_API_KEY: 'vk-test',
+    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
+    OPENAI_API_KEY: 'vk-test',
     GH_TOKEN: 'ghs_test',
     ...overrides,
   };
@@ -217,27 +217,35 @@ describe('publishing review lane admission', () => {
   });
 });
 
-describe('Bifrost is the only transport', () => {
+describe('OpenAI gateway is the admitted transport', () => {
   it('accepts the gateway', () => {
-    expect(bifrostTransport(env()).baseUrl).toBe('https://gateway.example.invalid/v1');
+    expect(openaiTransport(env()).baseUrl).toBe('https://gateway.example.invalid/v1');
   });
 
-  it.each(['BIFROST_BASE_URL', 'BIFROST_PR_REVIEW_API_KEY', 'REVIEW_MODEL'])(
+  it('accepts standard OPENAI_BASE_URL and OPENAI_API_KEY', () => {
+    const res = openaiTransport(env({
+      OPENAI_BASE_URL: 'https://standard-gateway.example.invalid/v1',
+      OPENAI_API_KEY: 'sk-standard-key',
+    }));
+    expect(res.baseUrl).toBe('https://standard-gateway.example.invalid/v1');
+    expect(res.apiKey).toBe('sk-standard-key');
+  });
+
+  it.each(['OPENAI_BASE_URL', 'OPENAI_API_KEY', 'REVIEW_MODEL'])(
     'refuses to run when %s is absent rather than defaulting',
     (name) => {
-      // The legacy runner defaults its base URL to openrouter.ai. Defaulting here
-      // would silently review against the wrong provider.
-      expect(() => bifrostTransport(env({ [name]: '' }))).toThrow(/contract is invalid/u);
+      // Defaulting here would silently review against the wrong provider.
+      expect(() => openaiTransport(env({ [name]: '' }))).toThrow(/contract is invalid/u);
     },
   );
 
   it('refuses a non-https gateway', () => {
-    expect(() => bifrostTransport(env({ BIFROST_BASE_URL: 'http://gateway.example.invalid/v1' })))
+    expect(() => openaiTransport(env({ OPENAI_BASE_URL: 'http://gateway.example.invalid/v1' })))
       .toThrow(/contract is invalid/u);
   });
 
   it('builds a single-provider panel from the operator-injected model', () => {
-    const config = createBifrostPublishingConfig('ollama/glm-5.3-flash');
+    const config = createOpenAIPublishingConfig('ollama/glm-5.3-flash');
 
     expect(config.reviewers.fallback).toBe('none');
     expect(config.default_max_turns).toBe(15);
@@ -1247,7 +1255,7 @@ describe('runPublishingReviewWorker', () => {
   it('reports a durable contract failure after check creation instead of skipping the callback', async () => {
     const completion = { reportTerminalFailure: vi.fn(async () => {}) };
     const d = deps({ completion });
-    await expect(runPublishingReviewWorker(env({ BIFROST_BASE_URL: '' }), d as never))
+    await expect(runPublishingReviewWorker(env({ OPENAI_BASE_URL: '' }), d as never))
       .rejects.toThrow(/contract is invalid/u);
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
       checkId: 4242,

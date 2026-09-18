@@ -28,8 +28,8 @@ function testEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    BIFROST_BASE_URL: 'https://gateway.example.invalid/v1',
-    BIFROST_PR_REVIEW_API_KEY: 'vk-test',
+    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
+    OPENAI_API_KEY: 'vk-test',
     GH_TOKEN: 'ghs_validtoken12345',
     ...overrides,
   };
