@@ -3,6 +3,7 @@ import { executeComposedReview } from '../composedEngine';
 import { computeArbitration } from '../../review/reviewCore';
 import { parseAndValidateConfig } from '../../config/configLoader';
 import type { OpenRouterResponse } from '../../gateway/openRouterClient';
+import { OpenRouterResponseError } from '../../gateway/openRouterClient';
 
 const mockYaml = `
 version: 3
@@ -233,4 +234,44 @@ describe('executeComposedReview', () => {
     const personas = (result && (result as any).personas) || [];
     expect(personas.some((p: any) => p.decision === 'APPROVE' || p.decision === 'FINDINGS')).toBe(false);
   });
+
+  // Collapsing N lanes into one loop deletes the redundancy that used to absorb provider hiccups.
+  // In the fan-out engine a transient fault cost one lane and the panel still reached a verdict
+  // from the rest; here there is no rest, so one empty completion would end the whole review.
+  // Observed twice in one afternoon on a real PR, each clearing on a plain retry.
+  it('retries a transient empty completion instead of losing the entire review', async () => {
+    let attempts = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const issued = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        attempts += 1;
+        if (attempts === 1) {
+          // Must be the real error type and message the predicate matches on; a look-alike
+          // proves nothing about the production path.
+          throw new OpenRouterResponseError('provider returned empty completion content', 200);
+        }
+        return fakeResponse(JSON.stringify({
+          nonce: issued,
+          tasks: [
+            { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q', rationale: 'r' },
+          ],
+        }));
+      }
+      return fakeResponse(JSON.stringify({ nonce: issued, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(attempts).toBeGreaterThan(1);
+    expect(result.personas).toHaveLength(1);
+    expect(result.personas[0].id).toBe('task-sec');
+  });
+
 });

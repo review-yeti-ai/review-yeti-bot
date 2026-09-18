@@ -48,6 +48,14 @@ import {
   throwIfPanelAborted,
   TURN_IDLE_MS,
   validateFindings,
+  isRetryablePanelError,
+  isEmptyCompletionError,
+  classifyPersonaAttemptFailure,
+  transportRetryDelayMs,
+  panelDelay,
+  EMPTY_COMPLETION_MAX_ATTEMPTS,
+  EMPTY_COMPLETION_RETRY_DELAY_MS,
+  TRANSPORT_MAX_RETRIES,
   type RepoFileProvider,
 } from './panelEngine';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
@@ -248,21 +256,80 @@ async function callTurn(params: {
   signal?: AbortSignal;
   turnNumber: number;
   kind: LaneTurnUsage['kind'];
+  /** Absolute epoch ms the composed run must not sleep past. Undefined means unbounded. */
+  deadlineAtMs?: number;
 }): Promise<TurnCallResult> {
   throwIfPanelAborted(params.signal);
   const startedAt = Date.now();
-  const response = await raceWithPanelAbort(
-    Promise.resolve().then(() => params.client.complete({
-      ...(params.requestPolicy || {}),
-      model: params.model,
-      messages: params.messages,
-      timeoutMs: params.timeoutMs,
-      inactivityTimeoutMs: params.inactivityTimeoutMs,
-      ...(params.jobId ? { jobId: params.jobId } : {}),
-      responseFormat: params.responseFormat,
-    })),
-    params.signal,
-  );
+
+  // Transport resilience, mirroring `runPersona`'s three ladders and reusing its exact predicates
+  // and constants so the two engines cannot drift on what counts as retryable.
+  //
+  // This matters MORE here than in the fan-out engine, not less. There, one lane hitting a
+  // transient provider fault costs one lane and the panel still reaches a verdict from the rest.
+  // In a single composed context there is no "rest" -- one empty completion or one 503 ends the
+  // whole review. That failure mode is not hypothetical: two `provider_structured_output_invalid`
+  // responses were observed on one PR in a single afternoon, each clearing on a plain retry.
+  //
+  // Budget-aware on purpose: sleeping past the deadline converts a precise transport failure into
+  // a generic timeout, which is strictly worse to operate on.
+  let emptyCompletionAttempts = 0;
+  let transportAttempts = 0;
+  let genericAttempts = 0;
+  let response: Awaited<ReturnType<ReviewModelClient['complete']>>;
+  for (;;) {
+    throwIfPanelAborted(params.signal);
+    try {
+      response = await raceWithPanelAbort(
+        Promise.resolve().then(() => params.client.complete({
+          ...(params.requestPolicy || {}),
+          model: params.model,
+          messages: params.messages,
+          timeoutMs: params.timeoutMs,
+          inactivityTimeoutMs: params.inactivityTimeoutMs,
+          ...(params.jobId ? { jobId: params.jobId } : {}),
+          responseFormat: params.responseFormat,
+        })),
+        params.signal,
+      );
+      break;
+    } catch (error: any) {
+      // An abort is a decision, never a transient fault. Never retry past it.
+      throwIfPanelAborted(params.signal);
+
+      const budgetLeftMs = params.deadlineAtMs !== undefined
+        ? params.deadlineAtMs - Date.now()
+        : Infinity;
+
+      if (isEmptyCompletionError(error) && emptyCompletionAttempts < EMPTY_COMPLETION_MAX_ATTEMPTS - 1
+          && EMPTY_COMPLETION_RETRY_DELAY_MS < budgetLeftMs) {
+        emptyCompletionAttempts += 1;
+        logger.warn(`[composed] empty completion from '${params.providerId}' (attempt ${emptyCompletionAttempts}/${EMPTY_COMPLETION_MAX_ATTEMPTS}); re-issuing against the same alias so its routing can pick a different backend.`);
+        await panelDelay(EMPTY_COMPLETION_RETRY_DELAY_MS, params.signal);
+        continue;
+      }
+
+      const backoffMs = transportRetryDelayMs(transportAttempts + 1);
+      if (transportAttempts < TRANSPORT_MAX_RETRIES
+          && backoffMs < budgetLeftMs
+          && classifyPersonaAttemptFailure(error) === 'transport') {
+        transportAttempts += 1;
+        logger.warn(`[composed] transport failure reaching '${params.providerId}'; backing off ${backoffMs}ms before retry ${transportAttempts}/${TRANSPORT_MAX_RETRIES}.`);
+        await panelDelay(backoffMs, params.signal);
+        continue;
+      }
+
+      if (genericAttempts < 1 && isRetryablePanelError(error) && 1000 < budgetLeftMs) {
+        genericAttempts += 1;
+        logger.warn(`[composed] retrying transient error from '${params.providerId}'.`);
+        await panelDelay(1000, params.signal);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
   const durationMs = Date.now() - startedAt;
   const usage = response.usage;
   const cachedTokens = usage
