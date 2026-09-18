@@ -173,4 +173,64 @@ describe('executeComposedReview', () => {
       client: { complete },
     })).rejects.toThrow(/empty_plan/);
   });
+
+  // The plan and work prompts both embed untrusted diff text by construction. The nonce is what
+  // binds a returned object back to the request that asked for it; without the check the field is
+  // decorative and an object echoing an earlier turn's shape -- or one supplied by injected diff
+  // content -- would be accepted. The fan-out engine enforces this via
+  // `parseNativeJsonObject(content, expectedNonce)`; the composed path must not be weaker.
+  it('rejects a plan whose nonce does not match the one issued for the request', async () => {
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
+        return fakeResponse(JSON.stringify({
+          nonce: 'not-the-issued-nonce',
+          tasks: [
+            { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q', rationale: 'r' },
+          ],
+        }));
+      }
+      throw new Error(`unexpected turn: ${text.slice(0, 80)}`);
+    });
+
+    await expect(executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    })).rejects.toThrow(/nonce/i);
+  });
+
+  it('rejects a task result whose nonce does not match, and never records it as a pass', async () => {
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const issued = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({
+          nonce: issued,
+          tasks: [
+            { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q', rationale: 'r' },
+          ],
+        }));
+      }
+      // A well-formed, plausible COMPLETE with zero findings -- the shape most dangerous to accept.
+      return fakeResponse(JSON.stringify({
+        nonce: 'not-the-issued-nonce', task: 'task-sec', status: 'COMPLETE', findings: [],
+      }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    }).catch((e) => e);
+
+    // Either it throws, or it completes with the task absent from the roster. What must NOT
+    // happen is an APPROVE lane for a result that was never bound to its request.
+    const personas = (result && (result as any).personas) || [];
+    expect(personas.some((p: any) => p.decision === 'APPROVE' || p.decision === 'FINDINGS')).toBe(false);
+  });
 });

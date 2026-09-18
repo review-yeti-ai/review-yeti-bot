@@ -439,18 +439,18 @@ function buildSystemPrompt(repository: string): string {
   ].join('\n\n');
 }
 
-function buildPlanDirective(maxTasks: number, changedFilePaths: string[]): string {
+function buildPlanDirective(maxTasks: number, changedFilePaths: string[], expectedNonce: string): string {
   return [
     `=== PLAN TURN ===`,
     `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset files do not need their own task).`,
     `Each task names a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
     `Use at most ${maxTasks} tasks. Every non-documentation changed file must be covered by at least one task. Any security-sensitive path (auth, secrets, access control) MUST be covered by a task with dimension "security" -- this is checked and failed closed if missed.`,
     `On an investigation turn, you may request exactly one read-only tool as {"tool":"tool_name","args":{}}. When ready, return the final plan object with the exact top-level fields "nonce" and "tasks" -- no other fields, no Markdown fences.`,
-    `CT_REVIEW_NONCE:${nonce()}`,
+    `CT_REVIEW_NONCE:${expectedNonce}`,
   ].join('\n');
 }
 
-function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: number): string {
+function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: number, expectedNonce: string): string {
   return [
     `=== WORK TURN: TASK ${taskIndex + 1} OF ${totalTasks} ===`,
     `Task id: ${task.id}`,
@@ -462,7 +462,7 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
     `Investigate this task only. You may request read-only tools as {"tool":"tool_name","args":{}}.`,
     `When done, return the final result object with the exact top-level fields "nonce", "task" (must equal "${task.id}"), "status" (COMPLETE or BLOCKED), and "findings" (an array; empty if none) -- no other fields, no Markdown fences.`,
     `Use BLOCKED only when you genuinely cannot complete this task with the tools and evidence available; BLOCKED is recorded as a failed lane, never as a pass.`,
-    `CT_REVIEW_NONCE:${nonce()}`,
+    `CT_REVIEW_NONCE:${expectedNonce}`,
   ].join('\n');
 }
 
@@ -490,6 +490,7 @@ async function runPlanPhase(input: {
   jobId?: string;
   signal?: AbortSignal;
   changedFilesForTools: Array<{ path: string; patch?: string; content?: string }>;
+  expectedNonce: string;
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: unknown;
   turnsRemaining: () => number;
@@ -540,6 +541,31 @@ async function runPlanPhase(input: {
     }
 
     const candidate = parsed?.finalObject;
+
+    // Bind the plan to this request before trusting any of its contents. The plan prompt embeds
+    // untrusted diff text by construction, and the plan decides what gets reviewed at all -- so an
+    // unbound object here is the highest-leverage thing an injected payload could supply. Treated
+    // as a correctable contract error, consistent with the WORK phase, so a one-off formatting
+    // slip does not sink a review; a second miss still fails closed below.
+    if (!candidate || (candidate as any).nonce !== input.expectedNonce) {
+      if (correctionUsed || isLastLocalTurn) {
+        throw new PanelConfigurationError(
+          'composed review plan rejected: plan "nonce" did not match the nonce issued for this request',
+          { failureClass: 'contract' },
+        );
+      }
+      correctionUsed = true;
+      messages = [...messages, {
+        role: 'user',
+        content: [
+          'PLAN_CORRECTION',
+          'Your plan was rejected: the "nonce" field did not match the nonce issued for this request.',
+          'Return a corrected complete plan object now with the exact top-level fields "nonce" and "tasks".',
+        ].join('\n'),
+      }];
+      continue;
+    }
+
     const validation: TaskPlanValidationResult = validateTaskPlan(candidate, {
       changedFiles: input.effectiveFilePaths,
       maxTasks: input.maxTasks,
@@ -604,9 +630,12 @@ async function runTaskWorkPhase(input: {
   turnsRemaining: () => number;
 }): Promise<TaskOutcome> {
   const startedAt = Date.now();
+  // Per-task nonce, retained so the finalize object can be bound to THIS task's request. Without
+  // it a stale or injected object echoing an earlier turn's shape would be accepted.
+  const expectedNonce = nonce();
   let taskMessages: OpenRouterMessage[] = [
     ...input.baseMessages,
-    { role: 'user', content: buildTaskDirective(input.task, input.taskIndex, input.totalTasks) },
+    { role: 'user', content: buildTaskDirective(input.task, input.taskIndex, input.totalTasks, expectedNonce) },
   ];
   const turnUsages: LaneTurnUsage[] = [];
   const toolCallsLog: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
@@ -662,6 +691,10 @@ async function runTaskWorkPhase(input: {
       contractError = 'response was not a JSON object matching the tool-call or task-result shape';
     } else if (candidate.task !== input.task.id) {
       contractError = `"task" must equal "${input.task.id}"`;
+    } else if (candidate.nonce !== expectedNonce) {
+      // Binds the response to this request. The fan-out engine enforces the same thing via
+      // `parseNativeJsonObject(content, expectedNonce)`; the composed path must not be weaker.
+      contractError = 'result "nonce" did not match the nonce issued for this task';
     } else if (candidate.status !== 'COMPLETE' && candidate.status !== 'BLOCKED') {
       contractError = '"status" must be COMPLETE or BLOCKED';
     }
@@ -777,13 +810,18 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const maxTasks = Math.max(1, Math.min((config as any)?.composed_max_tasks || DEFAULT_MAX_TASKS, DEFAULT_MAX_TASKS));
     const effectiveFilePaths = effectiveFiles.map((f) => f.path);
 
+    // Mint the plan nonce ONCE and keep it, so the returned object can be bound back to this
+    // exact request. Generating it inline in the directive would embed a value nothing retains,
+    // leaving the field decorative -- and this prompt necessarily contains untrusted diff text,
+    // which is the whole reason the binding exists.
+    const planNonce = nonce();
     const baseMessages: OpenRouterMessage[] = [
       { role: 'system', content: buildSystemPrompt(repository) },
       {
         role: 'user',
         content: [
           { type: 'text', text: staticPrefixText, cache_control: { type: 'ephemeral' } },
-          { type: 'text', text: buildPlanDirective(maxTasks, effectiveFilePaths) },
+          { type: 'text', text: buildPlanDirective(maxTasks, effectiveFilePaths, planNonce) },
         ],
       },
     ];
@@ -806,6 +844,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       jobId,
       signal,
       changedFilesForTools: effectiveFiles,
+      expectedNonce: planNonce,
       repoFileProvider,
       zoektConfig,
       turnsRemaining: remainingBudget,
