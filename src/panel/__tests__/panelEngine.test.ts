@@ -13,6 +13,7 @@ import {
 import { OpenRouterResponseError, OpenRouterTimeoutError } from '../../gateway/openRouterClient';
 import { OmniRouteClient } from '../../gateway/omniRouteClient';
 import { parseAndValidateConfig } from '../../config/configLoader';
+import { dashboardStore } from '../../persistence/dashboardStore';
 import { CtReviewConfigV3 } from '../../config/schema';
 
 const mockYaml = `
@@ -94,6 +95,81 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       })
     ).rejects.toThrow(PanelConfigurationError);
     });
+  }, 60_000);
+
+  it('names the unmatched paths and classifies a persona-coverage gap as a contract failure', async () => {
+    // A code path that no enabled persona covers is a persona *coverage gap*,
+    // not a worker fault. It is deterministic -- the changed-path set does not
+    // vary between attempts -- so the default `internal_error` class ("retry;
+    // inspect worker logs") is unactionable, and because Review Yeti is a
+    // required check the PR becomes permanently unmergeable with no reason
+    // given. It must stay fail-closed, but say which paths to cover.
+    const narrowYaml = mockYaml.replace('paths: ["**/*"]', 'paths: ["**/*.py"]');
+    const config = parseAndValidateConfig(narrowYaml) as unknown as CtReviewConfigV3;
+    const client = new OmniRouteClient({ baseUrl: 'http://127.0.0.1:9090' });
+
+    let caught: unknown;
+    try {
+      await executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'inventory/lab-assets.json', content: '{"a":1}' }],
+        repository: 'test/repo',
+        headSha: 'abc1234',
+        client,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(PanelConfigurationError);
+    const err = caught as PanelConfigurationError;
+    // Actionable: the operator learns exactly which file nobody covers, and
+    // which personas were enabled when it did not match.
+    expect(err.message).toContain('inventory/lab-assets.json');
+    expect(err.message).toContain('security');
+    expect(err.message).toMatch(/Extend that persona's paths/);
+    // Not a worker fault: `contract` maps to worker_contract_invalid rather
+    // than worker_internal_error's misleading "retry" guidance.
+    expect(err.failureClass).toBe('contract');
+  }, 60_000);
+
+  it('reports [none] when every persona is disabled at runtime, not an empty bracket', async () => {
+    // Distinct diagnostic from the "enabled but non-matching" case above: the
+    // roster is empty, so the remedy is to enable a persona rather than widen
+    // one's paths.
+    //
+    // This is only reachable through a runtime override. The config schema
+    // rejects a roster with no enabled required persona
+    // ("at least one enabled required persona is required"), so the `|| 'none'`
+    // fallback exists for dashboardStore disabling every persona after the
+    // config validated -- which is exactly the state that would otherwise
+    // render as an empty bracket.
+    const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+    const client = new OmniRouteClient({ baseUrl: 'http://127.0.0.1:9090' });
+    const getPersonaSetting = vi
+      .spyOn(dashboardStore, 'getPersonaSetting')
+      .mockReturnValue({ enabled: false } as any);
+
+    let caught: unknown;
+    try {
+      await executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'inventory/lab-assets.json', content: '{"a":1}' }],
+        repository: 'test/repo',
+        headSha: 'abc1234',
+        client,
+      });
+    } catch (error) {
+      caught = error;
+    } finally {
+      getPersonaSetting.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(PanelConfigurationError);
+    const err = caught as PanelConfigurationError;
+    expect(err.message).toContain('inventory/lab-assets.json');
+    expect(err.message).toContain('[none]');
+    expect(err.failureClass).toBe('contract');
   }, 60_000);
 
   it('retries only typed transient OpenRouter failures', () => {
