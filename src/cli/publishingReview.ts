@@ -22,11 +22,14 @@
  *    deliberate: a `neutral` check does not block a merge, so an outage that
  *    published `neutral` would silently stop enforcing.
  */
-import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted } from '../panel/panelEngine';
+import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
+import { createRepoFileProvider } from '../panel/repoFileProvider';
+import { GitHubInstallationClient } from '../github/installationClient';
 import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
+import { runInSpan, getMetrics } from '../telemetry';
 import { Octokit } from '@octokit/core';
 import {
   OpenRouterClient,
@@ -403,9 +406,16 @@ function renderTelemetrySummary(telemetry: {
    * lane's individual duration and overstates wall time under concurrent fan-out. Optional so a
    * panel result that predates this field still renders the base line unchanged. */
   panelWallClockMs?: number;
+  /** REL-677: fixed setup cost of materializing the worktree and building the review's throwaway
+   * Zoekt index, separate from the lane time above. Absent when grounding was not attempted
+   * (disabled) so a run without zoekt renders byte-identical to before this field existed. */
+  zoektIndexBuildMs?: number;
 }): string {
+  const zoektNote = telemetry.zoektIndexBuildMs !== undefined
+    ? ` Zoekt index build: ${telemetry.zoektIndexBuildMs}ms.`
+    : '';
   const base = `Telemetry: ${telemetry.totalTurns} turns, ${telemetry.totalToolCalls} tool calls, `
-    + `${telemetry.totalTokens} tokens across ${telemetry.laneCount} lanes (${telemetry.totalDurationMs}ms).`;
+    + `${telemetry.totalTokens} tokens across ${telemetry.laneCount} lanes (${telemetry.totalDurationMs}ms).${zoektNote}`;
   return typeof telemetry.panelWallClockMs === 'number'
     ? `${base} Panel wall clock: ${telemetry.panelWallClockMs}ms (the figure above sums lane durations, not wall time).`
     : base;
@@ -558,6 +568,23 @@ export interface PublishingReviewDeps {
     signal?: AbortSignal;
     zoektIndexBinaryPath?: string;
   }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string }>;
+  /**
+   * Full-repository grounding for a persona's `find_files`/`read_file` tools (see
+   * `RepoFileProvider` in `../panel/panelEngine` and `createRepoFileProvider` in
+   * `../panel/repoFileProvider`). Injectable for tests; the default constructs a
+   * `GitHubInstallationClient` from this run's own repository-scoped `GH_TOKEN`
+   * (`contents: read`, `pull_requests: read` -- minted by `getGitHubAppRepositoryReadToken`,
+   * see `kubernetesRunSecretProvisioner.ts`), the same read token the diff loader and
+   * visibility lookup above already use.
+   *
+   * `deps.checkClient`'s token is `checks: write` only (`getGitHubAppRepositoryPublishToken`)
+   * and is asserted to carry no other permission; it cannot serve this and this factory must
+   * never mint or require a broader credential than the `GH_TOKEN` already delivered to this
+   * pod. Construction is fail-soft: a throwing factory or a missing `GH_TOKEN` leaves this
+   * lane running exactly as it did before this dep existed -- diff-scoped tools only, logged
+   * once, never a reason the review fails.
+   */
+  repoFileProviderFactory?: (input: { token: string; owner: string; repo: string; headSha: string }) => RepoFileProvider;
 }
 
 /**
@@ -830,6 +857,45 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
+
+    // Full-repository grounding for persona find_files/read_file tools (see
+    // `createRepoFileProvider`'s doc comment for the defect this fixes: a diff-scoped miss on a
+    // file the diff imports but does not itself modify read as an honest "does not exist"). Uses
+    // this run's own `GH_TOKEN` -- the repository-scoped `contents: read` token already minted
+    // for the diff loader and visibility lookup above -- never `checkClient`'s `checks: write`
+    // token, which is asserted to carry no broader permission. Construction is fail-soft: a
+    // missing token or a throwing factory leaves `repoFileProvider` undefined, which the panel
+    // engine's tool handler already treats as "no full-repository access wired for this run"
+    // (diff-scoped tools only), not as a review failure.
+    let repoFileProvider: RepoFileProvider | undefined;
+    const repoReadToken = value(env, 'GH_TOKEN');
+    if (repoReadToken) {
+      try {
+        const factory = deps.repoFileProviderFactory
+          || ((input: { token: string; owner: string; repo: string; headSha: string }) => createRepoFileProvider(
+            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha,
+          ));
+        repoFileProvider = factory({
+          token: repoReadToken,
+          owner: identity.owner,
+          repo: identity.repoName,
+          headSha: identity.headSha,
+        });
+      } catch (error: any) {
+        repoFileProvider = undefined;
+        logger.warn('Failed to construct full-repository file provider for this run; persona find_files/read_file tools stay scoped to the diff', {
+          runId: identity.runId,
+          repository: identity.repo,
+          error: error?.message || String(error),
+        });
+      }
+    } else {
+      logger.warn('No GH_TOKEN available for this run; persona find_files/read_file tools stay scoped to the diff (no full-repository grounding)', {
+        runId: identity.runId,
+        repository: identity.repo,
+      });
+    }
+
     // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
     // removed in the finally below; the index never outlives this review run. Grounding
@@ -839,21 +905,46 @@ export async function runPublishingReviewWorker(
     const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
     const panelDeadline = createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal);
     let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
+    // REL-677: index-build duration is fixed setup cost paid on every grounded review, separate
+    // from persona lane time -- the trade-off the REL-677 latency claim rests on (setup cost vs.
+    // turns saved by grounded lookups) is unfalsifiable without measuring it on its own span.
+    // `zoektDuration` (panelEngine.ts) measures query time against an already-built index; this
+    // measures materializing the worktree and building that index in the first place.
+    let zoektIndexBuildMs = 0;
     try {
       // A throwing grounding dep still fails soft: grounding is evidence
       // enrichment, never a precondition of the review.
-      try {
-        zoektScratchRoot = await zoektGrounding({
-          repository: identity.repo,
-          headSha: identity.headSha,
-          token: value(env, 'GH_TOKEN'),
-          enabled: zoektGroundingEnabled,
-          signal: deps.signal,
-          zoektIndexBinaryPath: value(env, 'ZOEKT_INDEX_BIN') || undefined,
-        });
-      } catch (groundingError: any) {
-        zoektScratchRoot = { reason: groundingError?.message || 'zoekt_grounding_error' };
-      }
+      zoektScratchRoot = await runInSpan('review_yeti_zoekt_index_build', async (span) => {
+        const buildStart = deps.now ? deps.now() : Date.now();
+        let result: { indexDir?: string; scratchDir?: string; reason?: string };
+        try {
+          result = await zoektGrounding({
+            repository: identity.repo,
+            headSha: identity.headSha,
+            token: value(env, 'GH_TOKEN'),
+            enabled: zoektGroundingEnabled,
+            signal: deps.signal,
+            zoektIndexBinaryPath: value(env, 'ZOEKT_INDEX_BIN') || undefined,
+          });
+        } catch (groundingError: any) {
+          result = { reason: groundingError?.message || 'zoekt_grounding_error' };
+        }
+        span.setAttribute('review_yeti.zoekt_index_build.enabled', zoektGroundingEnabled);
+        // A disabled run performs no materialize/build work, so it has no build cost to
+        // report: gate the duration attribute and the histogram sample on `enabled` so a
+        // disabled run can never record (or pollute the REL-677 latency measurement with)
+        // a build duration for a build that never happened.
+        if (zoektGroundingEnabled) {
+          zoektIndexBuildMs = (deps.now ? deps.now() : Date.now()) - buildStart;
+          const status = result.indexDir ? 'ok' : (result.reason || 'unknown');
+          span.setAttribute('review_yeti.zoekt_index_build.status', status);
+          span.setAttribute('review_yeti.zoekt_index_build.duration_ms', zoektIndexBuildMs);
+          getMetrics().zoektIndexBuildDuration.record(zoektIndexBuildMs / 1000, { repository: identity.repo, status });
+        } else {
+          span.setAttribute('review_yeti.zoekt_index_build.status', 'disabled');
+        }
+        return result;
+      });
       // Single-surface injection: the panel (panelEngine) owns the zoekt
       // lookup policy and propagates evidence.zoekt.indexDir to every internal
       // consumer (symbol pre-check + on-demand code_search_zoekt tool). The
@@ -885,6 +976,7 @@ export async function runPublishingReviewWorker(
           client,
           jobId: identity.runId,
           signal: panelDeadline.signal,
+          repoFileProvider,
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1052,7 +1144,11 @@ export async function runPublishingReviewWorker(
           renderCoverageSummary(coverage),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
-          renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs }),
+          renderTelemetrySummary({
+            totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs,
+            panelWallClockMs,
+            ...(zoektGroundingEnabled ? { zoektIndexBuildMs } : {}),
+          }),
         ];
 
     if (recoverablePanelFailure) {
