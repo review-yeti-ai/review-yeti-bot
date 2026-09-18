@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, TRANSPORT_MAX_ATTEMPTS, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, transportRetryDelayMs } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, TRANSPORT_MAX_RETRIES, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, transportRetryDelayMs } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { OpenRouterResponseError } from '../../src/gateway/openRouterClient';
@@ -1845,7 +1845,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
     // Two transport failures then success: attempt 3 is already strictly beyond
     // the generic `maxAttempts` of 2 that used to retire the lane. The full
-    // TRANSPORT_MAX_ATTEMPTS budget and the backoff schedule are covered by the
+    // TRANSPORT_MAX_RETRIES budget and the backoff schedule are covered by the
     // pure-function test below, so this one only has to wait out two real
     // backoffs (~1s + ~4s) rather than the whole schedule.
     const failuresBeforeSuccess = 2;
@@ -1907,4 +1907,85 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const worstCaseTotalMs = [1, 2, 3].reduce((sum, n) => sum + transportRetryDelayMs(n, () => 0.999), 0);
     expect(worstCaseTotalMs).toBeLessThan(40_000);
   });
+
+  // Review feedback (P2): the budget-exhaustion boundary was untested. After
+  // TRANSPORT_MAX_RETRIES the lane must fail closed -- the retry must not be
+  // able to loop a required lane indefinitely against a dead gateway.
+  it('fails closed once the transport budget is exhausted, never approving', async () => {
+    const config = buildSingleAliasDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    let bifrostAttempts = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'should never be reached' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.model === 'bifrost/pr-reviewer') {
+        bifrostAttempts++;
+        // The gateway never comes back.
+        throw new Error('fetch failed');
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    // sec-lane is required, so an exhausted budget must fail the panel closed
+    // rather than yield a verdict built without it.
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-transport-exhausted',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    })).rejects.toBeInstanceOf(PanelConfigurationError);
+
+    // Bounded: the retry stops at the cap instead of looping forever.
+    expect(bifrostAttempts).toBe(TRANSPORT_MAX_RETRIES + 1);
+  }, 120_000);
+
+  // Review feedback (P2): the budget-fit guard was untested. When the proposed
+  // backoff does not fit in what is left of the panel budget, the transport
+  // branch must fall through immediately rather than sleep past the deadline
+  // and convert a precise transport failure into a generic timeout.
+  it('skips the transport backoff when it does not fit the remaining panel budget', async () => {
+    const base = buildSingleAliasDeepConfig();
+    // A panel deadline far shorter than even the first 1s backoff.
+    const config = ctReviewConfigV3Schema.parse({
+      ...base,
+      reviewers: { ...base.reviewers, overall_timeout_s: 1 },
+    }) as unknown as CtReviewConfigV3;
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    let bifrostAttempts = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'arbiter' || role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', decision: 'RECONCILED', findings: [], rationale: 'x' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.model === 'bifrost/pr-reviewer') {
+        bifrostAttempts++;
+        throw new Error('fetch failed');
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-transport-no-budget',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    })).rejects.toBeInstanceOf(Error);
+
+    // The transport budget was NOT spent: with no room to back off, the lane
+    // must give up at or below the generic cap rather than burn all 4 attempts.
+    expect(bifrostAttempts).toBeLessThan(TRANSPORT_MAX_RETRIES + 1);
+  }, 60_000);
 });

@@ -1190,7 +1190,7 @@ export const EMPTY_COMPLETION_MAX_ATTEMPTS = 4;
  * enough that four attempts stay well inside the persona's overall budget. */
 export const EMPTY_COMPLETION_RETRY_DELAY_MS = 1000;
 
-/** REL-940: attempts allotted to a lane for a provider TRANSPORT failure --
+/** REL-940: RETRIES allotted to a lane for a provider TRANSPORT failure --
  * the gateway itself being unreachable (`fetch failed`, ECONNRESET, connection
  * error) rather than any answer about the diff. Separate from, and larger
  * than, the generic transient-error `maxAttempts` budget below, for the same
@@ -1205,7 +1205,7 @@ export const EMPTY_COMPLETION_RETRY_DELAY_MS = 1000;
  * clean verdict. A 1s pause cannot outlast an outage of that shape, so the
  * retry was structurally guaranteed to be useless for the one failure class
  * it most needed to cover. */
-export const TRANSPORT_MAX_ATTEMPTS = 4;
+export const TRANSPORT_MAX_RETRIES = 3;
 /** Base of the exponential transport backoff: 1s -> 4s -> 16s -> 64s before
  * jitter. The FIRST retry stays as fast as the generic branch it replaces,
  * because a single dropped connection recovers immediately and every lane
@@ -2608,17 +2608,17 @@ async function runPersona(
             remainingPanelTimeoutMs?.() ?? Infinity,
           );
           if (
-            transportAttempts < TRANSPORT_MAX_ATTEMPTS &&
+            transportAttempts < TRANSPORT_MAX_RETRIES &&
             transportBackoffMs < remainingBudgetMs &&
             classifyPersonaAttemptFailure(error) === 'transport'
           ) {
             transportAttempts++;
             const backoffMs = transportBackoffMs;
-            logger.warn(`Transport failure reaching provider '${providerId}' for persona ${persona.id}; backing off ${backoffMs}ms before retry ${transportAttempts}/${TRANSPORT_MAX_ATTEMPTS}`, {
+            logger.warn(`Transport failure reaching provider '${providerId}' for persona ${persona.id}; backing off ${backoffMs}ms before retry ${transportAttempts}/${TRANSPORT_MAX_RETRIES}`, {
               persona: persona.id,
               provider: providerId,
               transportAttempt: transportAttempts,
-              transportMaxAttempts: TRANSPORT_MAX_ATTEMPTS,
+              transportMaxRetries: TRANSPORT_MAX_RETRIES,
               backoffMs,
               // Bounded/redacted, same contract as the generic branch below.
               error: redactWorkerFailureLogTail(panelErrorMessage(error)),
