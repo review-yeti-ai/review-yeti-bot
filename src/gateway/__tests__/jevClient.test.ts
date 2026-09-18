@@ -541,3 +541,96 @@ describe('JevClient — telemetry', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * `validAnswerShape`'s choice and score branches were introduced by this PR and had no direct
+ * coverage: every ok-case fixture used a well-formed `noul`, and every malformed-case fixture
+ * varied only envelope-level fields. Dropping the `probabilities` object check, or any other
+ * loosening of these branches, passed the whole suite unchanged.
+ *
+ * These pin the branches as they actually behave TODAY, including the deliberate limit: the
+ * client validates answer SHAPE, not the CONTENT of the probability map. The values inside are
+ * not checked and `choice` is not required to be one of the question's criteria keys. That is a
+ * real boundary -- the vendor guarantees a typed answer, so content validation here would be
+ * duplicating a contract we do not own -- and it should change by decision, not by drift. If it
+ * is ever tightened, the last test here is the one that must be updated deliberately.
+ */
+describe('JevClient — answer shape validation for choice and score', () => {
+  const CHOICE_Q = {
+    resolves_to: {
+      type: 'choice', instructions: 'Which definition?',
+      criteria: { c1: 'same module', c2: 'other module' },
+    } as JevQuestion,
+  };
+  const SCORE_Q = {
+    risk: { type: 'score', instructions: 'How risky?', criteria: ['low', 'medium', 'high'] } as JevQuestion,
+  };
+
+  function okChoice(over: Record<string, unknown> = {}) {
+    return { type: 'choice', choice: 'c1', confidence: 0.94, probabilities: { c1: 0.97, c2: 0.03 }, ...over };
+  }
+  function okScore(over: Record<string, unknown> = {}) {
+    return { type: 'score', score: 2.1, legend: ['low', 'medium', 'high'], confidence: 0.8, probabilities: { low: 0.1 }, ...over };
+  }
+
+  it('accepts a well-formed choice answer', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', answers: { resolves_to: okChoice() }, usage: { input_tokens: 5, output_tokens: 1 } }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: CHOICE_Q });
+    expect(outcome.status).toBe('ok');
+  });
+
+  it('rejects a choice answer whose probabilities is not an object', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', answers: { resolves_to: okChoice({ probabilities: 'nope' }) }, usage: { input_tokens: 5, output_tokens: 1 } }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: CHOICE_Q });
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  });
+
+  it('rejects a choice answer whose probabilities is null', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', answers: { resolves_to: okChoice({ probabilities: null }) }, usage: { input_tokens: 5, output_tokens: 1 } }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: CHOICE_Q });
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  });
+
+  it('rejects a choice answer with a non-numeric confidence', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', answers: { resolves_to: okChoice({ confidence: 'high' }) }, usage: { input_tokens: 5, output_tokens: 1 } }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: CHOICE_Q });
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  });
+
+  it('accepts a well-formed score answer', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', answers: { risk: okScore() }, usage: { input_tokens: 5, output_tokens: 1 } }),
+    );
+    expect((await baseClient({ fetchImplementation }).ask({ state: 's', questions: SCORE_Q })).status).toBe('ok');
+  });
+
+  it('rejects a score answer whose legend is not an array', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', answers: { risk: okScore({ legend: 'low,medium' }) }, usage: { input_tokens: 5, output_tokens: 1 } }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: SCORE_Q });
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  });
+
+  it('does NOT validate probability-map contents, by design', async () => {
+    // Shape only. Non-numeric values, and a `choice` outside the question's criteria keys, are
+    // accepted. Documented deliberately: tightening this is a decision about owning the vendor's
+    // answer contract, and this test is where that decision becomes visible.
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        model: 'jev-1.13.0',
+        answers: { resolves_to: okChoice({ choice: 'not-a-criteria-key', probabilities: { c1: 'not-a-number' } }) },
+        usage: { input_tokens: 5, output_tokens: 1 },
+      }),
+    );
+    expect((await baseClient({ fetchImplementation }).ask({ state: 's', questions: CHOICE_Q })).status).toBe('ok');
+  });
+});
