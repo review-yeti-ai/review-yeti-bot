@@ -131,6 +131,10 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		GatewaySecretName: envOr("REVIEW_YETI_GATEWAY_SECRET_NAME", "review-yeti-gateway-credentials"),
 		GatewaySecretKey:  envOr("REVIEW_YETI_GATEWAY_SECRET_KEY", "REVIEW_YETI_BIFROST_API_KEY"),
 		CompletionURL:     strings.TrimSpace(os.Getenv("REVIEW_YETI_COMPLETION_URL")),
+		// REL-677: zoekt grounding opt-in is deployment configuration; forward
+		// verbatim (only non-empty values reach the worker).
+		ZoektGroundingEnabled:  strings.TrimSpace(os.Getenv("REVIEW_YETI_ZOEKT_GROUNDING_ENABLED")),
+		ZoektGroundingDisabled: strings.TrimSpace(os.Getenv("REVIEW_YETI_ZOEKT_GROUNDING_DISABLED")),
 	}
 }
 
