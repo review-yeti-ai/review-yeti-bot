@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, TRANSPORT_MAX_ATTEMPTS, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, transportRetryDelayMs } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { OpenRouterResponseError } from '../../src/gateway/openRouterClient';
@@ -1832,5 +1832,79 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(invokedPersonas).not.toContain('p5');
     expect(invokedPersonas).not.toContain('p6');
     expect(result.optionalFailures.some((f) => f.error?.includes('stale run aborted'))).toBe(true);
+  });
+  // REL-940: a transport failure (gateway unreachable — `fetch failed`) is not
+  // an answer about the diff. It previously got ONE retry after a flat 1s
+  // pause, so a required lane failed closed ~6s after the first failure and
+  // took the whole panel with it, discarding lanes that had already completed.
+  // Real blips last minutes: an immediate manual retry reproduced the failure
+  // while a retry minutes later returned a clean verdict. This proves the lane
+  // now survives across its own larger, backed-off budget.
+  it('retries a transport failure past the generic 2-attempt cap instead of failing closed', async () => {
+    const config = buildSingleAliasDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    // Two transport failures then success: attempt 3 is already strictly beyond
+    // the generic `maxAttempts` of 2 that used to retire the lane. The full
+    // TRANSPORT_MAX_ATTEMPTS budget and the backoff schedule are covered by the
+    // pure-function test below, so this one only has to wait out two real
+    // backoffs (~1s + ~4s) rather than the whole schedule.
+    const failuresBeforeSuccess = 2;
+    let bifrostAttempts = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Lane recovered' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.model === 'bifrost/pr-reviewer') {
+        bifrostAttempts++;
+        // The exact deployed signature: the gateway could not be reached.
+        if (bifrostAttempts <= failuresBeforeSuccess) {
+          throw new Error('fetch failed');
+        }
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-transport-backoff',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    const secLane = result.personas.find((persona) => persona.id === 'sec-lane');
+    // The lane completed rather than failing closed and taking the panel with it.
+    expect(secLane?.decision).toBe('APPROVE');
+    expect(bifrostAttempts).toBe(failuresBeforeSuccess + 1);
+    // The whole point: strictly more than the generic maxAttempts of 2.
+    expect(bifrostAttempts).toBeGreaterThan(2);
+  }, 120_000);
+
+  it('bounds the transport backoff: exponential, jittered, and capped', () => {
+    // Deterministic bounds rather than exact values, because the jitter is the
+    // point: concurrent lanes must not retry a recovering gateway in lockstep.
+    for (const [attempt, base] of [[1, 1_000], [2, 4_000], [3, 16_000], [4, 64_000]] as const) {
+      const low = transportRetryDelayMs(attempt, () => 0);
+      const high = transportRetryDelayMs(attempt, () => 0.999);
+      expect(low).toBe(Math.round(base * 0.8));
+      expect(high).toBeLessThanOrEqual(Math.round(base * 1.2));
+      expect(high).toBeGreaterThan(low);
+    }
+    // Capped: a high attempt number never exceeds the ceiling plus jitter.
+    expect(transportRetryDelayMs(9, () => 0.999)).toBeLessThanOrEqual(Math.round(TRANSPORT_RETRY_MAX_DELAY_MS * 1.2));
+    // The FIRST retry stays as fast as the generic branch it replaces, so a
+    // momentary blip does not cost every lane the worst-case latency.
+    expect(transportRetryDelayMs(1, () => 0.5)).toBe(1_000);
+    // Worst-case total stays far inside the 30-minute terminal deadline.
+    const worstCaseTotalMs = [1, 2, 3, 4].reduce((sum, n) => sum + transportRetryDelayMs(n, () => 0.999), 0);
+    expect(worstCaseTotalMs).toBeLessThan(180_000);
   });
 });
