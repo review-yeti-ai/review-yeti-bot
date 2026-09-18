@@ -1174,8 +1174,20 @@ func TestBuildWorkerJobForwardsZoektGroundingEnvOnlyWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build app-gate job with zoekt kill switch: %v", err)
 	}
-	if envValue(disabled.Spec.Template.Spec.Containers[0], "ZOEKT_GROUNDING_DISABLED") != "true" {
+	if envValue(disabled.Spec.Template.Spec.Containers[0], job.ZoektGroundingDisabledEnv) != "true" {
 		t.Fatalf("operator must forward ZOEKT_GROUNDING_DISABLED verbatim to the worker")
+	}
+
+	// Non-'true' values are forwarded verbatim too — the worker's strict
+	// 'true' comparison owns enablement; the operator must not reinterpret.
+	input.Publishing.ZoektGroundingEnabled = "false"
+	input.Publishing.ZoektGroundingDisabled = ""
+	falsy, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with grounding=false: %v", err)
+	}
+	if envValue(falsy.Spec.Template.Spec.Containers[0], job.ZoektGroundingEnabledEnv) != "false" {
+		t.Fatalf("operator must forward ZOEKT_GROUNDING_ENABLED=false verbatim, not coerce or drop it")
 	}
 
 	// Receipt-only/disabled lanes must never receive the grounding env. The
