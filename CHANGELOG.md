@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.76.2...v1.76.3) (2026-09-18)
+
+
+### Bug Fixes
+
+* **REL-967:** route config-data JSON/JSONL to a persona instead of failing the panel ([#863](https://github.com/review-yeti-ai/review-yeti-bot/issues/863)) ([4e3b667](https://github.com/review-yeti-ai/review-yeti-bot/commit/4e3b667e081d4b0a62ba153c37e3a7efcaf2759e))
+
 ## [1.76.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.76.1...v1.76.2) (2026-09-18)
 
 
