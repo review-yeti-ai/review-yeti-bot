@@ -334,6 +334,13 @@ export const analyzersPreCheckSchema = z.object({
 
 export type PreChecksAnalyzersConfig = z.infer<typeof analyzersPreCheckSchema>;
 
+export const symbolAppendixPreCheckSchema = z.object({
+  enabled: z.boolean().default(true),
+  indexDir: z.string().optional(),
+}).default({ enabled: true });
+
+export type PreChecksSymbolAppendixConfig = z.infer<typeof symbolAppendixPreCheckSchema>;
+
 export const preChecksSchema = z.preprocess(
   (val: unknown) => {
     if (val === null || val === undefined) {
@@ -344,6 +351,7 @@ export const preChecksSchema = z.preprocess(
         enabled: false,
         zoekt: { enabled: false },
         analyzers: { enabled: false },
+        symbolAppendix: { enabled: false },
       };
     }
     if (val === true) {
@@ -351,6 +359,7 @@ export const preChecksSchema = z.preprocess(
         enabled: true,
         zoekt: { enabled: true },
         analyzers: { enabled: true },
+        symbolAppendix: { enabled: true },
       };
     }
     if (typeof val === 'object' && !Array.isArray(val)) {
@@ -365,6 +374,11 @@ export const preChecksSchema = z.preprocess(
       } else if (copy.analyzers === true) {
         copy.analyzers = { enabled: true };
       }
+      if (copy.symbolAppendix === false) {
+        copy.symbolAppendix = { enabled: false };
+      } else if (copy.symbolAppendix === true) {
+        copy.symbolAppendix = { enabled: true };
+      }
       if (copy.enabled === false) {
         copy.zoekt = {
           ...(typeof copy.zoekt === 'object' ? copy.zoekt : {}),
@@ -373,6 +387,10 @@ export const preChecksSchema = z.preprocess(
         copy.analyzers = {
           ...(typeof copy.analyzers === 'object' ? copy.analyzers : {}),
           enabled: copy.analyzers?.enabled === true,
+        };
+        copy.symbolAppendix = {
+          ...(typeof copy.symbolAppendix === 'object' ? copy.symbolAppendix : {}),
+          enabled: copy.symbolAppendix?.enabled === true,
         };
       }
       return copy;
@@ -383,6 +401,7 @@ export const preChecksSchema = z.preprocess(
     enabled: z.boolean().default(true),
     zoekt: zoektPreCheckSchema.default({}),
     analyzers: analyzersPreCheckSchema.default({}),
+    symbolAppendix: symbolAppendixPreCheckSchema.default({}),
   })
 ).default({});
 
@@ -400,6 +419,7 @@ export function resolvePreChecksConfig(rawConfig: any): PreChecksConfig {
       enabled: false,
       zoekt: { enabled: false, max_symbols: 200, timeoutMs: 10000 },
       analyzers: { enabled: false, linters: false, security: false, secrets: false },
+      symbolAppendix: { enabled: false },
     };
   }
   const parsed = preChecksSchema.parse(rawConfig.pre_checks);
@@ -414,6 +434,10 @@ export function resolvePreChecksConfig(rawConfig: any): PreChecksConfig {
       analyzers: {
         ...parsed.analyzers,
         enabled: rawPreChecks.analyzers?.enabled === true,
+      },
+      symbolAppendix: {
+        ...parsed.symbolAppendix,
+        enabled: rawPreChecks.symbolAppendix?.enabled === true,
       },
     };
   }

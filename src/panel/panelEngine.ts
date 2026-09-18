@@ -2,6 +2,12 @@ import crypto from 'node:crypto';
 import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
 import { resolveMaxFileSize } from '../config/configLoader';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, isSameFile, ZoektPreCheckResult } from '../services/zoektPreCheckService';
+import {
+  executeSymbolResolutionAppendix,
+  formatSymbolResolutionAppendixPrompt,
+  SymbolResolutionAppendixResult,
+  SymbolResolutionEntry,
+} from '../services/symbolResolutionAppendix';
 import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, filterHypothesesForPersona, PreCheckSummary } from '../sandbox/analyzerRunner';
 import { OpenRouterConnectionError, OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRouterResponse, OpenRouterResponseError, OpenRouterTimeoutError, ReviewModelClient, TokensUsed, UpstreamCapacityRejectionError, isExplicitUpstreamRejection, resolveCachedTokens } from '../gateway/openRouterClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
@@ -1895,6 +1901,13 @@ async function invoke(
   const analyzersPreCheckPromptText = (role === 'persona' && preCheckEvidence?.analyzers)
     ? formatCandidateHypothesesPrompt(preCheckEvidence.analyzers)
     : '';
+  // Computed ONCE per panel (see `executePersonaPanel`'s pre-checks block) and folded into this
+  // same cached static prefix -- every persona lane reuses it instead of re-discovering it with
+  // serial tool turns. `formatSymbolResolutionAppendixPrompt` is fail-soft: '' when unavailable,
+  // disabled, or scoped down to zero entries for this persona.
+  const symbolAppendixPromptText = (role === 'persona' && preCheckEvidence?.symbolAppendix)
+    ? formatSymbolResolutionAppendixPrompt(preCheckEvidence.symbolAppendix)
+    : '';
 
   const staticPrefix = [
     `=== CALLTELEMETRY AUTOMATED CODE REVIEW TASK ===`,
@@ -1912,6 +1925,10 @@ async function invoke(
     ...(analyzersPreCheckPromptText ? [
       ``,
       analyzersPreCheckPromptText,
+    ] : []),
+    ...(symbolAppendixPromptText ? [
+      ``,
+      symbolAppendixPromptText,
     ] : []),
     ``,
     `=== SEVERITY CALIBRATION (binding) ===`,
@@ -2537,6 +2554,18 @@ async function runPersona(
           ...preCheckEvidence.analyzers,
           hypotheses: scopedHypotheses,
           hypothesesCount: scopedHypotheses.length,
+        },
+      };
+    }
+    if (preCheckEvidence?.symbolAppendix && Array.isArray(preCheckEvidence.symbolAppendix.entries)) {
+      const scopedEntries = preCheckEvidence.symbolAppendix.entries.filter((entry: SymbolResolutionEntry) =>
+        scopedFiles.some((f) => pathMatches(entry.sourcePath, f.path) || f.path === entry.sourcePath || isSameFile(entry.sourcePath, f.path))
+      );
+      scopedPreCheckEvidence = {
+        ...scopedPreCheckEvidence,
+        symbolAppendix: {
+          ...preCheckEvidence.symbolAppendix,
+          entries: scopedEntries,
         },
       };
     }
@@ -3542,22 +3571,26 @@ export async function executePersonaPanel(options: {
       throw new PanelConfigurationError(`stale run aborted for ${runKey}`);
     }
 
-    // Execute deterministic Zoekt and Static Analyzer pre-checks concurrently prior to persona execution
+    // Execute deterministic Zoekt, Symbol Resolution Appendix, and Static Analyzer pre-checks
+    // concurrently prior to persona execution.
     let zoektPreCheckResult: ZoektPreCheckResult | undefined;
     let analyzersPreCheckResult: PreCheckSummary | undefined;
+    let symbolAppendixResult: SymbolResolutionAppendixResult | undefined;
     const preChecksConfig = resolvePreChecksConfig(config);
     const preChecksStartTime = performance.now();
     let zoektDurationMs = 0;
     let analyzersDurationMs = 0;
+    let symbolAppendixDurationMs = 0;
+    const preCheckZoektIndexDir = (config as any)?.evidence?.zoekt?.indexDir
+      || preChecksConfig.zoekt.indexDir
+      || process.env.ZOEKT_INDEX_DIR;
 
     if (preChecksConfig.enabled) {
       const zoektPromise = preChecksConfig.zoekt.enabled
         ? (async () => {
             const zStart = performance.now();
             try {
-              const indexDir = (config as any)?.evidence?.zoekt?.indexDir
-                || preChecksConfig.zoekt.indexDir
-                || process.env.ZOEKT_INDEX_DIR;
+              const indexDir = preCheckZoektIndexDir;
 
               const res = await raceWithPanelAbort(
                 executeZoektPreCheck({
@@ -3627,7 +3660,40 @@ export async function executePersonaPanel(options: {
           })()
         : Promise.resolve(undefined);
 
-      [zoektPreCheckResult, analyzersPreCheckResult] = await Promise.all([zoektPromise, analyzersPromise]);
+      const symbolAppendixPromise = preChecksConfig.symbolAppendix.enabled
+        ? (async () => {
+            const sStart = performance.now();
+            try {
+              const res = await raceWithPanelAbort(
+                executeSymbolResolutionAppendix({
+                  changedFiles: effectiveFiles,
+                  repoFileProvider,
+                  indexDir: preChecksConfig.symbolAppendix.indexDir || preCheckZoektIndexDir,
+                  identity: { repository, headSha },
+                  signal,
+                }),
+                signal,
+              );
+              symbolAppendixDurationMs = performance.now() - sStart;
+              return res;
+            } catch (err: any) {
+              symbolAppendixDurationMs = performance.now() - sStart;
+              throwIfPanelAborted(signal);
+              logger.warn('Symbol resolution appendix failed soft during executePersonaPanel', {
+                repository,
+                headSha,
+                error: err?.message,
+              });
+              return undefined;
+            }
+          })()
+        : Promise.resolve(undefined);
+
+      [zoektPreCheckResult, analyzersPreCheckResult, symbolAppendixResult] = await Promise.all([
+        zoektPromise,
+        analyzersPromise,
+        symbolAppendixPromise,
+      ]);
     }
 
     const preChecksTotalDurationMs = performance.now() - preChecksStartTime;
@@ -3735,6 +3801,29 @@ export async function executePersonaPanel(options: {
       } else if (!preChecksConfig.analyzers.enabled) {
         span.setAttribute('review_yeti.pre_checks.analyzers.status', 'disabled');
       }
+
+      if (symbolAppendixResult) {
+        const symStatus = symbolAppendixResult.status;
+        const symDuration = symbolAppendixResult.receipt?.durationMs ?? Math.round(symbolAppendixDurationMs);
+        span.setAttribute('review_yeti.pre_checks.symbol_appendix.status', symStatus);
+        span.setAttribute('review_yeti.pre_checks.symbol_appendix.duration_ms', symDuration);
+        span.setAttribute('review_yeti.pre_checks.symbol_appendix.symbols_considered', symbolAppendixResult.receipt?.symbolsConsidered ?? 0);
+        span.setAttribute('review_yeti.pre_checks.symbol_appendix.symbols_resolved', symbolAppendixResult.receipt?.symbolsResolved ?? 0);
+        span.setAttribute('review_yeti.pre_checks.symbol_appendix.symbols_ambiguous', symbolAppendixResult.receipt?.symbolsAmbiguous ?? 0);
+        logger.info('Pre-check symbol resolution appendix completed', {
+          repository,
+          headSha,
+          status: symStatus,
+          reason: symbolAppendixResult.reason,
+          durationMs: symDuration,
+          symbolsConsidered: symbolAppendixResult.receipt?.symbolsConsidered ?? 0,
+          symbolsResolved: symbolAppendixResult.receipt?.symbolsResolved ?? 0,
+          symbolsAmbiguous: symbolAppendixResult.receipt?.symbolsAmbiguous ?? 0,
+          symbolsNotFound: symbolAppendixResult.receipt?.symbolsNotFound ?? 0,
+        });
+      } else if (!preChecksConfig.symbolAppendix.enabled) {
+        span.setAttribute('review_yeti.pre_checks.symbol_appendix.status', 'disabled');
+      }
     }
 
     const settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[] =
@@ -3814,10 +3903,11 @@ export async function executePersonaPanel(options: {
               },
               signal,
               remainingPanelTimeoutMs,
-              (zoektPreCheckResult || analyzersPreCheckResult)
+              (zoektPreCheckResult || analyzersPreCheckResult || symbolAppendixResult)
                 ? {
                     ...(zoektPreCheckResult ? { zoekt: zoektPreCheckResult } : {}),
                     ...(analyzersPreCheckResult ? { analyzers: analyzersPreCheckResult } : {}),
+                    ...(symbolAppendixResult ? { symbolAppendix: symbolAppendixResult } : {}),
                   }
                 : undefined,
               domainLanes,
