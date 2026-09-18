@@ -74,6 +74,10 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     }]);
   });
 
+  // REL-940: a transport failure now retries on a bounded exponential
+  // backoff (~21s worst case) before the lane fails closed. The
+  // fail-closed guarantee asserted below is unchanged -- only its
+  // latency is -- so this test needs a timeout past that budget.
   it('fails closed (throws PanelConfigurationError) when gateway connection fails', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:9090')));
 
@@ -90,7 +94,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       })
     ).rejects.toThrow(PanelConfigurationError);
     });
-  });
+  }, 60_000);
 
   it('retries only typed transient OpenRouter failures', () => {
     expect(isRetryablePanelError(new OpenRouterResponseError('unauthorized', 401))).toBe(false);

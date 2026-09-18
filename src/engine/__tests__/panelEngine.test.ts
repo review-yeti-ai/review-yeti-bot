@@ -68,6 +68,10 @@ describe('PanelEngine — Error Propagation & Non-fallback Verification', () => 
     vi.unstubAllGlobals();
   });
 
+  // REL-940: a transport failure now retries on a bounded exponential
+  // backoff (~21s worst case) before the lane fails closed. The
+  // fail-closed guarantee asserted below is unchanged -- only its
+  // latency is -- so this test needs a timeout past that budget.
   it('fails closed (throws PanelConfigurationError) when omniRouteClient throws GatewayConnectionError, never returning synthetic approvals', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:9090')));
 
@@ -93,7 +97,7 @@ describe('PanelEngine — Error Propagation & Non-fallback Verification', () => 
     expect(panelError).toBeInstanceOf(PanelConfigurationError);
     expect(panelError?.message).toContain('required persona failure');
     expect(panelError?.message).toContain('OmniRoute connection failure');
-  });
+  }, 60_000);
 
   it('propagates gateway errors for optional personas and records them in optionalFailures', async () => {
     const optionalConfig = parseAndValidateConfig(mockOptionalYaml) as unknown as CtReviewConfigV3;
