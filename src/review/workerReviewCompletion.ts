@@ -4,6 +4,8 @@ import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane
 import { canonicalJson, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
+import { getMetrics } from '../telemetry';
+import { logger } from '../utils/logger';
 
 /**
  * The success callback is deliberately smaller than the worker's operational receipt. It carries
@@ -105,21 +107,32 @@ export type LaneTurnUsagePayload = z.output<typeof laneTurnUsageSchema>;
 
 /**
  * The ONLY place that maps a panel lane's turn-accumulation fields onto the wire shape
- * `personaTelemetrySchema` accepts. `buildReviewResult` in `publishingReview.ts` calls this
- * instead of hand-mirroring the field list a second time in a different module -- co-locating the
- * builder with the schema it targets (rather than relying on `z.output<...>` alone, which
- * TypeScript's excess-property checking does not actually enforce through the conditional spreads
- * a builder like this needs -- confirmed by renaming a field here and re-running `tsc --noEmit`
- * with no error) means an edit to one is an edit to the other, in the same file, in the same diff.
- * `personaTelemetrySchema.parse(...)` at the end is defense in depth: if this builder and the
- * schema ever do drift apart, the throw happens HERE, naming this exact lane's telemetry, instead
- * of only later inside `parseWorkerReviewCompletion`'s broader parse.
+ * `personaTelemetrySchema` accepts. `buildReviewResult` in `publishingReview.ts` calls this on
+ * the publishing worker's SUCCESS path, instead of hand-mirroring the field list a second time in
+ * a different module -- co-locating the builder with the schema it targets (rather than relying
+ * on `z.output<...>` alone, which TypeScript's excess-property checking does not actually enforce
+ * through the conditional spreads a builder like this needs -- confirmed by renaming a field here
+ * and re-running `tsc --noEmit` with no error) means an edit to one is an edit to the other, in
+ * the same file, in the same diff.
+ *
+ * TOTAL, never throws: `telemetry` is an OPTIONAL, additive field added specifically so it
+ * degrades safely -- this PR exists to make measurement trustworthy, not to make measurement able
+ * to fail a review. A lane carrying a malformed field from an unexpected producer (a string token
+ * count, a NaN, a non-integer `turn`, ...) must never sink the whole publishing run. On schema
+ * failure this OMITS the telemetry field for that lane and records the omission (a counter plus a
+ * bounded log line -- never the raw candidate, only zod's issue paths/codes) so the drop is
+ * visible rather than silent, then returns `undefined` exactly like the "no telemetry data at
+ * all" case the caller already handles. The earlier version of this function ended in
+ * `personaTelemetrySchema.parse(...)`, which threw on drift instead of degrading -- that was
+ * itself a real regression this rewrite fixes; fail-loud on drift belongs in this function's own
+ * unit tests, not on the production success path.
  *
  * Input is loosely typed (`unknown`-per-field, not `PersonaLaneResult` from the panel module):
  * this module must not depend on panel-engine internals, so every field is read defensively by
  * type, exactly as a producer across a process/module boundary should.
  */
 export function buildPersonaTelemetryPayload(lane: {
+  id?: unknown;
   model?: unknown;
   turnsCount?: unknown;
   toolTurns?: unknown;
@@ -163,7 +176,25 @@ export function buildPersonaTelemetryPayload(lane: {
       })),
     } : {}),
   };
-  return personaTelemetrySchema.parse(candidate);
+
+  const result = personaTelemetrySchema.safeParse(candidate);
+  if (result.success) return result.data;
+
+  const personaId = typeof lane.id === 'string' ? lane.id : 'unknown';
+  // Telemetry recording is itself best-effort: a metrics-layer failure must never compound into a
+  // review failure either, the same principle this whole function exists to uphold.
+  try {
+    getMetrics().personaTelemetryDropped.add(1, { persona: personaId });
+  } catch (_) {
+    // ignore
+  }
+  logger.warn('Persona telemetry payload failed schema validation; omitting it from the result', {
+    persona: personaId,
+    // Bounded to zod's structural issue metadata -- never the raw candidate values, which a
+    // future producer could make arbitrarily large.
+    issues: result.error.issues.map((issue) => ({ path: issue.path.join('.'), code: issue.code })),
+  });
+  return undefined;
 }
 
 const personaSchema = z.object({

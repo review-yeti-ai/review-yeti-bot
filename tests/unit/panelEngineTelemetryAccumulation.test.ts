@@ -358,6 +358,9 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
       }),
     };
 
+    // Measured AROUND the call, so it is a strict superset of anything the panel can measure
+    // internally. This is what makes the assertion below an invariant rather than a tuned margin.
+    const observedOuterWallMs0 = Date.now();
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/service.ts', patch: '+ const x = 1;' }],
@@ -365,6 +368,7 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
       headSha: 'head-sha-wall-clock',
       client: mockClient as unknown as OmniRouteClient,
     });
+    const observedOuterWallMs = Date.now() - observedOuterWallMs0;
 
     // Proof BY CONSTRUCTION that both persona calls were genuinely in flight at once -- not
     // inferred from timing. If a future change accidentally serialized the fan-out, this fails
@@ -381,17 +385,17 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     // still satisfies `<=`) -- that is what the ratio assertion below is for.
     expect(result.panelWallClockMs!).toBeGreaterThan(0);
     expect(result.panelWallClockMs!).toBeLessThanOrEqual(summedLaneDurationMs);
-    // Deliberately NOT compared against a fixed idle-time constant (e.g. via `timeBudgetMs`): a
-    // real concurrent/serial gap is only a ~2x effect here, well inside `timeBudgetMs`'s up-to-4x
-    // contention allowance, so that style of assertion cannot distinguish the fix from a mutation
-    // that sets `panelWallClockMs` to the summed lane durations (confirmed by mutation testing --
-    // see the Stage 0 PR description). Comparing against `summedLaneDurationMs` instead -- a value
-    // measured in this same contended run -- self-corrects for contention: if the whole run is
-    // slowed down by scheduling pressure, both numbers scale together, but a truly concurrent wall
-    // clock stays close to a SINGLE lane's duration (well under the two-lane sum) regardless of
-    // how much everything is slowed down, while the summed value never does. 0.7 (rather than the
-    // previous 0.8, with a 60ms delay) gives real headroom now that DELAY_MS is 300ms: a true
-    // concurrent run lands around ratio ~0.5-0.55, the mutated one at ~1.0.
-    expect(result.panelWallClockMs!).toBeLessThan(summedLaneDurationMs * 0.7);
+    // What catches a `panelWallClockMs = summedLaneDurationMs` mutation is CONTAINMENT, not a
+    // tuned ratio. `panelWallClockMs` is measured inside `executePersonaPanel`; `observedOuterWallMs`
+    // is measured around the call. An inner interval can never exceed the outer interval that
+    // encloses it -- that holds on any runner, at any load, with no threshold to tune. The summed
+    // lane durations are NOT so bounded: with two lanes genuinely in flight at once the sum counts
+    // the overlapped time twice, so the mutated value exceeds the real elapsed time and this fails.
+    //
+    // A previous revision asserted `< summedLaneDurationMs * 0.7`. That was flagged (correctly) as
+    // a flake vector: `maxObservedConcurrency` proves the lanes STARTED together but not that they
+    // overlapped substantially, so on a contended runner a correct implementation could drift past
+    // the ratio. Widening the ratio only moves the cliff; containment removes it.
+    expect(result.panelWallClockMs!).toBeLessThanOrEqual(observedOuterWallMs);
   });
 });
