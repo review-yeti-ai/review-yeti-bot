@@ -175,12 +175,20 @@ export class GitHubEventHandler {
       if (pr.state === 'closed') return { shouldTrigger: false, reason: 'PR is closed' };
 
       const prLabels = labels(pr);
+      const hasOptOut = prLabels.some((l) => {
+        const norm = l.toLowerCase().trim();
+        return norm === 'review-yeti:skip' || norm === 'wip' || norm === 'skip-review';
+      });
+      if (hasOptOut) {
+        return { shouldTrigger: false, reason: 'PR has opt-out label' };
+      }
+
       const triggerSource = pr.draft === true
         ? 'draft_precheck'
         : action === 'labeled'
           ? 'label_trigger'
           : 'pr_event';
-      const isAutomatic = ['opened', 'synchronize', 'reopened'].includes(action)
+      const isAutomatic = ['opened', 'synchronize', 'reopened', 'ready_for_review'].includes(action)
         || (action === 'labeled' && prLabels.some((label) => this.triggerLabels.has(label)));
       if (pr.draft !== true && !isAutomatic) {
         return { shouldTrigger: false, reason: `PR action '${action}' is not configured for automatic review` };
@@ -222,9 +230,10 @@ export class GitHubEventHandler {
       const commentBody = payload.comment?.body || '';
       const inReplyToId = payload.comment?.in_reply_to_id || payload.comment?.inReplyToId;
       const isBotMention = /@(review-yeti|review-yeti-bot|ct-review|bot|ct-review-bot)(\[[^\]]+\])?\b/i.test(commentBody);
+      const isReviewCommand = /^\/review\b/i.test(commentBody.trim());
       const isInlineReply = Boolean(inReplyToId);
 
-      if (!isBotMention && !isInlineReply) {
+      if (!isBotMention && !isReviewCommand && !isInlineReply) {
         return { shouldTrigger: false, reason: 'not bot review command or inline reply' };
       }
 

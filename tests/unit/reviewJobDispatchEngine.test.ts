@@ -516,3 +516,112 @@ describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
     expect(f.repository.markTerminal).not.toHaveBeenCalled();
   });
 });
+
+describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
+  it('sweeps pending cancellations, patches CRs, and marks them propagated', async () => {
+    const patchCancellation = vi.fn(async () => undefined);
+    const findPendingCancellations = vi.fn(async () => [
+      { runId: 'run_1', executionAttempt: 1, projectionName: 'prj-run-1', cancelReason: 'superseded_by_new_head' },
+      { runId: 'run_2', executionAttempt: 2, projectionName: 'prj-run-2', cancelReason: 'user_cancelled' },
+    ]);
+    const markCancelPropagated = vi.fn(async () => true);
+
+    const engine = new ReviewJobDispatchEngine({
+      repository: {
+        claimNext: vi.fn(async () => null),
+        markProjected: vi.fn(async () => true),
+        bindWorkerTokenDigest: vi.fn(async () => true),
+        releaseForRetry: vi.fn(async () => true),
+        markTerminal: vi.fn(async () => true),
+        findPendingCancellations,
+        markCancelPropagated,
+      },
+      projector: {
+        ensure: vi.fn(async () => undefined),
+        patchCancellation,
+      },
+      workerId: 'worker-1',
+      workerImage: 'review-yeti-worker:latest',
+      namespace: 'test-namespace',
+      now: () => 1_700_000_000_000,
+    });
+
+    const result = await engine.sweepPendingCancellations(10);
+    expect(result).toEqual({ propagated: 2, failed: 0 });
+    expect(findPendingCancellations).toHaveBeenCalledWith(10);
+    expect(patchCancellation).toHaveBeenCalledWith('prj-run-1', 'test-namespace', 'superseded_by_new_head');
+    expect(patchCancellation).toHaveBeenCalledWith('prj-run-2', 'test-namespace', 'user_cancelled');
+    expect(markCancelPropagated).toHaveBeenCalledWith('run_1', 1, 1_700_000_000_000);
+    expect(markCancelPropagated).toHaveBeenCalledWith('run_2', 2, 1_700_000_000_000);
+  });
+
+  it('tolerates individual patch failure during sweep without aborting subsequent items', async () => {
+    const patchCancellation = vi.fn()
+      .mockRejectedValueOnce(new Error('Kube API error'))
+      .mockResolvedValueOnce(undefined);
+    const findPendingCancellations = vi.fn(async () => [
+      { runId: 'run_fail', executionAttempt: 1, projectionName: 'prj-fail' },
+      { runId: 'run_ok', executionAttempt: 1, projectionName: 'prj-ok' },
+    ]);
+    const markCancelPropagated = vi.fn(async () => true);
+
+    const engine = new ReviewJobDispatchEngine({
+      repository: {
+        claimNext: vi.fn(async () => null),
+        markProjected: vi.fn(async () => true),
+        bindWorkerTokenDigest: vi.fn(async () => true),
+        releaseForRetry: vi.fn(async () => true),
+        markTerminal: vi.fn(async () => true),
+        findPendingCancellations,
+        markCancelPropagated,
+      },
+      projector: {
+        ensure: vi.fn(async () => undefined),
+        patchCancellation,
+      },
+      workerId: 'worker-1',
+      workerImage: 'review-yeti-worker:latest',
+      namespace: 'test-namespace',
+    });
+
+    const result = await engine.sweepPendingCancellations(10);
+    expect(result).toEqual({ propagated: 1, failed: 1 });
+    expect(markCancelPropagated).toHaveBeenCalledTimes(1);
+    expect(markCancelPropagated).toHaveBeenCalledWith('run_ok', 1, expect.any(Number));
+  });
+
+  it('handles immediate cancellation events and marks propagated', async () => {
+    const patchCancellation = vi.fn(async () => undefined);
+    const markCancelPropagated = vi.fn(async () => true);
+
+    const engine = new ReviewJobDispatchEngine({
+      repository: {
+        claimNext: vi.fn(async () => null),
+        markProjected: vi.fn(async () => true),
+        bindWorkerTokenDigest: vi.fn(async () => true),
+        releaseForRetry: vi.fn(async () => true),
+        markTerminal: vi.fn(async () => true),
+        markCancelPropagated,
+      },
+      projector: {
+        ensure: vi.fn(async () => undefined),
+        patchCancellation,
+      },
+      workerId: 'worker-1',
+      workerImage: 'review-yeti-worker:latest',
+      namespace: 'test-namespace',
+      now: () => 1_700_000_000_000,
+    });
+
+    const handled = await engine.handleCancellation({
+      runId: 'run_event_1',
+      executionAttempt: 3,
+      projectionName: 'prj-event-1',
+      cancelReason: 'superseded_by_new_head',
+    });
+
+    expect(handled).toBe(true);
+    expect(patchCancellation).toHaveBeenCalledWith('prj-event-1', 'test-namespace', 'superseded_by_new_head');
+    expect(markCancelPropagated).toHaveBeenCalledWith('run_event_1', 3, 1_700_000_000_000);
+  });
+});

@@ -703,6 +703,26 @@ export class GitHubInstallationClient {
     });
   }
 
+  async updateCheck(options: {
+    owner: string;
+    repo: string;
+    checkId: number;
+    status?: 'queued' | 'in_progress' | 'completed';
+    title?: string;
+    summary?: string;
+  }): Promise<void> {
+    const output: Record<string, unknown> = {};
+    if (options.title) output.title = validateCheckRunTitle(options.title);
+    if (options.summary) output.summary = options.summary.slice(0, 65_000);
+    await this.request(`/repos/${options.owner}/${options.repo}/check-runs/${options.checkId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: options.status || 'in_progress',
+        ...(Object.keys(output).length > 0 ? { output } : {}),
+      }),
+    });
+  }
+
   async postIssueComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
     await this.request(`/repos/${owner}/${repo}/issues/${prNumber}/comments`, {
       method: 'POST',

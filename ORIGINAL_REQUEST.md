@@ -79,3 +79,92 @@ Integrity mode: development
 - [ ] Default configuration enables Zoekt and analyzer pre-checks when unconfigured in `.ct-review.yaml`.
 - [ ] Explicitly setting `pre_checks.enabled: false` or individual flags bypasses the respective pre-checks cleanly.
 - [ ] TypeScript builds with zero type errors (`npm run build`).
+
+## Follow-up — 2026-09-18T14:26:10Z
+
+Implement comprehensive token optimization and lifecycle hardening for Review Yeti (`review-yeti-bot`), adopting the **Hybrid Trigger Model** (debounced automatic reviews with tagging/draft escape hatches), **two-tier in-flight cancellation** across dispatcher and worker pods, **pre-fetched bounded diff injection**, **path-based persona gating**, and **gateway circuit breaking**.
+
+Working directory: `/Users/jasonbarbee/work/review-yeti-bot`
+Integrity mode: development
+Architecture Reference: `docs/superpowers/specs/2026-09-18-review-lifecycle-and-token-design.md`
+
+Requested team: Full multi-agent team (parallel work streams across dispatcher, panel engine, sandbox, and gateway)
+
+## Requirements
+
+### R1. Hybrid Trigger Model & Commit Debouncing
+- **Hybrid Trigger Routing**:
+  - `opened` (non-draft) and `ready_for_review`: Admit and dispatch immediately (explicit review request).
+  - `synchronize`: Admit immediately to establish the pending GitHub check on the new head, but set outbox `available_at = received_at + 60s` (trailing quiet window with 5m burst cap). Rapid successive pushes supersede the queued outbox row before any worker pod is scheduled, costing zero tokens.
+  - `converted_to_draft` and `closed`: Automatically cancel in-flight reviews.
+  - Opt-out label (e.g. `review-yeti:skip`, `wip`): Suppress automatic review runs and cancel in-flight runs. Removing the label admits the head.
+  - On-demand command / tag (e.g. `/review` comment or `review-yeti` label): Bypass debounce and dispatch immediately on the current head.
+  - Wire repository configuration `auto_review.triggers` (currently dead in `src/config/schema.ts`) so individual repositories can opt into ready-for-review-only or tag-only mode.
+
+### R2. Two-Tier In-Flight Review Cancellation Architecture
+- **Push Path (Dispatcher → Operator → Pod)**:
+  - Add `cancel_requested_at`, `cancel_reason`, and `cancel_propagated_at` to PostgreSQL review run tables, fenced by `run_id` and `execution_attempt`.
+  - Dispatcher consumes `review.lifecycle.superseded` outbox events and patches the projected `PRReviewJob` CR with `spec.cancelRequested: true`.
+  - In `k8s-operator`: Add `PhaseCancelled`. On `spec.cancelRequested`, transition phase to `Cancelled` *before* deleting the Job with foreground propagation, avoiding the `WorkerJobMissing` failure-publication path that incorrectly marks checks red.
+- **Pull Path & Worker Self-Termination (Direct Pod GPU Saver)**:
+  - In `src/runLiveReview.ts` and worker runtime, install SIGTERM handling that triggers an `AbortController` passed into streaming gateway calls, terminating upstream vLLM inference immediately upon pod termination.
+  - Worker polls authenticated `/api/dispatch/status` periodically (every 20–30s) using its existing bearer token, wiring the result into the already-existing `isCurrentHead` callback in `src/panel/panelEngine.ts:2932` to abort if superseded even if push propagation is delayed.
+
+### R3. Pre-Fetched Bounded Diff Injection & Turn Reduction
+- In `src/panel/panelEngine.ts`, pre-format and inline scoped diff hunks (for files under ~12k-16k tokens) directly into the first user turn, ordered by persona lane affinity.
+- Update persona prompt instructions so the model renders findings immediately if inlined diffs suffice, rather than forcing sequential `get_diff` turns for each file.
+- Retain `get_diff` as an on-demand fallback only for files whose diffs exceed inlining thresholds.
+- Structure prompt segments to maximize vLLM prefix-cache sharing across personas (shared preamble + shared diff + persona charter/task).
+
+### R4. Domain-Based Persona Gating & Budgeting
+- Wire the existing domain classifier (`src/panel/classifierEngine.ts`) to conditionally gate personas instead of running all lanes blindly:
+  - `sec-lane`: Run only when touched files match `security_auth` domains, sensitive paths/extensions, secret manifests, or when static analyzers detect security-relevant patterns.
+  - `perf-lane`: Run only when persistence/runtime files change or analyzers flag queries/loops.
+  - Pure documentation/asset/config PRs: Skip `sec-lane` and `perf-lane`, recording an explicit `not_applicable` status rather than failing the panel quorum.
+  - Allocate a 2-turn / low-effort budget for gated lanes that match weakly, preventing empty approvals from consuming 50k tokens.
+
+### R5. Gateway Circuit Breaking & Outage Requeuing
+- In `src/panel/panelEngine.ts` and `src/gateway/`:
+  - When the primary provider returns 502/503 on large prompts (>15k tokens), avoid fan-out retry storms across secondary providers.
+  - Fail closed with `provider_5xx`, release the outbox row with exponential backoff delay (`available_at`), and keep the check pending rather than marking the PR failed.
+  - Add dispatch circuit breaker that pauses claiming new outbox rows when cluster 5xx rates cross error thresholds.
+
+## Verification Resources & Test Harness
+- `npm test tests/unit/panelEngine.test.ts`
+- `npm test tests/unit/reviewDispatchRepository.test.ts`
+- `npm test tests/unit/configLoader.test.ts`
+- `npm test tests/unit/publishingReview.test.ts`
+- `npm run build`
+- Dedicated test suites verifying:
+  1. Webhook debounce and queue-supersede without pod creation.
+  2. Cancellation propagation from DB to operator to worker SIGTERM.
+  3. Worker status polling tripping `isCurrentHead` abort.
+  4. Pre-fetched diff injection resulting in single/two-turn completions.
+  5. Persona gating decisions across docs-only, security, and performance PRs.
+  6. Gateway 5xx backoff and circuit breaker behavior.
+
+## Acceptance Criteria
+
+### Hybrid Triggers & Debounce
+- [ ] Non-draft `opened` and `ready_for_review` events trigger immediate admission and dispatch.
+- [ ] `synchronize` sets outbox `available_at` 60s in the future; successive pushes within the window supersede the row before a pod is created.
+- [ ] Draft PRs and PRs with opt-out labels do not schedule review pods.
+- [ ] `/review` comments and opt-in labels trigger immediate review runs bypassing debounce.
+- [ ] Repositories can set `auto_review.triggers: [pr_ready]` in `.ct-review.yaml`.
+
+### In-Flight Cancellation
+- [ ] Superseded runs issue `spec.cancelRequested` to the Kubernetes CR within 5 seconds.
+- [ ] Operator transitions CR to `Cancelled` and cleanly terminates the worker Job without triggering `WorkerJobMissing`.
+- [ ] Worker pod intercepts SIGTERM or status poll rejection, immediately aborting active HTTP/LLM streams.
+- [ ] Superseded runs update their GitHub checks with a neutral superseded notice.
+
+### Pre-Fetched Diffs & Persona Gating
+- [ ] Scoped diff hunks are pre-injected into turn 1, cutting average persona turns from 6–14 down to 2–4.
+- [ ] Pure docs and asset PRs skip `sec-lane` and `perf-lane` with `not_applicable` status.
+- [ ] Sensitive code changes reliably trigger `sec-lane` and `perf-lane`.
+
+### Gateway Outage Handling & Build
+- [ ] Upstream 502/503 errors delay and requeue outbox rows instead of cascading 25k+ token prompts across secondary pools.
+- [ ] TypeScript builds with zero errors (`npm run build`).
+- [ ] All unit and integration test suites pass (`npm test`).
+

@@ -69,22 +69,26 @@ export async function requeueRecoverableIncompletePanelFailure(
   const context = await repository.readRunRetryContext(input.runId);
   if (!context) return;
   if (context.publicationMode !== 'app-gate' || context.authoritativeGateAppId != null) return;
+  const isProvider5xx = input.diagnostics?.reason === 'provider_5xx';
+  const delayMs = isProvider5xx
+    ? Math.min(300_000, 15_000 * Math.pow(2, Math.max(0, input.executionAttempt - 1)))
+    : RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS;
   const receivedAt = now;
   try {
     await repository.admit({
       deliveryId: `internal-recoverable-panel-retry:${input.runId}:a${input.executionAttempt}`,
-      eventName: 'internal_recoverable_panel_retry',
+      eventName: isProvider5xx ? 'internal_provider_5xx_retry' : 'internal_recoverable_panel_retry',
       repositoryId: context.repositoryId,
       installationId: context.installationId,
       receivedAt,
       terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
       payloadDigest: sha256({ runId: input.runId, executionAttempt: input.executionAttempt,
-        reason: 'recoverable_incomplete_panel' }),
+        reason: isProvider5xx ? 'provider_5xx' : 'recoverable_incomplete_panel' }),
       publicationMode: 'app-gate',
       centralActionDispatch: false,
       retryRequested: true,
       retryAfterExecutionAttempt: input.executionAttempt,
-      availableAt: receivedAt + RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS,
+      availableAt: receivedAt + delayMs,
       identity: context.identity,
     });
   } catch (error) {

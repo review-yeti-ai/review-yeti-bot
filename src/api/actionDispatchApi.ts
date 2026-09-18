@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import {
   type GitHubActionsOidcClaims,
@@ -32,6 +33,13 @@ import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, Authoritat
 import { ReviewGenerationConflictError } from '../review/reviewRun';
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 
+function constantTimeDigestEqual(expected: unknown, actual: string): boolean {
+  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/u.test(expected) || !/^[a-f0-9]{64}$/u.test(actual)) {
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(actual, 'hex'));
+}
+
 export interface ActionOidcVerifier {
   verify(token: string): Promise<GitHubActionsOidcClaims>;
   /** The verified token policy; required to authorize central refresh forwarding. */
@@ -58,6 +66,7 @@ export interface ActionDispatchRouterOptions {
     evidence?: WorkerCompletionStore;
   };
   authoritativeWorkerCompletion?: AuthoritativeReviewCompletion;
+  runStatusRepository?: Pick<ReviewDispatchRepository, 'getRunStatus'>;
   now?: () => number;
 }
 
@@ -366,6 +375,54 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       return response.status(503).json({ error: 'Worker terminal failure could not be persisted' });
     }
   });
+
+  const handleRunStatus = async (request: Request, response: Response) => {
+    const token = bearerToken(request);
+    if (!token) return response.status(401).json({ error: 'Bearer token is required' });
+
+    const runId = String(request.params.runId || request.query.runId || '').trim();
+    const attemptStr = request.params.attempt || request.query.attempt;
+    const attempt = Number(attemptStr !== undefined ? attemptStr : 1);
+    if (!runId || !Number.isSafeInteger(attempt) || attempt < 1) {
+      return response.status(400).json({ error: 'Invalid run ID or execution attempt' });
+    }
+
+    const repository = options.runStatusRepository || (options.workerCompletion?.repository as any);
+    if (!repository || typeof repository.getRunStatus !== 'function') {
+      return response.status(503).json({ error: 'Run status lookup is not configured' });
+    }
+
+    try {
+      const status = await repository.getRunStatus(runId, attempt);
+      if (!status) {
+        return response.status(404).json({ error: 'Run not found' });
+      }
+
+      const tokenDigest = sha256(token);
+      if (!status.workerTokenDigest || !constantTimeDigestEqual(status.workerTokenDigest, tokenDigest)) {
+        return response.status(401).json({ error: 'Unauthorized' });
+      }
+
+      return response.status(200).json({
+        current: status.current,
+        status: status.status,
+        cancelRequested: status.cancelRequested,
+        cancelReason: status.cancelReason,
+        currentHeadSha: status.currentHeadSha,
+        isCurrentHead: status.isCurrentHead,
+      });
+    } catch (err) {
+      logger.error('Failed to get run status', {
+        runId,
+        attempt,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return response.status(500).json({ error: 'Failed to retrieve run status' });
+    }
+  };
+
+  router.get('/runs/:runId/attempts/:attempt/status', handleRunStatus);
+  router.get('/status', handleRunStatus);
 
   return router;
 }

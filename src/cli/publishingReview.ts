@@ -66,8 +66,8 @@ export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths }
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
 
-/** Terminal states this lane can publish. `neutral` is intentionally absent. */
-export type PublishingConclusion = 'success' | 'failure';
+/** Terminal states this lane can publish. */
+export type PublishingConclusion = 'success' | 'failure' | 'neutral' | 'cancelled';
 
 export interface PublishingReviewIdentity {
   runId: string;
@@ -105,11 +105,19 @@ export interface PublishingCheckClient {
     owner: string;
     repo: string;
     checkId: number;
-    conclusion: 'success' | 'failure' | 'cancelled';
+    conclusion: 'success' | 'failure' | 'cancelled' | 'neutral';
     title: string;
     summary: string;
     text?: string;
     annotations?: CheckAnnotation[];
+  }): Promise<void>;
+  updateCheck?(options: {
+    owner: string;
+    repo: string;
+    checkId: number;
+    status?: 'queued' | 'in_progress' | 'completed';
+    title?: string;
+    summary?: string;
   }): Promise<void>;
   publishGateCheck?(
     owner: string,
@@ -269,7 +277,7 @@ const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
  * else -- BLOCK, FIX_FIRST, an unrecognised verdict, or a SHIP that still carries
  * a P0/P1 -- concludes `failure`.
  */
-export function publishingConclusion(verdict: string, blockingFindingCount: number): PublishingConclusion {
+export function publishingConclusion(verdict: string, blockingFindingCount: number): 'success' | 'failure' {
   if (blockingFindingCount > 0) return 'failure';
   return String(verdict).toUpperCase() === 'SHIP' ? 'success' : 'failure';
 }
@@ -533,6 +541,8 @@ export interface PublishingReviewDeps {
   now?: () => number;
   /** Worker/runtime shutdown signal; linked to the panel's configured deadline. */
   signal?: AbortSignal;
+  /** Current head check to detect in-flight supersession and abort early. */
+  isCurrentHead?: () => boolean;
   /**
    * REL-677 / ADR 0329: index-at-review-time zoekt grounding. Injectable for tests; the default
    * implementation materializes a read-only tarball of the head SHA and builds a throwaway index.
@@ -688,19 +698,24 @@ export async function runPublishingReviewWorker(
     if (legacySuccessCompletionAttempted) return;
     const failureClass = panelFailure?.failureClass ?? classifyFailure(error);
     const githubDiffNotRenderable = isGithubDiffNotRenderableError(error);
+    const isProvider5xx = Boolean(
+      (error as any)?.failureReason === 'provider_5xx' ||
+      (error instanceof Error && error.message.includes('provider_5xx'))
+    );
     // The recoverable marker is the one bit the dispatcher's bounded
     // automatic retry (REL-620) reads off this event; it is set exactly when
-    // this call came from the `isRecoverableIncompletePanel` branch below,
-    // never inferred from `failureClass` alone.
+    // this call came from the `isRecoverableIncompletePanel` branch below or
+    // from a 502/503 provider outage, never inferred from `failureClass` alone.
     const diagnostics = buildWorkerFailureDiagnostics(error, failureClass, {
       githubDiffNotRenderable,
-      recoverableIncompletePanel: panelFailure !== undefined,
+      recoverableIncompletePanel: panelFailure !== undefined || isProvider5xx,
+      ...(isProvider5xx ? { reason: 'provider_5xx' } : {}),
     });
     // The dispatcher retries attempts 1..CAP; the attempt that fails as
     // CAP+1 is the exhausted one this exact worker execution is running as
     // (`identity.executionAttempt`), so no cross-process coordination is
     // needed to know whether this is the final word.
-    const recoverablePanelExhaustion = panelFailure !== undefined
+    const recoverablePanelExhaustion = (panelFailure !== undefined || isProvider5xx)
       && !isRecoverablePanelRetryEligible(identity.executionAttempt)
       ? { attempts: identity.executionAttempt, cap: RECOVERABLE_PANEL_AUTO_RETRY_CAP }
       : undefined;
@@ -717,26 +732,57 @@ export async function runPublishingReviewWorker(
     }
     if (failedCheckId !== undefined) {
       try {
-        await deps.checkClient.completeCheck({
-          owner: identity.owner,
-          repo: identity.repoName,
-          checkId: failedCheckId,
-          conclusion: 'failure',
-          title: 'Review Yeti: review did not complete',
-          summary: [
-            renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
-            ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : []),
-            ...(panelFailure?.panelEvidence
-              ? [
-                  renderTransportSummary(panelFailure.panelEvidence.requestedModel, panelFailure.panelEvidence.resolvedModel),
-                  renderTelemetrySummary(panelFailure.panelEvidence.telemetry),
-                  ...(panelFailure.panelEvidence.failedLanes.length > 0
-                    ? [renderFailedLanesSummary(panelFailure.panelEvidence.failedLanes)]
-                    : []),
-                ]
-              : []),
-          ].join('\n\n'),
-        });
+        const isSuperseded = Boolean(
+          (deps.isCurrentHead && !deps.isCurrentHead()) ||
+          (error instanceof Error && (
+            error.message.includes('stale run aborted') ||
+            error.message.includes('superseded') ||
+            (deps.signal?.aborted && (deps.isCurrentHead ? !deps.isCurrentHead() : false))
+          ))
+        );
+
+        if (isSuperseded) {
+          await deps.checkClient.completeCheck({
+            owner: identity.owner,
+            repo: identity.repoName,
+            checkId: failedCheckId,
+            conclusion: 'neutral',
+            title: 'Review Yeti: review superseded',
+            summary: 'Superseded by a newer pull request head.',
+          });
+        } else if (isProvider5xx) {
+          if (typeof deps.checkClient.updateCheck === 'function') {
+            await deps.checkClient.updateCheck({
+              owner: identity.owner,
+              repo: identity.repoName,
+              checkId: failedCheckId,
+              status: 'in_progress',
+              title: 'Review Yeti: gateway capacity unavailable (requeuing)',
+              summary: 'Gateway capacity unavailable (502/503 upstream). Execution will automatically requeue.',
+            });
+          }
+        } else {
+          await deps.checkClient.completeCheck({
+            owner: identity.owner,
+            repo: identity.repoName,
+            checkId: failedCheckId,
+            conclusion: 'failure',
+            title: 'Review Yeti: review did not complete',
+            summary: [
+              renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
+              ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : []),
+              ...(panelFailure?.panelEvidence
+                ? [
+                    renderTransportSummary(panelFailure.panelEvidence.requestedModel, panelFailure.panelEvidence.resolvedModel),
+                    renderTelemetrySummary(panelFailure.panelEvidence.telemetry),
+                    ...(panelFailure.panelEvidence.failedLanes.length > 0
+                      ? [renderFailedLanesSummary(panelFailure.panelEvidence.failedLanes)]
+                      : []),
+                  ]
+                : []),
+            ].join('\n\n'),
+          });
+        }
       } catch {
         logger.error('Failed to publish the fail-closed conclusion', {
           runId: identity.runId,
@@ -954,6 +1000,7 @@ export async function runPublishingReviewWorker(
           jobId: identity.runId,
           signal: panelDeadline.signal,
           repoFileProvider,
+          isCurrentHead: deps.isCurrentHead,
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
