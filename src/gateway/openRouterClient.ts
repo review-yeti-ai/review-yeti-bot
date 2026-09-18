@@ -1675,6 +1675,43 @@ export function isTransientGatewayError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Name the upstream that actually answered.
+ *
+ * This client is OpenAI-compatible and is pointed at both OpenRouter and the
+ * Bifrost gateway; Bifrost in turn routes to whatever provider its virtual key
+ * resolves to (ollama, gemini, ...). Hardcoding "OpenRouter" into every failure
+ * message is actively misleading: on 2026-09-17 it sent an outage investigation
+ * at an OpenRouter balance while the real blocker was Ollama out of credits.
+ *
+ * Prefer the provider Bifrost reports in `extra_fields.routing_info`, then fall
+ * back to the configured host.
+ */
+function extractRoutingInfo(candidate: any): any {
+  return candidate?.extra_fields?.routing_info
+    ?? candidate?.data$?.extra_fields?.routing_info
+    ?? candidate?.error?.extra_fields?.routing_info
+    ?? candidate?.body?.extra_fields?.routing_info
+    ?? null;
+}
+
+function upstreamLabel(baseUrl: string, parsedBody?: unknown): string {
+  const routing = extractRoutingInfo(parsedBody);
+  const provider = typeof routing?.provider === 'string' ? routing.provider : null;
+  if (provider) {
+    const model = typeof routing?.model === 'string' ? routing.model : null;
+    const key = typeof routing?.key === 'string' ? routing.key : null;
+    const detail = [model, key ? `key=${key}` : null].filter(Boolean).join(', ');
+    return detail ? `${provider} (${detail})` : provider;
+  }
+  try {
+    const host = new URL(baseUrl).hostname;
+    return host === 'openrouter.ai' ? 'OpenRouter' : host;
+  } catch {
+    return 'upstream';
+  }
+}
+
 /** OpenAI-compatible model boundary pinned to OpenRouter for review execution. */
 export class OpenRouterClient implements ReviewModelClient {
   private readonly baseUrl: string;
@@ -1900,11 +1937,16 @@ export class OpenRouterClient implements ReviewModelClient {
           }
           const status = response.status;
           let parsedMsg = errorBody;
+          let parsedBody: unknown = null;
           try {
             const parsed = JSON.parse(errorBody);
+            parsedBody = parsed;
             parsedMsg = parsed?.error?.message || parsed?.message || errorBody;
           } catch (_) {}
-          throw new OpenRouterResponseError(`OpenRouter HTTP ${status}: ${parsedMsg}`, status);
+          throw new OpenRouterResponseError(
+            `${upstreamLabel(this.baseUrl, parsedBody)} HTTP ${status}: ${parsedMsg}`,
+            status,
+          );
         }
 
         const contentType = response.headers?.get?.('content-type') || '';
@@ -2099,7 +2141,7 @@ export class OpenRouterClient implements ReviewModelClient {
         const status = sdkErrorStatus(error);
         const sdkMessage = sdkErrorMessage(error);
         if (status && status >= 400) {
-          classifiedError = new OpenRouterResponseError(`OpenRouter HTTP ${status}: ${sdkMessage}`, status);
+          classifiedError = new OpenRouterResponseError(`${upstreamLabel(this.baseUrl, error)} HTTP ${status}: ${sdkMessage}`, status);
         } else if (request.stream !== false && /malformed json|response validation failed/i.test(sdkMessage)) {
           classifiedError = new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
         } else if (error?.name === 'ResponseValidationError') {

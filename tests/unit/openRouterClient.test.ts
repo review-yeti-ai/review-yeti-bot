@@ -394,6 +394,47 @@ describe('OpenRouterClient', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
   });
 
+  it('does not blame OpenRouter when the upstream is the Bifrost gateway', async () => {
+    // Observed failure shape: the gateway routed the review model to a different
+    // provider, that provider was out of credits, and the message still said
+    // "OpenRouter HTTP 429" — sending the investigation at the wrong account.
+    const body = {
+      error: { message: 'you have reached your team usage limit, contact an admin to add usage credits' },
+      extra_fields: { routing_info: { provider: 'ollama', model: 'glm-5.3-flash', key: 'ollama-personal' } },
+    };
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify(body), {
+      status: 429,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new OpenRouterClient({
+      apiKey: 'test-openrouter-key',
+      baseUrl: 'https://gateway.example.com/v1',
+      fetchImplementation,
+    });
+
+    const failure = await client.complete({ ...request, stream: false }).catch((error: Error) => error);
+
+    // The point: it must not blame OpenRouter for something OpenRouter never saw.
+    expect((failure as Error).message).not.toContain('OpenRouter HTTP');
+    expect((failure as Error).message).toContain('gateway.example.com');
+  });
+
+  it('still says OpenRouter when OpenRouter is genuinely the upstream', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: 'nope' } }), {
+      status: 429,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new OpenRouterClient({
+      apiKey: 'test-openrouter-key',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      fetchImplementation,
+    });
+
+    await expect(client.complete({ ...request, stream: false })).rejects.toMatchObject({
+      message: expect.stringContaining('OpenRouter HTTP 429'),
+    });
+  });
+
   it('retains generation attribution and a sanitized failure class for failed requests', async () => {
     const jobId = 'run_22222222222222222222222222222222';
     const bus = LiveStreamBus.getInstance();
