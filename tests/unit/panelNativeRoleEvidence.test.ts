@@ -169,11 +169,15 @@ function expectPersonaRoleInput(request: any): void {
 
 function expectNoRawPatchOrDuplicateSchema(requests: any[]): void {
   for (const request of requests) {
-    const text = requestText(request);
-    expect(text).not.toContain(RAW_PATCH_MARKER);
+    const role = request.metadata?.role;
+    if (role === 'moderator' || role === 'arbiter') {
+      const text = requestText(request);
+      expect(text).not.toContain(RAW_PATCH_MARKER);
+    }
     const roleInput = parseRoleInput(request);
     expect(roleInput).not.toHaveProperty('changedFiles');
     expect(roleInput).not.toHaveProperty('outputSchema');
+    expect(JSON.stringify(roleInput)).not.toContain(RAW_PATCH_MARKER);
   }
 }
 

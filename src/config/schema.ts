@@ -258,15 +258,19 @@ export const knowledgeBaseSchema = z.object({
 
 export const pathFiltersSchema = z.array(z.string()).default([]);
 
+export const DEFAULT_AUTO_REVIEW_TRIGGERS = ['pr_opened', 'pr_synchronize', '@ct-review'] as const;
+export type AutoReviewTrigger = 'pr_opened' | 'pr_synchronize' | 'pr_ready' | '@ct-review' | 'tag' | (string & {});
+
 export const autoReviewSchema = z.object({
   enabled: z.boolean().default(true),
   ignore_drafts: z.boolean().default(true),
   review_drafts: z.boolean().default(false),
-  triggers: z.array(z.string()).default(['pr_opened', 'pr_synchronize', '@ct-review']),
+  triggers: z.array(z.string()).default([...DEFAULT_AUTO_REVIEW_TRIGGERS]),
   labels: z.array(z.string()).default([]),
   ignore_patterns: z.array(z.string()).default([]),
   drafts: z.boolean().default(false),
 }).passthrough().default({});
+export type AutoReviewConfig = z.infer<typeof autoReviewSchema>;
 
 export const enforcementPolicySchema = z.object({
   require_all_reviews: z.boolean().default(true),

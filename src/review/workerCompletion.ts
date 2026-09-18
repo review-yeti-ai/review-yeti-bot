@@ -244,7 +244,7 @@ export function buildDurableWorkerFailureDiagnostics(
 export function buildWorkerFailureDiagnostics(
   error: unknown,
   failureClass: WorkerTerminalFailure['failureClass'],
-  options?: { githubDiffNotRenderable?: boolean; recoverableIncompletePanel?: boolean },
+  options?: { githubDiffNotRenderable?: boolean; recoverableIncompletePanel?: boolean; reason?: string },
 ): WorkerFailureDiagnostics {
   const providerStatus = error && typeof error === 'object' && 'status' in error
     ? Number((error as { status?: unknown }).status)
@@ -259,10 +259,11 @@ export function buildWorkerFailureDiagnostics(
       logTail: redactWorkerFailureLogTail(`${GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION} ${message}`),
     };
   }
+  const explicitReason = options?.reason || (error && typeof error === 'object' && 'failureReason' in error && typeof (error as any).failureReason === 'string' ? (error as any).failureReason : undefined);
   return {
-    reason: workerFailureReason(failureClass),
+    reason: explicitReason || workerFailureReason(failureClass),
     ...(safeStatus === undefined ? {} : { providerStatus: safeStatus }),
-    logTail: redactWorkerFailureLogTail(message || workerFailureReason(failureClass)),
+    logTail: redactWorkerFailureLogTail(message || explicitReason || workerFailureReason(failureClass)),
     ...(options?.recoverableIncompletePanel === true ? { recoverableIncompletePanel: true } : {}),
   };
 }

@@ -166,6 +166,10 @@ function fromRow(row: any): ReviewRun {
     error: row.error_text || undefined,
     failureDiagnostics: storedDiagnostics && typeof storedDiagnostics === 'object'
       && Object.keys(storedDiagnostics).length > 0 ? storedDiagnostics : undefined,
+    burstStartedAt: row.burst_started_at ? milliseconds(row.burst_started_at) : undefined,
+    cancelRequestedAt: row.cancel_requested_at ? milliseconds(row.cancel_requested_at) : undefined,
+    cancelReason: row.cancel_reason || undefined,
+    cancelPropagatedAt: row.cancel_propagated_at ? milliseconds(row.cancel_propagated_at) : undefined,
     createdAt: milliseconds(row.created_at) || 0,
     updatedAt: milliseconds(row.updated_at) || 0,
   };
@@ -377,6 +381,53 @@ export interface ReviewDispatchRepository {
      * structural (only 'queued'/'running' rows ever match), not delivery-keyed. */
     deliveryId: string;
   }): Promise<{ terminalizedRunIds: string[] }>;
+  /**
+   * Advance a debounced outbox row's available_at to now for on-demand triggers.
+   */
+  advanceDebounceAvailableAt(
+    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; headSha?: string; now?: number },
+    prNumber?: number,
+    headSha?: string,
+    now?: number,
+  ): Promise<{ advanced: boolean; runId?: string }>;
+  /**
+   * Cancel in-flight reviews for a pull request (e.g. converted to draft or opt-out label added).
+   */
+  cancelRunsForPullRequest(
+    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string; now?: number },
+    prNumber?: number,
+    cancelReason?: string,
+    now?: number,
+  ): Promise<{ cancelledRunIds: string[] }>;
+  /**
+   * Mark cancellation as propagated to Kubernetes / worker pod for a specific execution attempt.
+   */
+  markCancelPropagated(runId: string, executionAttempt: number, now?: number): Promise<boolean>;
+  /**
+   * Find outbox rows with cancel requested that have not yet been propagated to Kubernetes.
+   */
+  findPendingCancellations(limit?: number): Promise<PendingCancellation[]>;
+  /**
+   * Get authenticated status for an execution attempt of a run.
+   */
+  getRunStatus(runId: string, executionAttempt: number): Promise<RunStatusResult | null>;
+}
+
+export interface PendingCancellation {
+  runId: string;
+  executionAttempt: number;
+  projectionName: string;
+  cancelReason?: string;
+}
+
+export interface RunStatusResult {
+  current: boolean;
+  status: string;
+  cancelRequested: boolean;
+  cancelReason?: string;
+  currentHeadSha?: string;
+  isCurrentHead: boolean;
+  workerTokenDigest?: string;
 }
 
 export interface WorkerFailureTransition {
@@ -567,6 +618,33 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
 
       const identityDigest = sha256(input.identity);
       const runId = deriveReviewRunId(input.identity);
+
+      let burstStartedAt = input.receivedAt;
+      let availableAt = input.availableAt ?? input.receivedAt;
+
+      if (input.debounce === true) {
+        const priorRun = await client.query(
+          `SELECT burst_started_at, received_at
+             FROM review_runs
+            WHERE owner = $1 AND repo = $2 AND pr_number = $3
+            ORDER BY received_at DESC NULLS LAST, created_at DESC
+            LIMIT 1`,
+          [input.identity.owner, input.identity.repo, input.identity.prNumber],
+        );
+        const priorRow = priorRun.rows[0];
+        if (priorRow) {
+          const priorBurst = priorRow.burst_started_at
+            ? milliseconds(priorRow.burst_started_at)
+            : milliseconds(priorRow.received_at);
+          if (priorBurst !== undefined && (input.receivedAt - priorBurst) <= 300_000 && (input.receivedAt - priorBurst) >= 0) {
+            burstStartedAt = priorBurst;
+          }
+        }
+        availableAt = Math.min(input.receivedAt + 60_000, burstStartedAt + 300_000);
+      } else if (input.debounce === false) {
+        availableAt = input.receivedAt;
+      }
+
       const inserted = await client.query(
          `WITH retry_eligibility AS (
            SELECT runs.run_id,
@@ -603,14 +681,15 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             snapshot_digest, config_digest, effective_policy_digest, effective_config_digest,
             index_epoch, identity, status, stage, attempt, artifacts, repository_id,
             installation_id, delivery_id, received_at, terminal_deadline, publication_mode, authoritative_gate_app_id,
-            created_at, updated_at)
+            burst_started_at, created_at, updated_at)
          VALUES
            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9, $11, $12,
             'queued', 'admission', 0, '{}'::jsonb, $13, $14, $15,
             to_timestamp($16 / 1000.0), to_timestamp($17 / 1000.0), $18, $19,
-            to_timestamp($16 / 1000.0), to_timestamp($16 / 1000.0))
+            to_timestamp($23 / 1000.0), to_timestamp($16 / 1000.0), to_timestamp($16 / 1000.0))
          ON CONFLICT (identity_digest) DO UPDATE
            SET updated_at = review_runs.updated_at,
+               burst_started_at = COALESCE(review_runs.burst_started_at, EXCLUDED.burst_started_at),
                -- Retry only the same complete identity after a durable failure.
                -- Active duplicates remain unchanged unless the trusted App
                -- requested-action path (or its central signed handoff) carries
@@ -682,6 +761,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           input.retryRequested === true,
           input.retryAfterExecutionAttempt ?? null,
           ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled,
+          burstStartedAt,
         ],
       );
       const runRow = inserted.rows[0];
@@ -706,6 +786,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
              UPDATE review_runs
                 SET status = 'superseded',
                     error_text = 'superseded by a newer review identity',
+                    cancel_requested_at = to_timestamp($5 / 1000.0),
+                    cancel_reason = 'superseded_by_new_head',
                     lease_owner = NULL,
                     lease_expires_at = NULL,
                     updated_at = to_timestamp($5 / 1000.0)
@@ -716,14 +798,24 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             RETURNING run_id
            )
            UPDATE review_dispatch_outbox AS outbox
-              SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+              SET status = 'terminal',
+                  cancel_requested_at = to_timestamp($5 / 1000.0),
+                  cancel_reason = 'superseded_by_new_head',
+                  cancel_propagated_at = CASE WHEN outbox.projection_name IS NULL THEN to_timestamp($5 / 1000.0) ELSE NULL END,
+                  lease_owner = NULL, lease_expires_at = NULL,
                   updated_at = to_timestamp($5 / 1000.0)
             WHERE outbox.run_id IN (SELECT run_id FROM superseded)
-           RETURNING outbox.run_id`,
+           RETURNING outbox.run_id, outbox.cancel_propagated_at`,
           [input.identity.owner, input.identity.repo, input.identity.prNumber, identityDigest, input.receivedAt,
             runRow.authoritative_gate_app_id != null],
         );
         for (const supersededRow of superseded.rows) {
+          if (supersededRow.cancel_propagated_at) {
+            await client.query(
+              `UPDATE review_runs SET cancel_propagated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
+              [supersededRow.run_id, input.receivedAt],
+            );
+          }
           await this.appendLifecycle(client, String(supersededRow.run_id), 'review.lifecycle.superseded', input.receivedAt,
             { stage: 'superseded', terminal_class: 'candidate_superseded' });
         }
@@ -768,7 +860,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 AND r.delivery_id = EXCLUDED.delivery_id
            )`,
         [runRow.run_id, input.deliveryId, input.receivedAt, runRow.retry_from_reaper_failure === true,
-          input.availableAt ?? input.receivedAt],
+          availableAt],
       );
       if (input.authoritativeGate && ['queued', 'running'].includes(runRow.status)) {
         const gate = await PostgresReviewGateRepository.reserveInTransaction(
@@ -1145,6 +1237,150 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       }
       await client.query('COMMIT');
       return { terminalizedRunIds: result.rows.map((row: Record<string, unknown>) => String(row.run_id)) };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async advanceDebounceAvailableAt(
+    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; headSha?: string; now?: number },
+    prNumberArg?: number,
+    headShaArg?: string,
+    nowArg?: number,
+  ): Promise<{ advanced: boolean; runId?: string }> {
+    let repositoryId: number;
+    let prNumber: number;
+    let headSha: string | undefined;
+    let now: number;
+    if (typeof repositoryIdOrInput === 'object') {
+      repositoryId = repositoryIdOrInput.repositoryId;
+      prNumber = repositoryIdOrInput.prNumber;
+      headSha = repositoryIdOrInput.headSha;
+      now = repositoryIdOrInput.now ?? Date.now();
+    } else {
+      repositoryId = repositoryIdOrInput;
+      prNumber = prNumberArg!;
+      headSha = headShaArg;
+      now = nowArg ?? Date.now();
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        reviewDispatchPrLockKey(repositoryId, prNumber),
+      ]);
+      const result = await client.query(
+        `SELECT outbox.run_id
+           FROM review_dispatch_outbox AS outbox
+           JOIN review_runs AS runs ON runs.run_id = outbox.run_id
+          WHERE runs.repository_id = $1
+            AND runs.pr_number = $2
+            AND ($3::text IS NULL OR runs.head_sha = $3)
+            AND outbox.status = 'pending'
+            AND runs.status = 'queued'
+          ORDER BY outbox.created_at DESC
+          LIMIT 1
+          FOR UPDATE OF outbox`,
+        [repositoryId, prNumber, headSha ?? null],
+      );
+      const row = result.rows[0];
+      if (!row) {
+        await client.query('COMMIT');
+        return { advanced: false };
+      }
+      await client.query(
+        `UPDATE review_dispatch_outbox
+            SET available_at = to_timestamp($2 / 1000.0),
+                updated_at = to_timestamp($2 / 1000.0)
+          WHERE run_id = $1`,
+        [row.run_id, now],
+      );
+      await client.query('COMMIT');
+      return { advanced: true, runId: String(row.run_id) };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async cancelRunsForPullRequest(
+    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string; now?: number },
+    prNumberArg?: number,
+    cancelReasonArg?: string,
+    nowArg?: number,
+  ): Promise<{ cancelledRunIds: string[] }> {
+    let repositoryId: number;
+    let prNumber: number;
+    let cancelReason: string;
+    let now: number;
+    if (typeof repositoryIdOrInput === 'object') {
+      repositoryId = repositoryIdOrInput.repositoryId;
+      prNumber = repositoryIdOrInput.prNumber;
+      cancelReason = repositoryIdOrInput.cancelReason;
+      now = repositoryIdOrInput.now ?? Date.now();
+    } else {
+      repositoryId = repositoryIdOrInput;
+      prNumber = prNumberArg!;
+      cancelReason = cancelReasonArg!;
+      now = nowArg ?? Date.now();
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        reviewDispatchPrLockKey(repositoryId, prNumber),
+      ]);
+      const result = await client.query(
+        `WITH candidate AS (
+           SELECT runs.run_id
+             FROM review_runs runs
+             JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+            WHERE runs.repository_id = $1 AND runs.pr_number = $2
+              AND runs.status IN ('queued', 'running', 'publishing')
+         ), cancelled AS (
+           UPDATE review_runs AS runs
+              SET status = 'cancelled', stage = 'complete',
+                  error_text = $4::text, lease_owner = NULL, lease_expires_at = NULL,
+                  cancel_requested_at = to_timestamp($3 / 1000.0),
+                  cancel_reason = $4::text,
+                  updated_at = to_timestamp($3 / 1000.0)
+             FROM candidate
+            WHERE runs.run_id = candidate.run_id
+           RETURNING runs.run_id
+         )
+         UPDATE review_dispatch_outbox AS outbox
+            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                cancel_requested_at = to_timestamp($3 / 1000.0),
+                cancel_reason = $4::text,
+                cancel_propagated_at = CASE WHEN outbox.projection_name IS NULL THEN to_timestamp($3 / 1000.0) ELSE NULL END,
+                updated_at = to_timestamp($3 / 1000.0)
+           FROM cancelled
+          WHERE outbox.run_id = cancelled.run_id
+         RETURNING outbox.run_id, outbox.cancel_propagated_at`,
+        [repositoryId, prNumber, now, cancelReason],
+      );
+      for (const row of result.rows as Record<string, unknown>[]) {
+        if (row.cancel_propagated_at) {
+          await client.query(
+            `UPDATE review_runs SET cancel_propagated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
+            [row.run_id, now],
+          );
+        }
+        await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.cancelled', now, {
+          stage: 'cancelled',
+          terminal_class: 'cancelled',
+          cancel_reason: cancelReason,
+        });
+      }
+      await client.query('COMMIT');
+      return { cancelledRunIds: result.rows.map((row: Record<string, unknown>) => String(row.run_id)) };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw error;
@@ -1845,5 +2081,125 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     await this.appendLifecycle(client, input.runId, 'review.lifecycle.terminal', now,
       { stage: 'terminal', terminal_class: input.failureClass });
     return { runId: input.runId, status: 'failed' };
+  }
+
+  async markCancelPropagated(runId: string, executionAttempt: number, nowArg = Date.now()): Promise<boolean> {
+    return this.inTransaction(async (client) => {
+      const outboxRes = await client.query(
+        `UPDATE review_dispatch_outbox
+            SET cancel_propagated_at = to_timestamp($3 / 1000.0),
+                updated_at = to_timestamp($3 / 1000.0)
+          WHERE run_id = $1
+            AND execution_attempt + 1 = $2
+            AND cancel_requested_at IS NOT NULL
+            AND cancel_propagated_at IS NULL
+        RETURNING run_id`,
+        [runId, executionAttempt, nowArg],
+      );
+      if (outboxRes.rows.length === 0) {
+        return false;
+      }
+      await client.query(
+        `UPDATE review_runs
+            SET cancel_propagated_at = to_timestamp($2 / 1000.0),
+                updated_at = to_timestamp($2 / 1000.0)
+          WHERE run_id = $1
+            AND cancel_requested_at IS NOT NULL
+            AND cancel_propagated_at IS NULL`,
+        [runId, nowArg],
+      );
+      return true;
+    });
+  }
+
+  async findPendingCancellations(limit = 10): Promise<PendingCancellation[]> {
+    const res = await this.queryable.query(
+      `SELECT outbox.run_id,
+              outbox.execution_attempt + 1 AS execution_attempt,
+              outbox.projection_name,
+              outbox.cancel_reason
+         FROM review_dispatch_outbox AS outbox
+        WHERE outbox.cancel_requested_at IS NOT NULL
+          AND outbox.cancel_propagated_at IS NULL
+          AND outbox.projection_name IS NOT NULL
+        ORDER BY outbox.cancel_requested_at ASC
+        LIMIT $1`,
+      [limit],
+    );
+    return res.rows.map((row: any) => ({
+      runId: String(row.run_id),
+      executionAttempt: Number(row.execution_attempt),
+      projectionName: String(row.projection_name),
+      cancelReason: row.cancel_reason ? String(row.cancel_reason) : undefined,
+    }));
+  }
+
+  async getRunStatus(runId: string, executionAttempt: number): Promise<RunStatusResult | null> {
+    const res = await this.queryable.query(
+      `SELECT runs.run_id,
+              runs.status,
+              runs.head_sha,
+              runs.owner,
+              runs.repo,
+              runs.pr_number,
+              runs.cancel_requested_at,
+              runs.cancel_reason,
+              outbox.execution_attempt,
+              outbox.worker_token_digest,
+              outbox.cancel_requested_at AS outbox_cancel_requested_at,
+              outbox.cancel_reason AS outbox_cancel_reason
+         FROM review_runs AS runs
+         LEFT JOIN review_dispatch_outbox AS outbox
+           ON outbox.run_id = runs.run_id AND outbox.execution_attempt + 1 = $2
+        WHERE runs.run_id = $1`,
+      [runId, executionAttempt],
+    );
+    const row = res.rows[0];
+    if (!row) return null;
+
+    const cancelRequested = Boolean(
+      row.cancel_requested_at != null
+      || row.outbox_cancel_requested_at != null
+      || ['superseded', 'cancelled'].includes(row.status),
+    );
+    const cancelReason = row.cancel_reason
+      ? String(row.cancel_reason)
+      : row.outbox_cancel_reason
+      ? String(row.outbox_cancel_reason)
+      : row.status === 'superseded'
+      ? 'superseded_by_new_head'
+      : undefined;
+
+    let currentHeadSha: string | undefined = undefined;
+    let isCurrentHead = true;
+    if (row.owner && row.repo && row.pr_number != null) {
+      const headRes = await this.queryable.query(
+        `SELECT head_sha FROM review_runs
+          WHERE owner = $1 AND repo = $2 AND pr_number = $3
+          ORDER BY admitted_at DESC NULLS LAST, created_at DESC
+          LIMIT 1`,
+        [row.owner, row.repo, row.pr_number],
+      );
+      if (headRes.rows.length > 0 && headRes.rows[0].head_sha) {
+        currentHeadSha = String(headRes.rows[0].head_sha);
+        isCurrentHead = currentHeadSha === String(row.head_sha) && !['superseded', 'cancelled'].includes(row.status);
+      } else {
+        isCurrentHead = !['superseded', 'cancelled'].includes(row.status);
+      }
+    } else {
+      isCurrentHead = !['superseded', 'cancelled'].includes(row.status);
+    }
+
+    const current = ['queued', 'running'].includes(row.status) && !cancelRequested;
+
+    return {
+      current,
+      status: String(row.status),
+      cancelRequested,
+      cancelReason,
+      currentHeadSha,
+      isCurrentHead,
+      workerTokenDigest: row.worker_token_digest ? String(row.worker_token_digest) : undefined,
+    };
   }
 }

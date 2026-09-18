@@ -87,7 +87,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     await expect(
       executePersonaPanel({
         config,
-        changedFiles: [{ path: 'src/main.ts', content: 'console.log("test");' }],
+        changedFiles: [{ path: 'src/auth/jwt.ts', content: 'console.log("test");' }],
         repository: 'test/repo',
         headSha: 'abc1234',
         client,
@@ -106,13 +106,13 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     expect(isRetryablePanelError(new OpenRouterTimeoutError('deadline', 'total'))).toBe(true);
   });
 
-  describe('buildDiffSection never inlines patch payloads', () => {
+  describe('buildCompactDiffManifest never inlines patch payloads', () => {
     it('emits git range and file names only, even for tiny diffs', () => {
       const files = [
         { path: 'src/a.ts', patch: 'diff a content line 1\nline 2' },
         { path: 'src/b.ts', patch: 'diff b content line 1\nline 2' },
       ];
-      const diffSection = buildDiffSection(files, {
+      const diffSection = buildCompactDiffManifest(files, {
         baseSha: 'b'.repeat(40),
         headSha: 'a'.repeat(40),
       });
@@ -134,7 +134,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
           { path: 'src/small.ts', patch: 'ok' },
           { path: 'src/huge.ts', patch: 'x'.repeat(200) },
         ];
-        const diffSection = buildDiffSection(files);
+        const diffSection = buildCompactDiffManifest(files);
         expect(diffSection).toContain('- src/small.ts');
         expect(diffSection).toContain('SKIPPED: 200 chars > max-file-diff-chars 100');
         expect(diffSection).not.toContain('x'.repeat(20));
@@ -149,7 +149,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
         path: `src/file_${i}.ts`,
         patch: `// Header for file ${i}\n` + 'x'.repeat(3000),
       }));
-      const diffSection = buildDiffSection(files);
+      const diffSection = buildCompactDiffManifest(files);
       expect(diffSection).toContain('=== PR CHANGED FILES INDEX (15 file(s)) ===');
       expect(diffSection).not.toContain('=== FILE: src/file_0.ts ===');
       expect(diffSection).not.toContain('x'.repeat(20));
@@ -350,7 +350,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
           return {
             id: 'resp_tool',
             model: 'test-model',
-            content: '```json\n{"tool": "read_file", "args": {"path": "src/multi.ts", "startLine": 2, "endLine": 3}}\n```',
+            content: '```json\n{"tool": "read_file", "args": {"path": "src/auth/multi.ts", "startLine": 2, "endLine": 3}}\n```',
             usage: { prompt: 10, completion: 10, total: 20 },
           };
         }),
@@ -366,13 +366,13 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
       await executePersonaPanel({
         config,
-        changedFiles: [{ path: 'src/multi.ts', patch: multilineContent }],
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: multilineContent }],
         repository: 'test/repo',
         headSha: 'abc1234',
         client: mockClient as any,
       });
 
-      expect(capturedToolResult).toContain("Lines 2-3 of 4 for 'src/multi.ts':");
+      expect(capturedToolResult).toContain("Lines 2-3 of 4 for 'src/auth/multi.ts':");
       expect(capturedToolResult).toContain('line 2: important logic\nline 3: edge case');
       expect(capturedToolResult).not.toContain('line 1: header');
       expect(capturedToolResult).not.toContain('line 4: footer');

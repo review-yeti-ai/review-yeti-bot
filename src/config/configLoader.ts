@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, PreChecksConfig, resolvePreChecksConfig, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT, MODERN_TESTING_MODELS } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, PreChecksConfig, resolvePreChecksConfig, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT, MODERN_TESTING_MODELS, DEFAULT_AUTO_REVIEW_TRIGGERS } from './schema';
 import { logger } from '../utils/logger';
 import { OMNIROUTE_GENERATED_PROVIDERS, OMNIROUTE_GENERATED_MODEL_LIST } from '../types/providers.generated';
 import { CommunityPersonaLoader, CommunityPersonaLoaderOptions, sanitizePersonaId } from '../personas/communityPersonaLoader';
@@ -51,6 +51,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
     auto_review: {
       enabled: true,
       ignore_drafts: true,
+      triggers: [...DEFAULT_AUTO_REVIEW_TRIGGERS],
       labels: [],
       drafts: false,
     },
@@ -211,6 +212,8 @@ export function applyTrustedOverrides(
   return normalizeConfigToV4({ ...config, limits, submodules } as CtReviewConfigV4);
 }
 
+export const normalizeRawConfigToV3 = translateCodeRabbitToV3;
+
 export function translateCodeRabbitToV3(raw: any): CtReviewConfigV3 {
   const rawObj = (raw || {}) as Record<string, any>;
   const reviews = rawObj.reviews || {};
@@ -288,6 +291,7 @@ export function translateCodeRabbitToV3(raw: any): CtReviewConfigV3 {
   const mergedAutoReview = {
     ...defaultConfig.auto_review,
     ...autoReview,
+    triggers: Array.isArray(autoReview.triggers) ? autoReview.triggers : defaultConfig.auto_review.triggers,
   };
 
   const mergedDials = {
@@ -321,6 +325,43 @@ export function translateCodeRabbitToV3(raw: any): CtReviewConfigV3 {
     on_pr_close,
     ...(rawObj.pre_checks !== undefined ? { pre_checks: rawObj.pre_checks } : {}),
   };
+}
+
+export interface TriggerActionOptions {
+  isDraft?: boolean;
+  isTag?: boolean;
+  isCommand?: boolean;
+  label?: string;
+}
+
+export function isTriggerActionAllowed(
+  triggers: readonly string[] | undefined,
+  action: string,
+  options?: TriggerActionOptions,
+): boolean {
+  const effective = (!triggers || triggers.length === 0)
+    ? DEFAULT_AUTO_REVIEW_TRIGGERS
+    : triggers;
+
+  if (action === 'synchronize' || action === 'pr_synchronize') {
+    return effective.includes('pr_synchronize');
+  }
+  if (action === 'opened' || action === 'pr_opened') {
+    return effective.includes('pr_opened');
+  }
+  if (action === 'reopened') {
+    return effective.includes('pr_opened') || effective.includes('pr_reopened');
+  }
+  if (action === 'ready_for_review' || action === 'pr_ready') {
+    return effective.includes('pr_ready') || effective.includes('ready_for_review') || effective.includes('pr_opened');
+  }
+  if (action === 'labeled' || options?.isTag) {
+    return effective.some((t) => ['tag', 'label', '@ct-review'].includes(t));
+  }
+  if (action === 'issue_comment' || action === 'comment' || options?.isCommand) {
+    return effective.some((t) => ['@ct-review', '/review', 'comment', 'command'].includes(t));
+  }
+  return effective.includes(action);
 }
 
 export function translateLegacyConfigToV3(raw: any): CtReviewConfigV3 {

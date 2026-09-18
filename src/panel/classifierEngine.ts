@@ -124,7 +124,7 @@ const SAFE_TXT_BASENAMES = new Set([
 /**
  * Explicit blocked dependency, lock, or build files.
  */
-const BLOCKED_BUILD_OR_DEP_FILENAMES = new Set([
+export const BLOCKED_BUILD_OR_DEP_FILENAMES = new Set([
   'requirements.txt',
   'constraints.txt',
   'cmakelists.txt',
@@ -138,7 +138,7 @@ const BLOCKED_BUILD_OR_DEP_FILENAMES = new Set([
  * Sensitive substrings and filename patterns. If a path contains any of these,
  * fast-ship is strictly prohibited, regardless of file extension.
  */
-const SENSITIVE_PATH_PATTERNS = [
+export const SENSITIVE_PATH_PATTERNS = [
   // CI/CD pipelines and automation
   '.github', '.gitlab', '.circleci', 'jenkinsfile', 'cloudbuild', 'buildkite',
   'workflow', 'pipeline',

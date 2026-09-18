@@ -55,6 +55,10 @@ export interface ReviewRun {
   error?: string;
   /** Last terminal worker diagnostic; provider text is redacted and bounded. */
   failureDiagnostics?: WorkerFailureDiagnostics & { failureClass?: string; executionAttempt?: number };
+  burstStartedAt?: number;
+  cancelRequestedAt?: number;
+  cancelReason?: string;
+  cancelPropagatedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -93,6 +97,11 @@ export interface ReviewAdmissionInput {
    * from an unverified request.
    */
   availableAt?: number;
+  /**
+   * Whether to apply the trailing quiet window debounce (e.g. 60s trailing,
+   * 5m burst cap) on push/synchronize admissions. Defaults to false.
+   */
+  debounce?: boolean;
   /** Service-resolved only; never decoded from an Action/worker request. */
   authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
 }

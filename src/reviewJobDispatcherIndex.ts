@@ -165,6 +165,14 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     await runReviewJobDispatcherLoop({ runOnce: async () => {
       await reaper?.runOnce(controller.signal);
       if (controller.signal.aborted) return { status: 'idle' };
+      try {
+        await engine.sweepPendingCancellations();
+      } catch (cancelErr) {
+        logger.warn('Review cancellation sweep failed; continuing dispatch cycle', {
+          error: cancelErr instanceof Error ? cancelErr.message : String(cancelErr),
+        });
+      }
+      if (controller.signal.aborted) return { status: 'idle' };
       const dispatchOutcome = await engine.runOnce();
       if (controller.signal.aborted) return dispatchOutcome;
       if (completionEngine) {

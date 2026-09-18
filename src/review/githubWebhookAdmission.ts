@@ -17,6 +17,35 @@ import {
   RECOVERABLE_FAILURE_TITLES,
   REVIEW_REFRESH_ACTION,
 } from './reviewRecoveryPolicy';
+import { isTriggerActionAllowed } from '../config/configLoader';
+
+export const OPT_OUT_LABELS = ['review-yeti:skip', 'wip', 'skip-review'] as const;
+export const OPT_IN_LABELS = ['review-yeti', 'ct-review', 'ai-review'] as const;
+
+export function isOptOutLabel(label: string): boolean {
+  const norm = label.toLowerCase().trim();
+  return OPT_OUT_LABELS.some((opt) => norm === opt);
+}
+
+export function isOptInLabel(label: string): boolean {
+  const norm = label.toLowerCase().trim();
+  return OPT_IN_LABELS.some((opt) => norm === opt);
+}
+
+export function hasOptOutLabel(labels: readonly string[]): boolean {
+  return labels.some((l) => isOptOutLabel(l));
+}
+
+export function hasOptInLabel(labels: readonly string[]): boolean {
+  return labels.some((l) => isOptInLabel(l));
+}
+
+export function extractLabelNames(labels: unknown): string[] {
+  if (!Array.isArray(labels)) return [];
+  return labels
+    .map((l) => (typeof l === 'string' ? l : (typeof l === 'object' && l && 'name' in l ? String(l.name) : '')))
+    .filter(Boolean);
+}
 
 const positiveInteger = z.number().int().positive().safe();
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -31,6 +60,7 @@ const pullRequestWebhook = z.object({
     draft: z.literal(false),
     head: z.object({ sha }).passthrough(),
     base: z.object({ sha, repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough() }).passthrough(),
+    labels: z.array(z.unknown()).optional(),
   }).passthrough(),
 }).passthrough();
 
@@ -46,6 +76,17 @@ const closedPullRequestWebhook = z.object({
     number: positiveInteger,
     state: z.literal('closed'),
     merged: z.boolean(),
+    base: z.object({ repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough() }).passthrough(),
+  }).passthrough(),
+}).passthrough();
+
+const convertedToDraftPullRequestWebhook = z.object({
+  action: z.literal('converted_to_draft'),
+  number: positiveInteger,
+  installation: z.object({ id: positiveInteger }).passthrough(),
+  repository: githubWebhookRepositorySchema,
+  pull_request: z.object({
+    number: positiveInteger,
     base: z.object({ repo: z.object({ full_name: z.string().min(3).max(201) }).passthrough() }).passthrough(),
   }).passthrough(),
 }).passthrough();
@@ -109,10 +150,17 @@ const refreshCheckRunWebhook = z.discriminatedUnion('action', [z.object({
 
 export interface GitHubWebhookAdmissionOptions {
   config: GitHubWebhookConfig;
-  admission: Pick<ReviewDispatchRepository, 'admit' | 'terminalizeRunsForClosedPullRequest'>;
+  admission: Pick<ReviewDispatchRepository, 'admit' | 'terminalizeRunsForClosedPullRequest'> &
+    Partial<Pick<ReviewDispatchRepository, 'cancelRunsForPullRequest' | 'advanceDebounceAvailableAt'>>;
   authoritativePublishing?: AuthoritativeReviewAdmission;
   now?: () => number;
   mergeGroupGate?(payload: unknown): Promise<{ checkId: number; conclusion: 'success' | 'failure'; constituents: number }>;
+  resolveRepositoryConfig?: (params: {
+    repositoryId: number;
+    owner: string;
+    repo: string;
+    headSha?: string;
+  }) => Promise<{ auto_review?: { triggers?: string[]; enabled?: boolean } } | null | undefined> | { auto_review?: { triggers?: string[]; enabled?: boolean } } | null | undefined;
 }
 
 export interface GitHubWebhookAdmissionEvent {
@@ -120,6 +168,7 @@ export interface GitHubWebhookAdmissionEvent {
   deliveryId: string;
   rawBody: Buffer;
   body: unknown;
+  signature256?: string;
 }
 
 function checkRunRepositoryMatches(
@@ -242,6 +291,100 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         reason: 'refresh_requested',
       };
     }
+    if (eventName === 'issue_comment') {
+      const body = event.body as Record<string, unknown> | null;
+      if (!body || typeof body !== 'object') return { status: 'ignored', reason: 'unsupported_event' };
+      const rawAction = typeof body.action === 'string' ? body.action : undefined;
+      if (rawAction !== 'created') return { status: 'ignored', reason: 'unsupported_comment_action' };
+
+      const commentObj = body.comment as Record<string, unknown> | undefined;
+      const commentBody = String(commentObj?.body || '').trim();
+      const isReviewCommand = /(?:^|\s)\/review\b/i.test(commentBody) || /(?:^|\s)@(review-yeti|review-yeti-bot|ct-review|ct-review-bot)\b/i.test(commentBody);
+      if (!isReviewCommand) return { status: 'ignored', reason: 'not_review_command' };
+
+      const issueObj = body.issue as Record<string, unknown> | undefined;
+      const isPr = Boolean(issueObj?.pull_request || body.pull_request);
+      if (!isPr) return { status: 'ignored', reason: 'comment_not_on_pull_request' };
+      const prNumber = Number(issueObj?.number || (body.pull_request as any)?.number);
+      const isClosed = issueObj?.state === 'closed' || (body.pull_request as any)?.state === 'closed';
+      if (isClosed) return { status: 'ignored', reason: 'pull_request_not_open', deliveryId: delivery, prNumber };
+
+      const parsedRepo = githubWebhookRepositorySchema.safeParse(body.repository);
+      if (!parsedRepo.success) return { status: 'ignored', reason: 'invalid_repository_payload' };
+
+      let enrolled;
+      try { enrolled = requireEnrolledGitHubWebhookRepository(parsedRepo.data, options.config); }
+      catch (error) {
+        if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+        throw error;
+      }
+
+      const { owner, repo } = enrolled;
+      const repositoryId = parsedRepo.data.id;
+      const prHead = (issueObj?.head || (issueObj?.pull_request as any)?.head || (body.pull_request as any)?.head) as { sha?: string } | undefined;
+      const headSha = prHead?.sha;
+      const receivedAt = now();
+
+      const repoConfig = options.resolveRepositoryConfig
+        ? await options.resolveRepositoryConfig({ repositoryId, owner, repo, headSha })
+        : undefined;
+      if (repoConfig?.auto_review?.enabled === false) {
+        return { status: 'ignored', reason: 'auto_review_disabled', deliveryId: delivery, prNumber };
+      }
+      if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'issue_comment', { isCommand: true })) {
+        return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber };
+      }
+
+      if (options.admission.advanceDebounceAvailableAt) {
+        const advanced = await options.admission.advanceDebounceAvailableAt(repositoryId, prNumber, headSha, receivedAt);
+        if (advanced.advanced) {
+          return {
+            status: 'accepted',
+            deliveryId: delivery,
+            prNumber,
+            headSha,
+            reason: 'debounce_advanced',
+            runId: advanced.runId,
+          };
+        }
+      }
+
+      const prBase = ((body.pull_request as any)?.base || (issueObj?.pull_request as any)?.base || (issueObj as any)?.base) as { sha?: string; repo?: { full_name?: string } } | undefined;
+      if (headSha && prBase?.sha && body.installation) {
+        const installationId = Number((body.installation as any)?.id);
+        const requested = { repositoryId, owner, repo, prNumber, headSha, baseSha: prBase.sha };
+        const authoritative = options.authoritativePublishing;
+        const resolved = authoritative && authoritativeIds.has(repositoryId)
+          ? await authoritative.resolver.resolve(requested) : undefined;
+        const admission = await options.admission.admit({
+          deliveryId: `github-webhook:${delivery}`,
+          eventName,
+          repositoryId,
+          installationId,
+          receivedAt,
+          terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+          payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
+          publicationMode: 'app-gate',
+          centralActionDispatch: false,
+          debounce: false,
+          identity: resolved?.identity || buildReviewRunIdentity(requested),
+          ...(resolved && authoritative ? {
+            effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
+            authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+          } : {}),
+        });
+        return {
+          status: admission.status,
+          deliveryId: delivery,
+          prNumber,
+          headSha,
+          reason: 'review_command',
+        };
+      }
+
+      return { status: 'ignored', reason: 'no_debounced_run_to_advance', deliveryId: delivery, prNumber };
+    }
+
     if (eventName !== 'pull_request') return { status: 'ignored', reason: 'unsupported_event' };
     const rawAction = event.body && typeof event.body === 'object' && !Array.isArray(event.body)
       ? (event.body as Record<string, unknown>).action : undefined;
@@ -288,6 +431,177 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         terminalized: closed.terminalizedRunIds.length,
       };
     }
+
+    if (rawAction === 'converted_to_draft') {
+      const parsedDraft = convertedToDraftPullRequestWebhook.safeParse(event.body);
+      if (!parsedDraft.success) return { status: 'ignored', reason: 'unsupported_pull_request_state' };
+      const draftPayload = parsedDraft.data;
+      let draftEnrolled;
+      try { draftEnrolled = requireEnrolledGitHubWebhookRepository(draftPayload.repository, options.config); }
+      catch (error) {
+        if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+        throw error;
+      }
+      if (draftPayload.number !== draftPayload.pull_request.number
+        || draftPayload.pull_request.base.repo.full_name !== draftPayload.repository.full_name) {
+        return { status: 'ignored', reason: 'not_enrolled' };
+      }
+      const draftReceivedAt = now();
+      const cancelled = options.admission.cancelRunsForPullRequest
+        ? await options.admission.cancelRunsForPullRequest(draftPayload.repository.id, draftPayload.pull_request.number, 'converted_to_draft', draftReceivedAt)
+        : { cancelledRunIds: [] };
+      return {
+        status: 'accepted',
+        deliveryId: delivery,
+        prNumber: draftPayload.pull_request.number,
+        reason: 'converted_to_draft',
+        cancelled: cancelled.cancelledRunIds.length,
+      };
+    }
+
+    if (rawAction === 'labeled') {
+      const body = event.body as any;
+      const parsedRepo = githubWebhookRepositorySchema.safeParse(body?.repository);
+      if (!parsedRepo.success) return { status: 'ignored', reason: 'unsupported_pull_request_state' };
+      let enrolled;
+      try { enrolled = requireEnrolledGitHubWebhookRepository(parsedRepo.data, options.config); }
+      catch (error) {
+        if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+        throw error;
+      }
+      const { owner, repo } = enrolled;
+      const repositoryId = parsedRepo.data.id;
+      const pr = body?.pull_request;
+      if (!pr || typeof pr !== 'object') return { status: 'ignored', reason: 'unsupported_pull_request_state' };
+      const prNumber = Number(pr.number || body.number);
+      const labelName = String(body.label?.name || body.label || '').trim();
+      const prLabels = extractLabelNames(pr.labels);
+      const receivedAt = now();
+
+      if (isOptOutLabel(labelName) || hasOptOutLabel(prLabels)) {
+        if (options.admission.cancelRunsForPullRequest) {
+          await options.admission.cancelRunsForPullRequest(repositoryId, prNumber, 'opt_out_label', receivedAt);
+        }
+        return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber };
+      }
+
+      if (isOptInLabel(labelName)) {
+        if (pr.draft === true) {
+          return { status: 'ignored', reason: 'draft_pr', deliveryId: delivery, prNumber };
+        }
+        const repoConfig = options.resolveRepositoryConfig
+          ? await options.resolveRepositoryConfig({ repositoryId, owner, repo, headSha: pr.head?.sha })
+          : undefined;
+        if (repoConfig?.auto_review?.enabled === false) {
+          return { status: 'ignored', reason: 'auto_review_disabled', deliveryId: delivery, prNumber };
+        }
+        if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'labeled', { isTag: true, label: labelName })) {
+          return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber };
+        }
+        if (options.admission.advanceDebounceAvailableAt && pr.head?.sha) {
+          const advanced = await options.admission.advanceDebounceAvailableAt(repositoryId, prNumber, pr.head.sha, receivedAt);
+          if (advanced.advanced) {
+            return {
+              status: 'accepted',
+              deliveryId: delivery,
+              prNumber,
+              headSha: pr.head.sha,
+              reason: 'debounce_advanced',
+              runId: advanced.runId,
+            };
+          }
+        }
+        if (pr.head?.sha && pr.base?.sha && body.installation) {
+          const requested = { repositoryId, owner, repo, prNumber, headSha: pr.head.sha, baseSha: pr.base.sha };
+          const authoritative = options.authoritativePublishing;
+          const resolved = authoritative && authoritativeIds.has(repositoryId)
+            ? await authoritative.resolver.resolve(requested) : undefined;
+          const admission = await options.admission.admit({
+            deliveryId: `github-webhook:${delivery}`,
+            eventName,
+            repositoryId,
+            installationId: Number(body.installation.id),
+            receivedAt,
+            terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+            payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
+            publicationMode: 'app-gate',
+            centralActionDispatch: false,
+            debounce: false,
+            identity: resolved?.identity || buildReviewRunIdentity(requested),
+            ...(resolved && authoritative ? {
+              effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
+              authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+            } : {}),
+          });
+          return { status: admission.status, deliveryId: delivery, prNumber, headSha: pr.head.sha };
+        }
+      }
+      return { status: 'ignored', reason: 'unsupported_pull_request_state' };
+    }
+
+    if (rawAction === 'unlabeled') {
+      const body = event.body as any;
+      const parsedRepo = githubWebhookRepositorySchema.safeParse(body?.repository);
+      if (!parsedRepo.success) return { status: 'ignored', reason: 'unsupported_pull_request_state' };
+      let enrolled;
+      try { enrolled = requireEnrolledGitHubWebhookRepository(parsedRepo.data, options.config); }
+      catch (error) {
+        if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+        throw error;
+      }
+      const { owner, repo } = enrolled;
+      const repositoryId = parsedRepo.data.id;
+      const pr = body?.pull_request;
+      if (!pr || typeof pr !== 'object') return { status: 'ignored', reason: 'unsupported_pull_request_state' };
+      const prNumber = Number(pr.number || body.number);
+      const labelName = String(body.label?.name || body.label || '').trim();
+      const prLabels = extractLabelNames(pr.labels);
+      const receivedAt = now();
+
+      if (isOptOutLabel(labelName)) {
+        if (hasOptOutLabel(prLabels)) {
+          return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber };
+        }
+        if (pr.draft === true) {
+          return { status: 'ignored', reason: 'draft_pr', deliveryId: delivery, prNumber };
+        }
+        const repoConfig = options.resolveRepositoryConfig
+          ? await options.resolveRepositoryConfig({ repositoryId, owner, repo, headSha: pr.head?.sha })
+          : undefined;
+        if (repoConfig?.auto_review?.enabled === false) {
+          return { status: 'ignored', reason: 'auto_review_disabled', deliveryId: delivery, prNumber };
+        }
+        if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'synchronize')) {
+          return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber };
+        }
+        if (pr.head?.sha && pr.base?.sha && body.installation) {
+          const requested = { repositoryId, owner, repo, prNumber, headSha: pr.head.sha, baseSha: pr.base.sha };
+          const authoritative = options.authoritativePublishing;
+          const resolved = authoritative && authoritativeIds.has(repositoryId)
+            ? await authoritative.resolver.resolve(requested) : undefined;
+          const admission = await options.admission.admit({
+            deliveryId: `github-webhook:${delivery}`,
+            eventName,
+            repositoryId,
+            installationId: Number(body.installation.id),
+            receivedAt,
+            terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
+            payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
+            publicationMode: 'app-gate',
+            centralActionDispatch: false,
+            debounce: false,
+            identity: resolved?.identity || buildReviewRunIdentity(requested),
+            ...(resolved && authoritative ? {
+              effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
+              authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+            } : {}),
+          });
+          return { status: admission.status, deliveryId: delivery, prNumber, headSha: pr.head.sha, reason: 'opt_out_label_removed' };
+        }
+      }
+      return { status: 'ignored', reason: 'unsupported_pull_request_state' };
+    }
+
     const parsed = pullRequestWebhook.safeParse(event.body);
     if (!parsed.success) return { status: 'ignored', reason: 'unsupported_pull_request_state' };
     const payload = parsed.data;
@@ -303,6 +617,26 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
     if (payload.number !== pr.number || pr.base.repo.full_name !== payload.repository.full_name) {
       return { status: 'ignored', reason: 'not_enrolled' };
     }
+
+    const prLabels = extractLabelNames(pr.labels);
+    const receivedAt = now();
+    if (hasOptOutLabel(prLabels)) {
+      if (options.admission.cancelRunsForPullRequest) {
+        await options.admission.cancelRunsForPullRequest(repositoryId, pr.number, 'opt_out_label', receivedAt);
+      }
+      return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber: pr.number };
+    }
+
+    const repoConfig = options.resolveRepositoryConfig
+      ? await options.resolveRepositoryConfig({ repositoryId, owner, repo, headSha: pr.head.sha })
+      : undefined;
+    if (repoConfig?.auto_review?.enabled === false) {
+      return { status: 'ignored', reason: 'auto_review_disabled', deliveryId: delivery, prNumber: pr.number };
+    }
+    if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, payload.action)) {
+      return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber: pr.number };
+    }
+
     const requested = {
       repositoryId, owner, repo, prNumber: pr.number,
       headSha: pr.head.sha, baseSha: pr.base.sha,
@@ -313,7 +647,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
     }
     const resolved = authoritative && authoritativeIds.has(repositoryId)
       ? await authoritative.resolver.resolve(requested) : undefined;
-    const receivedAt = now();
+    const debounce = (payload.action === 'synchronize');
     const admission = await options.admission.admit({
       deliveryId: `github-webhook:${delivery}`,
       eventName,
@@ -324,6 +658,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       payloadDigest: createHash('sha256').update(event.rawBody).digest('hex'),
       publicationMode: 'app-gate',
       centralActionDispatch: false,
+      debounce,
       identity: resolved?.identity || buildReviewRunIdentity(requested),
       ...(resolved && authoritative ? {
         effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
