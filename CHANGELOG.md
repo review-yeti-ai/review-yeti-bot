@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.75.1...v1.76.0) (2026-09-18)
+
+
+### Features
+
+* **REL-677:** operator forwards zoekt grounding opt-in to worker Jobs ([#853](https://github.com/review-yeti-ai/review-yeti-bot/issues/853)) ([f9ab179](https://github.com/review-yeti-ai/review-yeti-bot/commit/f9ab179d7f5a0708a5300e97e3b2277139e576a9))
+
 ## [1.75.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.75.0...v1.75.1) (2026-09-18)
 
 
