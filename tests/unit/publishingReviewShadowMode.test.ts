@@ -208,6 +208,25 @@ describe('shadow mode (review_engine: shadow) -- non-gating composed evidence', 
     for (const lane of shadowLanes) expect(lane.decision).toBe('FINDINGS');
   });
 
+  // NOT PINNED BY A TEST, deliberately and with the reason recorded rather than left implicit:
+  // that the AUTHORITATIVE `WorkerReviewCompletion.v1` body excludes shadow lanes.
+  //
+  // It holds structurally. `reportReviewResult` calls `buildReviewResult()` with NO options, and
+  // every shadow branch inside is guarded by `options.includeShadow &&`; only the non-authoritative
+  // `reportReviewEvidence` call opts in. There is no path that reaches the authoritative body with
+  // a shadow lane attached.
+  //
+  // A test was attempted and abandoned for a known cause, not a vague one: driving the
+  // authoritative path needs a full worker contract fixture (policy/config digests and the rest),
+  // and `REVIEW_AUTHORITATIVE_GATE=true` alone fails with "publishing review worker contract is
+  // invalid". Building that fixture is worthwhile follow-up; asserting it half-way would be worse
+  // than saying so here.
+  //
+  // Worth stating why it matters: `deriveCanonicalWorkerReviewEvidence` rejects any persona id
+  // outside the trusted roster, so a leak would turn valid evidence into a published FAILURE --
+  // loud, not silent. The dangerous direction is already covered: arbitration reads `panelResult`,
+  // which is only ever assigned from `panelRunner`.
+
   it('is byte-identical to a plain panel run when the composed run produces nothing', async () => {
     const panelOnlyDeps = {
       checkClient: checkClient(),
