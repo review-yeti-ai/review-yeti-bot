@@ -96,6 +96,42 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     });
   }, 60_000);
 
+  it('names the unmatched paths and classifies a persona-coverage gap as a contract failure', async () => {
+    // A code path that no enabled persona covers is a persona *coverage gap*,
+    // not a worker fault. It is deterministic -- the changed-path set does not
+    // vary between attempts -- so the default `internal_error` class ("retry;
+    // inspect worker logs") is unactionable, and because Review Yeti is a
+    // required check the PR becomes permanently unmergeable with no reason
+    // given. It must stay fail-closed, but say which paths to cover.
+    const narrowYaml = mockYaml.replace('paths: ["**/*"]', 'paths: ["**/*.py"]');
+    const config = parseAndValidateConfig(narrowYaml) as unknown as CtReviewConfigV3;
+    const client = new OmniRouteClient({ baseUrl: 'http://127.0.0.1:9090' });
+
+    let caught: unknown;
+    try {
+      await executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'inventory/lab-assets.json', content: '{"a":1}' }],
+        repository: 'test/repo',
+        headSha: 'abc1234',
+        client,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(PanelConfigurationError);
+    const err = caught as PanelConfigurationError;
+    // Actionable: the operator learns exactly which file nobody covers, and
+    // which personas were enabled when it did not match.
+    expect(err.message).toContain('inventory/lab-assets.json');
+    expect(err.message).toContain('security');
+    expect(err.message).toMatch(/Extend that persona's paths/);
+    // Not a worker fault: `contract` maps to worker_contract_invalid rather
+    // than worker_internal_error's misleading "retry" guidance.
+    expect(err.failureClass).toBe('contract');
+  }, 60_000);
+
   it('retries only typed transient OpenRouter failures', () => {
     expect(isRetryablePanelError(new OpenRouterResponseError('unauthorized', 401))).toBe(false);
     expect(isRetryablePanelError(new OpenRouterResponseError('rate limited', 429))).toBe(true);

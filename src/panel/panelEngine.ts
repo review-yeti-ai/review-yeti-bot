@@ -3389,7 +3389,39 @@ export async function executePersonaPanel(options: {
         isDocumentationOrAssetPath(f.path || f.filePath || '')
       );
       if (!allNonCode) {
-        throw new PanelConfigurationError(`no enabled persona applies to the changed paths for ${repository} #${headSha}`);
+        // Name the paths nobody covers, and classify this as a contract
+        // problem rather than a worker fault.
+        //
+        // This is deterministic: the changed-path set does not vary between
+        // attempts, so the default `internal_error` class ("retry; inspect
+        // worker logs") is doubly wrong -- retrying can never succeed, and the
+        // worker is healthy. Because `Review Yeti` is a required status check,
+        // a PR whose paths match no enabled persona is otherwise permanently
+        // unmergeable with no indication of why.
+        //
+        // Fail-closed is kept deliberately: an unmatched *code* path means
+        // nobody is reviewing that file, which is a persona coverage gap to
+        // fix, not something to wave through. The fix is to extend the
+        // persona's paths -- so the message now says which paths to extend.
+        const unmatched = effectiveFiles
+          .map((f: any) => f.path || f.filePath || '')
+          .filter((p: string) => p.length > 0)
+          .filter((p: string) => !isDocumentationOrAssetPath(p));
+        const shown = unmatched.slice(0, 10);
+        const overflow = unmatched.length - shown.length;
+        const pathList = shown.join(', ') + (overflow > 0 ? `, +${overflow} more` : '');
+        const enabledIds = config.personas
+          .filter((persona) => {
+            const storePersona = dashboardStore.getPersonaSetting(persona.id);
+            return storePersona ? storePersona.enabled !== false : persona.enabled;
+          })
+          .map((persona) => persona.id);
+        throw new PanelConfigurationError(
+          `no enabled persona applies to the changed paths for ${repository} #${headSha}: `
+          + `[${pathList}] matched none of the enabled personas [${enabledIds.join(', ') || 'none'}]. `
+          + `Extend that persona's paths to cover these files, or enable a persona that does.`,
+          { failureClass: 'contract' },
+        );
       }
 
       const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
