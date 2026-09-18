@@ -74,12 +74,12 @@ const SECURITY_DIMENSION: TaskDimension = 'security';
 // ---------------------------------------------------------------------------
 
 /**
- * Mirrors `isRosterId` in `src/cli/publishingReview.ts:322` byte-for-byte.
- * Not imported -- `publishingReview.ts` does not export it -- so this is a
- * deliberate, hand-verified duplicate of the same regex, not an
- * approximation. If `isRosterId` ever changes, this must change with it or a
- * valid task plan stops being a valid roster, defeating the entire point of
- * sharing the id format.
+ * The single definition of the id format shared by composed-review task ids and persona roster
+ * ids. `isRosterId` in `src/cli/publishingReview.ts` delegates here rather than re-declaring the
+ * regex, because the two formats being identical is load-bearing: it is what lets a validated task
+ * plan be a valid roster and a valid completion payload with no contract change downstream. Two
+ * hand-maintained copies would drift, and the drift would only surface as a valid plan being
+ * rejected as an invalid roster.
  */
 const TASK_ID_PATTERN = /^[a-z][a-z0-9_-]{0,127}$/u;
 

@@ -27,6 +27,7 @@ import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
 import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
+import { isValidTaskId } from '../panel/reviewTask';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
 import { runInSpan, getMetrics } from '../telemetry';
@@ -319,8 +320,12 @@ function boundedLaneCount(value: number): number {
   return Math.min(value, MAX_PERSONAS);
 }
 
+// A roster id and a composed-review task id are the SAME format on purpose: that is what makes a
+// validated task plan automatically a valid roster and a valid completion payload, with no
+// contract change anywhere downstream. Delegating instead of re-declaring the regex means the two
+// cannot drift apart silently.
 function isRosterId(value: unknown): value is string {
-  return typeof value === 'string' && /^[a-z][a-z0-9_-]{0,127}$/u.test(value);
+  return isValidTaskId(value);
 }
 
 function validConfiguredRoster(value: unknown): value is string[] {
