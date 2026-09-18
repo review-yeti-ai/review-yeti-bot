@@ -379,6 +379,28 @@ describe('WorkerReviewCompletion.v1', () => {
       expect(parsed.result.personas[0]?.telemetry?.turnUsages?.map((t) => t.kind)).toEqual(['tool', 'correction', 'final']);
     });
 
+    it('parses telemetry.toolCalls -- the count crossing the completion boundary (#862 gap)', () => {
+      // Before this change `toolCalls` was tracked inside the panel engine (the array declared
+      // in `panelEngine.ts`) but had no field on `personaTelemetrySchema`, so it never reached the
+      // completion payload -- nothing downstream could read it.
+      const parsed = parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', { telemetry: { toolCalls: 7 } }), lane('architecture')],
+        },
+      }));
+      expect(parsed.result.personas[0]?.telemetry).toEqual({ toolCalls: 7 });
+    });
+
+    it('rejects a negative toolCalls count', () => {
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', { telemetry: { toolCalls: -1 } }), lane('architecture')],
+        },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+
     it('still parses a persona with no telemetry field at all -- backward compatible, no version bump', () => {
       // This is the pre-Stage-0 shape every existing caller (and every OTHER test in this file)
       // sends. `telemetry` must be optional, not merely tolerated when present.
@@ -457,6 +479,35 @@ describe('WorkerReviewCompletion.v1', () => {
           ...completion().result,
           personas: [lane('security', { telemetry: { turnUsages: overLimit } }), lane('architecture')],
         },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+  });
+
+  describe('optional panel wall clock (Stage 0: closes the #862 measurement gap)', () => {
+    // #862 added `panelWallClockMs` to `PanelResult`, but `resultSchema` had no field for it, so
+    // it never reached the completion payload. This block proves the additive fix: the field
+    // parses when present, is genuinely optional (no version bump), and stays bounded.
+    it('parses a result that carries panelWallClockMs', () => {
+      const parsed = parseWorkerReviewCompletion(completion({
+        result: { ...completion().result, panelWallClockMs: 4_200 },
+      }));
+      expect(parsed.result.panelWallClockMs).toBe(4_200);
+    });
+
+    it('still parses a result with no panelWallClockMs -- backward compatible, no version bump', () => {
+      const parsed = parseWorkerReviewCompletion(completion());
+      expect(parsed.result).not.toHaveProperty('panelWallClockMs');
+    });
+
+    it('rejects a negative panelWallClockMs', () => {
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: { ...completion().result, panelWallClockMs: -1 },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+
+    it('rejects a non-integer panelWallClockMs', () => {
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: { ...completion().result, panelWallClockMs: 4_200.5 },
       }))).toThrow(/invalid WorkerReviewCompletion/u);
     });
   });
