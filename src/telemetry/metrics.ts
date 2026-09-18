@@ -9,6 +9,7 @@ import {
   InstrumentType,
 } from '@opentelemetry/sdk-metrics';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../types/jevContract';
 
 let metricsInstance: MetricCounters | null = null;
 let metricReader: PeriodicExportingMetricReader | null = null;
@@ -93,6 +94,14 @@ export interface MetricCounters {
   analyzersDuration: Histogram;
   analyzerHypotheses: Counter;
   preCheckTotalDuration: Histogram;
+
+  // Jev (TypeSafe AI System One) instruments.
+  jevRequests: Counter;
+  jevInputTokens: Counter;
+  jevCostUsd: Counter;
+  jevDuration: Histogram;
+  /** A real "calibrated thresholds are stale" condition, not an outage -- see jevClient.ts. */
+  jevModelPinMismatch: Counter;
   /**
    * REL-677 / ADR 0329: wall-clock time to materialize the read-only worktree and build the
    * throwaway Zoekt index for one review run (`src/mcp/zoektGrounding.js`), *not* the query
@@ -162,6 +171,11 @@ export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounter
         instrumentName: 'review_yeti_pre_checks_duration_seconds',
         instrumentType: InstrumentType.HISTOGRAM,
         aggregation: new ExplicitBucketHistogramAggregation([0.1, 0.5, 1, 2.5, 5, 10, 30, 60]),
+      }),
+      new View({
+        instrumentName: 'review_yeti_jev_duration_seconds',
+        instrumentType: InstrumentType.HISTOGRAM,
+        aggregation: new ExplicitBucketHistogramAggregation([0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]),
       }),
     ],
     readers,
@@ -264,6 +278,22 @@ export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounter
     }),
     preCheckTotalDuration: meter.createHistogram('review_yeti_pre_checks_duration_seconds', {
       description: 'Combined pre-checks latency in seconds.',
+    }),
+
+    jevRequests: meter.createCounter('review_yeti_jev_requests_total', {
+      description: 'Jev (TypeSafe AI System One) ask() calls tagged by seam and outcome (ok, or an unavailable reason).',
+    }),
+    jevInputTokens: meter.createCounter('review_yeti_jev_input_tokens_total', {
+      description: 'Jev input tokens consumed on successful calls. Output tokens are unmetered/free.',
+    }),
+    jevCostUsd: meter.createCounter('review_yeti_jev_cost_usd_total', {
+      description: `Cumulative Jev cost in USD (input_tokens x $${JEV_INPUT_TOKEN_USD_PER_MILLION} / 1e6).`,
+    }),
+    jevDuration: meter.createHistogram('review_yeti_jev_duration_seconds', {
+      description: 'Jev ask() call duration in seconds, tagged by seam and outcome.',
+    }),
+    jevModelPinMismatch: meter.createCounter('review_yeti_jev_model_pin_mismatch_total', {
+      description: 'Successful Jev responses whose versioned model differed from TYPESAFE_MODEL_PIN -- calibrated thresholds are stale, not an outage.',
     }),
     zoektIndexBuildDuration: meter.createHistogram('review_yeti_zoekt_index_build_duration_seconds', {
       description: 'REL-677: time to materialize the review worktree and build the throwaway Zoekt index for one run, excluding query time.',

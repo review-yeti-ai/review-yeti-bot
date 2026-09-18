@@ -1,6 +1,7 @@
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { logger } from '../utils/logger';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
+import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
 
 export class OpenRouterConnectionError extends Error {
   constructor(message: string) {
@@ -156,51 +157,23 @@ export interface OpenRouterClientOptions {
  * transport fails to observe AbortSignal. The underlying request is still
  * given the signal by OpenRouterClient, so real fetch/SDK requests are aborted
  * rather than merely detached from the caller.
+ *
+ * Delegates to the shared implementation in raceWithAbort.ts (also used by
+ * JevClient) so the two do not maintain diverging private copies; this wrapper
+ * exists only to pin OpenRouterTimeoutError as the cancellation error and keep
+ * every call site in this file unchanged.
  */
 function raceWithAbort<T>(
   operation: Promise<T>,
   signal?: AbortSignal,
   onLateValue?: (value: T) => void,
 ): Promise<T> {
-  const consumeLateValue = (value: T) => {
-    try {
-      onLateValue?.(value);
-    } catch (_) {
-      // Late cleanup must never replace the already-classified cancellation.
-    }
-  };
-  if (!signal) return operation;
-  if (signal.aborted) {
-    void operation.then(consumeLateValue, () => undefined);
-    return Promise.reject(new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request'));
-  }
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    let onAbort: () => void;
-    const cleanup = () => signal.removeEventListener('abort', onAbort);
-    onAbort = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      void operation.then(consumeLateValue, () => undefined);
-      reject(new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request'));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    operation.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(value);
-      },
-      (error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(error);
-      },
-    );
-  });
+  return sharedRaceWithAbort(
+    operation,
+    signal,
+    () => new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request'),
+    onLateValue,
+  );
 }
 
 /**
