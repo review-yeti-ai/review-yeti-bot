@@ -190,8 +190,10 @@ describe('authoritative prepared publishing worker', () => {
     f.panel.personas[0].toolCalls = [{ tool: 'read', args: { token: TOKEN } }];
     await runPublishingReviewWorker(f.env, f.deps);
     const expected = cleanResult();
+    // `toolCalls: 1` is the COUNT crossing the boundary -- never the array itself, so the
+    // `{ tool: 'read', args: { token: TOKEN } }` record above must still be fully absent below.
     expected.personas[0] = { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [finding],
-      telemetry: { model: transport.model, durationMs: 25 } };
+      telemetry: { model: transport.model, durationMs: 25, toolCalls: 1 } };
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(TOKEN);
