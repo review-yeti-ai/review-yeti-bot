@@ -855,6 +855,12 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
           security: true,
           secrets: true,
         },
+        // Default-on, like every other pre-check above. This assertion is an exhaustive
+        // deep-equal on purpose: adding a pre-check without deciding its default is the mistake it
+        // is here to catch, so a new key must be added here deliberately rather than absorbed.
+        symbolAppendix: {
+          enabled: true,
+        },
       });
 
       // Case B: pre_checks: {}
