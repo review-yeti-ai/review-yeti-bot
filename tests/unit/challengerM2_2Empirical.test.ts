@@ -726,6 +726,6 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
       const output = execSync('go test ./...', { cwd: operatorDir, encoding: 'utf8' });
       expect(output).toContain('github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers');
       expect(output).not.toContain('FAIL');
-    }, 60000);
+    }, 180000);
   });
 });

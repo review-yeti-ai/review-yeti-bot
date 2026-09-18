@@ -207,6 +207,10 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         delivery_id TEXT,
         received_at TIMESTAMPTZ,
         terminal_deadline TIMESTAMPTZ,
+        burst_started_at TIMESTAMPTZ,
+        cancel_requested_at TIMESTAMPTZ,
+        cancel_reason TEXT,
+        cancel_propagated_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -221,6 +225,9 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         execution_attempt INTEGER NOT NULL DEFAULT 0,
         worker_token_digest VARCHAR(64),
         available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        cancel_requested_at TIMESTAMPTZ,
+        cancel_reason TEXT,
+        cancel_propagated_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
