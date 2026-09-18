@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.78.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.77.0...v1.78.0) (2026-09-18)
+
+
+### Features
+
+* **gateway:** add Jev (TypeSafe AI System One) client, transport, and test double ([#860](https://github.com/review-yeti-ai/review-yeti-bot/issues/860)) ([3b70099](https://github.com/review-yeti-ai/review-yeti-bot/commit/3b7009946d56411c90ddeef88aa182eb0f04442a))
+
+
+### Bug Fixes
+
+* **panel:** refine adjudication prompts, persona scoping, gating rules, and test harnesses ([3900458](https://github.com/review-yeti-ai/review-yeti-bot/commit/3900458ed7ce5216871f131418ee46e3c9d14b40))
+
 ## [1.77.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.76.3...v1.77.0) (2026-09-18)
 
 
