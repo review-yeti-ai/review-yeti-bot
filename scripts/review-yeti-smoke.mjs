@@ -39,11 +39,6 @@ export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
 ]);
 export const EXPECTED_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 export const EXPECTED_GEMINI_MODEL = 'gemini-3.7-flash';
-export const EXPECTED_SYNTHETIC_BASE_URL = 'https://api.synthetic.new/openai/v1';
-export const EXPECTED_SYNTHETIC_MODEL = 'hf:zai-org/GLM-5.3-Flash';
-export const SYNTHETIC_REQUESTS_PER_PACK = 500;
-const SYNTHETIC_QUOTA_PATH = '/v2/quotas';
-const DEFAULT_QUOTA_TIMEOUT_MS = 5_000;
 
 const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti.json', import.meta.url)));
 
@@ -144,9 +139,16 @@ export function validatePolicy(policy, repository = '') {
     if (transport.stream !== true) throw new Error(`transport ${transport.name} must stream`);
   }
 
+  // REL-896/REL-965: the synthetic.new provider account was cancelled and the transport was
+  // permanently removed from policy (see emit-policy.test.sh and ci.yml, which hard-fail on the
+  // same reintroduction). This validator must assert absence, not merely pin a shape that would
+  // silently accept a reintroduced transport -- the two validators must visibly agree.
+  if (transports.some((transport) => transport.name === 'synthetic')) {
+    throw new Error('Synthetic transport must not be declared -- the provider account was cancelled (REL-896)');
+  }
+
   const bifrost = transports.find((transport) => transport.name === 'bifrost');
   const gemini = transports.find((transport) => transport.name === 'gemini');
-  const synthetic = transports.find((transport) => transport.name === 'synthetic');
   const ollama = transports.find((transport) => transport.name === 'ollama');
   const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
@@ -166,23 +168,6 @@ export function validatePolicy(policy, repository = '') {
       || gemini.structured_output !== 'strict'
       || gemini.reasoning_effort !== 'high') {
     throw new Error('Gemini must use the pinned Google OpenAI-compatible endpoint/model with strict high-reasoning output');
-  }
-  // REL-896: the synthetic.new account was cancelled and the transport was removed from the
-  // committed policy roster (it is no longer required, unlike gemini/ollama/fireworks/bifrost
-  // above). This shape check is retained purely as a defensive contract: it stays reachable for
-  // fixture-driven tests that still exercise a model-scoped, quota-bounded disabled transport
-  // under this exact name, so IF a policy ever declares one again it is still forced to match
-  // the last-reviewed pinned shape rather than being silently accepted.
-  if (synthetic && (synthetic.base_url !== EXPECTED_SYNTHETIC_BASE_URL
-      || synthetic.api_key_env !== 'SYNTHETIC_API_KEY'
-      || synthetic.model !== EXPECTED_SYNTHETIC_MODEL
-      || synthetic.compat !== 'openai'
-      || synthetic.max_in_flight !== 5
-      || synthetic.concurrency_scope !== 'model'
-      || synthetic.quota_probe !== 'synthetic-v2'
-      || synthetic.structured_output !== 'strict'
-      || synthetic.reasoning_effort !== 'high')) {
-    throw new Error('Synthetic must use the pinned endpoint/model, a five-pack per-model ceiling, quota-bounded admission, and strict high-reasoning output');
   }
   if (fireworks.base_url !== 'https://api.fireworks.ai/inference/v1'
       || fireworks.api_key_env !== 'FIREWORKS_PR_REVIEW_API_KEY'
@@ -609,85 +594,6 @@ export function selectHealthyTransports(transports, healthy) {
   return transports.filter((transport) => transport.enabled === true && healthySet.has(transport.name));
 }
 
-function syntheticFiveHourLimit(payload) {
-  for (const value of [payload?.rollingFiveHourLimit?.max, payload?.subscription?.limit]) {
-    if (Number.isSafeInteger(value) && value > 0) return value;
-  }
-  return null;
-}
-
-// Synthetic publishes one concurrent request per model per subscription pack and 500 requests in
-// the rolling five-hour bucket per pack. Treat the policy value as an upper bound, derive the live
-// pack count only from an exact documented multiple, and fail safe to one slot when the advisory
-// endpoint is unavailable or its under-development response shape is ambiguous.
-export function syntheticCapacityFromQuota(payload, configuredMaxInFlight) {
-  const configured = Number(configuredMaxInFlight);
-  if (!Number.isSafeInteger(configured) || configured < 1) return 1;
-  const fiveHourLimit = syntheticFiveHourLimit(payload);
-  if (!Number.isSafeInteger(fiveHourLimit)
-      || fiveHourLimit < SYNTHETIC_REQUESTS_PER_PACK
-      || fiveHourLimit % SYNTHETIC_REQUESTS_PER_PACK !== 0) {
-    return 1;
-  }
-  const packCount = fiveHourLimit / SYNTHETIC_REQUESTS_PER_PACK;
-  return Math.max(1, Math.min(configured, packCount));
-}
-
-export function syntheticQuotaUrl(transport) {
-  if (transport?.quota_probe !== 'synthetic-v2'
-      || transport?.base_url !== EXPECTED_SYNTHETIC_BASE_URL) {
-    return null;
-  }
-  try {
-    const providerBaseUrl = new URL(transport.base_url);
-    const pinnedBaseUrl = new URL(EXPECTED_SYNTHETIC_BASE_URL);
-    if (providerBaseUrl.protocol !== 'https:' || providerBaseUrl.origin !== pinnedBaseUrl.origin) {
-      return null;
-    }
-    return new URL(SYNTHETIC_QUOTA_PATH, providerBaseUrl.origin).toString();
-  } catch {
-    return null;
-  }
-}
-
-export async function boundSyntheticCapacity(
-  transports,
-  env = process.env,
-  fetchImpl = globalThis.fetch,
-  log = console.log,
-  timeoutMs = DEFAULT_QUOTA_TIMEOUT_MS,
-) {
-  const synthetic = transports.find((transport) => transport.quota_probe === 'synthetic-v2');
-  if (!synthetic) return transports;
-
-  let payload = null;
-  let source = 'fail-safe';
-  const apiKey = env[synthetic.api_key_env];
-  const quotaUrl = syntheticQuotaUrl(synthetic);
-  if (apiKey && quotaUrl) {
-    try {
-      const response = await fetchImpl(quotaUrl, {
-        method: 'GET',
-        headers: { authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (response.ok) {
-        payload = await response.json();
-        source = syntheticFiveHourLimit(payload) === null ? 'fail-safe' : 'live-quota';
-      }
-    } catch {
-      // Quota telemetry must never prevent a healthy provider from being used. The one-slot
-      // fail-safe matches the minimum subscription contract and prevents over-admission.
-    }
-  }
-
-  const maxInFlight = syntheticCapacityFromQuota(payload, synthetic.max_in_flight);
-  log(`[Review Yeti smoke] synthetic capacity max_in_flight=${maxInFlight} source=${source}.`);
-  return transports.map((transport) => transport === synthetic
-    ? { ...transport, max_in_flight: maxInFlight }
-    : transport);
-}
-
 export function encodeTransportPlan(transports) {
   return Buffer.from(JSON.stringify(transports), 'utf8').toString('base64');
 }
@@ -702,9 +608,7 @@ async function main() {
   const transports = validatePolicy(policy, process.env.REVIEW_REPOSITORY || '');
   const resolved = resolveTransport(transports, healthy);
   if (!resolved) throw new Error('no healthy transport could be resolved from a validated policy');
-  const healthyTransports = await boundSyntheticCapacity(
-    selectHealthyTransports(transports, healthy),
-  );
+  const healthyTransports = selectHealthyTransports(transports, healthy);
 
   const expectedOrder = transports.map((transport) => transport.name);
   const degraded = resolved.name !== expectedOrder[0];
