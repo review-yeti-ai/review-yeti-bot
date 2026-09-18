@@ -97,9 +97,9 @@ const (
 	DefaultTerminalMaxRetentionSeconds = int64(86400)
 	TerminalMaxRetentionSecondsEnv     = "REVIEW_YETI_TERMINAL_MAX_RETENTION_SECONDS"
 	WorkerCPURequest                   = "250m"
-	WorkerMemoryRequest = "512Mi"
-	WorkerCPULimit      = "1"
-	WorkerMemoryLimit   = "1536Mi"
+	WorkerMemoryRequest                = "512Mi"
+	WorkerCPULimit                     = "1"
+	WorkerMemoryLimit                  = "1536Mi"
 	// The CRD's CEL rule bounds terminalDeadline - receivedAt to [900s, 3600s]
 	// (see charts/review-yeti/templates/crd.yaml and
 	// k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml). Keep
@@ -132,7 +132,7 @@ var (
 // Input is the immutable review projection plus fresh workspace ownership
 // evidence.  No Secret object or credential is accepted by this builder.
 type Input struct {
-	Review           *v1alpha2.PRReviewJob
+	Review *v1alpha2.PRReviewJob
 	// WorkspacePVCName is required only when Review.Spec.RunnerMode == "generic".
 	WorkspacePVCName string
 	WorkspaceLease   workspace.LeaseAcquireResult
@@ -153,6 +153,12 @@ type PublishingConfig struct {
 	GatewaySecretName string
 	GatewaySecretKey  string
 	CompletionURL     string
+	// REL-677: optional zoekt grounding passthrough. Empty means "leave the
+	// worker's default (off)"; the operator only forwards what deployment
+	// configuration explicitly set, so review runs without grounding stay
+	// byte-identical until ct-infrastructure opts in.
+	ZoektGroundingEnabled  string
+	ZoektGroundingDisabled string
 }
 
 // WorkerComponentFor returns the component label for a review's lane. The builder
@@ -322,6 +328,12 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				corev1.EnvVar{Name: AuthoritativeGateEnv, Value: "true"},
 				corev1.EnvVar{Name: PreparedConfigEnv, Value: *spec.PreparedReview},
 			)
+		}
+		if input.Publishing.ZoektGroundingEnabled != "" {
+			env = append(env, corev1.EnvVar{Name: "ZOEKT_GROUNDING_ENABLED", Value: input.Publishing.ZoektGroundingEnabled})
+		}
+		if input.Publishing.ZoektGroundingDisabled != "" {
+			env = append(env, corev1.EnvVar{Name: "ZOEKT_GROUNDING_DISABLED", Value: input.Publishing.ZoektGroundingDisabled})
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
