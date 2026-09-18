@@ -81,6 +81,10 @@ export interface MetricCounters {
   reviewReaperDelegated: Counter;
   /** REL-904: terminal lane outcomes for lane/provider attribution. */
   laneOutcomes: Counter;
+  /** A lane's turn-accumulation telemetry failed `personaTelemetrySchema` validation and was
+   * omitted from the published/reported result rather than failing the review. Non-zero here
+   * means measurement is degraded for that lane, not that the review itself is unhealthy. */
+  personaTelemetryDropped: Counter;
   activeJobs: UpDownCounter;
   queuedJobs: UpDownCounter;
 
@@ -243,6 +247,9 @@ export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounter
     }),
     laneOutcomes: meter.createCounter('review_yeti_lane_outcome_total', {
       description: 'Persona lane terminal outcomes tagged by persona, outcome, failure class, and transport (REL-904 lane/provider attribution).',
+    }),
+    personaTelemetryDropped: meter.createCounter('review_yeti_persona_telemetry_dropped_total', {
+      description: 'Per-persona turn-usage telemetry that failed schema validation and was omitted from the result rather than failing the review.',
     }),
     activeJobs: meter.createUpDownCounter('review_yeti_queue_active_jobs', {
       description: 'Current active review jobs.',

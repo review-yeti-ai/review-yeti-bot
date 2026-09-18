@@ -4,6 +4,8 @@ import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane
 import { canonicalJson, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
+import { getMetrics } from '../telemetry';
+import { logger } from '../utils/logger';
 
 /**
  * The success callback is deliberately smaller than the worker's operational receipt. It carries
@@ -56,6 +58,145 @@ const findingSchema = z.object({
   }
 });
 
+/** MAX_INVESTIGATION_TURNS in `panelEngine.ts` is 15; this bound is deliberately a little larger
+ * so a future increase there does not also require a schema change here, while still rejecting an
+ * unbounded array. Not imported directly -- a worker-completion schema must not reach into the
+ * panel engine module for a plain numeric constant. */
+export const MAX_TURN_USAGES = 32;
+
+/** One real provider call inside a persona lane's `invoke()` loop. Bounded and strictly numeric
+ * (plus the resolved model string) -- never provider prompt/response text -- so it is safe on this
+ * boundary the same way the rest of this schema is. */
+const laneTurnUsageSchema = z.object({
+  turn: positiveInteger,
+  kind: z.enum(['tool', 'correction', 'final']),
+  promptTokens: boundedInteger,
+  completionTokens: boundedInteger,
+  totalTokens: boundedInteger,
+  cachedTokens: boundedInteger,
+  costUSD: z.number().finite().nonnegative().nullable(),
+  model: z.string().max(256),
+  durationMs: boundedInteger,
+}).strict();
+
+/**
+ * OPTIONAL, additive per-persona telemetry (Stage 0 / ct-meta review-yeti telemetry work): the
+ * lane's accumulated usage across every turn its `invoke()` loop made, not just the terminal turn
+ * the rest of this schema has always reported. Every field is optional and the object itself is
+ * optional on `personaSchema` below, so an older worker that never populates it -- or a panel
+ * result with no completed lanes -- still parses cleanly. This keeps `WorkerReviewCompletion.v1`
+ * backward compatible: no version bump, no dispatcher change required to read it.
+ */
+const personaTelemetrySchema = z.object({
+  model: z.string().max(256).optional(),
+  turnsCount: boundedInteger.optional(),
+  toolTurns: boundedInteger.optional(),
+  correctionTurns: boundedInteger.optional(),
+  promptTokens: boundedInteger.optional(),
+  completionTokens: boundedInteger.optional(),
+  totalTokens: boundedInteger.optional(),
+  cachedTokens: boundedInteger.optional(),
+  costUSD: z.number().finite().nonnegative().nullable().optional(),
+  durationMs: boundedInteger.optional(),
+  turnUsages: z.array(laneTurnUsageSchema).max(MAX_TURN_USAGES).optional(),
+}).strict();
+
+export type PersonaTelemetry = z.output<typeof personaTelemetrySchema>;
+/** The `turnUsages` entry shape. */
+export type LaneTurnUsagePayload = z.output<typeof laneTurnUsageSchema>;
+
+/**
+ * The ONLY place that maps a panel lane's turn-accumulation fields onto the wire shape
+ * `personaTelemetrySchema` accepts. `buildReviewResult` in `publishingReview.ts` calls this on
+ * the publishing worker's SUCCESS path, instead of hand-mirroring the field list a second time in
+ * a different module -- co-locating the builder with the schema it targets (rather than relying
+ * on `z.output<...>` alone, which TypeScript's excess-property checking does not actually enforce
+ * through the conditional spreads a builder like this needs -- confirmed by renaming a field here
+ * and re-running `tsc --noEmit` with no error) means an edit to one is an edit to the other, in
+ * the same file, in the same diff.
+ *
+ * TOTAL, never throws: `telemetry` is an OPTIONAL, additive field added specifically so it
+ * degrades safely -- this PR exists to make measurement trustworthy, not to make measurement able
+ * to fail a review. A lane carrying a malformed field from an unexpected producer (a string token
+ * count, a NaN, a non-integer `turn`, ...) must never sink the whole publishing run. On schema
+ * failure this OMITS the telemetry field for that lane and records the omission (a counter plus a
+ * bounded log line -- never the raw candidate, only zod's issue paths/codes) so the drop is
+ * visible rather than silent, then returns `undefined` exactly like the "no telemetry data at
+ * all" case the caller already handles. The earlier version of this function ended in
+ * `personaTelemetrySchema.parse(...)`, which threw on drift instead of degrading -- that was
+ * itself a real regression this rewrite fixes; fail-loud on drift belongs in this function's own
+ * unit tests, not on the production success path.
+ *
+ * Input is loosely typed (`unknown`-per-field, not `PersonaLaneResult` from the panel module):
+ * this module must not depend on panel-engine internals, so every field is read defensively by
+ * type, exactly as a producer across a process/module boundary should.
+ */
+export function buildPersonaTelemetryPayload(lane: {
+  id?: unknown;
+  model?: unknown;
+  turnsCount?: unknown;
+  toolTurns?: unknown;
+  correctionTurns?: unknown;
+  durationMs?: unknown;
+  aggregateUsage?: unknown;
+  turnUsages?: unknown;
+}): PersonaTelemetry | undefined {
+  const aggregate = lane.aggregateUsage as Record<string, unknown> | undefined;
+  const hasAggregate = !!aggregate && typeof aggregate === 'object';
+  const turnUsagesInput = Array.isArray(lane.turnUsages) ? lane.turnUsages : [];
+  const hasTurnUsages = turnUsagesInput.length > 0;
+  const hasAnyTelemetry = hasAggregate || hasTurnUsages
+    || typeof lane.turnsCount === 'number' || typeof lane.model === 'string';
+  if (!hasAnyTelemetry) return undefined;
+
+  const candidate: Record<string, unknown> = {
+    ...(typeof lane.model === 'string' ? { model: lane.model } : {}),
+    ...(typeof lane.turnsCount === 'number' ? { turnsCount: lane.turnsCount } : {}),
+    ...(typeof lane.toolTurns === 'number' ? { toolTurns: lane.toolTurns } : {}),
+    ...(typeof lane.correctionTurns === 'number' ? { correctionTurns: lane.correctionTurns } : {}),
+    ...(typeof lane.durationMs === 'number' ? { durationMs: lane.durationMs } : {}),
+    ...(hasAggregate ? {
+      promptTokens: aggregate!.promptTokens,
+      completionTokens: aggregate!.completionTokens,
+      totalTokens: aggregate!.totalTokens,
+      cachedTokens: aggregate!.cachedTokens,
+      costUSD: aggregate!.costUSD,
+    } : {}),
+    ...(hasTurnUsages ? {
+      turnUsages: turnUsagesInput.map((turn: any) => ({
+        turn: turn?.turn,
+        kind: turn?.kind,
+        promptTokens: turn?.promptTokens,
+        completionTokens: turn?.completionTokens,
+        totalTokens: turn?.totalTokens,
+        cachedTokens: turn?.cachedTokens,
+        costUSD: turn?.costUSD,
+        model: turn?.model,
+        durationMs: turn?.durationMs,
+      })),
+    } : {}),
+  };
+
+  const result = personaTelemetrySchema.safeParse(candidate);
+  if (result.success) return result.data;
+
+  const personaId = typeof lane.id === 'string' ? lane.id : 'unknown';
+  // Telemetry recording is itself best-effort: a metrics-layer failure must never compound into a
+  // review failure either, the same principle this whole function exists to uphold.
+  try {
+    getMetrics().personaTelemetryDropped.add(1, { persona: personaId });
+  } catch (_) {
+    // ignore
+  }
+  logger.warn('Persona telemetry payload failed schema validation; omitting it from the result', {
+    persona: personaId,
+    // Bounded to zod's structural issue metadata -- never the raw candidate values, which a
+    // future producer could make arbitrarily large.
+    issues: result.error.issues.map((issue) => ({ path: issue.path.join('.'), code: issue.code })),
+  });
+  return undefined;
+}
+
 const personaSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u),
   decision: z.enum(['APPROVE', 'FINDINGS', 'ERROR']),
@@ -63,6 +204,8 @@ const personaSchema = z.object({
   /** Bounded operational classification only; provider text/transcripts never cross this boundary. */
   errorClass: z.enum(workerFailureClasses).optional(),
   findings: z.array(findingSchema).max(MAX_FINDINGS_PER_PERSONA),
+  /** See `personaTelemetrySchema` above. */
+  telemetry: personaTelemetrySchema.optional(),
 }).strict().superRefine((persona, context) => {
   const errorLane = persona.decision === 'ERROR' || persona.status === 'ERROR';
   if (errorLane && persona.errorClass === undefined) {
