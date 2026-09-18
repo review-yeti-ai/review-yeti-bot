@@ -117,6 +117,23 @@ const RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES = new Set([
   'Review Yeti: review did not complete',
   'Review Yeti: NO VERDICT (no panel result for this head)',
 ]);
+// REL-940: conclusions that mark a prior attempt as a recoverable
+// INFRASTRUCTURE failure rather than a verdict about the diff.
+//
+// `failure` is what the engine has always published for these titles.
+// `action_required` is accepted so the engine can migrate to it -- it is the
+// semantically correct "no verdict, operator action needed" conclusion, and it
+// blocks merge exactly like `failure`. Accepting both here FIRST means the
+// engine can switch without a flag-day: this validator must never be the thing
+// that refuses same-head regeneration during that migration.
+//
+// `neutral` and `skipped` are deliberately absent and must stay absent: GitHub
+// treats both as PASSING for required status checks, so admitting either here
+// would let an infrastructure failure read as an approval.
+const RECOVERABLE_INFRASTRUCTURE_CONCLUSIONS = new Set([
+  'failure',
+  'action_required',
+]);
 
 function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -352,7 +369,7 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
 function isRecoverableInfrastructureAttempt(identity, expectedAttempt) {
   return identity.attempt === expectedAttempt
     && identity.row.status === 'completed'
-    && identity.row.conclusion === 'failure'
+    && RECOVERABLE_INFRASTRUCTURE_CONCLUSIONS.has(identity.row.conclusion)
     && RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title);
 }
 

@@ -297,6 +297,39 @@ test('attempt 2 rejects zero checks, active a1, terminal a1, and a2-or-later', a
   }
 });
 
+// REL-940: `action_required` is the semantically correct "no verdict, operator
+// action needed" conclusion for an infrastructure failure, and it blocks merge
+// exactly like `failure`. This validator accepts it BEFORE the engine starts
+// publishing it, so the engine migration is not a flag-day and this gate can
+// never be the thing that refuses same-head regeneration mid-migration.
+test('attempt 2 admits an action_required infrastructure failure alongside failure', async () => {
+  for (const conclusion of ['failure', 'action_required']) {
+    const runs = [workerCheck({ conclusion })];
+    const result = await validate({ attempt: 2, pages: [page(runs)] });
+    assert.ok(result, `a1 ${conclusion} should admit an a2 regeneration`);
+  }
+});
+
+// The exclusion of neutral/skipped is load-bearing, not an omission: GitHub
+// treats both as PASSING for required status checks, so admitting either would
+// let an infrastructure failure read as an approval. Asserted against every
+// recoverable title so a future title addition cannot quietly widen it.
+test('attempt 2 never admits a passing-equivalent conclusion', async () => {
+  const recoverableTitles = [
+    'Review Yeti: review did not complete',
+    'Review Yeti: NO VERDICT (no panel result for this head)',
+  ];
+  for (const title of recoverableTitles) {
+    for (const conclusion of ['neutral', 'skipped']) {
+      await assert.rejects(
+        validate({ attempt: 2, pages: [page([workerCheck({ conclusion, title })])] }),
+        /a1 worker is not a completed recoverable infrastructure failure/u,
+        `${conclusion} with title "${title}" must never admit a regeneration`,
+      );
+    }
+  }
+});
+
 test('attempt 3 admits one governed same-head rerequest after two infrastructure failures', async () => {
   const result = await validate({
     attempt: 3,
