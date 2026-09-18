@@ -123,6 +123,10 @@ describe('Challenger 1 Empirical Synthetic Fallback Verification (omniRouteClien
   });
 
   describe('2. panelEngine.executePersonaPanel network failure & mock review forging checks', () => {
+    // REL-940: a transport failure now retries on a bounded exponential
+    // backoff (~21s worst case) before the lane fails closed. The
+    // fail-closed guarantee asserted below is unchanged -- only its
+    // latency is -- so this test needs a timeout past that budget.
     it('FAILS CLOSED (throws PanelConfigurationError) when underlying omniRouteClient hits offline server, and NEVER returns forged APPROVE/SHIP verdict', async () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:9090')));
 
@@ -147,6 +151,6 @@ describe('Challenger 1 Empirical Synthetic Fallback Verification (omniRouteClien
       expect(panelResult).toBeNull();
       expect(panelError).not.toBeNull();
       expect(panelError).toBeInstanceOf(PanelConfigurationError);
-    });
+    }, 60_000);
   });
 });
