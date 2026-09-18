@@ -59,6 +59,17 @@ describe('Challenger 2 Empirical Stress Test: panelEngine & omniRouteClient Fail
     error500Server?.close();
   });
 
+  // REL-940: a transport failure now retries on a bounded exponential
+  // backoff (~21s worst case) before the lane fails closed. The
+  // fail-closed guarantee asserted below is unchanged -- only its
+  // latency is -- so this test needs a timeout past that budget.
+  //
+  // This scenario is the slowest of the three because it resolves a real
+  // `.invalid` hostname: every attempt pays an actual DNS timeout ON TOP of
+  // the backoff, where scenarios 2 and 3 hit 127.0.0.1 and fail instantly.
+  // Retrying ENOTFOUND is deliberate rather than an oversight -- the worker
+  // resolves the gateway by DNS in-cluster, where a CoreDNS restart or
+  // propagation lag is exactly the transient this retry exists for.
   it('Scenario 1: DNS Resolution Failure — panelEngine must fail closed and NOT return synthetic approvals', async () => {
     const config = parseAndValidateConfig(testPolicy) as unknown as CtReviewConfigV3;
     const client = new OmniRouteClient({
@@ -87,7 +98,7 @@ describe('Challenger 2 Empirical Stress Test: panelEngine & omniRouteClient Fail
 
     expect(returnedResult).toBeNull();
     expect(caughtError).toBeInstanceOf(Error);
-  });
+  }, 180_000);
 
   it('Scenario 2: Connection Timeout — panelEngine must fail closed and NOT return synthetic approvals', async () => {
     const config = parseAndValidateConfig(testPolicy) as unknown as CtReviewConfigV3;

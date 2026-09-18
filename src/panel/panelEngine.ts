@@ -1190,6 +1190,62 @@ export const EMPTY_COMPLETION_MAX_ATTEMPTS = 4;
  * enough that four attempts stay well inside the persona's overall budget. */
 export const EMPTY_COMPLETION_RETRY_DELAY_MS = 1000;
 
+/** REL-940: RETRIES allotted to a lane for a provider TRANSPORT failure --
+ * the gateway itself being unreachable (`fetch failed`, ECONNRESET, connection
+ * error) rather than any answer about the diff. Separate from, and larger
+ * than, the generic transient-error `maxAttempts` budget below, for the same
+ * reason the empty-completion signature gets its own budget above.
+ *
+ * Why this exists: the generic branch retried a transport error exactly once
+ * after a flat 1s pause, so a whole required lane -- and with it the entire
+ * panel, including lanes that had already completed and been paid for --
+ * failed closed roughly six seconds after the first failure. Observed
+ * gateway blips last minutes, not milliseconds: an immediate manual retry
+ * reproduced the same failure while a retry a few minutes later returned a
+ * clean verdict. A 1s pause cannot outlast an outage of that shape, so the
+ * retry was structurally guaranteed to be useless for the one failure class
+ * it most needed to cover. */
+export const TRANSPORT_MAX_RETRIES = 3;
+/** Base of the exponential transport backoff: 1s -> 4s -> 16s -> 64s before
+ * jitter. The FIRST retry stays as fast as the generic branch it replaces,
+ * because a single dropped connection recovers immediately and every lane
+ * would otherwise pay the worst-case latency for the common case. The
+ * escalation is what covers an outage that needs wall-clock time to clear. */
+export const TRANSPORT_RETRY_BASE_DELAY_MS = 1_000;
+/** Growth factor per transport retry. */
+export const TRANSPORT_RETRY_FACTOR = 4;
+/** Ceiling for any single transport backoff, so the schedule stays bounded. */
+export const TRANSPORT_RETRY_MAX_DELAY_MS = 120_000;
+
+/**
+ * Exponential backoff with jitter for transport retries.
+ *
+ * Exponential because the failure is an upstream outage that needs wall-clock
+ * time to clear, not a re-roll of provider routing (contrast the flat
+ * `EMPTY_COMPLETION_RETRY_DELAY_MS`, where an immediate retry genuinely can
+ * land on a different backend).
+ *
+ * Jittered because every persona lane runs concurrently against the SAME
+ * gateway: without jitter they fail together, sleep in lockstep, and retry in
+ * one synchronised burst against an upstream that is still recovering. The
+ * +/-20% spread breaks that thundering herd.
+ *
+ * Worst case is ~25s of added delay across three retries. That deliberately
+ * covers a SHORT blip -- a gateway restart or a dropped connection -- and not
+ * a multi-minute outage: past that point the cost is paid by every lane on
+ * every genuinely-down gateway (including the fail-closed path), for a
+ * shrinking chance of recovery. A longer outage is the operator re-review
+ * path's job, not this loop's.
+ */
+export function transportRetryDelayMs(attempt: number, random: () => number = Math.random): number {
+  const exponential = Math.min(
+    TRANSPORT_RETRY_BASE_DELAY_MS * Math.pow(TRANSPORT_RETRY_FACTOR, Math.max(0, attempt - 1)),
+    TRANSPORT_RETRY_MAX_DELAY_MS,
+  );
+  const jitter = 0.8 + random() * 0.4;
+  return Math.round(exponential * jitter);
+}
+
 export const MAX_INLINE_DIFF_CHARS = 0;
 
 export function buildCompactFileList(
@@ -2211,6 +2267,10 @@ async function runPersona(
       // capped by the generic transient-error `maxAttempts`. The loop itself is
       // therefore unconditional; every exit path below is an explicit `break`.
       let emptyCompletionAttempts = 0;
+      // REL-940: transport failures get their own separately tracked budget for
+      // the same reason as `emptyCompletionAttempts` -- so the generic
+      // `maxAttempts` cap cannot retire a lane while the gateway is simply down.
+      let transportAttempts = 0;
 
       for (;;) {
         throwIfPanelAborted(signal);
@@ -2527,6 +2587,44 @@ async function runPersona(
               },
             });
             break;
+          }
+          // REL-940: a transport failure is the gateway being unreachable, not
+          // an answer about the diff. It is checked BEFORE the generic branch
+          // below so the flat 1s/`maxAttempts` path cannot retire the lane
+          // while an outage is still clearing. Classification reuses
+          // `classifyPersonaAttemptFailure` -- the single shared classifier
+          // this file already trusts for the published failure class -- rather
+          // than a second message ladder that could drift from it.
+          // The backoff must also FIT in what is left of the persona/panel budget.
+          // Sleeping past the overall deadline converts a precise
+          // "required persona failure: ... transport" into a generic
+          // "panel exceeded overall timeout", which is strictly worse to
+          // operate on -- and a repo with a short `overall_timeout_s` would
+          // hit that every time. When there is no room, fall through and fail
+          // with the accurate reason now.
+          const transportBackoffMs = transportRetryDelayMs(transportAttempts + 1);
+          const remainingBudgetMs = Math.min(
+            MAX_PERSONA_BUDGET_MS - (Date.now() - personaStartedAt),
+            remainingPanelTimeoutMs?.() ?? Infinity,
+          );
+          if (
+            transportAttempts < TRANSPORT_MAX_RETRIES &&
+            transportBackoffMs < remainingBudgetMs &&
+            classifyPersonaAttemptFailure(error) === 'transport'
+          ) {
+            transportAttempts++;
+            const backoffMs = transportBackoffMs;
+            logger.warn(`Transport failure reaching provider '${providerId}' for persona ${persona.id}; backing off ${backoffMs}ms before retry ${transportAttempts}/${TRANSPORT_MAX_RETRIES}`, {
+              persona: persona.id,
+              provider: providerId,
+              transportAttempt: transportAttempts,
+              transportMaxRetries: TRANSPORT_MAX_RETRIES,
+              backoffMs,
+              // Bounded/redacted, same contract as the generic branch below.
+              error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+            });
+            await panelDelay(backoffMs, signal);
+            continue;
           }
           if (attempts < maxAttempts && isRetryablePanelError(error)) {
             logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts})`, {
