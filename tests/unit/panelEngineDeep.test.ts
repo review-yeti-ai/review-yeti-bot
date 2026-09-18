@@ -1891,7 +1891,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
   it('bounds the transport backoff: exponential, jittered, and capped', () => {
     // Deterministic bounds rather than exact values, because the jitter is the
     // point: concurrent lanes must not retry a recovering gateway in lockstep.
-    for (const [attempt, base] of [[1, 1_000], [2, 4_000], [3, 16_000], [4, 64_000]] as const) {
+    for (const [attempt, base] of [[1, 1_000], [2, 4_000], [3, 16_000]] as const) {
       const low = transportRetryDelayMs(attempt, () => 0);
       const high = transportRetryDelayMs(attempt, () => 0.999);
       expect(low).toBe(Math.round(base * 0.8));
@@ -1904,7 +1904,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     // momentary blip does not cost every lane the worst-case latency.
     expect(transportRetryDelayMs(1, () => 0.5)).toBe(1_000);
     // Worst-case total stays far inside the 30-minute terminal deadline.
-    const worstCaseTotalMs = [1, 2, 3, 4].reduce((sum, n) => sum + transportRetryDelayMs(n, () => 0.999), 0);
-    expect(worstCaseTotalMs).toBeLessThan(180_000);
+    const worstCaseTotalMs = [1, 2, 3].reduce((sum, n) => sum + transportRetryDelayMs(n, () => 0.999), 0);
+    expect(worstCaseTotalMs).toBeLessThan(40_000);
   });
 });

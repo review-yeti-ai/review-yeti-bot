@@ -1205,7 +1205,7 @@ export const EMPTY_COMPLETION_RETRY_DELAY_MS = 1000;
  * clean verdict. A 1s pause cannot outlast an outage of that shape, so the
  * retry was structurally guaranteed to be useless for the one failure class
  * it most needed to cover. */
-export const TRANSPORT_MAX_ATTEMPTS = 5;
+export const TRANSPORT_MAX_ATTEMPTS = 4;
 /** Base of the exponential transport backoff: 1s -> 4s -> 16s -> 64s before
  * jitter. The FIRST retry stays as fast as the generic branch it replaces,
  * because a single dropped connection recovers immediately and every lane
@@ -1230,9 +1230,12 @@ export const TRANSPORT_RETRY_MAX_DELAY_MS = 120_000;
  * one synchronised burst against an upstream that is still recovering. The
  * +/-20% spread breaks that thundering herd.
  *
- * Worst case is ~102s of added delay across four retries -- a rounding error
- * against the 30-minute terminal deadline and the 45-minute persona budget,
- * both of which continue to bound this loop from the outside.
+ * Worst case is ~25s of added delay across three retries. That deliberately
+ * covers a SHORT blip -- a gateway restart or a dropped connection -- and not
+ * a multi-minute outage: past that point the cost is paid by every lane on
+ * every genuinely-down gateway (including the fail-closed path), for a
+ * shrinking chance of recovery. A longer outage is the operator re-review
+ * path's job, not this loop's.
  */
 export function transportRetryDelayMs(attempt: number, random: () => number = Math.random): number {
   const exponential = Math.min(
@@ -2592,9 +2595,25 @@ async function runPersona(
           // `classifyPersonaAttemptFailure` -- the single shared classifier
           // this file already trusts for the published failure class -- rather
           // than a second message ladder that could drift from it.
-          if (transportAttempts < TRANSPORT_MAX_ATTEMPTS && classifyPersonaAttemptFailure(error) === 'transport') {
+          // The backoff must also FIT in what is left of the persona/panel budget.
+          // Sleeping past the overall deadline converts a precise
+          // "required persona failure: ... transport" into a generic
+          // "panel exceeded overall timeout", which is strictly worse to
+          // operate on -- and a repo with a short `overall_timeout_s` would
+          // hit that every time. When there is no room, fall through and fail
+          // with the accurate reason now.
+          const transportBackoffMs = transportRetryDelayMs(transportAttempts + 1);
+          const remainingBudgetMs = Math.min(
+            MAX_PERSONA_BUDGET_MS - (Date.now() - personaStartedAt),
+            remainingPanelTimeoutMs?.() ?? Infinity,
+          );
+          if (
+            transportAttempts < TRANSPORT_MAX_ATTEMPTS &&
+            transportBackoffMs < remainingBudgetMs &&
+            classifyPersonaAttemptFailure(error) === 'transport'
+          ) {
             transportAttempts++;
-            const backoffMs = transportRetryDelayMs(transportAttempts);
+            const backoffMs = transportBackoffMs;
             logger.warn(`Transport failure reaching provider '${providerId}' for persona ${persona.id}; backing off ${backoffMs}ms before retry ${transportAttempts}/${TRANSPORT_MAX_ATTEMPTS}`, {
               persona: persona.id,
               provider: providerId,
