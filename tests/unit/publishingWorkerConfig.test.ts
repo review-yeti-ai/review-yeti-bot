@@ -142,6 +142,68 @@ describe('publishingWorkerConfig', () => {
     }
   });
 
+  it('defaults to the panel engine and the default6 roster when no policy is supplied at all', () => {
+    const config = resolveWorkerConfig({}, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
+    expect(config.review_engine).toBe('panel');
+    expect(config.personas.length).toBe(6);
+  });
+
+  it('projects review_engine and the composed budget block from central policy', () => {
+    const config = resolveWorkerConfig({
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({
+        review_yeti: {
+          personas: 'security',
+          budget: { max_investigation_turns: 5 },
+          review_engine: 'composed',
+          composed: {
+            max_tasks: 4,
+            max_turns_total: 20,
+            max_turns_per_task: 3,
+            require_security_task: true,
+            task_dimensions: ['security', 'performance'],
+          },
+        },
+      }),
+    }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
+
+    expect(config.review_engine).toBe('composed');
+    expect(config.composed).toEqual({
+      max_tasks: 4,
+      max_turns_total: 20,
+      max_turns_per_task: 3,
+      task_dimensions: ['security', 'performance'],
+    });
+    // `require_security_task` is present in the policy blob above and is deliberately NOT
+    // projected. The composed plan's security floor is the defence against a diff that coaxes the
+    // model into skipping auth review (ADR 0639); it is heuristic-derived and not satisfiable by a
+    // corrective turn. A boolean policy key for it would offer exactly one meaningful value --
+    // false -- so the key does not exist, and a policy that sets it is ignored rather than obeyed.
+    expect(config.composed).not.toHaveProperty('require_security_task');
+  });
+
+  it('falls back to panel for an unrecognized review_engine value (fail-inert, not fail-open to a guess)', () => {
+    const config = resolveWorkerConfig({
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({
+        review_yeti: { personas: 'security', budget: { max_investigation_turns: 5 }, review_engine: 'yolo' },
+      }),
+    }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
+    expect(config.review_engine).toBe('panel');
+  });
+
+  it('fails closed on a malformed REVIEW_YETI_POLICY_JSON instead of silently falling back to the default6 panel roster', () => {
+    // Represents a policy that asked for the composed engine but whose JSON payload was corrupted
+    // (truncated here). A parse failure must never be silently treated as "use the panel engine
+    // with its full six-persona fan-out roster" -- that is exactly the roster (and engine) this
+    // policy was trying to avoid by selecting `composed` in the first place. Deliberately does not
+    // assert what engine resolveWorkerConfig "should have" picked -- the whole point is that it
+    // cannot know, and must refuse to guess rather than default to panel.
+    const corruptedComposedPolicy = '{"review_yeti":{"review_engine":"composed","personas":"security"';
+    expect(() => resolveWorkerConfig(
+      { REVIEW_YETI_POLICY_JSON: corruptedComposedPolicy },
+      { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' },
+    )).toThrow();
+  });
+
   it('assigns builtin:dependency-health charter to dep-lane', () => {
     const config = resolveWorkerConfig({}, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
     const depPersona = config.personas.find((p) => p.id === 'dep-lane');

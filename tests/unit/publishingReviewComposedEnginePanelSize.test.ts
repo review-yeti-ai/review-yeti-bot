@@ -15,11 +15,23 @@ import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
 
+/** Base-policy JSON that selects the composed engine (see `resolveWorkerConfig` in
+ * `src/config/publishingWorkerConfig.ts`). `review_engine` is only readable from here -- an env
+ * var alone must never select the engine (see `resolveReviewEngine` in
+ * `src/cli/publishingReview.ts`). */
+const COMPOSED_POLICY_JSON = JSON.stringify({
+  review_yeti: {
+    personas: 'security',
+    budget: { max_investigation_turns: 10 },
+    review_engine: 'composed',
+  },
+});
+
 function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     NODE_ENV: 'test',
     REVIEW_PUBLICATION_MODE: 'app-gate',
-    REVIEW_ENGINE: 'composed',
+    REVIEW_YETI_POLICY_JSON: COMPOSED_POLICY_JSON,
     REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
     REVIEW_REPO: 'calltelemetry/ct-meta',
     REVIEW_REPOSITORY_ID: '1339040553',
@@ -100,7 +112,7 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
     expect(receipt.blockingFindingCount).toBe(3);
   });
 
-  it('never calls the fan-out panelRunner when REVIEW_ENGINE=composed', async () => {
+  it('never calls the fan-out panelRunner when base policy selects the composed engine', async () => {
     const panelRunner = vi.fn();
     const d = deps({ panelRunner: panelRunner as never });
     await runPublishingReviewWorker(env(), d);
@@ -108,7 +120,7 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
     expect(d.composedReviewRunner).toHaveBeenCalledTimes(1);
   });
 
-  it('stays on the fan-out panel engine by default (REVIEW_ENGINE unset)', async () => {
+  it('stays on the fan-out panel engine by default (no policy review_engine)', async () => {
     const panelRunner = vi.fn(async () => ({
       applicablePersonaIds: ['sec-lane'],
       personas: [{ id: 'sec-lane', findings: [] }],
@@ -118,7 +130,36 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
     }));
     const composedReviewRunner = vi.fn();
     const localEnv = env();
-    delete (localEnv as Record<string, unknown>).REVIEW_ENGINE;
+    delete (localEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON;
+    const d = {
+      checkClient: checkClient(),
+      sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
+      visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
+      panelRunner: panelRunner as never,
+      composedReviewRunner: composedReviewRunner as never,
+      client: {} as never,
+    };
+    await runPublishingReviewWorker(localEnv, d);
+    expect(panelRunner).toHaveBeenCalledTimes(1);
+    expect(composedReviewRunner).not.toHaveBeenCalled();
+  });
+
+  it('never lets a raw REVIEW_ENGINE env var select the engine -- only base policy can', async () => {
+    // A PR/dispatch context setting REVIEW_ENGINE=composed directly (with no matching
+    // review_engine in base policy) must not switch the review's own engine. Only
+    // `workerConfig.review_engine`, projected from base policy, may do that (see
+    // `resolveReviewEngine` in `src/cli/publishingReview.ts`).
+    const panelRunner = vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      optionalFailures: [],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      arbiter: { verdict: 'SHIP' },
+    }));
+    const composedReviewRunner = vi.fn();
+    const localEnv = env();
+    delete (localEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON;
+    (localEnv as Record<string, unknown>).REVIEW_ENGINE = 'composed';
     const d = {
       checkClient: checkClient(),
       sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,

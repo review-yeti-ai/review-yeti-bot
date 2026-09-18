@@ -566,7 +566,7 @@ export interface PublishingReviewDeps {
   /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
   visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
   panelRunner?: typeof executePersonaPanel;
-  /** Injectable for tests. Used only when `resolveReviewEngine(env)` selects `'composed'`. */
+  /** Injectable for tests. Used only when `resolveReviewEngine(workerConfig)` selects `'composed'`. */
   composedReviewRunner?: typeof executeComposedReview;
   client?: ReviewModelClient;
   now?: () => number;
@@ -669,14 +669,21 @@ export function zoektGroundingEnabledFor(
 export type ReviewEngine = 'panel' | 'composed';
 
 /**
- * `REVIEW_ENGINE` selects between the fan-out persona panel (`panel`, the default) and the
- * single-context composed engine (`composed`, `src/panel/composedEngine.ts`). Fail-inert: any
- * value other than the exact string `'composed'` -- unset, empty, a typo, anything else -- stays
- * `'panel'`. This PR must not change production behaviour by default; only an explicit, exact
- * opt-in selects the new path.
+ * Selects between the fan-out persona panel (`panel`, the default) and the single-context composed
+ * engine (`composed`, `src/panel/composedEngine.ts`). Fail-inert: any value other than the exact
+ * string `'composed'` -- unset, `'shadow'` (reserved, not yet a distinct execution path), a typo,
+ * anything else -- stays `'panel'`.
+ *
+ * Deliberately reads the resolved worker config's `review_engine` field, never a raw env var: the
+ * worker config is projected from base policy (`resolveWorkerConfig` in
+ * `../config/publishingWorkerConfig`, or the digest-verified `parsePreparedReviewExecution` on the
+ * authoritative path), neither of which a pull request can influence. Reading an env var here
+ * instead would let whatever triggered this run pick its own review engine -- e.g. escaping the
+ * stricter composed engine an operator enabled for this repository, or opting into an engine that
+ * was never enabled at all.
  */
-export function resolveReviewEngine(env: NodeJS.ProcessEnv): ReviewEngine {
-  return value(env, 'REVIEW_ENGINE') === 'composed' ? 'composed' : 'panel';
+export function resolveReviewEngine(config: { review_engine?: unknown }): ReviewEngine {
+  return config?.review_engine === 'composed' ? 'composed' : 'panel';
 }
 
 export async function runPublishingReviewWorker(
@@ -700,10 +707,9 @@ export async function runPublishingReviewWorker(
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
-  const reviewEngine = resolveReviewEngine(env);
-  const panelRunner = reviewEngine === 'composed'
-    ? (deps.composedReviewRunner || executeComposedReview)
-    : (deps.panelRunner || executePersonaPanel);
+  // `reviewEngine`/`panelRunner` are resolved below, once `workerConfig` exists -- see
+  // `resolveReviewEngine`'s doc comment for why this must read the resolved base-policy config
+  // rather than a raw env var this early.
   let preparedPersonaIds: string[] = [];
   let authoritativeCompletionAttempted = false;
   let legacySuccessCompletionAttempted = false;
@@ -898,6 +904,12 @@ export async function runPublishingReviewWorker(
         { baseUrl: transport.baseUrl, model: transport.model }).config
       : resolveWorkerConfig(env, transport);
     if (authoritative) preparedPersonaIds = workerConfig.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
+    // Base-policy driven (see `resolveReviewEngine`'s doc comment): a PR cannot switch its own
+    // review engine by setting an env var, only by what `workerConfig.review_engine` resolved to.
+    const reviewEngine = resolveReviewEngine(workerConfig);
+    const panelRunner = reviewEngine === 'composed'
+      ? (deps.composedReviewRunner || executeComposedReview)
+      : (deps.panelRunner || executePersonaPanel);
     const repositoryVisibility = await resolveRepositoryVisibility(
       normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY')),
       {

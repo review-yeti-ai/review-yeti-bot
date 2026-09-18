@@ -111,12 +111,45 @@ export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 48;
 export const COMPOSED_PLAN_MAX_TURNS = 4;
 /** Turns available to a single task's WORK phase (tool calls + correction + finalize). */
 export const COMPOSED_TASK_MAX_TURNS = 6;
+
+/**
+ * Per-task turn ceiling. Policy NARROWS only: a value above `COMPOSED_TASK_MAX_TURNS` is ignored
+ * rather than honoured, so central policy can tighten a budget it does not own but never widen it.
+ * Non-positive and non-integer values fall back to the engine constant rather than clamping to
+ * zero, which would make every task exhaust on its first turn.
+ *
+ * Exported and pure so it can be tested directly. Inlining this arithmetic in the caller made an
+ * earlier test reimplement it, which meant the test passed against its own copy of the rule and a
+ * mutation of the real one did not register.
+ */
+export function resolveTaskTurnCeiling(
+  policyMaxTurnsPerTask: number | undefined,
+  turnsRemaining: number,
+): number {
+  const policyCeiling = Number.isInteger(policyMaxTurnsPerTask) && (policyMaxTurnsPerTask as number) > 0
+    ? (policyMaxTurnsPerTask as number)
+    : COMPOSED_TASK_MAX_TURNS;
+  return Math.min(COMPOSED_TASK_MAX_TURNS, policyCeiling, Math.max(1, turnsRemaining));
+}
 /** Turn-window compaction threshold inside one task's own branched sub-conversation. */
 const TASK_COMPACTION_ACTIVE_TURNS = 2;
 
-export function resolveComposedEngineMaxTurns(env: NodeJS.ProcessEnv = process.env): number {
+/**
+ * Resolution order: `env.COMPOSED_ENGINE_MAX_TURNS` (manual operator override) wins when set,
+ * then the base-policy-projected `composed.max_turns_total` (see `resolveWorkerConfig` in
+ * `../config/publishingWorkerConfig.ts`) -- clamped to `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`,
+ * so policy may only lower this engine's own total-turn ceiling, never raise it -- then the
+ * default. This function owns that clamp; it must never be raised by a caller-supplied value.
+ */
+export function resolveComposedEngineMaxTurns(
+  env: NodeJS.ProcessEnv = process.env,
+  configuredMaxTurnsTotal?: number,
+): number {
   const raw = Number(env.COMPOSED_ENGINE_MAX_TURNS);
   if (Number.isSafeInteger(raw) && raw > 0) return raw;
+  if (Number.isSafeInteger(configuredMaxTurnsTotal) && (configuredMaxTurnsTotal as number) > 0) {
+    return Math.min(configuredMaxTurnsTotal as number, COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
+  }
   return COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS;
 }
 
@@ -695,6 +728,8 @@ async function runTaskWorkPhase(input: {
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: unknown;
   turnsRemaining: () => number;
+  /** Policy may LOWER this task's turn ceiling, never raise it past `COMPOSED_TASK_MAX_TURNS`. */
+  maxTurnsPerTask?: number;
 }): Promise<TaskOutcome> {
   const startedAt = Date.now();
   // Per-task nonce, retained so the finalize object can be bound to THIS task's request. Without
@@ -708,7 +743,7 @@ async function runTaskWorkPhase(input: {
   const toolCallsLog: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
   let toolTurns = 0;
   let correctionAttempts = 0;
-  const localMaxTurns = Math.min(COMPOSED_TASK_MAX_TURNS, Math.max(1, input.turnsRemaining()));
+  const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining());
 
   for (let iter = 0; iter < localMaxTurns; iter++) {
     if (input.turnsRemaining() <= 0) return { type: 'exhausted', turnUsages };
@@ -874,7 +909,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       preCheckEvidence,
     });
 
-    const maxTasks = Math.max(1, Math.min((config as any)?.composed_max_tasks || DEFAULT_MAX_TASKS, DEFAULT_MAX_TASKS));
+    // Policy may only narrow this, never widen it past `DEFAULT_MAX_TASKS` -- `config.composed` is
+    // base-policy-projected (see `resolveWorkerConfig` in `../config/publishingWorkerConfig.ts`).
+    const maxTasks = Math.max(1, Math.min(config.composed?.max_tasks || DEFAULT_MAX_TASKS, DEFAULT_MAX_TASKS));
     const effectiveFilePaths = effectiveFiles.map((f) => f.path);
 
     // Mint the plan nonce ONCE and keep it, so the returned object can be bound back to this
@@ -893,7 +930,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       },
     ];
 
-    const totalTurnBudget = resolveComposedEngineMaxTurns();
+    const totalTurnBudget = resolveComposedEngineMaxTurns(process.env, config.composed?.max_turns_total);
     let totalTurnsUsed = 0;
     const remainingBudget = () => totalTurnBudget - totalTurnsUsed;
     const timeoutMs = Math.max(1, deadline.timeoutMs - (Date.now() - panelStartedAt));
@@ -938,6 +975,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       if (remainingBudget() <= 0) break;
       const task = planOutcome.tasks[i];
       const outcome = await runTaskWorkPhase({
+        maxTurnsPerTask: config.composed?.max_turns_per_task,
         task,
         taskIndex: i,
         totalTasks: planOutcome.tasks.length,
