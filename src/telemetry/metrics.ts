@@ -93,6 +93,14 @@ export interface MetricCounters {
   analyzersDuration: Histogram;
   analyzerHypotheses: Counter;
   preCheckTotalDuration: Histogram;
+  /**
+   * REL-677 / ADR 0329: wall-clock time to materialize the read-only worktree and build the
+   * throwaway Zoekt index for one review run (`src/mcp/zoektGrounding.js`), *not* the query
+   * time against that index once built (`zoektDuration` above covers that). This is fixed setup
+   * cost paid on every grounded review, distinct from persona lane time, and is the number the
+   * REL-677 latency trade-off (setup cost vs. turns saved by grounded lookups) is judged against.
+   */
+  zoektIndexBuildDuration: Histogram;
 }
 
 export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounters {
@@ -256,6 +264,9 @@ export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounter
     }),
     preCheckTotalDuration: meter.createHistogram('review_yeti_pre_checks_duration_seconds', {
       description: 'Combined pre-checks latency in seconds.',
+    }),
+    zoektIndexBuildDuration: meter.createHistogram('review_yeti_zoekt_index_build_duration_seconds', {
+      description: 'REL-677: time to materialize the review worktree and build the throwaway Zoekt index for one run, excluding query time.',
     }),
   };
 
