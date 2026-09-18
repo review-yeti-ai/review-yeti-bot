@@ -420,6 +420,44 @@ export function resolvePreChecksConfig(rawConfig: any): PreChecksConfig {
   return parsed;
 }
 
+/**
+ * Selects between the fan-out persona panel (`panel`, the default) and the single-context
+ * composed engine (`composed`, `src/panel/composedEngine.ts`). `shadow` is reserved for a future
+ * comparison-only mode and currently resolves to `panel` at every runtime call site -- see
+ * `resolveReviewEngine` in `src/cli/publishingReview.ts`. This is base-policy-projected
+ * (`resolveWorkerConfig` in `src/config/publishingWorkerConfig.ts`); a pull request cannot set its
+ * own value for this field.
+ */
+export const reviewEngineSchema = z.enum(['panel', 'composed', 'shadow']);
+export type ReviewEngineName = z.infer<typeof reviewEngineSchema>;
+
+/**
+ * Policy-authored bounds for the composed engine (`src/panel/composedEngine.ts`). Every field is
+ * optional and, when present, only ever narrows the engine's own hard-coded defaults/caps
+ * (`DEFAULT_MAX_TASKS`, `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`, `COMPOSED_TASK_MAX_TURNS`) --
+ * policy can lower these, never raise them. `max_tasks` and `max_turns_total` are wired into
+ * `composedEngine.ts`, and `max_turns_per_task` clamps each task's own turn budget.
+ *
+ * `task_dimensions` is projected and validated for forward-compatible policy authoring but is not
+ * yet consumed -- the plan turn still seeds from the engine's own `TASK_DIMENSIONS`. Stated here
+ * rather than left to be discovered: a config key that silently does nothing is a lie in the
+ * operator's surface.
+ *
+ * There is deliberately NO `require_security_task` key. The composed plan's security floor -- any
+ * file the deterministic classifier puts in the security lane must be covered by a `security`
+ * task -- is the defence against a diff whose own text coaxes the model into skipping auth review
+ * (ADR 0639). It is heuristic-derived, not model-derived, and not satisfiable by a corrective
+ * turn. Exposing it as a boolean would offer exactly one meaningful value, `false`, and would
+ * invite a future wiring pass to turn a non-negotiable control into an operator toggle.
+ */
+export const composedEngineConfigSchema = z.object({
+  max_tasks: z.number().int().positive().max(64).optional(),
+  max_turns_total: z.number().int().positive().max(200).optional(),
+  max_turns_per_task: z.number().int().positive().max(50).optional(),
+  task_dimensions: z.array(z.string().min(1)).min(1).optional(),
+}).passthrough();
+export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
+
 const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
@@ -453,6 +491,8 @@ const ctReviewConfigV3ObjectSchema = z.object({
   on_pr_close: onPRCloseSchema,
   evidence: evidenceSchema.optional(),
   pre_checks: preChecksSchema.optional(),
+  review_engine: reviewEngineSchema.optional(),
+  composed: composedEngineConfigSchema.optional(),
 
   reviewers: z.object({
     execution: z.literal('personas'),

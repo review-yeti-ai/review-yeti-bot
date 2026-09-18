@@ -1,5 +1,5 @@
 import { createDefaultV3Config, isTriggerActionAllowed, type TriggerActionOptions } from './configLoader';
-import type { CtReviewConfigV3, ProviderId } from './schema';
+import type { ComposedEngineConfig, CtReviewConfigV3, ProviderId, ReviewEngineName } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
 
@@ -248,6 +248,39 @@ export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDo
   return result.length > 0 ? result : (STATIC_FALLBACK_ECOSYSTEM_PATHS[target] || ['**']);
 }
 
+const VALID_REVIEW_ENGINES: ReadonlySet<string> = new Set(['panel', 'composed', 'shadow']);
+
+/** Fail-inert, exactly like `resolveReviewEngine` in `src/cli/publishingReview.ts`: anything other
+ * than one of the three known literals -- absent, a typo, the wrong type -- resolves to `'panel'`. */
+function normalizeReviewEngine(value: unknown): ReviewEngineName {
+  return typeof value === 'string' && VALID_REVIEW_ENGINES.has(value) ? (value as ReviewEngineName) : 'panel';
+}
+
+function positiveInt(value: unknown): number | undefined {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
+/** Projects the optional `composed` policy block. Every field is independently validated and
+ * omitted (not defaulted) when absent or malformed -- `composedEngine.ts` owns its own defaults
+ * and hard caps and clamps any value projected here against them. */
+function normalizeComposedOverrides(value: unknown): ComposedEngineConfig {
+  if (!value || typeof value !== 'object') return {};
+  const raw = value as Record<string, unknown>;
+  const overrides: ComposedEngineConfig = {};
+  const maxTasks = positiveInt(raw.max_tasks);
+  if (maxTasks !== undefined) overrides.max_tasks = maxTasks;
+  const maxTurnsTotal = positiveInt(raw.max_turns_total);
+  if (maxTurnsTotal !== undefined) overrides.max_turns_total = maxTurnsTotal;
+  const maxTurnsPerTask = positiveInt(raw.max_turns_per_task);
+  if (maxTurnsPerTask !== undefined) overrides.max_turns_per_task = maxTurnsPerTask;
+  if (Array.isArray(raw.task_dimensions) && raw.task_dimensions.length > 0
+    && raw.task_dimensions.every((d) => typeof d === 'string' && d.length > 0)) {
+    overrides.task_dimensions = raw.task_dimensions as string[];
+  }
+  return overrides;
+}
+
 export function resolveWorkerConfig(
   env: Readonly<Record<string, string | undefined>>,
   transport: { baseUrl: string; apiKey: string; model: string },
@@ -256,6 +289,8 @@ export function resolveWorkerConfig(
 
   let maxInvestigationTurns = PUBLISHING_MAX_TURNS;
   let personasList: string[] = [];
+  let reviewEngine: ReviewEngineName = 'panel';
+  let composed: ComposedEngineConfig = {};
 
   if (env.REVIEW_YETI_POLICY_JSON) {
     try {
@@ -269,8 +304,22 @@ export function resolveWorkerConfig(
       } else if (Array.isArray(policy.personas)) {
         personasList = policy.personas;
       }
+      reviewEngine = normalizeReviewEngine(policy.review_engine);
+      composed = normalizeComposedOverrides(policy.composed);
     } catch (e) {
-      logger.warn('Failed to parse REVIEW_YETI_POLICY_JSON', { error: e });
+      // A policy WAS supplied (this branch only runs when REVIEW_YETI_POLICY_JSON is present) but
+      // could not be parsed. Falling through here would leave `reviewEngine` at its `'panel'`
+      // initializer and `personasList` empty -- i.e. the default6 fan-out roster below -- which is
+      // exactly the trap this guards against: a corrupted or tampered policy that asked for the
+      // composed engine (or a narrowed persona roster) would silently come back as a full six-lane
+      // fan-out panel instead of the engine and roster the policy actually specified. This is the
+      // authoritative projection path (see `preparePublishingPolicy` in
+      // `src/review/preparedPublishingPolicy.ts`); a caller that cannot verify what the policy
+      // said must refuse to guess at a default, not fail open to one.
+      logger.error('Failed to parse REVIEW_YETI_POLICY_JSON; refusing to substitute a default review engine or persona roster', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      throw new Error('review policy could not be parsed; refusing to fail open to a default review engine or persona roster');
     }
   }
 
@@ -325,6 +374,8 @@ export function resolveWorkerConfig(
   return {
     ...baseConfig,
     personas,
+    review_engine: reviewEngine,
+    composed,
     default_max_turns: Math.min(PUBLISHING_MAX_TURNS, Math.max(1, maxInvestigationTurns || PUBLISHING_MAX_TURNS)),
     reviewer_effort: 'medium',
     reviewers: {
