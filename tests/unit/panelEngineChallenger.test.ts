@@ -80,7 +80,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       ).rejects.toThrow();
 
       const personaCalls = mockClient.complete.mock.calls.filter(([opts]: [any]) =>
-        opts.messages?.some((m: any) => m.content?.includes("persona 'sec-auditor'"))
+        JSON.stringify(opts.messages).includes("persona 'sec-auditor'")
       );
       expect(personaCalls).toHaveLength(1);
     });
@@ -128,7 +128,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       expect(result.personas[0].decision).toBe('APPROVE');
 
       const personaCalls = mockClient.complete.mock.calls.filter(([opts]: [any]) =>
-        opts.messages?.some((m: any) => m.content?.includes("persona 'sec-auditor'"))
+        JSON.stringify(opts.messages).includes("persona 'sec-auditor'")
       );
       expect(personaCalls).toHaveLength(1);
     });
@@ -139,8 +139,8 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       let turnCounter = 0;
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const isPersonaCall = opts.messages?.some((m: any) => m.content?.includes("persona 'sec-auditor'"));
         const allMsg = JSON.stringify(opts.messages);
+        const isPersonaCall = allMsg.includes("persona 'sec-auditor'");
         const prompt = extractMessageContentText(opts.messages[1]?.content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
@@ -201,8 +201,8 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       let turnCounter = 0;
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const isPersonaCall = opts.messages?.some((m: any) => m.content?.includes("persona 'sec-auditor'"));
         const allMsg = JSON.stringify(opts.messages);
+        const isPersonaCall = allMsg.includes("persona 'sec-auditor'");
         const prompt = extractMessageContentText(opts.messages[1]?.content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
@@ -262,8 +262,8 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       let turnCounter = 0;
 
       mockClient.complete.mockImplementation(async (opts: any) => {
-        const isPersonaCall = opts.messages?.some((m: any) => m.content?.includes("persona 'sec-auditor'"));
         const allMsg = JSON.stringify(opts.messages);
+        const isPersonaCall = allMsg.includes("persona 'sec-auditor'");
         const prompt = extractMessageContentText(opts.messages[1]?.content);
         const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/) || allMsg.match(/CT_REVIEW_NONCE:(.*?)"/);
         const nonce = nonceMatch ? nonceMatch[1].trim() : 'nonce';
