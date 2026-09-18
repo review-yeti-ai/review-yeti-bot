@@ -634,3 +634,66 @@ describe('JevClient — answer shape validation for choice and score', () => {
     expect((await baseClient({ fetchImplementation }).ask({ state: 's', questions: CHOICE_Q })).status).toBe('ok');
   });
 });
+
+describe('JevClient — unavailable outcomes are measured too', () => {
+  it('labels the request counter, duration, and span with the unavailable REASON', async () => {
+    // Only the ok path asserted metrics, so the outcome label on the unavailable path could be
+    // recorded as a literal, omitted, or mislabelled with every test still green -- and an
+    // outage would then be indistinguishable from success in the dashboards this instruments.
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response('', { status: 429 }));
+    const client = baseClient({ fetchImplementation, maxAttempts: 1 });
+
+    const requestsSpy = vi.spyOn(getMetrics().jevRequests, 'add');
+    const durationSpy = vi.spyOn(getMetrics().jevDuration, 'record');
+    const tokensSpy = vi.spyOn(getMetrics().jevInputTokens, 'add');
+    clearSpans();
+
+    const outcome = await client.ask({ state: 's', questions: BASE_QUESTIONS, seam: 'unit-seam' });
+    expect(outcome.status).toBe('unavailable');
+
+    expect(requestsSpy).toHaveBeenCalledWith(1, expect.objectContaining({ seam: 'unit-seam', outcome: 'http_429' }));
+    expect(durationSpy).toHaveBeenCalledWith(expect.any(Number), expect.objectContaining({ outcome: 'http_429' }));
+    // Cost and token counters are ok-path only: an unavailable call consumed no billable input.
+    expect(tokensSpy).not.toHaveBeenCalled();
+
+    const span = getRecentSpans().find((sp) => sp.name === 'review_yeti_jev');
+    expect(span?.attributes?.['review_yeti.jev.outcome']).toBe('http_429');
+
+    requestsSpy.mockRestore(); durationSpy.mockRestore(); tokensSpy.mockRestore();
+  });
+});
+
+describe('JevClient — retry budget exhaustion', () => {
+  it('returns the last attempt outcome instead of sleeping when no budget remains', async () => {
+    // `remaining <= 0` after a transient failure is a distinct branch from a null per-call
+    // budget. Untested, a broken implementation could sleep anyway, loop, or relabel the result
+    // as budget_exhausted -- losing the real reason the call failed.
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response('', { status: 529 }));
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    let clock = 0;
+    const client = baseClient({
+      fetchImplementation,
+      sleep,
+      // This branch sits in a narrow window between two thresholds, and the window was found by
+      // sweeping rather than by reasoning about the call sequence -- three attempts to derive it
+      // analytically all landed on `budget_exhausted` instead, because the number of `now()`
+      // reads before the first attempt is an implementation detail, not something to model from
+      // the outside. At attempt start the remaining budget must be >= MIN_USEFUL_CALL_MS (20) or
+      // `nextCallBudgetMs()` returns null and we take the OTHER branch; by the retry check it
+      // must be <= 0. (d=20, B=60) sits in that window. The assertions below pin the branch by
+      // its observable consequences -- original reason preserved, no sleep -- so a future change
+      // to the call sequence fails loudly here rather than silently testing the wrong path.
+      stageBudgetMs: 60,
+      maxAttempts: 3,
+      now: () => { clock += 20; return clock; },
+    } as never);
+
+    const outcome = await client.ask({ state: 's', questions: BASE_QUESTIONS });
+
+    expect(outcome.status).toBe('unavailable');
+    // The ORIGINAL failure reason survives -- not relabelled as budget_exhausted.
+    expect((outcome as { reason: string }).reason).toBe('http_529');
+    // And it did not sleep on a budget it did not have.
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});
