@@ -73,4 +73,25 @@ describe('buildPersonaTelemetryPayload is total', () => {
     expect(buildPersonaTelemetryPayload({})).toBeUndefined();
     expect(droppedCount(await getPrometheusMetrics(), 'unknown')).toBe(before);
   });
+
+  it('reports toolCalls as a count, not the array the panel engine tracks', () => {
+    // panelEngine.ts pushes individual { tool, args, scope, exhaustive } records onto `toolCalls`;
+    // this boundary must only ever carry the count -- never the array of tool names/args.
+    const built = buildPersonaTelemetryPayload({
+      ...healthyLane,
+      id: 'tool-lane',
+      toolCalls: [{ tool: 'read_file' }, { tool: 'grep' }, { tool: 'read_file' }],
+    });
+    expect(built?.toolCalls).toBe(3);
+  });
+
+  it('reports toolCalls as 0 for an empty array, distinct from a lane that never carried the field', () => {
+    const built = buildPersonaTelemetryPayload({ ...healthyLane, id: 'no-tools-lane', toolCalls: [] });
+    expect(built?.toolCalls).toBe(0);
+  });
+
+  it('a lane whose only telemetry is toolCalls still builds (not filtered as "no telemetry")', () => {
+    const built = buildPersonaTelemetryPayload({ id: 'only-tools-lane', toolCalls: [{ tool: 'grep' }] });
+    expect(built).toEqual({ toolCalls: 1 });
+  });
 });
