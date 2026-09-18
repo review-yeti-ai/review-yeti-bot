@@ -12,6 +12,7 @@ import {
   OpenRouterResponseError,
   OpenRouterTimeoutError,
   calculateFullJitterDelay,
+  upstreamLabel,
   isTransientGatewayError,
   getStaticModelMetadata,
   resolveModelMetadata,
@@ -392,6 +393,80 @@ describe('OpenRouterClient', () => {
       name: 'OpenRouterResponseError',
     });
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  describe('upstreamLabel', () => {
+    const gatewayUrl = 'https://gateway.example.com/v1';
+
+    it('prefers the provider the gateway reports, with model and key slot', () => {
+      const body = { extra_fields: { routing_info: { provider: 'ollama', model: 'glm-5.3-flash', key: 'ollama-personal' } } };
+      expect(upstreamLabel(gatewayUrl, body)).toBe('ollama (glm-5.3-flash, key=ollama-personal)');
+    });
+
+    it('names the provider alone when model and key are absent', () => {
+      expect(upstreamLabel(gatewayUrl, { extra_fields: { routing_info: { provider: 'gemini' } } })).toBe('gemini');
+    });
+
+    it.each([
+      ['data$', { data$: { extra_fields: { routing_info: { provider: 'ollama' } } } }],
+      ['error', { error: { extra_fields: { routing_info: { provider: 'ollama' } } } }],
+      ['body', { body: { extra_fields: { routing_info: { provider: 'ollama' } } } }],
+    ])('extracts routing_info from the SDK %s shape', (_shape, candidate) => {
+      // These fallbacks exist for the SDK-thrown error call site; without this
+      // test they could be deleted and nothing would go red.
+      expect(upstreamLabel(gatewayUrl, candidate)).toBe('ollama');
+    });
+
+    it('falls back to the configured host when no routing_info is present', () => {
+      expect(upstreamLabel(gatewayUrl)).toBe('gateway.example.com');
+      expect(upstreamLabel(gatewayUrl, { error: { message: 'nope' } })).toBe('gateway.example.com');
+    });
+
+    it('still says OpenRouter when openrouter.ai is genuinely the upstream', () => {
+      expect(upstreamLabel('https://openrouter.ai/api/v1')).toBe('OpenRouter');
+    });
+
+    it('degrades to a neutral label when the baseUrl is unparseable', () => {
+      expect(upstreamLabel('not a url')).toBe('upstream');
+    });
+  });
+
+  it('does not blame OpenRouter when the upstream is the Bifrost gateway', async () => {
+    // Observed failure shape: the gateway routed the review model to a different
+    // provider, that provider was out of credits, and the message still said
+    // "OpenRouter HTTP 429" — sending the investigation at the wrong account.
+    const body = { error: { message: 'you have reached your team usage limit, contact an admin to add usage credits' } };
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify(body), {
+      status: 429,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new OpenRouterClient({
+      apiKey: 'test-openrouter-key',
+      baseUrl: 'https://gateway.example.com/v1',
+      fetchImplementation,
+    });
+
+    const failure = await client.complete({ ...request, stream: false }).catch((error: Error) => error);
+
+    // The point: it must not blame OpenRouter for something OpenRouter never saw.
+    expect((failure as Error).message).not.toContain('OpenRouter HTTP');
+    expect((failure as Error).message).toContain('gateway.example.com');
+  });
+
+  it('still says OpenRouter when OpenRouter is genuinely the upstream', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: 'nope' } }), {
+      status: 429,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new OpenRouterClient({
+      apiKey: 'test-openrouter-key',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      fetchImplementation,
+    });
+
+    await expect(client.complete({ ...request, stream: false })).rejects.toMatchObject({
+      message: expect.stringContaining('OpenRouter HTTP 429'),
+    });
   });
 
   it('retains generation attribution and a sanitized failure class for failed requests', async () => {
