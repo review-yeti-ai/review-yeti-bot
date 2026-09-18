@@ -1068,11 +1068,11 @@ export class EvaluationRunner {
     }
 
     // 2. Live execution via OpenRouterClient or FetchImplementation (with multi-turn tool interaction loop)
-    if (!opts.offline && (opts.apiKey || process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY || opts.fetchImplementation)) {
+    if (!opts.offline && (opts.apiKey || process.env.OPENROUTER_API_KEY || opts.fetchImplementation)) {
       try {
         const client = new OpenRouterClient({
-          baseUrl: opts.baseUrl || process.env.OPENAI_BASE_URL,
-          apiKey: opts.apiKey || process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY || 'synthetic-key',
+          baseUrl: opts.baseUrl,
+          apiKey: opts.apiKey || process.env.OPENROUTER_API_KEY || 'synthetic-key',
           fetchImplementation: opts.fetchImplementation,
         });
 

@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
-  bifrostTransport,
   classifyFailure,
-  createBifrostPublishingConfig,
   createOpenAIPublishingConfig,
   isGithubDiffNotRenderableError,
   isPublishingReviewWorker,
@@ -222,7 +220,6 @@ describe('publishing review lane admission', () => {
 describe('OpenAI gateway is the admitted transport', () => {
   it('accepts the gateway', () => {
     expect(openaiTransport(env()).baseUrl).toBe('https://gateway.example.invalid/v1');
-    expect(bifrostTransport(env()).baseUrl).toBe('https://gateway.example.invalid/v1');
   });
 
   it('accepts standard OPENAI_BASE_URL and OPENAI_API_KEY', () => {
@@ -249,7 +246,6 @@ describe('OpenAI gateway is the admitted transport', () => {
 
   it('builds a single-provider panel from the operator-injected model', () => {
     const config = createOpenAIPublishingConfig('ollama/glm-5.3-flash');
-    expect(createBifrostPublishingConfig('ollama/glm-5.3-flash')).toEqual(config);
 
     expect(config.reviewers.fallback).toBe('none');
     expect(config.default_max_turns).toBe(15);

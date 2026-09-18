@@ -39,9 +39,7 @@ import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManag
 import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
 import {
   openaiTransport,
-  bifrostTransport,
   createOpenAIPublishingConfig,
-  createBifrostPublishingConfig,
   type OpenAITransportConfig,
 } from '../review/openaiTransport';
 import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
@@ -257,9 +255,7 @@ function validateConfiguredCompletionEndpoint(endpoint: string): void {
  */
 export {
   openaiTransport,
-  bifrostTransport,
   createOpenAIPublishingConfig,
-  createBifrostPublishingConfig,
 };
 export type { OpenAITransportConfig };
 

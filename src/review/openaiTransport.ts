@@ -40,14 +40,6 @@ export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
   return { baseUrl, apiKey, model };
 }
 
-/** Alias for backward compatibility during transition. */
-export const bifrostTransport = openaiTransport;
-
-/**
- * The publishing worker is admitted with a single OpenAI-compatible transport.
- * Keep every persona, moderator, and arbiter call on the operator-injected model
- * and fail closed on provider errors instead of attempting an undeclared route.
- */
 export function createOpenAIPublishingConfig(model: string): ReturnType<typeof createDefaultV3Config> {
   const providerId = 'bifrost';
   const config = createDefaultV3Config();
@@ -75,6 +67,3 @@ export function createOpenAIPublishingConfig(model: string): ReturnType<typeof c
     },
   };
 }
-
-/** Alias for backward compatibility during transition. */
-export const createBifrostPublishingConfig = createOpenAIPublishingConfig;
