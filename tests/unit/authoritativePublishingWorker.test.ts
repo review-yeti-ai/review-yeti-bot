@@ -112,6 +112,14 @@ describe('authoritative prepared publishing worker', () => {
       repository: 'example/project', headSha: HEAD, repositoryVisibility: 'PRIVATE', client: f.client,
       jobId: f.env.REVIEW_RUN_ID, baseSha: BASE, prNumber: 42,
       signal: expect.any(AbortSignal),
+      // This fixture's GH_TOKEN is a real `ghs_`-shaped read token and no
+      // repoFileProviderFactory is injected, so the worker wires the default
+      // full-repository grounding provider (REL- full-repo grounding): a
+      // find_files/read_file/treeTruncated seam built from that token, never a
+      // reason the exact-call assertion below should drift on its own.
+      repoFileProvider: {
+        findFiles: expect.any(Function), readFile: expect.any(Function), treeTruncated: expect.any(Function),
+      },
       requestPolicy: { responseFormat: { type: 'json_object' } },
     });
     expect(f.panelRunner.mock.calls[0][0].config.default_max_turns).toBe(1);
