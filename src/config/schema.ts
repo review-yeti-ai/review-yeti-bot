@@ -430,6 +430,12 @@ const ctReviewConfigV3ObjectSchema = z.object({
   default_max_turns: z.number().int().min(1).max(20).optional(),
   confidence_threshold: z.number().min(0).max(100).optional(),
   mascot: z.boolean().optional(),
+  /**
+   * Turn-window compaction for the persona tool loop (see `src/panel/messageWindow.ts`). Defaults
+   * to OFF: an unset or `false` value sends `messages` whole every turn, exactly as before this
+   * option existed. Can also be enabled globally via the `ENABLE_TURN_WINDOW_COMPACTION=1` env var.
+   */
+  turn_window_compaction: z.boolean().optional(),
   max_file_size: z.number().int().positive().default(MAX_FILE_SIZE_DEFAULT).optional(),
   max_file_bytes: z.number().int().positive().default(MAX_FILE_SIZE_DEFAULT).optional(),
 
