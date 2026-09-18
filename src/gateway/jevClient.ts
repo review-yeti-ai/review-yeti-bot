@@ -1,6 +1,7 @@
 import { runInSpan, getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
+import { JEV_INPUT_TOKEN_USD_PER_MILLION } from './jevPricing';
 
 /**
  * Client for TypeSafe AI's "System One" model (Jev).
@@ -170,6 +171,26 @@ function validateStateSize(state: unknown, questions: unknown): void {
   }
 }
 
+/**
+ * Enforced here, not only in jevTransport.ts: JevClient is exported and constructible
+ * independently of that transport helper, so any call site that builds one directly (bypassing
+ * jevTransport's own https check) would otherwise send the API key over the wire in cleartext.
+ * jevTransport's check stays too -- defence in depth against a different entry path.
+ */
+function validateHttpsBaseUrl(baseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new TypeError(`JevClient baseUrl "${baseUrl}" is not a valid URL`);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new TypeError(
+      `JevClient baseUrl must be https (got "${parsed.protocol}"): a plaintext base URL would send the Jev API key over the wire in cleartext`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Retry/backoff helpers — mirrors openRouterClient.ts conventions
 // ---------------------------------------------------------------------------
@@ -292,6 +313,7 @@ export class JevClient implements JevAsker {
 
   constructor(options: JevClientOptions = {}) {
     this.baseUrl = (options.baseUrl || 'https://api.typesafe.ai/v1/systemone').replace(/\/+$/, '');
+    validateHttpsBaseUrl(this.baseUrl);
     this.apiKey = options.apiKey || '';
     this.model = options.model || 'jev-latest';
     this.modelPin = options.modelPin;
@@ -351,7 +373,7 @@ export class JevClient implements JevAsker {
 
     if (outcome.status === 'ok') {
       metrics.jevInputTokens.add(outcome.usage.input_tokens, { seam, model: outcome.model });
-      const costUsd = (outcome.usage.input_tokens * 0.042) / 1_000_000;
+      const costUsd = (outcome.usage.input_tokens * JEV_INPUT_TOKEN_USD_PER_MILLION) / 1_000_000;
       metrics.jevCostUsd.add(costUsd, { seam, model: outcome.model });
 
       if (this.modelPin && outcome.model !== this.modelPin) {

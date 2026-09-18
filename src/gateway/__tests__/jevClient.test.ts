@@ -12,6 +12,7 @@ import {
   type JevQuestion,
   type JevOutcome,
 } from '../jevClient';
+import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../jevPricing';
 import { initTelemetry, getMetrics, getPrometheusMetrics, getRecentSpans, clearSpans } from '../../telemetry';
 import { logger } from '../../utils/logger';
 
@@ -336,6 +337,47 @@ describe('JevClient — programmer errors throw (fail loudly in CI)', () => {
     expect(() => validateJevQuestions(BASE_QUESTIONS)).not.toThrow();
     expect(() => validateJevQuestions({ rate: { type: 'score', instructions: 'x', criteria: [] } } as any)).toThrow();
   });
+
+  it('throws for an unknown question type', () => {
+    expect(() =>
+      validateJevQuestions({ mystery: { type: 'oracle', instructions: 'what happens' } } as any),
+    ).toThrow(/unknown type "oracle"/);
+  });
+
+  it('throws for empty instructions', () => {
+    expect(() => validateJevQuestions({ is_ambiguous: { type: 'noul', instructions: '' } } as any)).toThrow(
+      /requires non-empty instructions/,
+    );
+  });
+
+  it('throws for whitespace-only instructions', () => {
+    expect(() => validateJevQuestions({ is_ambiguous: { type: 'noul', instructions: '   ' } } as any)).toThrow(
+      /requires non-empty instructions/,
+    );
+  });
+
+  it('throws for an empty choice criteria map', () => {
+    expect(() =>
+      validateJevQuestions({ pick: { type: 'choice', instructions: 'pick one', criteria: {} } } as any),
+    ).toThrow(/requires a non-empty criteria map/);
+  });
+});
+
+describe('JevClient — https enforced at the client, not only at jevTransport', () => {
+  it('throws when constructed with an http:// baseUrl', () => {
+    expect(() => new JevClient({ baseUrl: 'http://api.typesafe.ai/v1/systemone', apiKey: 'k' })).toThrow(
+      /https/i,
+    );
+  });
+
+  it('throws when constructed with an unparseable baseUrl', () => {
+    expect(() => new JevClient({ baseUrl: 'not a url', apiKey: 'k' })).toThrow();
+  });
+
+  it('does not throw for the default https baseUrl or an explicit https baseUrl', () => {
+    expect(() => new JevClient({ apiKey: 'k' })).not.toThrow();
+    expect(() => new JevClient({ baseUrl: 'https://api.typesafe.ai/v1/systemone', apiKey: 'k' })).not.toThrow();
+  });
 });
 
 describe('JevClient — helper functions', () => {
@@ -392,7 +434,7 @@ describe('JevClient — telemetry', () => {
     expect(typeof span.attributes['review_yeti.jev.duration_ms']).toBe('number');
   });
 
-  it('increments review_yeti_jev counters', async () => {
+  it('increments review_yeti_jev counters, computing cost from the single shared pricing constant', async () => {
     const fetchImplementation = vi.fn().mockResolvedValue(
       jsonResponse(200, {
         model: 'jev-1.13.0',
@@ -401,6 +443,12 @@ describe('JevClient — telemetry', () => {
       }),
     );
     const client = baseClient({ fetchImplementation });
+
+    // Spy on the exact counter, not on cumulative Prometheus text, so this assertion is
+    // independent of accumulated state from other tests sharing the process-wide metrics
+    // singleton (getMetrics() is a singleton; getPrometheusMetrics() output is cumulative).
+    const costSpy = vi.spyOn(getMetrics().jevCostUsd, 'add');
+
     await client.ask({ state: 's', questions: BASE_QUESTIONS });
 
     const text = await getPrometheusMetrics();
@@ -408,6 +456,15 @@ describe('JevClient — telemetry', () => {
     expect(text).toContain('review_yeti_jev_input_tokens_total');
     expect(text).toContain('review_yeti_jev_cost_usd_total');
     expect(text).toContain('review_yeti_jev_duration_seconds');
+
+    // Both the counter's HELP text and the runtime cost calculation must derive from the
+    // same JEV_INPUT_TOKEN_USD_PER_MILLION constant -- a repricing cannot leave one stale.
+    expect(text).toContain(
+      `# HELP review_yeti_jev_cost_usd_total Cumulative Jev cost in USD (input_tokens x $${JEV_INPUT_TOKEN_USD_PER_MILLION} / 1e6).`,
+    );
+    const expectedCostUsd = (1000 * JEV_INPUT_TOKEN_USD_PER_MILLION) / 1_000_000;
+    expect(costSpy).toHaveBeenCalledTimes(1);
+    expect(costSpy.mock.calls[0][0]).toBeCloseTo(expectedCostUsd, 12);
   });
 
   it('warns and counts when the response model differs from the configured pin — a real condition, not an outage', async () => {

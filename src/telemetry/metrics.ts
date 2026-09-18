@@ -9,6 +9,7 @@ import {
   InstrumentType,
 } from '@opentelemetry/sdk-metrics';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../gateway/jevPricing';
 
 let metricsInstance: MetricCounters | null = null;
 let metricReader: PeriodicExportingMetricReader | null = null;
@@ -278,7 +279,7 @@ export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounter
       description: 'Jev input tokens consumed on successful calls. Output tokens are unmetered/free.',
     }),
     jevCostUsd: meter.createCounter('review_yeti_jev_cost_usd_total', {
-      description: 'Cumulative Jev cost in USD (input_tokens x $0.042 / 1e6).',
+      description: `Cumulative Jev cost in USD (input_tokens x $${JEV_INPUT_TOKEN_USD_PER_MILLION} / 1e6).`,
     }),
     jevDuration: meter.createHistogram('review_yeti_jev_duration_seconds', {
       description: 'Jev ask() call duration in seconds, tagged by seam and outcome.',
