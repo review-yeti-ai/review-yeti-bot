@@ -36,7 +36,7 @@ function fixture() {
     REVIEW_PR_NUMBER: '42', REVIEW_HEAD_SHA: HEAD, REVIEW_BASE_SHA: BASE, REVIEW_EXECUTION_ATTEMPT: '2',
     REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
     REVIEW_PREPARED_CONFIG_JSON: JSON.stringify(envelope), REVIEW_COMPLETION_URL: ENDPOINT,
-    REVIEW_MODEL: transport.model, BIFROST_BASE_URL: transport.baseUrl, BIFROST_PR_REVIEW_API_KEY: 'vk_fake',
+    REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'vk_fake',
     GH_TOKEN: TOKEN, GITHUB_PUBLISH_TOKEN: TOKEN, REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
   };
   const usage = { prompt: 10, completion: 5, total: 15 };
@@ -219,7 +219,7 @@ describe('authoritative prepared publishing worker', () => {
         config: { ...f.prepared.config, default_max_turns: 3 } });
       if (variant === 'wrong config digest') f.env.REVIEW_CONFIG_DIGEST = 'f'.repeat(64);
       if (variant === 'wrong model') f.env.REVIEW_MODEL = 'different-model';
-      if (variant === 'wrong URL') f.env.BIFROST_BASE_URL = 'https://other.example.invalid/v1';
+      if (variant === 'wrong URL') f.env.OPENAI_BASE_URL = 'https://other.example.invalid/v1';
       await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toThrow('Prepared review execution does not match its admitted identity');
       expectNoReview(f);
       expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
@@ -261,7 +261,7 @@ describe('authoritative prepared publishing worker', () => {
     }));
   });
 
-  it.each(['BIFROST_BASE_URL', 'BIFROST_PR_REVIEW_API_KEY', 'REVIEW_MODEL'])('reports a missing %s as a fail-closed pre-execution contract failure', async (name) => {
+  it.each(['OPENAI_BASE_URL', 'OPENAI_API_KEY', 'REVIEW_MODEL'])('reports a missing %s as a fail-closed pre-execution contract failure', async (name) => {
     const f = fixture();
     delete f.env[name];
     await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toThrow('publishing review worker contract is invalid');
