@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { ReviewJobProjector } from './reviewJobDispatchEngine';
+import type { ReviewJobProjector } from './reviewJobProjector';
 import { deriveRunSecretExecutionAttempt, type PRReviewJobProjection } from './reviewJobProjection';
 
 const GROUP = 'review-yeti.ai';
@@ -26,9 +26,22 @@ interface NamespacedCustomObjectCreate {
   fieldValidation: 'Strict';
 }
 
+export interface NamespacedCustomObjectPatch {
+  group: string;
+  version: string;
+  namespace: string;
+  plural: string;
+  name: string;
+  body: unknown;
+}
+
 export interface NamespacedCustomObjectClient {
   getNamespacedCustomObject(request: NamespacedCustomObjectIdentity): Promise<unknown>;
   createNamespacedCustomObject(request: NamespacedCustomObjectCreate): Promise<unknown>;
+  patchNamespacedCustomObject?(
+    request: NamespacedCustomObjectPatch,
+    options?: any,
+  ): Promise<unknown>;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -116,7 +129,7 @@ function assertExact(existing: unknown, projection: PRReviewJobProjection): void
   }
 }
 
-function apiFailure(operation: 'get' | 'create', error: unknown): Error {
+function apiFailure(operation: 'get' | 'create' | 'patch', error: unknown): Error {
   const status = kubernetesStatusCode(error);
   return new Error(`Kubernetes PRReviewJob ${operation} failed${status ? ` with status ${status}` : ''}`);
 }
@@ -160,6 +173,40 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
         }
         throw apiFailure('get', rereadError);
       }
+    }
+  }
+
+  async patchCancellation(name: string, namespace: string, cancelReason?: string): Promise<void> {
+    if (!this.client.patchNamespacedCustomObject) {
+      throw new Error('Kubernetes client does not support patchNamespacedCustomObject');
+    }
+    const patchBody: Record<string, unknown> = {
+      spec: {
+        cancelRequested: true,
+        ...(cancelReason ? { cancelReason } : {}),
+      },
+    };
+    try {
+      await this.client.patchNamespacedCustomObject(
+        {
+          group: GROUP,
+          version: VERSION,
+          namespace,
+          plural: PLURAL,
+          name,
+          body: patchBody,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/merge-patch+json',
+          },
+        },
+      );
+    } catch (error) {
+      if (kubernetesStatusCode(error) === 404) {
+        return;
+      }
+      throw apiFailure('patch', error);
     }
   }
 }

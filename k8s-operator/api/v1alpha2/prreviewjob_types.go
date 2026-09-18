@@ -24,7 +24,7 @@ import (
 )
 
 // PRReviewJobPhase is the bounded Kubernetes execution phase.
-// +kubebuilder:validation:Enum=Queued;Running;Succeeded;Failed;Expired
+// +kubebuilder:validation:Enum=Queued;Running;Succeeded;Failed;Expired;Cancelled
 type PRReviewJobPhase string
 
 const (
@@ -33,11 +33,12 @@ const (
 	PhaseSucceeded PRReviewJobPhase = "Succeeded"
 	PhaseFailed    PRReviewJobPhase = "Failed"
 	PhaseExpired   PRReviewJobPhase = "Expired"
+	PhaseCancelled PRReviewJobPhase = "Cancelled"
 )
 
 // PRReviewJobSpec is an immutable, non-secret projection of an authenticated review run.
 // The CRD schema rejects updates and all fields not declared here.
-// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="PRReviewJob spec is immutable"
+// +kubebuilder:validation:XValidation:rule="self == oldSelf || (has(self.cancelRequested) && self.cancelRequested == true && (!has(oldSelf.cancelRequested) || oldSelf.cancelRequested == false) && self.runId == oldSelf.runId && self.deliveryId == oldSelf.deliveryId && self.headSha == oldSelf.headSha)",message="PRReviewJob spec is immutable except for cancelRequested"
 // +kubebuilder:validation:XValidation:rule="duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')",message="terminalDeadline must be between 15 and 60 minutes after receivedAt"
 // +kubebuilder:validation:XValidation:rule="(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')",message="qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model"
 // +kubebuilder:validation:XValidation:rule="!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))",message="preparedReview requires the prebaked app-gate lane"
@@ -103,6 +104,12 @@ type PRReviewJobSpec struct {
 	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	QualificationModel string `json:"qualificationModel,omitempty"`
+	// CancelRequested indicates that the review run was superseded or explicitly cancelled.
+	// +optional
+	CancelRequested *bool `json:"cancelRequested,omitempty"`
+	// CancelReason records the reason why cancellation was requested.
+	// +optional
+	CancelReason *string `json:"cancelReason,omitempty"`
 }
 
 // DispatchTimingStage identifies one observable boundary in the receipt-only
@@ -255,6 +262,8 @@ type PRReviewJobStatus struct {
 	LeaseName          string                `json:"leaseName,omitempty"`
 	StartTime          *metav1.Time          `json:"startTime,omitempty"`
 	CompletionTime     *metav1.Time          `json:"completionTime,omitempty"`
+	CancelRequestedAt  *metav1.Time          `json:"cancelRequestedAt,omitempty"`
+	CancelObservedAt   *metav1.Time          `json:"cancelObservedAt,omitempty"`
 	Timing             *DispatchTimingStatus `json:"timing,omitempty"`
 	Message            string                `json:"message,omitempty"`
 	Conditions         []metav1.Condition    `json:"conditions,omitempty"`

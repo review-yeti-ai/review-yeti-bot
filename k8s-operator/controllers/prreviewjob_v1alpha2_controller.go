@@ -165,6 +165,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 	if isTerminalPhase(review.Status.Phase) {
 		return r.reconcileTerminalWorkspace(ctx, &review)
 	}
+	if review.Spec.CancelRequested != nil && *review.Spec.CancelRequested {
+		return r.reconcileCancellation(ctx, &review)
+	}
 	now := r.clock()
 	if err := validateProjectionWindow(&review); err != nil {
 		// Same class as WorkerContractRejected below: the projection is rejected
@@ -467,6 +470,68 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileElapsedDeadline(
 	completed := metav1.NewTime(now)
 	review.Status.CompletionTime = &completed
 	return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseExpired, "DeadlineExpired", "review terminal deadline has elapsed")
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileCancellation(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (ctrl.Result, error) {
+	now := r.clock()
+	nowMeta := metav1.NewTime(now)
+	if review.Status.CancelObservedAt == nil {
+		review.Status.CancelObservedAt = &nowMeta
+	}
+	if review.Status.CompletionTime == nil {
+		review.Status.CompletionTime = &nowMeta
+	}
+
+	reason := "Cancelled"
+	message := "review run cancelled"
+	if review.Spec.CancelReason != nil && *review.Spec.CancelReason != "" {
+		message = fmt.Sprintf("review run cancelled: %s", *review.Spec.CancelReason)
+	}
+
+	review.Status.Phase = reviewv1alpha2.PhaseCancelled
+	review.Status.ObservedGeneration = review.Generation
+	review.Status.Message = message
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: metav1.Now(),
+	})
+
+	// CRITICAL ORDER OF OPERATIONS:
+	// Commit PhaseCancelled to the API server before deleting the worker Job.
+	// This ensures that subsequent reconciles see the terminal phase and do not
+	// misinterpret the missing Job as a WorkerJobMissing failure.
+	if err := r.Status().Update(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	workerName := review.Name + "-worker"
+	var existing batchv1.Job
+	existingErr := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
+	if existingErr != nil && !apierrors.IsNotFound(existingErr) {
+		return ctrl.Result{}, existingErr
+	}
+	if existingErr == nil {
+		if existing.DeletionTimestamp == nil {
+			deleteOpts := client.PropagationPolicy(metav1.DeletePropagationForeground)
+			if err := r.Delete(ctx, &existing, deleteOpts); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+
+	// No worker Job exists yet (queued): delete the CR without creating a worker pod
+	if err := r.Delete(ctx, review); err != nil && !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
 }
 
 func workerCreationWasAttempted(review *reviewv1alpha2.PRReviewJob) bool {
@@ -1382,7 +1447,7 @@ func validateProjectionWindow(review *reviewv1alpha2.PRReviewJob) error {
 }
 
 func isTerminalPhase(phase reviewv1alpha2.PRReviewJobPhase) bool {
-	return phase == reviewv1alpha2.PhaseSucceeded || phase == reviewv1alpha2.PhaseFailed || phase == reviewv1alpha2.PhaseExpired
+	return phase == reviewv1alpha2.PhaseSucceeded || phase == reviewv1alpha2.PhaseFailed || phase == reviewv1alpha2.PhaseExpired || phase == reviewv1alpha2.PhaseCancelled
 }
 
 func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1.Job) bool {

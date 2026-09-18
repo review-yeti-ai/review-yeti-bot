@@ -62,6 +62,9 @@ export class InMemoryReviewRunRepository implements ReviewRunRepository {
       if (samePullRequest && existing.identity.headSha !== input.identity.headSha && (existing.status === 'queued' || existing.status === 'running')) {
         existing.status = 'superseded';
         existing.error = 'superseded by a newer pull request head';
+        existing.cancelRequestedAt = now;
+        existing.cancelReason = 'superseded_by_new_head';
+        existing.cancelPropagatedAt = now;
         existing.leaseOwner = undefined;
         existing.leaseExpiresAt = undefined;
         existing.updatedAt = now;
@@ -210,6 +213,9 @@ export class InMemoryReviewRunRepository implements ReviewRunRepository {
     if (!record || (record.status !== 'queued' && record.status !== 'running')) return null;
     record.status = 'cancelled';
     record.error = error;
+    record.cancelRequestedAt = now;
+    record.cancelReason = error;
+    record.cancelPropagatedAt = now;
     record.leaseOwner = undefined;
     record.leaseExpiresAt = undefined;
     record.updatedAt = now;
@@ -313,7 +319,7 @@ function requeueMutation(runId: string, workerId: string, now: number, error: st
 
 function cancelMutation(runId: string, now: number, error: string): ReviewRunMutation {
   return [
-    `UPDATE review_runs SET status='cancelled', error_text=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
+    `UPDATE review_runs SET status='cancelled', error_text=$2, cancel_requested_at=to_timestamp($3 / 1000.0), cancel_reason=$2, lease_owner=NULL, lease_expires_at=NULL, updated_at=to_timestamp($3 / 1000.0)
      WHERE run_id=$1 AND status IN ('queued','running') RETURNING *`,
     [runId, error, now],
   ];
@@ -429,6 +435,8 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
             `UPDATE review_runs
                 SET status = 'superseded',
                     error_text = 'superseded by a newer pull request head',
+                    cancel_requested_at = to_timestamp($2 / 1000.0),
+                    cancel_reason = 'superseded_by_new_head',
                     lease_owner = NULL,
                     lease_expires_at = NULL,
                     updated_at = to_timestamp($2 / 1000.0)
@@ -655,7 +663,7 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
     const now = new Date(input.now ?? Date.now()).toISOString();
     const result = await this.query(
       `WITH superseded AS (
-         UPDATE review_runs SET status='superseded', error_text='superseded by a newer pull request head', lease_owner=NULL, lease_expires_at=NULL, updated_at=$14
+         UPDATE review_runs SET status='superseded', error_text='superseded by a newer pull request head', cancel_requested_at=$14::timestamptz, cancel_reason='superseded_by_new_head', lease_owner=NULL, lease_expires_at=NULL, updated_at=$14
          WHERE owner=$3 AND repo=$4 AND pr_number=$5 AND head_sha <> $6 AND status IN ('queued','running')
        )
        INSERT INTO review_runs (run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha, snapshot_digest, config_digest, effective_policy_digest, effective_config_digest, index_epoch, identity, status, stage, attempt, artifacts, created_at, updated_at)
@@ -829,6 +837,9 @@ export class PostgresReviewRunRepository implements ReviewRunRepository {
       publicationFence: row.publication_fence || undefined,
       resultDigest: row.result_digest || undefined,
       error: row.error_text || undefined,
+      cancelRequestedAt: row.cancel_requested_at ? new Date(row.cancel_requested_at).getTime() : undefined,
+      cancelReason: row.cancel_reason || undefined,
+      cancelPropagatedAt: row.cancel_propagated_at ? new Date(row.cancel_propagated_at).getTime() : undefined,
       createdAt: new Date(row.created_at).getTime(),
       updatedAt: new Date(row.updated_at).getTime(),
     };

@@ -26,6 +26,7 @@ import {
   isPublishingReviewWorker,
   runPublishingReviewWorker,
 } from './publishingReview';
+import { WorkerStatusPoller } from './workerStatusPoller';
 import { GitHubInstallationClient } from '../github/installationClient';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
 import { flushMetrics } from '../telemetry/metrics';
@@ -1711,24 +1712,57 @@ export async function runWorker(
       throw new Error('publishing review worker requires a ghs_ installation token');
     }
     const checkClient = new GitHubInstallationClient({ token });
-    // Completion reporting is additive. Existing publishing workers may not yet
-    // have the operator callback URL; they retain the legacy check-only behavior
-    // until the explicit URL is configured. A nonempty value still constructs the
-    // strict adapter, so malformed configuration fails closed rather than opting
-    // out silently.
-    const receipt = await runPublishingReviewWorker(workerEnv, {
-      checkClient,
-      ...publishingWorkerAdapters(workerEnv, token),
-    });
-    logger.info('Publishing review worker completed', {
-      runId: receipt.runId,
-      repo: receipt.repo,
-      prNumber: receipt.prNumber,
-      verdict: receipt.verdict,
-      conclusion: receipt.conclusion,
-      transport: receipt.transport,
-      blockingFindingCount: receipt.blockingFindingCount,
-    });
+
+    const rootAbortController = new AbortController();
+    const onSigterm = () => {
+      logger.info('Received SIGTERM/SIGINT, aborting review worker pipeline');
+      rootAbortController.abort(new Error('Process received SIGTERM'));
+    };
+    process.once('SIGTERM', onSigterm);
+    process.once('SIGINT', onSigterm);
+
+    let poller: WorkerStatusPoller | undefined;
+    const statusUrl = workerEnv.REVIEW_STATUS_URL || workerEnv.REVIEW_DISPATCH_STATUS_URL;
+    const bearerToken = workerEnv.REVIEW_WORKER_TOKEN || workerEnv.REVIEW_DISPATCH_TOKEN;
+    if (statusUrl && bearerToken) {
+      poller = new WorkerStatusPoller({
+        statusUrl,
+        bearerToken,
+        signal: rootAbortController.signal,
+        onSuperseded: (reason) => {
+          logger.info('Review run was superseded or cancelled; aborting execution', { reason });
+          rootAbortController.abort(new Error(`Review run superseded: ${reason || 'newer head'}`));
+        },
+      });
+      poller.start();
+    }
+
+    try {
+      // Completion reporting is additive. Existing publishing workers may not yet
+      // have the operator callback URL; they retain the legacy check-only behavior
+      // until the explicit URL is configured. A nonempty value still constructs the
+      // strict adapter, so malformed configuration fails closed rather than opting
+      // out silently.
+      const receipt = await runPublishingReviewWorker(workerEnv, {
+        checkClient,
+        signal: rootAbortController.signal,
+        isCurrentHead: poller ? () => poller.isCurrentHead() : undefined,
+        ...publishingWorkerAdapters(workerEnv, token),
+      });
+      logger.info('Publishing review worker completed', {
+        runId: receipt.runId,
+        repo: receipt.repo,
+        prNumber: receipt.prNumber,
+        verdict: receipt.verdict,
+        conclusion: receipt.conclusion,
+        transport: receipt.transport,
+        blockingFindingCount: receipt.blockingFindingCount,
+      });
+    } finally {
+      process.removeListener('SIGTERM', onSigterm);
+      process.removeListener('SIGINT', onSigterm);
+      poller?.stop();
+    }
   },
 ): Promise<void> {
   if (sameHeadQualificationRequested(env)) {
