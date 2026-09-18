@@ -60,7 +60,7 @@ const findingSchema = z.object({
  * so a future increase there does not also require a schema change here, while still rejecting an
  * unbounded array. Not imported directly -- a worker-completion schema must not reach into the
  * panel engine module for a plain numeric constant. */
-const MAX_TURN_USAGES = 32;
+export const MAX_TURN_USAGES = 32;
 
 /** One real provider call inside a persona lane's `invoke()` loop. Bounded and strictly numeric
  * (plus the resolved model string) -- never provider prompt/response text -- so it is safe on this
@@ -98,6 +98,73 @@ const personaTelemetrySchema = z.object({
   durationMs: boundedInteger.optional(),
   turnUsages: z.array(laneTurnUsageSchema).max(MAX_TURN_USAGES).optional(),
 }).strict();
+
+export type PersonaTelemetry = z.output<typeof personaTelemetrySchema>;
+/** The `turnUsages` entry shape. */
+export type LaneTurnUsagePayload = z.output<typeof laneTurnUsageSchema>;
+
+/**
+ * The ONLY place that maps a panel lane's turn-accumulation fields onto the wire shape
+ * `personaTelemetrySchema` accepts. `buildReviewResult` in `publishingReview.ts` calls this
+ * instead of hand-mirroring the field list a second time in a different module -- co-locating the
+ * builder with the schema it targets (rather than relying on `z.output<...>` alone, which
+ * TypeScript's excess-property checking does not actually enforce through the conditional spreads
+ * a builder like this needs -- confirmed by renaming a field here and re-running `tsc --noEmit`
+ * with no error) means an edit to one is an edit to the other, in the same file, in the same diff.
+ * `personaTelemetrySchema.parse(...)` at the end is defense in depth: if this builder and the
+ * schema ever do drift apart, the throw happens HERE, naming this exact lane's telemetry, instead
+ * of only later inside `parseWorkerReviewCompletion`'s broader parse.
+ *
+ * Input is loosely typed (`unknown`-per-field, not `PersonaLaneResult` from the panel module):
+ * this module must not depend on panel-engine internals, so every field is read defensively by
+ * type, exactly as a producer across a process/module boundary should.
+ */
+export function buildPersonaTelemetryPayload(lane: {
+  model?: unknown;
+  turnsCount?: unknown;
+  toolTurns?: unknown;
+  correctionTurns?: unknown;
+  durationMs?: unknown;
+  aggregateUsage?: unknown;
+  turnUsages?: unknown;
+}): PersonaTelemetry | undefined {
+  const aggregate = lane.aggregateUsage as Record<string, unknown> | undefined;
+  const hasAggregate = !!aggregate && typeof aggregate === 'object';
+  const turnUsagesInput = Array.isArray(lane.turnUsages) ? lane.turnUsages : [];
+  const hasTurnUsages = turnUsagesInput.length > 0;
+  const hasAnyTelemetry = hasAggregate || hasTurnUsages
+    || typeof lane.turnsCount === 'number' || typeof lane.model === 'string';
+  if (!hasAnyTelemetry) return undefined;
+
+  const candidate: Record<string, unknown> = {
+    ...(typeof lane.model === 'string' ? { model: lane.model } : {}),
+    ...(typeof lane.turnsCount === 'number' ? { turnsCount: lane.turnsCount } : {}),
+    ...(typeof lane.toolTurns === 'number' ? { toolTurns: lane.toolTurns } : {}),
+    ...(typeof lane.correctionTurns === 'number' ? { correctionTurns: lane.correctionTurns } : {}),
+    ...(typeof lane.durationMs === 'number' ? { durationMs: lane.durationMs } : {}),
+    ...(hasAggregate ? {
+      promptTokens: aggregate!.promptTokens,
+      completionTokens: aggregate!.completionTokens,
+      totalTokens: aggregate!.totalTokens,
+      cachedTokens: aggregate!.cachedTokens,
+      costUSD: aggregate!.costUSD,
+    } : {}),
+    ...(hasTurnUsages ? {
+      turnUsages: turnUsagesInput.map((turn: any) => ({
+        turn: turn?.turn,
+        kind: turn?.kind,
+        promptTokens: turn?.promptTokens,
+        completionTokens: turn?.completionTokens,
+        totalTokens: turn?.totalTokens,
+        cachedTokens: turn?.cachedTokens,
+        costUSD: turn?.costUSD,
+        model: turn?.model,
+        durationMs: turn?.durationMs,
+      })),
+    } : {}),
+  };
+  return personaTelemetrySchema.parse(candidate);
+}
 
 const personaSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u),

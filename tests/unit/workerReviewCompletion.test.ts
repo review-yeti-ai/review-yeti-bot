@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_COMPLETION_BYTES,
+  MAX_TURN_USAGES,
   deriveCanonicalWorkerReviewEvidence,
   parseWorkerReviewCompletion,
   type TrustedReviewCoverageContract,
@@ -432,6 +433,29 @@ describe('WorkerReviewCompletion.v1', () => {
         result: {
           ...completion().result,
           personas: [lane('security', { telemetry: { promptTokens: -1 } }), lane('architecture')],
+        },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+
+    it('accepts exactly MAX_TURN_USAGES entries and rejects one more (dead-guard check)', () => {
+      // `MAX_TURN_USAGES`'s doc comment says it exists to reject an unbounded `turnUsages` array
+      // across the worker boundary. Every other fixture in this file carries at most 3 entries, so
+      // without this pair, dropping `.max(MAX_TURN_USAGES)` entirely (or raising it to `Infinity`)
+      // would leave the whole suite green -- a guard no test can distinguish from its own absence.
+      const atLimit = Array.from({ length: MAX_TURN_USAGES }, (_, index) => turnUsage({ turn: index + 1 }));
+      const parsed = parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', { telemetry: { turnUsages: atLimit } }), lane('architecture')],
+        },
+      }));
+      expect(parsed.result.personas[0]?.telemetry?.turnUsages).toHaveLength(MAX_TURN_USAGES);
+
+      const overLimit = Array.from({ length: MAX_TURN_USAGES + 1 }, (_, index) => turnUsage({ turn: index + 1 }));
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', { telemetry: { turnUsages: overLimit } }), lane('architecture')],
         },
       }))).toThrow(/invalid WorkerReviewCompletion/u);
     });

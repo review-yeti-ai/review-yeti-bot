@@ -53,7 +53,10 @@ import {
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '../pipeline/domainIndex';
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
-import { MAX_PERSONAS, parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
+import {
+  MAX_PERSONAS, buildPersonaTelemetryPayload, parseWorkerReviewCompletion,
+  type WorkerReviewResult,
+} from '../review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
 import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/types';
 
@@ -1113,45 +1116,17 @@ export async function runPublishingReviewWorker(
       // `invoke()` loop actually made, not just its terminal turn. Only emitted when the panel
       // result actually carries it, so a `panelRunner` fixture that predates per-turn accumulation
       // (or a fast-ship/zero-lane result with no completed lanes) omits the field entirely instead
-      // of publishing a fabricated zero. `personaSchema` in `workerReviewCompletion.ts` is
-      // `.strict()`: every key here must exist there too.
-      const buildPersonaTelemetry = (persona: any) => {
-        const aggregate = persona.aggregateUsage;
-        const hasAggregate = aggregate && typeof aggregate === 'object';
-        const hasTurnUsages = Array.isArray(persona.turnUsages) && persona.turnUsages.length > 0;
-        const hasAnyTelemetry = hasAggregate || hasTurnUsages
-          || typeof persona.turnsCount === 'number' || typeof persona.model === 'string';
-        if (!hasAnyTelemetry) return undefined;
-        return {
-          ...(typeof persona.model === 'string' ? { model: persona.model } : {}),
-          ...(typeof persona.turnsCount === 'number' ? { turnsCount: persona.turnsCount } : {}),
-          ...(typeof persona.toolTurns === 'number' ? { toolTurns: persona.toolTurns } : {}),
-          ...(typeof persona.correctionTurns === 'number' ? { correctionTurns: persona.correctionTurns } : {}),
-          ...(typeof persona.durationMs === 'number' ? { durationMs: persona.durationMs } : {}),
-          ...(hasAggregate ? {
-            promptTokens: aggregate.promptTokens,
-            completionTokens: aggregate.completionTokens,
-            totalTokens: aggregate.totalTokens,
-            cachedTokens: aggregate.cachedTokens,
-            costUSD: aggregate.costUSD,
-          } : {}),
-          ...(hasTurnUsages ? {
-            turnUsages: persona.turnUsages.map((turn: any) => ({
-              turn: turn.turn,
-              kind: turn.kind,
-              promptTokens: turn.promptTokens,
-              completionTokens: turn.completionTokens,
-              totalTokens: turn.totalTokens,
-              cachedTokens: turn.cachedTokens,
-              costUSD: turn.costUSD,
-              model: turn.model,
-              durationMs: turn.durationMs,
-            })),
-          } : {}),
-        };
-      };
+      // of publishing a fabricated zero.
+      //
+      // The field list itself is NOT hand-mirrored here: `buildPersonaTelemetryPayload` is the one
+      // shared builder, co-located with `personaTelemetrySchema` in `workerReviewCompletion.ts`, so
+      // an edit to the schema and its builder land in the same file, in the same diff. (An earlier
+      // version of this code relied on `z.output<typeof personaTelemetrySchema>` alone as the
+      // return type here -- that does NOT actually get enforced by `tsc --noEmit` through the
+      // conditional spreads a builder like this needs; renaming a schema field and re-running the
+      // typecheck produced no error. The shared builder is the fix, not the type annotation.)
       const personas = panelResult.personas.map((persona) => {
-        const telemetry = buildPersonaTelemetry(persona);
+        const telemetry = buildPersonaTelemetryPayload(persona);
         return {
           id: persona.id,
           // A lane that completed without stating a decision is read from its

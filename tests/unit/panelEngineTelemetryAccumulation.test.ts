@@ -158,6 +158,12 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     // requests a tool made 2 real provider calls but reported turnsCount=1. Reverting the fix
     // (removing the top-of-loop `turnsCount++` and restoring the old tool-call-only increment)
     // makes this assertion fail: `lane.turnsCount` reads back 1 instead of 2.
+    //
+    // `invoke()` has two, separately coded correction sites (see the sibling test below for the
+    // other one): this one is the `catch (fenceErr)` site -- content that is neither a valid
+    // fenced/native result NOR a tool call, reached only after both parses have already failed.
+    // The turn 1 content below is deliberately not valid JSON at all, so it can only reach this
+    // site, never the other one.
     const config = buildTelemetryConfig(2, 'correction-only-lane');
     const attempts = new Map<string, number>();
 
@@ -208,11 +214,96 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     expect(lane!.turnUsages).toHaveLength(2);
   });
 
+  it('counts a correction turn reached through the OTHER correction site: a validly-parsed but contract-violating result', async () => {
+    // The second, distinct correction site in `invoke()`: the turn's content parses successfully
+    // as JSON matching the nonce (`structuredOutputContractError` passes -- `decision` is a valid
+    // enum member and `findings` is an array), but `validateParsed` rejects it on the PERSONA
+    // decision contract (`personaDecisionContractError`): `APPROVE` carrying a non-empty
+    // `findings` array is contradictory. This never reaches the `catch (fenceErr)` block the
+    // sibling test above exercises -- parsing did not fail -- so it can only prove the OTHER site
+    // (the `if (!contractError) {...} ... structuredCorrectionAttempts += 1` block) sets
+    // `correctionTurns`/`kind` correctly. Deleting the counter increment or the `kind =
+    // 'correction'` downgrade at THIS site specifically (while leaving the other site untouched)
+    // would leave the sibling test green and only this one red.
+    const config = buildTelemetryConfig(2, 'contract-correction-lane');
+    const attempts = new Map<string, number>();
+
+    const mockClient = {
+      complete: vi.fn(async (opts: any) => {
+        const nonce = nonceFrom(opts);
+        if (opts.metadata.role !== 'persona') {
+          return {
+            model: opts.model,
+            content: opts.metadata.role === 'arbiter'
+              ? `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'clean' })}\nCT_REVIEW_END:${nonce}`
+              : `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+            usage: null,
+            costUSD: null,
+            raw: {},
+          };
+        }
+        const key = `${opts.metadata.role}:${opts.persona}`;
+        const attempt = (attempts.get(key) || 0) + 1;
+        attempts.set(key, attempt);
+
+        if (attempt === 1) {
+          // Valid JSON, valid nonce fence, valid `decision` enum member, `findings` is an array --
+          // parses cleanly. Only the PERSONA-specific decision/findings contradiction is wrong:
+          // APPROVE must carry zero findings.
+          const contradictory = {
+            decision: 'APPROVE',
+            findings: [{ severity: 'P1', path: 'src/security/auth.ts', line: 1, title: 'x', body: 'y' }],
+          };
+          return {
+            model: opts.model,
+            content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(contradictory)}\nCT_REVIEW_END:${nonce}`,
+            usage: { prompt: 40, completion: 8, total: 48 },
+            costUSD: 0.0003,
+            raw: {},
+          };
+        }
+        return {
+          model: opts.model,
+          content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+          usage: { prompt: 20, completion: 10, total: 30 },
+          costUSD: 0.0002,
+          raw: {},
+        };
+      }),
+    };
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: CHANGED_FILES,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-contract-correction-turns',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    const lane = result.personas.find((persona) => persona.id === 'contract-correction-lane');
+    expect(lane).toBeDefined();
+    expect(lane!.turnsCount).toBe(2);
+    expect(lane!.toolTurns).toBe(0);
+    expect(lane!.correctionTurns).toBe(1);
+    expect(lane!.turnUsages).toHaveLength(2);
+    expect(lane!.turnUsages!.map((t) => t.kind)).toEqual(['correction', 'final']);
+  });
+
   it('records panelWallClockMs distinct from the SUM of concurrent lane durations', async () => {
     // Two personas that each match the changed file run concurrently (MAX_CONCURRENT_PERSONAS=4).
     // If panelWallClockMs simply summed the lanes' durations (the publishing-layer bug this
     // measurement work exists to make visible), it would be >= 2x a single lane's delay. The real
     // wall clock should be well under that, since both lanes were in flight at once.
+    //
+    // Concurrency itself is proven BY CONSTRUCTION below (`maxObservedConcurrency`, the same
+    // pattern `panelEngineParallel.test.ts` uses), not by elapsed time -- that assertion cannot
+    // flake regardless of runner load. The VALUE of `panelWallClockMs` still has to be checked
+    // against real elapsed time, though, since that is what it measures. `DELAY_MS` is set an
+    // order of magnitude above typical GC/parse jitter (a few ms to a few tens of ms) so that
+    // noise cannot meaningfully move the ratio, and the ratio itself is compared against
+    // `summedLaneDurationMs` -- a value measured in this SAME contended run, not a fixed
+    // `timeBudgetMs`-style idle-time constant -- so a slow runner inflates both sides together
+    // instead of eating the margin on only one side.
     const config = ctReviewConfigV3Schema.parse({
       version: 3,
       profile: 'assertive',
@@ -238,12 +329,19 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
       display: { mascot: true },
     });
 
-    const DELAY_MS = 60;
+    // An order of magnitude above the few ms to few tens of ms of GC/parse jitter that could
+    // otherwise eat a thin margin -- see the comment above.
+    const DELAY_MS = 300;
+    let activeConcurrentCalls = 0;
+    let maxObservedConcurrency = 0;
     const mockClient = {
       complete: vi.fn(async (opts: any) => {
         const nonce = nonceFrom(opts);
         if (opts.metadata.role === 'persona') {
+          activeConcurrentCalls++;
+          maxObservedConcurrency = Math.max(maxObservedConcurrency, activeConcurrentCalls);
           await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
+          activeConcurrentCalls--;
         }
         const body = opts.metadata.role === 'arbiter'
           ? { verdict: 'SHIP', rationale: 'clean' }
@@ -268,12 +366,21 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
       client: mockClient as unknown as OmniRouteClient,
     });
 
+    // Proof BY CONSTRUCTION that both persona calls were genuinely in flight at once -- not
+    // inferred from timing. If a future change accidentally serialized the fan-out, this fails
+    // regardless of how generous the timing margins below are.
+    expect(maxObservedConcurrency).toBe(2);
+
     expect(result.personas).toHaveLength(2);
     const summedLaneDurationMs = result.personas.reduce((sum, p) => sum + p.durationMs, 0);
     expect(summedLaneDurationMs).toBeGreaterThanOrEqual(DELAY_MS * 2 - 5);
 
     expect(typeof result.panelWallClockMs).toBe('number');
+    // The flake-proof invariant: always true for a correct implementation, contention or not.
+    // Alone it does NOT catch a `panelWallClockMs = summedLaneDurationMs` mutation (equality
+    // still satisfies `<=`) -- that is what the ratio assertion below is for.
     expect(result.panelWallClockMs!).toBeGreaterThan(0);
+    expect(result.panelWallClockMs!).toBeLessThanOrEqual(summedLaneDurationMs);
     // Deliberately NOT compared against a fixed idle-time constant (e.g. via `timeBudgetMs`): a
     // real concurrent/serial gap is only a ~2x effect here, well inside `timeBudgetMs`'s up-to-4x
     // contention allowance, so that style of assertion cannot distinguish the fix from a mutation
@@ -282,7 +389,9 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     // measured in this same contended run -- self-corrects for contention: if the whole run is
     // slowed down by scheduling pressure, both numbers scale together, but a truly concurrent wall
     // clock stays close to a SINGLE lane's duration (well under the two-lane sum) regardless of
-    // how much everything is slowed down, while the summed value never does.
-    expect(result.panelWallClockMs!).toBeLessThan(summedLaneDurationMs * 0.8);
+    // how much everything is slowed down, while the summed value never does. 0.7 (rather than the
+    // previous 0.8, with a 60ms delay) gives real headroom now that DELAY_MS is 300ms: a true
+    // concurrent run lands around ratio ~0.5-0.55, the mutated one at ~1.0.
+    expect(result.panelWallClockMs!).toBeLessThan(summedLaneDurationMs * 0.7);
   });
 });
