@@ -12,7 +12,7 @@ import {
   type JevQuestion,
   type JevOutcome,
 } from '../jevClient';
-import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../jevPricing';
+import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../../types/jevContract';
 import { initTelemetry, getMetrics, getPrometheusMetrics, getRecentSpans, clearSpans } from '../../telemetry';
 import { logger } from '../../utils/logger';
 
@@ -126,6 +126,44 @@ describe('JevClient — malformed responses', () => {
     );
     const client = baseClient({ fetchImplementation });
     const outcome = await client.ask({ state: 's', questions: BASE_QUESTIONS });
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  });
+
+  // Envelope-level fields. Previously only the ANSWERS were exercised, so deleting any of the
+  // three envelope guards left every test green while a 200 carrying no usage (or no model) was
+  // reported as `ok` -- and cost/telemetry then read undefined token counts off it. A response
+  // this client cannot fully interpret is malformed, not a success.
+  const VALID_ANSWERS = { is_ambiguous: { type: 'noul', noul: 0.2 } };
+
+  it('reports malformed when the envelope has no usage', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', answers: VALID_ANSWERS }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: BASE_QUESTIONS });
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  });
+
+  it('reports malformed when usage token counts are not numbers', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', answers: VALID_ANSWERS, usage: { input_tokens: '10', output_tokens: 1 } }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: BASE_QUESTIONS });
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  });
+
+  it('reports malformed when the envelope has no model', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { answers: VALID_ANSWERS, usage: { input_tokens: 10, output_tokens: 1 } }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: BASE_QUESTIONS });
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  });
+
+  it('reports malformed when answers is absent entirely', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(
+      jsonResponse(200, { model: 'jev-1.13.0', usage: { input_tokens: 10, output_tokens: 1 } }),
+    );
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: BASE_QUESTIONS });
     expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
   });
 

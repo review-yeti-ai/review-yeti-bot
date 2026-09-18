@@ -1,3 +1,5 @@
+import { isHttpsBaseUrl } from '../types/jevContract';
+
 export interface JevTransportConfig {
   baseUrl: string;
   apiKey: string;
@@ -44,14 +46,10 @@ export function jevTransport(env: NodeJS.ProcessEnv): JevTransportConfig | null 
   if (presentCount === 0) return null;
   if (presentCount < 4) throw invalidJevTransportContract();
 
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw invalidJevTransportContract();
-  }
-  // A plaintext base URL would send the API key over the wire in cleartext.
-  if (parsed.protocol !== 'https:') throw invalidJevTransportContract();
+  // Same rule as JevClient's constructor guard, from the one shared definition in
+  // ../types/jevContract -- the predicate also rejects an unparseable URL. The error contract
+  // differs deliberately: this is transport misconfiguration, not a programmer error.
+  if (!isHttpsBaseUrl(baseUrl)) throw invalidJevTransportContract();
 
   return { baseUrl, apiKey, model, modelPin };
 }

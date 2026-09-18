@@ -1,7 +1,7 @@
 import { runInSpan, getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
-import { JEV_INPUT_TOKEN_USD_PER_MILLION } from './jevPricing';
+import { JEV_INPUT_TOKEN_USD_PER_MILLION, HTTPS_REQUIRED_REASON, isHttpsBaseUrl } from '../types/jevContract';
 
 /**
  * Client for TypeSafe AI's "System One" model (Jev).
@@ -178,15 +178,13 @@ function validateStateSize(state: unknown, questions: unknown): void {
  * jevTransport's check stays too -- defence in depth against a different entry path.
  */
 function validateHttpsBaseUrl(baseUrl: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw new TypeError(`JevClient baseUrl "${baseUrl}" is not a valid URL`);
-  }
-  if (parsed.protocol !== 'https:') {
+  // The RULE lives in ../types/jevContract (shared with jevTransport, which guards a different
+  // entry path). The ERROR CONTRACT stays here: reaching this function with a bad base URL is a
+  // programmer error at a directly-constructed client, so it throws TypeError like the other
+  // argument validators in this module -- not the transport-resolution error jevTransport raises.
+  if (!isHttpsBaseUrl(baseUrl)) {
     throw new TypeError(
-      `JevClient baseUrl must be https (got "${parsed.protocol}"): a plaintext base URL would send the Jev API key over the wire in cleartext`,
+      `JevClient baseUrl must be a valid https URL (got "${baseUrl}"): ${HTTPS_REQUIRED_REASON}`,
     );
   }
 }

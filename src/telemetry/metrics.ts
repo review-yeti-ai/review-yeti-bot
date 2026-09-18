@@ -9,7 +9,7 @@ import {
   InstrumentType,
 } from '@opentelemetry/sdk-metrics';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
-import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../gateway/jevPricing';
+import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../types/jevContract';
 
 let metricsInstance: MetricCounters | null = null;
 let metricReader: PeriodicExportingMetricReader | null = null;
