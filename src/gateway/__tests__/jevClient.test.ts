@@ -641,7 +641,7 @@ describe('JevClient — unavailable outcomes are measured too', () => {
     // recorded as a literal, omitted, or mislabelled with every test still green -- and an
     // outage would then be indistinguishable from success in the dashboards this instruments.
     const fetchImplementation = vi.fn().mockResolvedValue(new Response('', { status: 429 }));
-    const client = baseClient({ fetchImplementation, maxAttempts: 1 });
+    const client = baseClient({ fetchImplementation, maxRetries: 0 });
 
     const requestsSpy = vi.spyOn(getMetrics().jevRequests, 'add');
     const durationSpy = vi.spyOn(getMetrics().jevDuration, 'record');
@@ -684,9 +684,9 @@ describe('JevClient — retry budget exhaustion', () => {
       // its observable consequences -- original reason preserved, no sleep -- so a future change
       // to the call sequence fails loudly here rather than silently testing the wrong path.
       stageBudgetMs: 60,
-      maxAttempts: 3,
+      maxRetries: 2,
       now: () => { clock += 20; return clock; },
-    } as never);
+    });
 
     const outcome = await client.ask({ state: 's', questions: BASE_QUESTIONS });
 
