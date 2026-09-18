@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.77.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.76.3...v1.77.0) (2026-09-18)
+
+
+### Features
+
+* **publishing:** wire full-repo grounding and zoekt index-build telemetry ([#861](https://github.com/review-yeti-ai/review-yeti-bot/issues/861)) ([a6ab89b](https://github.com/review-yeti-ai/review-yeti-bot/commit/a6ab89bff97c70d17fe68faec8cc4d473546d626))
+
 ## [1.76.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.76.2...v1.76.3) (2026-09-18)
 
 
