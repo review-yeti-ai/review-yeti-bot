@@ -472,7 +472,7 @@ export function raceWithPanelAbort<T>(operation: Promise<T>, signal?: AbortSigna
   });
 }
 
-function panelDelay(ms: number, signal?: AbortSignal): Promise<void> {
+export function panelDelay(ms: number, signal?: AbortSignal): Promise<void> {
   if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
   throwIfPanelAborted(signal);
   return new Promise<void>((resolve, reject) => {
