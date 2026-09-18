@@ -150,7 +150,7 @@ for required_secret in CT_REVIEW_BOT_APP_ID CT_REVIEW_BOT_APP_PRIVATE_KEY; do
     exit 1
   }
 done
-for optional_secret in CONTEXT7_API_KEY GEMINI_API_KEY HONCHO_API_KEY HONCHO_BASE_URL OLLAMA_PR_REVIEW_API_KEY OPENROUTER_REVIEW_FLEET_KEY REVIEW_YETI_BIFROST_API_KEY SYNTHETIC_API_KEY; do
+for optional_secret in CONTEXT7_API_KEY GEMINI_API_KEY HONCHO_API_KEY HONCHO_BASE_URL OLLAMA_PR_REVIEW_API_KEY OPENROUTER_REVIEW_FLEET_KEY REVIEW_YETI_BIFROST_API_KEY; do
   declaration="$(sed -n "/^      ${optional_secret}:$/,/^      [A-Z0-9_]*:$/p" <<<"$secret_interface")"
   grep -Fxq '        required: false' <<<"$declaration" || {
     echo "${optional_secret} must remain an optional workflow_call secret" >&2

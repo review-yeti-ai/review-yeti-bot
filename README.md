@@ -12,7 +12,7 @@ Review Yeti is an enterprise-grade AI review engine designed for GitHub organiza
 * ⚡ **Zero-Waste Asynchrony**: Consumer PR trigger shims complete in **< 5–15 seconds**, eliminating the wasteful 15-minute runner polling anti-pattern.
 * ☸️ **Flexible Execution Modes**: Run reviews directly on **GitHub Actions** or offload heavy multi-persona workloads to an autoscaling **Kubernetes cluster** (DOKS, EKS, GKE).
 * 🤖 **Dedicated GitHub App Identity**: Uses short-lived installation tokens and separate per-installation rate-limit pools; creates direct check runs via `POST /repos/:owner/:repo/check-runs`.
-* 🔄 **Multi-Provider Resilience**: Built-in weighted striping, circuit breakers, and automatic failover across model providers (Bifrost, Ollama, OpenRouter, Gemini, and Synthetic).
+* 🔄 **Multi-Provider Resilience**: Built-in weighted striping, circuit breakers, and automatic failover across model providers (Bifrost, Ollama, OpenRouter, and Gemini).
 * 🚦 **Merge Queue Native**: First-class support for GitHub Merge Queues with instant synthetic-commit validation to avoid duplicate reviews.
 
 ---

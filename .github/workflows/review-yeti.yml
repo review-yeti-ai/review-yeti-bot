@@ -92,9 +92,6 @@ on:
       OLLAMA_PR_REVIEW_API_KEY:
         description: Optional Ollama provider credential.
         required: false
-      SYNTHETIC_API_KEY:
-        description: Optional synthetic provider credential.
-        required: false
       HONCHO_BASE_URL:
         description: Optional Honcho endpoint override.
         required: false
@@ -290,7 +287,6 @@ jobs:
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 90000
         run: |
           echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
@@ -412,7 +408,6 @@ jobs:
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
           OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          SYNTHETIC_API_KEY: ${{ secrets.SYNTHETIC_API_KEY }}
           HONCHO_BASE_URL: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.do.example.com' }}
           HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
           HONCHO_WORKSPACE: ${{ vars.HONCHO_WORKSPACE || 'exampleorg' }}

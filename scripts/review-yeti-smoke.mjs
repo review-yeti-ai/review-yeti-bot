@@ -34,7 +34,6 @@ export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
   'bifrost',
   'openrouter-primary',
   'gemini',
-  'synthetic',
   'fireworks',
   'ollama',
 ]);
@@ -151,8 +150,8 @@ export function validatePolicy(policy, repository = '') {
   const ollama = transports.find((transport) => transport.name === 'ollama');
   const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
-  if (!gemini || !ollama || !synthetic || !fireworks || !openrouter || !bifrost) {
-    throw new Error('policy must define OpenRouter, Gemini, Ollama, Synthetic, and Bifrost transports');
+  if (!gemini || !ollama || !fireworks || !openrouter || !bifrost) {
+    throw new Error('policy must define OpenRouter, Gemini, Ollama, and Bifrost transports');
   }
   if (bifrost.api_key_env !== 'BIFROST_PR_REVIEW_API_KEY') {
     throw new Error('Bifrost must use BIFROST_PR_REVIEW_API_KEY');
@@ -168,7 +167,13 @@ export function validatePolicy(policy, repository = '') {
       || gemini.reasoning_effort !== 'high') {
     throw new Error('Gemini must use the pinned Google OpenAI-compatible endpoint/model with strict high-reasoning output');
   }
-  if (synthetic.base_url !== EXPECTED_SYNTHETIC_BASE_URL
+  // REL-896: the synthetic.new account was cancelled and the transport was removed from the
+  // committed policy roster (it is no longer required, unlike gemini/ollama/fireworks/bifrost
+  // above). This shape check is retained purely as a defensive contract: it stays reachable for
+  // fixture-driven tests that still exercise a model-scoped, quota-bounded disabled transport
+  // under this exact name, so IF a policy ever declares one again it is still forced to match
+  // the last-reviewed pinned shape rather than being silently accepted.
+  if (synthetic && (synthetic.base_url !== EXPECTED_SYNTHETIC_BASE_URL
       || synthetic.api_key_env !== 'SYNTHETIC_API_KEY'
       || synthetic.model !== EXPECTED_SYNTHETIC_MODEL
       || synthetic.compat !== 'openai'
@@ -176,7 +181,7 @@ export function validatePolicy(policy, repository = '') {
       || synthetic.concurrency_scope !== 'model'
       || synthetic.quota_probe !== 'synthetic-v2'
       || synthetic.structured_output !== 'strict'
-      || synthetic.reasoning_effort !== 'high') {
+      || synthetic.reasoning_effort !== 'high')) {
     throw new Error('Synthetic must use the pinned endpoint/model, a five-pack per-model ceiling, quota-bounded admission, and strict high-reasoning output');
   }
   if (fireworks.base_url !== 'https://api.fireworks.ai/inference/v1'

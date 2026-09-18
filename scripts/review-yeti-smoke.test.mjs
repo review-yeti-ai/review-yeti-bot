@@ -298,7 +298,6 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
-  assert.equal(transports.find((transport) => transport.name === 'synthetic').quarantine_on_timeout, false);
   assert.equal(openrouter.enabled, true, 'OpenRouter is the inherited fleet fallback');
   assert.equal(openrouter.timeout_ms, Number(policy.review_yeti.openrouter_timeout_ms));
   assert.equal(openrouter.max_tokens, undefined);
@@ -912,11 +911,10 @@ test('the committed policy retains disabled providers as non-admitted transports
   const ollama = policy.review_yeti.transports.find((transport) => transport.name === 'ollama');
   const fireworks = policy.review_yeti.transports.find((transport) => transport.name === 'fireworks');
   const openrouter = policy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary');
-  const synthetic = policy.review_yeti.transports.find((transport) => transport.name === 'synthetic');
   assert.deepEqual(policy.review_yeti.transports.map((transport) => transport.name), EXPECTED_CONFIGURED_TRANSPORT_ORDER);
   assert.equal(bifrost.enabled, true, 'bifrost is the primary enabled transport');
   assert.equal(openrouter.enabled, true, 'openrouter-primary is the fleet fallback');
-  for (const disabled of [gemini, fireworks, synthetic, ollama]) {
+  for (const disabled of [gemini, fireworks, ollama]) {
     assert.equal(disabled.enabled, false, `${disabled.name} must stay declared-but-disabled`);
   }
   assert.deepEqual(validatePolicy(policy).map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);

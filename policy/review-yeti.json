@@ -137,32 +137,6 @@
         "reasoning_effort": "high"
       },
       {
-        "name": "synthetic",
-        "enabled": false,
-        "base_url": "https://api.synthetic.new/openai/v1",
-        "api_key_env": "SYNTHETIC_API_KEY",
-        "model": "hf:zai-org/GLM-5.3-Flash",
-        "compat": "openai",
-        "timeout_ms": 120000,
-        "connect_timeout_ms": 15000,
-        "ttft_ms": 60000,
-        "stall_ms": 20000,
-        "stream": true,
-        "dispatch_weight": 1,
-        "max_in_flight": 5,
-        "concurrency_scope": "model",
-        "capacity_wait_timeout_ms": 120000,
-        "quota_probe": "synthetic-v2",
-        "rate_limit": {
-          "scope": "provider",
-          "max_retries": 1,
-          "max_retry_after_ms": 5000
-        },
-        "structured_output": "strict",
-        "quarantine_on_timeout": false,
-        "reasoning_effort": "high"
-      },
-      {
         "name": "fireworks",
         "enabled": false,
         "base_url": "https://api.fireworks.ai/inference/v1",

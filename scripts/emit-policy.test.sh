@@ -63,14 +63,16 @@ if any(item.get('name') == 'bifrost' and (not isinstance(item.get('max_tokens'),
 bifrost = next((item for item in configured_transports if item.get('name') == 'bifrost'), None)
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
 gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
-synthetic = next((item for item in configured_transports if item.get('name') == 'synthetic'), None)
 openrouter = next((item for item in configured_transports if item.get('name') == 'openrouter-primary'), None)
-if not openrouter or not ollama or not gemini or not synthetic or not bifrost:
-    raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, Synthetic, and Bifrost transports')
+if not openrouter or not ollama or not gemini or not bifrost:
+    raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, and Bifrost transports')
 if gemini.get('enabled') is not False or ollama.get('enabled') is not False or bifrost.get('enabled') is not True:
     raise SystemExit('Bifrost must stay enabled; Gemini and Ollama must stay declared-but-disabled')
-if synthetic is None or synthetic.get('enabled') is not False:
-    raise SystemExit('Synthetic must be declared-but-disabled (retired)')
+# REL-896: the synthetic.new account was cancelled and the transport was fully removed (not
+# merely disabled). It must never resurface -- a reintroduced declaration, even disabled, means
+# the removal PR was reverted or partially reapplied without a fresh review of this contract.
+if any(item.get('name') == 'synthetic' for item in configured_transports):
+    raise SystemExit('Synthetic transport must not be declared -- the provider account was cancelled (REL-896)')
 if openrouter is None or openrouter.get('enabled') is not True:
     raise SystemExit('OpenRouter fleet fallback must be enabled (REL-710)')
 if any(item.get('name') == 'fireworks' for item in transports):
@@ -82,16 +84,6 @@ if (gemini.get('base_url'), gemini.get('api_key_env'), gemini.get('model'), gemi
     'https://generativelanguage.googleapis.com/v1beta/openai', 'GEMINI_API_KEY', 'gemini-3.7-flash', 'openai'
 ):
     raise SystemExit('Gemini must remain pinned to the Google OpenAI-compatible contract')
-if (synthetic.get('base_url'), synthetic.get('api_key_env'), synthetic.get('model'), synthetic.get('compat')) != (
-    'https://api.synthetic.new/openai/v1', 'SYNTHETIC_API_KEY', 'hf:zai-org/GLM-5.3-Flash', 'openai'
-):
-    raise SystemExit('Synthetic must remain pinned to its OpenAI-compatible contract')
-if (synthetic.get('max_in_flight'), synthetic.get('concurrency_scope'), synthetic.get('quota_probe')) != (
-    5, 'model', 'synthetic-v2'
-):
-    raise SystemExit('Synthetic must retain the five-pack per-model ceiling plus quota-bounded admission')
-if synthetic.get('quarantine_on_timeout') is not False:
-    raise SystemExit('Synthetic timeouts must remain lane-local so one slow lane cannot quarantine the transport for the run')
 if review.get('openrouter_max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
 budget = review.get('budget')
@@ -566,8 +558,10 @@ done
 for field in timeout_ms connect_timeout_ms ttft_ms stall_ms; do
   for value in 0 -1 180001 true 1.5 ''; do
     name="invalid-transport-${field}-${value:-empty}"
+    # REL-896: removing the synthetic transport shifted the committed transports array --
+    # index 3 is now fireworks (bifrost, openrouter-primary, gemini, fireworks, ollama).
     run_case "$name" "transport.3.${field}" "$value" 1
-    grep -q "transport synthetic.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
+    grep -q "transport fireworks.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
   done
 done
 

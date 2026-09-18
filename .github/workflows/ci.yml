@@ -129,7 +129,6 @@ jobs:
           jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "bifrost"' policy/review-yeti.json
           jq -e '.review_yeti.transports[] | select(.name == "bifrost") | .enabled == true' policy/review-yeti.json >/dev/null
-          grep -Fq '"name": "synthetic"' policy/review-yeti.json
           grep -Fq '"name": "openrouter-primary"' policy/review-yeti.json
           grep -Fq '"model": "z-ai/glm-5.3-flash"' policy/review-yeti.json
           grep -Fq '"models": []' policy/review-yeti.json
@@ -137,12 +136,17 @@ jobs:
             echo '::error::retired DeepSeek routing must not return to production policy'
             exit 1
           fi
+          # REL-896: the synthetic.new account was cancelled and the transport was fully removed
+          # (not merely disabled). It must never resurface in the committed policy.
+          if grep -Fq '"name": "synthetic"' policy/review-yeti.json; then
+            echo '::error::retired Synthetic transport must not return to production policy (REL-896)'
+            exit 1
+          fi
           grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .enabled == true' policy/review-yeti.json >/dev/null
-          jq -e '.review_yeti.transports[] | select(.name == "synthetic") | .enabled == false' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .provider_routing.ignore == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .ignore_providers == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           if [ "$(grep -c '^[[:space:]]*max-file-diff-chars:' .github/workflows/review-yeti.yml)" -ne 1 ]; then
@@ -175,8 +179,6 @@ jobs:
           fi
           grep -Fq 'GEMINI_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.GEMINI_API_KEY' .github/workflows/review-yeti.yml
-          grep -Fq 'SYNTHETIC_API_KEY:' .github/workflows/review-yeti.yml
-          grep -Fq 'secrets.SYNTHETIC_API_KEY' .github/workflows/review-yeti.yml
           resolved_base_url_marker='llm-base-url: $''{{ steps.smoke.outputs.resolved_base_url }}'
           resolved_model_marker='model: $''{{ steps.smoke.outputs.resolved_model }}'
           grep -Fq "$resolved_base_url_marker" .github/workflows/review-yeti.yml
