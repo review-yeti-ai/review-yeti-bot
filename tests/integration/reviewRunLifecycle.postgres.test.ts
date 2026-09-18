@@ -156,12 +156,19 @@ describe('PostgresReviewRunRepository legacy lifecycle events', () => {
       result_digest VARCHAR(64),
       artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
       error_text TEXT,
+      burst_started_at TIMESTAMPTZ,
+      cancel_requested_at TIMESTAMPTZ,
+      cancel_reason TEXT,
+      cancel_propagated_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`);
     await pool.query(`CREATE TABLE review_dispatch_outbox (
       run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
-      execution_attempt INTEGER NOT NULL DEFAULT 0
+      execution_attempt INTEGER NOT NULL DEFAULT 0,
+      cancel_requested_at TIMESTAMPTZ,
+      cancel_reason TEXT,
+      cancel_propagated_at TIMESTAMPTZ
     )`);
     await pool.query(REVIEW_EVENT_SCHEMA_SQL);
     await pool.query(REVIEW_EVENT_SCHEMA_SQL);
@@ -563,6 +570,10 @@ describe('disabled legacy lifecycle compatibility without event tables', () => {
       result_digest VARCHAR(64),
       artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
       error_text TEXT,
+      burst_started_at TIMESTAMPTZ,
+      cancel_requested_at TIMESTAMPTZ,
+      cancel_reason TEXT,
+      cancel_propagated_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`);
