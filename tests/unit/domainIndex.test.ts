@@ -259,6 +259,27 @@ describe('Master Domain Index (REL-551)', () => {
       expect(resolution.personas.sort()).toEqual(['devops', 'security', 'architecture'].sort());
     });
 
+    it('generic config JSON/JSONL files resolve to config -> security + architecture (must not be persona-less)', () => {
+      // Regression: before the generic config class carried `*.json` / `**/*.json` /
+      // `*.jsonl` / `**/*.jsonl`, an arbitrary config-JSON diff (e.g. ct-meta
+      // protection/*.json + rulesets.jsonl, where the hosted policy enables only
+      // architecture+security personas) matched no enabled persona and the panel threw
+      // `no enabled persona applies to the changed paths`, failing the review.
+      for (const file of [
+        'protection/branch-protection.main.json',
+        'protection/rulesets.jsonl',
+        'rulesets.list.json',
+        'some/tool-config.json',
+        'some/tool-config.jsonl',
+      ]) {
+        const resolution = resolveFileDomains(file, index);
+        expect(resolution.matched, file).toBe(true);
+        expect(resolution.classes, file).toContain('config');
+        expect(resolution.personas, file).toContain('security');
+        expect(resolution.personas, file).toContain('architecture');
+      }
+    });
+
     it('a path may match classes across multiple ecosystems and unions them', () => {
       // package.json is JS/TS deps-manifest; it's also covered by generic's config globs? verify union semantics
       // by checking mix.lock (elixir lockfile) also matches generic's `*.lock` glob -> still just "lockfile" class.
