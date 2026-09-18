@@ -700,10 +700,7 @@ export async function runPublishingReviewWorker(
     const githubDiffNotRenderable = isGithubDiffNotRenderableError(error);
     const isProvider5xx = Boolean(
       (error as any)?.failureReason === 'provider_5xx' ||
-      (error instanceof Error && (
-        error.message.includes('provider_5xx') ||
-        /\b(?:502|503)\b|Bad Gateway|Service Unavailable/i.test(error.message)
-      ))
+      (error instanceof Error && error.message.includes('provider_5xx'))
     );
     // The recoverable marker is the one bit the dispatcher's bounded
     // automatic retry (REL-620) reads off this event; it is set exactly when
