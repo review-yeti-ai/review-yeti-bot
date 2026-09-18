@@ -23,6 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
+import { executeComposedReview } from '../panel/composedEngine';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
 import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
@@ -565,6 +566,8 @@ export interface PublishingReviewDeps {
   /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
   visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
   panelRunner?: typeof executePersonaPanel;
+  /** Injectable for tests. Used only when `resolveReviewEngine(env)` selects `'composed'`. */
+  composedReviewRunner?: typeof executeComposedReview;
   client?: ReviewModelClient;
   now?: () => number;
   /** Worker/runtime shutdown signal; linked to the panel's configured deadline. */
@@ -663,6 +666,19 @@ export function zoektGroundingEnabledFor(
     && (config as { pre_checks?: { zoekt?: { enabled?: boolean } } })?.pre_checks?.zoekt?.enabled !== false;
 }
 
+export type ReviewEngine = 'panel' | 'composed';
+
+/**
+ * `REVIEW_ENGINE` selects between the fan-out persona panel (`panel`, the default) and the
+ * single-context composed engine (`composed`, `src/panel/composedEngine.ts`). Fail-inert: any
+ * value other than the exact string `'composed'` -- unset, empty, a typo, anything else -- stays
+ * `'panel'`. This PR must not change production behaviour by default; only an explicit, exact
+ * opt-in selects the new path.
+ */
+export function resolveReviewEngine(env: NodeJS.ProcessEnv): ReviewEngine {
+  return value(env, 'REVIEW_ENGINE') === 'composed' ? 'composed' : 'panel';
+}
+
 export async function runPublishingReviewWorker(
   env: NodeJS.ProcessEnv,
   deps: PublishingReviewDeps,
@@ -684,7 +700,10 @@ export async function runPublishingReviewWorker(
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
-  const panelRunner = deps.panelRunner || executePersonaPanel;
+  const reviewEngine = resolveReviewEngine(env);
+  const panelRunner = reviewEngine === 'composed'
+    ? (deps.composedReviewRunner || executeComposedReview)
+    : (deps.panelRunner || executePersonaPanel);
   let preparedPersonaIds: string[] = [];
   let authoritativeCompletionAttempted = false;
   let legacySuccessCompletionAttempted = false;
@@ -1051,6 +1070,11 @@ export async function runPublishingReviewWorker(
         changedFiles,
         coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && unreadable.length === 0,
         ...(unreadable.length > 0 ? { coverageGaps: ['unreadable diff header(s)'] } : {}),
+        // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
+        // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
+        // would let a longer task plan silently raise its own P1 blocking threshold (7 tasks moves
+        // it from 3 to 4). See `reviewCore.js`'s `resolvePanelSize` doc comment.
+        ...(reviewEngine === 'composed' ? { panelSize: 1 } : {}),
       });
       const coverage: PublishingCoverageProjection = {
         mode: rawRoster.mode,
