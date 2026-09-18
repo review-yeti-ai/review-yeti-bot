@@ -103,6 +103,26 @@ export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 48;
 export const COMPOSED_PLAN_MAX_TURNS = 4;
 /** Turns available to a single task's WORK phase (tool calls + correction + finalize). */
 export const COMPOSED_TASK_MAX_TURNS = 6;
+
+/**
+ * Per-task turn ceiling. Policy NARROWS only: a value above `COMPOSED_TASK_MAX_TURNS` is ignored
+ * rather than honoured, so central policy can tighten a budget it does not own but never widen it.
+ * Non-positive and non-integer values fall back to the engine constant rather than clamping to
+ * zero, which would make every task exhaust on its first turn.
+ *
+ * Exported and pure so it can be tested directly. Inlining this arithmetic in the caller made an
+ * earlier test reimplement it, which meant the test passed against its own copy of the rule and a
+ * mutation of the real one did not register.
+ */
+export function resolveTaskTurnCeiling(
+  policyMaxTurnsPerTask: number | undefined,
+  turnsRemaining: number,
+): number {
+  const policyCeiling = Number.isInteger(policyMaxTurnsPerTask) && (policyMaxTurnsPerTask as number) > 0
+    ? (policyMaxTurnsPerTask as number)
+    : COMPOSED_TASK_MAX_TURNS;
+  return Math.min(COMPOSED_TASK_MAX_TURNS, policyCeiling, Math.max(1, turnsRemaining));
+}
 /** Turn-window compaction threshold inside one task's own branched sub-conversation. */
 const TASK_COMPACTION_ACTIVE_TURNS = 2;
 
@@ -641,6 +661,8 @@ async function runTaskWorkPhase(input: {
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: unknown;
   turnsRemaining: () => number;
+  /** Policy may LOWER this task's turn ceiling, never raise it past `COMPOSED_TASK_MAX_TURNS`. */
+  maxTurnsPerTask?: number;
 }): Promise<TaskOutcome> {
   const startedAt = Date.now();
   // Per-task nonce, retained so the finalize object can be bound to THIS task's request. Without
@@ -654,7 +676,7 @@ async function runTaskWorkPhase(input: {
   const toolCallsLog: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
   let toolTurns = 0;
   let correctionAttempts = 0;
-  const localMaxTurns = Math.min(COMPOSED_TASK_MAX_TURNS, Math.max(1, input.turnsRemaining()));
+  const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining());
 
   for (let iter = 0; iter < localMaxTurns; iter++) {
     if (input.turnsRemaining() <= 0) return { type: 'exhausted', turnUsages };
@@ -886,6 +908,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       if (remainingBudget() <= 0) break;
       const task = planOutcome.tasks[i];
       const outcome = await runTaskWorkPhase({
+        maxTurnsPerTask: config.composed?.max_turns_per_task,
         task,
         taskIndex: i,
         totalTasks: planOutcome.tasks.length,

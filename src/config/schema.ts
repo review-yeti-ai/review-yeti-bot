@@ -436,17 +436,24 @@ export type ReviewEngineName = z.infer<typeof reviewEngineSchema>;
  * optional and, when present, only ever narrows the engine's own hard-coded defaults/caps
  * (`DEFAULT_MAX_TASKS`, `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`, `COMPOSED_TASK_MAX_TURNS`) --
  * policy can lower these, never raise them. `max_tasks` and `max_turns_total` are wired into
- * `composedEngine.ts`; `max_turns_per_task`, `require_security_task`, and `task_dimensions` are
- * projected and validated here for forward-compatible policy authoring but are not yet consumed by
- * any enforcement path (the composed engine's per-task turn clamp, its security-floor check, and
- * its task-dimension vocabulary all remain the engine's own fixed constants -- see
- * `composedEngine.ts` and `reviewTask.ts`).
+ * `composedEngine.ts`, and `max_turns_per_task` clamps each task's own turn budget.
+ *
+ * `task_dimensions` is projected and validated for forward-compatible policy authoring but is not
+ * yet consumed -- the plan turn still seeds from the engine's own `TASK_DIMENSIONS`. Stated here
+ * rather than left to be discovered: a config key that silently does nothing is a lie in the
+ * operator's surface.
+ *
+ * There is deliberately NO `require_security_task` key. The composed plan's security floor -- any
+ * file the deterministic classifier puts in the security lane must be covered by a `security`
+ * task -- is the defence against a diff whose own text coaxes the model into skipping auth review
+ * (ADR 0639). It is heuristic-derived, not model-derived, and not satisfiable by a corrective
+ * turn. Exposing it as a boolean would offer exactly one meaningful value, `false`, and would
+ * invite a future wiring pass to turn a non-negotiable control into an operator toggle.
  */
 export const composedEngineConfigSchema = z.object({
   max_tasks: z.number().int().positive().max(64).optional(),
   max_turns_total: z.number().int().positive().max(200).optional(),
   max_turns_per_task: z.number().int().positive().max(50).optional(),
-  require_security_task: z.boolean().optional(),
   task_dimensions: z.array(z.string().min(1)).min(1).optional(),
 }).passthrough();
 export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;

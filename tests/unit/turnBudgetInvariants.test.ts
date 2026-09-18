@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_INVESTIGATION_TURNS } from '../../src/panel/panelEngine';
 import { PUBLISHING_MAX_TURNS } from '../../src/config/publishingWorkerConfig';
+import { composedEngineConfigSchema } from '../../src/config/schema';
 import {
   COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
   COMPOSED_PLAN_MAX_TURNS,
   COMPOSED_TASK_MAX_TURNS,
+  resolveTaskTurnCeiling,
   resolveComposedEngineMaxTurns,
 } from '../../src/panel/composedEngine';
 
@@ -59,5 +61,26 @@ describe('composed engine turn budget resolution (own, separate ceilings)', () =
     // budget without the total being raised alongside it.
     expect(COMPOSED_PLAN_MAX_TURNS).toBeLessThan(COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
     expect(COMPOSED_TASK_MAX_TURNS).toBeLessThan(COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
+  });
+
+  // Policy narrows only. A central policy that could RAISE an engine's own ceiling would let the
+  // policy author widen a budget they do not own -- and the two panel clamps exist precisely so
+  // that nobody does that by accident.
+  it('ignores a per-task turn ceiling larger than the engine constant', () => {
+    const resolve = (policy?: number) => resolveTaskTurnCeiling(policy, 999);
+    expect(resolve(COMPOSED_TASK_MAX_TURNS + 50)).toBe(COMPOSED_TASK_MAX_TURNS);
+    expect(resolve(2)).toBe(2);
+    expect(resolve(undefined)).toBe(COMPOSED_TASK_MAX_TURNS);
+    expect(resolve(0)).toBe(COMPOSED_TASK_MAX_TURNS);
+    expect(resolve(-4)).toBe(COMPOSED_TASK_MAX_TURNS);
+  });
+
+  // The security floor is not an operator toggle. Exposing it as a boolean offers exactly one
+  // meaningful value -- false -- and invites a future wiring pass to turn the defence against a
+  // diff that says "skip auth review" into a config option (ADR 0639).
+  it('does not expose require_security_task as a policy key', () => {
+    const parsed = composedEngineConfigSchema.parse({ require_security_task: false });
+    expect((parsed as Record<string, unknown>).require_security_task).toBe(false);
+    expect(Object.keys(composedEngineConfigSchema.shape)).not.toContain('require_security_task');
   });
 });

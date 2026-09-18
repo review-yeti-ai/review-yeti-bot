@@ -171,9 +171,14 @@ describe('publishingWorkerConfig', () => {
       max_tasks: 4,
       max_turns_total: 20,
       max_turns_per_task: 3,
-      require_security_task: true,
       task_dimensions: ['security', 'performance'],
     });
+    // `require_security_task` is present in the policy blob above and is deliberately NOT
+    // projected. The composed plan's security floor is the defence against a diff that coaxes the
+    // model into skipping auth review (ADR 0639); it is heuristic-derived and not satisfiable by a
+    // corrective turn. A boolean policy key for it would offer exactly one meaningful value --
+    // false -- so the key does not exist, and a policy that sets it is ignored rather than obeyed.
+    expect(config.composed).not.toHaveProperty('require_security_task');
   });
 
   it('falls back to panel for an unrecognized review_engine value (fail-inert, not fail-open to a guess)', () => {

@@ -274,7 +274,6 @@ function normalizeComposedOverrides(value: unknown): ComposedEngineConfig {
   if (maxTurnsTotal !== undefined) overrides.max_turns_total = maxTurnsTotal;
   const maxTurnsPerTask = positiveInt(raw.max_turns_per_task);
   if (maxTurnsPerTask !== undefined) overrides.max_turns_per_task = maxTurnsPerTask;
-  if (typeof raw.require_security_task === 'boolean') overrides.require_security_task = raw.require_security_task;
   if (Array.isArray(raw.task_dimensions) && raw.task_dimensions.length > 0
     && raw.task_dimensions.every((d) => typeof d === 'string' && d.length > 0)) {
     overrides.task_dimensions = raw.task_dimensions as string[];
