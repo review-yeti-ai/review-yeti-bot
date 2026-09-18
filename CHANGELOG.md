@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.75.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.75.0...v1.75.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **panel:** back off and retry provider transport failures (REL-940) ([#851](https://github.com/review-yeti-ai/review-yeti-bot/issues/851)) ([ebce3d1](https://github.com/review-yeti-ai/review-yeti-bot/commit/ebce3d121f77b0518202dc98e84df651475b74e4))
+
 ## [1.75.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.74.0...v1.75.0) (2026-09-17)
 
 
