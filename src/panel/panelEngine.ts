@@ -1941,6 +1941,15 @@ async function invoke(
     `Return exactly one native JSON final result matching the role contract with exact top-level nonce "${requestNonce}". Do not copy the input object or output example. Do not use Markdown or plaintext fences.`,
   ].join('\n\n');
 
+  const isAdjudicationRole = role === 'moderator' || role === 'arbiter';
+  const fencedAdjudicationSystemPrompt = [
+    `You are the fail-closed CallTelemetry PR review ${role} for ${repoStr}. Perform a rigorous evaluation for persona '${personaName}' based on the charter and evidence.`,
+    ``,
+    roleCharter,
+    ``,
+    `You MUST return your final evaluation strictly inside CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.`,
+  ].join('\n\n');
+
   const personaSystemPrompt = [
     `You are an automated fail-closed CallTelemetry PR review engine for ${repoStr}.`,
     `Perform a rigorous code review based on the repository rules, pre-checks, and inlined diff hunks.`,
@@ -1960,6 +1969,11 @@ async function invoke(
     `  1. Code Reading: view_file, read_file, get_diff (patch-scoped to changed files in this PR)`,
     `  2. AST Context & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt`,
     `  3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}`,
+    `- You are granted up to ${maxTurns} execution turns. After each turn you have ${Math.round(TURN_IDLE_MS / 60000)} minutes to request the next turn or emit findings; the session then ends. Do not wait out a hard stop while you are still working.`,
+    `- Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.`,
+    ...(['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort)
+      ? [`- ACTIVE DEEP EXPLORATION REQUIRED: Perform multi-turn tool calls to search symbol dependencies, inspect related imported files, verify caller/callee context, and audit cross-file contracts before rendering your final decision.`]
+      : [`- Perform tool calls as needed to inspect file contents and verify code context.`]),
     `- Autonomous Decision: You decide whether to investigate further using tool calls or render your final evaluation immediately. If the diff is clean or self-contained, emit your final findings right away without unnecessary tool calls.`,
     `- ${nativeJsonMode
         ? `In native JSON mode, an investigation turn may return exactly one unfenced tool object with a string "tool" and object "args", or a complete nonce-bound final object. A native tool object must contain no nonce, decision, verdict, or other final-result field.`
@@ -1974,13 +1988,15 @@ async function invoke(
     `- NOTE: All file reads are limited to the workspace. File writes, shell execution, Linear/Productlane/GitHub actions, custom MCPs, and arbitrary local paths are strictly prohibited and will be rejected.`,
     `- ${nativeJsonMode
         ? `On the reserved final turn, tools are forbidden and the response must be the role-specific final JSON result${strictNativeFinalMode ? ' that also validates against the strict schema' : ''} with the exact top-level nonce specified in the role prompt. Never use Markdown or plaintext fences.`
-        : `You MUST return your final evaluation strictly inside CT_REVIEW_BEGIN and CT_REVIEW_END fences.`}`,
+        : `You MUST return your final evaluation strictly inside CT_REVIEW_BEGIN:${requestNonce} and CT_REVIEW_END:${requestNonce}.`}`,
   ].join('\n');
 
   const messages: OpenRouterMessage[] = [
     {
       role: 'system',
-      content: nativeAdjudication ? nativeAdjudicationSystemPrompt : personaSystemPrompt,
+      content: isAdjudicationRole
+        ? (nativeJsonMode ? nativeAdjudicationSystemPrompt : fencedAdjudicationSystemPrompt)
+        : personaSystemPrompt,
     },
     { role: 'user', content: userContent },
   ];
@@ -2626,7 +2642,7 @@ async function runPersona(
         targetModel = resolveDualModel(primaryModelContext, [{ id: providerId, model: spec.model }], persona.adversarial_model).model;
       }
 
-      const effectiveEffort = (budgetOverride?.effort || storePersona?.effort || persona.effort || spec.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      const effectiveEffort = (budgetOverride?.effort || persona.effort || spec.effort || storePersona?.effort || (config as any).default_effort || config.reviewer_effort || (config as any).reviews?.reviewer_effort || 'low') as 'low' | 'medium' | 'high' | 'xhigh' | 'max';
       const effectiveMaxTurns = Math.min(
         budgetOverride?.maxTurns ?? MAX_INVESTIGATION_TURNS,
         Math.max(1, storePersona?.maxTurns ?? persona.maxTurns ?? (config as any).default_max_turns ?? (config as any).reviews?.default_max_turns ?? MAX_INVESTIGATION_TURNS),
@@ -2686,7 +2702,7 @@ async function runPersona(
             branch: gitContext?.branch,
             prNumber: gitContext?.prNumber,
             repositoryVisibility,
-            changedFiles: changedFiles,
+            changedFiles: scopedFiles,
             domainLanes,
             pathInstructions: config.path_instructions,
             rules: [...(config.rules || []), ...memoryRules],
@@ -3091,8 +3107,8 @@ export function evaluatePersonaGating(options: {
   const pId = persona.id.toLowerCase();
   const charter = (persona.charter || '').toLowerCase();
 
-  const isSecLane = pId === 'sec-lane' || pId === 'security' || /^sec(?:urity)?-lane$/i.test(pId) || charter.includes('security');
-  const isPerfLane = pId === 'perf-lane' || pId === 'performance' || /^perf(?:ormance)?-lane$/i.test(pId) || charter.includes('performance');
+  const isSecLane = pId === 'sec-lane' || pId === 'security' || /^sec(?:urity)?-lane$/i.test(pId);
+  const isPerfLane = pId === 'perf-lane' || pId === 'performance' || /^perf(?:ormance)?-lane$/i.test(pId);
 
   if (!isSecLane && !isPerfLane) {
     return { skipped: false };
@@ -3235,6 +3251,24 @@ export function evaluatePersonaGating(options: {
     const matchesPerf = (persistenceOrRuntimeLines > 20) || hasPerfHypotheses || hasQueryOrLoopPatch;
 
     if (!matchesPerf) {
+      const isPureDocsAssetsOrUI = changedFiles.every((f) => {
+        const domain = domainLanes[f.path];
+        if (domain === 'docs_assets' || domain === 'ui_frontend') return true;
+        if (isDocumentationOrAssetPath(f.path)) return true;
+        const p = f.path.toLowerCase();
+        if (/(?:^|\/)(?:tests?|spec|specs|__tests__|fixtures?)\/|\.(?:test|spec)\.[a-z0-9]+$/i.test(p)) return true;
+        return false;
+      });
+
+      if (isPureDocsAssetsOrUI) {
+        return {
+          skipped: true,
+          skipReason: allDocOrAsset
+            ? 'Gated: pure documentation or asset changes contain no performance-relevant code paths'
+            : 'Gated: no persistence/runtime changes over threshold (>20 lines), performance hypotheses, or query/loop patterns detected',
+        };
+      }
+
       const shadowRate = Number(process.env.SHADOW_GATING_SAMPLE_RATE || (process.env.ENABLE_SHADOW_GATING === '1' ? 0.1 : 0));
       if (shadowRate > 0 && headSha) {
         const hash = parseInt(headSha.slice(0, 4), 16) || 0;
@@ -3243,10 +3277,7 @@ export function evaluatePersonaGating(options: {
           return { skipped: false, weakMatch: true };
         }
       }
-      return {
-        skipped: true,
-        skipReason: 'Gated: no persistence/runtime changes over threshold (>20 lines), performance hypotheses, or query/loop patterns detected',
-      };
+      return { skipped: false, weakMatch: true };
     }
 
     const isWeakMatch = !hasPerfHypotheses && persistenceOrRuntimeLines <= 50 && !hasQueryOrLoopPatch;

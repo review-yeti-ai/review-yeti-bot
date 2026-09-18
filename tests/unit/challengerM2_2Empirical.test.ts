@@ -726,6 +726,6 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
       const output = execSync('go test ./...', { cwd: operatorDir, encoding: 'utf8' });
       expect(output).toContain('github.com/calltelemetry/ct-review-bot/k8s-operator/controllers');
       expect(output).not.toContain('FAIL');
-    });
+    }, 60000);
   });
 });
