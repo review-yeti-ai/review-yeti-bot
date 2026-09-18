@@ -1178,14 +1178,18 @@ func TestBuildWorkerJobForwardsZoektGroundingEnvOnlyWhenSet(t *testing.T) {
 		t.Fatalf("operator must forward ZOEKT_GROUNDING_DISABLED verbatim to the worker")
 	}
 
-	// Receipt-only lanes must never receive the grounding env.
-	input.Publishing = job.PublishingConfig{}
+	// Receipt-only/disabled lanes must never receive the grounding env. The
+	// passthrough fields stay SET here — the isolation is mode-driven, not
+	// field-driven, so zeroing the config first would make this vacuous.
 	input.Review.Spec.PublicationMode = "disabled"
 	receipt, err := job.BuildWorkerJob(input)
 	if err != nil {
 		t.Fatalf("build receipt-only job: %v", err)
 	}
-	if envValue(receipt.Spec.Template.Spec.Containers[0], "ZOEKT_GROUNDING_ENABLED") != "" {
-		t.Fatalf("receipt-only lane must not receive ZOEKT_GROUNDING_ENABLED")
+	if envValue(receipt.Spec.Template.Spec.Containers[0], job.ZoektGroundingEnabledEnv) != "" {
+		t.Fatalf("disabled lane must not receive ZOEKT_GROUNDING_ENABLED")
+	}
+	if envValue(receipt.Spec.Template.Spec.Containers[0], job.ZoektGroundingDisabledEnv) != "" {
+		t.Fatalf("disabled lane must not receive ZOEKT_GROUNDING_DISABLED")
 	}
 }

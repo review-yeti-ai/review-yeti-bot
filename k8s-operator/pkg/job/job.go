@@ -53,6 +53,8 @@ const (
 	QualificationTimeoutEnv       = "REVIEW_QUALIFICATION_TIMEOUT_MS"
 	PublicationModeEnv            = "REVIEW_PUBLICATION_MODE"
 	CompletionURLEnv              = "REVIEW_COMPLETION_URL"
+	ZoektGroundingEnabledEnv      = "ZOEKT_GROUNDING_ENABLED"
+	ZoektGroundingDisabledEnv     = "ZOEKT_GROUNDING_DISABLED"
 	ExecutionAttemptEnv           = "REVIEW_EXECUTION_ATTEMPT"
 	AuthoritativeGateEnv          = "REVIEW_AUTHORITATIVE_GATE"
 	PreparedConfigEnv             = "REVIEW_PREPARED_CONFIG_JSON"
@@ -330,10 +332,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			)
 		}
 		if input.Publishing.ZoektGroundingEnabled != "" {
-			env = append(env, corev1.EnvVar{Name: "ZOEKT_GROUNDING_ENABLED", Value: input.Publishing.ZoektGroundingEnabled})
+			env = append(env, corev1.EnvVar{Name: ZoektGroundingEnabledEnv, Value: input.Publishing.ZoektGroundingEnabled})
 		}
 		if input.Publishing.ZoektGroundingDisabled != "" {
-			env = append(env, corev1.EnvVar{Name: "ZOEKT_GROUNDING_DISABLED", Value: input.Publishing.ZoektGroundingDisabled})
+			env = append(env, corev1.EnvVar{Name: ZoektGroundingDisabledEnv, Value: input.Publishing.ZoektGroundingDisabled})
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
