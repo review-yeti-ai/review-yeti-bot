@@ -1695,7 +1695,7 @@ function extractRoutingInfo(candidate: any): any {
     ?? null;
 }
 
-function upstreamLabel(baseUrl: string, parsedBody?: unknown): string {
+export function upstreamLabel(baseUrl: string, parsedBody?: unknown): string {
   const routing = extractRoutingInfo(parsedBody);
   const provider = typeof routing?.provider === 'string' ? routing.provider : null;
   if (provider) {
