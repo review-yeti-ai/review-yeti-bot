@@ -92,6 +92,12 @@ const personaTelemetrySchema = z.object({
   turnsCount: boundedInteger.optional(),
   toolTurns: boundedInteger.optional(),
   correctionTurns: boundedInteger.optional(),
+  /** Count of tool invocations the lane's `invoke()` loop actually made (the `toolCalls` array
+   * declared in `panelEngine.ts`), not the array itself -- this boundary carries bounded numeric
+   * telemetry only, never the tool names/args a provider or repository file path could leak
+   * through. Optional and additive for the same reason every other field here is: an older worker
+   * that never populates it must still parse. */
+  toolCalls: boundedInteger.optional(),
   promptTokens: boundedInteger.optional(),
   completionTokens: boundedInteger.optional(),
   totalTokens: boundedInteger.optional(),
@@ -140,12 +146,17 @@ export function buildPersonaTelemetryPayload(lane: {
   durationMs?: unknown;
   aggregateUsage?: unknown;
   turnUsages?: unknown;
+  toolCalls?: unknown;
 }): PersonaTelemetry | undefined {
   const aggregate = lane.aggregateUsage as Record<string, unknown> | undefined;
   const hasAggregate = !!aggregate && typeof aggregate === 'object';
   const turnUsagesInput = Array.isArray(lane.turnUsages) ? lane.turnUsages : [];
   const hasTurnUsages = turnUsagesInput.length > 0;
-  const hasAnyTelemetry = hasAggregate || hasTurnUsages
+  // `lane.toolCalls` is the panel engine's array of individual tool-invocation records
+  // (`{ tool, args, scope, exhaustive }`); this boundary only ever reports its length, never the
+  // array itself -- see the doc comment on `personaTelemetrySchema.toolCalls`.
+  const hasToolCalls = Array.isArray(lane.toolCalls);
+  const hasAnyTelemetry = hasAggregate || hasTurnUsages || hasToolCalls
     || typeof lane.turnsCount === 'number' || typeof lane.model === 'string';
   if (!hasAnyTelemetry) return undefined;
 
@@ -155,6 +166,7 @@ export function buildPersonaTelemetryPayload(lane: {
     ...(typeof lane.toolTurns === 'number' ? { toolTurns: lane.toolTurns } : {}),
     ...(typeof lane.correctionTurns === 'number' ? { correctionTurns: lane.correctionTurns } : {}),
     ...(typeof lane.durationMs === 'number' ? { durationMs: lane.durationMs } : {}),
+    ...(hasToolCalls ? { toolCalls: (lane.toolCalls as unknown[]).length } : {}),
     ...(hasAggregate ? {
       promptTokens: aggregate!.promptTokens,
       completionTokens: aggregate!.completionTokens,
@@ -239,6 +251,18 @@ const resultSchema = z.object({
   verdict: z.enum(['SHIP', 'FIX_FIRST', 'BLOCK']).optional(),
   findingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
   blockingFindingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
+  /**
+   * OPTIONAL, additive (Stage 0 / ct-meta review-yeti telemetry work): the panel engine's own
+   * wall-clock measurement of the whole run (`panelResult.panelWallClockMs` in `panelEngine.ts`),
+   * distinct from summing every persona's `telemetry.durationMs`. Under the panel's concurrent
+   * fan-out (`MAX_CONCURRENT_PERSONAS`) a summed-lane figure overstates wall time, so it cannot
+   * stand in for how long the run actually took -- comparing a fan-out engine against a
+   * single-context engine on the summed figure is not a meaningful comparison. Optional and left
+   * off `resultSchema`'s literal `version`, exactly like `telemetry` on `personaTelemetrySchema`,
+   * so this stays `WorkerReviewCompletion.v1`: no version bump, no dispatcher change required, and
+   * a worker built before this field existed still parses cleanly.
+   */
+  panelWallClockMs: boundedInteger.optional(),
   /** Optional bounded context for a terminal error result; persisted after a second redaction. */
   failureDiagnostics: workerFailureDiagnosticsSchema.optional(),
 }).strict();

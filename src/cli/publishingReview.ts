@@ -1298,7 +1298,12 @@ export async function runPublishingReviewWorker(
         policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
         executionAttempt: identity.executionAttempt,
         result: { version: 'WorkerReviewResult.v1', completedAt, personas: [...personas, ...errors],
-          coverageComplete: unreadable.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true },
+          coverageComplete: unreadable.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true,
+          // See `resultSchema.panelWallClockMs`: the panel's own wall-clock measurement, carried
+          // across the completion boundary so downstream comparisons stop relying on a summed
+          // per-lane duration that overstates wall time under fan-out. Omitted (not a fabricated
+          // `0`) when the panel result predates this field, matching `telemetry` above.
+          ...(typeof panelWallClockMs === 'number' ? { panelWallClockMs } : {}) },
       }).result;
     };
     if (authoritative) {
