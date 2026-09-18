@@ -7,6 +7,7 @@ import {
   COMPOSED_PLAN_MAX_TURNS,
   COMPOSED_TASK_MAX_TURNS,
   resolveTaskTurnCeiling,
+  COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
   resolveComposedEngineMaxTurns,
 } from '../../src/panel/composedEngine';
 
@@ -79,8 +80,21 @@ describe('composed engine turn budget resolution (own, separate ceilings)', () =
   // meaningful value -- false -- and invites a future wiring pass to turn the defence against a
   // diff that says "skip auth review" into a config option (ADR 0639).
   it('does not expose require_security_task as a policy key', () => {
-    const parsed = composedEngineConfigSchema.parse({ require_security_task: false });
-    expect((parsed as Record<string, unknown>).require_security_task).toBe(false);
     expect(Object.keys(composedEngineConfigSchema.shape)).not.toContain('require_security_task');
+    // The block is `.strict()`, so a policy carrying the key is REJECTED rather than quietly
+    // parsed with the key riding along. The earlier version of this test asserted the key
+    // survived on the parsed object, which read as endorsing exactly the leak it meant to forbid.
+    expect(() => composedEngineConfigSchema.parse({ require_security_task: false })).toThrow();
+    expect(() => composedEngineConfigSchema.parse({ max_tasks: 4 })).not.toThrow();
   });
+
+  it('clamps the operator env override to the same ceiling policy is bound by', () => {
+    // The override may exceed the DEFAULT (that is its purpose) but not the hard cap. Returned raw
+    // before this, so a mistyped COMPOSED_ENGINE_MAX_TURNS=4800 was honoured verbatim.
+    expect(resolveComposedEngineMaxTurns({ COMPOSED_ENGINE_MAX_TURNS: '4800' } as any))
+      .toBe(COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP);
+    expect(resolveComposedEngineMaxTurns({ COMPOSED_ENGINE_MAX_TURNS: '60' } as any)).toBe(60);
+    expect(resolveComposedEngineMaxTurns({} as any)).toBe(COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
+  });
+
 });

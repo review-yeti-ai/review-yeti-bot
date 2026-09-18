@@ -274,4 +274,31 @@ describe('executeComposedReview', () => {
     expect(result.personas[0].id).toBe('task-sec');
   });
 
+
+  // The retry ladders check their backoff against the run's remaining budget. That check compared
+  // against Infinity until the deadline was actually threaded from the orchestrator into
+  // `callTurn` -- the guard existed, was described as "budget-aware" in its own commit message,
+  // and could not fire. This pins that it is reachable: with no budget left, a retryable error is
+  // NOT retried, so exactly one provider call is made.
+  it('does not retry when the remaining budget cannot fit the backoff', async () => {
+    let calls = 0;
+    const complete = vi.fn(async () => {
+      calls += 1;
+      throw new OpenRouterResponseError('provider returned empty completion content', 200);
+    });
+
+    const cfg: any = config();
+    cfg.reviewers = { ...cfg.reviewers, overall_timeout_s: 0 };
+
+    await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    }).catch(() => undefined);
+
+    expect(calls).toBe(1);
+  });
+
 });
