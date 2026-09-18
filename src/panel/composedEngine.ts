@@ -106,6 +106,11 @@ export interface ComposedReviewOptions {
 // across a planned task list -- and it must never quietly raise either of them. This is its own,
 // separately named, explicitly documented budget. Overridable for operators the same way
 // `MAX_INVESTIGATION_TURNS` is (`env.COMPOSED_ENGINE_MAX_TURNS`), never silently.
+/** Absolute ceiling for the composed engine's total turn budget, however it is configured.
+ * Matches `composedEngineConfigSchema.max_turns_total`'s `.max(200)` so policy and the operator
+ * escape hatch cannot disagree about what "too many" means. */
+export const COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP = 200;
+
 export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 48;
 /** Turns available to the PLAN phase alone (tool calls + up to one corrective retry + finalize). */
 export const COMPOSED_PLAN_MAX_TURNS = 4;
@@ -146,7 +151,13 @@ export function resolveComposedEngineMaxTurns(
   configuredMaxTurnsTotal?: number,
 ): number {
   const raw = Number(env.COMPOSED_ENGINE_MAX_TURNS);
-  if (Number.isSafeInteger(raw) && raw > 0) return raw;
+  // The env override is an operator escape hatch, so unlike the policy value it MAY exceed the
+  // default -- but it must still be bounded. Previously it was returned raw, so a mistyped
+  // `COMPOSED_ENGINE_MAX_TURNS=4800` would have been honoured verbatim. 200 is the same ceiling
+  // `composedEngineConfigSchema.max_turns_total` already enforces, so the two agree.
+  if (Number.isSafeInteger(raw) && raw > 0) {
+    return Math.min(raw, COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP);
+  }
   if (Number.isSafeInteger(configuredMaxTurnsTotal) && (configuredMaxTurnsTotal as number) > 0) {
     return Math.min(configuredMaxTurnsTotal as number, COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
   }
@@ -591,6 +602,8 @@ async function runPlanPhase(input: {
   signal?: AbortSignal;
   changedFilesForTools: Array<{ path: string; patch?: string; content?: string }>;
   expectedNonce: string;
+  /** Absolute epoch ms this run must not sleep past; forwarded to every provider call. */
+  deadlineAtMs?: number;
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: unknown;
   turnsRemaining: () => number;
@@ -615,6 +628,7 @@ async function runPlanPhase(input: {
       timeoutMs: input.timeoutMs,
       inactivityTimeoutMs: input.inactivityTimeoutMs,
       requestPolicy: input.requestPolicy,
+      deadlineAtMs: input.deadlineAtMs,
       responseFormat,
       jobId: input.jobId,
       signal: input.signal,
@@ -728,6 +742,8 @@ async function runTaskWorkPhase(input: {
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: unknown;
   turnsRemaining: () => number;
+  /** Absolute epoch ms this run must not sleep past; forwarded to every provider call. */
+  deadlineAtMs?: number;
   /** Policy may LOWER this task's turn ceiling, never raise it past `COMPOSED_TASK_MAX_TURNS`. */
   maxTurnsPerTask?: number;
 }): Promise<TaskOutcome> {
@@ -761,6 +777,7 @@ async function runTaskWorkPhase(input: {
       timeoutMs: input.timeoutMs,
       inactivityTimeoutMs: input.inactivityTimeoutMs,
       requestPolicy: input.requestPolicy,
+      deadlineAtMs: input.deadlineAtMs,
       responseFormat,
       jobId: input.jobId,
       signal: input.signal,
@@ -847,6 +864,14 @@ async function runTaskWorkPhase(input: {
 
 export async function executeComposedReview(options: ComposedReviewOptions): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
+  // Absolute wall-clock bound for this run, derived from the SAME timeout the abort signal uses.
+  // Forwarded into every provider call so a retry backoff cannot sleep past it. The abort signal
+  // already stops the run, but a backoff that overshoots converts a precise transport failure into
+  // a generic timeout, which is strictly worse to operate on -- that is the whole point of the
+  // budget check, and until this was wired the check compared against Infinity and did nothing.
+  const composedDeadlineAtMs = Number.isFinite(options.config.reviewers.overall_timeout_s)
+    ? Date.now() + Math.max(0, options.config.reviewers.overall_timeout_s) * 1000
+    : undefined;
   const panelStartedAt = Date.now();
   return runInSpan<PanelResult>('review_yeti_composed_panel', async (span) => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, repoFileProvider } = options;
@@ -949,6 +974,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       signal,
       changedFilesForTools: effectiveFiles,
       expectedNonce: planNonce,
+      deadlineAtMs: composedDeadlineAtMs,
       repoFileProvider,
       zoektConfig,
       turnsRemaining: remainingBudget,
@@ -976,6 +1002,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       const task = planOutcome.tasks[i];
       const outcome = await runTaskWorkPhase({
         maxTurnsPerTask: config.composed?.max_turns_per_task,
+        deadlineAtMs: composedDeadlineAtMs,
         task,
         taskIndex: i,
         totalTasks: planOutcome.tasks.length,
