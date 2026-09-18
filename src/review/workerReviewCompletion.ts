@@ -218,6 +218,19 @@ const personaSchema = z.object({
   findings: z.array(findingSchema).max(MAX_FINDINGS_PER_PERSONA),
   /** See `personaTelemetrySchema` above. */
   telemetry: personaTelemetrySchema.optional(),
+  /**
+   * OPTIONAL, additive (shadow-mode review engine comparison, `src/cli/publishingReview.ts`'s
+   * `resolveReviewEngine`/`'shadow'`): which engine produced this lane -- the fan-out persona
+   * panel (`'panel'`) or the single-context composed engine running alongside it purely as
+   * non-gating comparison evidence (`'shadow'`). Every field on this schema stays optional and
+   * additive the same way `telemetry` above is, so `WorkerReviewCompletion.v1` stays backward
+   * compatible: no version bump, no dispatcher change required, and a worker built before shadow
+   * mode existed -- or a lane this field was never populated for -- still parses cleanly. A
+   * consumer that wants only gating evidence treats an absent value exactly like `'panel'`; the
+   * ingest side already reads `lane.evidenceSource == 'shadow'` to route shadow findings into
+   * their own comparison bucket, separate from the findings that gated the published verdict.
+   */
+  evidenceSource: z.enum(['panel', 'shadow']).optional(),
 }).strict().superRefine((persona, context) => {
   const errorLane = persona.decision === 'ERROR' || persona.status === 'ERROR';
   if (errorLane && persona.errorClass === undefined) {
