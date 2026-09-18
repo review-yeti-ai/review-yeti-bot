@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.76.1...v1.76.2) (2026-09-18)
+
+
+### Bug Fixes
+
+* **gateway:** reject truncated reasoning-only completions on finish_reason=length ([#856](https://github.com/review-yeti-ai/review-yeti-bot/issues/856)) ([7e9d8a8](https://github.com/review-yeti-ai/review-yeti-bot/commit/7e9d8a8664332bbe52364c2f313fd78b4e2b7c27))
+
 ## [1.76.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.76.0...v1.76.1) (2026-09-18)
 
 
