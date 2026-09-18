@@ -44,7 +44,15 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   );
   const bifrost = fixture.plan.transports.find((transport) => transport.name === 'bifrost');
   assert.equal(bifrost.reasoning.wire_shape, 'reasoning_effort');
-  assert.equal(bifrost.model, 'openrouter-pool');
+  // Assert the plan DERIVES the model from the policy rather than hardcoding a
+// pool name here. A literal makes this test a mirror of production data, so
+// repointing the transport (e.g. openrouter-pool -> fireworks-pool when the
+// OpenRouter pool is exhausted) fails a test that was never about which pool
+// is in use — only that the plan carries the policy's choice through.
+const bifrostPolicy = committedPolicy.review_yeti.transports.find(
+  (transport) => transport.name === 'bifrost',
+);
+assert.equal(bifrost.model, bifrostPolicy.model);
   assert.deepEqual(bifrost.capacity, {
     max_in_flight: 4,
     concurrency_scope: 'provider',

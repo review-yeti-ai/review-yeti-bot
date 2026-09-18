@@ -44,7 +44,7 @@
         "enabled": true,
         "base_url": "https://llm-gateway.example.com/v1",
         "api_key_env": "BIFROST_PR_REVIEW_API_KEY",
-        "model": "openrouter-pool",
+        "model": "glm-5.3-flash-pool",
         "compat": "openai",
         "max_tokens": 65536,
         "timeout_ms": 90000,

@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "e4c9bc7275600b267717c281ed77ffd922ebac905fd710cbf12a0df0e781991e",
+  "normalized_plan_sha256": "628e8b041672d4dc6e7af7f91e39f6758b8e0e84ee1ad71b3c0a1c00c877934a",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
@@ -31,7 +31,7 @@
       {
         "name": "bifrost",
         "base_url_class": "exampleorg-bifrost-openai-compatible",
-        "model": "openrouter-pool",
+        "model": "glm-5.3-flash-pool",
         "compatibility_mode": "openai",
         "timeouts": {
           "connect_ms": 90000,

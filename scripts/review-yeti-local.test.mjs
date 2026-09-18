@@ -27,7 +27,10 @@ test('materializes the committed provider order and routing into the local CLI c
   // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
   assert.equal(config.github_action.openrouter.timeout_ms, bifrostTransport.timeout_ms);
   assert.equal(config.github_action.openrouter.ttft_ms, Number(policy.review_yeti.openrouter_ttft_ms));
-  assert.equal(config.github_action.openrouter.model, 'openrouter-pool');
+  // Derive from policy for the same reason as timeout_ms above: the Bifrost
+  // transport's pool gets repointed when a provider pool is exhausted, and a
+  // literal here fails a test that is about materialization, not routing.
+  assert.equal(config.github_action.openrouter.model, bifrostTransport.model);
   assert.deepEqual(config.github_action.openrouter.models, undefined);
   // Must track policy/review-yeti.json rather than restating a provider preference.
   assert.equal(
@@ -69,7 +72,8 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
   const transports = JSON.parse(env.REVIEW_YETI_TRANSPORTS);
   assert.deepEqual(transports.map((transport) => transport.name), ['bifrost', 'openrouter-primary']);
-  assert.equal(transports[0].model, 'openrouter-pool');
+  // Tracks policy rather than pinning the Bifrost pool name (see #74).
+  assert.equal(transports[0].model, policy.review_yeti.transports.find((t) => t.name === 'bifrost').model);
   assert.equal(transports[1].model, 'z-ai/glm-5.3-flash');
 });
 
