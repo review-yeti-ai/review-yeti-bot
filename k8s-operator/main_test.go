@@ -98,6 +98,31 @@ func TestPublishingConfigFromEnvDefaultsRefuseAppGate(t *testing.T) {
 	}
 }
 
+// REL-677: the zoekt passthrough is verbatim — the operator forwards exactly
+// what deployment configuration set, including 'false', so the worker's own
+// strict 'true' comparison decides enablement. Empty means unset everywhere.
+func TestPublishingConfigFromEnvReadsZoektPassthrough(t *testing.T) {
+	t.Setenv("REVIEW_YETI_ZOEKT_GROUNDING_ENABLED", "true")
+	t.Setenv("REVIEW_YETI_ZOEKT_GROUNDING_DISABLED", "")
+	config := publishingConfigFromEnv()
+	if config.ZoektGroundingEnabled != "true" {
+		t.Fatalf("grounding opt-in not read: %+v", config)
+	}
+	if config.ZoektGroundingDisabled != "" {
+		t.Fatalf("unset kill switch must stay empty: %+v", config)
+	}
+
+	t.Setenv("REVIEW_YETI_ZOEKT_GROUNDING_ENABLED", "")
+	t.Setenv("REVIEW_YETI_ZOEKT_GROUNDING_DISABLED", "true")
+	config = publishingConfigFromEnv()
+	if config.ZoektGroundingEnabled != "" {
+		t.Fatalf("unset opt-in must stay empty: %+v", config)
+	}
+	if config.ZoektGroundingDisabled != "true" {
+		t.Fatalf("kill switch not read: %+v", config)
+	}
+}
+
 func TestPublishingConfigFromEnvReadsTransport(t *testing.T) {
 	t.Setenv("REVIEW_YETI_GATEWAY_BASE_URL", "https://gateway.example.invalid/v1")
 	t.Setenv("REVIEW_YETI_REVIEW_MODEL", "ollama/glm-5.3-flash")

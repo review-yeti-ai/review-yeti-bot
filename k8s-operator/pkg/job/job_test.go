@@ -1137,3 +1137,71 @@ func TestIsValidRunSecretName(t *testing.T) {
 		})
 	}
 }
+
+// REL-677: the zoekt grounding opt-in is deployment configuration on the
+// operator; the operator forwards only explicitly-set values so review runs
+// without grounding stay byte-identical to the pre-zoekt lane.
+func TestBuildWorkerJobForwardsZoektGroundingEnvOnlyWhenSet(t *testing.T) {
+	now := time.Date(2026, 9, 16, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	baseContainer := baseline.Spec.Template.Spec.Containers[0]
+	if envValue(baseContainer, "ZOEKT_GROUNDING_ENABLED") != "" {
+		t.Fatalf("unset operator config must not reach the worker as ZOEKT_GROUNDING_ENABLED")
+	}
+	if envValue(baseContainer, "ZOEKT_GROUNDING_DISABLED") != "" {
+		t.Fatalf("unset operator config must not reach the worker as ZOEKT_GROUNDING_DISABLED")
+	}
+
+	input.Publishing.ZoektGroundingEnabled = "true"
+	forwarded, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with zoekt grounding enabled: %v", err)
+	}
+	if envValue(forwarded.Spec.Template.Spec.Containers[0], "ZOEKT_GROUNDING_ENABLED") != "true" {
+		t.Fatalf("operator must forward ZOEKT_GROUNDING_ENABLED verbatim to the worker")
+	}
+
+	input.Publishing.ZoektGroundingDisabled = "true"
+	disabled, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with zoekt kill switch: %v", err)
+	}
+	if envValue(disabled.Spec.Template.Spec.Containers[0], job.ZoektGroundingDisabledEnv) != "true" {
+		t.Fatalf("operator must forward ZOEKT_GROUNDING_DISABLED verbatim to the worker")
+	}
+
+	// Non-'true' values are forwarded verbatim too — the worker's strict
+	// 'true' comparison owns enablement; the operator must not reinterpret.
+	input.Publishing.ZoektGroundingEnabled = "false"
+	input.Publishing.ZoektGroundingDisabled = ""
+	falsy, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with grounding=false: %v", err)
+	}
+	if envValue(falsy.Spec.Template.Spec.Containers[0], job.ZoektGroundingEnabledEnv) != "false" {
+		t.Fatalf("operator must forward ZOEKT_GROUNDING_ENABLED=false verbatim, not coerce or drop it")
+	}
+
+	// Receipt-only/disabled lanes must never receive the grounding env. The
+	// passthrough fields stay SET here — the isolation is mode-driven, not
+	// field-driven, so zeroing the config first would make this vacuous.
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	if envValue(receipt.Spec.Template.Spec.Containers[0], job.ZoektGroundingEnabledEnv) != "" {
+		t.Fatalf("disabled lane must not receive ZOEKT_GROUNDING_ENABLED")
+	}
+	if envValue(receipt.Spec.Template.Spec.Containers[0], job.ZoektGroundingDisabledEnv) != "" {
+		t.Fatalf("disabled lane must not receive ZOEKT_GROUNDING_DISABLED")
+	}
+}
