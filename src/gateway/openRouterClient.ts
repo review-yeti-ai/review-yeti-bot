@@ -584,8 +584,8 @@ export async function resolveModelMetadata(
   }
 
   const resolutionPromise = (async () => {
-    const key = apiKey || process.env.OPENROUTER_API_KEY || '';
-    const baseUrl = (options?.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+    const key = apiKey || process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY || '';
+    const baseUrl = (options?.baseUrl || process.env.OPENAI_BASE_URL || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
     const fetchImpl = options?.fetchImplementation || ((input, init) => globalThis.fetch(input, init));
     const timeoutMs = options?.timeoutMs ?? 5000;
 
@@ -1734,8 +1734,8 @@ export class OpenRouterClient implements ReviewModelClient {
   readonly random: () => number;
 
   constructor(options: OpenRouterClientOptions = {}) {
-    this.baseUrl = (options.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-    this.apiKey = options.apiKey || process.env.OPENROUTER_API_KEY || '';
+    this.baseUrl = (options.baseUrl || process.env.OPENAI_BASE_URL || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+    this.apiKey = options.apiKey || process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY || '';
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
     this.now = options.now || Date.now;
     this.maxRetries = options.maxRetries !== undefined

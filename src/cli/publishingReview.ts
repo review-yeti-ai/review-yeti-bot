@@ -251,8 +251,8 @@ function validateConfiguredCompletionEndpoint(endpoint: string): void {
  * against the wrong provider.
  */
 export function bifrostTransport(env: NodeJS.ProcessEnv): { baseUrl: string; apiKey: string; model: string } {
-  const baseUrl = value(env, 'BIFROST_BASE_URL');
-  const apiKey = value(env, 'BIFROST_PR_REVIEW_API_KEY');
+  const baseUrl = value(env, 'OPENAI_BASE_URL') || value(env, 'BIFROST_BASE_URL');
+  const apiKey = value(env, 'OPENAI_API_KEY') || value(env, 'BIFROST_PR_REVIEW_API_KEY');
   const model = value(env, 'REVIEW_MODEL');
   if (!baseUrl || !apiKey || !model) throw invalidPublishingReviewContract();
   let parsed: URL;

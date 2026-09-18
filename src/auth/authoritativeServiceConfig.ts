@@ -55,7 +55,8 @@ export function authoritativeServiceConfigFromEnv(
     if (typeof sourceJson !== 'string' || Buffer.byteLength(sourceJson, 'utf8') > 8_192) throw new Error();
     const source = sourceSchema.parse(JSON.parse(sourceJson));
     reviewPolicySourceSchema.shape.repository.parse(`${source.owner}/${source.repo}`);
-    const baseUrl = z.string().min(1).max(2_000).url().parse(env.BIFROST_BASE_URL);
+    const rawBaseUrl = env.OPENAI_BASE_URL || env.BIFROST_BASE_URL;
+    const baseUrl = z.string().min(1).max(2_000).url().parse(rawBaseUrl);
     const url = new URL(baseUrl);
     if (baseUrl.trim() !== baseUrl || /[\u0000-\u0020\u007f\\?#]/u.test(baseUrl)
       || url.protocol !== 'https:' || url.username || url.password) throw new Error();

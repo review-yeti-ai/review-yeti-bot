@@ -307,8 +307,8 @@ export class OpenRouterModelService {
   private isUsingFallback = false;
 
   constructor(options?: ServiceOptions) {
-    this.baseUrl = (options?.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-    this.apiKey = options?.apiKey || process.env.OPENROUTER_API_KEY;
+    this.baseUrl = (options?.baseUrl || process.env.OPENAI_BASE_URL || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
+    this.apiKey = options?.apiKey || process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
     this.cacheTTLMs = options?.cacheTTLMs ?? 3_600_000; // Default 1 hour
   }
 

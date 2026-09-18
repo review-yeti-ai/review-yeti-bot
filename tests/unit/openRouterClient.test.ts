@@ -2041,7 +2041,9 @@ describe('Dynamic Model Context Window Discovery & Budget Calculation', () => {
     it('gracefully degrades to static offline fallback when no API key is provided', async () => {
       clearModelMetadataCache();
       const prevKey = process.env.OPENROUTER_API_KEY;
+      const prevOpenAiKey = process.env.OPENAI_API_KEY;
       delete process.env.OPENROUTER_API_KEY;
+      delete process.env.OPENAI_API_KEY;
       try {
         const mockFetch = vi.fn();
         const meta = await resolveModelMetadata('anthropic/claude-3.7-sonnet', '', {
@@ -2051,6 +2053,31 @@ describe('Dynamic Model Context Window Discovery & Budget Calculation', () => {
         expect(mockFetch).not.toHaveBeenCalled();
       } finally {
         if (prevKey) process.env.OPENROUTER_API_KEY = prevKey;
+        if (prevOpenAiKey) process.env.OPENAI_API_KEY = prevOpenAiKey;
+      }
+    });
+
+    it('uses OPENAI_API_KEY when OPENROUTER_API_KEY is absent', async () => {
+      clearModelMetadataCache();
+      const prevKey = process.env.OPENROUTER_API_KEY;
+      const prevOpenAiKey = process.env.OPENAI_API_KEY;
+      delete process.env.OPENROUTER_API_KEY;
+      process.env.OPENAI_API_KEY = 'test-openai-key';
+      try {
+        const mockFetch = vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ id: 'anthropic/claude-3.7-sonnet', context_length: 300_000 }] }),
+        });
+        const meta = await resolveModelMetadata('anthropic/claude-3.7-sonnet', '', {
+          fetchImplementation: mockFetch,
+        });
+        expect(meta.contextLength).toBe(300_000);
+        expect(mockFetch).toHaveBeenCalled();
+      } finally {
+        if (prevKey) process.env.OPENROUTER_API_KEY = prevKey;
+        else delete process.env.OPENROUTER_API_KEY;
+        if (prevOpenAiKey) process.env.OPENAI_API_KEY = prevOpenAiKey;
+        else delete process.env.OPENAI_API_KEY;
       }
     });
   });

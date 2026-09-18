@@ -222,6 +222,26 @@ describe('Bifrost is the only transport', () => {
     expect(bifrostTransport(env()).baseUrl).toBe('https://gateway.example.invalid/v1');
   });
 
+  it('accepts standard OPENAI_BASE_URL and OPENAI_API_KEY', () => {
+    const res = bifrostTransport(env({
+      BIFROST_BASE_URL: '',
+      BIFROST_PR_REVIEW_API_KEY: '',
+      OPENAI_BASE_URL: 'https://standard-gateway.example.invalid/v1',
+      OPENAI_API_KEY: 'sk-standard-key',
+    }));
+    expect(res.baseUrl).toBe('https://standard-gateway.example.invalid/v1');
+    expect(res.apiKey).toBe('sk-standard-key');
+  });
+
+  it('prioritizes OPENAI_BASE_URL and OPENAI_API_KEY over legacy BIFROST_* keys', () => {
+    const res = bifrostTransport(env({
+      OPENAI_BASE_URL: 'https://standard-gateway.example.invalid/v1',
+      OPENAI_API_KEY: 'sk-standard-key',
+    }));
+    expect(res.baseUrl).toBe('https://standard-gateway.example.invalid/v1');
+    expect(res.apiKey).toBe('sk-standard-key');
+  });
+
   it.each(['BIFROST_BASE_URL', 'BIFROST_PR_REVIEW_API_KEY', 'REVIEW_MODEL'])(
     'refuses to run when %s is absent rather than defaulting',
     (name) => {
