@@ -1,5 +1,6 @@
 import { runInSpan, getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
+import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
 
 /**
  * Client for TypeSafe AI's "System One" model (Jev).
@@ -208,41 +209,14 @@ function statusToReason(status: number): JevUnavailableReason | null {
 }
 
 /**
- * Reject promptly when a caller cancels even if a test double fails to observe
- * AbortSignal. Mirrors openRouterClient.ts's raceWithAbort.
+ * Reject promptly when a caller cancels even if a test double fails to observe AbortSignal.
+ * Shares its implementation with openRouterClient.ts's raceWithAbort (see raceWithAbort.ts)
+ * so the two do not maintain diverging private copies of the same settled-flag bookkeeping,
+ * listener cleanup, and orphaned-promise swallowing; this wrapper only pins Jev's own
+ * cancellation error.
  */
 function raceWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return operation;
-  if (signal.aborted) {
-    void operation.catch(() => undefined);
-    return Promise.reject(new Error('Jev request was cancelled'));
-  }
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      void operation.catch(() => undefined);
-      reject(new Error('Jev request was cancelled'));
-    };
-    const cleanup = () => signal.removeEventListener('abort', onAbort);
-    signal.addEventListener('abort', onAbort, { once: true });
-    operation.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve(value);
-      },
-      (error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(error);
-      },
-    );
-  });
+  return sharedRaceWithAbort(operation, signal, () => new Error('Jev request was cancelled'));
 }
 
 function validAnswerShape(question: JevQuestion, answer: unknown): answer is JevAnswer {

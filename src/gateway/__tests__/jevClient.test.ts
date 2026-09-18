@@ -190,6 +190,57 @@ describe('JevClient — never rejects for transport conditions', () => {
   });
 });
 
+describe('JevClient — caller cancellation (signal)', () => {
+  it('resolves promptly as unavailable when the caller aborts mid-flight, even against a fetch double that ignores its own signal', async () => {
+    const controller = new AbortController();
+    // Deliberately ignores init.signal: never settles, never observes abort on its own.
+    // Promptness must come from ask()'s own signal race, not from the double cooperating.
+    const fetchImplementation = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const client = baseClient({
+      fetchImplementation,
+      // A long cap/budget: if this test passes only because a timeout/deadline fired, that
+      // proves nothing about caller cancellation. Promptness relative to this size is the point.
+      perCallCapMs: 5_000,
+      stageBudgetMs: 5_000,
+      maxRetries: 0,
+    });
+
+    const askPromise = client.ask({ state: 's', questions: BASE_QUESTIONS, signal: controller.signal });
+    await vi.waitFor(() => expect(fetchImplementation).toHaveBeenCalledTimes(1));
+    const abortedAt = Date.now();
+    controller.abort();
+
+    const outcome = await askPromise;
+    const elapsedMs = Date.now() - abortedAt;
+
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'timeout', durationMs: expect.any(Number) });
+    expect(elapsedMs).toBeLessThan(500);
+  });
+
+  it('resolves promptly when the caller aborts during a 429 retry backoff, without waiting for the jitter sleep to complete', async () => {
+    const controller = new AbortController();
+    const fetchImplementation = vi.fn().mockResolvedValue(jsonResponse(429, { error: 'slow down' }));
+    // Never resolves on its own -- if ask() waited for this, the test would hang.
+    const sleep = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const client = baseClient({
+      fetchImplementation,
+      sleep,
+      maxRetries: 3,
+      stageBudgetMs: 60_000,
+    });
+
+    const askPromise = client.ask({ state: 's', questions: BASE_QUESTIONS, signal: controller.signal });
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalledTimes(1));
+    controller.abort();
+
+    const outcome = await askPromise;
+    expect(outcome).toEqual({ status: 'unavailable', reason: 'timeout', durationMs: expect.any(Number) });
+    // The backoff sleep was entered but never awaited to completion, and no retry followed it.
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('JevClient — per-run stage budget', () => {
   it('never starts a call once remaining budget is below the useful minimum', async () => {
     let now = 0;
