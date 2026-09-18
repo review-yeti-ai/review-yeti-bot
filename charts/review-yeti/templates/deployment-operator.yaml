@@ -64,6 +64,14 @@ spec:
             - name: REVIEW_YETI_COMPLETION_URL
               value: {{ .Values.publishing.completionUrl | quote }}
             {{- end }}
+            {{- if .Values.publishing.zoektGroundingEnabled }}
+            - name: REVIEW_YETI_ZOEKT_GROUNDING_ENABLED
+              value: {{ .Values.publishing.zoektGroundingEnabled | quote }}
+            {{- end }}
+            {{- if .Values.publishing.zoektGroundingDisabled }}
+            - name: REVIEW_YETI_ZOEKT_GROUNDING_DISABLED
+              value: {{ .Values.publishing.zoektGroundingDisabled | quote }}
+            {{- end }}
             - name: REVIEW_YETI_GATEWAY_SECRET_NAME
               value: {{ .Values.publishing.gatewaySecretName | quote }}
             - name: REVIEW_YETI_GATEWAY_SECRET_KEY

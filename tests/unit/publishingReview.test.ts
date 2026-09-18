@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
   classifyFailure,
@@ -21,6 +21,7 @@ import {
 } from '../../src/gateway/openRouterClient';
 import { UpstreamCapacityRejectionError } from '../../src/gateway/providerCapacityManager';
 import { logger } from '../../src/utils/logger';
+import { initTelemetry, getRecentSpans, clearSpans, getPrometheusMetrics } from '../../src/telemetry';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -1882,6 +1883,182 @@ describe('hosted lane — repository visibility resolution', () => {
     });
     await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow('LLM Provider Outage');
     expect(publishGateCheck).not.toHaveBeenCalled();
+  });
+});
+
+describe('full-repository grounding (repoFileProvider)', () => {
+  it("wires a repoFileProvider into panelRunner built from the run's own GH_TOKEN, owner, repo, and headSha", async () => {
+    const stubProvider = { findFiles: vi.fn(), readFile: vi.fn() };
+    const repoFileProviderFactory = vi.fn(() => stubProvider);
+    const panelRunner = vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      arbiter: { verdict: 'SHIP' },
+    }));
+    await runPublishingReviewWorker(env(), deps({ repoFileProviderFactory, panelRunner: panelRunner as never }) as never);
+
+    expect(repoFileProviderFactory).toHaveBeenCalledTimes(1);
+    expect(repoFileProviderFactory).toHaveBeenCalledWith({
+      token: 'ghs_test', owner: 'calltelemetry', repo: 'ct-meta', headSha: HEAD,
+    });
+    const arg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(arg.repoFileProvider).toBe(stubProvider);
+  });
+
+  it('does not wire a repoFileProvider and logs explicitly when GH_TOKEN is absent', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const repoFileProviderFactory = vi.fn();
+    const panelRunner = vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      arbiter: { verdict: 'SHIP' },
+    }));
+    const receipt = await runPublishingReviewWorker(
+      env({ GH_TOKEN: '' }),
+      deps({ repoFileProviderFactory, panelRunner: panelRunner as never }) as never,
+    );
+
+    expect(receipt.conclusion).toBe('success');
+    expect(repoFileProviderFactory).not.toHaveBeenCalled();
+    const arg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(arg.repoFileProvider).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('No GH_TOKEN available'),
+      expect.objectContaining({ repository: 'calltelemetry/ct-meta' }),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it('fails soft: a throwing repoFileProviderFactory does not fail the review and leaves repoFileProvider undefined', async () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const repoFileProviderFactory = vi.fn(() => { throw new Error('installation client blew up'); });
+    const panelRunner = vi.fn(async () => ({
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', findings: [] }],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      arbiter: { verdict: 'SHIP' },
+    }));
+    const receipt = await runPublishingReviewWorker(
+      env(),
+      deps({ repoFileProviderFactory, panelRunner: panelRunner as never }) as never,
+    );
+
+    expect(receipt.conclusion).toBe('success');
+    const arg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(arg.repoFileProvider).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to construct full-repository file provider'),
+      expect.objectContaining({ error: expect.stringContaining('installation client blew up') }),
+    );
+    warnSpy.mockRestore();
+  });
+});
+
+// Positive counterpart to the "no disabled-status sample" negative assertion below: reads the
+// actual recorded sample count for one status label off the Prometheus export, not just whether
+// the metric *type* is registered (initMetrics registers the type unconditionally, independent of
+// whether `.record(...)` was ever called -- see the histogram-type test further down). Returns 0
+// when no sample with this status has landed yet so callers can assert an exact before/after delta
+// without depending on what earlier tests in this file recorded.
+function histogramCountForStatus(text: string, status: string): number {
+  const match = text.match(new RegExp(`review_yeti_zoekt_index_build_duration_seconds_count\\{[^}]*status="${status}"[^}]*\\}\\s+(\\d+(?:\\.\\d+)?)`, 'u'));
+  return match ? Number(match[1]) : 0;
+}
+
+describe('REL-677 zoekt index-build telemetry', () => {
+  beforeEach(() => {
+    initTelemetry('review-yeti-bot');
+    clearSpans();
+  });
+
+  it('records a review_yeti_zoekt_index_build span, separate from lane time, when grounding is enabled', async () => {
+    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-zoekt-index' }));
+    // Deterministic duration: `now()` is called for startedAt, buildStart, the build-end
+    // measurement, then completedAt (in that order) on this success path.
+    const now = vi.fn().mockReturnValueOnce(1_000).mockReturnValueOnce(2_000).mockReturnValueOnce(2_042).mockReturnValue(3_000);
+    const before = histogramCountForStatus(await getPrometheusMetrics(), 'ok');
+    await runPublishingReviewWorker(
+      env({ ZOEKT_GROUNDING_ENABLED: 'true' }),
+      deps({ zoektGrounding: zoektGrounding as never, now }) as never,
+    );
+
+    expect(zoektGrounding).toHaveBeenCalledTimes(1);
+    const spans = getRecentSpans();
+    const buildSpan = spans.find((s) => s.name === 'review_yeti_zoekt_index_build');
+    expect(buildSpan).toBeDefined();
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.enabled']).toBe(true);
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.status']).toBe('ok');
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.duration_ms']).toBe(42);
+    // Positive assertion the prior round was missing: the histogram must actually have
+    // recorded a sample for this run, not merely have its type registered (that happens
+    // unconditionally in initMetrics, independent of this code path ever executing).
+    const after = histogramCountForStatus(await getPrometheusMetrics(), 'ok');
+    expect(after).toBe(before + 1);
+  });
+
+  it('reports a non-ok status on the span when the index build fails, without failing the review', async () => {
+    const zoektGrounding = vi.fn(async () => ({ reason: 'build_failed' }));
+    const before = histogramCountForStatus(await getPrometheusMetrics(), 'build_failed');
+    const receipt = await runPublishingReviewWorker(
+      env({ ZOEKT_GROUNDING_ENABLED: 'true' }),
+      deps({ zoektGrounding: zoektGrounding as never }) as never,
+    );
+
+    expect(receipt.conclusion).toBe('success');
+    const spans = getRecentSpans();
+    const buildSpan = spans.find((s) => s.name === 'review_yeti_zoekt_index_build');
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.status']).toBe('build_failed');
+    // Same positive assertion for the failure-status path: a failed build still records its
+    // cost (it still consumed materialize/build wall time), tagged by its own status label.
+    const after = histogramCountForStatus(await getPrometheusMetrics(), 'build_failed');
+    expect(after).toBe(before + 1);
+  });
+
+  it('marks the span disabled and records no index-build cost when grounding is off', async () => {
+    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/should-not-be-used' }));
+    await runPublishingReviewWorker(env(), deps({ zoektGrounding: zoektGrounding as never }) as never);
+
+    const spans = getRecentSpans();
+    const buildSpan = spans.find((s) => s.name === 'review_yeti_zoekt_index_build');
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.enabled']).toBe(false);
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.status']).toBe('disabled');
+    // A disabled run performs no materialize/build work, so it has no build cost to
+    // report -- assert the absence of a measurement, not just a status label, so a
+    // future regression that records a bogus duration on a disabled run is caught here.
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.duration_ms']).toBeUndefined();
+    const text = await getPrometheusMetrics();
+    expect(text).not.toMatch(/review_yeti_zoekt_index_build_duration_seconds_(?:bucket|sum|count)\{[^}]*status="disabled"[^}]*\}/u);
+  });
+
+  it('publishes the index-build duration in the check-run telemetry summary only when grounding is enabled', async () => {
+    const enabledClient = checkClient();
+    await runPublishingReviewWorker(
+      env({ ZOEKT_GROUNDING_ENABLED: 'true' }),
+      deps({
+        checkClient: enabledClient,
+        zoektGrounding: vi.fn(async () => ({ indexDir: '/tmp/fake-zoekt-index' })) as never,
+      }) as never,
+    );
+    const enabledSummary = String(
+      ((enabledClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary,
+    );
+    expect(enabledSummary).toContain('Zoekt index build:');
+
+    const disabledClient = checkClient();
+    await runPublishingReviewWorker(env(), deps({ checkClient: disabledClient }) as never);
+    const disabledSummary = String(
+      ((disabledClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary,
+    );
+    expect(disabledSummary).not.toContain('Zoekt index build:');
+  });
+
+  it('registers the review_yeti_zoekt_index_build_duration_seconds histogram distinct from the pre-check zoektDuration metric', async () => {
+    const text = await getPrometheusMetrics();
+    expect(text).toContain('# TYPE review_yeti_zoekt_index_build_duration_seconds histogram');
+    // The pre-existing pre-check query-duration metric must remain a separate series.
+    expect(text).toContain('# TYPE review_yeti_zoekt_duration_seconds histogram');
   });
 });
 
