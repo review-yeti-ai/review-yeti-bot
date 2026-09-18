@@ -1154,6 +1154,192 @@ describe('OpenRouterClient', () => {
       expect(res.content).toBe('Detailed chain-of-thought analysis');
     });
 
+    // NeuralWatt (OpenAI-compatible, serving glm-5.3-flash) returns `content: null` with the
+    // full answer in `reasoning` and no `finish_reason: "length"` truncation -- a legitimate
+    // reasoning-only completion, matching a live probe against the provider.
+    it('parses a NeuralWatt-shaped reasoning-only completion (content: null) without empty completion error', async () => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-neuralwatt',
+          object: 'chat.completion',
+          created: 1_700_000_000,
+          model: 'glm-5.3-flash',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+            message: {
+              role: 'assistant',
+              content: null,
+              function_call: null,
+              reasoning: 'The user has given me a very clear, simple instruction; here is the review verdict.',
+            },
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+      );
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+      const res = await client.complete({ ...request, model: 'glm-5.3-flash', stream: false });
+      expect(res.content).toBe('The user has given me a very clear, simple instruction; here is the review verdict.');
+    });
+
+    it('prefers a populated content field over reasoning when a model returns both', async () => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-both',
+          object: 'chat.completion',
+          created: 1_700_000_000,
+          model: 'glm-5.3-flash',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+            message: {
+              role: 'assistant',
+              content: '{"findings":[]}',
+              reasoning: 'scratchpad notes that must never replace the real answer',
+            },
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+      );
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+      const res = await client.complete({ ...request, model: 'glm-5.3-flash', stream: false });
+      expect(res.content).toBe('{"findings":[]}');
+    });
+
+    it('still fails closed with empty completion content when both content and reasoning are empty', async () => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-truly-empty',
+          object: 'chat.completion',
+          created: 1_700_000_000,
+          model: 'glm-5.3-flash',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+            message: { role: 'assistant', content: null, reasoning: null },
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+      );
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
+      await expect(client.complete({ ...request, model: 'glm-5.3-flash', stream: false })).rejects.toMatchObject({
+        message: 'OpenRouter returned empty completion content',
+      });
+    });
+
+    // A live NeuralWatt probe with a tight max_tokens budget returned
+    // `finish_reason: "length"` with `content: null` and a truncated `reasoning` string -- the
+    // provider was cut off mid-thought, before it produced any real answer. Accepting that
+    // unfinished scratchpad as the review verdict would be worse than failing loudly, so this
+    // must be rejected as a (retryable) failure rather than silently accepted as output.
+    it('rejects truncated reasoning-only output when finish_reason is "length"', async () => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-truncated',
+          object: 'chat.completion',
+          created: 1_700_000_000,
+          model: 'glm-5.3-flash',
+          choices: [{
+            index: 0,
+            finish_reason: 'length',
+            message: {
+              role: 'assistant',
+              content: null,
+              reasoning: 'The user has given me a very clear, simple instruction...',
+            },
+          }],
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }))
+      );
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
+      await expect(client.complete({ ...request, model: 'glm-5.3-flash', stream: false })).rejects.toMatchObject({
+        message: 'OpenRouter returned truncated reasoning with no completion content (finish_reason=length)',
+        status: 502,
+      });
+    });
+
+    it('retries the truncated-reasoning finish_reason=length failure and recovers with a complete answer', async () => {
+      let callCount = 0;
+      const fetchImplementation = vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve(new Response(JSON.stringify({
+            id: 'chatcmpl-truncated-1',
+            object: 'chat.completion',
+            model: 'glm-5.3-flash',
+            choices: [{
+              index: 0,
+              finish_reason: 'length',
+              message: { role: 'assistant', content: null, reasoning: 'still thinking, ran out of tokens' },
+            }],
+          }), { status: 200, headers: { 'content-type': 'application/json' } }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-truncated-2',
+          object: 'chat.completion',
+          model: 'glm-5.3-flash',
+          choices: [{
+            index: 0,
+            finish_reason: 'stop',
+            message: { role: 'assistant', content: null, reasoning: 'RECOVERED_AFTER_LENGTH_TRUNCATION' },
+          }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } }));
+      });
+      const sleep = vi.fn().mockResolvedValue(undefined);
+      const client = new OpenRouterClient({
+        apiKey: 'test-openrouter-key',
+        fetchImplementation,
+        sleep,
+        maxRetries: 2,
+      });
+
+      const res = await client.complete({ ...request, model: 'glm-5.3-flash', stream: false });
+      expect(res.content).toBe('RECOVERED_AFTER_LENGTH_TRUNCATION');
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not treat finish_reason "length" as a rejection when real content is present', async () => {
+      const fetchImplementation = vi.fn().mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          id: 'chatcmpl-length-with-content',
+          object: 'chat.completion',
+          model: 'glm-5.3-flash',
+          choices: [{
+            index: 0,
+            finish_reason: 'length',
+            message: { role: 'assistant', content: 'partial but real answer text', reasoning: 'notes' },
+          }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } }))
+      );
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+      const res = await client.complete({ ...request, model: 'glm-5.3-flash', stream: false });
+      expect(res.content).toBe('partial but real answer text');
+    });
+
+    it('rejects truncated reasoning-only output over a streaming SSE response with finish_reason "length"', async () => {
+      const stream = [
+        `data: ${sdkChunk({ reasoning: 'thinking about the diff but' }, { finish_reason: 'length' })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      const fetchImplementation = vi.fn().mockResolvedValue(new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }));
+      const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
+      await expect(client.complete({ ...request, stream: true })).rejects.toMatchObject({
+        message: 'OpenRouter returned truncated reasoning with no completion content (finish_reason=length)',
+        status: 502,
+      });
+    });
+
     it('retries on 504 Gateway Timeout and resolves on retry', async () => {
       let callCount = 0;
       const fetchImplementation = vi.fn().mockImplementation(() => {

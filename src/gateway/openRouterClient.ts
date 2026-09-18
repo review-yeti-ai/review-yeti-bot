@@ -846,6 +846,9 @@ function collectChunk(data: any, state: StreamState): boolean {
     ?? choice?.message?.reasoning_content
     ?? choice?.message?.reasoningContent;
   state.reasoning += reasoningText(reasoning);
+  if (choice?.finishReason !== undefined || choice?.finish_reason !== undefined) {
+    state.finishReason = choice.finishReason ?? choice.finish_reason ?? null;
+  }
   if (data?.usage) {
     // Providers may emit token usage and cost details in separate terminal SSE frames. Merge
     // them instead of letting a later cost-only frame erase prompt/completion token counts.
@@ -1219,11 +1222,16 @@ async function readStreamingResponse(
     try { reader.releaseLock(); } catch (_) {}
   }
 
-  const finalContent = state.content || state.reasoning || '';
-
+  // Deliberately do NOT fold `state.reasoning` into `content` here. The single extraction
+  // block in `executeSingleAttempt` is the one place that decides content-vs-reasoning
+  // precedence and the `finish_reason: "length"` truncated-reasoning guard; merging here would
+  // make that block see a non-empty `content` and skip the guard for every streamed response.
   return {
     model: state.model,
-    choices: [{ message: { role: 'assistant', content: finalContent, reasoning: state.reasoning || undefined } }],
+    choices: [{
+      finish_reason: state.finishReason,
+      message: { role: 'assistant', content: state.content, reasoning: state.reasoning || undefined },
+    }],
     usage: state.usage,
     cost: state.cost,
   };
@@ -1465,7 +1473,8 @@ async function readSdkStreamingResponse(
     try { reader.releaseLock(); } catch (_) {}
   }
 
-  const finalContent = state.content || state.reasoning || '';
+  // Deliberately do NOT fold `state.reasoning` into `content` here -- see the matching note in
+  // `readStreamingResponse` above. The shared extraction block owns the fallback decision.
   return {
     model: state.model,
     choices: [{
@@ -1473,7 +1482,7 @@ async function readSdkStreamingResponse(
       finish_reason: state.finishReason,
       message: {
         role: 'assistant',
-        content: finalContent,
+        content: state.content,
         ...(state.reasoning ? { reasoning: state.reasoning } : {}),
       },
     }],
@@ -2009,7 +2018,9 @@ export class OpenRouterClient implements ReviewModelClient {
           }
         }
       }
-      const rawMsg = data?.choices?.[0]?.message;
+      const rawChoice = data?.choices?.[0];
+      const rawMsg = rawChoice?.message;
+      const finishReason = rawChoice?.finishReason ?? rawChoice?.finish_reason ?? null;
       let extractedContent = '';
       if (typeof rawMsg?.content === 'string' && rawMsg.content.trim() !== '') {
         extractedContent = rawMsg.content;
@@ -2031,6 +2042,27 @@ export class OpenRouterClient implements ReviewModelClient {
       if (typeof content !== 'string' || content.trim() === '') {
         // Tag the error so panel retry/failover can classify it as transient.
         throw new OpenRouterResponseError('OpenRouter returned empty completion content', 502);
+      }
+      // A reasoning-shaped model (e.g. GLM served via an OpenAI-compatible endpoint) can put its
+      // entire answer in `reasoning`/`reasoning_content` and leave `content` null or empty --
+      // that is a legitimate completion and `content` above already falls back to it. But when
+      // the provider also reports `finish_reason: "length"` alongside an empty `content`, the
+      // generation was cut off by the token budget before it ever reached an answer: `reasoning`
+      // is an unfinished scratchpad, not a verdict. Publishing that as the review's output would
+      // be worse than failing loudly, so this is treated as a real, retryable failure instead of
+      // an accepted (if truncated) completion -- deliberately narrower than "content" being
+      // spooled, since a `finish_reason: "length"` on a *populated* content field is a separate,
+      // pre-existing, out-of-scope truncation shape this fix does not change.
+      if (extractedContent === '' && finishReason === 'length') {
+        // Tag the error so panel retry/failover can classify it as transient (502), same as the
+        // empty-completion signature above -- but with a distinct message so it takes the
+        // generic retry budget rather than the empty-completion-specific one: real (if
+        // truncated) reasoning was produced here, so there is no signal that a different
+        // backend is needed the way a totally blank completion suggests.
+        throw new OpenRouterResponseError(
+          'OpenRouter returned truncated reasoning with no completion content (finish_reason=length)',
+          502,
+        );
       }
 
       const rawUsage = data.usage;
