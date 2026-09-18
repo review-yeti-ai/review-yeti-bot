@@ -372,6 +372,21 @@ function describeCoverageGaps(coverageGaps) {
     .filter(Boolean);
 }
 
+// `panelSize` scales the blocking thresholds below, so it decides how many P1 findings it takes
+// to BLOCK a merge. In the fan-out engine one completed entry is one independent reviewer, so
+// deriving it from `completedResults.length` is correct and stays the default.
+//
+// A composed single-context engine emits one entry per planned *review task*, and that task list
+// is chosen by the model. Deriving `panelSize` from the entry count there would let the reviewer
+// raise its own blocking threshold just by planning more tasks -- 7 tasks moves blockP1 from 3 to
+// 4, 11 tasks moves it to 6 -- with no log line and no visible difference in the check run. Any
+// caller whose entry count is not a count of independent reviewers must therefore pass an
+// explicit `panelSize`; the composed engine passes 1, because one context is one reviewer.
+function resolvePanelSize(override, completedCount) {
+  if (Number.isInteger(override) && override > 0) return override;
+  return Math.max(1, completedCount);
+}
+
 function computeArbitration(personaResults, expectedPersonas, options = {}) {
   const results = Array.isArray(personaResults) ? personaResults : [];
   const expected = Number.isInteger(expectedPersonas) ? expectedPersonas : results.length;
@@ -392,7 +407,7 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     else if (finding.severity === 'P2') p2Count += 1;
   }
 
-  const panelSize = Math.max(1, completedResults.length);
+  const panelSize = resolvePanelSize(options.panelSize, completedResults.length);
   const blockP1 = Math.max(3, Math.ceil(panelSize / 2));
   const fixP2 = Math.max(5, panelSize);
   // P2 findings no longer decide the verdict. The threshold is still computed and
@@ -503,5 +518,6 @@ module.exports = {
   hasUnverifiedPremise,
   downgradeUnverifiedPremise,
   clusterFindings,
+  resolvePanelSize,
   computeArbitration,
 };
