@@ -28,6 +28,11 @@ import { resolvePreChecksConfig } from '../config/schema';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, ZoektPreCheckResult } from '../services/zoektPreCheckService';
 import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, PreCheckSummary } from '../sandbox/analyzerRunner';
 import {
+  executeSymbolResolutionAppendix,
+  formatSymbolResolutionAppendixPrompt,
+  SymbolResolutionAppendixResult,
+} from '../services/symbolResolutionAppendix';
+import {
   OpenRouterMessage,
   ReviewModelClient,
 } from '../gateway/openRouterClient';
@@ -424,18 +429,20 @@ async function gatherPreCheckEvidence(
   effectiveFiles: Array<{ path: string; patch?: string; content?: string }>,
   workspaceRoot: string | undefined,
   signal: AbortSignal,
-): Promise<{ zoekt?: ZoektPreCheckResult; analyzers?: PreCheckSummary }> {
+  repoFileProvider: RepoFileProvider | undefined,
+): Promise<{ zoekt?: ZoektPreCheckResult; analyzers?: PreCheckSummary; symbolAppendix?: SymbolResolutionAppendixResult }> {
   const preChecksConfig = resolvePreChecksConfig(config);
   if (!preChecksConfig.enabled) return {};
+
+  const zoektIndexDir = (config as any)?.evidence?.zoekt?.indexDir
+    || preChecksConfig.zoekt.indexDir
+    || process.env.ZOEKT_INDEX_DIR;
 
   const zoektPromise = preChecksConfig.zoekt.enabled
     ? (async () => {
         try {
-          const indexDir = (config as any)?.evidence?.zoekt?.indexDir
-            || preChecksConfig.zoekt.indexDir
-            || process.env.ZOEKT_INDEX_DIR;
           return await raceWithPanelAbort(
-            executeZoektPreCheck({ changedFiles: effectiveFiles, config: preChecksConfig.zoekt, indexDir, signal }),
+            executeZoektPreCheck({ changedFiles: effectiveFiles, config: preChecksConfig.zoekt, indexDir: zoektIndexDir, signal }),
             signal,
           );
         } catch (err: any) {
@@ -466,8 +473,29 @@ async function gatherPreCheckEvidence(
       })()
     : Promise.resolve(undefined);
 
-  const [zoekt, analyzers] = await Promise.all([zoektPromise, analyzersPromise]);
-  return { zoekt, analyzers };
+  const symbolAppendixPromise = preChecksConfig.symbolAppendix.enabled
+    ? (async () => {
+        try {
+          return await raceWithPanelAbort(
+            executeSymbolResolutionAppendix({
+              changedFiles: effectiveFiles,
+              repoFileProvider,
+              indexDir: preChecksConfig.symbolAppendix.indexDir || zoektIndexDir,
+              identity: { repository: (config as any)?.repository, headSha: (config as any)?.headSha },
+              signal,
+            }),
+            signal,
+          );
+        } catch (err: any) {
+          throwIfPanelAborted(signal);
+          logger.warn('Symbol resolution appendix failed soft during executeComposedReview', { error: err?.message });
+          return undefined;
+        }
+      })()
+    : Promise.resolve(undefined);
+
+  const [zoekt, analyzers, symbolAppendix] = await Promise.all([zoektPromise, analyzersPromise, symbolAppendixPromise]);
+  return { zoekt, analyzers, symbolAppendix };
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +512,7 @@ function buildStaticPrefix(input: {
   prNumber?: number;
   repositoryVisibility: RepositoryVisibility;
   rules: string[];
-  preCheckEvidence: { zoekt?: ZoektPreCheckResult; analyzers?: PreCheckSummary };
+  preCheckEvidence: { zoekt?: ZoektPreCheckResult; analyzers?: PreCheckSummary; symbolAppendix?: SymbolResolutionAppendixResult };
 }): string {
   const diffSection = buildDiffSection(input.effectiveFiles, {
     baseSha: input.baseSha || '',
@@ -500,6 +528,11 @@ function buildStaticPrefix(input: {
   const analyzersPromptText = input.preCheckEvidence.analyzers
     ? formatCandidateHypothesesPrompt(input.preCheckEvidence.analyzers)
     : '';
+  // Computed ONCE per review, before any plan/task turn, and folded into this same cached static
+  // prefix so every task branch reuses it instead of re-discovering it with serial tool turns.
+  // See ../services/symbolResolutionAppendix.ts for the fail-soft contract: an empty string here
+  // means the appendix was unavailable/disabled/skipped and this section is simply absent.
+  const symbolAppendixPromptText = formatSymbolResolutionAppendixPrompt(input.preCheckEvidence.symbolAppendix);
 
   const rulesText = input.rules.length > 0
     ? input.rules.map((r, idx) => `${idx + 1}. ${r}`).join('\n')
@@ -524,6 +557,7 @@ function buildStaticPrefix(input: {
     diffSection,
     ...(zoektPromptText ? ['', zoektPromptText] : []),
     ...(analyzersPromptText ? ['', analyzersPromptText] : []),
+    ...(symbolAppendixPromptText ? ['', symbolAppendixPromptText] : []),
     ``,
     `=== SEVERITY CALIBRATION (binding) ===`,
     ...SEVERITY_CALIBRATION_LINES,
@@ -918,7 +952,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const inactivityTimeoutMs = configuredInactivityTimeoutMs(spec.review_timeout_s, TURN_IDLE_MS);
 
     const domainLanes = classifyDomainLanesByHeuristic(effectiveFiles);
-    const preCheckEvidence = await gatherPreCheckEvidence(config, effectiveFiles, options.workspaceRoot, signal);
+    const preCheckEvidence = await gatherPreCheckEvidence(config, effectiveFiles, options.workspaceRoot, signal, repoFileProvider);
     const zoektConfig = mergeZoektToolConfig((config as any)?.pre_checks?.zoekt, (config as any)?.evidence?.zoekt);
 
     const staticPrefixText = buildStaticPrefix({
