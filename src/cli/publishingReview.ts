@@ -36,9 +36,12 @@ import {
 } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManager';
-import { createDefaultV3Config } from '../config/configLoader';
-import type { ProviderId } from '../config/schema';
-import { resolveWorkerConfig, PUBLISHING_MAX_TURNS, PUBLISHING_IDLE_TIMEOUT_SECONDS, PUBLISHING_OVERALL_TIMEOUT_SECONDS } from '../config/publishingWorkerConfig';
+import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
+import {
+  openaiTransport,
+  createOpenAIPublishingConfig,
+  type OpenAITransportConfig,
+} from '../review/openaiTransport';
 import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
 import { computeArbitration } from '../review/reviewCore';
 import { isRecoverableIncompletePanel, isRecoverablePanelRetryEligible, RECOVERABLE_PANEL_AUTO_RETRY_CAP } from '../review/publicationFailurePolicy';
@@ -250,52 +253,11 @@ function validateConfiguredCompletionEndpoint(endpoint: string): void {
  * required: defaulting either one is how a misconfigured worker silently reviews
  * against the wrong provider.
  */
-export function bifrostTransport(env: NodeJS.ProcessEnv): { baseUrl: string; apiKey: string; model: string } {
-  const baseUrl = value(env, 'BIFROST_BASE_URL');
-  const apiKey = value(env, 'BIFROST_PR_REVIEW_API_KEY');
-  const model = value(env, 'REVIEW_MODEL');
-  if (!baseUrl || !apiKey || !model) throw invalidPublishingReviewContract();
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    throw invalidPublishingReviewContract();
-  }
-  // A plaintext or non-gateway base URL would ship diffs off the intended path.
-  if (parsed.protocol !== 'https:') throw invalidPublishingReviewContract();
-  return { baseUrl, apiKey, model };
-}
-
-/**
- * The publishing worker is admitted with a single Bifrost transport. It must
- * not fall back to the legacy default config, whose synthetic/claude providers
- * are unavailable in the production gateway. Keep every persona, moderator,
- * and arbiter call on the operator-injected model and fail closed on provider
- * errors instead of attempting an undeclared route.
- */
-export function createBifrostPublishingConfig(model: string): ReturnType<typeof createDefaultV3Config> {
-  const providerId = 'bifrost';
-  const config = createDefaultV3Config();
-  return {
-    ...config,
-    default_max_turns: PUBLISHING_MAX_TURNS,
-    personas: config.personas.map((persona) => ({ ...persona, providers: [providerId] })),
-    reviewers: {
-      ...config.reviewers,
-      overall_timeout_s: PUBLISHING_OVERALL_TIMEOUT_SECONDS,
-      fallback: 'none',
-      providers: [{
-        id: providerId,
-        enabled: true,
-        model,
-        effort: 'medium',
-        review_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
-        arbiter_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
-      }],
-      arbiter: { order: [providerId] },
-    },
-  };
-}
+export {
+  openaiTransport,
+  createOpenAIPublishingConfig,
+};
+export type { OpenAITransportConfig };
 
 const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
@@ -810,7 +772,7 @@ export async function runPublishingReviewWorker(
     // Validate the provider contract after check creation so a validly identified
     // worker can still persist a durable terminal failure for a configuration
     // error. The check id remains optional only for createCheck failures.
-    const transport = bifrostTransport(env);
+    const transport = openaiTransport(env);
     const workerConfig = authoritative
       ? parsePreparedReviewExecution(value(env, 'REVIEW_PREPARED_CONFIG_JSON'), value(env, 'REVIEW_CONFIG_DIGEST'),
         { baseUrl: transport.baseUrl, model: transport.model }).config

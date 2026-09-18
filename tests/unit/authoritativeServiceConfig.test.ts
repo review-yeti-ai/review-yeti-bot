@@ -10,7 +10,7 @@ function env(overrides: Record<string, string | undefined> = {}) {
   return {
     AUTHORITATIVE_REVIEW_ENABLED: 'true', GITHUB_APP_ID: '4385771', AUTHORITATIVE_REVIEW_APP_ID: '4385771',
     AUTHORITATIVE_REVIEW_REPOSITORY_IDS: '123,456', AUTHORITATIVE_REVIEW_POLICY_SOURCE: JSON.stringify(source),
-    BIFROST_BASE_URL: 'https://gateway.example.invalid/v1', REVIEW_MODEL: 'service-model', ...overrides,
+    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1', REVIEW_MODEL: 'service-model', ...overrides,
   };
 }
 
@@ -33,14 +33,14 @@ describe('authoritativeServiceConfigFromEnv', () => {
   });
 
   it('returns only explicit credential-free configuration and does not mutate its inputs', () => {
-    const input = Object.freeze(env({ BIFROST_API_KEY: marker, GITHUB_APP_PRIVATE_KEY: marker, OPENROUTER_API_KEY: marker }));
+    const input = Object.freeze(env({ OPENAI_API_KEY: marker, GITHUB_APP_PRIVATE_KEY: marker, OPENROUTER_API_KEY: marker }));
     const before = JSON.stringify(input);
     const resolved = authoritativeServiceConfigFromEnv(input, policy);
     expect(resolved).toEqual({
       expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, admissionEnabled: false, repositoryIds: [123, 456],
       policyRepository: { repositoryId: 987, owner: 'calltelemetry', repo: 'ct-review-actions' },
       policyRef: source.ref, policyPath: source.path,
-      transport: { baseUrl: input.BIFROST_BASE_URL, model: input.REVIEW_MODEL }, tickMs: 5_000,
+      transport: { baseUrl: input.OPENAI_BASE_URL, model: input.REVIEW_MODEL }, tickMs: 5_000,
     });
     expect(JSON.stringify(resolved)).not.toContain(marker);
     expect(JSON.stringify(input)).toBe(before);
@@ -93,8 +93,8 @@ describe('authoritativeServiceConfigFromEnv', () => {
   it.each([undefined, '', 'http://gateway.invalid', `https://user:${marker}@gateway.invalid/v1`,
     `https://${marker}@gateway.invalid/v1`, 'https://gateway.invalid/v1?', 'https://gateway.invalid/v1?key=value',
     'https://gateway.invalid/v1#', ' https://gateway.invalid/v1', 'https://gateway.invalid/\nv1'])
-  ('rejects missing or credential-bearing Bifrost transport %j', (value) => {
-    expect(() => authoritativeServiceConfigFromEnv(env({ BIFROST_BASE_URL: value }), policy)).toThrow(error);
+  ('rejects missing or credential-bearing OpenAI transport %j', (value) => {
+    expect(() => authoritativeServiceConfigFromEnv(env({ OPENAI_BASE_URL: value }), policy)).toThrow(error);
   });
 
   it.each([undefined, '', ' ', 'model\n', 'x'.repeat(257)])('requires an explicit bounded model %j', (value) => {
