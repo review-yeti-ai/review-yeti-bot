@@ -655,6 +655,8 @@ index 123456..789abc 100644
       GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
       GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
       VITEST: process.env.VITEST,
+      OPENROUTER_BASE_URL: process.env.OPENROUTER_BASE_URL,
+      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
     };
 
     try {
@@ -667,6 +669,8 @@ index 123456..789abc 100644
       process.env.GITHUB_ACTIONS = 'false';
       process.env.VITEST = 'true';
       delete process.env.GITHUB_EVENT_PATH;
+      delete process.env.OPENROUTER_BASE_URL;
+      delete process.env.OPENAI_BASE_URL;
 
       await expect(pipeline.main()).resolves.not.toThrow();
     } finally {

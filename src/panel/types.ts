@@ -100,6 +100,8 @@ export interface PersonaLaneResult {
   isRedTeam?: boolean;
   crossExaminedModel?: string;
   mermaidDiagram?: string;
+  notApplicable?: boolean;
+  skipReason?: string;
 }
 
 export interface PanelResult {
@@ -124,6 +126,7 @@ export interface PanelResult {
      * class of its own.
      */
     failureClass?: WorkerFailureClass;
+    failureReason?: string;
   }>;
   /** Final path/config/classifier-selected roster used by the panel execution. */
   applicablePersonaIds?: string[];
