@@ -79,7 +79,13 @@ function expectedEvent(f: ReturnType<typeof fixture>, result: WorkerReviewResult
 
 function cleanResult(): WorkerReviewResult {
   return { version: 'WorkerReviewResult.v1', completedAt: COMPLETED,
-    personas: ['sec-lane', 'qual-lane'].map((id) => ({ id, decision: 'APPROVE', status: 'COMPLETE', findings: [] })),
+    // `fixture()`'s panel personas always carry `model`/`durationMs` (both required on
+    // `PersonaLaneResult`), so `buildReviewResult` in `publishingReview.ts` always attaches a
+    // `telemetry` object carrying at least those two fields -- "include per-lane model" per the
+    // Stage 0 telemetry brief. A test that overrides `personas[n]` wholesale instead of spreading
+    // this base value needs to add the same `telemetry` clause back in.
+    personas: ['sec-lane', 'qual-lane'].map((id) => ({ id, decision: 'APPROVE', status: 'COMPLETE', findings: [],
+      telemetry: { model: transport.model, durationMs: 25 } })),
     coverageComplete: true, quorumSatisfied: true };
 }
 
@@ -184,10 +190,61 @@ describe('authoritative prepared publishing worker', () => {
     f.panel.personas[0].toolCalls = [{ tool: 'read', args: { token: TOKEN } }];
     await runPublishingReviewWorker(f.env, f.deps);
     const expected = cleanResult();
-    expected.personas[0] = { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [finding] };
+    expected.personas[0] = { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [finding],
+      telemetry: { model: transport.model, durationMs: 25 } };
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(TOKEN);
+  });
+
+  it('carries per-turn telemetry onto the authoritative WorkerReviewResult, additive and optional', async () => {
+    // Stage 0 telemetry work: `PersonaLaneResult.turnUsages`/`aggregateUsage`/`toolTurns`/
+    // `correctionTurns` are new fields on the panel's own output. `buildReviewResult` in
+    // `publishingReview.ts` must carry them into the authoritative callback as an OPTIONAL
+    // `telemetry` object on the persona -- optional so `WorkerReviewCompletion.v1` needs no version
+    // bump -- and must NOT invent one for a lane that never reported them (the sibling
+    // `qual-lane` below, which the fixture leaves untouched).
+    const f = fixture();
+    f.panel.personas[0] = {
+      ...f.panel.personas[0],
+      model: transport.model,
+      turnsCount: 3,
+      toolTurns: 1,
+      correctionTurns: 1,
+      aggregateUsage: { promptTokens: 450, completionTokens: 75, totalTokens: 525, cachedTokens: 80, costUSD: 0.0042 },
+      turnUsages: [
+        { turn: 1, kind: 'tool', promptTokens: 100, completionTokens: 20, totalTokens: 120, cachedTokens: 30, costUSD: 0.001, model: transport.model, durationMs: 40 },
+        { turn: 2, kind: 'correction', promptTokens: 150, completionTokens: 25, totalTokens: 175, cachedTokens: 0, costUSD: 0.0012, model: transport.model, durationMs: 40 },
+        { turn: 3, kind: 'final', promptTokens: 200, completionTokens: 30, totalTokens: 230, cachedTokens: 50, costUSD: 0.002, model: transport.model, durationMs: 40 },
+      ],
+    };
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    const expected = cleanResult();
+    expected.personas[0] = {
+      ...expected.personas[0],
+      telemetry: {
+        model: transport.model,
+        durationMs: 25,
+        turnsCount: 3,
+        toolTurns: 1,
+        correctionTurns: 1,
+        promptTokens: 450,
+        completionTokens: 75,
+        totalTokens: 525,
+        cachedTokens: 80,
+        costUSD: 0.0042,
+        turnUsages: f.panel.personas[0].turnUsages,
+      },
+    } as typeof expected.personas[0];
+    // `qual-lane` was never given `turnUsages`/`aggregateUsage`/`toolTurns`/`correctionTurns` on the
+    // panel fixture -- only the base `model`/`durationMs` every completed lane always carries.
+    // `cleanResult()`'s default telemetry already reflects exactly that, unmodified.
+    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
+    expect(f.reportReviewResult.mock.calls[0][0].result.personas[1].telemetry).toEqual({
+      model: transport.model, durationMs: 25,
+    });
   });
 
   it.each(['TRUE', 'True', 'false', '1', 'yes', 'tru'])('rejects the authoritative flag typo %s before side effects', async (flag) => {
