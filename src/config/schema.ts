@@ -420,6 +420,37 @@ export function resolvePreChecksConfig(rawConfig: any): PreChecksConfig {
   return parsed;
 }
 
+/**
+ * Selects between the fan-out persona panel (`panel`, the default) and the single-context
+ * composed engine (`composed`, `src/panel/composedEngine.ts`). `shadow` is reserved for a future
+ * comparison-only mode and currently resolves to `panel` at every runtime call site -- see
+ * `resolveReviewEngine` in `src/cli/publishingReview.ts`. This is base-policy-projected
+ * (`resolveWorkerConfig` in `src/config/publishingWorkerConfig.ts`); a pull request cannot set its
+ * own value for this field.
+ */
+export const reviewEngineSchema = z.enum(['panel', 'composed', 'shadow']);
+export type ReviewEngineName = z.infer<typeof reviewEngineSchema>;
+
+/**
+ * Policy-authored bounds for the composed engine (`src/panel/composedEngine.ts`). Every field is
+ * optional and, when present, only ever narrows the engine's own hard-coded defaults/caps
+ * (`DEFAULT_MAX_TASKS`, `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`, `COMPOSED_TASK_MAX_TURNS`) --
+ * policy can lower these, never raise them. `max_tasks` and `max_turns_total` are wired into
+ * `composedEngine.ts`; `max_turns_per_task`, `require_security_task`, and `task_dimensions` are
+ * projected and validated here for forward-compatible policy authoring but are not yet consumed by
+ * any enforcement path (the composed engine's per-task turn clamp, its security-floor check, and
+ * its task-dimension vocabulary all remain the engine's own fixed constants -- see
+ * `composedEngine.ts` and `reviewTask.ts`).
+ */
+export const composedEngineConfigSchema = z.object({
+  max_tasks: z.number().int().positive().max(64).optional(),
+  max_turns_total: z.number().int().positive().max(200).optional(),
+  max_turns_per_task: z.number().int().positive().max(50).optional(),
+  require_security_task: z.boolean().optional(),
+  task_dimensions: z.array(z.string().min(1)).min(1).optional(),
+}).passthrough();
+export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
+
 const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
@@ -453,6 +484,8 @@ const ctReviewConfigV3ObjectSchema = z.object({
   on_pr_close: onPRCloseSchema,
   evidence: evidenceSchema.optional(),
   pre_checks: preChecksSchema.optional(),
+  review_engine: reviewEngineSchema.optional(),
+  composed: composedEngineConfigSchema.optional(),
 
   reviewers: z.object({
     execution: z.literal('personas'),

@@ -106,9 +106,22 @@ export const COMPOSED_TASK_MAX_TURNS = 6;
 /** Turn-window compaction threshold inside one task's own branched sub-conversation. */
 const TASK_COMPACTION_ACTIVE_TURNS = 2;
 
-export function resolveComposedEngineMaxTurns(env: NodeJS.ProcessEnv = process.env): number {
+/**
+ * Resolution order: `env.COMPOSED_ENGINE_MAX_TURNS` (manual operator override) wins when set,
+ * then the base-policy-projected `composed.max_turns_total` (see `resolveWorkerConfig` in
+ * `../config/publishingWorkerConfig.ts`) -- clamped to `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`,
+ * so policy may only lower this engine's own total-turn ceiling, never raise it -- then the
+ * default. This function owns that clamp; it must never be raised by a caller-supplied value.
+ */
+export function resolveComposedEngineMaxTurns(
+  env: NodeJS.ProcessEnv = process.env,
+  configuredMaxTurnsTotal?: number,
+): number {
   const raw = Number(env.COMPOSED_ENGINE_MAX_TURNS);
   if (Number.isSafeInteger(raw) && raw > 0) return raw;
+  if (Number.isSafeInteger(configuredMaxTurnsTotal) && (configuredMaxTurnsTotal as number) > 0) {
+    return Math.min(configuredMaxTurnsTotal as number, COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
+  }
   return COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS;
 }
 
@@ -807,7 +820,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       preCheckEvidence,
     });
 
-    const maxTasks = Math.max(1, Math.min((config as any)?.composed_max_tasks || DEFAULT_MAX_TASKS, DEFAULT_MAX_TASKS));
+    // Policy may only narrow this, never widen it past `DEFAULT_MAX_TASKS` -- `config.composed` is
+    // base-policy-projected (see `resolveWorkerConfig` in `../config/publishingWorkerConfig.ts`).
+    const maxTasks = Math.max(1, Math.min(config.composed?.max_tasks || DEFAULT_MAX_TASKS, DEFAULT_MAX_TASKS));
     const effectiveFilePaths = effectiveFiles.map((f) => f.path);
 
     // Mint the plan nonce ONCE and keep it, so the returned object can be bound back to this
@@ -826,7 +841,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       },
     ];
 
-    const totalTurnBudget = resolveComposedEngineMaxTurns();
+    const totalTurnBudget = resolveComposedEngineMaxTurns(process.env, config.composed?.max_turns_total);
     let totalTurnsUsed = 0;
     const remainingBudget = () => totalTurnBudget - totalTurnsUsed;
     const timeoutMs = Math.max(1, deadline.timeoutMs - (Date.now() - panelStartedAt));
