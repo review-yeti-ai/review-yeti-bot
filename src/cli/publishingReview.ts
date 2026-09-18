@@ -906,12 +906,20 @@ export async function runPublishingReviewWorker(
         } catch (groundingError: any) {
           result = { reason: groundingError?.message || 'zoekt_grounding_error' };
         }
-        zoektIndexBuildMs = (deps.now ? deps.now() : Date.now()) - buildStart;
-        const status = !zoektGroundingEnabled ? 'disabled' : result.indexDir ? 'ok' : (result.reason || 'unknown');
         span.setAttribute('review_yeti.zoekt_index_build.enabled', zoektGroundingEnabled);
-        span.setAttribute('review_yeti.zoekt_index_build.status', status);
-        span.setAttribute('review_yeti.zoekt_index_build.duration_ms', zoektIndexBuildMs);
-        getMetrics().zoektIndexBuildDuration.record(zoektIndexBuildMs / 1000, { repository: identity.repo, status });
+        // A disabled run performs no materialize/build work, so it has no build cost to
+        // report: gate the duration attribute and the histogram sample on `enabled` so a
+        // disabled run can never record (or pollute the REL-677 latency measurement with)
+        // a build duration for a build that never happened.
+        if (zoektGroundingEnabled) {
+          zoektIndexBuildMs = (deps.now ? deps.now() : Date.now()) - buildStart;
+          const status = result.indexDir ? 'ok' : (result.reason || 'unknown');
+          span.setAttribute('review_yeti.zoekt_index_build.status', status);
+          span.setAttribute('review_yeti.zoekt_index_build.duration_ms', zoektIndexBuildMs);
+          getMetrics().zoektIndexBuildDuration.record(zoektIndexBuildMs / 1000, { repository: identity.repo, status });
+        } else {
+          span.setAttribute('review_yeti.zoekt_index_build.status', 'disabled');
+        }
         return result;
       });
       // Single-surface injection: the panel (panelEngine) owns the zoekt

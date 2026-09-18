@@ -1999,6 +1999,12 @@ describe('REL-677 zoekt index-build telemetry', () => {
     const buildSpan = spans.find((s) => s.name === 'review_yeti_zoekt_index_build');
     expect(buildSpan?.attributes['review_yeti.zoekt_index_build.enabled']).toBe(false);
     expect(buildSpan?.attributes['review_yeti.zoekt_index_build.status']).toBe('disabled');
+    // A disabled run performs no materialize/build work, so it has no build cost to
+    // report -- assert the absence of a measurement, not just a status label, so a
+    // future regression that records a bogus duration on a disabled run is caught here.
+    expect(buildSpan?.attributes['review_yeti.zoekt_index_build.duration_ms']).toBeUndefined();
+    const text = await getPrometheusMetrics();
+    expect(text).not.toMatch(/review_yeti_zoekt_index_build_duration_seconds_(?:bucket|sum|count)\{[^}]*status="disabled"[^}]*\}/u);
   });
 
   it('publishes the index-build duration in the check-run telemetry summary only when grounding is enabled', async () => {
