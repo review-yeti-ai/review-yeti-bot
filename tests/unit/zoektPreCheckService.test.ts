@@ -591,4 +591,40 @@ describe('zoektPreCheckService.test.ts — Milestone 3 Unit Tests', () => {
       expect(prompt).toContain('No modified symbols eligible for external search');
     });
   });
+
+  describe('inferred definitions are not presented as canonical', () => {
+    // When no line matches the definition heuristic, the service adopts the first non-import
+    // match as a stand-in. That is a guess. Rendering it under "Canonical definition:" tells a
+    // reviewer model the location is established fact, and a model that believes a wrong location
+    // produces exactly the confident, specific, false blocking finding this pipeline exists to
+    // avoid -- the same failure shape as reporting a symbol missing because the search was only
+    // patch-scoped.
+    const symbol = (definitionsAreInferred: boolean) => ({
+      status: 'ok' as const,
+      symbols: [{
+        symbol: 'replace_filters',
+        kind: 'function',
+        sourcePath: 'lib/catalog.ex',
+        isModifiedDefinition: false,
+        definitions: [{ path: 'lib/other.ex', line: 41, text: 'defp replace_filters(x)' }],
+        definitionsAreInferred,
+        callSites: [],
+      }],
+      receipt: { totalQueries: 1 } as any,
+    });
+
+    it('labels an inferred definition UNCONFIRMED and tells the model to verify it', () => {
+      const prompt = formatZoektPreCheckPrompt(symbol(true) as any);
+      expect(prompt).toContain('UNCONFIRMED');
+      expect(prompt).toMatch(/may be the wrong location/i);
+      expect(prompt).not.toContain('Canonical definition:');
+    });
+
+    it('still calls a matched definition canonical', () => {
+      const prompt = formatZoektPreCheckPrompt(symbol(false) as any);
+      expect(prompt).toContain('Canonical definition:');
+      expect(prompt).not.toContain('UNCONFIRMED');
+    });
+  });
+
 });
