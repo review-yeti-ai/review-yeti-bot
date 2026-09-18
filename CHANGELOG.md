@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.76.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.76.0...v1.76.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **gateway:** name the upstream that actually answered, not always OpenRouter ([#855](https://github.com/review-yeti-ai/review-yeti-bot/issues/855)) ([a2d6674](https://github.com/review-yeti-ai/review-yeti-bot/commit/a2d66741758e2459c569e60de016344645c593c1))
+
 ## [1.76.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.75.1...v1.76.0) (2026-09-18)
 
 
