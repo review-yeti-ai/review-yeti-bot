@@ -1,7 +1,9 @@
-import { createDefaultV3Config } from './configLoader';
+import { createDefaultV3Config, isTriggerActionAllowed, type TriggerActionOptions } from './configLoader';
 import type { CtReviewConfigV3, ProviderId } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
+
+export { isTriggerActionAllowed, type TriggerActionOptions };
 
 // Native publishing must project the same bounded turn/idle policy as the
 // panel. Idle time is separate from the overall deadline enforced at runtime.

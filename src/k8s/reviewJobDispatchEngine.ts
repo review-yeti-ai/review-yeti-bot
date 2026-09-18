@@ -6,10 +6,8 @@ import {
   type RunnerMode,
 } from './reviewJobProjection';
 
-export interface ReviewJobProjector {
-  /** Ensure is idempotent for metadata.name and must reject a conflicting existing resource. */
-  ensure(projection: PRReviewJobProjection): Promise<void>;
-}
+import type { ReviewJobProjector } from './reviewJobProjector';
+export type { ReviewJobProjector };
 
 /**
  * Provisions the per-run Secret a publishing review needs, before its PRReviewJob
@@ -28,11 +26,14 @@ export interface RunSecretProvisioner {
   }): Promise<{ workerTokenDigest: string }>;
 }
 
+import { DispatchCircuitBreaker } from './dispatchCircuitBreaker';
+export { DispatchCircuitBreaker };
+
 export interface ReviewJobDispatchEngineOptions {
   repository: Pick<
     ReviewDispatchRepository,
     'claimNext' | 'markProjected' | 'bindWorkerTokenDigest' | 'releaseForRetry' | 'markTerminal'
-  >;
+  > & Partial<Pick<ReviewDispatchRepository, 'markCancelPropagated' | 'findPendingCancellations'>>;
   projector: ReviewJobProjector;
   /** Required to dispatch an app-gate review; absent, publishing runs are refused. */
   runSecretProvisioner?: RunSecretProvisioner;
@@ -45,6 +46,8 @@ export interface ReviewJobDispatchEngineOptions {
   now?: () => number;
   leaseMs?: number;
   retryDelayMs?: number;
+  circuitBreaker?: DispatchCircuitBreaker | { isOpen(now?: number): boolean };
+  isDispatchPaused?: () => boolean;
 }
 
 export type ReviewJobDispatchOutcome =
@@ -58,11 +61,13 @@ export class ReviewJobDispatchEngine {
   private readonly now: () => number;
   private readonly leaseMs: number;
   private readonly retryDelayMs: number;
+  public readonly circuitBreaker: DispatchCircuitBreaker | { isOpen(now?: number): boolean };
 
   constructor(private readonly options: ReviewJobDispatchEngineOptions) {
     this.now = options.now || Date.now;
     this.leaseMs = options.leaseMs ?? 30_000;
     this.retryDelayMs = options.retryDelayMs ?? 5_000;
+    this.circuitBreaker = options.circuitBreaker ?? new DispatchCircuitBreaker({ now: this.now });
     if (!options.workerId.trim()) throw new Error('dispatcher worker id is required');
     if (!Number.isSafeInteger(this.leaseMs) || this.leaseMs <= 0) throw new Error('dispatcher lease must be positive');
     if (!Number.isSafeInteger(this.retryDelayMs) || this.retryDelayMs < 0) throw new Error('dispatcher retry delay cannot be negative');
@@ -70,6 +75,9 @@ export class ReviewJobDispatchEngine {
 
   async runOnce(): Promise<ReviewJobDispatchOutcome> {
     const now = this.now();
+    if (this.options.isDispatchPaused?.() || this.circuitBreaker.isOpen(now)) {
+      return { status: 'idle' };
+    }
     const claim = await this.options.repository.claimNext(this.options.workerId, now, this.leaseMs);
     if (!claim) return { status: 'idle' };
 
@@ -225,5 +233,58 @@ export class ReviewJobDispatchEngine {
     return projected
       ? { status: 'projected', runId: claim.runId, projectionName: projection.metadata.name }
       : { status: 'lease-lost', runId: claim.runId };
+  }
+
+  async sweepPendingCancellations(limit = 10): Promise<{ propagated: number; failed: number }> {
+    if (
+      !this.options.repository.findPendingCancellations ||
+      !this.options.repository.markCancelPropagated ||
+      typeof this.options.projector.patchCancellation !== 'function'
+    ) {
+      return { propagated: 0, failed: 0 };
+    }
+    const pending = await this.options.repository.findPendingCancellations(limit);
+    let propagated = 0;
+    let failed = 0;
+    for (const item of pending) {
+      try {
+        await this.options.projector.patchCancellation(
+          item.projectionName,
+          this.options.namespace,
+          item.cancelReason,
+        );
+        await this.options.repository.markCancelPropagated(item.runId, item.executionAttempt, this.now());
+        propagated++;
+      } catch {
+        failed++;
+      }
+    }
+    return { propagated, failed };
+  }
+
+  async handleCancellation(event: {
+    runId: string;
+    executionAttempt: number;
+    projectionName: string;
+    cancelReason?: string;
+  }): Promise<boolean> {
+    if (!this.options.repository.markCancelPropagated || typeof this.options.projector.patchCancellation !== 'function') {
+      return false;
+    }
+    try {
+      await this.options.projector.patchCancellation(
+        event.projectionName,
+        this.options.namespace,
+        event.cancelReason,
+      );
+      await this.options.repository.markCancelPropagated(
+        event.runId,
+        event.executionAttempt,
+        this.now(),
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

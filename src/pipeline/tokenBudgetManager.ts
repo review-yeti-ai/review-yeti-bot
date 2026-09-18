@@ -40,7 +40,9 @@ export function evaluateEffortAndBudget(
 
   if (lineEstimate < 50 && sensitiveFileCount === 0) {
     effortTier = 'low';
-  } else if (lineEstimate > 500 || sensitiveFileCount > 0 || config?.profile === 'assertive') {
+  } else if (lineEstimate <= 500 && sensitiveFileCount === 0 && config?.profile !== 'assertive') {
+    effortTier = 'medium';
+  } else {
     effortTier = 'high';
   }
 

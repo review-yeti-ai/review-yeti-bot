@@ -27,4 +27,15 @@ export class GitHubCheckPublisher {
   }): Promise<void> {
     return this.client.completeCheck(options);
   }
+
+  public async updateCheck(options: {
+    owner: string;
+    repo: string;
+    checkId: number;
+    status?: 'queued' | 'in_progress' | 'completed';
+    title?: string;
+    summary?: string;
+  }): Promise<void> {
+    return this.client.updateCheck(options);
+  }
 }

@@ -164,6 +164,10 @@ export class PostgresStore {
           artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           error_text TEXT,
           failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
+          burst_started_at TIMESTAMP WITH TIME ZONE,
+          cancel_requested_at TIMESTAMP WITH TIME ZONE,
+          cancel_reason TEXT,
+          cancel_propagated_at TIMESTAMP WITH TIME ZONE,
           created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -181,6 +185,10 @@ export class PostgresStore {
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS delivery_id TEXT;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS received_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS terminal_deadline TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS burst_started_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+        ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS cancel_propagated_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS publication_mode TEXT NOT NULL DEFAULT 'disabled';
         UPDATE review_runs SET publication_mode = 'disabled' WHERE publication_mode IS NULL;
         ALTER TABLE review_runs ALTER COLUMN publication_mode SET DEFAULT 'disabled';
@@ -239,6 +247,9 @@ export class PostgresStore {
           execution_attempt INTEGER NOT NULL DEFAULT 0,
           worker_token_digest VARCHAR(64),
           available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          cancel_requested_at TIMESTAMP WITH TIME ZONE,
+          cancel_reason TEXT,
+          cancel_propagated_at TIMESTAMP WITH TIME ZONE,
           created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -248,6 +259,14 @@ export class PostgresStore {
           ADD COLUMN IF NOT EXISTS execution_attempt INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS worker_token_digest VARCHAR(64);
+        ALTER TABLE review_dispatch_outbox
+          ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMP WITH TIME ZONE;
+        ALTER TABLE review_dispatch_outbox
+          ADD COLUMN IF NOT EXISTS cancel_reason TEXT;
+        ALTER TABLE review_dispatch_outbox
+          ADD COLUMN IF NOT EXISTS cancel_propagated_at TIMESTAMP WITH TIME ZONE;
+        CREATE INDEX IF NOT EXISTS review_dispatch_cancel_sweep_idx
+          ON review_dispatch_outbox (cancel_requested_at, cancel_propagated_at, projection_name);
         CREATE INDEX IF NOT EXISTS review_runs_delivery_idx ON review_runs (delivery_id);
 
         CREATE TABLE IF NOT EXISTS review_completion_outbox (
