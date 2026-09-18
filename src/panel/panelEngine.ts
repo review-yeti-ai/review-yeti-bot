@@ -3996,6 +3996,10 @@ export async function executePersonaPanel(options: {
         applicablePersonaIds: applicable.map((persona) => persona.id),
         personas,
         optionalFailures: [],
+        // Fourth PanelResult return site. Like the zero-lane and fast-ship short-circuits, this
+        // one skips the fan-out, so nothing else in the result reports elapsed time -- which is
+        // exactly when a missing wall clock goes unnoticed.
+        panelWallClockMs: Date.now() - panelStartedAt,
         quorum: { required: config.quorum, distinctProviders: [], satisfied: true },
         moderator: {
           providerId: (config.reviewers.providers.find((p) => p.enabled)?.id || 'none') as ProviderId,

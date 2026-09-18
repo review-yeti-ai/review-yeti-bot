@@ -399,3 +399,60 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     expect(result.panelWallClockMs!).toBeLessThanOrEqual(observedOuterWallMs);
   });
 });
+
+/**
+ * `panelWallClockMs` is set at THREE return sites in `executePersonaPanel`: the main result, the
+ * zero-lane non-evidence early return, and the fast-ship early return. Only the main one was
+ * exercised, so deleting the field from either early return -- or computing it from the wrong
+ * baseline -- left every test green while those paths silently reported no wall clock. Both early
+ * returns are short-circuits that skip the persona fan-out entirely, which is exactly when a
+ * "how long did this review actually take" number is easiest to lose and hardest to notice.
+ */
+describe('panelWallClockMs on early-return paths', () => {
+  const silentClient = { complete: vi.fn() };
+
+  it('is recorded when every applicable persona is gated not-applicable', async () => {
+    // A fourth short-circuit, found by accident while trying to reach fast-ship: every applicable
+    // persona gates itself not-applicable, so the fan-out is skipped and a full PanelResult is
+    // returned with no provider call. It was missing `panelWallClockMs` entirely -- the review
+    // named the zero-lane and fast-ship returns, not this one.
+    const config = buildTelemetryConfig(3);
+    const outerStart = Date.now();
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/security/notes.md', patch: '+ a docs line' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-gated',
+      client: silentClient as unknown as OmniRouteClient,
+    });
+    const outerWallMs = Date.now() - outerStart;
+
+    expect(silentClient.complete).not.toHaveBeenCalled();
+    expect(typeof result.panelWallClockMs).toBe('number');
+    expect(result.panelWallClockMs!).toBeGreaterThanOrEqual(0);
+    expect(result.panelWallClockMs!).toBeLessThanOrEqual(outerWallMs);
+  });
+
+  it('is recorded on the zero-lane non-evidence return', async () => {
+    const config = buildTelemetryConfig(3);
+    const outerStart = Date.now();
+    const result = await executePersonaPanel({
+      config,
+      // Matches no persona path, and is documentation -- the zero-lane non-evidence contract.
+      changedFiles: [{ path: 'docs/readme.md', patch: '+ a docs line' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-zero-lane',
+      client: silentClient as unknown as OmniRouteClient,
+    });
+    const outerWallMs = Date.now() - outerStart;
+
+    expect(result.zeroLaneNonEvidence).toBe(true);
+    expect(result.personas).toHaveLength(0);
+    expect(typeof result.panelWallClockMs).toBe('number');
+    expect(result.panelWallClockMs!).toBeGreaterThanOrEqual(0);
+    // Same containment invariant as the main-path test: a panel-internal interval cannot exceed
+    // the interval measured around the call. Catches a wrong baseline, not just a missing field.
+    expect(result.panelWallClockMs!).toBeLessThanOrEqual(outerWallMs);
+    expect(silentClient.complete).not.toHaveBeenCalled();
+  });
+});
