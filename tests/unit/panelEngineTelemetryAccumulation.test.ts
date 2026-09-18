@@ -412,22 +412,52 @@ describe('panelWallClockMs on early-return paths', () => {
   const silentClient = { complete: vi.fn() };
 
   it('is recorded when every applicable persona is gated not-applicable', async () => {
-    // A fourth short-circuit, found by accident while trying to reach fast-ship: every applicable
-    // persona gates itself not-applicable, so the fan-out is skipped and a full PanelResult is
-    // returned with no provider call. It was missing `panelWallClockMs` entirely -- the review
-    // named the zero-lane and fast-ship returns, not this one.
-    const config = buildTelemetryConfig(3);
+    // A fourth short-circuit: every applicable persona is gated out (a docs-only change against a
+    // broad path glob), so the panel returns a full PanelResult without running a lane. It was
+    // missing `panelWallClockMs` entirely -- the review named the zero-lane and fast-ship returns,
+    // not this one.
+    //
+    // Fixture mirrors `personaGating.test.ts`'s known-good gating shape rather than inventing one:
+    // broad `**/*` paths plus a pure-docs file, pre-checks off. An earlier version used a narrow
+    // `src/security/**` glob and stopped gating when upstream refined the gating rules, at which
+    // point the lane actually ran -- a test that silently stops exercising its own path.
+    const config = ctReviewConfigV3Schema.parse({
+      version: 3, profile: 'assertive', quorum: 1,
+      pre_checks: { classifier: { enabled: false }, analyzers: { enabled: false }, zoekt: { enabled: false } },
+      personas: [{
+        // The id matters: `evaluatePersonaGating` only gates personas whose id resolves to
+        // sec-lane or perf-lane -- every other persona returns `{skipped: false}` immediately.
+        // An earlier fixture used a descriptive id and never gated at all.
+        id: 'sec-lane', enabled: true, required: true,
+        charter: 'Security review for auth', paths: ['**/*'], providers: ['claude'], maxTurns: 2,
+      }],
+      reviewers: {
+        execution: 'personas', fallback: 'none', overall_timeout_s: 120,
+        providers: [{ id: 'claude', enabled: true, model: 'c', effort: 'high', review_timeout_s: 30, arbiter_timeout_s: 30 }],
+        arbiter: { order: ['claude'] },
+      },
+      path_instructions: [], rules: [], reviewer_effort: 'high',
+      confidence_threshold: 70, mascot: true, display: { mascot: true },
+    });
+
     const outerStart = Date.now();
     const result = await executePersonaPanel({
       config,
-      changedFiles: [{ path: 'src/security/notes.md', patch: '+ a docs line' }],
+      changedFiles: [{ path: 'docs/guide.md', patch: '+ a docs line' }],
       repository: 'calltelemetry/repo',
       headSha: 'head-sha-gated',
       client: silentClient as unknown as OmniRouteClient,
     });
     const outerWallMs = Date.now() - outerStart;
 
-    expect(silentClient.complete).not.toHaveBeenCalled();
+    // Pins that this is the gated path specifically, so it cannot drift onto a neighbouring
+    // short-circuit the way the earlier fixture did.
+    expect(result.personas.length).toBeGreaterThan(0);
+    // Every lane carries a notApplicable receipt -- that, not the absence of provider calls, is
+    // what identifies this path. (A downstream stage may still make one call; asserting zero
+    // calls made the test about something it does not actually own.)
+    expect(result.personas.every((p) => (p as { notApplicable?: boolean }).notApplicable)).toBe(true);
+
     expect(typeof result.panelWallClockMs).toBe('number');
     expect(result.panelWallClockMs!).toBeGreaterThanOrEqual(0);
     expect(result.panelWallClockMs!).toBeLessThanOrEqual(outerWallMs);
