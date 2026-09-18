@@ -41,6 +41,7 @@ import {
 import { buildFastShipPanelResult } from './fastShipResult';
 import { compactMessageWindow, MessageWindowPolicy } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
+import { TASK_DIMENSIONS } from './reviewTask';
 
 export const DEFAULT_CANONICAL_DOMAIN_PRIORITY: readonly DomainLane[] = [
   'security_auth',
@@ -154,7 +155,7 @@ export interface RepoFileProvider {
 }
 
 
-type StructuredOutputRole = 'persona' | 'moderator' | 'arbiter';
+type StructuredOutputRole = 'persona' | 'moderator' | 'arbiter' | 'plan';
 
 /**
  * Keep the provider-facing schema deliberately narrow.  The application validator remains the
@@ -200,6 +201,24 @@ export function buildPanelResponseFormat(
     personaRequired.push('mermaidDiagram');
   }
 
+  // The composed engine's single PLAN turn (src/panel/composedEngine.ts): a bounded list of
+  // review tasks, not a decision/verdict. `id`/`dimension`/`paths`/`question`/`rationale` mirror
+  // `ReviewTask` in `./reviewTask.ts` exactly -- that module's `validateTaskPlan` is the
+  // authoritative (deterministic, app-side) validator; this schema is only the provider-facing
+  // shape hint, same "narrow, app validator is authoritative" posture as every other role here.
+  const planTaskItems = {
+    type: 'object',
+    properties: {
+      id: { type: 'string' },
+      dimension: { type: 'string', enum: [...TASK_DIMENSIONS] },
+      paths: { type: 'array', items: { type: 'string' } },
+      question: { type: 'string' },
+      rationale: { type: 'string' },
+    },
+    required: ['id', 'dimension', 'paths', 'question', 'rationale'],
+    additionalProperties: false,
+  } as const;
+
   const schema = normalizedRole === 'persona'
     ? {
         type: 'object',
@@ -218,21 +237,32 @@ export function buildPanelResponseFormat(
           required: ['nonce', 'decision', 'findings'],
           additionalProperties: false,
         }
-      : {
-          type: 'object',
-          properties: {
-            nonce: { type: 'string' },
-            verdict: { type: 'string', enum: ['SHIP', 'FIX_FIRST', 'BLOCK'] },
-            rationale: { type: 'string' },
-          },
-          required: ['nonce', 'verdict', 'rationale'],
-          additionalProperties: false,
-        };
+      : normalizedRole === 'plan'
+        ? {
+            type: 'object',
+            properties: {
+              nonce: { type: 'string' },
+              tasks: { type: 'array', items: planTaskItems },
+            },
+            required: ['nonce', 'tasks'],
+            additionalProperties: false,
+          }
+        : {
+            type: 'object',
+            properties: {
+              nonce: { type: 'string' },
+              verdict: { type: 'string', enum: ['SHIP', 'FIX_FIRST', 'BLOCK'] },
+              rationale: { type: 'string' },
+            },
+            required: ['nonce', 'verdict', 'rationale'],
+            additionalProperties: false,
+          };
 
   const names: Record<StructuredOutputRole, string> = {
     persona: 'review_yeti_persona_v1',
     moderator: 'review_yeti_moderator_v1',
     arbiter: 'review_yeti_arbiter_v1',
+    plan: 'ct_review_plan_v1',
   };
   return {
     type: 'json_schema',
@@ -777,7 +807,7 @@ function pathMatches(pattern: string, path: string): boolean {
   return matchOne(pattern, path);
 }
 
-function isDocumentationOrAssetPath(filePath: string): boolean {
+export function isDocumentationOrAssetPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/').toLowerCase();
   return (
     normalized.startsWith('docs/') ||
