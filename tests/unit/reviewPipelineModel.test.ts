@@ -1,5 +1,5 @@
 import { timeBudgetMs } from '../support/timeBudget';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 
@@ -7,6 +7,18 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   ? path.resolve(__dirname, '../..')
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
+
+const originalOpenRouterBaseUrl = process.env.OPENROUTER_BASE_URL;
+beforeEach(() => {
+  process.env.OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+});
+afterEach(() => {
+  if (originalOpenRouterBaseUrl !== undefined) {
+    process.env.OPENROUTER_BASE_URL = originalOpenRouterBaseUrl;
+  } else {
+    delete process.env.OPENROUTER_BASE_URL;
+  }
+});
 
 const {
   analyzeFindingsPayload,
