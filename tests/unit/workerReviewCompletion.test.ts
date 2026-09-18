@@ -332,4 +332,108 @@ describe('WorkerReviewCompletion.v1', () => {
       /coordinates do not match/u,
     );
   });
+
+  describe('optional per-persona telemetry (Stage 0: turn-accumulated usage)', () => {
+    // Additive-only: `personaSchema` is `.strict()`, so this whole block exists to prove the new
+    // field is genuinely optional (no version bump / dispatcher change needed) rather than merely
+    // undocumented-but-accepted.
+    const turnUsage = (overrides: Record<string, unknown> = {}) => ({
+      turn: 1, kind: 'final', promptTokens: 100, completionTokens: 20, totalTokens: 120,
+      cachedTokens: 30, costUSD: 0.001, model: 'claude-5-sonnet', durationMs: 250,
+      ...overrides,
+    });
+
+    it('parses a persona that carries full per-turn telemetry', () => {
+      const parsed = parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [
+            lane('security', {
+              telemetry: {
+                model: 'claude-5-sonnet',
+                turnsCount: 3,
+                toolTurns: 1,
+                correctionTurns: 1,
+                promptTokens: 450,
+                completionTokens: 75,
+                totalTokens: 525,
+                cachedTokens: 80,
+                costUSD: 0.0042,
+                durationMs: 900,
+                turnUsages: [
+                  turnUsage({ turn: 1, kind: 'tool' }),
+                  turnUsage({ turn: 2, kind: 'correction', cachedTokens: 0 }),
+                  turnUsage({ turn: 3, kind: 'final' }),
+                ],
+              },
+            }),
+            lane('architecture'),
+          ],
+        },
+      }));
+      expect(parsed.result.personas[0]?.telemetry).toMatchObject({
+        turnsCount: 3, toolTurns: 1, correctionTurns: 1, totalTokens: 525, cachedTokens: 80,
+      });
+      expect(parsed.result.personas[0]?.telemetry?.turnUsages).toHaveLength(3);
+      expect(parsed.result.personas[0]?.telemetry?.turnUsages?.map((t) => t.kind)).toEqual(['tool', 'correction', 'final']);
+    });
+
+    it('still parses a persona with no telemetry field at all -- backward compatible, no version bump', () => {
+      // This is the pre-Stage-0 shape every existing caller (and every OTHER test in this file)
+      // sends. `telemetry` must be optional, not merely tolerated when present.
+      const parsed = parseWorkerReviewCompletion(completion());
+      expect(parsed.result.personas[0]).not.toHaveProperty('telemetry');
+      expect(parsed.version).toBe('WorkerReviewCompletion.v1');
+    });
+
+    it('parses telemetry with only a subset of its fields populated', () => {
+      const parsed = parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', { telemetry: { model: 'claude-5-sonnet', turnsCount: 1 } }), lane('architecture')],
+        },
+      }));
+      expect(parsed.result.personas[0]?.telemetry).toEqual({ model: 'claude-5-sonnet', turnsCount: 1 });
+    });
+
+    it('rejects an unrecognized key on the telemetry object (still .strict())', () => {
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', { telemetry: { turnsCount: 1, notARealField: true } }), lane('architecture')],
+        },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+
+    it('rejects an unrecognized key on a turnUsages entry', () => {
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', {
+            telemetry: { turnUsages: [{ ...turnUsage(), providerRawResponse: 'do-not-leak-this' }] },
+          }), lane('architecture')],
+        },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+
+    it('rejects a turnUsages entry with an invalid kind', () => {
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', {
+            telemetry: { turnUsages: [turnUsage({ kind: 'not-a-real-kind' })] },
+          }), lane('architecture')],
+        },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+
+    it('rejects a negative token count inside telemetry', () => {
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: {
+          ...completion().result,
+          personas: [lane('security', { telemetry: { promptTokens: -1 } }), lane('architecture')],
+        },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+  });
 });

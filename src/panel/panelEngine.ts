@@ -42,7 +42,9 @@ import { buildFastShipPanelResult } from './fastShipResult';
 export type {
   FindingSeverity,
   FixOption,
+  LaneAggregateUsage,
   LaneTokenUsage,
+  LaneTurnUsage,
   PanelFinding,
   PersonaLaneResult,
   PanelResult,
@@ -51,7 +53,9 @@ export type {
 import type {
   FindingSeverity,
   FixOption,
+  LaneAggregateUsage,
   LaneTokenUsage,
+  LaneTurnUsage,
   PanelFinding,
   PersonaLaneResult,
   PanelResult,
@@ -1412,7 +1416,19 @@ async function invoke(
     onFirstToken?: () => void;
     signal?: AbortSignal;
   }
-): Promise<{ response: OpenRouterResponse; parsed: any; durationMs: number; turnsCount?: number; toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> }> {
+): Promise<{
+  response: OpenRouterResponse;
+  parsed: any;
+  durationMs: number;
+  turnsCount?: number;
+  toolTurns?: number;
+  correctionTurns?: number;
+  toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>;
+  /** One entry per provider call this invocation made. See `LaneTurnUsage`'s doc comment. */
+  turnUsages?: LaneTurnUsage[];
+  /** Sum of `turnUsages`. See `LaneAggregateUsage`'s doc comment. */
+  aggregateUsage?: LaneAggregateUsage;
+}> {
   throwIfPanelAborted(options?.signal);
   const requestNonce = nonce();
   const baseRequestPolicy = options?.requestPolicy;
@@ -1632,8 +1648,16 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 
   let finalResponse: OpenRouterResponse | null = null;
   let parsedResult: any = null;
-  let turnsCount = 1;
+  // Every iteration of the loop below issues exactly one real provider call -- a tool-exploration
+  // turn, a bounded structured-output correction, or the terminal turn -- so this increments once
+  // per iteration, not only inside the tool-call branch. A 15-turn lane that spends turns on
+  // correction or investigation without ever calling a tool previously reported turnsCount=1 no
+  // matter how many real calls it made.
+  let turnsCount = 0;
+  let toolTurns = 0;
+  let correctionTurns = 0;
   const toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
+  const turnUsages: LaneTurnUsage[] = [];
   let structuredCorrectionAttempts = 0;
   let nativeFinalizationRequested = false;
 
@@ -1655,6 +1679,7 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         ? `NATIVE TURN ${iter + 1} OF ${maxTurns}; REMAINING TURNS: ${maxTurns - iter - 1}. This is the terminal finalization turn. Do not request a tool. Return exactly one unfenced JSON object that matches the role-specific final contract${strictNativeFinalMode ? ' and strict schema' : ''} and has exact top-level nonce "${requestNonce}".`
         : `NATIVE TURN ${iter + 1} OF ${maxTurns}; REMAINING TURNS: ${maxTurns - iter - 1}. This is an investigation turn. Return exactly one unfenced JSON object: either the nonce-free tool envelope {"tool":"tool_name","args":{}} or a complete final result with exact top-level nonce "${requestNonce}".`,)
       : messages;
+    const turnStartedAt = Date.now();
     const response = await raceWithPanelAbort(
       Promise.resolve().then(() => client.complete({
         ...(turnRequestPolicy || {}),
@@ -1680,6 +1705,24 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
     );
     throwIfPanelAborted(options?.signal);
     finalResponse = response;
+    turnsCount++;
+    // Recorded once per real provider call, independent of what this turn turns out to be (tool
+    // exploration, a correction, or the terminal result). `kind` starts as 'final' -- the common
+    // case, since most turns are the terminal turn -- and is downgraded to 'tool' or 'correction'
+    // below at the exact branch that decides this turn was not terminal. The object is captured by
+    // reference so those branches can mutate it in place instead of re-deriving the same counters.
+    const turnUsage: LaneTurnUsage = {
+      turn: turnsCount,
+      kind: 'final',
+      promptTokens: response.usage?.prompt || 0,
+      completionTokens: response.usage?.completion || 0,
+      totalTokens: response.usage?.total || 0,
+      cachedTokens: resolveCachedTokens(response.usage),
+      costUSD: response.costUSD ?? null,
+      model: response.model,
+      durationMs: Date.now() - turnStartedAt,
+    };
+    turnUsages.push(turnUsage);
     // Native tool calls are complete JSON objects. Parse them before attempting final-result
     // parsing, but only while an investigation turn remains; the reserved final turn is terminal.
     const nativeToolCall = nativeJsonMode && !nativeFinalTurn
@@ -1712,6 +1755,8 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
         break;
       }
       structuredCorrectionAttempts += 1;
+      correctionTurns++;
+      turnUsage.kind = 'correction';
       if (nativeJsonMode) nativeFinalizationRequested = true;
       messages.push({ role: 'assistant', content: response.content });
       messages.push({
@@ -1741,7 +1786,8 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
 
       if (toolCall && toolCall.tool) {
         throwIfPanelAborted(options?.signal);
-        turnsCount++;
+        toolTurns++;
+        turnUsage.kind = 'tool';
         const tName = toolCall.tool;
         const targetPath = toolCall.args?.path || toolCall.args?.filePath || '';
         const searchQ = toolCall.args?.query || toolCall.args?.pattern || '';
@@ -1933,6 +1979,8 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
       // failing closed. This is separate from tool exploration and never infers a verdict.
       if (structuredCorrectionAttempts < 1 && iter + 1 < maxTurns) {
         structuredCorrectionAttempts += 1;
+        correctionTurns++;
+        turnUsage.kind = 'correction';
         if (nativeJsonMode) nativeFinalizationRequested = true;
         messages.push({ role: 'assistant', content: response.content });
         messages.push({
@@ -1979,12 +2027,24 @@ ${['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort) ?
     throw new Error('Pi agent harness failed to receive response');
   }
 
+  const aggregateUsage: LaneAggregateUsage = turnUsages.reduce((acc, turn) => ({
+    promptTokens: acc.promptTokens + turn.promptTokens,
+    completionTokens: acc.completionTokens + turn.completionTokens,
+    totalTokens: acc.totalTokens + turn.totalTokens,
+    cachedTokens: acc.cachedTokens + turn.cachedTokens,
+    costUSD: acc.costUSD + (turn.costUSD || 0),
+  }), { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, costUSD: 0 });
+
   return {
     response: finalResponse,
     parsed: parsedResult,
     durationMs: Date.now() - started,
     turnsCount,
+    toolTurns,
+    correctionTurns,
     toolCalls,
+    turnUsages,
+    aggregateUsage,
   };
 }
 
@@ -2494,7 +2554,11 @@ async function runPersona(
             costUSD: result.response.costUSD,
             durationMs: result.durationMs,
             turnsCount: result.turnsCount || 1,
+            toolTurns: result.toolTurns || 0,
+            correctionTurns: result.correctionTurns || 0,
             toolCalls: result.toolCalls || [],
+            turnUsages: result.turnUsages || [],
+            aggregateUsage: result.aggregateUsage,
             promptTokens,
             completionTokens,
             totalTokens,
@@ -2786,6 +2850,7 @@ export async function executePersonaPanel(options: {
         personas: [],
         optionalFailures: [],
         zeroLaneNonEvidence: true,
+        panelWallClockMs: Date.now() - panelStartedAt,
         quorum: { required: 0, distinctProviders: [], satisfied: true },
         moderator: {
           providerId: arbiterId,
@@ -2878,7 +2943,11 @@ export async function executePersonaPanel(options: {
           },
         });
 
-        return { ...fastShipResult, applicablePersonaIds: applicable.map((persona) => persona.id) };
+        return {
+          ...fastShipResult,
+          applicablePersonaIds: applicable.map((persona) => persona.id),
+          panelWallClockMs: Date.now() - panelStartedAt,
+        };
       }
     }
 
@@ -3527,6 +3596,7 @@ export async function executePersonaPanel(options: {
         headSha,
         repositoryVisibility,
         applicablePersonaIds: applicable.map((persona) => persona.id),
+        panelWallClockMs: Date.now() - panelStartedAt,
         personas,
         optionalFailures,
         quorum: { required: config.quorum, distinctProviders, satisfied: true },

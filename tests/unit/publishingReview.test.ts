@@ -295,6 +295,45 @@ describe('runPublishingReviewWorker', () => {
     );
   });
 
+  it('carries per-lane turn/tool/correction counts and the panel wall clock onto the receipt (Stage 0 telemetry)', async () => {
+    // A lane's `turnUsages`/`aggregateUsage`/`toolTurns`/`correctionTurns` and the panel's own
+    // `panelWallClockMs` are new, additive `PanelResult` fields -- see `src/panel/panelEngine.ts`.
+    // This proves they reach the published receipt rather than being silently dropped by the
+    // `personaMetrics` mapping or the receipt's `metrics` block.
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{
+          id: 'sec-lane', findings: [], turnsCount: 3, toolTurns: 1, correctionTurns: 1,
+          toolCalls: [{ tool: 'grep_search' }],
+          promptTokens: 200, completionTokens: 30, totalTokens: 230, durationMs: 300,
+          model: 'ollama/glm-5.3-flash',
+          aggregateUsage: { promptTokens: 450, completionTokens: 75, totalTokens: 525, cachedTokens: 80, costUSD: 0.0042 },
+        }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+        panelWallClockMs: 180,
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.conclusion).toBe('success');
+    expect(receipt.personas?.[0]).toMatchObject({
+      id: 'sec-lane', turnsCount: 3, toolTurns: 1, correctionTurns: 1,
+      aggregateUsage: { promptTokens: 450, completionTokens: 75, totalTokens: 525, cachedTokens: 80, costUSD: 0.0042 },
+    });
+    // `metrics.totalDurationMs` remains the SUM of lane durations (unchanged behaviour); the wall
+    // clock is a distinct, additional field, never a replacement for it.
+    expect(receipt.metrics?.totalDurationMs).toBe(300);
+    expect(receipt.metrics?.panelWallClockMs).toBe(180);
+
+    const summary = String(((d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('Telemetry: 3 turns, 1 tool calls, 230 tokens across 1 lanes (300ms).');
+    expect(summary).toContain('Panel wall clock: 180ms');
+  });
+
   it('publishes failure when the panel blocks', async () => {
     // The finding must carry a path inside the diff. Arbitration drops findings
     // it cannot attribute to a changed file, and the blocking count is now taken

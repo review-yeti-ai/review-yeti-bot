@@ -42,6 +42,37 @@ export interface LaneTokenUsage {
   totalTokens: number;
 }
 
+/**
+ * Bounded, numeric-only usage for exactly one provider turn inside a lane's `invoke()` loop.
+ * `kind` records what that turn did: it requested a read-only tool, it was a bounded
+ * structured-output correction, or it produced (or attempted to produce) the lane's final
+ * result. A 15-turn lane makes up to 15 real provider calls; without one entry per call here,
+ * only the last turn's tokens are ever visible and every aggregate figure is low by roughly
+ * (turns - 1) prefills.
+ */
+export interface LaneTurnUsage {
+  turn: number;
+  kind: 'tool' | 'correction' | 'final';
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens: number;
+  costUSD: number | null;
+  model: string;
+  durationMs: number;
+}
+
+/** Sum of every `LaneTurnUsage` entry for a lane -- the true per-lane total, as opposed to the
+ * single-turn `usage`/`promptTokens`/`completionTokens`/`totalTokens` fields below, which have
+ * always reflected only the lane's terminal turn. */
+export interface LaneAggregateUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens: number;
+  costUSD: number;
+}
+
 export interface PersonaLaneResult {
   id: string;
   required: boolean;
@@ -53,9 +84,18 @@ export interface PersonaLaneResult {
   costUSD: number | null;
   durationMs: number;
   turnsCount?: number;
+  /** Turns in which the lane requested a read-only tool, a strict subset of `turnsCount`. */
+  toolTurns?: number;
+  /** Turns spent on a bounded structured-output correction, a strict subset of `turnsCount`. */
+  correctionTurns?: number;
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  /** One entry per provider call this lane made. Optional only so pre-existing fixtures that
+   * construct a `PersonaLaneResult` literal without it still type-check; a real run always sets it. */
+  turnUsages?: LaneTurnUsage[];
+  /** Sum of `turnUsages`. See that field's doc comment for why this differs from `usage` above. */
+  aggregateUsage?: LaneAggregateUsage;
   toolCalls?: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>;
   isRedTeam?: boolean;
   crossExaminedModel?: string;
@@ -110,6 +150,12 @@ export interface PanelResult {
   mermaidDiagram?: string;
   prSummary?: string;
   summary?: string;
+  /** Wall-clock duration of the whole panel run (concurrent persona fan-out, then moderator, then
+   * arbiter), as opposed to the SUM of individual lane `durationMs` values computed elsewhere.
+   * Under concurrent fan-out that sum overstates wall time; comparing two engines on the sum alone
+   * is meaningless. Optional only so pre-existing fixtures that construct a `PanelResult` literal
+   * without it still type-check; a real run always sets it. */
+  panelWallClockMs?: number;
 }
 
 /**

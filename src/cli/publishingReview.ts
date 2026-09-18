@@ -55,7 +55,7 @@ import { loadCompiledIndex, defaultDomainsDir, type CompiledDomainIndex } from '
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
 import { MAX_PERSONAS, parseWorkerReviewCompletion, type WorkerReviewResult } from '../review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
-import type { PanelResult, LaneTokenUsage } from '../panel/types';
+import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/types';
 
 import { parseChangedFiles } from '../review/changedFiles';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
@@ -127,10 +127,18 @@ export interface PublishingReviewPersonaMetrics {
   findingsCount: number;
   blockingCount: number;
   turnsCount: number;
+  /** Turns in which the lane requested a read-only tool, a strict subset of `turnsCount`. */
+  toolTurns?: number;
+  /** Turns spent on a bounded structured-output correction, a strict subset of `turnsCount`. */
+  correctionTurns?: number;
   toolCallsCount: number;
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** Sum of every real provider call this lane made (see `LaneAggregateUsage`), as opposed to the
+   * fields above, which have always reflected only the lane's terminal turn. Optional so a panel
+   * result that predates per-turn accumulation still degrades safely. */
+  aggregateUsage?: LaneAggregateUsage;
   durationMs: number;
   /** The concrete model the provider actually reported for this lane's call, which may differ
    * from the requested `transport.model` when that value is an alias. */
@@ -185,7 +193,12 @@ export interface PublishingReviewReceipt {
     totalTokens: number;
     totalTurns: number;
     totalToolCalls: number;
+    /** SUM of every lane's individual duration -- overstates wall time under concurrent fan-out.
+     * See `panelWallClockMs` for the figure that actually reflects how long the run took. */
     totalDurationMs: number;
+    /** The panel's own wall-clock measurement. Optional so a panel result that predates this field
+     * still produces a receipt. */
+    panelWallClockMs?: number;
   };
 }
 
@@ -383,9 +396,16 @@ function renderTransportSummary(requestedModel: string, resolvedModel?: string):
 
 function renderTelemetrySummary(telemetry: {
   totalTurns: number; totalToolCalls: number; totalTokens: number; laneCount: number; totalDurationMs: number;
+  /** The panel's own wall-clock measurement. Distinct from `totalDurationMs`, which SUMS every
+   * lane's individual duration and overstates wall time under concurrent fan-out. Optional so a
+   * panel result that predates this field still renders the base line unchanged. */
+  panelWallClockMs?: number;
 }): string {
-  return `Telemetry: ${telemetry.totalTurns} turns, ${telemetry.totalToolCalls} tool calls, `
+  const base = `Telemetry: ${telemetry.totalTurns} turns, ${telemetry.totalToolCalls} tool calls, `
     + `${telemetry.totalTokens} tokens across ${telemetry.laneCount} lanes (${telemetry.totalDurationMs}ms).`;
+  return typeof telemetry.panelWallClockMs === 'number'
+    ? `${base} Panel wall clock: ${telemetry.panelWallClockMs}ms (the figure above sums lane durations, not wall time).`
+    : base;
 }
 
 /**
@@ -650,7 +670,7 @@ export async function runPublishingReviewWorker(
       panelEvidence?: {
         requestedModel: string;
         resolvedModel?: string;
-        telemetry: { totalTurns: number; totalToolCalls: number; totalTokens: number; laneCount: number; totalDurationMs: number };
+        telemetry: { totalTurns: number; totalToolCalls: number; totalTokens: number; laneCount: number; totalDurationMs: number; panelWallClockMs?: number };
         failedLanes: PublishingReviewFailedLane[];
       };
     },
@@ -948,10 +968,13 @@ export async function runPublishingReviewWorker(
         findingsCount: pFindings.length,
         blockingCount: pBlocking.length,
         turnsCount: p.turnsCount || 1,
+        ...(typeof p.toolTurns === 'number' ? { toolTurns: p.toolTurns } : {}),
+        ...(typeof p.correctionTurns === 'number' ? { correctionTurns: p.correctionTurns } : {}),
         toolCallsCount: (p.toolCalls || []).length,
         promptTokens: p.promptTokens || p.usage?.prompt || 0,
         completionTokens: p.completionTokens || p.usage?.completion || 0,
         totalTokens: p.totalTokens || p.usage?.total || 0,
+        ...(p.aggregateUsage ? { aggregateUsage: p.aggregateUsage } : {}),
         durationMs: p.durationMs || 0,
         ...(p.model ? { model: p.model } : {}),
       };
@@ -963,6 +986,13 @@ export async function runPublishingReviewWorker(
     const totalTurns = personaMetrics.reduce((sum, p) => sum + p.turnsCount, 0);
     const totalToolCalls = personaMetrics.reduce((sum, p) => sum + p.toolCallsCount, 0);
     const totalDurationMs = personaMetrics.reduce((sum, p) => sum + p.durationMs, 0);
+    // The panel's own wall-clock measurement, distinct from `totalDurationMs` above: that figure
+    // SUMS every lane's individual duration, which overstates wall time under the panel's
+    // concurrent persona fan-out (MAX_CONCURRENT_PERSONAS). Comparing two engines on the sum alone
+    // is meaningless; this is the one number that actually reflects how long the run took.
+    // Optional so a `panelRunner` that predates this field (e.g. a pre-existing test double) still
+    // degrades safely instead of reporting a fabricated `0`.
+    const panelWallClockMs = panelResult.panelWallClockMs;
     // `transport.model` is the exact configured `REVIEW_MODEL` (alias or concrete, depending on
     // deployment). The resolved concrete model is whatever the provider actually reported on a
     // real call: prefer a completed lane's, and fall back to a failed lane's last-known model so a
@@ -1019,7 +1049,7 @@ export async function runPublishingReviewWorker(
           renderCoverageSummary(coverage),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
-          renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs }),
+          renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs }),
         ];
 
     if (recoverablePanelFailure) {
@@ -1033,7 +1063,7 @@ export async function runPublishingReviewWorker(
         panelEvidence: {
           requestedModel: transport.model,
           resolvedModel: resolvedTransportModel,
-          telemetry: { totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs },
+          telemetry: { totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs },
           failedLanes,
         },
       });
@@ -1079,14 +1109,60 @@ export async function runPublishingReviewWorker(
     const buildReviewResult = () => {
       const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
         'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
-      const personas = panelResult.personas.map((persona) => ({ id: persona.id,
-        // A lane that completed without stating a decision is read from its
-        // findings: evidence must not be dropped for a missing label.
-        decision: persona.decision ?? (persona.findings.length > 0 ? 'FINDINGS' : 'APPROVE'),
-        status: 'COMPLETE' as const,
-        findings: persona.findings.map((finding) => Object.fromEntries(
-          Object.entries(finding).filter(([key, value]) => findingKeys.has(key) && value !== undefined))),
-      }));
+      // Additive, OPTIONAL per-persona telemetry: the accumulated per-turn usage this lane's
+      // `invoke()` loop actually made, not just its terminal turn. Only emitted when the panel
+      // result actually carries it, so a `panelRunner` fixture that predates per-turn accumulation
+      // (or a fast-ship/zero-lane result with no completed lanes) omits the field entirely instead
+      // of publishing a fabricated zero. `personaSchema` in `workerReviewCompletion.ts` is
+      // `.strict()`: every key here must exist there too.
+      const buildPersonaTelemetry = (persona: any) => {
+        const aggregate = persona.aggregateUsage;
+        const hasAggregate = aggregate && typeof aggregate === 'object';
+        const hasTurnUsages = Array.isArray(persona.turnUsages) && persona.turnUsages.length > 0;
+        const hasAnyTelemetry = hasAggregate || hasTurnUsages
+          || typeof persona.turnsCount === 'number' || typeof persona.model === 'string';
+        if (!hasAnyTelemetry) return undefined;
+        return {
+          ...(typeof persona.model === 'string' ? { model: persona.model } : {}),
+          ...(typeof persona.turnsCount === 'number' ? { turnsCount: persona.turnsCount } : {}),
+          ...(typeof persona.toolTurns === 'number' ? { toolTurns: persona.toolTurns } : {}),
+          ...(typeof persona.correctionTurns === 'number' ? { correctionTurns: persona.correctionTurns } : {}),
+          ...(typeof persona.durationMs === 'number' ? { durationMs: persona.durationMs } : {}),
+          ...(hasAggregate ? {
+            promptTokens: aggregate.promptTokens,
+            completionTokens: aggregate.completionTokens,
+            totalTokens: aggregate.totalTokens,
+            cachedTokens: aggregate.cachedTokens,
+            costUSD: aggregate.costUSD,
+          } : {}),
+          ...(hasTurnUsages ? {
+            turnUsages: persona.turnUsages.map((turn: any) => ({
+              turn: turn.turn,
+              kind: turn.kind,
+              promptTokens: turn.promptTokens,
+              completionTokens: turn.completionTokens,
+              totalTokens: turn.totalTokens,
+              cachedTokens: turn.cachedTokens,
+              costUSD: turn.costUSD,
+              model: turn.model,
+              durationMs: turn.durationMs,
+            })),
+          } : {}),
+        };
+      };
+      const personas = panelResult.personas.map((persona) => {
+        const telemetry = buildPersonaTelemetry(persona);
+        return {
+          id: persona.id,
+          // A lane that completed without stating a decision is read from its
+          // findings: evidence must not be dropped for a missing label.
+          decision: persona.decision ?? (persona.findings.length > 0 ? 'FINDINGS' : 'APPROVE'),
+          status: 'COMPLETE' as const,
+          findings: persona.findings.map((finding) => Object.fromEntries(
+            Object.entries(finding).filter(([key, value]) => findingKeys.has(key) && value !== undefined))),
+          ...(telemetry ? { telemetry } : {}),
+        };
+      });
       // Same coded-reason-first precedence as the published check's `failedLanes` above: this is
       // the authoritative service's own record of why each lane failed and must not independently
       // drift from it by re-deriving a class from prose here.
@@ -1174,6 +1250,7 @@ export async function runPublishingReviewWorker(
         totalTurns,
         totalToolCalls,
         totalDurationMs,
+        ...(typeof panelWallClockMs === 'number' ? { panelWallClockMs } : {}),
       },
     };
     } finally {

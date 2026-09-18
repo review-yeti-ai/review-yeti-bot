@@ -56,6 +56,49 @@ const findingSchema = z.object({
   }
 });
 
+/** MAX_INVESTIGATION_TURNS in `panelEngine.ts` is 15; this bound is deliberately a little larger
+ * so a future increase there does not also require a schema change here, while still rejecting an
+ * unbounded array. Not imported directly -- a worker-completion schema must not reach into the
+ * panel engine module for a plain numeric constant. */
+const MAX_TURN_USAGES = 32;
+
+/** One real provider call inside a persona lane's `invoke()` loop. Bounded and strictly numeric
+ * (plus the resolved model string) -- never provider prompt/response text -- so it is safe on this
+ * boundary the same way the rest of this schema is. */
+const laneTurnUsageSchema = z.object({
+  turn: positiveInteger,
+  kind: z.enum(['tool', 'correction', 'final']),
+  promptTokens: boundedInteger,
+  completionTokens: boundedInteger,
+  totalTokens: boundedInteger,
+  cachedTokens: boundedInteger,
+  costUSD: z.number().finite().nonnegative().nullable(),
+  model: z.string().max(256),
+  durationMs: boundedInteger,
+}).strict();
+
+/**
+ * OPTIONAL, additive per-persona telemetry (Stage 0 / ct-meta review-yeti telemetry work): the
+ * lane's accumulated usage across every turn its `invoke()` loop made, not just the terminal turn
+ * the rest of this schema has always reported. Every field is optional and the object itself is
+ * optional on `personaSchema` below, so an older worker that never populates it -- or a panel
+ * result with no completed lanes -- still parses cleanly. This keeps `WorkerReviewCompletion.v1`
+ * backward compatible: no version bump, no dispatcher change required to read it.
+ */
+const personaTelemetrySchema = z.object({
+  model: z.string().max(256).optional(),
+  turnsCount: boundedInteger.optional(),
+  toolTurns: boundedInteger.optional(),
+  correctionTurns: boundedInteger.optional(),
+  promptTokens: boundedInteger.optional(),
+  completionTokens: boundedInteger.optional(),
+  totalTokens: boundedInteger.optional(),
+  cachedTokens: boundedInteger.optional(),
+  costUSD: z.number().finite().nonnegative().nullable().optional(),
+  durationMs: boundedInteger.optional(),
+  turnUsages: z.array(laneTurnUsageSchema).max(MAX_TURN_USAGES).optional(),
+}).strict();
+
 const personaSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u),
   decision: z.enum(['APPROVE', 'FINDINGS', 'ERROR']),
@@ -63,6 +106,8 @@ const personaSchema = z.object({
   /** Bounded operational classification only; provider text/transcripts never cross this boundary. */
   errorClass: z.enum(workerFailureClasses).optional(),
   findings: z.array(findingSchema).max(MAX_FINDINGS_PER_PERSONA),
+  /** See `personaTelemetrySchema` above. */
+  telemetry: personaTelemetrySchema.optional(),
 }).strict().superRefine((persona, context) => {
   const errorLane = persona.decision === 'ERROR' || persona.status === 'ERROR';
   if (errorLane && persona.errorClass === undefined) {
