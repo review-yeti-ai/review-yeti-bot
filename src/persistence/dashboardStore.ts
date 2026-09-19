@@ -582,7 +582,7 @@ export class DashboardStore {
 - Do NOT flag micro-optimizations in cold execution paths (e.g. initialization or CLI startup scripts) unless performance degradation is significant.
 - Ignore minor string concatenation choices when total execution impact is negligible.`,
             paths: ['**/*'],
-            providers: ['synthetic', 'claude'],
+            providers: ['opencode', 'claude'],
           },
           quality: {
             id: 'quality',
@@ -757,7 +757,7 @@ export class DashboardStore {
 - Do NOT flag missing retry logic on idempotent or lightweight local helper operations.
 - Suppress logging format suggestions unless essential context keys (e.g. requestId, tenantId) are omitted.`,
             paths: ['**/*'],
-            providers: ['synthetic', 'claude'],
+            providers: ['opencode', 'claude'],
           },
           devops: {
             id: 'devops',
@@ -792,7 +792,7 @@ export class DashboardStore {
 - Do NOT flag Dockerfile comment styles or label ordering if security and build performance standards are met.
 - Suppress warnings on development/testing container configs unless applied to production manifests.`,
             paths: ['**/*'],
-            providers: ['synthetic', 'codex'],
+            providers: ['opencode', 'codex'],
           },
           finops: {
             id: 'finops',
@@ -827,7 +827,7 @@ export class DashboardStore {
 - Do NOT flag minor token count variations in low-frequency system execution paths.
 - Suppress prompt optimization suggestions if context truncation threatens review coverage or finding accuracy.`,
             paths: ['**/*'],
-            providers: ['synthetic'],
+            providers: ['opencode'],
           },
           red_team: {
             id: 'red_team',

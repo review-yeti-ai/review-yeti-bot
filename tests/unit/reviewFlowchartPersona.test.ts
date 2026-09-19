@@ -127,7 +127,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
         charter: 'builtin:review-flowchart',
         model: 'claude-3-5-sonnet',
         paths: ['**/*'],
-        providers: ['synthetic'],
+        providers: ['opencode'],
       });
 
       const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
