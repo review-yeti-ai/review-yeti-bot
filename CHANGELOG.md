@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.79.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.78.0...v1.79.0) (2026-09-19)
+
+
+### Features
+
+* **arbitration:** let callers pin panelSize so a task list cannot loosen the merge gate ([#868](https://github.com/review-yeti-ai/review-yeti-bot/issues/868)) ([907b5d5](https://github.com/review-yeti-ai/review-yeti-bot/commit/907b5d59a1e1a329c1734a65b1fbad6abc0c40cc))
+* **panel:** add review task plan data model and validator ([#869](https://github.com/review-yeti-ai/review-yeti-bot/issues/869)) ([e0f2933](https://github.com/review-yeti-ai/review-yeti-bot/commit/e0f293384d6dc998a01481ace53dd9bf3f8e69e0))
+* **panel:** add turn-window compaction for the persona tool loop ([#870](https://github.com/review-yeti-ai/review-yeti-bot/issues/870)) ([3fc6855](https://github.com/review-yeti-ai/review-yeti-bot/commit/3fc6855f3f16e354b8b9bf537717334b7ae5dafb))
+* **panel:** composed single-context review engine (REVIEW_ENGINE flag) ([#875](https://github.com/review-yeti-ai/review-yeti-bot/issues/875)) ([afb72ec](https://github.com/review-yeti-ai/review-yeti-bot/commit/afb72ecbce5999bb89baf17bd9a18a0127af8eb0))
+* **panel:** run the composed engine as non-gating shadow evidence ([#880](https://github.com/review-yeti-ai/review-yeti-bot/issues/880)) ([b1d7d4b](https://github.com/review-yeti-ai/review-yeti-bot/commit/b1d7d4b467136b7021924865612ce849d4939f54))
+* **policy:** make review engine selection base-policy driven ([#877](https://github.com/review-yeti-ai/review-yeti-bot/issues/877)) ([1b104f6](https://github.com/review-yeti-ai/review-yeti-bot/commit/1b104f6c91447efd133f47ff2457a5bca91feb9a))
+* **pre-checks:** deterministic Symbol Resolution Appendix ([#881](https://github.com/review-yeti-ai/review-yeti-bot/issues/881)) ([69f2e8c](https://github.com/review-yeti-ai/review-yeti-bot/commit/69f2e8c49ee1d291075603feb523498997fd1eca))
+
+
+### Bug Fixes
+
+* **config:** retire synthetic from the default review roster ([#883](https://github.com/review-yeti-ai/review-yeti-bot/issues/883)) ([407411c](https://github.com/review-yeti-ai/review-yeti-bot/commit/407411c5169d278dededd623322f87be8702184e))
+* **generator:** make the provider catalog a single source of truth (REL-985) ([#884](https://github.com/review-yeti-ai/review-yeti-bot/issues/884)) ([6a11efa](https://github.com/review-yeti-ai/review-yeti-bot/commit/6a11efa4e0b25f2d4bb7c29dcb1f106437c30ee6))
+* **models:** move review defaults to flash/light and retire glm-5.2 ([#882](https://github.com/review-yeti-ai/review-yeti-bot/issues/882)) ([66fccf9](https://github.com/review-yeti-ai/review-yeti-bot/commit/66fccf9fa2f18844a4346e76020a246cb5b26973))
+* **panel:** give the composed engine the transport resilience it lost with fan-out ([#876](https://github.com/review-yeti-ai/review-yeti-bot/issues/876)) ([fd74290](https://github.com/review-yeti-ai/review-yeti-bot/commit/fd74290b5f7da0f2d2218b6a51762bb2b4c48828))
+* **panel:** make a persona coverage gap actionable, not an internal error ([#867](https://github.com/review-yeti-ai/review-yeti-bot/issues/867)) ([7252578](https://github.com/review-yeti-ai/review-yeti-bot/commit/725257862a5e5fb5f1fecbd6af960ca019a49b90))
+* **panel:** wire the composed deadline, reject unknown policy keys, clamp the env override ([#879](https://github.com/review-yeti-ai/review-yeti-bot/issues/879)) ([4c00e11](https://github.com/review-yeti-ai/review-yeti-bot/commit/4c00e114ba8a2fabd912418ba5fc7fcae34fc705))
+* **telemetry:** carry panelWallClockMs and toolCalls across the completion boundary ([#871](https://github.com/review-yeti-ai/review-yeti-bot/issues/871)) ([a0a92f8](https://github.com/review-yeti-ai/review-yeti-bot/commit/a0a92f861c018364f1c020cded9a0aef53788e08))
+
 ## [1.78.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.77.0...v1.78.0) (2026-09-18)
 
 
