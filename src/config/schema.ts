@@ -41,6 +41,63 @@ export function isBannedModel(_modelName?: string | null): boolean {
   return false;
 }
 
+/**
+ * The per-provider model catalog that `scripts/generate-omniroute-providers.ts` renders into
+ * `src/types/providers.generated.ts`.
+ *
+ * It lives here because it used to live inside the generator as inline literals, and those
+ * literals went stale. The checked-in generated file carried newer values, so running the
+ * generator -- the process its own header instructs you to run -- silently regressed four
+ * defaults (`openai` to `gpt-4o`, `anthropic` to `claude-3-5-sonnet`, `gemini` to
+ * `gemini-1.5-pro`, `deepseek` to `deepseek-v3`) and dropped newer entries from several
+ * `supportedModels` lists. Four lines in a sixty-line diff, none obviously wrong alone.
+ *
+ * `glm` and `codex` deliberately carry no `defaultModel` here: theirs comes from
+ * `V3_PROVIDER_MODELS`, which the generator reads directly. One source per value, never two.
+ */
+export const GENERATED_PROVIDER_CATALOG: Record<string, { defaultModel?: string; supportedModels: string[] }> = {
+  openai: {
+    defaultModel: 'openai/gpt-5.6-luna:high',
+    supportedModels: ['openai/gpt-5.6-luna:high', 'openai/gpt-5.6-luna', 'openrouter/5.6-luna-high', 'gpt-5.6-sol', 'o3-mini', 'gpt-4o', 'gpt-4o-mini'],
+  },
+  anthropic: {
+    defaultModel: 'claude-5-haiku:high',
+    supportedModels: ['claude-5-haiku:high', 'claude-5-haiku', 'claude-3-7-sonnet', 'claude-5-sonnet', 'claude-opus-4-8', 'claude-3-5-sonnet', 'agy/claude-opus-4-6-thinking'],
+  },
+  gemini: {
+    defaultModel: 'google/gemini-3.7-flash:high',
+    supportedModels: ['google/gemini-3.7-flash:high', 'google/gemini-3.7-flash', 'google/gemini-3.6-flash', 'google/gemini-2.5-pro'],
+  },
+  grok: {
+    supportedModels: ['grok-cli/grok-4.5', 'grok-2'],
+  },
+  deepseek: {
+    defaultModel: 'deepseek/deepseek-v4-flash-0731:high',
+    supportedModels: ['deepseek/deepseek-v4-flash-0731:high', 'deepseek/deepseek-v4-flash-0731:low', 'accounts/fireworks/models/deepseek-v4-flash-0731', 'deepseek-v4-pro', 'deepseek-r1', 'deepseek-v3'],
+  },
+  glm: {
+    supportedModels: ['glm-5.3-flash', 'glm-5.2', 'synthetic/v1', 'synthetic/glm-5.2-high'],
+  },
+  doppler: {
+    defaultModel: 'doppler-sync-v1',
+    supportedModels: ['doppler-sync-v1'],
+  },
+  ollama: {
+    defaultModel: 'llama3.3',
+    supportedModels: ['llama3.3', 'qwen2.5-coder', 'deepseek-r1:8b'],
+  },
+  'custom-openai': {
+    defaultModel: 'custom-model-v1',
+    supportedModels: ['custom-model-v1'],
+  },
+  codex: {
+    supportedModels: ['codex/gpt-5.6-sol-high', 'gpt-5.6-sol'],
+  },
+  agy: {
+    supportedModels: ['agy/claude-opus-4-6-thinking'],
+  },
+};
+
 export const R4_ALLOWED_MODELS = [
   'openrouter/auto',
   'deepseek/deepseek-v4.1-flash',
