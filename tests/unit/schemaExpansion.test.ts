@@ -1,3 +1,4 @@
+import { normalizeOpenRouterModel, flattenMessageContent, buildOpenRouterChatRequest } from '../../src/gateway/openRouterClient';
 import { describe, it, expect } from 'vitest';
 import {
   V3_PROVIDER_MODELS,
@@ -13,7 +14,7 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
     expect(V3_PROVIDER_MODELS.grok).toBe('grok-cli/grok-4.5');
     expect(V3_PROVIDER_MODELS['agy-opus']).toBe('agy/claude-opus-4-6-thinking');
     expect(V3_PROVIDER_MODELS.claude).toBe('claude/claude-opus-4-8');
-    expect(V3_PROVIDER_MODELS.opencode).toBe('opencode-go/glm-5.2');
+    expect(V3_PROVIDER_MODELS.opencode).toBe('opencode-go/glm-5.3-flash');
   });
 
   it('R4_ALLOWED_MODELS includes required 4-persona models', () => {
@@ -156,5 +157,58 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
     if (!res.success) {
       expect(res.error.issues[0].message).toContain('quorum exceeds enabled distinct providers');
     }
+  });
+
+  // `normalizeOpenRouterModel` is applied to EVERY request regardless of which gateway the client
+  // points at, so a BARE model id mapped in its alias table gets rewritten for non-OpenRouter
+  // transports too. `glm-5.3-flash` is the default synthetic model and the literal id both
+  // opencode and bifrost expect. Aliasing it produced a live
+  // `HTTP 401: Model z-ai/glm-5.3-flash is not supported` from opencode -- found by running a
+  // real review, not by reading the table.
+  it('leaves bare flash model ids untouched so non-OpenRouter gateways get what they expect', () => {
+    expect(normalizeOpenRouterModel('glm-5.3-flash')).toBe('glm-5.3-flash');
+    // Namespaced ids are safe to map: a non-OpenRouter gateway is never asked for one.
+    expect(normalizeOpenRouterModel('opencode-go/glm-5.3-flash')).toBe('z-ai/glm-5.3-flash');
+    expect(normalizeOpenRouterModel('claude/claude-haiku-4-5')).toBe('anthropic/claude-haiku-4.5');
+  });
+
+  // opencode rejects the block-array content form outright:
+  //   Input should be a valid string, field: 'messages[1].content.str'
+  // The panel uses that form because it carries the cache_control prefix breakpoint, so a
+  // transport that cannot read it needs flattening rather than a second prompt builder.
+  describe('flattenMessageContent', () => {
+    it('joins text blocks and drops the cache_control marker it cannot honour', () => {
+      const out = flattenMessageContent([
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: [
+          { type: 'text', text: 'PREFIX', cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: 'DIRECTIVE' },
+        ] as any },
+      ] as any);
+      expect(out[1].content).toBe('PREFIX\n\nDIRECTIVE');
+      expect(JSON.stringify(out)).not.toContain('cache_control');
+    });
+
+    it('names a dropped non-text block instead of vanishing it', () => {
+      const out = flattenMessageContent([
+        { role: 'user', content: [{ type: 'image_url', image_url: { url: 'x' } }] as any },
+      ] as any);
+      // A silently vanished image is indistinguishable from one that was never sent.
+      expect(out[0].content).toContain('unsupported content block omitted: image_url');
+    });
+
+    it('returns the same array by reference when nothing needs flattening', () => {
+      const input = [{ role: 'user', content: 'plain' }] as any;
+      // Byte-identical to not calling it at all, so a block-capable transport is unaffected.
+      expect(flattenMessageContent(input)).toBe(input);
+    });
+
+    it('is opt-in: the request builder leaves blocks alone unless asked', () => {
+      const messages = [{ role: 'user', content: [{ type: 'text', text: 'A' }] }] as any;
+      const untouched = buildOpenRouterChatRequest({ model: 'glm-5.3-flash', messages } as any);
+      expect(Array.isArray((untouched as any).messages[0].content)).toBe(true);
+      const flattened = buildOpenRouterChatRequest({ model: 'glm-5.3-flash', messages, flattenContentBlocks: true } as any);
+      expect((flattened as any).messages[0].content).toBe('A');
+    });
   });
 });

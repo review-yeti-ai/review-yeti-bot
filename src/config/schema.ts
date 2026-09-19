@@ -11,13 +11,13 @@ const legacyConfigSchema = z.object({
 }).passthrough();
 
 export const V3_PROVIDER_MODELS = {
-  synthetic: 'glm-5.2',
+  synthetic: 'glm-5.3-flash',
   'synthetic.new': 'synthetic-new/glm-5.2-high',
   codex: 'codex/gpt-5.6-sol-high',
   grok: 'grok-cli/grok-4.5',
   'agy-opus': 'agy/claude-opus-4-6-thinking',
   claude: 'claude/claude-opus-4-8',
-  opencode: 'opencode-go/glm-5.2',
+  opencode: 'opencode-go/glm-5.3-flash',
 } as const;
 
 /**
@@ -123,6 +123,12 @@ export const R4_ALLOWED_MODELS = [
   'claude/claude-opus-4-8',
   'deepseek-v3',
   'opencode-go/glm-5.2',
+  // Review defaults are flash/light only (operator policy, 2026-09-19). glm-5.2 is retired
+  // upstream; the ids above stay listed so an existing repo config that still names one keeps
+  // parsing rather than failing closed on a model string, but nothing defaults to them.
+  'glm-5.3-flash',
+  'opencode-go/glm-5.3-flash',
+  'claude/claude-haiku-4-5',
 ];
 
 export type ProviderId = string;
