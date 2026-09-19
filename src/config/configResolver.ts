@@ -329,7 +329,7 @@ export class ConfigResolver {
         required: false,
         charter: 'builtin:correctness',
         paths: ['**'],
-        providers: ['synthetic'],
+        providers: ['opencode'],
       };
       targetMap.set(item.id, {
         ...existing,
