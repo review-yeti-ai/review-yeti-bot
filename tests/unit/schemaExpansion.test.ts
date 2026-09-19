@@ -1,3 +1,4 @@
+import { normalizeOpenRouterModel } from '../../src/gateway/openRouterClient';
 import { describe, it, expect } from 'vitest';
 import {
   V3_PROVIDER_MODELS,
@@ -156,5 +157,18 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
     if (!res.success) {
       expect(res.error.issues[0].message).toContain('quorum exceeds enabled distinct providers');
     }
+  });
+
+  // `normalizeOpenRouterModel` is applied to EVERY request regardless of which gateway the client
+  // points at, so a BARE model id mapped in its alias table gets rewritten for non-OpenRouter
+  // transports too. `glm-5.3-flash` is the default synthetic model and the literal id both
+  // opencode and bifrost expect. Aliasing it produced a live
+  // `HTTP 401: Model z-ai/glm-5.3-flash is not supported` from opencode -- found by running a
+  // real review, not by reading the table.
+  it('leaves bare flash model ids untouched so non-OpenRouter gateways get what they expect', () => {
+    expect(normalizeOpenRouterModel('glm-5.3-flash')).toBe('glm-5.3-flash');
+    // Namespaced ids are safe to map: a non-OpenRouter gateway is never asked for one.
+    expect(normalizeOpenRouterModel('opencode-go/glm-5.3-flash')).toBe('z-ai/glm-5.3-flash');
+    expect(normalizeOpenRouterModel('claude/claude-haiku-4-5')).toBe('anthropic/claude-haiku-4.5');
   });
 });

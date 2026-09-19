@@ -303,8 +303,15 @@ export function normalizeOpenRouterModel(model: string): string {
     'codex/gpt-5.6-sol-high': 'openai/gpt-5.6-sol',
     'codex-gateway/gpt-5.6-sol-high': 'openai/gpt-5.6-sol',
     'opencode-go/glm-5.3-flash': 'z-ai/glm-5.3-flash',
-    'glm-5.3-flash': 'z-ai/glm-5.3-flash',
     'claude/claude-haiku-4-5': 'anthropic/claude-haiku-4.5',
+    // Deliberately NO bare 'glm-5.3-flash' entry. This table is applied to every request
+    // regardless of which gateway the client points at, so a bare id mapped here is rewritten
+    // for non-OpenRouter transports too. `glm-5.3-flash` is now the default synthetic model and
+    // is the literal id opencode and bifrost expect; aliasing it to `z-ai/glm-5.3-flash` made
+    // those transports answer `HTTP 401: Model z-ai/glm-5.3-flash is not supported`. Namespaced
+    // ids are safe to map because they are never what a non-OpenRouter gateway is asked for.
+    // (The pre-existing bare 'glm-5.2' entry below has the same hazard; it is left as-is because
+    // nothing defaults to it any more, but it should not be copied.)
     'opencode-go/glm-5.2': 'z-ai/glm-5.2',
     'synthetic/glm-5.2': 'z-ai/glm-5.2',
     'synthetic-new/glm-5.2-high': 'z-ai/glm-5.2',
