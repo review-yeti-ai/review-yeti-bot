@@ -1,5 +1,9 @@
 import fs from 'fs';
 import path from 'path';
+// Imported, not regex-parsed out of source text. The previous version scraped schema.ts and
+// hard-coded whatever it could not scrape, which is how four defaults and several supportedModels
+// lists went stale unnoticed. A direct import cannot drift.
+import { GENERATED_PROVIDER_CATALOG, V3_PROVIDER_MODELS as SCHEMA_V3_MODELS } from '../src/config/schema';
 
 /**
  * OmniRoute Provider Meta Schema Auto-Generator
@@ -87,6 +91,25 @@ function main() {
   const provenanceMap = parseOmniRouteProvenance(omniRouteContent);
   const { v3Models, allowedModels } = parseSchemaModels(schemaContent);
 
+  /** Fail loudly rather than silently substituting a stale literal. A generator that quietly
+   * falls back to an inline default is exactly how the previous regression shipped. */
+  const catalogEntry = (id: string) => {
+    const entry = GENERATED_PROVIDER_CATALOG[id];
+    if (!entry) {
+      throw new Error(
+        `[generate:providers] no catalog entry for provider '${id}'. Add it to `
+        + `GENERATED_PROVIDER_CATALOG in src/config/schema.ts -- do not inline literals here.`,
+      );
+    }
+    return entry;
+  };
+  const providerDefault = (id: string): string => {
+    const value = catalogEntry(id).defaultModel;
+    if (!value) throw new Error(`[generate:providers] provider '${id}' has no defaultModel in the catalog.`);
+    return value;
+  };
+  const providerModels = (id: string): string[] => [...catalogEntry(id).supportedModels];
+
   // Catalog definitions for all 9 AI provider families + codex/agy
   const providersCatalog: Record<string, ProviderDefinition> = {
     openai: {
@@ -94,8 +117,8 @@ function main() {
       displayName: 'OpenAI',
       defaultBaseUrl: 'https://api.openai.com/v1',
       provenancePrefixes: ['openai', 'gpt'],
-      defaultModel: 'gpt-4o',
-      supportedModels: ['gpt-4o', 'gpt-4o-mini', 'o1-mini', 'o3-mini', 'openai/gpt-5.6-luna', 'openrouter/5.6-luna-high'],
+      defaultModel: providerDefault('openai'),
+      supportedModels: providerModels('openai'),
       supportsCustomModels: true,
       requiresApiKey: true,
     },
@@ -104,8 +127,8 @@ function main() {
       displayName: 'Anthropic Claude',
       defaultBaseUrl: 'https://api.anthropic.com/v1',
       provenancePrefixes: ['claude', 'anthropic'],
-      defaultModel: 'claude-3-5-sonnet',
-      supportedModels: ['claude-3-5-sonnet', 'claude-3-7-sonnet', 'claude-5-sonnet', 'claude-opus-4-8'],
+      defaultModel: providerDefault('anthropic'),
+      supportedModels: providerModels('anthropic'),
       supportsCustomModels: false,
       requiresApiKey: true,
     },
@@ -114,8 +137,8 @@ function main() {
       displayName: 'Google Gemini',
       defaultBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
       provenancePrefixes: ['gemini', 'google'],
-      defaultModel: 'gemini-1.5-pro',
-      supportedModels: ['gemini-1.5-pro', 'gemini-2.0-flash', 'gemini-2.0-pro'],
+      defaultModel: providerDefault('gemini'),
+      supportedModels: providerModels('gemini'),
       supportsCustomModels: false,
       requiresApiKey: true,
     },
@@ -125,7 +148,7 @@ function main() {
       defaultBaseUrl: 'https://api.x.ai/v1',
       provenancePrefixes: provenanceMap['grok-cli'] || ['grok-cli', 'grok'],
       defaultModel: v3Models['grok'] || 'grok-cli/grok-4.5',
-      supportedModels: ['grok-cli/grok-4.5', 'grok-2'],
+      supportedModels: providerModels('grok'),
       supportsCustomModels: false,
       requiresApiKey: true,
     },
@@ -134,8 +157,8 @@ function main() {
       displayName: 'DeepSeek AI',
       defaultBaseUrl: 'https://api.deepseek.com/v1',
       provenancePrefixes: ['deepseek'],
-      defaultModel: 'deepseek-v3',
-      supportedModels: ['deepseek-v3', 'deepseek-r1', 'deepseek-v4-pro'],
+      defaultModel: providerDefault('deepseek'),
+      supportedModels: providerModels('deepseek'),
       supportsCustomModels: true,
       requiresApiKey: true,
     },
@@ -145,7 +168,7 @@ function main() {
       defaultBaseUrl: 'https://api.omniroute.internal/v1',
       provenancePrefixes: ['glm', 'synthetic'],
       defaultModel: v3Models['synthetic'] || 'glm-5.2',
-      supportedModels: ['glm-5.2', 'synthetic/v1', 'synthetic/glm-5.2-high'],
+      supportedModels: providerModels('glm'),
       supportsCustomModels: false,
       requiresApiKey: false,
     },
@@ -154,8 +177,8 @@ function main() {
       displayName: 'Doppler Secret Sync',
       defaultBaseUrl: 'https://api.doppler.com/v3',
       provenancePrefixes: ['doppler'],
-      defaultModel: 'doppler-sync-v1',
-      supportedModels: ['doppler-sync-v1'],
+      defaultModel: providerDefault('doppler'),
+      supportedModels: providerModels('doppler'),
       supportsCustomModels: false,
       requiresApiKey: true,
     },
@@ -164,8 +187,8 @@ function main() {
       displayName: 'Ollama Local LLM',
       defaultBaseUrl: 'http://localhost:11434/v1',
       provenancePrefixes: ['ollama', 'local'],
-      defaultModel: 'llama3.3',
-      supportedModels: ['llama3.3', 'qwen2.5-coder', 'deepseek-r1:8b'],
+      defaultModel: providerDefault('ollama'),
+      supportedModels: providerModels('ollama'),
       supportsCustomModels: true,
       requiresApiKey: false,
     },
@@ -174,8 +197,8 @@ function main() {
       displayName: 'Custom OpenAI-Compatible',
       defaultBaseUrl: 'https://api.custom-llm.com/v1',
       provenancePrefixes: ['custom'],
-      defaultModel: 'custom-model-v1',
-      supportedModels: ['custom-model-v1'],
+      defaultModel: providerDefault('custom-openai'),
+      supportedModels: providerModels('custom-openai'),
       supportsCustomModels: true,
       requiresApiKey: true,
     },
@@ -185,7 +208,7 @@ function main() {
       defaultBaseUrl: 'https://api.codex.internal/v1',
       provenancePrefixes: provenanceMap['codex'] || ['codex', 'cx'],
       defaultModel: v3Models['codex'] || 'codex/gpt-5.6-sol-high',
-      supportedModels: ['codex/gpt-5.6-sol-high', 'gpt-5.6-sol'],
+      supportedModels: providerModels('codex'),
       supportsCustomModels: false,
       requiresApiKey: true,
     },
@@ -195,7 +218,7 @@ function main() {
       defaultBaseUrl: 'https://api.agy.internal/v1',
       provenancePrefixes: provenanceMap['agy'] || ['agy'],
       defaultModel: v3Models['agy-opus'] || 'agy/claude-opus-4-6-thinking',
-      supportedModels: ['agy/claude-opus-4-6-thinking'],
+      supportedModels: providerModels('agy'),
       supportsCustomModels: false,
       requiresApiKey: true,
     },
