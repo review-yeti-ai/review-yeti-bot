@@ -92,8 +92,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
           // Flash/light only for review lanes (operator policy, 2026-09-19). A reviewer reads a
           // bounded diff and emits bounded JSON; the frontier-tier model that used to sit here
           // bought latency and concurrency cost, not recall -- and recall is what this panel is
-          // measured on. Escalation, if it is ever wanted, belongs behind an explicit policy
-          // decision rather than as the silent default.
+          // measured on. Escalation belongs behind an explicit policy decision, not the default.
           model: 'claude-haiku-4-5',
           effort: 'low',
           review_timeout_s: 90,

@@ -1,4 +1,4 @@
-import { normalizeOpenRouterModel } from '../../src/gateway/openRouterClient';
+import { normalizeOpenRouterModel, flattenMessageContent, buildOpenRouterChatRequest } from '../../src/gateway/openRouterClient';
 import { describe, it, expect } from 'vitest';
 import {
   V3_PROVIDER_MODELS,
@@ -170,5 +170,45 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
     // Namespaced ids are safe to map: a non-OpenRouter gateway is never asked for one.
     expect(normalizeOpenRouterModel('opencode-go/glm-5.3-flash')).toBe('z-ai/glm-5.3-flash');
     expect(normalizeOpenRouterModel('claude/claude-haiku-4-5')).toBe('anthropic/claude-haiku-4.5');
+  });
+
+  // opencode rejects the block-array content form outright:
+  //   Input should be a valid string, field: 'messages[1].content.str'
+  // The panel uses that form because it carries the cache_control prefix breakpoint, so a
+  // transport that cannot read it needs flattening rather than a second prompt builder.
+  describe('flattenMessageContent', () => {
+    it('joins text blocks and drops the cache_control marker it cannot honour', () => {
+      const out = flattenMessageContent([
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: [
+          { type: 'text', text: 'PREFIX', cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: 'DIRECTIVE' },
+        ] as any },
+      ] as any);
+      expect(out[1].content).toBe('PREFIX\n\nDIRECTIVE');
+      expect(JSON.stringify(out)).not.toContain('cache_control');
+    });
+
+    it('names a dropped non-text block instead of vanishing it', () => {
+      const out = flattenMessageContent([
+        { role: 'user', content: [{ type: 'image_url', image_url: { url: 'x' } }] as any },
+      ] as any);
+      // A silently vanished image is indistinguishable from one that was never sent.
+      expect(out[0].content).toContain('unsupported content block omitted: image_url');
+    });
+
+    it('returns the same array by reference when nothing needs flattening', () => {
+      const input = [{ role: 'user', content: 'plain' }] as any;
+      // Byte-identical to not calling it at all, so a block-capable transport is unaffected.
+      expect(flattenMessageContent(input)).toBe(input);
+    });
+
+    it('is opt-in: the request builder leaves blocks alone unless asked', () => {
+      const messages = [{ role: 'user', content: [{ type: 'text', text: 'A' }] }] as any;
+      const untouched = buildOpenRouterChatRequest({ model: 'glm-5.3-flash', messages } as any);
+      expect(Array.isArray((untouched as any).messages[0].content)).toBe(true);
+      const flattened = buildOpenRouterChatRequest({ model: 'glm-5.3-flash', messages, flattenContentBlocks: true } as any);
+      expect((flattened as any).messages[0].content).toBe('A');
+    });
   });
 });

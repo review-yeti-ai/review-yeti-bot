@@ -36,14 +36,15 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "openai",
       "gpt"
     ],
-    "defaultModel": "gpt-4o",
+    "defaultModel": "openai/gpt-5.6-luna:high",
     "supportedModels": [
-      "gpt-4o",
-      "gpt-4o-mini",
-      "o1-mini",
-      "o3-mini",
+      "openai/gpt-5.6-luna:high",
       "openai/gpt-5.6-luna",
-      "openrouter/5.6-luna-high"
+      "openrouter/5.6-luna-high",
+      "gpt-5.6-sol",
+      "o3-mini",
+      "gpt-4o",
+      "gpt-4o-mini"
     ],
     "supportsCustomModels": true,
     "requiresApiKey": true
@@ -56,12 +57,15 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "claude",
       "anthropic"
     ],
-    "defaultModel": "claude-3-5-sonnet",
+    "defaultModel": "claude-5-haiku:high",
     "supportedModels": [
-      "claude-3-5-sonnet",
+      "claude-5-haiku:high",
+      "claude-5-haiku",
       "claude-3-7-sonnet",
       "claude-5-sonnet",
-      "claude-opus-4-8"
+      "claude-opus-4-8",
+      "claude-3-5-sonnet",
+      "agy/claude-opus-4-6-thinking"
     ],
     "supportsCustomModels": false,
     "requiresApiKey": true
@@ -74,11 +78,12 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "gemini",
       "google"
     ],
-    "defaultModel": "gemini-1.5-pro",
+    "defaultModel": "google/gemini-3.7-flash:high",
     "supportedModels": [
-      "gemini-1.5-pro",
-      "gemini-2.0-flash",
-      "gemini-2.0-pro"
+      "google/gemini-3.7-flash:high",
+      "google/gemini-3.7-flash",
+      "google/gemini-3.6-flash",
+      "google/gemini-2.5-pro"
     ],
     "supportsCustomModels": false,
     "requiresApiKey": true
@@ -105,11 +110,14 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
     "provenancePrefixes": [
       "deepseek"
     ],
-    "defaultModel": "deepseek-v3",
+    "defaultModel": "deepseek/deepseek-v4-flash-0731:high",
     "supportedModels": [
-      "deepseek-v3",
+      "deepseek/deepseek-v4-flash-0731:high",
+      "deepseek/deepseek-v4-flash-0731:low",
+      "accounts/fireworks/models/deepseek-v4-flash-0731",
+      "deepseek-v4-pro",
       "deepseek-r1",
-      "deepseek-v4-pro"
+      "deepseek-v3"
     ],
     "supportsCustomModels": true,
     "requiresApiKey": true
@@ -122,7 +130,7 @@ export const OMNIROUTE_GENERATED_PROVIDERS: Record<ProviderType, GeneratedProvid
       "glm",
       "synthetic"
     ],
-    "defaultModel": "glm-5.3-flash",
+    "defaultModel": "glm-5.2",
     "supportedModels": [
       "glm-5.2",
       "synthetic/v1",
@@ -239,18 +247,6 @@ export const OMNIROUTE_GENERATED_MODEL_LIST: readonly string[] = [
   "gpt-5.6-sol",
   "agy/claude-opus-4-6-thinking",
   "openrouter/auto",
-  "deepseek/deepseek-v4.1-flash",
-  "deepseek/deepseek-v4.1-flash:high",
-  "deepseek/deepseek-v4.1-flash:low",
-  "deepseek-v4.1-flash",
-  "openrouter/deepseek/deepseek-v4.1-flash",
-  "z-ai/glm-5.3-flash",
-  "synthetic/glm-5.3-flash",
-  "synthetic/hf:zai-org/GLM-5.3-Flash",
-  "hf:zai-org/GLM-5.3-Flash",
-  "ollama/glm-5.3-flash",
-  "glm-5.3-flash",
-  "bifrost/pr-reviewer",
   "openrouter/anthropic/claude-3.7-sonnet",
   "openrouter/deepseek/deepseek-r1",
   "openrouter/google/gemini-2.5-pro",
@@ -261,37 +257,7 @@ export const OMNIROUTE_GENERATED_MODEL_LIST: readonly string[] = [
   "openrouter/deepseek/deepseek-v3",
   "openrouter/google/gemini-1.5-pro",
   "openrouter/anthropic/claude-haiku-4.5",
-  "openrouter/anthropic/claude-opus-4.8",
-  "openai/gpt-5.6-luna:high",
   "openrouter/openai/gpt-5.6-luna",
-  "openrouter/openai/gpt-5.6-luna:high",
-  "claude-5-haiku:high",
-  "claude-5-haiku",
-  "openrouter/anthropic/claude-5-haiku:high",
-  "openrouter/anthropic/claude-5-haiku",
-  "anthropic/claude-5-haiku:high",
-  "anthropic/claude-5-haiku",
-  "openai/gpt-4o",
-  "openai/gpt-4o-mini",
-  "google/gemini-1.5-pro",
-  "google/gemini-2.5-pro",
-  "google/gemini-2.5-flash",
-  "google/gemini-3.7-flash",
-  "google/gemini-3.7-flash:high",
-  "openrouter/google/gemini-3.7-flash",
-  "openrouter/google/gemini-2.5-flash",
-  "deepseek/deepseek-v4-flash-0731:low",
-  "deepseek/deepseek-v4-flash-0731:high",
-  "deepseek/deepseek-v4-flash-0731",
-  "accounts/fireworks/models/deepseek-v4-flash-0731",
-  "openrouter/deepseek/deepseek-v4-flash-0731:low",
-  "openrouter/deepseek/deepseek-v4-flash-0731:high",
-  "qwen/qwen-3.8-27b:high",
-  "qwen/qwen-3.8-27b",
-  "qwen/qwen-2.5-72b-instruct",
-  "openrouter/qwen/qwen-3.8-27b:high",
-  "anthropic/claude-3.7-sonnet",
-  "anthropic/claude-opus-4.8",
   "synthetic/hf:moonshotai/Kimi-K3",
   "synthetic/hf:zai-org/GLM-5.2",
   "synthetic/hf:zai-org/GLM-4.7-Flash",
@@ -300,7 +266,5 @@ export const OMNIROUTE_GENERATED_MODEL_LIST: readonly string[] = [
   "claude-haiku",
   "codex-gateway/gpt-5.6-sol-high",
   "claude/claude-opus-4-8",
-  "opencode-go/glm-5.2",
-  "opencode-go/glm-5.3-flash",
-  "claude/claude-haiku-4-5"
+  "opencode-go/glm-5.2"
 ];
