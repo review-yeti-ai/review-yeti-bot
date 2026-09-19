@@ -13,7 +13,7 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
     expect(V3_PROVIDER_MODELS.grok).toBe('grok-cli/grok-4.5');
     expect(V3_PROVIDER_MODELS['agy-opus']).toBe('agy/claude-opus-4-6-thinking');
     expect(V3_PROVIDER_MODELS.claude).toBe('claude/claude-opus-4-8');
-    expect(V3_PROVIDER_MODELS.opencode).toBe('opencode-go/glm-5.2');
+    expect(V3_PROVIDER_MODELS.opencode).toBe('opencode-go/glm-5.3-flash');
   });
 
   it('R4_ALLOWED_MODELS includes required 4-persona models', () => {

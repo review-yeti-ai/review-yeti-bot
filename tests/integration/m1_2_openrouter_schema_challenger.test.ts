@@ -33,13 +33,13 @@ describe('Milestone 1 (R4) — OpenRouter Default Model & Schema Validation Stre
 
     it('validates V3_PROVIDER_MODELS structure and values', () => {
       expect(V3_PROVIDER_MODELS).toEqual({
-        synthetic: 'glm-5.2',
+        synthetic: 'glm-5.3-flash',
         'synthetic.new': 'synthetic-new/glm-5.2-high',
         codex: 'codex/gpt-5.6-sol-high',
         grok: 'grok-cli/grok-4.5',
         'agy-opus': 'agy/claude-opus-4-6-thinking',
         claude: 'claude/claude-opus-4-8',
-        opencode: 'opencode-go/glm-5.2',
+        opencode: 'opencode-go/glm-5.3-flash',
       });
     });
 

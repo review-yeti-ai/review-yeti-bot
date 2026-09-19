@@ -77,7 +77,7 @@ mascot: true
       const claudeProvider = v3.reviewers.providers.find(p => p.id === 'claude');
       expect(claudeProvider).toBeDefined();
       expect(claudeProvider?.enabled).toBe(true);
-      expect(claudeProvider?.model).toBe('claude-opus-4-8');
+      expect(claudeProvider?.model).toBe('claude-haiku-4-5');
       expect(claudeProvider?.effort).toBe('low');
 
       // Tier 3: Arbiter configuration specifies valid provider order
