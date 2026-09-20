@@ -60,8 +60,15 @@ jobs:
           pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           personas: ${{ vars.ACTIVE_PERSONAS }}
           model: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
-          # Use only the role-scoped review key; generic provider secrets are not admitted here.
-          llm-api-key: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          # Use only role-scoped review keys (CT_REVIEW_*); generic provider secrets such as a bare
+          # OPENROUTER_API_KEY are deliberately NOT admitted here, so a key provisioned for some
+          # other purpose can never end up funding reviews.
+          #
+          # opencode first, because `vars.OPENROUTER_BASE_URL` now points there and a base URL
+          # without its matching key fails closed at the first lane rather than at config time --
+          # the least useful moment to discover it. The OpenRouter key stays as the fallback so
+          # pointing the base URL back is a one-variable change, not a redeploy.
+          llm-api-key: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
           # OpenRouter remains the primary direct DeepSeek -> GLM route.
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}
