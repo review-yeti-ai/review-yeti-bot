@@ -614,9 +614,18 @@ function qualificationProviderTopologyDigest(providerId: string, model: string):
  *  - the non-streaming path goes through the OpenRouter SDK, which does not reach a custom base
  *    URL (`fetch failed`). Forcing the streaming path uses plain fetch and works.
  *
- * EXPLICIT, never inferred from the host. Sniffing the URL would silently change request shape
- * for any gateway that merely looks unfamiliar, and a silent shape change is exactly the class of
- * bug this function exists to record.
+ * EXPLICIT, declared rather than inferred -- and deliberately different from
+ * `resolvesToOpenRouterDestination` in the action pipeline, which IS keyed on the host. The two
+ * answer different questions and the distinction is the point:
+ *
+ *   - "is the far end OpenRouter?" is a fact the host settles definitively, so that one reads the
+ *     host. Sending OpenRouter-only fields anywhere else is wrong by definition.
+ *   - "what quirks does this non-OpenRouter host have?" -- content-block support, whether its
+ *     non-streaming path is reachable -- is NOT visible in the URL. Two gateways on different
+ *     hosts can want different shapes, so a quirk has to be declared. Guessing it from the host
+ *     would silently change request shape for any gateway that merely looks unfamiliar.
+ *
+ * Host for the fact, declaration for the quirks.
  */
 export function resolveTransportCompat(env: NodeJS.ProcessEnv): { flattenContentBlocks?: boolean; stream?: boolean } {
   const mode = (env.REVIEW_TRANSPORT_COMPAT || '').trim().toLowerCase();

@@ -609,3 +609,31 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
     expect(ciWorkflow).toMatch(/jobs:\n  test:[\s\S]*?timeout-minutes: 15/u);
   });
 });
+describe('resolvesToOpenRouterDestination', () => {
+  // The core behavioural fix: OpenRouter-only request fields (`session_id`, `reasoning`,
+  // `provider`, `plugins`, `models`) are unknown inputs anywhere else and produce
+  // `HTTP 400 Extra inputs are not permitted`, failing every persona lane. This predicate is what
+  // stops that, so it is asserted directly rather than inferred from a green pipeline run.
+  const { resolvesToOpenRouterDestination } = require('../../.github/workflows/pipelines/review-pipeline.js');
+
+  it('is true for an OpenRouter destination', () => {
+    expect(resolvesToOpenRouterDestination({ provider: 'openrouter' }, 'https://openrouter.ai/api/v1')).toBe(true);
+  });
+
+  it('is FALSE when a transport named openrouter points somewhere else', () => {
+    // The regression this PR exists to fix. The name does not change what the server parses.
+    expect(resolvesToOpenRouterDestination({ provider: 'openrouter', compat: 'openrouter' }, 'https://opencode.ai/zen/v1')).toBe(false);
+  });
+
+  it('falls back to the name/compat labels only when no base URL is configured', () => {
+    // Keeps legacy transports that rely on the label working.
+    expect(resolvesToOpenRouterDestination({ provider: 'openrouter' }, '')).toBe(true);
+    expect(resolvesToOpenRouterDestination({ compat: 'openrouter' }, undefined)).toBe(true);
+    expect(resolvesToOpenRouterDestination({ provider: 'fireworks' }, '   ')).toBe(false);
+  });
+
+  it('does not treat a lookalike host as OpenRouter by name alone', () => {
+    expect(resolvesToOpenRouterDestination({ provider: 'openrouter' }, 'https://api.fireworks.ai/inference/v1')).toBe(false);
+  });
+});
+

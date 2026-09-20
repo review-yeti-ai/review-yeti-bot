@@ -191,6 +191,32 @@ const AUTO_TRANSPORT_TIMEOUT_MS = (() => {
   return Number.isSafeInteger(raw) && raw > 0 ? raw : 90_000;
 })();
 
+/**
+ * Does this transport actually TALK to OpenRouter?
+ *
+ * OpenRouter-only request fields (`session_id`, `reasoning`, `provider`, `plugins`, `models`)
+ * are unknown inputs anywhere else, and sending them makes every persona lane fail with
+ * HTTP 400. The same hazard is documented further down for Fireworks and Ollama.
+ *
+ * Keyed on the DESTINATION, because that is the only thing that determines what the far end will
+ * accept. A transport may still be NAMED `openrouter` while `llm-base-url` points elsewhere, and
+ * the name does not change what the server parses. The name/compat labels are honoured only when
+ * no base URL is configured at all, so legacy transports that rely on them are unaffected.
+ *
+ * Distinct from `resolveTransportCompat` in src/cli/runLiveReview.ts, and the two are NOT
+ * redundant:
+ *   - this answers "is the far end OpenRouter", which the host settles definitively;
+ *   - that answers "what quirks does this non-OpenRouter host have" (content-block support,
+ *     streaming), which the host does NOT reveal and which must therefore be declared.
+ * Host for the fact, declaration for the quirks.
+ */
+function resolvesToOpenRouterDestination(transport, transportBaseUrl) {
+  const baseUrl = String(transportBaseUrl || '').trim();
+  if (baseUrl) return baseUrl.toLowerCase().includes('openrouter.ai');
+  return String(transport?.provider || '').toLowerCase() === 'openrouter'
+    || String(transport?.compat || '').toLowerCase() === 'openrouter';
+}
+
 let streamingFetchDispatcher = null;
 let loggedMissingUndiciAgent = false;
 
@@ -3950,24 +3976,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const transportTimeoutMs = transport.timeoutMs || transport.timeout_ms || options.timeoutMs || 90_000;
       const streamEnabled = transport.stream === true;
       const configuredProvider = resolveConfiguredProvider(transport, transportName, transportBaseUrl);
-      // The DESTINATION decides whether OpenRouter-only request fields may be sent, not the
-      // transport's name or `compat` label. A transport still named `openrouter` can be pointed at
-      // another OpenAI-compatible host by `llm-base-url`, and when that happens every
-      // OpenRouter-only field becomes an unknown request field.
-      //
-      // That is the failure mode already documented further down for Fireworks/Ollama
-      // ("rejected as an unknown request field and makes every persona lane fail"). Pointing the
-      // base URL at opencode reproduced it exactly: `session_id` and `reasoning` came back as
-      // `Extra inputs are not permitted` and all five lanes failed with HTTP 400.
-      //
-      // Keyed on the host rather than an env flag so it cannot disagree with where the request is
-      // actually going.
-      const isOpenRouterDestination = transportBaseUrl.toLowerCase().includes('openrouter.ai');
-      const isOpenRouterTransport =
-        isOpenRouterDestination
-        || ((String(transport.provider || '').toLowerCase() === 'openrouter'
-          || String(transport.compat || '').toLowerCase() === 'openrouter')
-          && !transportBaseUrl.trim());
+      // See `resolvesToOpenRouterDestination`: keyed on where the request actually goes.
+      const isOpenRouterTransport = resolvesToOpenRouterDestination(transport, transportBaseUrl);
       const isOllama = isOllamaTransport(transport, transportBaseUrl);
       const isDirectReasoning = isDirectReasoningTransport(transport, transportBaseUrl);
       const configuredMaxOutputTokens =
@@ -8028,6 +8038,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  resolvesToOpenRouterDestination,
   PERSONA_CHARTERS,
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
