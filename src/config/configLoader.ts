@@ -83,8 +83,15 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
           enabled: true,
           model: V3_PROVIDER_MODELS.opencode,
           effort: 'low',
-          review_timeout_s: 90,
-          arbiter_timeout_s: 90,
+          // Measured, not guessed. At 90s -- the shared default -- every lane failed with
+          // "Streaming response exceeded total deadline of 90000ms" on a ~2,500 line diff, while
+          // the same transport answers a small prompt in ~2s. glm-5.3-flash via opencode is
+          // simply slower per token than the OpenRouter route this default was tuned for.
+          //
+          // Raised only for THIS provider. Lifting the shared default would hide genuine
+          // stalls on the faster transports, and a timeout that never fires is not a timeout.
+          review_timeout_s: 300,
+          arbiter_timeout_s: 300,
         },
         {
           // Defined but DISABLED, mirroring how `codex` is carried below. Deleting the entry
