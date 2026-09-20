@@ -186,10 +186,16 @@ const STREAMING_FETCH_DISPATCHER_OPTIONS = Object.freeze({
  * A hardcoded deadline with no lever is not a safety property, it is a ceiling on which
  * transports can be used at all. Still bounded and still defaulted, just nameable.
  */
-const AUTO_TRANSPORT_TIMEOUT_MS = (() => {
-  const raw = Number(process.env.REVIEW_LANE_TIMEOUT_MS);
-  return Number.isSafeInteger(raw) && raw > 0 ? raw : 90_000;
-})();
+const DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS = 90_000;
+
+/** Exported and pure so the boundary parsing is testable. Computing it inline in a module-load
+ * IIFE made it unreachable from a test, which is how it shipped unasserted. */
+function resolveAutoTransportTimeoutMs(env = process.env) {
+  const raw = Number(env.REVIEW_LANE_TIMEOUT_MS);
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS;
+}
+
+const AUTO_TRANSPORT_TIMEOUT_MS = resolveAutoTransportTimeoutMs();
 
 /**
  * Does this transport actually TALK to OpenRouter?
@@ -8039,6 +8045,8 @@ if (require.main === module) {
 
 module.exports = {
   resolvesToOpenRouterDestination,
+  resolveAutoTransportTimeoutMs,
+  DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS,
   PERSONA_CHARTERS,
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,

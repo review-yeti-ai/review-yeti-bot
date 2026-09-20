@@ -632,8 +632,35 @@ describe('resolvesToOpenRouterDestination', () => {
     expect(resolvesToOpenRouterDestination({ provider: 'fireworks' }, '   ')).toBe(false);
   });
 
-  it('does not treat a lookalike host as OpenRouter by name alone', () => {
+  it('does not admit an unrelated host by name alone', () => {
     expect(resolvesToOpenRouterDestination({ provider: 'openrouter' }, 'https://api.fireworks.ai/inference/v1')).toBe(false);
+  });
+
+  // A genuine lookalike, which the previous version of this test did NOT cover -- it asserted
+  // against fireworks.ai and called it a lookalike. Worth stating what this predicate does and
+  // does not promise: substring matching means a hostile host CAN satisfy it. That is acceptable
+  // here only because the base URL is separately pinned to a closed allowlist in
+  // openrouter-policy.js, which is the control that actually stops an attacker-chosen
+  // destination. This predicate decides request SHAPE for an already-trusted host.
+  it('substring matching admits a lookalike, which the policy allowlist is what actually blocks', () => {
+    expect(resolvesToOpenRouterDestination({}, 'https://openrouter.ai.evil.example/v1')).toBe(true);
+  });
+
+  describe('resolveAutoTransportTimeoutMs', () => {
+    const { resolveAutoTransportTimeoutMs, DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS } =
+      require('../../.github/workflows/pipelines/review-pipeline.js');
+
+    it('accepts a positive safe integer', () => {
+      expect(resolveAutoTransportTimeoutMs({ REVIEW_LANE_TIMEOUT_MS: '420000' })).toBe(420000);
+    });
+
+    it('falls back to the default for every non-positive or non-integer input', () => {
+      for (const raw of ['0', '-1', 'abc', '', '1.5', 'Infinity', String(Number.MAX_SAFE_INTEGER) + '0']) {
+        expect(resolveAutoTransportTimeoutMs({ REVIEW_LANE_TIMEOUT_MS: raw }), raw)
+          .toBe(DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS);
+      }
+      expect(resolveAutoTransportTimeoutMs({})).toBe(DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS);
+    });
   });
 });
 
