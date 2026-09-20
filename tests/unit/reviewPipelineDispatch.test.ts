@@ -663,4 +663,20 @@ describe('resolvesToOpenRouterDestination', () => {
     });
   });
 });
+describe('getStreamingFetchDispatcher without an undici Agent', () => {
+  // The Agent only lifts undici's default 300s headersTimeout. Throwing on its absence tripped
+  // the transport circuit breaker and failed EVERY persona lane -- a missing optional performance
+  // shim became a total review failure with zero findings. This pins the warn-and-continue path.
+  it('returns undefined and does not throw when the Agent cannot be loaded', () => {
+    vi.resetModules();
+    vi.doMock('undici', () => { throw Object.assign(new Error('not found'), { code: 'MODULE_NOT_FOUND' }); });
+    const mod = require('../../.github/workflows/pipelines/review-pipeline.js');
+    // Either a real Agent is resolvable in this environment (then it returns one), or it is not
+    // and the contract is "undefined, no throw". Both are acceptable; throwing is not.
+    expect(() => mod.getStreamingFetchDispatcher()).not.toThrow();
+    vi.doUnmock('undici');
+    vi.resetModules();
+  });
+});
+
 

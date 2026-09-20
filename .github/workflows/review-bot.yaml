@@ -68,7 +68,14 @@ jobs:
           # without its matching key fails closed at the first lane rather than at config time --
           # the least useful moment to discover it. The OpenRouter key stays as the fallback so
           # pointing the base URL back is a one-variable change, not a redeploy.
-          llm-api-key: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          # The key is selected by the SAME variable that selects the destination, not
+          # independently with `||`. Independent selection meant a missing opencode secret would
+          # silently fall back to the OpenRouter key while `llm-base-url` still pointed at
+          # opencode -- transmitting one provider's credential to another provider's endpoint.
+          #
+          # Tied together, a missing secret yields an empty key and the run fails closed at
+          # authentication, which is recoverable. A leaked credential is not.
+          llm-api-key: ${{ vars.REVIEW_TRANSPORT_COMPAT == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
           # OpenRouter remains the primary direct DeepSeek -> GLM route.
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}

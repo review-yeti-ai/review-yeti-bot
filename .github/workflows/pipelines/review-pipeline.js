@@ -4027,6 +4027,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
       const requestBody = {
         model: requestModel,
+        // Why this path needs no content-block flattening, unlike `resolveTransportCompat` in
+        // src/cli/runLiveReview.ts: a non-OpenRouter destination gets PLAIN STRING content here,
+        // built fresh below. It never sees the `OpenRouterContentBlock[]` form that carries the
+        // cache_control breakpoint, so there is nothing to flatten. The TS panel path does send
+        // that form and therefore does need the shim.
+        //
+        // The asymmetry is a consequence of where each path builds its messages, not an
+        // oversight -- adding a flatten step here would be dead code that future readers would
+        // have to reason about.
         messages: isOpenRouterTransport
           ? openRouterMessages.map((message) => ({ ...message }))
           : [
