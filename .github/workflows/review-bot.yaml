@@ -77,6 +77,7 @@ jobs:
           # Set `vars.REVIEW_TRANSPORT_COMPAT=opencode` alongside an opencode `llm-base-url`.
           # Unset for OpenRouter, which needs no shims.
           transport-compat: ${{ vars.REVIEW_TRANSPORT_COMPAT }}
+          lane-timeout-ms: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
           github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}

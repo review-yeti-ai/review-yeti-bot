@@ -51,6 +51,13 @@ inputs:
       request shapes they accept and those differences are not inferable from the URL.
     required: false
     default: 'https://openrouter.ai/api/v1'
+  lane-timeout-ms:
+    description: >-
+      Per-lane streaming deadline in ms for transports this action synthesizes when no explicit
+      transport plan is supplied. Defaults to 90000, which suits the OpenRouter route it was tuned
+      against; a slower gateway needs more or every lane dies mid-stream.
+    required: false
+    default: ''
   transport-compat:
     description: >-
       Per-transport request compatibility. Leave unset for OpenRouter. Set to `opencode` when
@@ -626,6 +633,7 @@ runs:
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
         REVIEW_TRANSPORT_COMPAT: ${{ inputs.transport-compat }}
+        REVIEW_LANE_TIMEOUT_MS: ${{ inputs.lane-timeout-ms }}
         FIREWORKS_PR_REVIEW_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY }}
         FIREWORKS_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_API_KEY }}
         OLLAMA_PR_REVIEW_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY }}

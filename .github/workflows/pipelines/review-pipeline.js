@@ -177,6 +177,20 @@ const STREAMING_FETCH_DISPATCHER_OPTIONS = Object.freeze({
   bodyTimeout: 0,
 });
 
+/**
+ * Per-lane streaming deadline for the transports this action synthesizes when no explicit plan is
+ * supplied. Was a bare 90_000 with no override, which is fine for the OpenRouter route it was
+ * tuned against and fatal for a slower one: every lane died with "Streaming response exceeded
+ * total deadline of 90000ms" while the same endpoint answered a small prompt in ~2s.
+ *
+ * A hardcoded deadline with no lever is not a safety property, it is a ceiling on which
+ * transports can be used at all. Still bounded and still defaulted, just nameable.
+ */
+const AUTO_TRANSPORT_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.REVIEW_LANE_TIMEOUT_MS);
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : 90_000;
+})();
+
 let streamingFetchDispatcher = null;
 let loggedMissingUndiciAgent = false;
 
@@ -1547,7 +1561,7 @@ function resolveModelConfig(env = process.env) {
         compat: 'openrouter',
         stream: true,
         reasoningEffort: 'high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
         ttftTimeoutMs: 30_000,
         connectTimeoutMs: 30_000,
       });
@@ -1561,7 +1575,7 @@ function resolveModelConfig(env = process.env) {
         compat: 'openrouter',
         stream: true,
         reasoningEffort: 'high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
         ttftTimeoutMs: 30_000,
         connectTimeoutMs: 30_000,
       });
@@ -1573,7 +1587,7 @@ function resolveModelConfig(env = process.env) {
         model,
         compat: 'openrouter',
         stream: true,
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
       });
     }
 
@@ -1602,7 +1616,7 @@ function resolveModelConfig(env = process.env) {
         model: env.OLLAMA_MODEL || 'glm-5.3-flash',
         stream: true,
         reasoningEffort: 'high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
         ttftTimeoutMs: 30_000,
         connectTimeoutMs: 30_000,
       });
@@ -1615,7 +1629,7 @@ function resolveModelConfig(env = process.env) {
         model: env.SYNTHETIC_MODEL || 'glm-5.3-flash',
         stream: true,
         reasoningEffort: 'high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
         ttftTimeoutMs: 30_000,
         connectTimeoutMs: 30_000,
       });
@@ -1636,7 +1650,7 @@ function resolveModelConfig(env = process.env) {
         baseUrl: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/+$/, ''),
         apiKey: env.GEMINI_API_KEY,
         model: env.GEMINI_MODEL || 'google/gemini-3.7-flash:high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
       });
     }
     if (!apiKey && env.OPENAI_API_KEY) {
@@ -1645,7 +1659,7 @@ function resolveModelConfig(env = process.env) {
         baseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
         apiKey: env.OPENAI_API_KEY,
         model: env.OPENAI_MODEL || 'openai/gpt-5.6-luna:high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
       });
     }
     if (autoTransports.length > 0) {
