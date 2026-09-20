@@ -602,6 +602,28 @@ function qualificationProviderTopologyDigest(providerId: string, model: string):
   return createHash('sha256').update(JSON.stringify(topology)).digest('hex');
 }
 
+/**
+ * Per-transport request compatibility.
+ *
+ * Not every OpenAI-compatible gateway accepts what OpenRouter does, and the differences are not
+ * guessable from the URL -- they were each found by a request failing against a live endpoint:
+ *
+ *  - opencode rejects `OpenRouterContentBlock[]` message content outright
+ *    (`Input should be a valid string, field: 'messages[1].content.str'`). The panel uses the
+ *    array form because it carries the `cache_control` prefix breakpoint.
+ *  - the non-streaming path goes through the OpenRouter SDK, which does not reach a custom base
+ *    URL (`fetch failed`). Forcing the streaming path uses plain fetch and works.
+ *
+ * EXPLICIT, never inferred from the host. Sniffing the URL would silently change request shape
+ * for any gateway that merely looks unfamiliar, and a silent shape change is exactly the class of
+ * bug this function exists to record.
+ */
+export function resolveTransportCompat(env: NodeJS.ProcessEnv): { flattenContentBlocks?: boolean; stream?: boolean } {
+  const mode = (env.REVIEW_TRANSPORT_COMPAT || '').trim().toLowerCase();
+  if (mode === 'opencode') return { flattenContentBlocks: true, stream: true };
+  return {};
+}
+
 function fullPanelRequestPolicy(
   model: string,
   identity: QualificationIdentity,
@@ -1560,6 +1582,7 @@ export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
   }
 
   // Execute persona panel review through the OpenRouter-only model boundary.
+  const transportCompat = resolveTransportCompat(env);
   const panelResult = await executePersonaPanel({
     config,
     changedFiles,
@@ -1567,6 +1590,9 @@ export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
     headSha,
     client,
     jobId: `job_${repo.replace('/', '_')}_pr${prNumber}`,
+    // Empty object when unset, so a transport that needs no compatibility shims is byte-identical
+    // to not passing a policy at all.
+    ...(Object.keys(transportCompat).length > 0 ? { requestPolicy: transportCompat } : {}),
   });
 
   // Compile findings across personas

@@ -67,6 +67,9 @@ jobs:
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}
           synthetic-api-key: ${{ secrets.CT_REVIEW_SYNTHETIC_API_KEY || secrets.SYNTHETIC_API_KEY }}
           llm-base-url: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          # Set `vars.REVIEW_TRANSPORT_COMPAT=opencode` alongside an opencode `llm-base-url`.
+          # Unset for OpenRouter, which needs no shims.
+          transport-compat: ${{ vars.REVIEW_TRANSPORT_COMPAT }}
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
           github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
