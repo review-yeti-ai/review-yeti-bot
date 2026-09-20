@@ -178,6 +178,7 @@ const STREAMING_FETCH_DISPATCHER_OPTIONS = Object.freeze({
 });
 
 let streamingFetchDispatcher = null;
+let loggedMissingUndiciAgent = false;
 
 function loadUndiciAgentClass() {
   try {
@@ -196,16 +197,42 @@ function loadUndiciAgentClass() {
   );
   try {
     return require(nested).Agent;
-  } catch (error) {
-    throw new Error(
-      `undici Agent is required to disable the 300s headersTimeout on streaming fetches: ${error?.message || error}`,
-    );
+  } catch {
+    // fall through
   }
+  // `undici` IS a declared dependency of this repo, but this file runs from
+  // .github/workflows/pipelines/ inside a composite action, where plain resolution does not
+  // always reach the repo-root node_modules. Try it explicitly before giving up.
+  try {
+    const repoRoot = path.resolve(__dirname, '..', '..', '..');
+    return require(require.resolve('undici', { paths: [repoRoot] })).Agent;
+  } catch {
+    // fall through
+  }
+  return null;
 }
 
 function getStreamingFetchDispatcher() {
   if (!streamingFetchDispatcher) {
     const Agent = loadUndiciAgentClass();
+    if (!Agent) {
+      // The Agent exists ONLY to lift undici's default 300s headersTimeout so a long generation
+      // is not cut off mid-stream. It is a timeout extension, not a correctness requirement.
+      //
+      // Throwing here previously tripped the transport circuit breaker and failed EVERY persona
+      // lane, turning a missing optional performance shim into a total review failure with zero
+      // findings -- strictly worse than a review that runs under the default timeout.
+      //
+      // Warn once and proceed with the platform default dispatcher.
+      if (!loggedMissingUndiciAgent) {
+        loggedMissingUndiciAgent = true;
+        console.warn(
+          '[Streaming] undici Agent unavailable; streaming proceeds under the default 300s '
+          + 'headersTimeout. A very long generation may be cut off, but reviews still run.',
+        );
+      }
+      return undefined;
+    }
     streamingFetchDispatcher = new Agent(STREAMING_FETCH_DISPATCHER_OPTIONS);
   }
   return streamingFetchDispatcher;
