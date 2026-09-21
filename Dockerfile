@@ -10,6 +10,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --omit=optional && npm cache clean --force
 
 COPY dist ./dist
+COPY domains ./domains
 COPY public ./public
 
 RUN install -d -o node -g node /app/data
