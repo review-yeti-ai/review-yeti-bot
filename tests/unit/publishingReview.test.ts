@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
+import { MAX_PERSONAS, MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
   classifyFailure,
   createOpenAIPublishingConfig,
@@ -746,6 +746,35 @@ describe('runPublishingReviewWorker', () => {
     expect(receipt.conclusion).toBe('failure');
     expect(receipt.coverage).toMatchObject({ expectedLaneCount: 2, completedLaneCount: 2, failedLaneCount: 0,
       rosterValid: false, quorumSatisfied: false, fullPanelComplete: false });
+  });
+
+  it('fails closed and bounds arbitration when the applicable roster exceeds MAX_PERSONAS', async () => {
+    const applicablePersonaIds = Array.from({ length: MAX_PERSONAS + 1 }, (_, index) => `lane-${index}`);
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds,
+        personas: applicablePersonaIds.map((id) => ({ id, findings: [] })),
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({
+      expectedLaneCount: null,
+      completedLaneCount: MAX_PERSONAS,
+      failedLaneCount: 0,
+      rosterValid: false,
+      quorumSatisfied: false,
+      fullPanelComplete: false,
+    });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: BLOCK' }),
+    );
   });
 
   it('fails closed when the panel omits the applicable roster', async () => {
