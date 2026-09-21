@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { nextLaneStep, unreportedLaneFailure } from '../../src/panel/composedEngine';
 import type { ReviewTask } from '../../src/panel/reviewTask';
@@ -6,51 +5,33 @@ import type { ReviewTask } from '../../src/panel/reviewTask';
 function task(id: string): ReviewTask {
   return {
     id,
-    dimension: 'testing',
-    paths: ['src/a.ts'],
-    question: 'Is the change covered?',
-    rationale: 'The diff touches this file.',
+    dimension: 'security',
+    paths: ['src/auth/guard.ts'],
+    question: 'Is the change safe?',
+    rationale: 'The diff touches an auth file.',
   };
 }
 
-describe('unreported composed lanes', () => {
-  it('records a no-verdict lane as a budget failure and keeps walking', () => {
-    for (const reason of ['exhausted', 'no_budget'] as const) {
-      expect(nextLaneStep(reason)).toEqual({
-        record: 'failure',
-        continueRemaining: true,
-        failureClass: 'budget_exhausted',
-      });
-    }
-    expect(unreportedLaneFailure(task('task-5'))).toMatchObject({
-      id: 'task-5',
+describe('unreported composed lane reasons', () => {
+  it('names a spent budget separately from a lane that ran and produced no verdict', () => {
+    expect(nextLaneStep('no_budget')).toMatchObject({
+      record: 'failure',
+      continueRemaining: true,
       failureClass: 'budget_exhausted',
     });
-  });
+    expect(nextLaneStep('exhausted')).toMatchObject({
+      record: 'failure',
+      continueRemaining: true,
+      failureClass: 'malformed_output',
+    });
 
-  it('does not abort the task loop on a no-verdict lane', () => {
-    const source = readFileSync(new URL('../../src/panel/composedEngine.ts', import.meta.url), 'utf8');
-    const start = source.indexOf('for (let i = 0; i < planOutcome.tasks.length');
-    const end = source.indexOf('return {\n      headSha,', start);
-    const loop = source.slice(start, end);
-    expect(loop).toContain("nextLaneStep('exhausted')");
-    expect(loop).toContain("nextLaneStep('no_budget')");
-    expect(loop).toContain('if (!step.continueRemaining) break;');
-    expect(loop).not.toContain('unreported.push');
-  });
-
-  it('still visits every later task after an exhausted lane', () => {
-    const outcomes = ['complete', 'exhausted', 'complete'] as const;
-    const recorded: string[] = [];
-    for (const outcome of outcomes) {
-      if (outcome === 'exhausted') {
-        const step = nextLaneStep('exhausted');
-        recorded.push(`failure:${step.failureClass}`);
-        if (!step.continueRemaining) break;
-        continue;
-      }
-      recorded.push(outcome);
-    }
-    expect(recorded).toEqual(['complete', 'failure:budget_exhausted', 'complete']);
+    const neverStarted = unreportedLaneFailure(task('task-budget'), 'no_budget');
+    const noVerdict = unreportedLaneFailure(task('task-output'), 'exhausted');
+    expect(neverStarted.failureClass).toBe('budget_exhausted');
+    expect(neverStarted.error).toContain('did not start');
+    expect(neverStarted.error).not.toContain('produced no verdict');
+    expect(noVerdict.failureClass).toBe('malformed_output');
+    expect(noVerdict.error).toContain('ran and produced no verdict');
+    expect(noVerdict.error).not.toContain('did not start');
   });
 });

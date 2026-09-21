@@ -885,28 +885,34 @@ async function runTaskWorkPhase(input: {
 }
 
 /**
- * A task with no verdict is a failed lane, and the walk continues.
+ * A task that does not yield a verdict is a failed lane, and the walk continues.
  *
- * Aborting the loop omitted that task and every task after it, so the roster
- * check saw "completed 4 of 5" and BLOCKED. Recording the miss as
- * `budget_exhausted` keeps its id on the roster without inventing an APPROVE.
+ * `no_budget` means the task never started because the composed turn budget was
+ * already spent. `exhausted` means the task ran and still produced no verdict.
+ * Those are different failures. Neither one is an APPROVE, and a failed lane
+ * still blocks publication.
  */
 export function nextLaneStep(reason: 'no_budget' | 'exhausted'): {
   record: 'failure';
   continueRemaining: true;
-  failureClass: 'budget_exhausted';
+  failureClass: 'budget_exhausted' | 'malformed_output';
 } {
-  void reason;
-  return { record: 'failure', continueRemaining: true, failureClass: 'budget_exhausted' };
+  return {
+    record: 'failure',
+    continueRemaining: true,
+    failureClass: reason === 'no_budget' ? 'budget_exhausted' : 'malformed_output',
+  };
 }
 
-export function unreportedLaneFailure(task: ReviewTask): NonNullable<PanelResult['optionalFailures']>[number] {
-  const step = nextLaneStep('exhausted');
-  return {
-    id: task.id,
-    error: `Task ${task.id} (${task.dimension}) produced no verdict`,
-    failureClass: step.failureClass,
-  };
+export function unreportedLaneFailure(
+  task: ReviewTask,
+  reason: 'no_budget' | 'exhausted',
+): NonNullable<PanelResult['optionalFailures']>[number] {
+  const step = nextLaneStep(reason);
+  const error = reason === 'no_budget'
+    ? `Task ${task.id} (${task.dimension}) did not start: composed review turn budget was spent`
+    : `Task ${task.id} (${task.dimension}) ran and produced no verdict`;
+  return { id: task.id, error, failureClass: step.failureClass };
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,7 +1058,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       const task = planOutcome.tasks[i];
       if (remainingBudget() <= 0) {
         const step = nextLaneStep('no_budget');
-        optionalFailures.push(unreportedLaneFailure(task));
+        optionalFailures.push(unreportedLaneFailure(task, 'no_budget'));
         if (!step.continueRemaining) break;
         continue;
       }
@@ -1122,10 +1128,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
         ];
       } else {
-        // No parseable verdict. Record the lane as a budget failure and keep
-        // walking. Do not synthesize an APPROVE for a task that did not run.
+        // The task ran and returned no verdict. That is malformed output, not a
+        // spent budget, and it is not an APPROVE. Later tasks still run.
         const step = nextLaneStep('exhausted');
-        optionalFailures.push(unreportedLaneFailure(task));
+        optionalFailures.push(unreportedLaneFailure(task, 'exhausted'));
         if (!step.continueRemaining) break;
       }
     }
