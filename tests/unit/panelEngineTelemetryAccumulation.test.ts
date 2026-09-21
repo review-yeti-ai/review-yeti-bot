@@ -468,7 +468,7 @@ describe('panelWallClockMs on early-return paths', () => {
     const outerStart = Date.now();
     const result = await executePersonaPanel({
       config,
-      // Matches no persona path, and is documentation -- the zero-lane non-evidence contract.
+      // Matches no persona path, and is documentation -- the documentation-only approval contract.
       changedFiles: [{ path: 'docs/readme.md', patch: '+ a docs line' }],
       repository: 'calltelemetry/repo',
       headSha: 'head-sha-zero-lane',
@@ -476,8 +476,8 @@ describe('panelWallClockMs on early-return paths', () => {
     });
     const outerWallMs = Date.now() - outerStart;
 
-    expect(result.zeroLaneNonEvidence).toBe(true);
-    expect(result.personas).toHaveLength(0);
+    expect((result as any).documentationOnly).toBe(true);
+    expect(result.personas).toHaveLength(1);
     expect(typeof result.panelWallClockMs).toBe('number');
     expect(result.panelWallClockMs!).toBeGreaterThanOrEqual(0);
     // Same containment invariant as the main-path test: a panel-internal interval cannot exceed

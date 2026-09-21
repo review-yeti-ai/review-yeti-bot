@@ -44,7 +44,7 @@ import {
   BLOCKED_BUILD_OR_DEP_FILENAMES,
   SENSITIVE_PATH_PATTERNS,
 } from './classifierEngine';
-import { buildFastShipPanelResult } from './fastShipResult';
+import { buildFastShipPanelResult, buildDocumentationOnlyPanelResult } from './fastShipResult';
 import { compactMessageWindow, MessageWindowPolicy } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import { TASK_DIMENSIONS } from './reviewTask';
@@ -819,6 +819,22 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
     normalized.startsWith('docs/') ||
     normalized.startsWith('.github/') ||
     normalized.startsWith('.changeset/') ||
+    // Run and evidence directories hold generated artifacts -- benchmark
+    // output, captures, receipts. They are records of an execution, not code
+    // that executes, so there is nothing for a persona to reason about.
+    normalized.startsWith('runs/') ||
+    normalized.includes('/runs/') ||
+    // Serialized data under an evidence location only. A blanket `*.json` rule
+    // was tried and reverted: it also captured package.json, lockfiles and
+    // Kubernetes manifests, which made `allDocOrAsset` true for a dependency
+    // bump and skipped the security lane outright -- a supply-chain review
+    // hole, and the exact case tests/unit/personaGating.test.ts pins with
+    // "runs sec-lane when sensitive files or manifests are modified".
+    //
+    // Evidence JSON is already covered without that risk: `docs/` is excluded
+    // wholesale above, and run artifacts are excluded by the `runs/` rules.
+    /^(evidence|artifacts)\//.test(normalized) ||
+    /\/(evidence|artifacts)\//.test(normalized) ||
     /\.(md|markdown|txt|rst|adoc|png|jpg|jpeg|gif|svg|ico|pdf|drawio)$/i.test(normalized)
   );
 }
@@ -3409,33 +3425,22 @@ export async function executePersonaPanel(options: {
         );
       }
 
+      // Reaching here means every changed path is documentation, an asset or
+      // data -- an unmatched source path throws above rather than falling
+      // through. So this is not "the roster is misconfigured", it is "there is
+      // nothing to analyze", and those need opposite outcomes. Emitting a
+      // zero-lane non-evidence receipt made documentation- and evidence-only
+      // pull requests permanently unmergeable: publishing refuses a zero-lane
+      // run as review evidence, correctly, and no amount of retrying produces
+      // a lane when no lane applies.
       const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
       return {
-        headSha,
-        applicablePersonaIds: [],
-        personas: [],
-        optionalFailures: [],
-        zeroLaneNonEvidence: true,
+        ...buildDocumentationOnlyPanelResult(
+          headSha,
+          arbiterId,
+          'No analyzable source changed: every path is documentation, an asset, a run artifact or data.',
+        ),
         panelWallClockMs: Date.now() - panelStartedAt,
-        quorum: { required: 0, distinctProviders: [], satisfied: true },
-        moderator: {
-          providerId: arbiterId,
-          model: 'none',
-          decision: 'RECONCILED',
-          findings: [],
-          usage: null,
-          costUSD: null,
-          durationMs: 0,
-        },
-        arbiter: {
-          providerId: arbiterId,
-          model: 'none',
-          verdict: 'SHIP',
-          rationale: 'No enabled persona paths matched the changed files; zero-lane run is a non-evidence clean receipt.',
-          usage: null,
-          costUSD: null,
-          durationMs: 0,
-        },
       };
     }
 
