@@ -658,6 +658,27 @@ const BUILTIN_CHARTERS: Record<string, string> = {
 - Do NOT flag missing retry logic on idempotent or lightweight local helper operations.
 - Suppress logging format suggestions unless essential context keys (e.g. requestId, tenantId) are omitted.`,
 
+  'builtin:architecture': `Find coupling, layering, boundary, and ownership defects that make the system harder to change safely.
+
+## Domain Charter & Core Scope
+- Detect dependency-direction violations: inner layers importing outer ones, domain logic reaching into transport/persistence, and cycles between modules or packages.
+- Identify duplicated implementations of one contract -- two code paths, two schemas, or a script and a test asserting the same rule -- which drift apart silently.
+- Audit module and service boundaries for leaked internals: exported mutable state, cross-package reach-through, and callers depending on incidental structure rather than a declared interface.
+- Evaluate state ownership and blast radius: which component may mutate a given store, whether a failure is contained to one domain, and whether a new shared dependency widens an outage.
+- Assess whether an abstraction earns its indirection, and whether a new seam is placed where change actually occurs.
+
+## Deep Reasoning Protocol
+1. Map the dependency direction across the changed modules and verify each import points inward or sideways by design, never outward from the domain.
+2. For every rule, constraint, or schema introduced, search for an existing implementation of the same rule; report duplication as a drift risk even when both copies currently agree.
+3. Trace the ownership of each mutated store or shared resource and identify every writer, flagging any change that adds a second writer to a previously single-owner resource.
+4. Determine the blast radius of a failure in the changed component, and whether the change converts an isolated failure into a shared one.
+5. Compare the declared interface against how callers actually use it, and flag consumers coupled to incidental implementation detail.
+
+## Nit Suppression Rules
+- Do NOT flag naming, formatting, or file placement when module boundaries and dependency direction are sound.
+- Do NOT recommend a refactor whose only justification is symmetry or taste; tie every structural finding to a concrete future change it would make unsafe or costly.
+- Do NOT propose introducing an abstraction for a single current caller.`,
+
   'builtin:constitutional-goals': `Protect the repository constitutional goals and durable system authority boundaries.
 
 ## Domain Charter & Core Scope

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ConfigResolver, RepositoryContentClient } from '../../src/config/configResolver';
-import { ConfigValidationError } from '../../src/config/configLoader';
+import { createDefaultV3Config, ConfigValidationError } from '../../src/config/configLoader';
 
 describe('ConfigResolver Unit Tests (Milestone 39)', () => {
   const mockClient = (files: Record<string, string>): RepositoryContentClient => ({
@@ -124,7 +124,30 @@ personas:
     // Other lanes maintain system defaults
     const archLane = config.personas.find((p) => p.id === 'arch-lane');
     expect(archLane?.enabled).toBe(true);
-    expect(archLane?.charter).toBe('builtin:constitutional-goals');
+    expect(archLane?.charter).toBe('builtin:architecture');
+  });
+
+  it('gives every default lane a charter that names its own domain', () => {
+    // arch-lane shipped pointing at 'builtin:constitutional-goals' -- a
+    // governance/authority charter with no architectural vocabulary in it,
+    // while every other lane's charter matched its name. The lane was being
+    // asked a governance question and graded on architecture.
+    const config = createDefaultV3Config();
+    const expected: Record<string, string> = {
+      'sec-lane': 'builtin:security',
+      'arch-lane': 'builtin:architecture',
+      'qual-lane': 'builtin:consistency',
+      'devops-lane': 'builtin:devops',
+      'correctness-lane': 'builtin:correctness',
+      'contract-lane': 'builtin:contract',
+      'policy-lane': 'builtin:policy-compliance',
+      'perf-lane': 'builtin:performance',
+    };
+    for (const [laneId, charter] of Object.entries(expected)) {
+      const lane = config.personas.find((p) => p.id === laneId);
+      if (!lane) continue;
+      expect(lane.charter, `${laneId} charter`).toBe(charter);
+    }
   });
 
   it('accepts any valid model string (open provider system)', async () => {
