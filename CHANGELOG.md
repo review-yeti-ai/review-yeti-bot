@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.80.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.79.0...v1.80.0) (2026-09-21)
+
+
+### Features
+
+* **transport:** admit a third, digest-pinned review destination ([#886](https://github.com/review-yeti-ai/review-yeti-bot/issues/886)) ([543ea14](https://github.com/review-yeti-ai/review-yeti-bot/commit/543ea143835d2f4b500e753678b753cc9243dc7a))
+
 ## [1.79.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.78.0...v1.79.0) (2026-09-21)
 
 
