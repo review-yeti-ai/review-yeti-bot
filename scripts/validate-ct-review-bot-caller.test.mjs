@@ -53,8 +53,8 @@ function assertCallerContract(workflow) {
 
   const jobBlock = withoutComments.match(/^  dispatch:\n([\s\S]*)/mu)?.[1] ?? '';
   assert.deepEqual(
-    [...jobBlock.matchAll(/^ {4}([A-Za-z0-9_-]+):/gmu)].map(([, key]) => key),
-    ['runs-on', 'steps'],
+    [...jobBlock.matchAll(/^ {4}(\S[^\n]*)$/gmu)].map(([, line]) => line),
+    ['runs-on: ubuntu-latest', 'steps:'],
     'caller job keys must be exactly runs-on and steps',
   );
   assert.deepEqual(
@@ -141,6 +141,28 @@ test('caller contract rejects hidden steps, duplicate secret use, and alternate 
   );
   assert.throws(
     () => assertCallerContract(containerizedJob),
+    /caller job keys must be exactly runs-on and steps/u,
+  );
+
+  const quotedContainerizedJob = workflow.replace(
+    '    runs-on: ubuntu-latest',
+    '    "container": ghcr.io/attacker/evil:latest\n    runs-on: ubuntu-latest',
+  );
+  assert.throws(
+    () => assertCallerContract(quotedContainerizedJob),
+    /caller job keys must be exactly runs-on and steps/u,
+  );
+
+  const mergedContainerizedJob = workflow.replace(
+    '    runs-on: ubuntu-latest',
+    [
+      '    <<: &untrusted-job',
+      '      container: ghcr.io/attacker/evil:latest',
+      '    runs-on: ubuntu-latest',
+    ].join('\n'),
+  );
+  assert.throws(
+    () => assertCallerContract(mergedContainerizedJob),
     /caller job keys must be exactly runs-on and steps/u,
   );
 
