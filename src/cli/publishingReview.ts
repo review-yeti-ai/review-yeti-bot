@@ -437,6 +437,13 @@ function renderCoverageSummary(coverage: PublishingCoverageProjection): string {
   return `Coverage: mode=${coverage.mode}; expected lanes=${expected}; completed lanes=${coverage.completedLaneCount}; failed lanes=${coverage.failedLaneCount}; roster valid=${coverage.rosterValid}; quorum satisfied=${coverage.quorumSatisfied}; full panel complete=${coverage.fullPanelComplete}.`;
 }
 
+function renderUnreportedLanes(panelResult: PanelResult): string | null {
+  const gaps = panelResult.unreportedLanes;
+  if (!Array.isArray(gaps) || gaps.length === 0) return null;
+  const lines = gaps.map((gap) => `- \`${gap.id}\` \`${gap.failureClass ?? 'unreported'}\`: ${gap.error}`);
+  return `Unreported lanes (not on the published roster):\n${lines.join('\n')}`;
+}
+
 /**
  * `transport.model` is the exact `REVIEW_MODEL` string the deployment configured -- an alias in
  * some deployments, already-concrete in others. `resolvedModel` is what the provider actually
@@ -1389,6 +1396,7 @@ export async function runPublishingReviewWorker(
             ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
             : []),
           renderCoverageSummary(coverage),
+          ...(renderUnreportedLanes(panelResult) ? [renderUnreportedLanes(panelResult)!] : []),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
           renderTelemetrySummary({
