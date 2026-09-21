@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.81.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.1...v1.81.2) (2026-09-21)
+
+
+### Bug Fixes
+
+* **composed:** approve a diff with nothing analyzable on the composed path too ([#899](https://github.com/review-yeti-ai/review-yeti-bot/issues/899)) ([139739c](https://github.com/review-yeti-ai/review-yeti-bot/commit/139739c5928b6be419cd3ae50e9d7f38d2d7d84a))
+
 ## [1.81.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.0...v1.81.1) (2026-09-21)
 
 
