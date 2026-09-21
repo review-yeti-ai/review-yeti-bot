@@ -51,11 +51,9 @@ if [[ "$uses_count" -ne 1 ]]; then
 fi
 if [[ "$immutable_uses_count" -eq 1 ]]; then
   immutable_pin="$(grep -E '^    uses: exampleorg/example-review-actions/\.github/workflows/review-yeti\.yml@[0-9a-fA-F]{40}$' <<<"$workflow_content" | sed -E 's/.*@([0-9a-fA-F]{40})$/\1/')"
-  # The target token reads the caller workflow. The central compare is a private
-  # repository the public target App cannot see, so it uses the central token
-  # when the workflow supplies one. Tests that mint a single token keep working.
+  : "${GH_CENTRAL_TOKEN:?GH_CENTRAL_TOKEN is required for immutable central comparison}"
   central_comparison_status="$({
-    GH_TOKEN="${GH_CENTRAL_TOKEN:-$GH_TOKEN}" \
+    GH_TOKEN="$GH_CENTRAL_TOKEN" \
       gh api "repos/exampleorg/example-review-actions/compare/${immutable_pin}...${central_ref}" |
       jq -r '.status // empty'
   } 2>&1)" || {

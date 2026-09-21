@@ -33,6 +33,7 @@ const payload = Object.freeze({
   head_sha: headSha,
 });
 const receiverWorkflow = readFileSync(new URL('../.github/workflows/repository-dispatch.yml', import.meta.url), 'utf8');
+const reusableWorkflow = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
 
 function workflowStepRun(source, name) {
   const marker = `      - name: ${name}\n`;
@@ -46,11 +47,11 @@ function workflowStepRun(source, name) {
   return run[1].split('\n').map((line) => line.startsWith('          ') ? line.slice(10) : line).join('\n');
 }
 
-function resolveValidationTokenScope(targetRepository) {
+function resolveWorkflowTargetScope(workflow, targetRepository) {
   const directory = mkdtempSync(`${tmpdir()}/review-yeti-token-scope-`);
   const outputPath = `${directory}/github-output`;
   try {
-    const result = spawnSync('bash', ['-c', workflowStepRun(receiverWorkflow, 'Resolve target repository scope')], {
+    const result = spawnSync('bash', ['-c', workflowStepRun(workflow, 'Resolve target repository scope')], {
       encoding: 'utf8',
       env: { ...process.env, GITHUB_OUTPUT: outputPath, TARGET_REPOSITORY: targetRepository },
     });
@@ -59,6 +60,10 @@ function resolveValidationTokenScope(targetRepository) {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+function resolveValidationTokenScope(targetRepository) {
+  return resolveWorkflowTargetScope(receiverWorkflow, targetRepository);
 }
 
 // ADR 0490 scope widened 2026-09-02 (example-review-actions #200): every admitted
@@ -422,6 +427,36 @@ test('receiver scopes internal and public target Apps independently', () => {
   assert.match(validationTokenStep, /private-key:\s*\$\{\{ secrets\.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY \}\}/u);
   assert.match(validationTokenStep, /owner:\s*review-yeti-ai/u);
   assert.match(validationTokenStep, /repositories:\s*review-yeti-bot/u);
+});
+
+test('reusable and receiver admission scopes stay in lockstep', () => {
+  for (const targetRepository of [
+    'exampleorg/example-api',
+    CENTRAL_REPOSITORY,
+    'review-yeti-ai/review-yeti-bot',
+  ]) {
+    assert.deepEqual(
+      resolveWorkflowTargetScope(reusableWorkflow, targetRepository),
+      resolveValidationTokenScope(targetRepository),
+      `admission scope drift for ${targetRepository}`,
+    );
+  }
+});
+
+test('App setup documentation preserves route-specific least privilege', () => {
+  const docs = readFileSync(new URL('../docs/github-app-setup.md', import.meta.url), 'utf8');
+  assert.match(docs, /## Route-specific permissions/u);
+  assert.match(docs, /review-yeti-ingress/u);
+  assert.match(docs, /REVIEW_YETI_DISPATCH_APP_ID/u);
+  assert.match(docs, /CT_REVIEW_BOT_APP_ID/u);
+  assert.match(docs, /REVIEW_YETI_PUBLIC_TARGET_APP_ID/u);
+  assert.match(docs, /## Installing the route-specific Apps/u);
+  assert.match(docs, /Install the \*\*Public ingress App\*\* only on\s+`exampleorg\/example-review-actions`/u);
+  assert.match(docs, /Install the \*\*Public target App\*\* only on\s+`review-yeti-ai\/review-yeti-bot`/u);
+  assert.doesNotMatch(docs, /Add all \*\*Consumer Repositories\*\*/u);
+  assert.doesNotMatch(docs, /## Installing the App on Repositories/u);
+  assert.doesNotMatch(docs, /(?:secrets\.|gh secret set )REVIEW_BOT_APP_ID/u);
+  assert.doesNotMatch(docs, /"actions":\s*"write"[\s\S]{0,160}"checks":\s*"write"[\s\S]{0,160}"contents":\s*"write"/u);
 });
 
 

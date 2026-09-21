@@ -164,7 +164,7 @@ jobs:
                 echo "scope=exampleorg"
                 echo "owner=exampleorg"
                 echo "name=${target_name}"
-                echo "repositories=${target_name},example-review-actions"
+                echo "repositories=${target_name}"
                 echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
               } >> "$GITHUB_OUTPUT"
               ;;

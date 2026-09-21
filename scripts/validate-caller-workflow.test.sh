@@ -66,6 +66,11 @@ grep -Fxq '          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token |
   echo 'immutable caller validation must bind only the already-minted App token' >&2
   exit 1
 }
+# shellcheck disable=SC2016 # Match the literal GitHub expression, not shell expansion.
+grep -Fxq '          GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token }}' <<<"$pin_step" || {
+  echo 'immutable caller validation must bind the dedicated central App token' >&2
+  exit 1
+}
 
 # The called workflow is its own immutable trust root. Consumer calls must
 # capture job.workflow_sha before any repository checkout and use that exact
@@ -158,36 +163,37 @@ for optional_secret in CONTEXT7_API_KEY GEMINI_API_KEY HONCHO_API_KEY HONCHO_BAS
   }
 done
 
-# The ambient consumer token can read its own base caller but cannot compare
-# private central history. Only the App token works; lack of it is fail-closed.
+# The target App reads consumer contents while the dedicated central App reads
+# private central history. The two identities must remain distinct and the
+# central token is mandatory for immutable comparison.
 PATH="$tmp_dir/bin:$PATH" \
-  GH_TOKEN=fixture-app FAKE_COMPARE_TOKEN=fixture-app \
+  GH_TOKEN=fixture-target GH_CENTRAL_TOKEN=fixture-central FAKE_COMPARE_TOKEN=fixture-central \
   REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
   FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
   "$repo_root/scripts/validate-caller-workflow.sh"
 
 if output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=fixture-ambient FAKE_COMPARE_TOKEN=fixture-app \
+    GH_TOKEN=fixture-target GH_CENTRAL_TOKEN=fixture-wrong-central FAKE_COMPARE_TOKEN=fixture-central \
     REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
     FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
     "$repo_root/scripts/validate-caller-workflow.sh"
 } 2>&1)"; then
-  echo 'expected the ambient consumer token to fail private central comparison' >&2
+  echo 'expected the wrong central App token to fail private central comparison' >&2
   exit 1
 fi
 grep -Fq 'Could not verify immutable Review Yeti pin' <<<"$output"
 
 if output="$({
-  PATH="$tmp_dir/bin:$PATH" GH_TOKEN='' \
+  PATH="$tmp_dir/bin:$PATH" GH_TOKEN=fixture-target GH_CENTRAL_TOKEN='' \
     REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
     FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
     "$repo_root/scripts/validate-caller-workflow.sh"
 } 2>&1)"; then
-  echo 'expected an absent App token to fail before any API access' >&2
+  echo 'expected an absent central App token to fail before any API access' >&2
   exit 1
 fi
-grep -Fq 'GH_TOKEN is required' <<<"$output"
+grep -Fq 'GH_CENTRAL_TOKEN is required' <<<"$output"
 
 PATH="$tmp_dir/bin:$PATH" \
   GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
@@ -195,7 +201,8 @@ PATH="$tmp_dir/bin:$PATH" \
   "$repo_root/scripts/validate-caller-workflow.sh"
 
 PATH="$tmp_dir/bin:$PATH" \
-  GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+  GH_TOKEN=test GH_CENTRAL_TOKEN=central-test FAKE_COMPARE_TOKEN=central-test \
+  REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
   FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
   "$repo_root/scripts/validate-caller-workflow.sh"
 
@@ -212,7 +219,8 @@ grep -Fq "must not duplicate the central release ref as central-sha" <<<"$output
 
 if output="$({
   PATH="$tmp_dir/bin:$PATH" \
-    GH_TOKEN=test REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
+    GH_TOKEN=test GH_CENTRAL_TOKEN=central-test FAKE_COMPARE_TOKEN=central-test \
+    REVIEW_REPOSITORY=exampleorg/example CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \
     FAKE_COMPARE_STATUS=behind FAKE_WORKFLOW_CONTENT="$immutable_workflow" \
     "$repo_root/scripts/validate-caller-workflow.sh"
 } 2>&1)"; then
