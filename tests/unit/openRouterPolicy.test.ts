@@ -387,6 +387,20 @@ describe('openrouter review policy', () => {
       expect(resolved.cost_quality_tradeoff).toBe(5);
     });
 
+    // Pins the auto path's resolved SHAPE rather than an unreachable guard. The auto-model
+    // conversion runs before the admit rule and rewrites the model to the direct primary, so the
+    // pseudo-model can never reach it -- confirmed by resolving with and without the clause and
+    // getting byte-identical output. What matters is that the pseudo-model never leaks into the
+    // per-request routing set, which is what this asserts.
+    it('resolves the auto model to the direct pair without leaking the pseudo-model', () => {
+      const resolved = resolveOpenRouterReviewPolicy({
+        actionInputs: { 'llm-base-url': 'https://openrouter.ai/api/v1', model: 'openrouter/auto' },
+      });
+      expect(resolved.model).not.toBe('openrouter/auto');
+      expect(resolved.allowed_models).not.toContain('openrouter/auto');
+      expect(resolved.allowed_models).toContain(resolved.model);
+    });
+
     // An explicit list is a deliberate narrowing and must not be silently widened.
     it('leaves an explicitly supplied allowed_models untouched', () => {
       expect(() =>

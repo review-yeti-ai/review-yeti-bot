@@ -271,6 +271,11 @@ function resolveOpenRouterReviewPolicy({ actionInputs, trustedConfig } = {}) {
     merged.allowed_models = [OPENROUTER_DIRECT_PRIMARY_MODEL, OPENROUTER_DIRECT_FALLBACK_MODEL];
   }
 
+  // Runs AFTER the auto-model conversion above, which is why there is no auto-model guard here:
+  // that block rewrites `merged.model` to the direct primary, so the pseudo-model cannot reach
+  // this point. A guard for it would be unreachable, and an unreachable guard invites a test that
+  // asserts nothing. The auto path's resolved shape is pinned by its own test instead.
+  //
   // Selecting a model while forbidding it is incoherent, and the two values come from different
   // places: `model` from an action input, `allowed_models` from the manifest default. So a
   // destination whose model id is absent from that default throws here and every lane fails with
@@ -286,7 +291,6 @@ function resolveOpenRouterReviewPolicy({ actionInputs, trustedConfig } = {}) {
   if (
     !explicitAllowedModels
     && typeof merged.model === 'string'
-    && merged.model !== OPENROUTER_AUTO_MODEL
     && Array.isArray(merged.allowed_models)
     && !merged.allowed_models.includes(merged.model)
   ) {

@@ -203,6 +203,12 @@ describe('review transport configuration guard', () => {
       path.resolve(__dirname, '../../.github/workflows/review-bot.yaml'),
       'utf8',
     );
+    // The chain is: script output -> step id -> selector reference. The middle link was asserted
+    // on neither side, so deleting `id: transport` left the whole suite green while
+    // `steps.transport.outputs.destination` resolved to empty, every `==` arm evaluated false, and
+    // each lane failed at runtime with no API key.
+    expect(workflow).toMatch(/id: transport\n\s+shell: bash\n[\s\S]*?assert-review-transport-config\.sh/);
+
     const selector = workflow.match(/llm-api-key: >-\n([\s\S]*?)\n\s{10}[a-z#]/)?.[1] ?? '';
     expect(selector).toContain("outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY");
     expect(selector).toContain("outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY");
