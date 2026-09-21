@@ -110,6 +110,7 @@ describe('Milestone 3 Empirical Challenge: POST /api/onboarding/diagnostic', () 
       // Mock executePersonaPanel to simulate active network response for Probe 3
       vi.spyOn(panelEngine, 'executePersonaPanel').mockResolvedValue({
         headSha: 'abc1234',
+        applicablePersonaIds: ['security', 'architecture', 'quality'],
         optionalFailures: [],
         quorum: { required: 3, distinctProviders: ['codex', 'grok', 'claude'], satisfied: true },
         personas: [
