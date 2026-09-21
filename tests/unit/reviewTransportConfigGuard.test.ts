@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import os from 'node:os';
 import { OPENCODE_LANE_TIMEOUT_S } from '../../src/config/configLoader';
 
 /**
@@ -21,6 +23,19 @@ function run(env: Record<string, string>): { ok: boolean; out: string } {
 
 const OPENCODE = 'https://opencode.ai/zen/v1';
 const OPENROUTER = 'https://openrouter.ai/api/v1';
+
+/**
+ * The third destination is pinned by digest, not hostname, because this repository is public.
+ * These tests must not hardcode the hostname either -- so they drive the guard with a destination
+ * synthesised from the SAME pin the guard uses, overriding it to a value the tests do own.
+ */
+const TEST_GATEWAY = 'https://gateway.test.invalid/v1';
+const TEST_GATEWAY_SHA256 = createHash('sha256').update(TEST_GATEWAY).digest('hex');
+const gatewayEnv = (extra: Record<string, string> = {}) => ({
+  REVIEW_BASE_URL: TEST_GATEWAY,
+  GATEWAY_BASE_URL_SHA256: TEST_GATEWAY_SHA256,
+  ...extra,
+});
 
 describe('review transport configuration guard', () => {
   it('accepts a fully consistent opencode configuration', () => {
@@ -77,5 +92,163 @@ describe('review transport configuration guard', () => {
     const match = source.match(/OPENCODE_MIN_LANE_TIMEOUT_MS:-(\d+)/);
     expect(match, 'guard must declare a default minimum').toBeTruthy();
     expect(Number(match![1])).toBe(OPENCODE_LANE_TIMEOUT_S * 1000);
+  });
+
+  // --- digest-pinned gateway destination ---------------------------------------------------
+
+  it('accepts a consistent digest-pinned gateway configuration', () => {
+    const r = run(gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }));
+    expect(r.ok).toBe(true);
+    expect(r.out).toMatch(/digest-pinned gateway destination/);
+  });
+
+  it('normalizes a trailing slash before matching the pinned digest', () => {
+    const r = run(gatewayEnv({ REVIEW_BASE_URL: `${TEST_GATEWAY}/`, GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }));
+    expect(r.ok).toBe(true);
+  });
+
+  // Same leak as the opencode case: with the gateway secret empty, the workflow's key-selection
+  // expression falls through to another provider's credential and transmits it to the gateway.
+  it('refuses the gateway without its own key rather than falling back', () => {
+    const r = run(gatewayEnv({ GATEWAY_KEY_PRESENT: 'false', OPENROUTER_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }));
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/CT_REVIEW_GATEWAY_API_KEY is unset/);
+  });
+
+  it('requires an explicit lane timeout for the gateway', () => {
+    const r = run(gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '' }));
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/REVIEW_LANE_TIMEOUT_MS is unset/);
+  });
+
+  it('rejects a lane timeout tighter than the gateway budget', () => {
+    const r = run(gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '90000' }));
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/tighter than the digest-pinned gateway provider budget/);
+  });
+
+  // A near-miss of the pinned URL must fall to the catch-all, not be waved through.
+  it('rejects a destination that merely resembles the pinned one', () => {
+    const r = run(gatewayEnv({ REVIEW_BASE_URL: 'https://gateway.test.invalid/v2', GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }));
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/no matching role-scoped credential rule/);
+  });
+
+  // This repository's workflow logs are public, and the likeliest unrecognised destination is a
+  // typo of a first-party hostname. The guard must report the digest, never the URL.
+  it('never echoes an unrecognised destination back into the log', () => {
+    const secretish = 'https://internal-host.example.com/v1';
+    const r = run({ REVIEW_BASE_URL: secretish });
+    expect(r.ok).toBe(false);
+    expect(r.out).not.toContain(secretish);
+    expect(r.out).not.toContain('internal-host');
+    expect(r.out).toContain(createHash('sha256').update(secretish).digest('hex'));
+  });
+
+  // The guard and the policy module each carry the pin. If they drift, the workflow admits a
+  // destination the policy rejects (or the reverse) and the failure surfaces only in production.
+  it('pins the same gateway digest as the review policy module', () => {
+    const script = fs.readFileSync(SCRIPT, 'utf8');
+    const policy = fs.readFileSync(
+      path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'),
+      'utf8',
+    );
+    const inScript = script.match(/GATEWAY_BASE_URL_SHA256:-([0-9a-f]{64})/)?.[1];
+    expect(inScript).toMatch(/^[0-9a-f]{64}$/);
+
+    // Both directions. `toContain` alone only caught script -> policy: adding a digest to the
+    // policy array WITHOUT adding it to the guard script stayed green, and the drift surfaced only
+    // at workflow runtime when the guard's catch-all rejected the new destination -- the exact
+    // "fails only in production" outcome this test claims to prevent.
+    const { ALLOWED_REVIEW_BASE_URL_DIGESTS } = require(
+      path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'),
+    );
+    expect([...ALLOWED_REVIEW_BASE_URL_DIGESTS].sort()).toEqual([inScript].sort());
+    // Guards the assertion above against being trivially satisfied if the policy array empties.
+    expect(policy).toContain(inScript);
+  });
+
+  // The guard admits a trailing-slash destination by stripping it before hashing. The policy
+  // module's `digestBaseUrl` hashes the RAW string, so the two layers agree only because
+  // `normalizePolicyShape` strips the slash before the allowlist check runs. Nothing pinned that,
+  // and if it stopped happening the guard would wave a URL through that the policy then rejects:
+  // the job proceeds, then every lane fails at validation.
+  it('agrees with the policy module on a trailing-slash destination', () => {
+    const {
+      resolveOpenRouterReviewPolicy,
+    } = require(path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'));
+
+    expect(run({ REVIEW_BASE_URL: `${OPENCODE}/`, OPENCODE_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }).ok).toBe(true);
+    const resolved = resolveOpenRouterReviewPolicy({
+      actionInputs: { 'llm-base-url': `${OPENCODE}/`, model: 'glm-5.3-flash' },
+    });
+    expect(resolved.base_url).toBe(OPENCODE);
+  });
+
+  // --- destination class emitted for the workflow's credential selection -----------------------
+
+  /**
+   * The workflow picks the credential from this output. The binding used to be prose only -- the
+   * selector identified the gateway by elimination, which held while those were the only
+   * destinations and would have handed the gateway credential to any fourth one admitted later.
+   * These assert the contract the selector actually consumes.
+   */
+  function destinationOf(env: Record<string, string>): { ok: boolean; destination: string } {
+    const outPath = path.join(os.tmpdir(), `gh-output-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(outPath, '');
+    try {
+      const r = run({ ...env, GITHUB_OUTPUT: outPath });
+      const written = fs.readFileSync(outPath, 'utf8');
+      return { ok: r.ok, destination: written.match(/^destination=(.*)$/m)?.[1] ?? '' };
+    } finally {
+      fs.rmSync(outPath, { force: true });
+    }
+  }
+
+  it.each([
+    ['opencode', { REVIEW_BASE_URL: OPENCODE, OPENCODE_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }],
+    ['openrouter', { REVIEW_BASE_URL: OPENROUTER, OPENROUTER_KEY_PRESENT: 'true' }],
+    ['gateway', gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' })],
+  ])('emits the %s destination class for the credential selector', (expected, env) => {
+    const r = destinationOf(env as Record<string, string>);
+    expect(r.ok).toBe(true);
+    expect(r.destination).toBe(expected);
+  });
+
+  // The selector has no catch-all arm, so an empty class yields an empty key rather than another
+  // provider's credential. A rejected destination must therefore emit nothing at all.
+  it('emits no destination class when the configuration is rejected', () => {
+    const r = destinationOf({ REVIEW_BASE_URL: 'https://evil.example/v1' });
+    expect(r.ok).toBe(false);
+    expect(r.destination).toBe('');
+  });
+
+  // Each class must map to exactly one credential in the workflow, and no arm may be a catch-all.
+  it('maps every emitted class to its own credential in the workflow', () => {
+    const workflow = fs.readFileSync(
+      path.resolve(__dirname, '../../.github/workflows/review-bot.yaml'),
+      'utf8',
+    );
+    // The chain is: script output -> step id -> selector reference. The middle link was asserted
+    // on neither side, so deleting `id: transport` left the whole suite green while
+    // `steps.transport.outputs.destination` resolved to empty, every `==` arm evaluated false, and
+    // each lane failed at runtime with no API key.
+    expect(workflow).toMatch(/id: transport\n\s+shell: bash\n[\s\S]*?assert-review-transport-config\.sh/);
+
+    const selector = workflow.match(/llm-api-key: >-\n([\s\S]*?)\n\s{10}[a-z#]/)?.[1] ?? '';
+    expect(selector).toContain("outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY");
+    expect(selector).toContain("outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY");
+    expect(selector).toContain("outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY");
+    // Every arm that reaches a secret must be gated by a destination comparison. Checked per-arm
+    // rather than at the tail: the previous negative regex required `}}` right after the secret,
+    // so a bare `|| secrets.X` inserted MID-expression stayed green -- and since `&&` binds
+    // tighter than `||`, an unrelated destination then short-circuits straight to that secret.
+    const armsWithSecrets = selector
+      .split(/\r?\n/)
+      .filter((line) => line.includes('secrets.'));
+    expect(armsWithSecrets).toHaveLength(3);
+    for (const arm of armsWithSecrets) {
+      expect(arm).toMatch(/outputs\.destination == '[a-z]+'\s*&&\s*secrets\./);
+    }
   });
 });
