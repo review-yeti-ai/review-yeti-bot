@@ -119,11 +119,32 @@ describe('validateTaskPlan', () => {
     }
   });
 
-  it('rejects a task with an oversized question or rationale', () => {
+  it('clamps an oversized question or rationale and still accepts the plan', () => {
     const result = validateTaskPlan(
-      plan([task({ question: 'x'.repeat(MAX_TASK_TEXT_LENGTH + 1) })]),
+      plan([
+        task({ question: `q${'x'.repeat(MAX_TASK_TEXT_LENGTH + 50)}`, paths: [API_FILE] }),
+        task({
+          id: 'util-task',
+          dimension: 'testing',
+          paths: [UTIL_FILE],
+          rationale: `r${'y'.repeat(MAX_TASK_TEXT_LENGTH + 10)}`,
+        }),
+      ]),
       ctx(),
     );
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      const apiTask = result.tasks.find((t) => t.id === 'task-api-review');
+      const utilTask = result.tasks.find((t) => t.id === 'util-task');
+      expect(apiTask?.question).toHaveLength(MAX_TASK_TEXT_LENGTH);
+      expect(apiTask?.question.startsWith('q')).toBe(true);
+      expect(utilTask?.rationale).toHaveLength(MAX_TASK_TEXT_LENGTH);
+      expect(utilTask?.rationale.startsWith('r')).toBe(true);
+    }
+  });
+
+  it('rejects a task with a blank question or rationale', () => {
+    const result = validateTaskPlan(plan([task({ question: '   ' })]), ctx());
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.reason).toBe('invalid_task_fields');
   });
