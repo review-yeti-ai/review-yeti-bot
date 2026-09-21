@@ -362,7 +362,7 @@ function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): Ra
 
   if (isFastShip) {
     return {
-      mode: (panelResult as any).documentationOnly ? 'documentation_only' : 'fast_ship',
+      mode: panelResult.documentationOnly ? 'documentation_only' : 'fast_ship',
       lanes,
       expectedLaneCount: null,
       arbitrationExpectedCount: boundedLaneCount(completed.length),
@@ -1273,7 +1273,7 @@ export async function runPublishingReviewWorker(
     // `checks: write`, so the findings become visible without widening the
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
-    const documentationOnly = fastShipApproved && Boolean((panelResult as any).documentationOnly);
+    const documentationOnly = fastShipApproved && Boolean(panelResult.documentationOnly);
     const title = documentationOnly
       ? 'Review Yeti: SHIP (documentation-only)'
       : fastShipApproved

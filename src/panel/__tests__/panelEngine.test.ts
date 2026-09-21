@@ -490,6 +490,23 @@ describe('documentation, asset and data paths are not analyzable', () => {
     }
   });
 
+  it('keeps executable content under run/evidence directories analyzable', () => {
+    // The directory rules are constrained by data/serialization file type.
+    // A contributor-placed executable under an attacker-chosen runs/,
+    // evidence/ or artifacts/ directory must fail closed the same way an
+    // unmatched source path does -- never exempted from all review by its
+    // directory alone.
+    for (const path of [
+      'runs/deploy.sh',
+      'artifacts/loader.js',
+      'evidence/payload.py',
+      'some/nested/runs/worker.ts',
+      'artifacts/binary.wasm',
+    ]) {
+      expect(isDocumentationOrAssetPath(path)).toBe(false);
+    }
+  });
+
   it('approves a diff with nothing to analyze instead of emitting a zero-lane receipt', () => {
     // A zero-lane result is refused by publishing as non-evidence, which made
     // documentation- and evidence-only pull requests permanently unmergeable.

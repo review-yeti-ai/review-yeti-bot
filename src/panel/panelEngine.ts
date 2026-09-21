@@ -819,22 +819,20 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
     normalized.startsWith('docs/') ||
     normalized.startsWith('.github/') ||
     normalized.startsWith('.changeset/') ||
-    // Run and evidence directories hold generated artifacts -- benchmark
-    // output, captures, receipts. They are records of an execution, not code
-    // that executes, so there is nothing for a persona to reason about.
-    normalized.startsWith('runs/') ||
-    normalized.includes('/runs/') ||
-    // Serialized data under an evidence location only. A blanket `*.json` rule
-    // was tried and reverted: it also captured package.json, lockfiles and
-    // Kubernetes manifests, which made `allDocOrAsset` true for a dependency
-    // bump and skipped the security lane outright -- a supply-chain review
-    // hole, and the exact case tests/unit/personaGating.test.ts pins with
-    // "runs sec-lane when sensitive files or manifests are modified".
-    //
-    // Evidence JSON is already covered without that risk: `docs/` is excluded
-    // wholesale above, and run artifacts are excluded by the `runs/` rules.
-    /^(evidence|artifacts)\//.test(normalized) ||
-    /\/(evidence|artifacts)\//.test(normalized) ||
+    // Serialized data under a run/evidence location only. The directory
+    // rules are constrained by file type the way the extension list below
+    // is: a blanket directory rule would also exempt executable content (a
+    // contributor-placed runs/deploy.sh or artifacts/loader.js) from all
+    // review, which fails closed today and must keep failing closed. Only
+    // data/serialization extensions are records of an execution; anything
+    // else under these directories stays analyzable.
+    (
+      (normalized.startsWith('runs/') ||
+        normalized.includes('/runs/') ||
+        /^(evidence|artifacts)\//.test(normalized) ||
+        /\/(evidence|artifacts)\//.test(normalized)) &&
+      /\.(json|jsonl|ndjson|csv|tsv|log|xml|yaml|yml)$/i.test(normalized)
+    ) ||
     /\.(md|markdown|txt|rst|adoc|png|jpg|jpeg|gif|svg|ico|pdf|drawio)$/i.test(normalized)
   );
 }
