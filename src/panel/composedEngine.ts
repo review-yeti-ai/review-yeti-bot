@@ -579,7 +579,7 @@ function buildPlanDirective(maxTasks: number, changedFilePaths: string[], expect
   return [
     `=== PLAN TURN ===`,
     `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset files do not need their own task).`,
-    `Each task names a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
+    `Each task names an id matching [a-z][a-z0-9_-]* (for example "security-auth", not "T1"), a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
     `Use at most ${maxTasks} tasks. Every non-documentation changed file must be covered by at least one task. Any security-sensitive path (auth, secrets, access control) MUST be covered by a task with dimension "security" -- this is checked and failed closed if missed.`,
     `On an investigation turn, you may request exactly one read-only tool as {"tool":"tool_name","args":{}}. When ready, return the final plan object with the exact top-level fields "nonce" and "tasks" -- no other fields, no Markdown fences.`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
