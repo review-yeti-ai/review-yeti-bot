@@ -380,6 +380,7 @@ describe('panel qualification worker contract', () => {
       }
       return {
         headSha: panelEnvironment.REVIEW_HEAD_SHA!,
+        applicablePersonaIds: ['qualification-lane'],
         personas: [{
           id: 'qualification-lane', required: true, providerId: 'qualification',
           model: panelEnvironment.REVIEW_QUALIFICATION_MODEL!, decision: 'APPROVE', findings: [],
@@ -551,6 +552,7 @@ describe('full-panel qualification worker contract', () => {
       });
       return {
         headSha: fullPanelEnvironment.REVIEW_HEAD_SHA!,
+        applicablePersonaIds: ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'],
         personas: ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'].map(personaResult),
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['qualification'], satisfied: true },
@@ -666,6 +668,7 @@ describe('full-panel qualification worker contract', () => {
   it('persists a failed receipt when a completed panel misses the acceptance gate', async () => {
     const panelRunner = vi.fn(async () => ({
       headSha: fullPanelEnvironment.REVIEW_HEAD_SHA!,
+      applicablePersonaIds: [],
       personas: [],
       optionalFailures: [{ id: 'licensing', error: 'private response detail' }],
       quorum: { required: 1, distinctProviders: [], satisfied: false },
@@ -755,6 +758,7 @@ describe('same-head qualification worker contract', () => {
     });
     return {
       headSha: sameHeadEnvironment.REVIEW_HEAD_SHA!,
+      applicablePersonaIds: ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'],
       personas: ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'].map(persona),
       optionalFailures: [],
       quorum: { required: 1, distinctProviders: ['qualification'], satisfied: true },
