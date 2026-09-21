@@ -884,6 +884,29 @@ async function runTaskWorkPhase(input: {
   return { type: 'exhausted', turnUsages };
 }
 
+/**
+ * `no_budget` — the task never started because the composed turn budget was spent.
+ * `exhausted` — the task ran and still produced no verdict.
+ * Both are failed lanes. Neither is an approval.
+ */
+export function unreportedLaneFailure(
+  task: ReviewTask,
+  reason: 'no_budget' | 'exhausted',
+): NonNullable<PanelResult['optionalFailures']>[number] {
+  if (reason === 'no_budget') {
+    return {
+      id: task.id,
+      error: `Task ${task.id} (${task.dimension}) did not start: composed review turn budget was spent`,
+      failureClass: 'budget_exhausted',
+    };
+  }
+  return {
+    id: task.id,
+    error: `Task ${task.id} (${task.dimension}) ran and produced no verdict`,
+    failureClass: 'malformed_output',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -1026,9 +1049,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     for (let i = 0; i < planOutcome.tasks.length; i++) {
       const task = planOutcome.tasks[i];
       if (remainingBudget() <= 0) {
-        // Leave the task out of personas and optionalFailures. Either record
-        // would put its id on the published roster and could ship a partial
-        // plan. Later tasks still run; the missing id keeps the roster invalid.
+        // The task never started. Say so. A failed lane still blocks publication;
+        // it is not an approval, and later tasks still run.
+        optionalFailures.push(unreportedLaneFailure(task, 'no_budget'));
         continue;
       }
       const outcome = await runTaskWorkPhase({
@@ -1097,9 +1120,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
         ];
       } else {
-        // The task ran and returned no verdict. Do not invent an APPROVE and
-        // do not record an optional failure: both would satisfy the roster.
-        // Later tasks still run, and the gap forces an incomplete BLOCK.
+        // The task ran and returned no verdict. That is malformed output, not a
+        // spent budget and not an approval. Later tasks still run. A failed
+        // lane blocks publication.
+        optionalFailures.push(unreportedLaneFailure(task, 'exhausted'));
       }
     }
 
