@@ -289,9 +289,23 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		if err := validatePublishing(input.Publishing); err != nil {
 			return nil, err
 		}
+		gatewayURL := input.Publishing.GatewayBaseURL
+		reviewModel := input.Publishing.Model
+		// The prepared envelope's transport is what the config digest was
+		// computed from. A separately configured operator URL must not be
+		// injected instead: the worker then rejects the job as an identity
+		// mismatch before it calls the model.
+		if spec.PreparedReview != nil {
+			admittedURL, admittedModel, err := admittedPreparedTransport(*spec.PreparedReview)
+			if err != nil {
+				return nil, err
+			}
+			gatewayURL = admittedURL
+			reviewModel = admittedModel
+		}
 		env = append(env,
-			corev1.EnvVar{Name: "OPENAI_BASE_URL", Value: input.Publishing.GatewayBaseURL},
-			corev1.EnvVar{Name: "REVIEW_MODEL", Value: input.Publishing.Model},
+			corev1.EnvVar{Name: "OPENAI_BASE_URL", Value: gatewayURL},
+			corev1.EnvVar{Name: "REVIEW_MODEL", Value: reviewModel},
 			corev1.EnvVar{
 				Name: "OPENAI_API_KEY",
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
@@ -530,17 +544,22 @@ func validateInput(input Input) error {
 }
 
 // validatePreparedReview bounds the opaque transport and checks its envelope.
-// Config semantics/digest and agreement with the actual injected provider
-// transport remain with the shared TypeScript verifier, not this Go builder.
-// Both languages exercise testdata/prepared-review-execution.json.
+// The job's provider URL and model are copied from this admitted transport so
+// they cannot drift from the config digest. Both languages exercise
+// testdata/prepared-review-execution.json.
 func validatePreparedReview(raw string) error {
+	_, _, err := admittedPreparedTransport(raw)
+	return err
+}
+
+func admittedPreparedTransport(raw string) (string, string, error) {
 	rejected := configErr("prepared review envelope is invalid")
 	if len(raw) == 0 || len(raw) > MaxPreparedReviewBytes || !utf8.ValidString(raw) {
-		return rejected
+		return "", "", rejected
 	}
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal([]byte(raw), &envelope) != nil || len(envelope) != 3 {
-		return rejected
+		return "", "", rejected
 	}
 	var version string
 	var config map[string]json.RawMessage
@@ -548,29 +567,29 @@ func validatePreparedReview(raw string) error {
 	if json.Unmarshal(envelope["version"], &version) != nil || version != "PreparedReviewExecution.v1" ||
 		json.Unmarshal(envelope["config"], &config) != nil || config == nil ||
 		json.Unmarshal(envelope["transport"], &transport) != nil || len(transport) != 2 {
-		return rejected
+		return "", "", rejected
 	}
 	var baseURL, model string
 	if json.Unmarshal(transport["baseUrl"], &baseURL) != nil || utf16CodeUnits(baseURL) > 2000 ||
 		json.Unmarshal(transport["model"], &model) != nil || len(model) == 0 || utf16CodeUnits(model) > 256 ||
 		strings.ContainsFunc(model, func(r rune) bool { return r < 32 || r == 127 }) {
-		return rejected
+		return "", "", rejected
 	}
 	// Reject raw spelling that URL parsers normalize differently, including
 	// empty query/fragment delimiters. Escaped path characters remain valid.
 	if strings.ContainsAny(baseURL, "\\?#") || strings.ContainsFunc(baseURL, func(r rune) bool { return r <= 32 || r == 127 }) {
-		return rejected
+		return "", "", rejected
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return rejected
+		return "", "", rejected
 	}
 	if port := parsed.Port(); port != "" {
 		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-			return rejected
+			return "", "", rejected
 		}
 	}
-	return nil
+	return baseURL, model, nil
 }
 
 // Match TypeScript/Zod string limits, which count UTF-16 units rather than
