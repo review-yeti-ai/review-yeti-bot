@@ -7,17 +7,26 @@ const path = require('path');
 const MANIFEST_PATH = path.resolve(__dirname, '../../../src/config/openrouter-review-policy.json');
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENCODE_BASE_URL = 'https://opencode.ai/zen/v1';
+const FIREWORKS_BASE_URL = 'https://api.fireworks.ai/inference/v1';
 /**
  * Closed allowlist of review destinations. This is an exfiltration control, not configuration:
  * the review pipeline ships private diffs to a third-party model, so the destination is pinned
  * and the model allowlisted, with data_collection forced to deny.
  *
- * It is a LIST rather than a single constant because the fleet now has two funded transports.
- * It is emphatically NOT an "any https URL" check -- a compromised or mistyped base URL is
- * precisely what this stops, and the guard is worth more than the convenience of adding a third
- * destination without review.
+ * It is a LIST rather than a single constant because the fleet has more than one funded
+ * transport. It is emphatically NOT an "any https URL" check -- a compromised or mistyped base
+ * URL is precisely what this stops, and the guard is worth more than the convenience of adding
+ * a destination without review.
+ *
+ * Fireworks is a public provider, so it is named here the same way OpenRouter and OpenCode are.
+ * The digest pin below is only for the destination whose hostname must stay out of this public
+ * repository.
  */
-const ALLOWED_REVIEW_BASE_URLS = Object.freeze([OPENROUTER_BASE_URL, OPENCODE_BASE_URL]);
+const ALLOWED_REVIEW_BASE_URLS = Object.freeze([
+  OPENROUTER_BASE_URL,
+  OPENCODE_BASE_URL,
+  FIREWORKS_BASE_URL,
+]);
 /**
  * A third funded destination, pinned by digest rather than plaintext.
  *
@@ -89,6 +98,10 @@ const CANONICAL_ALLOWED_MODELS = Object.freeze([
   // model family as the entries above, reached by a third name on a third destination.
   'neuralwatt/glm-5.3-flash',
   'neuralwatt/deepseek-v4-flash',
+  // Fireworks publishes these ids. `glm-5.3-flash` is not one of them: the account's flash GLM
+  // is `glm-5p3-flash` (the dot is spelled `p`).
+  'accounts/fireworks/models/glm-5p3-flash',
+  'accounts/fireworks/models/deepseek-v4-flash-0731',
 ]);
 const CANONICAL_ALLOWED_MODEL_SET = new Set(CANONICAL_ALLOWED_MODELS);
 const POLICY_KEYS = Object.freeze([
