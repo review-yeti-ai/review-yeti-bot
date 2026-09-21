@@ -238,19 +238,24 @@ export function validateTaskPlan(
   }
 
   // --- Rule 2: ids match the roster regex and are unique ------------------
+  // Case is not part of the contract. A live plan died on ids "T1".."T4";
+  // folding to lowercase makes those the same roster ids the rest of the
+  // pipeline already accepts. Anything still illegal after that stays rejected.
   const malformedIds: string[] = [];
   const seenIds = new Set<string>();
   const duplicateIds = new Set<string>();
 
   for (const raw of rawTasks) {
-    if (!isValidTaskId(raw?.id)) {
+    const folded = typeof raw?.id === 'string' ? raw.id.trim().toLowerCase() : '';
+    if (!isValidTaskId(folded)) {
       malformedIds.push(idOf(raw));
       continue;
     }
-    if (seenIds.has(raw.id as string)) {
-      duplicateIds.add(raw.id as string);
+    raw.id = folded;
+    if (seenIds.has(folded)) {
+      duplicateIds.add(folded);
     } else {
-      seenIds.add(raw.id as string);
+      seenIds.add(folded);
     }
   }
 
