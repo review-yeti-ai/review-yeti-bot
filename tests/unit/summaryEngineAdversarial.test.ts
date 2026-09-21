@@ -62,6 +62,7 @@ index 1111111..2222222 100644
   it('handles PanelResult parameters and cross-examined model info (gpt-5.6-sol, deepseek-v4-pro)', () => {
     const mockPanelResult: PanelResult = {
       headSha: 'abc1234',
+      applicablePersonaIds: ['red_team'],
       personas: [
         {
           id: 'red_team',
@@ -142,6 +143,7 @@ index 1111111..2222222 100644
   it('handles findings with missing title and body without throwing', () => {
     const mockPanelResult: PanelResult = {
       headSha: 'abc1234',
+      applicablePersonaIds: ['red_team'],
       personas: [
         {
           id: 'red_team',
@@ -198,6 +200,7 @@ index 1111111..2222222 100644
 
     const mockPanelResult: PanelResult = {
       headSha: 'sha999',
+      applicablePersonaIds: ['red_team'],
       personas: [
         {
           id: 'red_team',
@@ -253,6 +256,7 @@ index 1111111..2222222 100644
   it('safely ignores null or falsy array items in personas and findings', () => {
     const panelResultWithNulls: PanelResult = {
       headSha: 'shaNull',
+      applicablePersonaIds: ['red_team'],
       personas: [
         null as any,
         undefined as any,

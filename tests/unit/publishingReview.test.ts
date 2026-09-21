@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
+import { MAX_PERSONAS, MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
   classifyFailure,
   createOpenAIPublishingConfig,
@@ -9,6 +9,7 @@ import {
   parseChangedFiles,
   publishingConclusion,
   publishingReviewIdentity,
+  projectPublishingRosterBounds,
   resolveWorkerConfig,
   runPublishingReviewWorker,
 } from '../../src/cli/publishingReview';
@@ -22,6 +23,19 @@ import {
 import { UpstreamCapacityRejectionError } from '../../src/gateway/providerCapacityManager';
 import { logger } from '../../src/utils/logger';
 import { initTelemetry, getRecentSpans, clearSpans, getPrometheusMetrics } from '../../src/telemetry';
+
+const arbitrationObserver = vi.hoisted(() => ({ laneIds: [] as string[][] }));
+
+vi.mock('../../src/review/reviewCore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/review/reviewCore')>();
+  return {
+    ...actual,
+    computeArbitration: (...args: Parameters<typeof actual.computeArbitration>) => {
+      arbitrationObserver.laneIds.push(args[0].map((lane) => String(lane.id || '')));
+      return actual.computeArbitration(...args);
+    },
+  };
+});
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -746,6 +760,77 @@ describe('runPublishingReviewWorker', () => {
     expect(receipt.conclusion).toBe('failure');
     expect(receipt.coverage).toMatchObject({ expectedLaneCount: 2, completedLaneCount: 2, failedLaneCount: 0,
       rosterValid: false, quorumSatisfied: false, fullPanelComplete: false });
+  });
+
+  it('fails closed when the configured roster exceeds MAX_PERSONAS despite bounded returned lanes', async () => {
+    const applicablePersonaIds = Array.from({ length: MAX_PERSONAS + 1 }, (_, index) => `lane-${index}`);
+    const panelResult = {
+      applicablePersonaIds,
+      personas: applicablePersonaIds.slice(0, MAX_PERSONAS).map((id) => ({ id, findings: [] })),
+      optionalFailures: [],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      arbiter: { verdict: 'SHIP' },
+    };
+    const d = deps({
+      panelRunner: vi.fn(async () => panelResult) as never,
+    });
+
+    const bounds = projectPublishingRosterBounds(panelResult as never);
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(bounds).toMatchObject({
+      configuredRosterValid: false,
+      returnedLaneCountValid: true,
+    });
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({
+      expectedLaneCount: null,
+      completedLaneCount: MAX_PERSONAS,
+      failedLaneCount: 0,
+      rosterValid: false,
+      quorumSatisfied: false,
+      fullPanelComplete: false,
+    });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: BLOCK' }),
+    );
+  });
+
+  it('rejects returned-lane overflow and passes only MAX_PERSONAS lanes into arbitration', async () => {
+    const applicablePersonaIds = Array.from({ length: MAX_PERSONAS }, (_, index) => `lane-${index}`);
+    const returnedPersonaIds = [...applicablePersonaIds, 'overflow-lane'];
+    const panelResult = {
+      applicablePersonaIds,
+      personas: returnedPersonaIds.map((id) => ({ id, findings: [] })),
+      optionalFailures: [],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      arbiter: { verdict: 'SHIP' },
+    };
+    const d = deps({ panelRunner: vi.fn(async () => panelResult) as never });
+
+    const bounds = projectPublishingRosterBounds(panelResult as never);
+    arbitrationObserver.laneIds.length = 0;
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(bounds).toMatchObject({
+      configuredRosterValid: true,
+      returnedLaneCountValid: false,
+      completedLaneCount: MAX_PERSONAS,
+    });
+    expect(arbitrationObserver.laneIds).toEqual([applicablePersonaIds]);
+    expect(bounds.lanes).toHaveLength(MAX_PERSONAS);
+    expect(bounds.lanes.map((lane) => lane.id)).toEqual(applicablePersonaIds);
+    expect(receipt.verdict).toBe('BLOCK');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage).toMatchObject({
+      expectedLaneCount: MAX_PERSONAS,
+      completedLaneCount: MAX_PERSONAS,
+      failedLaneCount: 0,
+      rosterValid: false,
+      quorumSatisfied: false,
+      fullPanelComplete: false,
+    });
   });
 
   it('fails closed when the panel omits the applicable roster', async () => {

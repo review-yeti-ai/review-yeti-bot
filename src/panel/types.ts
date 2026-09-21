@@ -135,7 +135,7 @@ export interface PanelResult {
     failureReason?: string;
   }>;
   /** Final path/config/classifier-selected roster used by the panel execution. */
-  applicablePersonaIds?: string[];
+  applicablePersonaIds: string[];
   zeroLaneNonEvidence?: boolean;
   quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
   moderator: {

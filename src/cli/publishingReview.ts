@@ -312,6 +312,21 @@ interface RawPublicationRoster {
   rosterValid: boolean;
 }
 
+/**
+ * Pure projection of the two independent roster limits enforced before arbitration.
+ * Keeping this separate from verdict construction makes the configured-roster guard,
+ * returned-lane guard, and bounded arbitration input independently observable without
+ * allowing callers to replace the canonical arbiter.
+ */
+export interface PublishingRosterBoundsProjection {
+  lanes: RawPublicationLane[];
+  returnedIds: string[];
+  configuredRosterValid: boolean;
+  returnedLaneCountValid: boolean;
+  completedLaneCount: number;
+  failedLaneCount: number;
+}
+
 function hasDuplicate(values: string[]): boolean {
   return new Set(values).size !== values.length;
 }
@@ -336,13 +351,7 @@ function validConfiguredRoster(value: unknown): value is string[] {
     && !hasDuplicate(value);
 }
 
-/**
- * Convert the panel's existing selection result into raw-publication evidence.
- * The panel engine owns path matching and classifier narrowing; this publisher
- * only validates the returned roster and adds failed optional lanes to the
- * arbitration input. Fast-ship remains its explicit classifier-owned bypass.
- */
-function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): RawPublicationRoster {
+export function projectPublishingRosterBounds(panelResult: PanelResult): PublishingRosterBoundsProjection {
   const completed = Array.isArray(panelResult.personas) ? panelResult.personas : [];
   const failures = Array.isArray(panelResult.optionalFailures) ? panelResult.optionalFailures : [];
   const failedLanes: RawPublicationLane[] = failures.map((failure) => ({
@@ -353,34 +362,52 @@ function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): Ra
     findings: [],
   }));
   const allLanes: RawPublicationLane[] = [...completed, ...failedLanes];
-  // Keep the arbitration input bounded even if an injected result bypasses the
-  // panel/completion contracts. The projection below reports the bounded count,
-  // while the roster validity bit carries the fail-closed reason.
-  const lanes = allLanes.slice(0, MAX_PERSONAS);
-  const completedLaneCount = boundedLaneCount(completed.length);
-  const failedLaneCount = boundedLaneCount(failures.length);
+
+  return {
+    lanes: allLanes.slice(0, MAX_PERSONAS),
+    returnedIds: allLanes.map((lane) => lane.id || ''),
+    configuredRosterValid: validConfiguredRoster(panelResult.applicablePersonaIds),
+    returnedLaneCountValid: allLanes.length <= MAX_PERSONAS,
+    completedLaneCount: boundedLaneCount(completed.length),
+    failedLaneCount: boundedLaneCount(failures.length),
+  };
+}
+
+/**
+ * Convert the panel's existing selection result into raw-publication evidence.
+ * The panel engine owns path matching and classifier narrowing; this publisher
+ * only validates the returned roster and adds failed optional lanes to the
+ * arbitration input. Fast-ship remains its explicit classifier-owned bypass.
+ */
+function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): RawPublicationRoster {
+  const {
+    lanes,
+    returnedIds,
+    configuredRosterValid,
+    returnedLaneCountValid,
+    completedLaneCount,
+    failedLaneCount,
+  } = projectPublishingRosterBounds(panelResult);
 
   if (isFastShip) {
     return {
       mode: panelResult.documentationOnly ? 'documentation_only' : 'fast_ship',
       lanes,
       expectedLaneCount: null,
-      arbitrationExpectedCount: boundedLaneCount(completed.length),
+      arbitrationExpectedCount: completedLaneCount,
       completedLaneCount: 0,
       failedLaneCount,
-      rosterValid: allLanes.length <= MAX_PERSONAS,
+      rosterValid: returnedLaneCountValid,
     };
   }
 
   const configuredIds = panelResult.applicablePersonaIds;
-  const configuredRosterValid = validConfiguredRoster(configuredIds);
   const expectedLaneCount = configuredRosterValid ? configuredIds.length : null;
   const arbitrationExpectedCount = configuredRosterValid ? configuredIds.length : 0;
-  const returnedIds = allLanes.map((lane) => lane.id || '');
   const configuredSet = new Set(configuredRosterValid ? configuredIds : []);
   const returnedSet = new Set(returnedIds);
   const rosterValid = configuredRosterValid
-    && allLanes.length <= MAX_PERSONAS
+    && returnedLaneCountValid
     && returnedIds.every((id) => isRosterId(id) && configuredSet.has(id))
     && !hasDuplicate(returnedIds)
     && configuredIds.every((id) => returnedSet.has(id));
