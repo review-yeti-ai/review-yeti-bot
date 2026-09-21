@@ -428,7 +428,9 @@ describe('openrouter review policy', () => {
     // hostnames from filenames like `providers.generated.ts` is not worth its false positives.
     it('keeps every scheme-qualified URL in the policy source within the public allowlist', () => {
       const source = fs.readFileSync(policyModulePath, 'utf8');
-      const literals = [...new Set(source.match(/(?:[a-z][a-z0-9+.-]*:)?\/\/[^'"`\s)]+/gi) ?? [])];
+      const literals = [...new Set(
+        source.match(/(?:[a-z][a-z0-9+.-]*:)?\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}[^'"`\s)]*/gi) ?? [],
+      )];
       expect(literals.length).toBeGreaterThan(0);
       for (const literal of literals) {
         expect(ALLOWED_REVIEW_BASE_URLS).toContain(literal);

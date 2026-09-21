@@ -239,7 +239,16 @@ describe('review transport configuration guard', () => {
     expect(selector).toContain("outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY");
     expect(selector).toContain("outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY");
     expect(selector).toContain("outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY");
-    // No bare trailing `|| secrets.X` arm: that is the elimination fallback this replaced.
-    expect(selector).not.toMatch(/\|\|\s*secrets\.[A-Z_]+\s*\}\}/);
+    // Every arm that reaches a secret must be gated by a destination comparison. Checked per-arm
+    // rather than at the tail: the previous negative regex required `}}` right after the secret,
+    // so a bare `|| secrets.X` inserted MID-expression stayed green -- and since `&&` binds
+    // tighter than `||`, an unrelated destination then short-circuits straight to that secret.
+    const armsWithSecrets = selector
+      .split(/\r?\n/)
+      .filter((line) => line.includes('secrets.'));
+    expect(armsWithSecrets).toHaveLength(3);
+    for (const arm of armsWithSecrets) {
+      expect(arm).toMatch(/outputs\.destination == '[a-z]+'\s*&&\s*secrets\./);
+    }
   });
 });
