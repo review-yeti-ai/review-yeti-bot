@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.81.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.3...v1.81.4) (2026-09-21)
+
+
+### Bug Fixes
+
+* **ci:** close the release-tag expression in the image summary ([ec0a9fc](https://github.com/review-yeti-ai/review-yeti-bot/commit/ec0a9fca05198131f802107ce04773d2586ba1f1))
+* **composed:** fold capitalized task ids into the roster format ([#906](https://github.com/review-yeti-ai/review-yeti-bot/issues/906)) ([696af00](https://github.com/review-yeti-ai/review-yeti-bot/commit/696af00a00afc22175f82dcbd3471ec03499301b))
+
 ## [1.81.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.2...v1.81.3) (2026-09-21)
 
 
