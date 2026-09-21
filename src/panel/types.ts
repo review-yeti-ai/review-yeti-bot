@@ -106,6 +106,12 @@ export interface PersonaLaneResult {
 
 export interface PanelResult {
   headSha: string;
+  /**
+   * Set when the approval came from path classification (documentation-only diff), not the
+   * triage classifier. Declared on the base contract so CLI consumers read it directly instead
+   * of casting, keeping the panel→CLI boundary compiler-checked.
+   */
+  documentationOnly?: true;
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];

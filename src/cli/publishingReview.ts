@@ -171,7 +171,7 @@ export interface PublishingReviewFailedLane {
   model?: string;
 }
 
-export type PublishingCoverageMode = 'panel' | 'fast_ship' | 'zero_lane';
+export type PublishingCoverageMode = 'panel' | 'fast_ship' | 'documentation_only' | 'zero_lane';
 
 export interface PublishingCoverageProjection {
   mode: PublishingCoverageMode;
@@ -391,7 +391,7 @@ function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): Ra
 
   if (isFastShip) {
     return {
-      mode: 'fast_ship',
+      mode: panelResult.documentationOnly ? 'documentation_only' : 'fast_ship',
       lanes,
       expectedLaneCount: null,
       arbitrationExpectedCount: completedLaneCount,
@@ -1300,15 +1300,27 @@ export async function runPublishingReviewWorker(
     // `checks: write`, so the findings become visible without widening the
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
-    const title = fastShipApproved
-      ? 'Review Yeti: SHIP (fast-ship)'
-      : `Review Yeti: ${verdict}`;
+    const documentationOnly = fastShipApproved && Boolean(panelResult.documentationOnly);
+    const title = documentationOnly
+      ? 'Review Yeti: SHIP (documentation-only)'
+      : fastShipApproved
+        ? 'Review Yeti: SHIP (fast-ship)'
+        : `Review Yeti: ${verdict}`;
 
     const safeClassifierRationale = fastShipApproved && panelResult.classifierRationale
       ? panelResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
       : 'Approved via fast-ship triage classifier.';
 
-    const summaryParts = fastShipApproved
+    const summaryParts = documentationOnly
+      ? [
+          `### Review Yeti: SHIP (documentation-only)`,
+          `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (no analyzable source changed).`,
+          `- **Rationale**: \`${safeClassifierRationale}\``,
+          renderCoverageSummary(coverage),
+          renderTransportSummary(transport.model, resolvedTransportModel),
+          `Repository visibility: ${repositoryVisibility}.`,
+        ]
+      : fastShipApproved
       ? [
           `### Review Yeti: SHIP (fast-ship)`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,

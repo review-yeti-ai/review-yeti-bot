@@ -8,8 +8,10 @@ import {
   isRetryablePanelError,
   MAX_INLINE_DIFF_CHARS,
   PanelConfigurationError,
+  isDocumentationOrAssetPath,
   validateFindings,
 } from '../panelEngine';
+import { buildDocumentationOnlyPanelResult } from '../fastShipResult';
 import { OpenRouterResponseError, OpenRouterTimeoutError } from '../../gateway/openRouterClient';
 import { OmniRouteClient } from '../../gateway/omniRouteClient';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -112,7 +114,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     try {
       await executePersonaPanel({
         config,
-        changedFiles: [{ path: 'inventory/lab-assets.json', content: '{"a":1}' }],
+        changedFiles: [{ path: 'inventory/labAssets.ts', content: 'export const a = 1;' }],
         repository: 'test/repo',
         headSha: 'abc1234',
         client,
@@ -125,7 +127,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     const err = caught as PanelConfigurationError;
     // Actionable: the operator learns exactly which file nobody covers, and
     // which personas were enabled when it did not match.
-    expect(err.message).toContain('inventory/lab-assets.json');
+    expect(err.message).toContain('inventory/labAssets.ts');
     expect(err.message).toContain('security');
     expect(err.message).toMatch(/Extend that persona's paths/);
     // Not a worker fault: `contract` maps to worker_contract_invalid rather
@@ -154,7 +156,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     try {
       await executePersonaPanel({
         config,
-        changedFiles: [{ path: 'inventory/lab-assets.json', content: '{"a":1}' }],
+        changedFiles: [{ path: 'inventory/labAssets.ts', content: 'export const a = 1;' }],
         repository: 'test/repo',
         headSha: 'abc1234',
         client,
@@ -167,7 +169,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
 
     expect(caught).toBeInstanceOf(PanelConfigurationError);
     const err = caught as PanelConfigurationError;
-    expect(err.message).toContain('inventory/lab-assets.json');
+    expect(err.message).toContain('inventory/labAssets.ts');
     expect(err.message).toContain('[none]');
     expect(err.failureClass).toBe('contract');
   }, 60_000);
@@ -455,3 +457,69 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     });
   });
 
+
+describe('documentation, asset and data paths are not analyzable', () => {
+  it('classifies data files and run artifacts as non-analyzable', () => {
+    for (const path of [
+      'docs/uat/runs/benchmarks/2026-09-21_ova_load_benchmark.json',
+      'docs/uat/runs/benchmarks/README.md',
+      'runs/capture/receipt.ndjson',
+      'some/nested/runs/evidence.jsonl',
+      'evidence/capture.json',
+      'artifacts/report.json',
+    ]) {
+      expect(isDocumentationOrAssetPath(path)).toBe(true);
+    }
+  });
+
+  it('still treats source as analyzable', () => {
+    // Guards the inverse: the broadened classifier must not swallow code.
+    for (const path of [
+      'src/panel/panelEngine.ts',
+      'lib/auth/session.rb',
+      'cmd/server/main.go',
+      'src/runserver.ts',
+      'src/json-parser.ts',
+      // Manifests stay analyzable on purpose: a blanket *.json rule made
+      // allDocOrAsset true for a dependency bump and skipped the security
+      // lane. See tests/unit/personaGating.test.ts.
+      'package.json',
+      'k8s/overlays/prod/values.json',
+    ]) {
+      expect(isDocumentationOrAssetPath(path)).toBe(false);
+    }
+  });
+
+  it('keeps executable content under run/evidence directories analyzable', () => {
+    // The directory rules are constrained by data/serialization file type.
+    // A contributor-placed executable under an attacker-chosen runs/,
+    // evidence/ or artifacts/ directory must fail closed the same way an
+    // unmatched source path does -- never exempted from all review by its
+    // directory alone.
+    for (const path of [
+      'runs/deploy.sh',
+      'artifacts/loader.js',
+      'evidence/payload.py',
+      'some/nested/runs/worker.ts',
+      'artifacts/binary.wasm',
+    ]) {
+      expect(isDocumentationOrAssetPath(path)).toBe(false);
+    }
+  });
+
+  it('approves a diff with nothing to analyze instead of emitting a zero-lane receipt', () => {
+    // A zero-lane result is refused by publishing as non-evidence, which made
+    // documentation- and evidence-only pull requests permanently unmergeable.
+    // Nothing to analyze is an approval, not missing evidence.
+    const result = buildDocumentationOnlyPanelResult('abc1234', 'bifrost' as any, 'no analyzable source changed');
+
+    expect(result.documentationOnly).toBe(true);
+    expect(result.isFastShip).toBe(true);
+    expect((result as any).zeroLaneNonEvidence).toBeUndefined();
+    expect(result.arbiter.verdict).toBe('SHIP');
+    expect(result.quorum.satisfied).toBe(true);
+    expect(result.personas).toHaveLength(1);
+    expect(result.personas[0].decision).toBe('APPROVE');
+    expect(result.personas[0].findings).toEqual([]);
+  });
+});

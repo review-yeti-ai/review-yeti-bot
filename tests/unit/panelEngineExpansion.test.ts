@@ -77,11 +77,17 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
       headSha: 'sha-1',
       client: mockClient as unknown as OmniRouteClient,
     });
-    expect(result.zeroLaneNonEvidence).toBe(true);
+    // A diff with nothing to analyze is an approval, not missing evidence:
+    // the previous zero-lane receipt was refused by publishing, which left
+    // documentation-only pull requests permanently unmergeable.
+    expect(result.zeroLaneNonEvidence).toBeUndefined();
+    expect(result.documentationOnly).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(result, 'applicablePersonaIds')).toBe(true);
     expect(result.applicablePersonaIds).toEqual([]);
     expect(result.arbiter.verdict).toBe('SHIP');
-    expect(result.personas).toHaveLength(0);
+    expect(result.personas).toHaveLength(1);
+    expect(result.personas[0].decision).toBe('APPROVE');
+    expect(result.quorum.satisfied).toBe(true);
   });
 
   it('records configured applicable persona ids on a classifier-approved fast-ship result', async () => {
