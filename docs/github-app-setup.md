@@ -33,7 +33,7 @@ repository and the listed subset through `actions/create-github-app-token`'s
 | :--- | :--- | :--- |
 | Internal exampleorg target App (`CT_REVIEW_BOT_APP_*`) | Admitted `exampleorg/*` target repositories | `Actions: write`, `Checks: write`, `Contents: write`, `Issues: write`, `Pull requests: write` for same-owner review/check publication. |
 | Central tooling token (`CT_REVIEW_BOT_APP_*`) | `exampleorg/example-review-actions` only for the external route | A narrowed token requesting `Actions: read` and `Contents: read`; central validation and tooling never use the public target token. |
-| Public target App (`REVIEW_YETI_PUBLIC_TARGET_APP_*`) | Exactly `review-yeti-ai/review-yeti-bot` | `Actions: write`, `Checks: write`, `Contents: read`, `Issues: write`, `Pull requests: write` for target reads, check publication, and post-SHIP `validate.yml` dispatch. |
+| Review Yeti target App (`REVIEW_YETI_PUBLIC_TARGET_APP_*`) | The App installation may cover the reviewer organization's repositories; this route requests a token narrowed to exactly `review-yeti-ai/review-yeti-bot` | `Actions: write`, `Checks: write`, `Contents: read`, `Issues: write`, `Pull requests: write` for target reads, check publication, and post-SHIP `validate.yml` dispatch. |
 | Public ingress App (`REVIEW_YETI_DISPATCH_APP_*`) | Exactly `exampleorg/example-review-actions` | `Contents: write` only (plus mandatory `Metadata: read`); no `Actions`, `Checks`, `Issues`, or `Pull requests` permission. |
 
 For the external route, the public target App is the only boundary that has
@@ -157,10 +157,12 @@ separate boundaries:
   `CT_REVIEW_BOT_APP_ID` / `CT_REVIEW_BOT_APP_PRIVATE_KEY` only in the central
   workflow;
 * `REVIEW_YETI_PUBLIC_TARGET_APP_ID` /
-  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` identify an App installed only on
-  the exact public `review-yeti-ai/review-yeti-bot` repository. Central uses
-  that token for target PR reads, check publication, and the post-SHIP
-  `validate.yml` dispatch (`Actions: write`), never for central tooling;
+  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` identify the Review Yeti App. Its
+  installation may cover the reviewer organization's repositories, but central
+  requests a token narrowed to the exact public
+  `review-yeti-ai/review-yeti-bot` repository for target PR reads, check
+  publication, and the post-SHIP `validate.yml` dispatch (`Actions: write`),
+  never for central tooling;
 * `REVIEW_YETI_DISPATCH_APP_ID` /
   `REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY` identify an ingress App installed only
   on `exampleorg/example-review-actions`. The public caller can submit the

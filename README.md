@@ -78,8 +78,9 @@ or ambient `github.token` fallback crosses this boundary.
 Activating the external route requires three exact installations/secrets:
 
 * central stores `REVIEW_YETI_PUBLIC_TARGET_APP_ID` /
-  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` for an App installed only on
-  `review-yeti-ai/review-yeti-bot`;
+  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` for the Review Yeti App installed
+  across the reviewer organization's repositories; central still narrows every
+  external-route token to `review-yeti-ai/review-yeti-bot`;
 * the public caller stores `REVIEW_YETI_DISPATCH_APP_ID` /
   `REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY` for an ingress App installed only on
   `exampleorg/example-review-actions` with Contents: write;

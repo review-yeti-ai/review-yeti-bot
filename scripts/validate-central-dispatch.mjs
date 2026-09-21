@@ -337,13 +337,6 @@ async function githubJson(url, token, fetchImpl) {
 }
 
 async function assertInstallationTokenScope({ token, owner, repositories, label, fetchImpl }) {
-  const installation = await githubJson('https://api.github.com/installation', token, fetchImpl);
-  assertPlainObject(installation, `${label} installation`);
-  assertPlainObject(installation.account, `${label} installation account`);
-  if (installation.account.login !== owner) {
-    throw new Error(`${label} installation owner must be exactly ${owner}`);
-  }
-
   const scope = await githubJson(
     'https://api.github.com/installation/repositories?per_page=100',
     token,
@@ -352,6 +345,10 @@ async function assertInstallationTokenScope({ token, owner, repositories, label,
   assertPlainObject(scope, `${label} installation repository scope`);
   if (!Number.isSafeInteger(scope.total_count) || scope.total_count < 0 || !Array.isArray(scope.repositories)) {
     throw new Error(`${label} installation repository scope is invalid`);
+  }
+  const owners = scope.repositories.map((repository) => repository?.owner?.login);
+  if (owners.some((repositoryOwner) => repositoryOwner !== owner)) {
+    throw new Error(`${label} installation owner must be exactly ${owner}`);
   }
   const actual = scope.repositories.map((repository) => repository?.full_name);
   if (actual.some((repository) => typeof repository !== 'string')

@@ -70,20 +70,13 @@ function response(payload, status = 200) {
 
 function externalFetch(calls, {
   targetRepositories = [REVIEW_YETI_REPOSITORY],
+  targetOwner = 'review-yeti-ai',
   workflow = callerWorkflow,
 } = {}) {
   return async (url, init) => {
     calls.push({ url, init });
     const authorization = init?.headers?.authorization;
-    if (url === 'https://api.github.com/installation') {
-      if (authorization === 'Bearer target-installation-token') {
-        return response({ account: { login: 'review-yeti-ai' } });
-      }
-      if (authorization === 'Bearer central-installation-token') {
-        return response({ account: { login: 'exampleorg' } });
-      }
-      return response({}, 403);
-    }
+    if (url === 'https://api.github.com/installation') return response({}, 404);
     if (url === 'https://api.github.com/installation/repositories?per_page=100') {
       const repositories = authorization === 'Bearer target-installation-token'
         ? targetRepositories
@@ -93,7 +86,14 @@ function externalFetch(calls, {
       if (repositories === null) return response({}, 403);
       return response({
         total_count: repositories.length,
-        repositories: repositories.map((fullName) => ({ full_name: fullName })),
+        repositories: repositories.map((fullName) => ({
+          full_name: fullName,
+          owner: {
+            login: authorization === 'Bearer target-installation-token'
+              ? targetOwner
+              : fullName.split('/')[0],
+          },
+        })),
       });
     }
     const expectedToken = url.includes(`/repos/${CENTRAL_REPOSITORY}/actions/workflows/`)
@@ -182,6 +182,7 @@ test('uses distinct exact-installation tokens for public target and private cent
 
   assert.equal(result.repository, REVIEW_YETI_REPOSITORY);
   assert.equal(result.caller_workflow_path, REVIEW_YETI_CALLER_WORKFLOW_PATH);
+  assert.equal(calls.some((call) => call.url === 'https://api.github.com/installation'), false);
   for (const call of calls) {
     if (call.url.startsWith('https://api.github.com/installation')) continue;
     const expectedToken = call.url.includes(`/repos/${CENTRAL_REPOSITORY}/actions/workflows/`)
@@ -201,13 +202,20 @@ test('central validation applies the strict public caller contract', async () =>
   }), /public caller dispatch App|central dispatch repository|repositories/u);
 });
 
-test('fails closed when the exact public target installation is wrong or tokens are reused', async () => {
+test('fails closed when the exact public target token scope is wrong or tokens are reused', async () => {
   await assert.rejects(validateCentralDispatch({
     payload: externalPayload,
     targetToken: 'target-installation-token',
     centralToken: 'central-installation-token',
     fetchImpl: externalFetch([], { targetRepositories: ['review-yeti-ai/another-repository'] }),
   }), /repository scope/u);
+
+  await assert.rejects(validateCentralDispatch({
+    payload: externalPayload,
+    targetToken: 'target-installation-token',
+    centralToken: 'central-installation-token',
+    fetchImpl: externalFetch([], { targetOwner: 'another-owner' }),
+  }), /installation owner/u);
 
   await assert.rejects(validateCentralDispatch({
     payload: externalPayload,

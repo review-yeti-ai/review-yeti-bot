@@ -37,8 +37,10 @@ That route uses separate, least-privilege App boundaries because a repository
 list cannot span owners:
 
 * central stores `REVIEW_YETI_PUBLIC_TARGET_APP_ID` /
-  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` for an App installed only on the
-  exact public target, and uses it for target PR reads and check publication;
+  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` for the Review Yeti App installed
+  across the reviewer organization's repositories, while the central route
+  requests a token narrowed to the exact public target for PR reads and check
+  publication;
 * the public caller stores `REVIEW_YETI_DISPATCH_APP_ID` /
   `REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY` for an ingress App installed only on
   `exampleorg/example-review-actions`, with Contents: write solely to submit the

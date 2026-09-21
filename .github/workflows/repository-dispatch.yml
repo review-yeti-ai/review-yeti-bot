@@ -124,8 +124,9 @@ jobs:
           permission-contents: read
           permission-pull-requests: read
 
-      # This App is installed only on review-yeti-ai/review-yeti-bot. It is not
-      # the private ct-review-bot App and has no access to central tooling.
+      # The App may review multiple repositories in review-yeti-ai, but this
+      # token is narrowed to review-yeti-bot. It is not the private
+      # ct-review-bot App and has no access to central tooling.
       - name: Mint Review Yeti App token for exact public target validation
         id: target_token_public
         if: steps.target.outputs.scope == 'review-yeti-public'

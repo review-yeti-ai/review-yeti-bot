@@ -81,10 +81,10 @@ on:
         description: GitHub App private key used to mint repository-scoped installation tokens.
         required: true
       REVIEW_YETI_PUBLIC_TARGET_APP_ID:
-        description: Dedicated App id installed only on review-yeti-ai/review-yeti-bot.
+        description: Review Yeti App id used to mint a token narrowed to review-yeti-ai/review-yeti-bot.
         required: false
       REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY:
-        description: Dedicated target App key for review-yeti-ai/review-yeti-bot only.
+        description: Review Yeti App key used to mint a token narrowed to review-yeti-ai/review-yeti-bot.
         required: false
       REVIEW_YETI_BIFROST_API_KEY:
         description: Optional Bifrost provider credential.
@@ -195,8 +195,9 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
 
-      # This App is installed only on the exact public target. It cannot read
-      # or write the private central repository and is never used for tooling.
+      # The App may review multiple repositories in its owner organization, but
+      # this token is narrowed to the exact public target and cannot access the
+      # private central repository or central tooling.
       - name: Mint Review Yeti App token for exact public target
         id: target_token_public
         if: steps.target.outputs.scope == 'review-yeti-public'
