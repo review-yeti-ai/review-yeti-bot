@@ -36,6 +36,9 @@ const ALLOWED_REVIEW_KEYS = [
   'mcp_servers',
   'telemetry',
   'retry_analysis',
+  // Selects the publishing worker engine. Not part of the credential-free
+  // transport plan; the worker reads it from the policy file itself.
+  'review_engine',
 ];
 const ALLOWED_INCREMENTAL_KEYS = ['repositories', 'max_incremental_chain'];
 const ALLOWED_BUDGET_KEYS = [
@@ -118,6 +121,10 @@ export function validateExecutionPlanPolicy(policy, repository = '') {
   policy = resolvePolicyForRepository(policy, repository);
   rejectUnknownKeys(policy, ALLOWED_POLICY_KEYS, 'policy');
   rejectUnknownKeys(policy.review_yeti, ALLOWED_REVIEW_KEYS, 'policy.review_yeti');
+  if (policy.review_yeti.review_engine !== undefined
+      && !['panel', 'composed', 'shadow'].includes(policy.review_yeti.review_engine)) {
+    throw new Error('policy.review_yeti.review_engine must be panel, composed, or shadow');
+  }
   rejectUnknownKeys(policy.review_yeti.budget, ALLOWED_BUDGET_KEYS, 'policy.review_yeti.budget');
   if (!['ordered', 'striped'].includes(policy.review_yeti.dispatch_mode)) {
     throw new Error('policy.review_yeti.dispatch_mode must be ordered or striped');
