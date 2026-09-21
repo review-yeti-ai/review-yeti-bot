@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createDefaultV3Config as makeDefaultV3, OPENCODE_LANE_TIMEOUT_S } from '../../src/config/configLoader';
 import {
   ConfigValidationError,
   translateCodeRabbitToV3,
@@ -217,3 +218,31 @@ reviewers:
     expect(providerUnder.arbiter_timeout_s).toBe(1);
   });
 });
+describe('opencode lane budget', () => {
+  const {
+    resolveAutoTransportTimeoutMs,
+  } = require('../../.github/workflows/pipelines/review-pipeline.js');
+
+  // Measured, not guessed: at the shared 90s default every lane failed with "Streaming response
+  // exceeded total deadline of 90000ms" on a ~2,500 line diff. Pinned so a future tidy-up that
+  // folds it back into the shared default has to argue with a test.
+  it('gives opencode its own raised budget, not the shared 90s default', () => {
+    const cfg = makeDefaultV3();
+    const opencode = cfg.reviewers.providers.find((p: any) => p.id === 'opencode');
+    const claude = cfg.reviewers.providers.find((p: any) => p.id === 'claude');
+    expect(opencode?.review_timeout_s).toBe(OPENCODE_LANE_TIMEOUT_S);
+    expect(opencode?.arbiter_timeout_s).toBe(OPENCODE_LANE_TIMEOUT_S);
+    expect(OPENCODE_LANE_TIMEOUT_S).toBeGreaterThan(90);
+    // Raised for this provider ONLY. A timeout that never fires is not a timeout.
+    expect(claude?.review_timeout_s).toBe(90);
+  });
+
+  // Two layers govern this, and they cannot read each other: a compiled TS default versus a
+  // workflow variable. The outer one must not be able to cut off a lane the inner one still
+  // considers live, so the ordering is asserted rather than left to coincidence.
+  it("the action's outer deadline is not tighter than the provider budget", () => {
+    const outerMs = resolveAutoTransportTimeoutMs({ REVIEW_LANE_TIMEOUT_MS: '420000' });
+    expect(outerMs).toBeGreaterThanOrEqual(OPENCODE_LANE_TIMEOUT_S * 1000);
+  });
+});
+

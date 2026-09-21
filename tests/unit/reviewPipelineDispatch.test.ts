@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -664,7 +664,16 @@ describe('resolvesToOpenRouterDestination', () => {
   });
 });
 describe('getStreamingFetchDispatcher without an undici Agent', () => {
-  const mod = require('../../.github/workflows/pipelines/review-pipeline.js');
+  // review-pipeline.js memoises the dispatcher in a module-level `streamingFetchDispatcher`.
+  // Without resetting the module between cases these tests are order-dependent: whichever runs
+  // second reads the first one's cached value instead of exercising its own loader, and the
+  // null-loader case would silently assert against a cached Agent. Reload per test so each one
+  // actually runs the branch it names.
+  let mod: any;
+  beforeEach(() => {
+    vi.resetModules();
+    mod = require('../../.github/workflows/pipelines/review-pipeline.js');
+  });
 
   // The Agent only lifts undici's default 300s headersTimeout. Throwing on its absence tripped
   // the transport circuit breaker and failed EVERY persona lane -- a missing optional performance
