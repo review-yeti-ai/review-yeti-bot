@@ -52,6 +52,37 @@ jobs:
             rm -f "$f"
           done
 
+      # One provider's credential must never reach another provider's endpoint. The key-selection
+      # expression below cannot enforce that on its own (Actions `||` falls through on an empty
+      # secret), so the invariant is asserted here, in shell, where an empty value is detectable.
+      - name: Assert the review credential matches the destination
+        shell: bash
+        env:
+          REVIEW_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          OPENCODE_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY != '' }}
+          OPENROUTER_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          case "$REVIEW_BASE_URL" in
+            *opencode.ai*)
+              if [ "$OPENCODE_KEY_PRESENT" != "true" ]; then
+                echo "::error::Review destination is opencode but CT_REVIEW_OPENCODE_API_KEY is unset. Refusing to run rather than falling back to the OpenRouter credential, which would transmit it to opencode.ai."
+                exit 1
+              fi
+              ;;
+            *openrouter.ai*)
+              if [ "$OPENROUTER_KEY_PRESENT" != "true" ]; then
+                echo "::error::Review destination is OpenRouter but CT_REVIEW_OPENROUTER_API_KEY is unset."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Review destination '$REVIEW_BASE_URL' has no matching role-scoped credential rule."
+              exit 1
+              ;;
+          esac
+          echo "Credential matches destination: $REVIEW_BASE_URL"
+
       - name: Execute AI Review Panel
         id: review
         uses: ./
@@ -60,22 +91,18 @@ jobs:
           pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           personas: ${{ vars.ACTIVE_PERSONAS }}
           model: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
-          # Use only role-scoped review keys (CT_REVIEW_*); generic provider secrets such as a bare
-          # OPENROUTER_API_KEY are deliberately NOT admitted here, so a key provisioned for some
-          # other purpose can never end up funding reviews.
+          # Use only role-scoped review keys (CT_REVIEW_*); generic provider secrets such as a
+          # bare OPENROUTER_API_KEY are deliberately NOT admitted here.
           #
-          # opencode first, because `vars.OPENROUTER_BASE_URL` now points there and a base URL
-          # without its matching key fails closed at the first lane rather than at config time --
-          # the least useful moment to discover it. The OpenRouter key stays as the fallback so
-          # pointing the base URL back is a one-variable change, not a redeploy.
-          # The key is selected by the SAME variable that selects the destination, not
-          # independently with `||`. Independent selection meant a missing opencode secret would
-          # silently fall back to the OpenRouter key while `llm-base-url` still pointed at
-          # opencode -- transmitting one provider's credential to another provider's endpoint.
+          # Keyed on the DESTINATION (`vars.OPENROUTER_BASE_URL`), the same value that decides
+          # where the request goes -- not on a second variable that can disagree with it.
           #
-          # Tied together, a missing secret yields an empty key and the run fails closed at
-          # authentication, which is recoverable. A leaked credential is not.
-          llm-api-key: ${{ vars.REVIEW_TRANSPORT_COMPAT == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          # This expression ALONE is not fail-closed, and the previous version's comment wrongly
+          # claimed it was: GitHub Actions `&&`/`||` return operands rather than booleans, and an
+          # unset secret is an empty string, which is falsy. So a missing opencode secret would
+          # fall straight through to the OpenRouter credential and transmit it to opencode.ai.
+          # The preceding guard step is what actually prevents that; this line only picks.
+          llm-api-key: ${{ contains(vars.OPENROUTER_BASE_URL, 'opencode.ai') && secrets.CT_REVIEW_OPENCODE_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
           # OpenRouter remains the primary direct DeepSeek -> GLM route.
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}

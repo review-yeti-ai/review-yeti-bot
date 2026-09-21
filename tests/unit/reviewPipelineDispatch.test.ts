@@ -664,18 +664,23 @@ describe('resolvesToOpenRouterDestination', () => {
   });
 });
 describe('getStreamingFetchDispatcher without an undici Agent', () => {
+  const mod = require('../../.github/workflows/pipelines/review-pipeline.js');
+
   // The Agent only lifts undici's default 300s headersTimeout. Throwing on its absence tripped
   // the transport circuit breaker and failed EVERY persona lane -- a missing optional performance
-  // shim became a total review failure with zero findings. This pins the warn-and-continue path.
-  it('returns undefined and does not throw when the Agent cannot be loaded', () => {
-    vi.resetModules();
-    vi.doMock('undici', () => { throw Object.assign(new Error('not found'), { code: 'MODULE_NOT_FOUND' }); });
-    const mod = require('../../.github/workflows/pipelines/review-pipeline.js');
-    // Either a real Agent is resolvable in this environment (then it returns one), or it is not
-    // and the contract is "undefined, no throw". Both are acceptable; throwing is not.
-    expect(() => mod.getStreamingFetchDispatcher()).not.toThrow();
-    vi.doUnmock('undici');
-    vi.resetModules();
+  // shim became a total review failure with zero findings.
+  //
+  // The loader is injected rather than mocked out of the module graph. The previous version of
+  // this test asserted only `.not.toThrow()` with the real loader, and undici IS resolvable in
+  // this repo -- so it passed whether or not the fallback existed and could not fail for the
+  // behaviour it claimed to pin.
+  it('returns undefined instead of throwing when no Agent can be loaded', () => {
+    expect(mod.getStreamingFetchDispatcher(() => null)).toBeUndefined();
+  });
+
+  it('still returns a dispatcher when an Agent is available', () => {
+    class FakeAgent { constructor(public opts: unknown) {} }
+    expect(mod.getStreamingFetchDispatcher(() => FakeAgent)).toBeInstanceOf(FakeAgent);
   });
 });
 

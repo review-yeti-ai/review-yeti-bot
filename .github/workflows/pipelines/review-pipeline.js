@@ -258,9 +258,9 @@ function loadUndiciAgentClass() {
   return null;
 }
 
-function getStreamingFetchDispatcher() {
+function getStreamingFetchDispatcher(loadAgent = loadUndiciAgentClass) {
   if (!streamingFetchDispatcher) {
-    const Agent = loadUndiciAgentClass();
+    const Agent = loadAgent();
     if (!Agent) {
       // The Agent exists ONLY to lift undici's default 300s headersTimeout so a long generation
       // is not cut off mid-stream. It is a timeout extension, not a correctness requirement.
