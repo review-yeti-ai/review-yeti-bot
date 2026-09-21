@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.81.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.4...v1.81.5) (2026-09-21)
+
+
+### Bug Fixes
+
+* **composed:** review the real diff when a plan names other paths ([2ce8cc2](https://github.com/review-yeti-ai/review-yeti-bot/commit/2ce8cc24dd298369a44ada61eeb516a9b598859b))
+
 ## [1.81.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.3...v1.81.4) (2026-09-21)
 
 
