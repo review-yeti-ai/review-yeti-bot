@@ -90,6 +90,29 @@ func TestPreparedReviewAddsOnlyExplicitAuthoritativeEnvironment(t *testing.T) {
 	}
 }
 
+func TestPreparedReviewTransportOverridesDriftedOperatorGateway(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	raw := preparedEnvelope
+	review.Spec.PreparedReview = &raw
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.GatewayBaseURL = "https://other.example.invalid/v1"
+	input.Publishing.Model = "other-model"
+	built, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	container := built.Spec.Template.Spec.Containers[0]
+	if envValue(container, "OPENAI_BASE_URL") != "https://gateway.example.invalid/v1" {
+		t.Fatalf("base url = %q", envValue(container, "OPENAI_BASE_URL"))
+	}
+	if envValue(container, "REVIEW_MODEL") != "ollama/glm-5.3-flash" {
+		t.Fatalf("model = %q", envValue(container, "REVIEW_MODEL"))
+	}
+}
+
 func TestPreparedReviewAbsentLeavesReceiptOnlyJobUnchanged(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	built, err := job.BuildWorkerJob(buildInput(reviewFixture(now), now))
