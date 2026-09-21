@@ -66,6 +66,7 @@ import type { WorkerReviewCompletionAdapter } from '../review/workerReviewComple
 import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/types';
 
 import { parseChangedFiles } from '../review/changedFiles';
+import { matchOne } from '../pipeline/domainIndex';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -171,7 +172,7 @@ export interface PublishingReviewFailedLane {
   model?: string;
 }
 
-export type PublishingCoverageMode = 'panel' | 'fast_ship' | 'zero_lane';
+export type PublishingCoverageMode = 'panel' | 'fast_ship' | 'zero_lane' | 'not_applicable';
 
 export interface PublishingCoverageProjection {
   mode: PublishingCoverageMode;
@@ -342,7 +343,11 @@ function validConfiguredRoster(value: unknown): value is string[] {
  * only validates the returned roster and adds failed optional lanes to the
  * arbitration input. Fast-ship remains its explicit classifier-owned bypass.
  */
-function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): RawPublicationRoster {
+function rawPublicationRoster(
+  panelResult: PanelResult,
+  isFastShip: boolean,
+  notApplicable = false,
+): RawPublicationRoster {
   const completed = Array.isArray(panelResult.personas) ? panelResult.personas : [];
   const failures = Array.isArray(panelResult.optionalFailures) ? panelResult.optionalFailures : [];
   const failedLanes: RawPublicationLane[] = failures.map((failure) => ({
@@ -386,7 +391,11 @@ function rawPublicationRoster(panelResult: PanelResult, isFastShip: boolean): Ra
     && configuredIds.every((id) => returnedSet.has(id));
 
   return {
-    mode: panelResult.zeroLaneNonEvidence ? 'zero_lane' : 'panel',
+    mode: notApplicable
+      ? 'not_applicable'
+      : panelResult.zeroLaneNonEvidence
+        ? 'zero_lane'
+        : 'panel',
     lanes,
     expectedLaneCount,
     arbitrationExpectedCount,
@@ -1142,7 +1151,19 @@ export async function runPublishingReviewWorker(
       throwIfPanelAborted(panelDeadline.signal);
 
       const isFastShip = isFastShipPanelResult(panelResult);
-      const rawRoster = rawPublicationRoster(panelResult, isFastShip);
+      // Owner-declared not-applicable: when every changed path matches the
+      // repository's `auto_review.ignore_patterns`, no persona can ever match and
+      // the honest outcome is a skipped check that claims no verdict -- not the
+      // zero-lane non-evidence failure ADR 0333 forbids from counting as evidence,
+      // and never a SHIP. A single non-ignored path keeps the normal review.
+      const ignorePatterns = Array.isArray((workerConfig as any)?.auto_review?.ignore_patterns)
+        ? ((workerConfig as any).auto_review.ignore_patterns as string[]).filter((g) => typeof g === 'string' && g.length > 0)
+        : [];
+      const notApplicable = Boolean((panelResult as any).zeroLaneNonEvidence)
+        && ignorePatterns.length > 0
+        && changedFiles.length > 0
+        && changedFiles.every((file) => ignorePatterns.some((glob) => matchOne(glob, file.path)));
+      const rawRoster = rawPublicationRoster(panelResult, isFastShip, notApplicable);
       const rawFindings = (Array.isArray(panelResult.personas) ? panelResult.personas : [])
         .flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
       const panelQuorumSatisfied = panelResult?.quorum?.satisfied === true;
@@ -1189,7 +1210,9 @@ export async function runPublishingReviewWorker(
       // headers, rather than publish a verdict over a partial review.
       const conclusion = unreadable.length > 0
         ? ('failure' as const)
-        : publishingConclusion(verdict, blocking.length);
+        : notApplicable
+          ? ('neutral' as const)
+          : publishingConclusion(verdict, blocking.length);
       // A valid roster with failed reviewer calls and no findings is not a
       // code verdict. Preserve failure, but use the existing exact-head
       // recovery protocol instead of publishing an unrepeatable BLOCK while
@@ -1273,9 +1296,11 @@ export async function runPublishingReviewWorker(
     // `checks: write`, so the findings become visible without widening the
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
-    const title = fastShipApproved
-      ? 'Review Yeti: SHIP (fast-ship)'
-      : `Review Yeti: ${verdict}`;
+    const title = notApplicable
+      ? 'Review Yeti: NO_REVIEW (not applicable)'
+      : fastShipApproved
+        ? 'Review Yeti: SHIP (fast-ship)'
+        : `Review Yeti: ${verdict}`;
 
     const safeClassifierRationale = fastShipApproved && panelResult.classifierRationale
       ? panelResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
@@ -1293,8 +1318,10 @@ export async function runPublishingReviewWorker(
         ]
       : [
           `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
-          (panelResult as any).zeroLaneNonEvidence
-            ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
+          notApplicable
+            ? 'Review not required: every changed path matches `auto_review.ignore_patterns` (repository-declared not-applicable). No panel ran; this check claims no verdict and is not review evidence.'
+            : (panelResult as any).zeroLaneNonEvidence
+              ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
             : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
           ...(discardedFindingCount > 0
             ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
