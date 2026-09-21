@@ -1284,6 +1284,36 @@ export function isProvider5xxError(error: unknown): boolean {
   return /\b(?:502|503)\b|Bad Gateway|Service Unavailable/i.test(msg);
 }
 
+/**
+ * True when a persona returned a well-formed response whose decision is
+ * INCOMPLETE -- the contract's own way of saying "evidence was insufficient",
+ * which the persona prompt explicitly asks for instead of inventing a finding
+ * or approving to burn the last turn.
+ *
+ * This is NOT malformed output. The payload parses and matches the schema; the
+ * model simply did not reach a verdict. Classifying it as a structured-output
+ * failure sent it down the provider-identity failover path, and in a router
+ * deployment -- one configured alias -- there is no second identity to try, so
+ * a required lane failed closed on an answer the contract asked for.
+ *
+ * Treat it like the empty-completion signature: re-issue against the same
+ * alias so the router can land on a different backend. That re-entry is the
+ * failover for this failure mode, at the layer that owns model-level failover.
+ */
+export function isIncompleteReviewError(error: unknown): boolean {
+  return error instanceof PanelStructuredOutputError
+    && /reported INCOMPLETE without a completed review/i.test(error.message);
+}
+
+/** Attempts allotted to the same provider/alias for the INCOMPLETE signature.
+ * Smaller than the empty-completion budget: an empty completion is pure
+ * transport luck, whereas INCOMPLETE means the model did reason and still could
+ * not conclude, so repeated attempts pay off less and cost a full review each. */
+export const INCOMPLETE_REVIEW_MAX_ATTEMPTS = 3;
+/** Pause between INCOMPLETE retries against the same alias, matching the
+ * empty-completion delay so a stateful router can reconsider its backend. */
+export const INCOMPLETE_REVIEW_RETRY_DELAY_MS = 1000;
+
 /** REL-886: attempts allotted to the same provider/alias specifically for the
  * empty-completion signature, separate from and larger than the generic
  * transient-error `maxAttempts` retry budget below. */
@@ -2616,7 +2646,19 @@ async function runPersona(
       ? [dualResolved.providerId, ...persona.providers.filter((p) => p !== dualResolved!.providerId)]
       : persona.providers;
 
-    const providersToTry = [...new Set([...baseProviders, 'synthetic', 'glm'])].filter((p) => availableProviderIds.includes(p as any));
+    // Failover follows the CONFIGURED provider list only. The hardcoded
+    // 'synthetic' and 'glm' entries that used to be appended here predate
+    // REL-886 and contradict it: a router deployment configures exactly one
+    // OpenAI-compatible alias (`bifrost/pr-reviewer`), so both names were
+    // filtered out by availableProviderIds on every real run -- dead weight
+    // that made this loop look like failover while providing none.
+    //
+    // Model-level failover belongs to the router, which already owns it: the
+    // alias fans out across its own backends. Re-entering the same alias is
+    // the failover (see isEmptyCompletionError and isIncompleteReviewError),
+    // which is why those signatures get their own same-alias retry budgets
+    // rather than a second provider identity.
+    const providersToTry = [...new Set(baseProviders)].filter((p) => availableProviderIds.includes(p as any));
 
     for (const providerId of providersToTry) {
       throwIfPanelAborted(signal);
@@ -2662,6 +2704,7 @@ async function runPersona(
       // capped by the generic transient-error `maxAttempts`. The loop itself is
       // therefore unconditional; every exit path below is an explicit `break`.
       let emptyCompletionAttempts = 0;
+      let incompleteReviewAttempts = 0;
       // REL-940: transport failures get their own separately tracked budget for
       // the same reason as `emptyCompletionAttempts` -- so the generic
       // `maxAttempts` cap cannot retire a lane while the gateway is simply down.
@@ -2928,6 +2971,37 @@ async function runPersona(
             logger.warn(`[Persona: ${persona.id}] Total execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s exhausted; failing closed.`);
             errors.push(`${providerId}: persona ${persona.id} exceeded total retry/execution budget of ${MAX_PERSONA_BUDGET_MS / 1000}s`);
             lastFailureClass = 'budget_exhausted';
+            break;
+          }
+          // MUST precede the PanelStructuredOutputError branch below, which
+          // would otherwise swallow this on the generic 2-attempt budget.
+          //
+          // An INCOMPLETE verdict is a WELL-FORMED answer, not malformed
+          // output: the persona contract explicitly asks for it when evidence
+          // is insufficient. It therefore gets the same treatment as the
+          // empty-completion signature -- re-enter the SAME alias so the
+          // router can land on a different backend. Previously it fell through
+          // to the structured-output path and then off the end of a
+          // one-element providersToTry, failing a required lane closed on the
+          // very answer the contract requested (see isIncompleteReviewError).
+          // Scoped deliberately to the case where there is NO further provider
+          // identity to fall over to. A multi-provider panel keeps its existing
+          // behaviour exactly -- retry once, then fail over -- because a
+          // genuinely different provider is the better next move and is already
+          // configured. Only when this is the last (or only) entry, as in a
+          // router deployment with one alias, does re-entering that alias
+          // become the sole remaining form of failover.
+          if (isIncompleteReviewError(error)
+            && providersToTry.indexOf(providerId) === providersToTry.length - 1) {
+            incompleteReviewAttempts++;
+            errors.push(`${providerId}: ${panelErrorMessage(error)}`);
+            lastFailureClass = 'malformed_output';
+            if (incompleteReviewAttempts < INCOMPLETE_REVIEW_MAX_ATTEMPTS) {
+              logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' returned INCOMPLETE (attempt ${incompleteReviewAttempts}/${INCOMPLETE_REVIEW_MAX_ATTEMPTS}); retrying the same alias so its own routing can select a different backend.`);
+              await panelDelay(INCOMPLETE_REVIEW_RETRY_DELAY_MS, signal);
+              continue;
+            }
+            logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' returned INCOMPLETE on every attempt (${incompleteReviewAttempts}/${INCOMPLETE_REVIEW_MAX_ATTEMPTS}); failing closed.`);
             break;
           }
           if (error instanceof PanelStructuredOutputError) {
