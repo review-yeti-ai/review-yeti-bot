@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.81.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.80.1...v1.81.0) (2026-09-21)
+
+
+### Features
+
+* **transport:** admit Fireworks as a review destination ([#894](https://github.com/review-yeti-ai/review-yeti-bot/issues/894)) ([fce0569](https://github.com/review-yeti-ai/review-yeti-bot/commit/fce05696b7ea07da40ec8789efdc683c3066697b))
+
 ## [1.80.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.80.0...v1.80.1) (2026-09-21)
 
 
