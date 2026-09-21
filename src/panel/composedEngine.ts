@@ -728,12 +728,13 @@ async function runPlanPhase(input: {
     }
     correctionUsed = true;
     const uncovered = validation.reason === 'coverage_gap' ? ` Uncovered paths: ${(validation.uncoveredPaths || []).join(', ')}.` : '';
+    const changed = ` Changed files you may name, and no others: ${input.effectiveFilePaths.join(', ')}.`;
     messages = [...messages, {
       role: 'user',
       content: [
         'PLAN_CORRECTION',
-        `Your plan was rejected: ${validation.message}${uncovered}`,
-        'Return a corrected complete plan object now (not a diff of the previous one) with the exact top-level fields "nonce" and "tasks".',
+        `Your plan was rejected: ${validation.message}${uncovered}${changed}`,
+        'Task ids must match [a-z][a-z0-9_-]*. Return a corrected complete plan object now (not a diff of the previous one) with the exact top-level fields "nonce" and "tasks".',
       ].join('\n'),
     }];
   }
