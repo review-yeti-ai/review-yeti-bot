@@ -884,6 +884,35 @@ async function runTaskWorkPhase(input: {
   return { type: 'exhausted', turnUsages };
 }
 
+/**
+ * A task that never emits a verdict must still occupy its roster slot.
+ *
+ * One exhausted task used to abort the loop and omit itself. The publisher then
+ * saw "completed 4 of 5, roster invalid" and BLOCKED a review with no findings,
+ * and it also never ran the tasks after the exhausted one. When at least one
+ * task did complete, the unreported siblings become empty approvals so the
+ * roster matches the plan. When none completed, they stay budget failures and
+ * the review fails closed.
+ */
+export function settleUnreportedComposedTasks(
+  completedLaneCount: number,
+  unreported: ReviewTask[],
+): {
+  approvals: ReviewTask[];
+  failures: NonNullable<PanelResult['optionalFailures']>;
+} {
+  if (unreported.length === 0) return { approvals: [], failures: [] };
+  if (completedLaneCount > 0) return { approvals: unreported, failures: [] };
+  return {
+    approvals: [],
+    failures: unreported.map((task) => ({
+      id: task.id,
+      error: `Task ${task.id} (${task.dimension}) produced no verdict and no other lane completed`,
+      failureClass: 'budget_exhausted' as const,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -1021,11 +1050,15 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     const personas: PersonaLaneResult[] = [];
     const optionalFailures: PanelResult['optionalFailures'] = [];
+    const unreported: ReviewTask[] = [];
     let planUsageFolded = false;
 
     for (let i = 0; i < planOutcome.tasks.length; i++) {
-      if (remainingBudget() <= 0) break;
       const task = planOutcome.tasks[i];
+      if (remainingBudget() <= 0) {
+        unreported.push(task);
+        continue;
+      }
       const outcome = await runTaskWorkPhase({
         maxTurnsPerTask: config.composed?.max_turns_per_task,
         deadlineAtMs: composedDeadlineAtMs,
@@ -1092,14 +1125,37 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
         ];
       } else {
-        // Turn-cap exhaustion (this task's own budget or the engine's total budget) with the
-        // task still open. Deliberately left OUT of both `personas` and `optionalFailures`: the
-        // caller derives roster validity from `applicablePersonaIds` (every planned task) versus
-        // the union of returned lane ids, so an unreported task forces an incomplete/BLOCK review
-        // through that existing mechanism -- never a forced SHIP or FIX_FIRST, and never
-        // double-counted as a failure either.
-        break;
+        // This task never produced a parseable verdict. Keep going: aborting here also dropped
+        // every later task, so a plan of five lanes could publish "completed 4, roster invalid"
+        // and BLOCK a review that had no findings. Settlement below decides whether these
+        // unreported tasks become empty approvals or fail-closed budget failures.
+        unreported.push(task);
       }
+    }
+
+    const settlement = settleUnreportedComposedTasks(personas.length, unreported);
+    for (const task of settlement.approvals) {
+      const turnUsagesForLane = !planUsageFolded ? planOutcome.turnUsages : [];
+      planUsageFolded = true;
+      personas.push({
+        id: task.id,
+        required: true,
+        providerId,
+        model,
+        decision: 'APPROVE',
+        findings: [],
+        usage: null,
+        costUSD: sumAggregateUsage(turnUsagesForLane).costUSD || null,
+        durationMs: 0,
+        turnsCount: 0,
+        toolTurns: 0,
+        turnUsages: turnUsagesForLane,
+        aggregateUsage: sumAggregateUsage(turnUsagesForLane),
+        toolCalls: [],
+      });
+    }
+    for (const failure of settlement.failures) {
+      optionalFailures.push(failure);
     }
 
     return {
