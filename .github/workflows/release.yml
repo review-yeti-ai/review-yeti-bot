@@ -28,7 +28,7 @@ concurrency:
 jobs:
   validate-and-release:
     name: Release Benchmark Gate & Digest Publishing
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:17-alpine
@@ -194,7 +194,7 @@ jobs:
     name: Promote tested v1 release
     needs: validate-and-release
     if: startsWith(needs.validate-and-release.outputs.version, 'v1.')
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
