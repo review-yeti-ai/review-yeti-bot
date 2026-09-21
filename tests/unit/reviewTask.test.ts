@@ -104,6 +104,20 @@ describe('validateTaskPlan', () => {
     }
   });
 
+  it('folds a capitalized task id into the roster format', () => {
+    const result = validateTaskPlan(
+      plan([
+        task({ id: 'T1', paths: [API_FILE] }),
+        task({ id: 'T2', dimension: 'testing', paths: [UTIL_FILE] }),
+      ]),
+      ctx(),
+    );
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.tasks.map((t) => t.id)).toEqual(['t1', 't2']);
+    }
+  });
+
   it('rejects an id starting with a digit or underscore (roster id format)', () => {
     const result = validateTaskPlan(plan([task({ id: '1-task' })]), ctx());
     expect(result.valid).toBe(false);
