@@ -307,28 +307,16 @@ export function validateTaskPlan(
     );
   }
 
-  // --- Rule 3b: paths must exist in changedFiles; phantom paths dropped ---
-  // Same posture as classifierEngine.ts's phantom-path handling around
-  // classifyDomainLanesByHeuristic's LLM-augmentation pass (~703-707): a path
-  // the model invents that is not in the diff is silently dropped rather than
-  // treated as an error in itself. A task can still be rejected as a result,
-  // but the *reason* is "this task ended up covering nothing", not "this task
-  // named a path that doesn't exist".
+  // --- Rule 3b: paths must exist in changedFiles; phantom paths replaced ---
+  // A path the model invents is not part of the diff. Drop it. A task that
+  // then covers nothing is rebound onto the real changed files that no other
+  // task covers, so a naming miss does not fail the review. The security
+  // floor below still judges the rebound plan and is not correctable.
   const changedFileSet = new Set(context.changedFiles);
   const normalizedTasks: ReviewTask[] = [];
-  const emptiedIds: string[] = [];
+  const emptied: RawReviewTask[] = [];
 
-  for (const raw of rawTasks) {
-    const rawPaths = Array.isArray(raw.paths) ? raw.paths : [];
-    const keptPaths = Array.from(
-      new Set(rawPaths.filter((p): p is string => typeof p === 'string' && changedFileSet.has(p))),
-    );
-
-    if (keptPaths.length === 0) {
-      emptiedIds.push(idOf(raw));
-      continue;
-    }
-
+  const pushTask = (raw: RawReviewTask, paths: string[]): TaskPlanValidationResult | null => {
     const text = clampedText.get(raw);
     if (!text) {
       return reject('invalid_task_fields', `Task ${idOf(raw)} lost its question or rationale during validation.`, {
@@ -338,18 +326,36 @@ export function validateTaskPlan(
     normalizedTasks.push({
       id: raw.id as string,
       dimension: raw.dimension as TaskDimension,
-      paths: keptPaths,
+      paths,
       question: text.question,
       rationale: text.rationale,
     });
+    return null;
+  };
+
+  for (const raw of rawTasks) {
+    const rawPaths = Array.isArray(raw.paths) ? raw.paths : [];
+    const keptPaths = Array.from(
+      new Set(rawPaths.filter((p): p is string => typeof p === 'string' && changedFileSet.has(p))),
+    );
+    if (keptPaths.length === 0) {
+      emptied.push(raw);
+      continue;
+    }
+    const failed = pushTask(raw, keptPaths);
+    if (failed) return failed;
   }
 
-  if (emptiedIds.length > 0) {
-    return reject(
-      'task_emptied_by_path_drop',
-      `Task(s) covered only phantom paths not present in the diff and were emptied by validation: ${emptiedIds.join(', ')}.`,
-      { offendingIds: emptiedIds },
-    );
+  const covered = new Set(normalizedTasks.flatMap((task) => task.paths));
+  const uncovered = context.changedFiles.filter((path) => !covered.has(path));
+  if (emptied.length > 0 && uncovered.length > 0) {
+    const buckets = emptied.map(() => [] as string[]);
+    uncovered.forEach((path, index) => buckets[index % emptied.length].push(path));
+    for (let index = 0; index < emptied.length; index += 1) {
+      if (buckets[index].length === 0) continue;
+      const failed = pushTask(emptied[index], buckets[index]);
+      if (failed) return failed;
+    }
   }
 
   // --- Heuristic (non-model) domain classification of the real diff -------
