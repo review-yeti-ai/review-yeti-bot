@@ -322,6 +322,16 @@ describe('native panel turn protocol', () => {
     const baseConfig = buildConfig();
     const config = ctReviewConfigV3Schema.parse({
       ...baseConfig,
+      // The fallback provider is declared on the persona, not inferred from a
+      // magic provider name. panelEngine used to append 'synthetic' and 'glm'
+      // to every persona's failover list regardless of configuration; failover
+      // now follows the configured list only, so a test that wants a second
+      // identity has to say so -- which is also the only way a real deployment
+      // could ever have gotten one.
+      personas: baseConfig.personas.map((persona: any) => ({
+        ...persona,
+        providers: [...persona.providers, 'glm'],
+      })),
       reviewers: {
         ...baseConfig.reviewers,
         providers: [
