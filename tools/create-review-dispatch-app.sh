@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/create-review-dispatch-app-credentials.sh — store the ct-review-bot
+# tools/create-review-dispatch-app.sh — store the ct-review-bot
 # App credentials as org secrets for Review Yeti dispatch (REL-519).
 #
 # Adapted from the proven .context/create-release-automation-app.sh
@@ -8,7 +8,7 @@
 #
 # Two modes:
 #   A) The ct-review-bot App (app_id 4385771) already exists and is
-#      installed on ALL repos, but its private key was never saved. Keys
+#      installed broadly, but its private key was never saved. Keys
 #      cannot be re-downloaded — instead this flow CREATES A NEW APP with
 #      the same slug family (ct-review-dispatch) via the manifest flow,
 #      which hands back a fresh PEM in the redirect. Install it on the same
@@ -20,9 +20,9 @@
 # What this does, end to end, on YOUR Mac under YOUR gh login (org owner):
 #   1. Starts a tiny localhost listener for the manifest-flow redirect.
 #   2. Opens a browser page that auto-submits the App manifest to GitHub
-#      (name ct-review-dispatch, permissions: repository_dispatch:write,
-#      contents:read, pull_requests:read, issues:write, metadata:read,
-#      no webhook, private).
+#      (name ct-review-dispatch, App-registration union: actions/checks/
+#      contents/issues/pull_requests:write plus metadata:read, no webhook,
+#      private). Runtime tokens narrow that union by repository and permission.
 #   3. You click "Create GitHub App" on GitHub. GitHub redirects to localhost
 #      with a one-time code.
 #   4. The script exchanges the code (POST /app-manifests/{code}/conversions)
@@ -48,8 +48,9 @@ command -v gh >/dev/null || { echo "gh is required"; exit 1; }
 command -v jq >/dev/null || { echo "jq is required"; exit 1; }
 gh auth status -h github.com >/dev/null 2>&1 || { echo "gh is not logged in"; exit 1; }
 
-# Permission plan (REL-519): dispatch into example-review-actions; read PRs and
-# contents on consumer repos for exact-head validation and verdict posting.
+# App-registration union (REL-519): same-owner target review/check publication
+# needs the write grants below. Runtime workflows request narrower,
+# repository-scoped tokens for target validation and central tooling.
 MANIFEST="$(jq -cn --arg name "$APP_NAME" --arg redirect "$REDIRECT" '{
   name: $name,
   url: "https://github.com/exampleorg/example-review-actions",
@@ -57,9 +58,10 @@ MANIFEST="$(jq -cn --arg name "$APP_NAME" --arg redirect "$REDIRECT" '{
   redirect_url: $redirect,
   public: false,
   default_permissions: {
-    repository_dispatch: "write",
-    contents: "read",
-    pull_requests: "read",
+    actions: "write",
+    checks: "write",
+    contents: "write",
+    pull_requests: "write",
     issues: "write",
     metadata: "read"
   },
@@ -128,7 +130,7 @@ echo "✓ App '${SLUG:-$APP_NAME}' created (App ID ${APP_ID}); CT_REVIEW_BOT_APP
 echo
 echo "Last click — install it on the repos (org-owned apps have no REST install endpoint):"
 echo "  https://github.com/organizations/${ORG}/settings/apps/${SLUG:-$APP_NAME}/installations"
-echo "  Select: example-review-actions (dispatch target) + every consumer carrying ct-review-bot.yml (example-meta, example-api, example-release, example-infra)."
+echo "  Select only: example-review-actions + approved consumers carrying ct-review-bot.yml (currently example-meta, example-api, example-release, example-infra)."
 echo
 echo "Verify: re-run any consumer PR's 'Review Yeti / Review Yeti' check — it now mints"
 echo "  CT_REVIEW_BOT_APP tokens (own rate bucket) instead of the shared PAT."

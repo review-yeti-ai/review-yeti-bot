@@ -22,13 +22,17 @@ Using a GitHub App provides isolated rate-limiting, least-privilege scoping, sho
 
 The governed cross-owner route uses separate App identities. Do not create one
 catch-all App and reuse its key across the ingress, public target, and central
-tooling boundaries. `Metadata: read` is the mandatory default for every App;
-the table lists the additional repository permissions for each identity.
+tooling boundaries. `Metadata: read` is the mandatory default for every App.
+The table records each workflow's short-lived token request, not a second App
+registration. The internal `CT_REVIEW_BOT_APP_*` App registration grants the
+union needed by same-owner targets; every token is then narrowed to one
+repository and the listed subset through `actions/create-github-app-token`'s
+`permission-*` inputs.
 
-| Identity | Installation | Repository permissions |
+| Identity or token | Repository scope | Token permissions requested |
 | :--- | :--- | :--- |
 | Internal exampleorg target App (`CT_REVIEW_BOT_APP_*`) | Admitted `exampleorg/*` target repositories | `Actions: write`, `Checks: write`, `Contents: write`, `Issues: write`, `Pull requests: write` for same-owner review/check publication. |
-| Central tooling installation (`CT_REVIEW_BOT_APP_*`) | `exampleorg/example-review-actions` only for the external route | `Actions: read`, `Contents: read`; central validation and tooling never use the public target token. |
+| Central tooling token (`CT_REVIEW_BOT_APP_*`) | `exampleorg/example-review-actions` only for the external route | A narrowed token requesting `Actions: read` and `Contents: read`; central validation and tooling never use the public target token. |
 | Public target App (`REVIEW_YETI_PUBLIC_TARGET_APP_*`) | Exactly `review-yeti-ai/review-yeti-bot` | `Actions: write`, `Checks: write`, `Contents: read`, `Issues: write`, `Pull requests: write` for target reads, check publication, and post-SHIP `validate.yml` dispatch. |
 | Public ingress App (`REVIEW_YETI_DISPATCH_APP_*`) | Exactly `exampleorg/example-review-actions` | `Contents: write` only (plus mandatory `Metadata: read`); no `Actions`, `Checks`, `Issues`, or `Pull requests` permission. |
 
@@ -96,14 +100,19 @@ If you prefer using the GitHub web interface:
    * **GitHub App name**: `my-org-review-bot` (must be globally unique)
    * **Homepage URL**: `https://github.com/<your-org>/<your-review-repo>`
    * **Webhook**: Uncheck **Active** (unless using webhook dispatch).
-3. **Configure only the permissions for the selected identity**:
-   * Public ingress: `Contents` **Read and write** and `Metadata` **Read-only**;
+3. **Configure the App registration for the selected identity**:
+   * Public ingress App registration: `Contents` **Read and write** and
+     `Metadata` **Read-only**;
      no `Actions`, `Checks`, `Issues`, or `Pull requests` permission.
-   * Public target: `Actions` **Read and write**, `Checks` **Read and write**,
-     `Contents` **Read-only**, `Issues` **Read and write**, `Pull requests`
-     **Read and write**, and `Metadata` **Read-only**.
-   * Central tooling: `Actions` and `Contents` **Read-only**, plus `Metadata`
-     **Read-only**.
+   * Public target App registration: `Actions`, `Checks`, `Issues`, and
+     `Pull requests` **Read and write**, `Contents` **Read-only**, and
+     `Metadata` **Read-only**.
+   * Internal exampleorg App registration: `Actions`, `Checks`, `Contents`,
+     `Issues`, and `Pull requests` **Read and write**, plus `Metadata`
+     **Read-only**. This is the App-level union used by same-owner targets.
+   * Central tooling token (not an App registration): the workflow narrows the
+     internal App to the exact `example-review-actions` repository and requests only
+     `Actions` and `Contents` **Read-only** for that short-lived token.
 4. **Create & Generate Private Key**:
    * Click **Create GitHub App**.
    * Under **General > Private keys**, click **Generate a private key**.

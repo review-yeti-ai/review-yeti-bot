@@ -35,13 +35,17 @@ const payload = Object.freeze({
 const receiverWorkflow = readFileSync(new URL('../.github/workflows/repository-dispatch.yml', import.meta.url), 'utf8');
 const reusableWorkflow = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
 
-function workflowStepRun(source, name) {
+function workflowStepBlock(source, name) {
   const marker = `      - name: ${name}\n`;
   const start = source.indexOf(marker);
   assert.notEqual(start, -1, `missing workflow step ${name}`);
   const blockStart = start + marker.length;
   const next = source.indexOf('\n      - name: ', blockStart);
-  const block = source.slice(blockStart, next === -1 ? source.length : next + 1);
+  return source.slice(blockStart, next === -1 ? source.length : next + 1);
+}
+
+function workflowStepRun(source, name) {
+  const block = workflowStepBlock(source, name);
   const run = block.match(/^        run: \|\n([\s\S]*)$/mu);
   assert.ok(run, `missing run body for ${name}`);
   return run[1].split('\n').map((line) => line.startsWith('          ') ? line.slice(10) : line).join('\n');
@@ -445,16 +449,32 @@ test('reusable and receiver admission scopes stay in lockstep', () => {
 
 test('App setup documentation preserves route-specific least privilege', () => {
   const docs = readFileSync(new URL('../docs/github-app-setup.md', import.meta.url), 'utf8');
+  const helper = readFileSync(new URL('../tools/create-review-dispatch-app.sh', import.meta.url), 'utf8');
+  const targetToken = workflowStepBlock(reusableWorkflow, 'Mint Review Yeti App token for exampleorg target');
+  const centralToken = workflowStepBlock(reusableWorkflow, 'Mint Review Yeti App token for central tooling');
   assert.match(docs, /## Route-specific permissions/u);
   assert.match(docs, /review-yeti-ingress/u);
   assert.match(docs, /REVIEW_YETI_DISPATCH_APP_ID/u);
   assert.match(docs, /CT_REVIEW_BOT_APP_ID/u);
   assert.match(docs, /REVIEW_YETI_PUBLIC_TARGET_APP_ID/u);
+  assert.match(docs, /short-lived token request/u);
+  assert.match(docs, /App registration grants the\s+union/u);
+  assert.match(docs, /`permission-\*` inputs/u);
   assert.match(docs, /## Installing the route-specific Apps/u);
   assert.match(docs, /Install the \*\*Public ingress App\*\* only on\s+`exampleorg\/example-review-actions`/u);
   assert.match(docs, /Install the \*\*Public target App\*\* only on\s+`review-yeti-ai\/review-yeti-bot`/u);
   assert.doesNotMatch(docs, /Add all \*\*Consumer Repositories\*\*/u);
   assert.doesNotMatch(docs, /## Installing the App on Repositories/u);
+  assert.match(docs, /Internal exampleorg App registration:[\s\S]*?`Actions`, `Checks`, `Contents`,\s+`Issues`, and `Pull requests` \*\*Read and write\*\*/u);
+  assert.match(docs, /Central tooling token \(not an App registration\):[\s\S]*`Actions` and `Contents` \*\*Read-only\*\*/u);
+  for (const permission of ['actions', 'checks', 'contents', 'issues', 'pull_requests']) {
+    assert.match(helper, new RegExp(`${permission}: "write"`, 'u'), `helper is missing ${permission}:write App grant`);
+    assert.match(targetToken, new RegExp(`permission-${permission.replace('_', '-')}: write`, 'u'), `runtime target token is missing ${permission}:write`);
+  }
+  assert.doesNotMatch(helper, /repository_dispatch:/u);
+  assert.match(centralToken, /permission-actions: read/u);
+  assert.match(centralToken, /permission-contents: read/u);
+  assert.doesNotMatch(centralToken, /permission-(?:actions|contents): write/u);
   assert.doesNotMatch(docs, /(?:secrets\.|gh secret set )REVIEW_BOT_APP_ID/u);
   assert.doesNotMatch(docs, /"actions":\s*"write"[\s\S]{0,160}"checks":\s*"write"[\s\S]{0,160}"contents":\s*"write"/u);
 });
