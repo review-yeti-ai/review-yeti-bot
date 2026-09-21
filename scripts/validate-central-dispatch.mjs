@@ -7,13 +7,15 @@ import { isEntrypoint } from './entrypoint-guard.mjs';
 export const CENTRAL_REPOSITORY = 'exampleorg/example-review-actions';
 // Repositories admitted to the central dispatch boundary. ADR 0519 replaced the
 // fixed exampleorg repository list with an owner check plus a per-repository
-// concurrency cap. Admission is owner-scoped by design: the internal review lane
-// is a private resource and is never granted to a public repository entity.
+// concurrency cap. The public Review Yeti self-review is the sole cross-owner
+// exception and is bound to one exact repository and one exact caller workflow;
+// its target and central installation tokens are always distinct.
 // ADR 0490 still governs the shared lane itself.
 export const TARGET_OWNER = 'exampleorg';
 // A GitHub repository name: no slashes, no leading dot, no path traversal.
 const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/u;
 export const TARGET_REPOSITORY = 'exampleorg/example-api';
+export const REVIEW_YETI_REPOSITORY = 'review-yeti-ai/review-yeti-bot';
 
 // Peak observed central concurrency over a 17.4h / 100-run sample was 4 global,
 // and 4 / 3 / 2 for example-release / example-meta / example-api. Six is above every
@@ -60,6 +62,7 @@ export function globalConcurrencyCap(env = process.env) {
 
 export const DISPATCH_EVENT_TYPE = 'review-yeti-request';
 export const CALLER_WORKFLOW_PATH = '.github/workflows/ct-review-bot.yml';
+export const REVIEW_YETI_CALLER_WORKFLOW_PATH = CALLER_WORKFLOW_PATH;
 
 export function resolveAdmittedTarget(repository) {
   if (typeof repository !== 'string') throw new Error('repository must be a string');
@@ -72,8 +75,16 @@ export function resolveAdmittedTarget(repository) {
       callerWorkflowPath: CALLER_WORKFLOW_PATH,
     };
   }
+  if (repository === REVIEW_YETI_REPOSITORY) {
+    return {
+      owner: 'review-yeti-ai',
+      name: 'review-yeti-bot',
+      repository,
+      callerWorkflowPath: REVIEW_YETI_CALLER_WORKFLOW_PATH,
+    };
+  }
   throw new Error(
-    `repository is not admitted; repository must be a ${TARGET_OWNER}/<repo> repository, got '${repository}'`,
+    `repository is not admitted; repository must be a ${TARGET_OWNER}/<repo> repository or exactly ${REVIEW_YETI_REPOSITORY}, got '${repository}'`,
   );
 }
 
@@ -99,6 +110,11 @@ const REFRESH_PAYLOAD_KEYS = Object.freeze([...PAYLOAD_KEYS, 'refresh_requested'
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const REQUEST_ID_PATTERN = /^([A-Za-z0-9_][A-Za-z0-9._-]{0,99}):([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
 const PROVIDER_SECRET_PATTERN = /(?:OLLAMA_PR_REVIEW_API_KEY|OPENROUTER(?:_PR_REVIEW_API_KEY|_REVIEW_FLEET_KEY|_API_KEY)|FIREWORKS_PR_REVIEW_API_KEY|SYNTHETIC_API_KEY|GEMINI_API_KEY)/u;
+const PUBLIC_DISPATCH_APP_ACTION_PATTERN = /^actions\/create-github-app-token@[0-9a-f]{40}$/u;
+const PUBLIC_DISPATCH_ALLOWED_SECRETS = Object.freeze([
+  'REVIEW_YETI_DISPATCH_APP_ID',
+  'REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY',
+]);
 const WORKER_EXTERNAL_ID_PATTERN = /^(run_[a-f0-9]{32}):a([1-9][0-9]*)$/u;
 const MERGE_GROUP_EXTERNAL_ID_PATTERN = /^merge-group:([a-f0-9]{40})$/u;
 const CHECK_RUN_STATUSES = new Set(['completed', 'in_progress', 'pending', 'queued', 'requested', 'waiting']);
@@ -205,6 +221,103 @@ export function validateCallerWorkflow(content) {
     throw new Error('base-owned caller workflow must not reference provider credentials');
   }
   return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+function withoutYamlComments(content) {
+  return content.split(/\r?\n/u).map((line) => line.replace(/\s+#.*$/u, '')).join('\n');
+}
+
+function workflowStepBlocks(content) {
+  const lines = content.split(/\r?\n/u);
+  const starts = lines
+    .map((line, index) => /^\s{6}-\s+/u.test(line) ? index : -1)
+    .filter((index) => index >= 0);
+  return starts.map((start, index) => lines.slice(start, starts[index + 1]).join('\n'));
+}
+
+function compactWorkflowScript(script) {
+  return script.replace(/\\\r?\n/gu, ' ').replace(/\s+/gu, ' ').trim();
+}
+
+export function validatePublicCallerWorkflow(content) {
+  const sha256 = validateCallerWorkflow(content);
+  const workflow = withoutYamlComments(content);
+  const topLevelKeys = [...workflow.matchAll(/^([A-Za-z0-9_-]+):(?:\s|$)/gmu)].map((match) => match[1]);
+  const allowedTopLevelKeys = new Set(['name', 'on', 'permissions', 'jobs']);
+  if (topLevelKeys.some((key) => !allowedTopLevelKeys.has(key))) {
+    throw new Error('public caller must be a dispatch-only workflow');
+  }
+  if (!/^\s{2}pull_request_target:\s*$/mu.test(workflow)) {
+    throw new Error('public caller must run from pull_request_target');
+  }
+
+  const permissionBlock = workflow.match(/^permissions:\s*\n((?: {2}[^\n]*\n?)*)/mu)?.[1] || '';
+  const permissionLines = [...permissionBlock.matchAll(/^ {2}([A-Za-z-]+):\s*([^\s]+)\s*$/gmu)]
+    .map((match) => `${match[1]}:${match[2]}`);
+  if (JSON.stringify(permissionLines) !== JSON.stringify(['contents:read'])) {
+    throw new Error('public caller must request only contents:read workflow permissions');
+  }
+  if (/^ {4,}permissions:\s*$/mu.test(workflow)) {
+    throw new Error('public caller must not widen job permissions');
+  }
+
+  const secretRefs = [...workflow.matchAll(/\$\{\{\s*secrets\.([A-Za-z0-9_]+)\s*\}\}/gu)]
+    .map((match) => match[1]);
+  if (JSON.stringify([...new Set(secretRefs)].sort()) !== JSON.stringify([...PUBLIC_DISPATCH_ALLOWED_SECRETS].sort())) {
+    throw new Error('public caller must use only the dedicated dispatch App secrets');
+  }
+  if (/github\.token|GITHUB_TOKEN|PERSONAL_ACCESS_TOKEN|NPM_TOKEN|\bPAT\b/u.test(workflow)) {
+    throw new Error('public caller must not use ambient or personal access tokens');
+  }
+
+  const steps = workflowStepBlocks(workflow);
+  if (steps.length !== 2) {
+    throw new Error('public caller must contain exactly one App-mint step and one dispatch step');
+  }
+  const actionUses = [...workflow.matchAll(/^\s+uses:\s*([^\s]+)\s*$/gmu)].map((match) => match[1]);
+  if (actionUses.length !== 1 || !PUBLIC_DISPATCH_APP_ACTION_PATTERN.test(actionUses[0])) {
+    throw new Error('public caller must use exactly one SHA-pinned dispatch App action');
+  }
+  const appStep = steps.find((step) => step.includes('uses: actions/create-github-app-token@')) || '';
+  const dispatchStep = steps.find((step) => step.includes('run: |')) || '';
+  if (!appStep || !dispatchStep || appStep.includes('run:') || dispatchStep.includes('uses:')) {
+    throw new Error('public caller must contain exactly one App-mint step and one dispatch step');
+  }
+  for (const marker of [
+    'id: dispatch_token',
+    'app-id: ${{ secrets.REVIEW_YETI_DISPATCH_APP_ID }}',
+    'private-key: ${{ secrets.REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY }}',
+    'owner: exampleorg',
+    'repositories: example-review-actions',
+  ]) {
+    if (!appStep.includes(marker)) throw new Error(`public caller dispatch App is missing ${marker}`);
+  }
+  const appPermissions = [...appStep.matchAll(/^\s+permission-([a-z-]+):\s*([^\s]+)\s*$/gmu)]
+    .map((match) => `${match[1]}:${match[2]}`);
+  if (JSON.stringify(appPermissions) !== JSON.stringify(['contents:write'])) {
+    throw new Error('public caller dispatch App must request only contents:write');
+  }
+  if (!/^\s+GH_TOKEN:\s*\$\{\{\s*steps\.dispatch_token\.outputs\.token\s*\}\}\s*$/mu.test(dispatchStep)) {
+    throw new Error('public caller dispatch must bind GH_TOKEN to the dispatch App output');
+  }
+
+  const runBody = dispatchStep.match(/^\s+run:\s*\|\s*\n([\s\S]*)$/mu)?.[1] || '';
+  const normalizedScript = compactWorkflowScript(runBody);
+  const expectedScript = [
+    'set -euo pipefail',
+    'jq -n',
+    '--arg repository "${{ github.repository }}"',
+    '--argjson pr_number "${{ github.event.pull_request.number }}"',
+    '--arg base_sha "${{ github.event.pull_request.base.sha }}"',
+    '--arg head_sha "${{ github.event.pull_request.head.sha }}"',
+    '--arg request_id "${{ github.event.repository.name }}:${{ github.event.pull_request.number }}:${{ github.event.pull_request.head.sha }}:${{ github.run_id }}:${{ github.run_attempt }}"',
+    `'{event_type:"${DISPATCH_EVENT_TYPE}",client_payload:{repository:$repository,pr_number:$pr_number,base_sha:$base_sha,head_sha:$head_sha,request_id:$request_id}}'`,
+    '| gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -',
+  ].join(' ');
+  if (normalizedScript !== expectedScript) {
+    throw new Error('public caller must perform exactly one coordinate-only central dispatch');
+  }
+  return sha256;
 }
 
 async function githubJson(url, token, fetchImpl) {
@@ -690,7 +803,9 @@ export async function validateCentralDispatch({
   } catch {
     throw new Error('base-owned caller workflow could not be decoded');
   }
-  const callerWorkflowSha256 = validateCallerWorkflow(callerContent);
+  const callerWorkflowSha256 = admittedTarget.owner === TARGET_OWNER
+    ? validateCallerWorkflow(callerContent)
+    : validatePublicCallerWorkflow(callerContent);
   return {
     ...request,
     caller_run_id: callerRunId,

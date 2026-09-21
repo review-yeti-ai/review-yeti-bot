@@ -28,7 +28,7 @@ When creating the GitHub App, configure the following repository-level permissio
 | **Pull requests** | **Read & write** | Reads PR metadata, diffs, changed files, and posts review comments / inline feedback threads. |
 | **Contents** | **Read & write** | Reads repository files and git history; write access supports the existing repository-dispatch caller contract. |
 | **Issues** | **Read & write** | Posts high-level review summaries, notifications, or diagnostic comments on pull request conversations. |
-| **Actions** | **Read-only** | Reads originating workflow runs for immutable caller validation. |
+| **Actions** | **Read & write** | Reads originating workflow runs and dispatches the target `validate.yml` workflow after a SHIP verdict. |
 | **Metadata** | **Read-only** | Mandatory default for all GitHub Apps to query repository identifiers. |
 
 > [!NOTE]
@@ -54,7 +54,7 @@ You can run the provided script in `tools/create-review-dispatch-app.sh` or crea
   "description": "Review Yeti automated AI code review identity",
   "public": false,
   "default_permissions": {
-    "actions": "read",
+    "actions": "write",
     "checks": "write",
     "contents": "write",
     "pull_requests": "write",
@@ -92,7 +92,7 @@ If you prefer using the GitHub web interface:
      * `Contents`: **Read and write**
      * `Issues`: **Read and write**
      * `Pull requests`: **Read and write**
-     * `Actions`: **Read-only**
+     * `Actions`: **Read and write**
      * `Metadata`: **Read-only**
 4. **Create & Generate Private Key**:
    * Click **Create GitHub App**.
@@ -119,18 +119,34 @@ contains repository names under that owner; it does not accept a mixture of
 `owner/repository` values from different organizations. Install the same App
 separately for each owner and mint a separate token for each installation.
 
-Admission is owner-scoped: only `exampleorg/*` repositories are admitted.
-The internal review lane is a private company resource and is never granted to a
-public repository entity (for example `review-yeti-ai/review-yeti-bot`), which
-keeps the `ct-review-bot` App installation, private key, and internal network
-access within the company boundary. A public repository reviews itself with its
-own native workflow and its own credentials.
+Admission is owner-scoped for the exampleorg fleet, with one explicit
+cross-owner exception: `review-yeti-ai/review-yeti-bot` at
+`.github/workflows/ct-review-bot.yml`. That exception uses three deliberately
+separate boundaries:
 
-The trusted workflows consume `CT_REVIEW_BOT_APP_ID` and
-`CT_REVIEW_BOT_APP_PRIVATE_KEY` only in pinned
-`actions/create-github-app-token` steps. There is no PAT or `github.token`
-fallback. A missing installation, unavailable secret, or insufficient App
-permission stops the workflow before review execution.
+* the internal `ct-review-bot` App stays installed only on the private
+  `exampleorg/example-review-actions` repository and is exposed through
+  `CT_REVIEW_BOT_APP_ID` / `CT_REVIEW_BOT_APP_PRIVATE_KEY` only in the central
+  workflow;
+* `REVIEW_YETI_PUBLIC_TARGET_APP_ID` /
+  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` identify an App installed only on
+  the exact public `review-yeti-ai/review-yeti-bot` repository. Central uses
+  that token for target PR reads, check publication, and the post-SHIP
+  `validate.yml` dispatch (`Actions: write`), never for central tooling;
+* `REVIEW_YETI_DISPATCH_APP_ID` /
+  `REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY` identify an ingress App installed only
+  on `exampleorg/example-review-actions`. The public caller can submit the
+  coordinate-only `repository_dispatch`, but cannot read the private central
+  repository through that token.
+
+The external route is therefore an asynchronous dispatch shim, not a public
+reusable-workflow call. GitHub does not expose private reusable workflows to
+public callers. Provider credentials remain central, and a missing installation,
+unavailable secret, or insufficient App permission fails closed before review
+execution. The central validator also requires the public caller to be exactly
+the two-step, SHA-pinned dispatch shape: mint the ingress App token, then submit
+one coordinate-only POST to the central `repository_dispatch` endpoint. There is
+no checkout, extra API write, PAT, or ambient `github.token` fallback.
 
 ---
 

@@ -634,7 +634,7 @@ grep -Fq "REVIEW_YETI_DOKS_PUBLISH_MODE: \${{ inputs.central_execution && 'app-g
 # shellcheck disable=SC2016
 grep -Fq 'REVIEW_YETI_RESOLVED_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
-grep -Fq "if: inputs.central_execution && steps.ry_token.outputs.token != '' && env.TRUSTED_EXECUTION_BACKEND != 'doks'" "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq "if: inputs.central_execution && (steps.target_token_exampleorg.outputs.token != '' || steps.target_token_public.outputs.token != '') && env.TRUSTED_EXECUTION_BACKEND != 'doks'" "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq "check-id: \${{ env.TRUSTED_EXECUTION_BACKEND != 'doks' && steps.init_check.outputs.check_id || '' }}" "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016

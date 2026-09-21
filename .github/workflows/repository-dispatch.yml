@@ -74,8 +74,9 @@ jobs:
           fetch-depth: 1
 
       # The validator reads target state with the App installation belonging to
-      # that owner. Cross-owner targets get a second, repository-scoped token
-      # for central capacity reads; an installation token never spans owners.
+      # that owner. The public Review Yeti target is the one exact cross-owner
+      # exception and uses a dedicated target App; the internal App remains
+      # scoped to this private repository for central capacity/tooling reads.
       - name: Resolve target repository scope
         id: target
         env:
@@ -89,22 +90,29 @@ jobs:
                 echo "::error::invalid exampleorg repository name '${target_name}'"
                 exit 1
               fi
-              repositories="${target_name}"
-              if [[ "${target_name}" != "example-review-actions" ]]; then
-                repositories="${target_name},example-review-actions"
-              fi
               {
+                echo "scope=exampleorg"
                 echo "owner=exampleorg"
                 echo "name=${target_name}"
-                echo "repositories=${repositories}"
+                echo "repositories=${target_name}"
+                echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            review-yeti-ai/review-yeti-bot)
+              {
+                echo "scope=review-yeti-public"
+                echo "owner=review-yeti-ai"
+                echo "name=review-yeti-bot"
+                echo "repositories=review-yeti-bot"
                 echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
               } >> "$GITHUB_OUTPUT"
               ;;
             *) echo "::error::target repository is not admitted: '${TARGET_REPOSITORY}'"; exit 1 ;;
           esac
 
-      - name: Mint Review Yeti App token for target validation
-        id: ry_token
+      - name: Mint Review Yeti App token for exampleorg target validation
+        id: target_token_exampleorg
+        if: steps.target.outputs.scope == 'exampleorg'
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
         with:
           app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
@@ -116,12 +124,39 @@ jobs:
           permission-contents: read
           permission-pull-requests: read
 
+      # This App is installed only on review-yeti-ai/review-yeti-bot. It is not
+      # the private ct-review-bot App and has no access to central tooling.
+      - name: Mint Review Yeti App token for exact public target validation
+        id: target_token_public
+        if: steps.target.outputs.scope == 'review-yeti-public'
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
+        with:
+          app-id: ${{ secrets.REVIEW_YETI_PUBLIC_TARGET_APP_ID }}
+          private-key: ${{ secrets.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY }}
+          owner: review-yeti-ai
+          repositories: review-yeti-bot
+          permission-actions: read
+          permission-checks: read
+          permission-contents: read
+          permission-pull-requests: read
+
+      - name: Mint Review Yeti App token for central validation
+        id: central_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
+        with:
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: example-review-actions
+          permission-actions: read
+          permission-contents: read
+
       - name: Validate payload, current PR, and immutable caller
         id: request
         working-directory: .exampleorg-review-actions
         env:
-          GH_TARGET_TOKEN: ${{ steps.ry_token.outputs.token }}
-          GH_CENTRAL_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TARGET_TOKEN: ${{ steps.target_token_public.outputs.token || steps.target_token_exampleorg.outputs.token }}
+          GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
           CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload || inputs) }}
         run: node scripts/validate-central-dispatch.mjs

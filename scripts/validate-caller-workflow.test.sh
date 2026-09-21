@@ -62,7 +62,7 @@ invalid_workflow="${valid_workflow}"$'    with:\n      central-sha: 012345678901
 # miss github.token being passed to this one step while checkout uses the App.
 pin_step="$(sed -n '/      - name: Validate immutable caller pin/,/      - name: Validate central dispatch boundary/p' "$repo_root/.github/workflows/review-yeti.yml")"
 # shellcheck disable=SC2016 # Match the literal GitHub expression, not shell expansion.
-grep -Fxq '          GH_TOKEN: ${{ steps.ry_token.outputs.token }}' <<<"$pin_step" || {
+grep -Fxq '          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}' <<<"$pin_step" || {
   echo 'immutable caller validation must bind only the already-minted App token' >&2
   exit 1
 }

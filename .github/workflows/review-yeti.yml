@@ -80,6 +80,12 @@ on:
       CT_REVIEW_BOT_APP_PRIVATE_KEY:
         description: GitHub App private key used to mint repository-scoped installation tokens.
         required: true
+      REVIEW_YETI_PUBLIC_TARGET_APP_ID:
+        description: Dedicated App id installed only on review-yeti-ai/review-yeti-bot.
+        required: false
+      REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY:
+        description: Dedicated target App key for review-yeti-ai/review-yeti-bot only.
+        required: false
       REVIEW_YETI_BIFROST_API_KEY:
         description: Optional Bifrost provider credential.
         required: false
@@ -139,8 +145,8 @@ jobs:
       TRUSTED_EXECUTION_BACKEND: ${{ inputs.central_execution && 'doks' || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
     steps:
       # Resolve only the existing exampleorg owner admission or the one
-      # owner-scoped boundary. The trusted reusable workflow performs this
-      # before exposing the App private key to token minting.
+      # exact public repository boundary. The trusted reusable workflow performs
+      # this before exposing either App private key to token minting.
       - name: Resolve target repository scope
         id: target
         env:
@@ -154,33 +160,68 @@ jobs:
                 echo "::error::invalid exampleorg repository name '${target_name}'"
                 exit 1
               fi
-              repositories="${target_name}"
-              if [[ "${target_name}" != "example-review-actions" ]]; then
-                repositories="${target_name},example-review-actions"
-              fi
               {
+                echo "scope=exampleorg"
                 echo "owner=exampleorg"
                 echo "name=${target_name}"
-                echo "repositories=${repositories}"
+                echo "repositories=${target_name},example-review-actions"
+                echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
+              } >> "$GITHUB_OUTPUT"
+              ;;
+            review-yeti-ai/review-yeti-bot)
+              {
+                echo "scope=review-yeti-public"
+                echo "owner=review-yeti-ai"
+                echo "name=review-yeti-bot"
+                echo "repositories=review-yeti-bot"
                 echo "caller_workflow_path=.github/workflows/ct-review-bot.yml"
               } >> "$GITHUB_OUTPUT"
               ;;
             *) echo "::error::target repository is not admitted: '${TARGET_REPOSITORY}'"; exit 1 ;;
           esac
 
-      - name: Mint Review Yeti App token
-        id: ry_token
+      - name: Mint Review Yeti App token for exampleorg target
+        id: target_token_exampleorg
+        if: steps.target.outputs.scope == 'exampleorg'
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
         with:
           app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
           private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
           owner: ${{ steps.target.outputs.owner }}
           repositories: ${{ steps.target.outputs.repositories }}
-          permission-actions: read
+          permission-actions: write
           permission-checks: write
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+
+      # This App is installed only on the exact public target. It cannot read
+      # or write the private central repository and is never used for tooling.
+      - name: Mint Review Yeti App token for exact public target
+        id: target_token_public
+        if: steps.target.outputs.scope == 'review-yeti-public'
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
+        with:
+          app-id: ${{ secrets.REVIEW_YETI_PUBLIC_TARGET_APP_ID }}
+          private-key: ${{ secrets.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY }}
+          owner: review-yeti-ai
+          repositories: review-yeti-bot
+          permission-actions: write
+          permission-checks: write
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Mint Review Yeti App token for central tooling
+        id: central_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2, SHA-pinned (secret-bearing step)
+        with:
+          app-id: ${{ secrets.CT_REVIEW_BOT_APP_ID }}
+          private-key: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}
+          owner: exampleorg
+          repositories: example-review-actions
+          permission-actions: read
+          permission-contents: read
 
       # job.workflow_sha is the immutable commit GitHub selected when it
       # admitted this reusable workflow invocation. Capture it in trusted
@@ -216,7 +257,7 @@ jobs:
           repository: exampleorg/example-review-actions
           ref: ${{ steps.central_source.outputs.sha }}
           path: .exampleorg-review-actions
-          token: ${{ steps.ry_token.outputs.token }}
+          token: ${{ steps.central_token.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
 
@@ -232,18 +273,20 @@ jobs:
       - name: Validate immutable caller pin
         if: ${{ !inputs.central_execution }}
         env:
-          # Consumer GITHUB_TOKEN cannot read the private central compare API.
-          # Reuse the already-minted App identity for both repositories; an empty
-          # mint output fails the validator's required-token guard, never falls back.
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          # The target token reads the caller workflow in the repository under
+          # review. The immutable-pin compare hits the private central repository,
+          # which the public target App cannot read, so that call uses the
+          # central token inside the script.
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
+          GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token }}
         run: .exampleorg-review-actions/scripts/validate-caller-workflow.sh
 
       - name: Validate central dispatch boundary
         id: central_validation
         if: ${{ inputs.central_execution }}
         env:
-          GH_TARGET_TOKEN: ${{ steps.ry_token.outputs.token }}
-          GH_CENTRAL_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TARGET_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
+          GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
           CENTRAL_DISPATCH_PAYLOAD: >-
             {"request_id":"${{ inputs.request_id }}","repository":"${{ inputs.repository }}","pr_number":${{ inputs.pr_number }},"base_sha":"${{ inputs.base_sha }}","head_sha":"${{ inputs.head_sha }}","refresh_requested":${{ inputs.refresh_requested && 'true' || 'false' }}}
@@ -251,7 +294,7 @@ jobs:
 
       - name: Validate immutable review request
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
         run: .exampleorg-review-actions/scripts/validate-review-request.sh
 
       - name: Load central Review Yeti policy
@@ -304,7 +347,7 @@ jobs:
         id: resolved
         if: steps.policy.outputs.passthrough != 'true'
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
           REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
         run: .exampleorg-review-actions/scripts/resolve-release-channel.sh
@@ -316,14 +359,14 @@ jobs:
           repository: ${{ steps.policy.outputs.repository }}
           ref: ${{ steps.resolved.outputs.sha }}
           path: .review-yeti-bot
-          token: ${{ steps.ry_token.outputs.token }}
+          token: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           persist-credentials: false
           fetch-depth: 1
 
       - name: Validate Review Yeti release provenance
         if: steps.policy.outputs.passthrough != 'true'
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           REVIEW_YETI_REPOSITORY: ${{ steps.policy.outputs.repository }}
           REVIEW_YETI_ACTION_CHANNEL: ${{ steps.policy.outputs.action_ref }}
           RESOLVED_SHA: ${{ steps.resolved.outputs.sha }}
@@ -348,9 +391,9 @@ jobs:
       # still hard-fails before this step.
       - name: Initialize Review Yeti check run
         id: init_check
-        if: inputs.central_execution && steps.ry_token.outputs.token != '' && env.TRUSTED_EXECUTION_BACKEND != 'doks'
+        if: inputs.central_execution && (steps.target_token_exampleorg.outputs.token != '' || steps.target_token_public.outputs.token != '') && env.TRUSTED_EXECUTION_BACKEND != 'doks'
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           TARGET_REPO: ${{ inputs.repository }}
           HEAD_SHA: ${{ inputs.head_sha }}
           CENTRAL_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -419,7 +462,7 @@ jobs:
           MCP_CONFIG_JSON: ${{ steps.policy.outputs.mcp_config_json }}
         with:
           check-id: ${{ env.TRUSTED_EXECUTION_BACKEND != 'doks' && steps.init_check.outputs.check_id || '' }}
-          github-token: ${{ steps.ry_token.outputs.token }}
+          github-token: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
           pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
           expected-generation: ${{ inputs.expected_generation }}
@@ -482,7 +525,7 @@ jobs:
         id: passthrough
         if: always() && steps.policy.outputs.passthrough == 'true'
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           TARGET_REPO: ${{ inputs.central_execution && inputs.repository || github.repository }}
           PR_NUMBER: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}
           HEAD_SHA: ${{ inputs.central_execution && inputs.head_sha || github.event.pull_request.head.sha }}
@@ -530,9 +573,9 @@ jobs:
         run: node scripts/annotate-transport-failover.mjs "${{ steps.review.outputs.provider-telemetry-path }}"
 
       - name: Report Review Yeti Check Run to target repository
-        if: always() && inputs.central_execution && steps.ry_token.outputs.token != ''
+        if: always() && inputs.central_execution && (steps.target_token_exampleorg.outputs.token != '' || steps.target_token_public.outputs.token != '')
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           TARGET_REPO: ${{ inputs.repository }}
           HEAD_SHA: ${{ inputs.head_sha }}
           REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
@@ -543,27 +586,27 @@ jobs:
         run: .exampleorg-review-actions/scripts/publish-review-check-run.sh
 
       - name: Trigger target repository CI validation on SHIP
-        if: always() && inputs.central_execution && steps.ry_token.outputs.token != '' && (steps.passthrough.outputs.review-status == 'SHIP' || steps.review.outputs.review-status == 'SHIP')
+        if: always() && inputs.central_execution && (steps.target_token_exampleorg.outputs.token != '' || steps.target_token_public.outputs.token != '') && (steps.passthrough.outputs.review-status == 'SHIP' || steps.review.outputs.review-status == 'SHIP')
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           TARGET_REPO: ${{ inputs.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}
           HEAD_SHA: ${{ inputs.head_sha }}
         run: |
           set -euo pipefail
           echo "Review Yeti passed with SHIP. Admitting PR #${PR_NUMBER} to CI/CD validation..."
-          head_ref="$(gh api "repos/${TARGET_REPO}/pulls/${PR_NUMBER}" --jq .head.ref 2>/dev/null || echo '')"
-          if [ -n "$head_ref" ]; then
-            echo "Dispatching validate.yml on ${TARGET_REPO}@${head_ref}..."
-            gh workflow run validate.yml --repo "${TARGET_REPO}" --ref "${head_ref}" -f pr_number="${PR_NUMBER}" -f head_sha="${HEAD_SHA}" || {
-              echo "::notice::Direct workflow run dispatch was skipped or not supported on target repo."
-            }
+          head_ref="$(gh api "repos/${TARGET_REPO}/pulls/${PR_NUMBER}" --jq .head.ref)"
+          if [ -z "$head_ref" ]; then
+            echo "::error::Target PR source branch is unavailable; refusing to skip required CI dispatch."
+            exit 1
           fi
+          echo "Dispatching validate.yml on ${TARGET_REPO}@${head_ref}..."
+          gh workflow run validate.yml --repo "${TARGET_REPO}" --ref "${head_ref}" -f pr_number="${PR_NUMBER}" -f head_sha="${HEAD_SHA}"
 
       - name: Enforce exact-head Review Yeti verdict
         if: always()
         env:
-          GH_TOKEN: ${{ steps.ry_token.outputs.token }}
+          GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           REVIEW_STATUS: ${{ steps.passthrough.outputs.review-status || steps.review.outputs.review-status }}
           GATE_DECISION: ${{ steps.passthrough.outputs.gate-decision || steps.review.outputs.gate-decision }}
           MERGE_ELIGIBLE: ${{ steps.passthrough.outputs.merge-eligible || steps.review.outputs.merge-eligible }}

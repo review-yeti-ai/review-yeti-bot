@@ -137,7 +137,10 @@ the target repository, while the `exampleorg` token can read only
 `example-review-actions` capacity state. The reusable review workflow applies the
 same split to target access/check publication and central tooling. Missing,
 swapped, or reused cross-owner credentials fail closed; no PAT or ambient
-workflow-token fallback is accepted.
+workflow-token fallback is accepted. For the public caller, central validation
+also enforces the SHA-pinned ingress-App, two-step dispatch-only workflow and
+the exact five-field coordinate payload; it rejects checkout, extra API writes,
+and any alternate token source.
 
 ### D. Self-Cancellation of Superseded Runs
 If multiple commits are pushed in rapid succession, earlier in-flight central runs detect that `head_sha` has moved and self-cancel, avoiding wasted model tokens on outdated code.

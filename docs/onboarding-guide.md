@@ -32,13 +32,22 @@ Review Yeti supports two consumer workflow patterns depending on your organizati
 
 The governed central receiver preserves `exampleorg/*` callers at
 `.github/workflows/ct-review-bot.yml` and has one exact cross-owner admission:
-`review-yeti-ai/review-yeti-bot` at `.github/workflows/ct-review-bot.yml`. That
-route requires separate App installation tokens for the `review-yeti-ai`
-target and the `exampleorg/example-review-actions` hub; a repository list cannot
-span owners. The App must be installed on both selected repositories, and the
-trusted caller must have access to the existing `CT_REVIEW_BOT_APP_ID` and
-`CT_REVIEW_BOT_APP_PRIVATE_KEY` Actions secrets. There is no PAT or ambient
-workflow-token fallback.
+`review-yeti-ai/review-yeti-bot` at `.github/workflows/ct-review-bot.yml`.
+That route uses separate, least-privilege App boundaries because a repository
+list cannot span owners:
+
+* central stores `REVIEW_YETI_PUBLIC_TARGET_APP_ID` /
+  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` for an App installed only on the
+  exact public target, and uses it for target PR reads and check publication;
+* the public caller stores `REVIEW_YETI_DISPATCH_APP_ID` /
+  `REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY` for an ingress App installed only on
+  `exampleorg/example-review-actions`, with Contents: write solely to submit the
+  coordinate-only dispatch;
+* the private central tooling App remains central-only in
+  `CT_REVIEW_BOT_APP_ID` / `CT_REVIEW_BOT_APP_PRIVATE_KEY`.
+
+The public caller never receives provider credentials or the internal App key.
+There is no PAT or ambient workflow-token fallback.
 
 Because the admitted external repository is public while the central workflow
 repository is private, that route must use the async dispatch shim. GitHub does

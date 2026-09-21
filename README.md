@@ -58,7 +58,10 @@ For complete architectural details, see [Architecture & Design Principles](docs/
 ## Quickstart: Onboarding a Repository in 5 Minutes
 
 ### Step 1: Install the GitHub App
-Ensure the **Review Yeti GitHub App** is installed on both the central review repository and the consumer repository with permissions for `Checks: write`, `Pull requests: write`, and `Contents: read`.
+For same-owner exampleorg consumers, install the internal **Review Yeti App** on
+the admitted target repositories and `exampleorg/example-review-actions`. The exact
+public self-review route uses separate App boundaries described below; never
+install the internal App in the public `review-yeti-ai` organization.
 
 See the [GitHub App Setup & Permissions Guide](docs/github-app-setup.md) for full instructions.
 
@@ -66,16 +69,25 @@ The governed receiver preserves its existing `exampleorg/*` admission at
 `.github/workflows/ct-review-bot.yml` and additionally admits exactly
 `review-yeti-ai/review-yeti-bot` at `.github/workflows/ct-review-bot.yml`. For
 that cross-owner route, trusted central workflows mint one installation token
-for `review-yeti-ai/review-yeti-bot` target reads and check publication and a
-separate `exampleorg/example-review-actions` token for central reads. GitHub App
+for `review-yeti-ai/review-yeti-bot` target reads, check publication, and the
+post-SHIP `validate.yml` dispatch; and a separate
+`exampleorg/example-review-actions` token for central reads. GitHub App
 installation tokens are owner-bound; no token, PAT, wildcard owner/repository,
 or ambient `github.token` fallback crosses this boundary.
 
-Activating the external route requires the `ct-review-bot` App to be installed
-on the selected `review-yeti-ai/review-yeti-bot` repository and the existing
-`CT_REVIEW_BOT_APP_ID` and `CT_REVIEW_BOT_APP_PRIVATE_KEY` Actions secrets to
-be available to the dispatch caller. Provider credentials remain in the
-private central repository and never cross into the public consumer.
+Activating the external route requires three exact installations/secrets:
+
+* central stores `REVIEW_YETI_PUBLIC_TARGET_APP_ID` /
+  `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` for an App installed only on
+  `review-yeti-ai/review-yeti-bot`;
+* the public caller stores `REVIEW_YETI_DISPATCH_APP_ID` /
+  `REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY` for an ingress App installed only on
+  `exampleorg/example-review-actions` with Contents: write;
+* central retains `CT_REVIEW_BOT_APP_ID` /
+  `CT_REVIEW_BOT_APP_PRIVATE_KEY` for private central tooling only.
+
+Provider credentials remain in the private central repository and never cross
+into the public consumer.
 
 The public Review Yeti repository cannot resolve a reusable workflow from the
 private `exampleorg/example-review-actions` repository. Its base-owned
@@ -84,12 +96,19 @@ coordinate-only `repository_dispatch` boundary as other production consumers.
 The caller mints a repository-scoped App token, submits immutable PR
 coordinates, and exits; it never checks out PR code or receives provider
 credentials. The central receiver validates the exact caller run and the
-default-branch caller bytes before admitting work.
+default-branch caller bytes before admitting work. It also requires the
+two-step SHA-pinned ingress-App shape, one coordinate-only POST, and no extra
+API writes, checkout, PAT, or ambient `github.token` fallback.
 
-The external dispatch caller requires only the App identity pair:
+The runtime target App used by the central review workflow requests
+`Actions: write` because a SHIP verdict dispatches the target `validate.yml`
+workflow. The receiver-only validation App and central tooling App remain
+separately scoped to their read-only responsibilities.
 
-- `CT_REVIEW_BOT_APP_ID`
-- `CT_REVIEW_BOT_APP_PRIVATE_KEY`
+The public external dispatch caller requires only the ingress App identity pair:
+
+- `REVIEW_YETI_DISPATCH_APP_ID`
+- `REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY`
 
 At runtime, accessible same-owner reusable callers capture GitHub's immutable
 `job.workflow_sha` before any central checkout and checks out that exact commit.
