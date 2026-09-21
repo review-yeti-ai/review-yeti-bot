@@ -54,6 +54,14 @@ describe('review transport configuration guard', () => {
     expect(run({ REVIEW_BASE_URL: OPENROUTER, OPENROUTER_KEY_PRESENT: 'true' }).ok).toBe(true);
   });
 
+  // Both destinations must fail closed on a missing key, not just opencode. Only the accept path
+  // was covered here, which would have let the OpenRouter branch rot into a no-op unnoticed.
+  it('refuses OpenRouter without its own key', () => {
+    const r = run({ REVIEW_BASE_URL: OPENROUTER, OPENROUTER_KEY_PRESENT: 'false', OPENCODE_KEY_PRESENT: 'true' });
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/CT_REVIEW_OPENROUTER_API_KEY is unset/);
+  });
+
   it('rejects a destination with no credential rule rather than defaulting', () => {
     const r = run({ REVIEW_BASE_URL: 'https://evil.example/v1', OPENCODE_KEY_PRESENT: 'true', OPENROUTER_KEY_PRESENT: 'true' });
     expect(r.ok).toBe(false);
