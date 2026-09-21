@@ -364,12 +364,10 @@ describe('executeComposedReview', () => {
     });
 
     expect(workTurns).toEqual(['task-1', 'task-2', 'task-3']);
-    expect(result.personas.map((lane) => lane.id).sort()).toEqual(['task-1', 'task-2', 'task-3']);
-    expect(result.personas.find((lane) => lane.id === 'task-2')).toMatchObject({
-      decision: 'APPROVE',
-      findings: [],
-    });
-    expect(result.optionalFailures ?? []).toEqual([]);
+    expect(result.personas.map((lane) => lane.id).sort()).toEqual(['task-1', 'task-3']);
+    expect(result.personas.every((lane) => lane.decision === 'APPROVE')).toBe(true);
+    expect((result.optionalFailures ?? []).map((failure) => failure.id)).toEqual(['task-2']);
+    expect(result.optionalFailures?.[0]?.failureClass).toBe('budget_exhausted');
   });
 
   it('fails closed when every planned task produces no verdict', async () => {
@@ -407,10 +405,9 @@ describe('executeComposedReview', () => {
     });
 
     expect(workTurns).toEqual(['task-1']);
-    expect(result.personas.map((lane) => lane.id).sort()).toEqual(['task-1', 'task-2', 'task-3']);
-    expect(result.personas.find((lane) => lane.id === 'task-2')?.decision).toBe('APPROVE');
-    expect(result.personas.find((lane) => lane.id === 'task-3')?.decision).toBe('APPROVE');
-    expect(result.optionalFailures ?? []).toEqual([]);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1']);
+    expect((result.optionalFailures ?? []).map((failure) => failure.id).sort()).toEqual(['task-2', 'task-3']);
+    expect((result.optionalFailures ?? []).every((failure) => failure.failureClass === 'budget_exhausted')).toBe(true);
   });
 
 });
