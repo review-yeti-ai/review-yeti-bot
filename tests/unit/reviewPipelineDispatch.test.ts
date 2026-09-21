@@ -586,18 +586,13 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
   });
 
   it('uses only the role-scoped review fleet secret for hosted OpenRouter calls', () => {
-    // A third workflow used to be listed here. It deployed a private instance from
-    // this public product repository and was removed; the assertion still covers
-    // every deployment workflow that remains.
-    const deploymentWorkflows = [
-      workflow,
-      fs.readFileSync(path.join(rootRepoDir, '.github/workflows/ci-cd.yaml'), 'utf-8'),
-    ];
-
-    deploymentWorkflows.forEach((source) => {
-      expect(source).toContain('CT_REVIEW_OPENROUTER_API_KEY');
-      expect(source).not.toContain('secrets.OPENROUTER_API_KEY');
-    });
+    // ci-cd.yaml used to deploy from this repository and was on this list. That
+    // deploy is gone, so the image workflow no longer carries a review secret.
+    expect(workflow).toContain('CT_REVIEW_OPENROUTER_API_KEY');
+    expect(workflow).not.toContain('secrets.OPENROUTER_API_KEY');
+    const ciWorkflow = fs.readFileSync(path.join(rootRepoDir, '.github/workflows/ci-cd.yaml'), 'utf-8');
+    expect(ciWorkflow).not.toContain('CT_REVIEW_OPENROUTER_API_KEY');
+    expect(ciWorkflow).not.toContain('secrets.OPENROUTER_API_KEY');
   });
 
   it('retains the redacted provider telemetry receipt as a workflow artifact', () => {
