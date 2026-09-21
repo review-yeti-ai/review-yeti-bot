@@ -6,6 +6,18 @@ const path = require('path');
 
 const MANIFEST_PATH = path.resolve(__dirname, '../../../src/config/openrouter-review-policy.json');
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const OPENCODE_BASE_URL = 'https://opencode.ai/zen/v1';
+/**
+ * Closed allowlist of review destinations. This is an exfiltration control, not configuration:
+ * the review pipeline ships private diffs to a third-party model, so the destination is pinned
+ * and the model allowlisted, with data_collection forced to deny.
+ *
+ * It is a LIST rather than a single constant because the fleet now has two funded transports.
+ * It is emphatically NOT an "any https URL" check -- a compromised or mistyped base URL is
+ * precisely what this stops, and the guard is worth more than the convenience of adding a third
+ * destination without review.
+ */
+const ALLOWED_REVIEW_BASE_URLS = Object.freeze([OPENROUTER_BASE_URL, OPENCODE_BASE_URL]);
 const OPENROUTER_AUTO_MODEL = 'openrouter/auto';
 const OPENROUTER_DIRECT_PRIMARY_MODEL = 'z-ai/glm-5.3-flash';
 const OPENROUTER_DIRECT_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
@@ -17,6 +29,10 @@ const CANONICAL_ALLOWED_MODELS = Object.freeze([
   'tencent/hy3',
   'z-ai/glm-5.2',
   'google/gemini-3.5-flash-lite',
+  // opencode serves bare model ids rather than vendor-namespaced ones. Same model family as the
+  // OpenRouter entries above, reached by a different name on a different destination.
+  'glm-5.3-flash',
+  'deepseek-v4-flash-0731',
 ]);
 const CANONICAL_ALLOWED_MODEL_SET = new Set(CANONICAL_ALLOWED_MODELS);
 const POLICY_KEYS = Object.freeze([
@@ -115,8 +131,10 @@ function validateOpenRouterReviewPolicy(policy) {
 
   const normalized = normalizePolicyShape(policy);
 
-  if (normalized.base_url !== OPENROUTER_BASE_URL) {
-    throw new Error(`OpenRouter review policy base url must normalize exactly to ${OPENROUTER_BASE_URL}`);
+  if (!ALLOWED_REVIEW_BASE_URLS.includes(normalized.base_url)) {
+    throw new Error(
+      `Review policy base url must normalize exactly to one of: ${ALLOWED_REVIEW_BASE_URLS.join(', ')}`,
+    );
   }
 
   if (normalized.model !== OPENROUTER_AUTO_MODEL && !CANONICAL_ALLOWED_MODEL_SET.has(normalized.model)) {

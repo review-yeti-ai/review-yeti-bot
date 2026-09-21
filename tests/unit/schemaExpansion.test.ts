@@ -1,4 +1,5 @@
 import { normalizeOpenRouterModel, flattenMessageContent, buildOpenRouterChatRequest } from '../../src/gateway/openRouterClient';
+import { resolveTransportCompat } from '../../src/cli/runLiveReview';
 import { describe, it, expect } from 'vitest';
 import {
   V3_PROVIDER_MODELS,
@@ -209,6 +210,27 @@ describe('schema.ts — Comprehensive Unit Expansion Tests', () => {
       expect(Array.isArray((untouched as any).messages[0].content)).toBe(true);
       const flattened = buildOpenRouterChatRequest({ model: 'glm-5.3-flash', messages, flattenContentBlocks: true } as any);
       expect((flattened as any).messages[0].content).toBe('A');
+    });
+  });
+
+  describe('resolveTransportCompat', () => {
+    // Each shim below corresponds to a request that actually failed against a live endpoint, not
+    // to a guess about what a gateway might want.
+    it('applies opencode shims only when explicitly asked', () => {
+      expect(resolveTransportCompat({ REVIEW_TRANSPORT_COMPAT: 'opencode' } as any))
+        .toEqual({ flattenContentBlocks: true, stream: true });
+    });
+
+    it('is inert for OpenRouter and for anything unset', () => {
+      // Empty object, so the panel call is byte-identical to passing no requestPolicy at all.
+      expect(resolveTransportCompat({} as any)).toEqual({});
+      expect(resolveTransportCompat({ REVIEW_TRANSPORT_COMPAT: '' } as any)).toEqual({});
+    });
+
+    it('does not infer shims from an unfamiliar host', () => {
+      // Sniffing the base URL would silently change request shape for any gateway that merely
+      // looks unfamiliar. That silent change is the bug class this function exists to record.
+      expect(resolveTransportCompat({ OPENROUTER_BASE_URL: 'https://opencode.ai/zen/v1' } as any)).toEqual({});
     });
   });
 });

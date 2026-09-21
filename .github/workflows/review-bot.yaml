@@ -52,6 +52,17 @@ jobs:
             rm -f "$f"
           done
 
+      # Both invariants live in a script so they are testable; branching buried in workflow YAML
+      # cannot be exercised by the suite. See scripts/assert-review-transport-config.sh.
+      - name: Assert the review transport configuration is consistent
+        shell: bash
+        env:
+          REVIEW_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          OPENCODE_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY != '' }}
+          OPENROUTER_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY != '' }}
+          REVIEW_LANE_TIMEOUT_MS: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
+        run: ./scripts/assert-review-transport-config.sh
+
       - name: Execute AI Review Panel
         id: review
         uses: ./
@@ -60,13 +71,27 @@ jobs:
           pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           personas: ${{ vars.ACTIVE_PERSONAS }}
           model: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
-          # Use only the role-scoped review key; generic provider secrets are not admitted here.
-          llm-api-key: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          # Use only role-scoped review keys (CT_REVIEW_*); generic provider secrets such as a
+          # bare OPENROUTER_API_KEY are deliberately NOT admitted here.
+          #
+          # Keyed on the DESTINATION (`vars.OPENROUTER_BASE_URL`), the same value that decides
+          # where the request goes -- not on a second variable that can disagree with it.
+          #
+          # This expression ALONE is not fail-closed, and the previous version's comment wrongly
+          # claimed it was: GitHub Actions `&&`/`||` return operands rather than booleans, and an
+          # unset secret is an empty string, which is falsy. So a missing opencode secret would
+          # fall straight through to the OpenRouter credential and transmit it to opencode.ai.
+          # The preceding guard step is what actually prevents that; this line only picks.
+          llm-api-key: ${{ contains(vars.OPENROUTER_BASE_URL, 'opencode.ai') && secrets.CT_REVIEW_OPENCODE_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
           # OpenRouter remains the primary direct DeepSeek -> GLM route.
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}
           synthetic-api-key: ${{ secrets.CT_REVIEW_SYNTHETIC_API_KEY || secrets.SYNTHETIC_API_KEY }}
           llm-base-url: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          # Set `vars.REVIEW_TRANSPORT_COMPAT=opencode` alongside an opencode `llm-base-url`.
+          # Unset for OpenRouter, which needs no shims.
+          transport-compat: ${{ vars.REVIEW_TRANSPORT_COMPAT }}
+          lane-timeout-ms: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
           github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}

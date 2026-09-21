@@ -29,6 +29,10 @@ describe('openrouter review policy', () => {
       allowed_models: [
         'z-ai/glm-5.3-flash',
         'deepseek/deepseek-v4-flash-0731',
+        // Same two models, unnamespaced, as opencode serves them. Not a widening of what may
+        // review code -- a second spelling of the identical pair for the second pinned host.
+        'glm-5.3-flash',
+        'deepseek-v4-flash-0731',
       ],
       data_collection: 'deny',
       cost_quality_tradeoff: 7,
@@ -39,9 +43,14 @@ describe('openrouter review policy', () => {
   it('uses the direct two-model fleet as the default execution policy', () => {
     const resolved = resolveOpenRouterReviewPolicy({});
     expect(resolved.model).toBe('z-ai/glm-5.3-flash');
+    // Two models, each reachable on either pinned destination. The bare ids are the SAME two
+    // models as served by opencode, which uses unnamespaced ids -- not four different models, and
+    // not a widening of what may review code.
     expect(resolved.allowed_models).toEqual([
       'z-ai/glm-5.3-flash',
       'deepseek/deepseek-v4-flash-0731',
+      'glm-5.3-flash',
+      'deepseek-v4-flash-0731',
     ]);
     expect(resolved.allowed_models).not.toContain('openrouter/auto');
     expect(resolved.allowed_models).not.toContain('openrouter/openai/gpt-4o');
@@ -191,6 +200,8 @@ describe('openrouter review policy', () => {
 
     expect(resolved).toMatchObject({
       model: 'z-ai/glm-5.3-flash',
+      // The auto-router conversion sets this pair explicitly in code, so it stays two entries --
+      // it is not reading the manifest and must not drift toward it.
       allowed_models: ['z-ai/glm-5.3-flash', 'deepseek/deepseek-v4-flash-0731'],
     });
     expect(buildOpenRouterRequestOptions(resolved)).toEqual({
@@ -200,6 +211,41 @@ describe('openrouter review policy', () => {
       provider: {
         data_collection: 'deny',
       },
+    });
+  });
+
+  // The base-url check is an exfiltration control: the pipeline ships private diffs to a
+  // third-party model, so the destination is pinned. It is now a closed list of two funded
+  // transports -- deliberately still a list, never an "any https URL" check.
+  describe('review destination allowlist', () => {
+    const base = (base_url: string, model: string) => ({
+      base_url, model, allowed_models: [model], data_collection: 'deny', cost_quality_tradeoff: 7,
+    });
+
+    it('admits both pinned destinations', () => {
+      expect(() => validateOpenRouterReviewPolicy(base('https://openrouter.ai/api/v1', 'z-ai/glm-5.3-flash'))).not.toThrow();
+      expect(() => validateOpenRouterReviewPolicy(base('https://opencode.ai/zen/v1', 'glm-5.3-flash'))).not.toThrow();
+    });
+
+    it('still rejects any destination outside the list', () => {
+      for (const url of [
+        'https://evil.example/v1',
+        'https://openrouter.ai.evil.example/api/v1',
+        'https://opencode.ai/zen/v2',
+        'http://openrouter.ai/api/v1',
+      ]) {
+        expect(() => validateOpenRouterReviewPolicy(base(url, 'glm-5.3-flash')), url).toThrow(/base url must normalize exactly/);
+      }
+    });
+
+    it('still rejects a model outside the canonical set, on either destination', () => {
+      expect(() => validateOpenRouterReviewPolicy(base('https://opencode.ai/zen/v1', 'claude-opus-4-8')))
+        .toThrow(/canonical approved model/);
+    });
+
+    it('still forces data_collection deny', () => {
+      const policy = { ...base('https://opencode.ai/zen/v1', 'glm-5.3-flash'), data_collection: 'allow' };
+      expect(() => validateOpenRouterReviewPolicy(policy)).toThrow();
     });
   });
 });
