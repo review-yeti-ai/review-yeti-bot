@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.81.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.5...v1.81.6) (2026-09-21)
+
+
+### Bug Fixes
+
+* **image:** ship the bot domain index in the bot image ([#916](https://github.com/review-yeti-ai/review-yeti-bot/issues/916)) ([dd05b94](https://github.com/review-yeti-ai/review-yeti-bot/commit/dd05b940f06c08cea4c2476e2a29b0589968e653))
+
 ## [1.81.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.4...v1.81.5) (2026-09-21)
 
 
