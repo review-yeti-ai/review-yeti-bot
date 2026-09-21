@@ -439,7 +439,7 @@ jobs:
               "${GHCR_REGISTRY}/${pkg}@${arm64_digest}"
             echo "- \`${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
             if [ -n "${{ steps.version.outputs.tag }}" ]; then
-              echo "- \`${GHCR_REGISTRY}/${pkg}:${{ steps.version.outputs.tag}\`" >> "$GITHUB_STEP_SUMMARY"
+              echo "- \`${GHCR_REGISTRY}/${pkg}:${{ steps.version.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
             fi
           done
 
