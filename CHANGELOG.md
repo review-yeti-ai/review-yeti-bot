@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.80.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.80.0...v1.80.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **panel:** retry the router alias on INCOMPLETE instead of failing closed ([#874](https://github.com/review-yeti-ai/review-yeti-bot/issues/874)) ([c8824c7](https://github.com/review-yeti-ai/review-yeti-bot/commit/c8824c70d25d5161a4ef185242c5f3b4d59ffa41))
+* **personas:** give arch-lane an architecture charter instead of a governance one ([#888](https://github.com/review-yeti-ai/review-yeti-bot/issues/888)) ([d980795](https://github.com/review-yeti-ai/review-yeti-bot/commit/d9807951b061434685462d426ca112d4e7b9b002))
+* **qualification:** admit diffs up to ~80k lines via the pull-files fallback ([#891](https://github.com/review-yeti-ai/review-yeti-bot/issues/891)) ([457499b](https://github.com/review-yeti-ai/review-yeti-bot/commit/457499b57ffeeb76a3fa2aded2429407f5b7d59a))
+
 ## [1.80.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.79.0...v1.80.0) (2026-09-21)
 
 
