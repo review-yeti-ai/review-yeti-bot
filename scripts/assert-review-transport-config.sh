@@ -27,12 +27,16 @@ BASE_URL="${REVIEW_BASE_URL:-}"
 OPENCODE_KEY_PRESENT="${OPENCODE_KEY_PRESENT:-false}"
 OPENROUTER_KEY_PRESENT="${OPENROUTER_KEY_PRESENT:-false}"
 GATEWAY_KEY_PRESENT="${GATEWAY_KEY_PRESENT:-false}"
+FIREWORKS_KEY_PRESENT="${FIREWORKS_KEY_PRESENT:-false}"
 LANE_TIMEOUT_MS="${REVIEW_LANE_TIMEOUT_MS:-}"
 OPENCODE_MIN_LANE_TIMEOUT_MS="${OPENCODE_MIN_LANE_TIMEOUT_MS:-300000}"
 # Not a vendor-published budget: derived from measured per-turn latency on this destination
 # (~12s for a prefix-sized turn) against the 15-turn investigation ceiling, plus headroom. The
 # point is that the 90s DEFAULT would truncate a multi-turn lane, so the variable must be set.
 GATEWAY_MIN_LANE_TIMEOUT_MS="${GATEWAY_MIN_LANE_TIMEOUT_MS:-300000}"
+# Same floor as the gateway: Fireworks is a direct reasoning transport, and the 90s default
+# cuts a multi-turn lane off before it emits findings.
+FIREWORKS_MIN_LANE_TIMEOUT_MS="${FIREWORKS_MIN_LANE_TIMEOUT_MS:-300000}"
 # Digest of the normalized base URL. Keep in lockstep with openrouter-policy.js.
 GATEWAY_BASE_URL_SHA256="${GATEWAY_BASE_URL_SHA256:-ca8309dbe7eb85c5c7da280d48572eb44d159c1244ebea3548b82784cbc27c53}"
 
@@ -90,6 +94,12 @@ case "$BASE_URL" in
     [ "$OPENROUTER_KEY_PRESENT" = "true" ] || fail \
       "Review destination is OpenRouter but CT_REVIEW_OPENROUTER_API_KEY is unset."
     emit_destination openrouter
+    ;;
+  *api.fireworks.ai*)
+    [ "$FIREWORKS_KEY_PRESENT" = "true" ] || fail \
+      "Review destination is Fireworks but CT_REVIEW_FIREWORKS_API_KEY is unset. Refusing to run rather than falling back to another provider's credential."
+    require_lane_timeout "$FIREWORKS_MIN_LANE_TIMEOUT_MS" "fireworks"
+    emit_destination fireworks
     ;;
   *)
     fail "Review destination has no matching role-scoped credential rule (sha256 $(sha256_of "$NORMALIZED_BASE_URL")). The URL is withheld because this repository's workflow logs are public."
