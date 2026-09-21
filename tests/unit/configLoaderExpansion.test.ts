@@ -237,12 +237,16 @@ describe('opencode lane budget', () => {
     expect(claude?.review_timeout_s).toBe(90);
   });
 
-  // Two layers govern this, and they cannot read each other: a compiled TS default versus a
-  // workflow variable. The outer one must not be able to cut off a lane the inner one still
-  // considers live, so the ordering is asserted rather than left to coincidence.
-  it("the action's outer deadline is not tighter than the provider budget", () => {
-    const outerMs = resolveAutoTransportTimeoutMs({ REVIEW_LANE_TIMEOUT_MS: '420000' });
-    expect(outerMs).toBeGreaterThanOrEqual(OPENCODE_LANE_TIMEOUT_S * 1000);
+  // The outer deadline does NOT satisfy this by default, and the previous version of this test
+  // hid that by supplying its own passing value -- it asserted arithmetic, not the deployed
+  // relationship, so it could not fail on the invariant it named.
+  //
+  // With REVIEW_LANE_TIMEOUT_MS unset the outer default is 90s while the opencode budget is 300s,
+  // so the opencode destination REQUIRES the variable. That requirement is enforced by
+  // scripts/assert-review-transport-config.sh and covered in reviewTransportConfigGuard.test.ts;
+  // what is pinned here is the fact that makes the requirement necessary.
+  it('the default outer deadline is tighter than the opencode budget, so the variable is required', () => {
+    expect(resolveAutoTransportTimeoutMs({})).toBeLessThan(OPENCODE_LANE_TIMEOUT_S * 1000);
   });
 });
 

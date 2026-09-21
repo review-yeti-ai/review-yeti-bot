@@ -52,36 +52,16 @@ jobs:
             rm -f "$f"
           done
 
-      # One provider's credential must never reach another provider's endpoint. The key-selection
-      # expression below cannot enforce that on its own (Actions `||` falls through on an empty
-      # secret), so the invariant is asserted here, in shell, where an empty value is detectable.
-      - name: Assert the review credential matches the destination
+      # Both invariants live in a script so they are testable; branching buried in workflow YAML
+      # cannot be exercised by the suite. See scripts/assert-review-transport-config.sh.
+      - name: Assert the review transport configuration is consistent
         shell: bash
         env:
           REVIEW_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
           OPENCODE_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY != '' }}
           OPENROUTER_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY != '' }}
-        run: |
-          set -euo pipefail
-          case "$REVIEW_BASE_URL" in
-            *opencode.ai*)
-              if [ "$OPENCODE_KEY_PRESENT" != "true" ]; then
-                echo "::error::Review destination is opencode but CT_REVIEW_OPENCODE_API_KEY is unset. Refusing to run rather than falling back to the OpenRouter credential, which would transmit it to opencode.ai."
-                exit 1
-              fi
-              ;;
-            *openrouter.ai*)
-              if [ "$OPENROUTER_KEY_PRESENT" != "true" ]; then
-                echo "::error::Review destination is OpenRouter but CT_REVIEW_OPENROUTER_API_KEY is unset."
-                exit 1
-              fi
-              ;;
-            *)
-              echo "::error::Review destination '$REVIEW_BASE_URL' has no matching role-scoped credential rule."
-              exit 1
-              ;;
-          esac
-          echo "Credential matches destination: $REVIEW_BASE_URL"
+          REVIEW_LANE_TIMEOUT_MS: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
+        run: ./scripts/assert-review-transport-config.sh
 
       - name: Execute AI Review Panel
         id: review
