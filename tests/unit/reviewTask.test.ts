@@ -179,7 +179,7 @@ describe('validateTaskPlan', () => {
     }
   });
 
-  it('rejects a task left with zero paths after phantom-path dropping', () => {
+  it('rebinds a phantom-only task onto the changed files no other task covers', () => {
     const result = validateTaskPlan(
       plan([
         task({ id: 'phantom-only', paths: ['src/does/not/exist.ts'] }),
@@ -187,10 +187,37 @@ describe('validateTaskPlan', () => {
       ]),
       ctx(),
     );
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.tasks.find((t) => t.id === 'phantom-only')?.paths).toEqual([API_FILE]);
+      expect(result.tasks.find((t) => t.id === 'util-task')?.paths).toEqual([UTIL_FILE]);
+    }
+  });
+
+  it('still fails the security floor when a rebound plan is not a security task', () => {
+    const result = validateTaskPlan(
+      plan([task({ id: 't1', dimension: 'contract', paths: ['not-a-real-path'] })]),
+      ctx({ changedFiles: [AUTH_FILE, API_FILE] }),
+    );
     expect(result.valid).toBe(false);
     if (!result.valid) {
-      expect(result.reason).toBe('task_emptied_by_path_drop');
-      expect(result.offendingIds).toContain('phantom-only');
+      expect(result.reason).toBe('security_floor_violation');
+      expect(result.offendingPaths).toContain(AUTH_FILE);
+    }
+  });
+
+  it('rebinds a plan that named no real path onto the diff', () => {
+    const result = validateTaskPlan(
+      plan([
+        task({ id: 't1', paths: ['image-supply-chain'] }),
+        task({ id: 't2', dimension: 'testing', paths: ['digest-consistency'] }),
+      ]),
+      ctx(),
+    );
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      const covered = result.tasks.flatMap((t) => t.paths).sort();
+      expect(covered).toEqual([API_FILE, UTIL_FILE].sort());
     }
   });
 
