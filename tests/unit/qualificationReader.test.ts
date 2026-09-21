@@ -62,13 +62,41 @@ describe('same-head qualification reader', () => {
   });
 
   it('rejects empty and oversized diffs instead of truncating them', async () => {
-    for (const candidate of ['', 'x'.repeat(2_000_001)]) {
+    for (const candidate of ['', 'x'.repeat(8_000_001)]) {
       const request = vi.fn()
         .mockResolvedValueOnce(metadata())
         .mockResolvedValueOnce({ data: candidate, status: 200 });
       await expect(loadSameHeadReviewSource(input(), request as any)).rejects.toThrow(/diff size is outside qualification bounds/u);
       expect(request).toHaveBeenCalledTimes(2);
     }
+  });
+
+  it('assembles the diff from the pull-files API when GitHub 406s the diff media read', async () => {
+    const filePatchA = '@@ -1 +1 @@\n-old\n+new\n';
+    const filePatchB = '@@ -2 +2 @@\n-before\n+after\n';
+    const request = vi.fn()
+      .mockResolvedValueOnce(metadata())
+      .mockRejectedValueOnce(Object.assign(new Error('diff too large'), { status: 406 }))
+      .mockResolvedValueOnce({
+        data: [
+          { filename: 'a.ts', status: 'modified', patch: filePatchA },
+          { filename: 'renamed.ts', previous_filename: 'old.ts', status: 'renamed', patch: filePatchB },
+          { filename: 'binary.png', status: 'modified' },
+        ],
+        status: 200,
+      })
+      .mockResolvedValueOnce(metadata());
+
+    const source = await loadSameHeadReviewSource(input(), request as any);
+    expect(source.diff).toContain('diff --git a/a.ts b/a.ts');
+    expect(source.diff).toContain(filePatchA);
+    expect(source.diff).toContain('diff --git a/old.ts b/renamed.ts');
+    expect(source.diff).toContain(filePatchB);
+    expect(source.diff).not.toContain('binary.png');
+    expect(source.githubReads).toBe(4);
+    expect(request).toHaveBeenCalledTimes(4);
+    expect(request.mock.calls[2][0]).toBe('GET /repos/{owner}/{repo}/pulls/{pull_number}/files');
+    expect(request.mock.calls[3][0]).toBe('GET /repos/{owner}/{repo}/pulls/{pull_number}');
   });
 
   it('classifies GitHub errors without exposing response text', async () => {

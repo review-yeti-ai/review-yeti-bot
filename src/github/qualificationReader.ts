@@ -2,8 +2,15 @@ import { createHash } from 'node:crypto';
 import { Octokit } from '@octokit/core';
 
 const PR_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}';
+const FILES_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files';
 const DIFF_ACCEPT = 'application/vnd.github.v3.diff';
-const MAX_QUALIFICATION_DIFF_BYTES = 2_000_000;
+// Raised from 2 MB to 8 MB so a single review can admit diffs up to roughly
+// 80k changed lines. Diffs above GitHub's diff-render contract (~20k lines)
+// are assembled from the paginated pull-files API instead of the diff media
+// type, which returns HTTP 406 for changes that are too large to render.
+const MAX_QUALIFICATION_DIFF_BYTES = 8_000_000;
+const FILES_PAGE_SIZE = 100;
+const MAX_FILES_PAGES = 100;
 
 export interface SameHeadQualificationInput {
   token: string;
@@ -18,7 +25,7 @@ export interface SameHeadReviewSource {
   headSha: string;
   diff: string;
   diffDigest: string;
-  githubReads: 3;
+  githubReads: number;
 }
 
 type PullRequestResponse = {
@@ -76,9 +83,10 @@ async function safeRequest(
   request: GitHubQualificationRequest,
   parameters: Record<string, unknown>,
   githubReads: number,
+  route: string = PR_ROUTE,
 ): Promise<PullRequestResponse> {
   try {
-    return await request(PR_ROUTE, parameters);
+    return await request(route, parameters);
   } catch (error) {
     const status = Number((error as { status?: unknown })?.status);
     if (Number.isInteger(status) && status >= 100 && status <= 599) {
@@ -86,6 +94,67 @@ async function safeRequest(
     }
     throw new GitHubQualificationReadError('GitHub qualification read failed', githubReads);
   }
+}
+
+type PullFileEntry = {
+  filename?: unknown;
+  previous_filename?: unknown;
+  status?: unknown;
+  patch?: unknown;
+};
+
+function renderFilePatch(file: PullFileEntry): string {
+  const filename = typeof file.filename === 'string' ? file.filename : '';
+  const patch = typeof file.patch === 'string' ? file.patch : '';
+  if (!filename || !patch) return '';
+  const previous =
+    file.status === 'renamed' && typeof file.previous_filename === 'string'
+      ? file.previous_filename
+      : filename;
+  return `diff --git a/${previous} b/${filename}\n${patch}\n`;
+}
+
+/**
+ * Reads the pull request diff. GitHub returns HTTP 406 from the diff media type
+ * when a change is too large to render (~20k changed lines); for those diffs the
+ * patch is assembled from the paginated pull-files API, which keeps working, so
+ * large-but-legitimate reviews can still qualify.
+ */
+async function readQualificationDiff(
+  request: GitHubQualificationRequest,
+  parameters: Record<string, unknown>,
+  githubReads: number,
+): Promise<{ diff: string; githubReads: number }> {
+  try {
+    const diffResponse = await safeRequest(request, {
+      ...parameters,
+      headers: { accept: DIFF_ACCEPT },
+    }, githubReads + 1);
+    if (typeof diffResponse.data !== 'string') {
+      throw new GitHubQualificationReadError('GitHub qualification diff response is invalid', githubReads + 1);
+    }
+    return { diff: diffResponse.data, githubReads: githubReads + 1 };
+  } catch (error) {
+    if (!(error instanceof GitHubQualificationReadError) || error.httpStatus !== 406) throw error;
+  }
+
+  let reads = githubReads + 1;
+  const parts: string[] = [];
+  for (let page = 1; page <= MAX_FILES_PAGES; page += 1) {
+    const response = await safeRequest(request, {
+      ...parameters,
+      per_page: FILES_PAGE_SIZE,
+      page,
+    }, reads + 1, FILES_ROUTE);
+    reads += 1;
+    const files = Array.isArray(response.data) ? (response.data as PullFileEntry[]) : [];
+    for (const file of files) parts.push(renderFilePatch(file));
+    if (files.length < FILES_PAGE_SIZE) return { diff: parts.join(''), githubReads: reads };
+  }
+  throw new GitHubQualificationReadError(
+    'GitHub qualification diff fallback exceeded page bound',
+    reads,
+  );
 }
 
 /**
@@ -106,28 +175,22 @@ export async function loadSameHeadReviewSource(
     throw new GitHubQualificationReadError('GitHub projected pull request identity mismatch', 1);
   }
 
-  const diffResponse = await safeRequest(request, {
-    ...parameters,
-    headers: { accept: DIFF_ACCEPT },
-  }, 2);
-  if (typeof diffResponse.data !== 'string') {
-    throw new GitHubQualificationReadError('GitHub qualification diff response is invalid', 2);
-  }
-  const diffBytes = Buffer.byteLength(diffResponse.data, 'utf8');
+  const { diff, githubReads } = await readQualificationDiff(request, parameters, 1);
+  const diffBytes = Buffer.byteLength(diff, 'utf8');
   if (diffBytes < 1 || diffBytes > MAX_QUALIFICATION_DIFF_BYTES) {
-    throw new GitHubQualificationReadError('GitHub qualification diff size is outside qualification bounds', 2);
+    throw new GitHubQualificationReadError('GitHub qualification diff size is outside qualification bounds', githubReads);
   }
 
-  const final = pullRequestIdentity((await safeRequest(request, parameters, 3)).data, 3);
+  const final = pullRequestIdentity((await safeRequest(request, parameters, githubReads + 1)).data, githubReads + 1);
   if (final.baseSha !== input.expectedBaseSha || final.headSha !== input.expectedHeadSha) {
-    throw new GitHubQualificationReadError('GitHub pull request moved during qualification read', 3);
+    throw new GitHubQualificationReadError('GitHub pull request moved during qualification read', githubReads + 1);
   }
 
   return {
     baseSha: initial.baseSha,
     headSha: initial.headSha,
-    diff: diffResponse.data,
-    diffDigest: createHash('sha256').update(diffResponse.data, 'utf8').digest('hex'),
-    githubReads: 3,
+    diff,
+    diffDigest: createHash('sha256').update(diff, 'utf8').digest('hex'),
+    githubReads: githubReads + 1,
   };
 }
