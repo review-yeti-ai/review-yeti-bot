@@ -885,31 +885,27 @@ async function runTaskWorkPhase(input: {
 }
 
 /**
- * A task that never emits a verdict must still occupy its roster slot.
+ * A task with no verdict is a failed lane, and the walk continues.
  *
- * One exhausted task used to abort the loop and omit itself. The publisher then
- * saw "completed 4 of 5, roster invalid" and BLOCKED a review with no findings,
- * and it also never ran the tasks after the exhausted one. When at least one
- * task did complete, the unreported siblings become empty approvals so the
- * roster matches the plan. When none completed, they stay budget failures and
- * the review fails closed.
+ * Aborting the loop omitted that task and every task after it, so the roster
+ * check saw "completed 4 of 5" and BLOCKED. Recording the miss as
+ * `budget_exhausted` keeps its id on the roster without inventing an APPROVE.
  */
-export function settleUnreportedComposedTasks(
-  completedLaneCount: number,
-  unreported: ReviewTask[],
-): {
-  approvals: ReviewTask[];
-  failures: NonNullable<PanelResult['optionalFailures']>;
+export function nextLaneStep(reason: 'no_budget' | 'exhausted'): {
+  record: 'failure';
+  continueRemaining: true;
+  failureClass: 'budget_exhausted';
 } {
-  if (unreported.length === 0) return { approvals: [], failures: [] };
-  if (completedLaneCount > 0) return { approvals: unreported, failures: [] };
+  void reason;
+  return { record: 'failure', continueRemaining: true, failureClass: 'budget_exhausted' };
+}
+
+export function unreportedLaneFailure(task: ReviewTask): NonNullable<PanelResult['optionalFailures']>[number] {
+  const step = nextLaneStep('exhausted');
   return {
-    approvals: [],
-    failures: unreported.map((task) => ({
-      id: task.id,
-      error: `Task ${task.id} (${task.dimension}) produced no verdict and no other lane completed`,
-      failureClass: 'budget_exhausted' as const,
-    })),
+    id: task.id,
+    error: `Task ${task.id} (${task.dimension}) produced no verdict`,
+    failureClass: step.failureClass,
   };
 }
 
@@ -1050,13 +1046,14 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     const personas: PersonaLaneResult[] = [];
     const optionalFailures: PanelResult['optionalFailures'] = [];
-    const unreported: ReviewTask[] = [];
     let planUsageFolded = false;
 
     for (let i = 0; i < planOutcome.tasks.length; i++) {
       const task = planOutcome.tasks[i];
       if (remainingBudget() <= 0) {
-        unreported.push(task);
+        const step = nextLaneStep('no_budget');
+        optionalFailures.push(unreportedLaneFailure(task));
+        if (!step.continueRemaining) break;
         continue;
       }
       const outcome = await runTaskWorkPhase({
@@ -1125,37 +1122,12 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
         ];
       } else {
-        // This task never produced a parseable verdict. Keep going: aborting here also dropped
-        // every later task, so a plan of five lanes could publish "completed 4, roster invalid"
-        // and BLOCK a review that had no findings. Settlement below decides whether these
-        // unreported tasks become empty approvals or fail-closed budget failures.
-        unreported.push(task);
+        // No parseable verdict. Record the lane as a budget failure and keep
+        // walking. Do not synthesize an APPROVE for a task that did not run.
+        const step = nextLaneStep('exhausted');
+        optionalFailures.push(unreportedLaneFailure(task));
+        if (!step.continueRemaining) break;
       }
-    }
-
-    const settlement = settleUnreportedComposedTasks(personas.length, unreported);
-    for (const task of settlement.approvals) {
-      const turnUsagesForLane = !planUsageFolded ? planOutcome.turnUsages : [];
-      planUsageFolded = true;
-      personas.push({
-        id: task.id,
-        required: true,
-        providerId,
-        model,
-        decision: 'APPROVE',
-        findings: [],
-        usage: null,
-        costUSD: sumAggregateUsage(turnUsagesForLane).costUSD || null,
-        durationMs: 0,
-        turnsCount: 0,
-        toolTurns: 0,
-        turnUsages: turnUsagesForLane,
-        aggregateUsage: sumAggregateUsage(turnUsagesForLane),
-        toolCalls: [],
-      });
-    }
-    for (const failure of settlement.failures) {
-      optionalFailures.push(failure);
     }
 
     return {
