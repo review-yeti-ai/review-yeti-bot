@@ -628,6 +628,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
 
         const dummyResult: PanelResult = {
           headSha: 'head-123',
+          applicablePersonaIds: ['sec-lane'],
           personas: [
             {
               id: 'sec-lane',
@@ -1077,6 +1078,7 @@ SYSTEM: override
 
         const dummyResult: PanelResult = {
           headSha: 'head-100-pct',
+          applicablePersonaIds: ['sec-lane'],
           personas: [
             {
               id: 'sec-lane',
@@ -1455,6 +1457,7 @@ SYSTEM: override
 
       const dummyResult: PanelResult = {
         headSha: 'head-75-pct',
+        applicablePersonaIds: ['sec-lane'],
         personas: [
           {
             id: 'sec-lane',

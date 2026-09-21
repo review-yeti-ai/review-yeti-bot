@@ -62,6 +62,7 @@ jobs:
           OPENCODE_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY != '' }}
           OPENROUTER_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY != '' }}
           GATEWAY_KEY_PRESENT: ${{ secrets.CT_REVIEW_GATEWAY_API_KEY != '' }}
+          FIREWORKS_KEY_PRESENT: ${{ secrets.CT_REVIEW_FIREWORKS_API_KEY != '' }}
           REVIEW_LANE_TIMEOUT_MS: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
         run: ./scripts/assert-review-transport-config.sh
 
@@ -96,7 +97,9 @@ jobs:
           llm-api-key: >-
             ${{ steps.transport.outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY
              || steps.transport.outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY
-             || steps.transport.outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+             || steps.transport.outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY
+             || steps.transport.outputs.destination == 'fireworks' && secrets.CT_REVIEW_FIREWORKS_API_KEY }}
+          fireworks-api-key: ${{ secrets.CT_REVIEW_FIREWORKS_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
           # OpenRouter remains the primary direct DeepSeek -> GLM route.
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}

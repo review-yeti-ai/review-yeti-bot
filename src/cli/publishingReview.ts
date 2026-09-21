@@ -172,7 +172,7 @@ export interface PublishingReviewFailedLane {
   model?: string;
 }
 
-export type PublishingCoverageMode = 'panel' | 'fast_ship' | 'zero_lane' | 'not_applicable';
+export type PublishingCoverageMode = 'panel' | 'fast_ship' | 'documentation_only' | 'zero_lane' | 'not_applicable';
 
 export interface PublishingCoverageProjection {
   mode: PublishingCoverageMode;
@@ -313,6 +313,21 @@ interface RawPublicationRoster {
   rosterValid: boolean;
 }
 
+/**
+ * Pure projection of the two independent roster limits enforced before arbitration.
+ * Keeping this separate from verdict construction makes the configured-roster guard,
+ * returned-lane guard, and bounded arbitration input independently observable without
+ * allowing callers to replace the canonical arbiter.
+ */
+export interface PublishingRosterBoundsProjection {
+  lanes: RawPublicationLane[];
+  returnedIds: string[];
+  configuredRosterValid: boolean;
+  returnedLaneCountValid: boolean;
+  completedLaneCount: number;
+  failedLaneCount: number;
+}
+
 function hasDuplicate(values: string[]): boolean {
   return new Set(values).size !== values.length;
 }
@@ -337,6 +352,28 @@ function validConfiguredRoster(value: unknown): value is string[] {
     && !hasDuplicate(value);
 }
 
+export function projectPublishingRosterBounds(panelResult: PanelResult): PublishingRosterBoundsProjection {
+  const completed = Array.isArray(panelResult.personas) ? panelResult.personas : [];
+  const failures = Array.isArray(panelResult.optionalFailures) ? panelResult.optionalFailures : [];
+  const failedLanes: RawPublicationLane[] = failures.map((failure) => ({
+    id: failure.id,
+    decision: 'ERROR',
+    status: 'ERROR',
+    error: failure.error,
+    findings: [],
+  }));
+  const allLanes: RawPublicationLane[] = [...completed, ...failedLanes];
+
+  return {
+    lanes: allLanes.slice(0, MAX_PERSONAS),
+    returnedIds: allLanes.map((lane) => lane.id || ''),
+    configuredRosterValid: validConfiguredRoster(panelResult.applicablePersonaIds),
+    returnedLaneCountValid: allLanes.length <= MAX_PERSONAS,
+    completedLaneCount: boundedLaneCount(completed.length),
+    failedLaneCount: boundedLaneCount(failures.length),
+  };
+}
+
 /**
  * Convert the panel's existing selection result into raw-publication evidence.
  * The panel engine owns path matching and classifier narrowing; this publisher
@@ -348,44 +385,34 @@ function rawPublicationRoster(
   isFastShip: boolean,
   notApplicable = false,
 ): RawPublicationRoster {
-  const completed = Array.isArray(panelResult.personas) ? panelResult.personas : [];
-  const failures = Array.isArray(panelResult.optionalFailures) ? panelResult.optionalFailures : [];
-  const failedLanes: RawPublicationLane[] = failures.map((failure) => ({
-    id: failure.id,
-    decision: 'ERROR',
-    status: 'ERROR',
-    error: failure.error,
-    findings: [],
-  }));
-  const allLanes: RawPublicationLane[] = [...completed, ...failedLanes];
-  // Keep the arbitration input bounded even if an injected result bypasses the
-  // panel/completion contracts. The projection below reports the bounded count,
-  // while the roster validity bit carries the fail-closed reason.
-  const lanes = allLanes.slice(0, MAX_PERSONAS);
-  const completedLaneCount = boundedLaneCount(completed.length);
-  const failedLaneCount = boundedLaneCount(failures.length);
+  const {
+    lanes,
+    returnedIds,
+    configuredRosterValid,
+    returnedLaneCountValid,
+    completedLaneCount,
+    failedLaneCount,
+  } = projectPublishingRosterBounds(panelResult);
 
   if (isFastShip) {
     return {
-      mode: 'fast_ship',
+      mode: panelResult.documentationOnly ? 'documentation_only' : 'fast_ship',
       lanes,
       expectedLaneCount: null,
-      arbitrationExpectedCount: boundedLaneCount(completed.length),
+      arbitrationExpectedCount: completedLaneCount,
       completedLaneCount: 0,
       failedLaneCount,
-      rosterValid: allLanes.length <= MAX_PERSONAS,
+      rosterValid: returnedLaneCountValid,
     };
   }
 
   const configuredIds = panelResult.applicablePersonaIds;
-  const configuredRosterValid = validConfiguredRoster(configuredIds);
   const expectedLaneCount = configuredRosterValid ? configuredIds.length : null;
   const arbitrationExpectedCount = configuredRosterValid ? configuredIds.length : 0;
-  const returnedIds = allLanes.map((lane) => lane.id || '');
   const configuredSet = new Set(configuredRosterValid ? configuredIds : []);
   const returnedSet = new Set(returnedIds);
   const rosterValid = configuredRosterValid
-    && allLanes.length <= MAX_PERSONAS
+    && returnedLaneCountValid
     && returnedIds.every((id) => isRosterId(id) && configuredSet.has(id))
     && !hasDuplicate(returnedIds)
     && configuredIds.every((id) => returnedSet.has(id));
@@ -1316,17 +1343,29 @@ export async function runPublishingReviewWorker(
     // `checks: write`, so the findings become visible without widening the
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
+    const documentationOnly = fastShipApproved && Boolean(panelResult.documentationOnly);
     const title = notApplicable
       ? 'Review Yeti: NO_REVIEW (not applicable)'
-      : fastShipApproved
-        ? 'Review Yeti: SHIP (fast-ship)'
-        : `Review Yeti: ${verdict}`;
+      : documentationOnly
+        ? 'Review Yeti: SHIP (documentation-only)'
+        : fastShipApproved
+          ? 'Review Yeti: SHIP (fast-ship)'
+          : `Review Yeti: ${verdict}`;
 
     const safeClassifierRationale = fastShipApproved && panelResult.classifierRationale
       ? panelResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
       : 'Approved via fast-ship triage classifier.';
 
-    const summaryParts = fastShipApproved
+    const summaryParts = documentationOnly
+      ? [
+          `### Review Yeti: SHIP (documentation-only)`,
+          `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (no analyzable source changed).`,
+          `- **Rationale**: \`${safeClassifierRationale}\``,
+          renderCoverageSummary(coverage),
+          renderTransportSummary(transport.model, resolvedTransportModel),
+          `Repository visibility: ${repositoryVisibility}.`,
+        ]
+      : fastShipApproved
       ? [
           `### Review Yeti: SHIP (fast-ship)`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,

@@ -156,7 +156,7 @@ export interface SameHeadQualificationReceipt extends Omit<FullPanelQualificatio
   profile: 'same-head';
   source: 'github-pull-request';
   diffDigest: string;
-  githubReads: 3;
+  githubReads: number;
   verdictSource: 'canonical-production-policy';
   severityCounts: { P0: number; P1: number; P2: number };
   findingFingerprintVersion: 'ReviewYetiFindingFingerprint.v1';
@@ -549,7 +549,7 @@ const FULL_PANEL_QUALIFICATION_PERSONAS = [
   },
   {
     id: 'architecture',
-    charter: 'builtin:constitutional-goals',
+    charter: 'builtin:architecture',
     paths: ['src/**', 'Dockerfile', 'k8s/**'],
   },
   {

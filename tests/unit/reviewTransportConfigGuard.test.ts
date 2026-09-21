@@ -23,6 +23,7 @@ function run(env: Record<string, string>): { ok: boolean; out: string } {
 
 const OPENCODE = 'https://opencode.ai/zen/v1';
 const OPENROUTER = 'https://openrouter.ai/api/v1';
+const FIREWORKS = 'https://api.fireworks.ai/inference/v1';
 
 /**
  * The third destination is pinned by digest, not hostname, because this repository is public.
@@ -71,6 +72,33 @@ describe('review transport configuration guard', () => {
 
   // Both destinations must fail closed on a missing key, not just opencode. Only the accept path
   // was covered here, which would have let the OpenRouter branch rot into a no-op unnoticed.
+  it('accepts a fully consistent fireworks configuration', () => {
+    expect(run({ REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }).ok).toBe(true);
+  });
+
+  it('refuses fireworks without its own key rather than falling back', () => {
+    const r = run({
+      REVIEW_BASE_URL: FIREWORKS,
+      FIREWORKS_KEY_PRESENT: 'false',
+      OPENROUTER_KEY_PRESENT: 'true',
+      REVIEW_LANE_TIMEOUT_MS: '420000',
+    });
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/CT_REVIEW_FIREWORKS_API_KEY is unset/);
+  });
+
+  it('requires an explicit lane timeout for fireworks', () => {
+    const r = run({ REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '' });
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/REVIEW_LANE_TIMEOUT_MS is unset/);
+  });
+
+  it('rejects a lane timeout tighter than the fireworks budget', () => {
+    const r = run({ REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '90000' });
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/tighter than the fireworks provider budget/);
+  });
+
   it('refuses OpenRouter without its own key', () => {
     const r = run({ REVIEW_BASE_URL: OPENROUTER, OPENROUTER_KEY_PRESENT: 'false', OPENCODE_KEY_PRESENT: 'true' });
     expect(r.ok).toBe(false);
@@ -209,6 +237,7 @@ describe('review transport configuration guard', () => {
     ['opencode', { REVIEW_BASE_URL: OPENCODE, OPENCODE_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }],
     ['openrouter', { REVIEW_BASE_URL: OPENROUTER, OPENROUTER_KEY_PRESENT: 'true' }],
     ['gateway', gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' })],
+    ['fireworks', { REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }],
   ])('emits the %s destination class for the credential selector', (expected, env) => {
     const r = destinationOf(env as Record<string, string>);
     expect(r.ok).toBe(true);
@@ -239,6 +268,7 @@ describe('review transport configuration guard', () => {
     expect(selector).toContain("outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY");
     expect(selector).toContain("outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY");
     expect(selector).toContain("outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY");
+    expect(selector).toContain("outputs.destination == 'fireworks' && secrets.CT_REVIEW_FIREWORKS_API_KEY");
     // Every arm that reaches a secret must be gated by a destination comparison. Checked per-arm
     // rather than at the tail: the previous negative regex required `}}` right after the secret,
     // so a bare `|| secrets.X` inserted MID-expression stayed green -- and since `&&` binds
@@ -246,7 +276,7 @@ describe('review transport configuration guard', () => {
     const armsWithSecrets = selector
       .split(/\r?\n/)
       .filter((line) => line.includes('secrets.'));
-    expect(armsWithSecrets).toHaveLength(3);
+    expect(armsWithSecrets).toHaveLength(4);
     for (const arm of armsWithSecrets) {
       expect(arm).toMatch(/outputs\.destination == '[a-z]+'\s*&&\s*secrets\./);
     }
