@@ -97,7 +97,7 @@ describe('worker container contract', () => {
     expect(script).toContain('path.relative');
   });
 
-  it('exposes an offline self-test entrypoint and keeps image publication manual', () => {
+  it('exposes an offline self-test entrypoint and attests published indexes without a cluster deploy', () => {
     const liveReview = readRequired(liveReviewPath);
     const selfTestModules = JSON.parse(readRequired(selfTestModulesPath));
     const workflow = readRequired(ciWorkflowPath);
@@ -110,7 +110,9 @@ describe('worker container contract', () => {
     expect(workflow).toContain('NODE_BASE_IMAGE=');
     expect(workflow).toContain('--self-test');
     expect(workflow).toContain('verify-worker-image-size.mjs');
-    expect(workflow).toContain('inputs.deploy');
+    expect(workflow).toContain('attest-published-indexes:');
+    expect(workflow).not.toContain('digitalocean/action-doctl');
+    expect(workflow).not.toContain('scripts/deploy-doks.sh');
   });
 
   it('enforces compressed size and service-relative size gates from OCI manifests', () => {
