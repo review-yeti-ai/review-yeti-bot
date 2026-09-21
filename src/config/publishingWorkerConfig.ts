@@ -250,10 +250,12 @@ export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDo
 
 const VALID_REVIEW_ENGINES: ReadonlySet<string> = new Set(['panel', 'composed', 'shadow']);
 
-/** Fail-inert, exactly like `resolveReviewEngine` in `src/cli/publishingReview.ts`: anything other
- * than one of the three known literals -- absent, a typo, the wrong type -- resolves to `'panel'`. */
+/** The cutover default is the composed engine. Only the exact literals `panel` and `shadow`
+ * select something else. An absent key, a typo, or the wrong type stays on composed, so a
+ * malformed policy cannot quietly restore the fan-out. */
 function normalizeReviewEngine(value: unknown): ReviewEngineName {
-  return typeof value === 'string' && VALID_REVIEW_ENGINES.has(value) ? (value as ReviewEngineName) : 'panel';
+  if (value === 'panel' || value === 'shadow' || value === 'composed') return value;
+  return 'composed';
 }
 
 function positiveInt(value: unknown): number | undefined {
@@ -289,7 +291,7 @@ export function resolveWorkerConfig(
 
   let maxInvestigationTurns = PUBLISHING_MAX_TURNS;
   let personasList: string[] = [];
-  let reviewEngine: ReviewEngineName = 'panel';
+  let reviewEngine: ReviewEngineName = 'composed';
   let composed: ComposedEngineConfig = {};
 
   if (env.REVIEW_YETI_POLICY_JSON) {

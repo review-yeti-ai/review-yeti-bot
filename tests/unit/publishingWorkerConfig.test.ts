@@ -142,9 +142,9 @@ describe('publishingWorkerConfig', () => {
     }
   });
 
-  it('defaults to the panel engine and the default6 roster when no policy is supplied at all', () => {
+  it('defaults to the composed engine and the default6 roster when no policy is supplied at all', () => {
     const config = resolveWorkerConfig({}, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
-    expect(config.review_engine).toBe('panel');
+    expect(config.review_engine).toBe('composed');
     expect(config.personas.length).toBe(6);
   });
 
@@ -181,10 +181,19 @@ describe('publishingWorkerConfig', () => {
     expect(config.composed).not.toHaveProperty('require_security_task');
   });
 
-  it('falls back to panel for an unrecognized review_engine value (fail-inert, not fail-open to a guess)', () => {
+  it('stays on composed for an unrecognized review_engine value instead of restoring the fan-out', () => {
     const config = resolveWorkerConfig({
       REVIEW_YETI_POLICY_JSON: JSON.stringify({
         review_yeti: { personas: 'security', budget: { max_investigation_turns: 5 }, review_engine: 'yolo' },
+      }),
+    }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
+    expect(config.review_engine).toBe('composed');
+  });
+
+  it('keeps the fan-out only when policy spells panel', () => {
+    const config = resolveWorkerConfig({
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({
+        review_yeti: { personas: 'security', budget: { max_investigation_turns: 5 }, review_engine: 'panel' },
       }),
     }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
     expect(config.review_engine).toBe('panel');

@@ -120,7 +120,7 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
     expect(d.composedReviewRunner).toHaveBeenCalledTimes(1);
   });
 
-  it('stays on the fan-out panel engine by default (no policy review_engine)', async () => {
+  it('uses the composed engine when policy omits review_engine', async () => {
     const panelRunner = vi.fn(async () => ({
       applicablePersonaIds: ['sec-lane'],
       personas: [{ id: 'sec-lane', findings: [] }],
@@ -128,7 +128,7 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
       arbiter: { verdict: 'SHIP' },
     }));
-    const composedReviewRunner = vi.fn();
+    const composedReviewRunner = vi.fn(async () => sevenTaskComposedResult());
     const localEnv = env();
     delete (localEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON;
     const d = {
@@ -140,8 +140,8 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
       client: {} as never,
     };
     await runPublishingReviewWorker(localEnv, d);
-    expect(panelRunner).toHaveBeenCalledTimes(1);
-    expect(composedReviewRunner).not.toHaveBeenCalled();
+    expect(composedReviewRunner).toHaveBeenCalledTimes(1);
+    expect(panelRunner).not.toHaveBeenCalled();
   });
 
   it('never lets a raw REVIEW_ENGINE env var select the engine -- only base policy can', async () => {
@@ -158,7 +158,9 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
     }));
     const composedReviewRunner = vi.fn();
     const localEnv = env();
-    delete (localEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON;
+    (localEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON = JSON.stringify({
+      review_yeti: { personas: 'security', budget: { max_investigation_turns: 10 }, review_engine: 'panel' },
+    });
     (localEnv as Record<string, unknown>).REVIEW_ENGINE = 'composed';
     const d = {
       checkClient: checkClient(),

@@ -696,25 +696,21 @@ export function zoektGroundingEnabledFor(
 export type ReviewEngine = 'panel' | 'composed' | 'shadow';
 
 /**
- * Selects between the fan-out persona panel (`panel`, the default), the single-context composed
- * engine (`composed`, `src/panel/composedEngine.ts`), and `shadow` -- run both, gate on the panel
- * (see the `isShadow` block in `runPublishingReviewWorker`: the composed run there is additive,
- * non-gating evidence and can never influence `rawPublicationRoster`/`computeArbitration` or the
- * published conclusion). Fail-inert: any value other than the exact strings `'composed'` or
- * `'shadow'` -- unset, a typo, anything else -- stays `'panel'`.
+ * Selects the single-context composed engine (`composed`, `src/panel/composedEngine.ts`) unless
+ * base policy spells `panel` (the fan-out) or `shadow` (run both, gate on the panel -- see the
+ * `isShadow` block in `runPublishingReviewWorker`). An absent or unrecognized value stays on
+ * composed, so a typo cannot quietly restore the fan-out.
  *
  * Deliberately reads the resolved worker config's `review_engine` field, never a raw env var: the
  * worker config is projected from base policy (`resolveWorkerConfig` in
  * `../config/publishingWorkerConfig`, or the digest-verified `parsePreparedReviewExecution` on the
  * authoritative path), neither of which a pull request can influence. Reading an env var here
- * instead would let whatever triggered this run pick its own review engine -- e.g. escaping the
- * stricter composed engine an operator enabled for this repository, or opting into an engine that
- * was never enabled at all.
+ * instead would let whatever triggered this run pick its own review engine.
  */
 export function resolveReviewEngine(config: { review_engine?: unknown }): ReviewEngine {
-  if (config?.review_engine === 'composed') return 'composed';
+  if (config?.review_engine === 'panel') return 'panel';
   if (config?.review_engine === 'shadow') return 'shadow';
-  return 'panel';
+  return 'composed';
 }
 
 export async function runPublishingReviewWorker(

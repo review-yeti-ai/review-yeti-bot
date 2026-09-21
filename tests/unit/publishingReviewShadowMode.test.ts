@@ -37,6 +37,14 @@ const SHADOW_POLICY_JSON = JSON.stringify({
   },
 });
 
+const PANEL_POLICY_JSON = JSON.stringify({
+  review_yeti: {
+    personas: 'security',
+    budget: { max_investigation_turns: 10 },
+    review_engine: 'panel',
+  },
+});
+
 function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     NODE_ENV: 'test',
@@ -237,7 +245,7 @@ describe('shadow mode (review_engine: shadow) -- non-gating composed evidence', 
       client: {} as never,
     };
     const plainEnv = env();
-    delete (plainEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON;
+    (plainEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON = PANEL_POLICY_JSON;
     await runPublishingReviewWorker(plainEnv, panelOnlyDeps as never);
     const plainEvent = (panelOnlyDeps.completion.reportReviewEvidence as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
 
@@ -282,7 +290,7 @@ describe('shadow mode (review_engine: shadow) -- non-gating composed evidence', 
     const composedReviewRunner = vi.fn();
     const panelRunner = vi.fn(async () => cleanPanelResult());
     const plainEnv = env();
-    delete (plainEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON;
+    (plainEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON = PANEL_POLICY_JSON;
     const d = {
       checkClient: checkClient(),
       sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,

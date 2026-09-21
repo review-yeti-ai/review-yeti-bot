@@ -16,8 +16,8 @@
  *
  * This module must never import from `../panel/panelEngine.ts`'s persona/moderator/arbiter
  * internals (`runPersona`, `executePersonaPanel`) and must not change their behaviour -- those
- * remain the fallback engine AND the shadow comparator for this whole rollout (`REVIEW_ENGINE`
- * flag, default `panel`; see `src/cli/publishingReview.ts`). It reuses only the pieces the
+ * remain the explicit `panel` opt-in and the shadow comparator (`review_engine`, default
+ * `composed`; see `src/cli/publishingReview.ts`). It reuses only the pieces the
  * fan-out engine already shares on purpose: `buildDiffSection` (identical diff rendering),
  * `runReadOnlyTool` (identical tool semantics), `compactMessageWindow` (identical compaction),
  * `validateFindings` (identical findings contract), and `buildPanelResponseFormat`'s new `plan`
