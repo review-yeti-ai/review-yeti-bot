@@ -692,5 +692,19 @@ describe('getStreamingFetchDispatcher without an undici Agent', () => {
     expect(mod.getStreamingFetchDispatcher(() => FakeAgent)).toBeInstanceOf(FakeAgent);
   });
 });
+describe('synthesized transports consume the configured lane deadline', () => {
+  // The helper was tested but nothing pinned that the six call sites actually USE it -- replacing
+  // the literal at five of six would have passed every existing test.
+  it('every synthesized transport carries the resolved timeout, not a literal', () => {
+    const source = require('node:fs').readFileSync(
+      require('node:path').resolve(__dirname, '../../.github/workflows/pipelines/review-pipeline.js'),
+      'utf8',
+    );
+    const autoBlock = source.slice(source.indexOf('autoTransports.push({'), source.indexOf('function ', source.indexOf('autoTransports.push({')));
+    expect(autoBlock).not.toMatch(/timeoutMs:\s*90_000/);
+    expect((autoBlock.match(/timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,/g) || []).length).toBeGreaterThan(0);
+  });
+});
+
 
 
