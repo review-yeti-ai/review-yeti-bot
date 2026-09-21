@@ -32,8 +32,11 @@ export const PERSONA_DOMAIN_AFFINITY: Record<string, DomainLane[]> = {
   'contract': ['api_contracts'],
   'devops-lane': ['system_runtime'],
   'devops': ['system_runtime'],
-  'arch-lane': ['system_runtime', 'api_contracts', 'data_persistence'],
-  'architecture': ['system_runtime', 'api_contracts', 'data_persistence'],
+  // Narrowed from three lanes: data_persistence is db-lane's domain, and the
+  // overlap left arch with the second-widest remit of any persona and no
+  // usable focus signal.
+  'arch-lane': ['system_runtime', 'api_contracts'],
+  'architecture': ['system_runtime', 'api_contracts'],
   'correctness-lane': ['api_contracts', 'data_persistence', 'system_runtime', 'ui_frontend'],
   'correctness': ['api_contracts', 'data_persistence', 'system_runtime', 'ui_frontend'],
   'perf-lane': ['system_runtime', 'data_persistence'],

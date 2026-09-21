@@ -199,6 +199,7 @@ const BuiltinCharterEnum = z.enum([
   'builtin:contract',
   'builtin:consistency',
   'builtin:policy-compliance',
+  'builtin:architecture',
   'builtin:constitutional-goals',
   'builtin:performance',
   'builtin:database',

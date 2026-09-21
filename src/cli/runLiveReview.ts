@@ -549,7 +549,7 @@ const FULL_PANEL_QUALIFICATION_PERSONAS = [
   },
   {
     id: 'architecture',
-    charter: 'builtin:constitutional-goals',
+    charter: 'builtin:architecture',
     paths: ['src/**', 'Dockerfile', 'k8s/**'],
   },
   {
