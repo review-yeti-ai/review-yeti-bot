@@ -310,6 +310,72 @@ describe('openrouter review policy', () => {
       expect(isAllowedReviewBaseUrl.plaintextCount).toBe(ALLOWED_REVIEW_BASE_URLS.length);
     });
 
+    // The failure this exists to stop, caught by reading rather than by a broken production run:
+    // `resolveOpenRouterReviewPolicy` overlays `base_url` and `model` from action inputs but
+    // leaves `allowed_models` at the MANIFEST default, and validation requires the selected model
+    // to appear in that list. So configuring a destination whose model id is absent from the
+    // manifest throws at resolve time and every lane fails with zero findings -- while the
+    // destination allowlist, the guard script and the workflow are all individually correct.
+    //
+    // Table-driven over the pairs this deployment can actually be configured with, because the
+    // defect is in the COMBINATION, not in either value alone.
+    it.each([
+      ['openrouter', 'https://openrouter.ai/api/v1', 'z-ai/glm-5.3-flash'],
+      ['openrouter fallback', 'https://openrouter.ai/api/v1', 'deepseek/deepseek-v4-flash-0731'],
+      ['opencode', 'https://opencode.ai/zen/v1', 'glm-5.3-flash'],
+      ['digest-pinned gateway', 'https://gateway.test.invalid/v1', 'neuralwatt/glm-5.3-flash'],
+    ])('resolves a valid policy for the %s destination', (_label, baseUrl, model) => {
+      const resolve = () =>
+        resolveOpenRouterReviewPolicy({
+          actionInputs: { 'llm-base-url': baseUrl, model },
+        });
+
+      if (isAllowedReviewBaseUrl(baseUrl)) {
+        const resolved = resolve();
+        expect(resolved.model).toBe(model);
+        expect(resolved.allowed_models).toContain(model);
+        return;
+      }
+
+      // The test gateway is deliberately not the production pin, so resolution must fail on the
+      // DESTINATION. Proving the model half separately is the point: the same model resolves
+      // cleanly against an admitted destination, so nothing about the model id is the problem.
+      expect(resolve).toThrow(/base url/i);
+      const onAdmittedDestination = resolveOpenRouterReviewPolicy({
+        actionInputs: { 'llm-base-url': 'https://openrouter.ai/api/v1', model },
+      });
+      expect(onAdmittedDestination.allowed_models).toContain(model);
+    });
+
+    // Directly covers the resolver rule the table above depends on.
+    it('admits the selected model into allowed_models rather than contradicting it', () => {
+      const model = 'neuralwatt/glm-5.3-flash';
+      expect(DEFAULT_OPENROUTER_REVIEW_POLICY.allowed_models).not.toContain(model);
+
+      const resolved = resolveOpenRouterReviewPolicy({
+        actionInputs: { 'llm-base-url': 'https://opencode.ai/zen/v1', model },
+      });
+      // Membership, not position: normalizeAllowedModels reorders, and ordering is not the point.
+      expect(resolved.allowed_models).toContain(model);
+      // The manifest's own entries survive; the selected model is added, not substituted.
+      for (const inherited of DEFAULT_OPENROUTER_REVIEW_POLICY.allowed_models) {
+        expect(resolved.allowed_models).toContain(inherited);
+      }
+    });
+
+    // An explicit list is a deliberate narrowing and must not be silently widened.
+    it('leaves an explicitly supplied allowed_models untouched', () => {
+      expect(() =>
+        resolveOpenRouterReviewPolicy({
+          actionInputs: {
+            'llm-base-url': 'https://opencode.ai/zen/v1',
+            model: 'neuralwatt/glm-5.3-flash',
+            'allowed-models': 'glm-5.3-flash',
+          },
+        }),
+      ).toThrow(/must be present in allowed_models/);
+    });
+
     // The whole reason the third destination is digest-pinned is that this repository is public.
     // A later edit pasting the URL in "for readability" would undo that silently.
     //

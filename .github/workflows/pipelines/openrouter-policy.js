@@ -271,6 +271,28 @@ function resolveOpenRouterReviewPolicy({ actionInputs, trustedConfig } = {}) {
     merged.allowed_models = [OPENROUTER_DIRECT_PRIMARY_MODEL, OPENROUTER_DIRECT_FALLBACK_MODEL];
   }
 
+  // Selecting a model while forbidding it is incoherent, and the two values come from different
+  // places: `model` from an action input, `allowed_models` from the manifest default. So a
+  // destination whose model id is absent from that default throws here and every lane fails with
+  // zero findings, even though the destination allowlist, the guard script and the workflow are
+  // each individually correct. The current opencode configuration avoids this only by coincidence
+  // -- its bare model id happens to appear in the manifest's list.
+  //
+  // This does NOT widen the security control. Which models may be used at all is enforced by
+  // CANONICAL_ALLOWED_MODEL_SET below, and the destination by the base-url pin. `allowed_models`
+  // is the per-request routing set, so it must follow the selected model, not contradict it.
+  const explicitAllowedModels = inputOverlay.allowed_models !== undefined
+    || (trustedPolicy && trustedPolicy.allowed_models !== undefined);
+  if (
+    !explicitAllowedModels
+    && typeof merged.model === 'string'
+    && merged.model !== OPENROUTER_AUTO_MODEL
+    && Array.isArray(merged.allowed_models)
+    && !merged.allowed_models.includes(merged.model)
+  ) {
+    merged.allowed_models = [merged.model, ...merged.allowed_models];
+  }
+
   if (merged.cost_quality_tradeoff !== undefined && typeof merged.cost_quality_tradeoff !== 'number') {
     const parsed = Number(merged.cost_quality_tradeoff);
     merged.cost_quality_tradeoff = Number.isNaN(parsed) ? merged.cost_quality_tradeoff : parsed;
