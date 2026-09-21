@@ -216,16 +216,17 @@ describe('openrouter review policy', () => {
   });
 
   // The base-url check is an exfiltration control: the pipeline ships private diffs to a
-  // third-party model, so the destination is pinned. It is now a closed list of two funded
-  // transports -- deliberately still a list, never an "any https URL" check.
+  // third-party model, so the destination is pinned. It is a closed list of named public
+  // transports plus one digest pin -- deliberately still a list, never an "any https URL" check.
   describe('review destination allowlist', () => {
     const base = (base_url: string, model: string) => ({
       base_url, model, allowed_models: [model], data_collection: 'deny', cost_quality_tradeoff: 7,
     });
 
-    it('admits both pinned destinations', () => {
+    it('admits each named public destination', () => {
       expect(() => validateOpenRouterReviewPolicy(base('https://openrouter.ai/api/v1', 'z-ai/glm-5.3-flash'))).not.toThrow();
       expect(() => validateOpenRouterReviewPolicy(base('https://opencode.ai/zen/v1', 'glm-5.3-flash'))).not.toThrow();
+      expect(() => validateOpenRouterReviewPolicy(base('https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/glm-5p3-flash'))).not.toThrow();
     });
 
     it('still rejects any destination outside the list', () => {
@@ -325,6 +326,8 @@ describe('openrouter review policy', () => {
       ['opencode', 'https://opencode.ai/zen/v1', 'glm-5.3-flash'],
       ['digest-pinned gateway', 'https://gateway.test.invalid/v1', 'neuralwatt/glm-5.3-flash'],
       ['digest-pinned gateway (deepseek)', 'https://gateway.test.invalid/v1', 'neuralwatt/deepseek-v4-flash'],
+      ['fireworks', 'https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/glm-5p3-flash'],
+      ['fireworks deepseek', 'https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/deepseek-v4-flash-0731'],
     ])('resolves a valid policy for the %s destination', (_label, baseUrl, model) => {
       const resolve = () =>
         resolveOpenRouterReviewPolicy({
