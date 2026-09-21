@@ -154,9 +154,35 @@ describe('review transport configuration guard', () => {
       'utf8',
     );
     const inScript = script.match(/GATEWAY_BASE_URL_SHA256:-([0-9a-f]{64})/)?.[1];
-    const inPolicy = [...policy.matchAll(/'([0-9a-f]{64})'/g)].map((m) => m[1]);
     expect(inScript).toMatch(/^[0-9a-f]{64}$/);
-    expect(inPolicy).toContain(inScript);
+
+    // Both directions. `toContain` alone only caught script -> policy: adding a digest to the
+    // policy array WITHOUT adding it to the guard script stayed green, and the drift surfaced only
+    // at workflow runtime when the guard's catch-all rejected the new destination -- the exact
+    // "fails only in production" outcome this test claims to prevent.
+    const { ALLOWED_REVIEW_BASE_URL_DIGESTS } = require(
+      path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'),
+    );
+    expect([...ALLOWED_REVIEW_BASE_URL_DIGESTS].sort()).toEqual([inScript].sort());
+    // Guards the assertion above against being trivially satisfied if the policy array empties.
+    expect(policy).toContain(inScript);
+  });
+
+  // The guard admits a trailing-slash destination by stripping it before hashing. The policy
+  // module's `digestBaseUrl` hashes the RAW string, so the two layers agree only because
+  // `normalizePolicyShape` strips the slash before the allowlist check runs. Nothing pinned that,
+  // and if it stopped happening the guard would wave a URL through that the policy then rejects:
+  // the job proceeds, then every lane fails at validation.
+  it('agrees with the policy module on a trailing-slash destination', () => {
+    const {
+      resolveOpenRouterReviewPolicy,
+    } = require(path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'));
+
+    expect(run({ REVIEW_BASE_URL: `${OPENCODE}/`, OPENCODE_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }).ok).toBe(true);
+    const resolved = resolveOpenRouterReviewPolicy({
+      actionInputs: { 'llm-base-url': `${OPENCODE}/`, model: 'glm-5.3-flash' },
+    });
+    expect(resolved.base_url).toBe(OPENCODE);
   });
 
   // --- destination class emitted for the workflow's credential selection -----------------------
