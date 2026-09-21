@@ -511,4 +511,37 @@ describe('WorkerReviewCompletion.v1', () => {
       }))).toThrow(/invalid WorkerReviewCompletion/u);
     });
   });
+
+  describe('optional per-persona evidenceSource (shadow-mode review engine comparison)', () => {
+    // Additive-only, same contract as the telemetry block above: `personaSchema` is `.strict()`,
+    // so this proves `evidenceSource` is genuinely optional (no version bump / dispatcher change
+    // needed) rather than merely undocumented-but-accepted.
+    it('parses a persona tagged evidenceSource: panel', () => {
+      const parsed = parseWorkerReviewCompletion(completion({
+        result: { ...completion().result, personas: [lane('security', { evidenceSource: 'panel' }), lane('architecture')] },
+      }));
+      expect(parsed.result.personas[0]?.evidenceSource).toBe('panel');
+    });
+
+    it('parses a persona tagged evidenceSource: shadow', () => {
+      const parsed = parseWorkerReviewCompletion(completion({
+        result: { ...completion().result, personas: [lane('security', { evidenceSource: 'shadow' }), lane('architecture')] },
+      }));
+      expect(parsed.result.personas[0]?.evidenceSource).toBe('shadow');
+    });
+
+    it('still parses a persona with no evidenceSource field at all -- backward compatible, no version bump', () => {
+      // This is the shape every pre-shadow-mode caller (and every OTHER test in this file) sends.
+      // `evidenceSource` must be optional, not merely tolerated when present.
+      const parsed = parseWorkerReviewCompletion(completion());
+      expect(parsed.result.personas[0]).not.toHaveProperty('evidenceSource');
+      expect(parsed.version).toBe('WorkerReviewCompletion.v1');
+    });
+
+    it('rejects an evidenceSource value outside the panel/shadow enum', () => {
+      expect(() => parseWorkerReviewCompletion(completion({
+        result: { ...completion().result, personas: [lane('security', { evidenceSource: 'composed' }), lane('architecture')] },
+      }))).toThrow(/invalid WorkerReviewCompletion/u);
+    });
+  });
 });

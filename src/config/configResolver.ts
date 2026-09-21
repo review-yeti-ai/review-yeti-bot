@@ -329,7 +329,7 @@ export class ConfigResolver {
         required: false,
         charter: 'builtin:correctness',
         paths: ['**'],
-        providers: ['synthetic'],
+        providers: ['opencode'],
       };
       targetMap.set(item.id, {
         ...existing,
@@ -416,6 +416,24 @@ export class ConfigResolver {
     const security = repoAnalyzers.security ?? orgAnalyzers.security ?? sysAnalyzers.security ?? true;
     const secrets = repoAnalyzers.secrets ?? orgAnalyzers.secrets ?? sysAnalyzers.secrets ?? true;
 
+    // Merge symbol resolution appendix pre-checks -- same master-switch precedence as zoekt/analyzers.
+    const sysSymbolAppendix = normSys.symbolAppendix && typeof normSys.symbolAppendix === 'object' ? normSys.symbolAppendix : {};
+    const orgSymbolAppendix = normOrg.symbolAppendix && typeof normOrg.symbolAppendix === 'object' ? normOrg.symbolAppendix : {};
+    const repoSymbolAppendix = normRepo.symbolAppendix && typeof normRepo.symbolAppendix === 'object' ? normRepo.symbolAppendix : {};
+
+    let symbolAppendixEnabled: boolean;
+    if (repoSymbolAppendix.enabled !== undefined) {
+      symbolAppendixEnabled = repoSymbolAppendix.enabled;
+    } else if (!enabled) {
+      symbolAppendixEnabled = false;
+    } else if (orgSymbolAppendix.enabled !== undefined) {
+      symbolAppendixEnabled = orgSymbolAppendix.enabled;
+    } else {
+      symbolAppendixEnabled = sysSymbolAppendix.enabled ?? defaultSubsystemEnabled;
+    }
+
+    const symbolAppendixIndexDir = repoSymbolAppendix.indexDir ?? orgSymbolAppendix.indexDir ?? sysSymbolAppendix.indexDir;
+
     return {
       enabled,
       zoekt: {
@@ -430,6 +448,10 @@ export class ConfigResolver {
         security,
         secrets,
       },
+      symbolAppendix: {
+        enabled: symbolAppendixEnabled,
+        ...(symbolAppendixIndexDir !== undefined ? { indexDir: symbolAppendixIndexDir } : {}),
+      },
     };
   }
 
@@ -439,6 +461,7 @@ export class ConfigResolver {
         enabled: false,
         zoekt: { enabled: false },
         analyzers: { enabled: false, linters: false, security: false, secrets: false },
+        symbolAppendix: { enabled: false },
       };
     }
     if (val === true) {
@@ -458,6 +481,11 @@ export class ConfigResolver {
     } else if (copy.analyzers === true) {
       copy.analyzers = { enabled: true };
     }
+    if (copy.symbolAppendix === false) {
+      copy.symbolAppendix = { enabled: false };
+    } else if (copy.symbolAppendix === true) {
+      copy.symbolAppendix = { enabled: true };
+    }
     if (copy.enabled === false) {
       copy.zoekt = {
         ...(typeof copy.zoekt === 'object' ? copy.zoekt : {}),
@@ -466,6 +494,10 @@ export class ConfigResolver {
       copy.analyzers = {
         ...(typeof copy.analyzers === 'object' ? copy.analyzers : {}),
         enabled: copy.analyzers?.enabled === true,
+      };
+      copy.symbolAppendix = {
+        ...(typeof copy.symbolAppendix === 'object' ? copy.symbolAppendix : {}),
+        enabled: copy.symbolAppendix?.enabled === true,
       };
     }
     return copy;

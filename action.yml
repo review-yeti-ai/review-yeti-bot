@@ -45,9 +45,28 @@ inputs:
     required: false
     default: ''
   llm-base-url:
-    description: 'Trusted workflow/base-config OpenRouter base URL. Must normalize exactly to https://openrouter.ai/api/v1.'
+    description: >-
+      Trusted workflow/base-config LLM base URL. Defaults to OpenRouter. Any other
+      OpenAI-compatible gateway must also set `transport-compat`, because gateways differ in what
+      request shapes they accept and those differences are not inferable from the URL.
     required: false
     default: 'https://openrouter.ai/api/v1'
+  lane-timeout-ms:
+    description: >-
+      Per-lane streaming deadline in ms for transports this action synthesizes when no explicit
+      transport plan is supplied. Defaults to 90000, which suits the OpenRouter route it was tuned
+      against; a slower gateway needs more or every lane dies mid-stream.
+    required: false
+    default: ''
+  transport-compat:
+    description: >-
+      Per-transport request compatibility. Leave unset for OpenRouter. Set to `opencode` when
+      `llm-base-url` points at opencode: it rejects the content-block array form the panel uses for
+      the cache_control prefix, and its non-streaming path is unreachable through the OpenRouter
+      SDK. Explicit rather than sniffed from the host, so an unfamiliar gateway never has its
+      request shape silently altered.
+    required: false
+    default: ''
   model:
     description: 'Trusted workflow/base-config OpenRouter model control. Defaults to direct DeepSeek V4 Flash 0731; GLM 5.3 Flash is the explicit fallback.'
     required: false
@@ -613,6 +632,8 @@ runs:
         OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key || inputs.api-key || inputs.llm-api-key }}
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
+        REVIEW_TRANSPORT_COMPAT: ${{ inputs.transport-compat }}
+        REVIEW_LANE_TIMEOUT_MS: ${{ inputs.lane-timeout-ms }}
         FIREWORKS_PR_REVIEW_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY }}
         FIREWORKS_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_API_KEY }}
         OLLAMA_PR_REVIEW_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY }}

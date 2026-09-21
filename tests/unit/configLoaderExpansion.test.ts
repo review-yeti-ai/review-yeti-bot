@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createDefaultV3Config as makeDefaultV3, OPENCODE_LANE_TIMEOUT_S } from '../../src/config/configLoader';
 import {
   ConfigValidationError,
   translateCodeRabbitToV3,
@@ -22,7 +23,7 @@ describe('configLoader.ts — Comprehensive Unit Expansion Tests', () => {
     expect(v3.profile).toBe('balanced');
     expect(v3.quorum).toBe(1);
     expect(v3.personas.length).toBeGreaterThan(0);
-    expect(v3.reviewers.providers[0].id).toBe('synthetic');
+    expect(v3.reviewers.providers[0].id).toBe('opencode');
     expect(v3.reviewers.providers.length).toBeGreaterThan(0);
     expect(v3.confidence_threshold).toBe(70);
   });
@@ -217,3 +218,35 @@ reviewers:
     expect(providerUnder.arbiter_timeout_s).toBe(1);
   });
 });
+describe('opencode lane budget', () => {
+  const {
+    resolveAutoTransportTimeoutMs,
+  } = require('../../.github/workflows/pipelines/review-pipeline.js');
+
+  // Measured, not guessed: at the shared 90s default every lane failed with "Streaming response
+  // exceeded total deadline of 90000ms" on a ~2,500 line diff. Pinned so a future tidy-up that
+  // folds it back into the shared default has to argue with a test.
+  it('gives opencode its own raised budget, not the shared 90s default', () => {
+    const cfg = makeDefaultV3();
+    const opencode = cfg.reviewers.providers.find((p: any) => p.id === 'opencode');
+    const claude = cfg.reviewers.providers.find((p: any) => p.id === 'claude');
+    expect(opencode?.review_timeout_s).toBe(OPENCODE_LANE_TIMEOUT_S);
+    expect(opencode?.arbiter_timeout_s).toBe(OPENCODE_LANE_TIMEOUT_S);
+    expect(OPENCODE_LANE_TIMEOUT_S).toBeGreaterThan(90);
+    // Raised for this provider ONLY. A timeout that never fires is not a timeout.
+    expect(claude?.review_timeout_s).toBe(90);
+  });
+
+  // The outer deadline does NOT satisfy this by default, and the previous version of this test
+  // hid that by supplying its own passing value -- it asserted arithmetic, not the deployed
+  // relationship, so it could not fail on the invariant it named.
+  //
+  // With REVIEW_LANE_TIMEOUT_MS unset the outer default is 90s while the opencode budget is 300s,
+  // so the opencode destination REQUIRES the variable. That requirement is enforced by
+  // scripts/assert-review-transport-config.sh and covered in reviewTransportConfigGuard.test.ts;
+  // what is pinned here is the fact that makes the requirement necessary.
+  it('the default outer deadline is tighter than the opencode budget, so the variable is required', () => {
+    expect(resolveAutoTransportTimeoutMs({})).toBeLessThan(OPENCODE_LANE_TIMEOUT_S * 1000);
+  });
+});
+

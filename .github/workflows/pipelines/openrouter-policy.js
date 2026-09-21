@@ -6,6 +6,70 @@ const path = require('path');
 
 const MANIFEST_PATH = path.resolve(__dirname, '../../../src/config/openrouter-review-policy.json');
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const OPENCODE_BASE_URL = 'https://opencode.ai/zen/v1';
+/**
+ * Closed allowlist of review destinations. This is an exfiltration control, not configuration:
+ * the review pipeline ships private diffs to a third-party model, so the destination is pinned
+ * and the model allowlisted, with data_collection forced to deny.
+ *
+ * It is a LIST rather than a single constant because the fleet now has two funded transports.
+ * It is emphatically NOT an "any https URL" check -- a compromised or mistyped base URL is
+ * precisely what this stops, and the guard is worth more than the convenience of adding a third
+ * destination without review.
+ */
+const ALLOWED_REVIEW_BASE_URLS = Object.freeze([OPENROUTER_BASE_URL, OPENCODE_BASE_URL]);
+/**
+ * A third funded destination, pinned by digest rather than plaintext.
+ *
+ * This repository is public, and the operator's hygiene rule bars first-party hostnames from it.
+ * The allowlist above cannot simply gain a fourth string without publishing that hostname, and it
+ * must NOT become env-configurable -- "whatever a repository variable says" is not an exfiltration
+ * control, which is the whole point of the comment above.
+ *
+ * Pinning the SHA-256 of the normalized base URL keeps both properties: the allowlist stays closed
+ * (only one exact URL matches, and changing it still requires a reviewed commit), while the
+ * hostname stays out of public source, greps, and code search.
+ *
+ * Honest about what this is NOT: the destination is a public DNS name, so the digest is guessable
+ * by anyone who thinks to try it. This is hygiene, not secrecy. It buys absence from the public
+ * source tree, not confidentiality of the endpoint.
+ */
+const ALLOWED_REVIEW_BASE_URL_DIGESTS = Object.freeze([
+  'ca8309dbe7eb85c5c7da280d48572eb44d159c1244ebea3548b82784cbc27c53',
+]);
+
+function digestBaseUrl(baseUrl) {
+  return crypto.createHash('sha256').update(baseUrl).digest('hex');
+}
+
+/**
+ * Built as a factory purely so the digest branch is testable. The suite cannot exercise it against
+ * the production pin without hardcoding the very hostname the pin exists to keep out of this public
+ * repository, so tests build a predicate over their own URL and digest instead. The exported
+ * production predicate stays bound to the frozen constants, so this is a testing seam, not a
+ * widening of the control.
+ */
+function createReviewBaseUrlAllowlist(baseUrls, digests) {
+  const urlSet = new Set(baseUrls);
+  const digestSet = new Set(digests);
+  const isAllowed = function isAllowed(baseUrl) {
+    if (typeof baseUrl !== 'string' || baseUrl.length === 0) return false;
+    if (urlSet.has(baseUrl)) return true;
+    return digestSet.has(digestBaseUrl(baseUrl));
+  };
+  // Surfaced so the suite can assert the production predicate is actually WIRED to the production
+  // pins. Without this, emptying the digest list at the call site leaves the exported constant
+  // intact and every test still passes while the destination silently stops being admitted --
+  // verified: that mutation was green across the whole file before this existed.
+  isAllowed.plaintextCount = urlSet.size;
+  isAllowed.pinnedDigestCount = digestSet.size;
+  return isAllowed;
+}
+
+const isAllowedReviewBaseUrl = createReviewBaseUrlAllowlist(
+  ALLOWED_REVIEW_BASE_URLS,
+  ALLOWED_REVIEW_BASE_URL_DIGESTS,
+);
 const OPENROUTER_AUTO_MODEL = 'openrouter/auto';
 const OPENROUTER_DIRECT_PRIMARY_MODEL = 'z-ai/glm-5.3-flash';
 const OPENROUTER_DIRECT_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
@@ -17,6 +81,14 @@ const CANONICAL_ALLOWED_MODELS = Object.freeze([
   'tencent/hy3',
   'z-ai/glm-5.2',
   'google/gemini-3.5-flash-lite',
+  // opencode serves bare model ids rather than vendor-namespaced ones. Same model family as the
+  // OpenRouter entries above, reached by a different name on a different destination.
+  'glm-5.3-flash',
+  'deepseek-v4-flash-0731',
+  // The digest-pinned destination namespaces models by the provider it fronts. Same flash-class
+  // model family as the entries above, reached by a third name on a third destination.
+  'neuralwatt/glm-5.3-flash',
+  'neuralwatt/deepseek-v4-flash',
 ]);
 const CANONICAL_ALLOWED_MODEL_SET = new Set(CANONICAL_ALLOWED_MODELS);
 const POLICY_KEYS = Object.freeze([
@@ -115,8 +187,11 @@ function validateOpenRouterReviewPolicy(policy) {
 
   const normalized = normalizePolicyShape(policy);
 
-  if (normalized.base_url !== OPENROUTER_BASE_URL) {
-    throw new Error(`OpenRouter review policy base url must normalize exactly to ${OPENROUTER_BASE_URL}`);
+  if (!isAllowedReviewBaseUrl(normalized.base_url)) {
+    throw new Error(
+      `Review policy base url must normalize exactly to one of: ${ALLOWED_REVIEW_BASE_URLS.join(', ')}`
+        + `, or match one of ${ALLOWED_REVIEW_BASE_URL_DIGESTS.length} digest-pinned destination(s)`,
+    );
   }
 
   if (normalized.model !== OPENROUTER_AUTO_MODEL && !CANONICAL_ALLOWED_MODEL_SET.has(normalized.model)) {
@@ -196,6 +271,32 @@ function resolveOpenRouterReviewPolicy({ actionInputs, trustedConfig } = {}) {
     merged.allowed_models = [OPENROUTER_DIRECT_PRIMARY_MODEL, OPENROUTER_DIRECT_FALLBACK_MODEL];
   }
 
+  // Runs AFTER the auto-model conversion above, which is why there is no auto-model guard here:
+  // that block rewrites `merged.model` to the direct primary, so the pseudo-model cannot reach
+  // this point. A guard for it would be unreachable, and an unreachable guard invites a test that
+  // asserts nothing. The auto path's resolved shape is pinned by its own test instead.
+  //
+  // Selecting a model while forbidding it is incoherent, and the two values come from different
+  // places: `model` from an action input, `allowed_models` from the manifest default. So a
+  // destination whose model id is absent from that default throws here and every lane fails with
+  // zero findings, even though the destination allowlist, the guard script and the workflow are
+  // each individually correct. The current opencode configuration avoids this only by coincidence
+  // -- its bare model id happens to appear in the manifest's list.
+  //
+  // This does NOT widen the security control. Which models may be used at all is enforced by
+  // CANONICAL_ALLOWED_MODEL_SET below, and the destination by the base-url pin. `allowed_models`
+  // is the per-request routing set, so it must follow the selected model, not contradict it.
+  const explicitAllowedModels = inputOverlay.allowed_models !== undefined
+    || (trustedPolicy && trustedPolicy.allowed_models !== undefined);
+  if (
+    !explicitAllowedModels
+    && typeof merged.model === 'string'
+    && Array.isArray(merged.allowed_models)
+    && !merged.allowed_models.includes(merged.model)
+  ) {
+    merged.allowed_models = [merged.model, ...merged.allowed_models];
+  }
+
   if (merged.cost_quality_tradeoff !== undefined && typeof merged.cost_quality_tradeoff !== 'number') {
     const parsed = Number(merged.cost_quality_tradeoff);
     merged.cost_quality_tradeoff = Number.isNaN(parsed) ? merged.cost_quality_tradeoff : parsed;
@@ -237,6 +338,10 @@ function buildOpenRouterRequestOptions(policy) {
 
 module.exports = {
   DEFAULT_OPENROUTER_REVIEW_POLICY,
+  ALLOWED_REVIEW_BASE_URLS,
+  ALLOWED_REVIEW_BASE_URL_DIGESTS,
+  createReviewBaseUrlAllowlist,
+  isAllowedReviewBaseUrl,
   resolveOpenRouterReviewPolicy,
   validateOpenRouterReviewPolicy,
   buildOpenRouterRequestOptions,

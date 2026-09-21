@@ -11,13 +11,13 @@ const legacyConfigSchema = z.object({
 }).passthrough();
 
 export const V3_PROVIDER_MODELS = {
-  synthetic: 'glm-5.2',
+  synthetic: 'glm-5.3-flash',
   'synthetic.new': 'synthetic-new/glm-5.2-high',
   codex: 'codex/gpt-5.6-sol-high',
   grok: 'grok-cli/grok-4.5',
   'agy-opus': 'agy/claude-opus-4-6-thinking',
   claude: 'claude/claude-opus-4-8',
-  opencode: 'opencode-go/glm-5.2',
+  opencode: 'opencode-go/glm-5.3-flash',
 } as const;
 
 /**
@@ -40,6 +40,63 @@ export function isBannedModel(_modelName?: string | null): boolean {
   // Legacy models are allowed publicly; no models are rejected from configuration.
   return false;
 }
+
+/**
+ * The per-provider model catalog that `scripts/generate-omniroute-providers.ts` renders into
+ * `src/types/providers.generated.ts`.
+ *
+ * It lives here because it used to live inside the generator as inline literals, and those
+ * literals went stale. The checked-in generated file carried newer values, so running the
+ * generator -- the process its own header instructs you to run -- silently regressed four
+ * defaults (`openai` to `gpt-4o`, `anthropic` to `claude-3-5-sonnet`, `gemini` to
+ * `gemini-1.5-pro`, `deepseek` to `deepseek-v3`) and dropped newer entries from several
+ * `supportedModels` lists. Four lines in a sixty-line diff, none obviously wrong alone.
+ *
+ * `glm` and `codex` deliberately carry no `defaultModel` here: theirs comes from
+ * `V3_PROVIDER_MODELS`, which the generator reads directly. One source per value, never two.
+ */
+export const GENERATED_PROVIDER_CATALOG: Record<string, { defaultModel?: string; supportedModels: string[] }> = {
+  openai: {
+    defaultModel: 'openai/gpt-5.6-luna:high',
+    supportedModels: ['openai/gpt-5.6-luna:high', 'openai/gpt-5.6-luna', 'openrouter/5.6-luna-high', 'gpt-5.6-sol', 'o3-mini', 'gpt-4o', 'gpt-4o-mini'],
+  },
+  anthropic: {
+    defaultModel: 'claude-5-haiku:high',
+    supportedModels: ['claude-5-haiku:high', 'claude-5-haiku', 'claude-3-7-sonnet', 'claude-5-sonnet', 'claude-opus-4-8', 'claude-3-5-sonnet', 'agy/claude-opus-4-6-thinking'],
+  },
+  gemini: {
+    defaultModel: 'google/gemini-3.7-flash:high',
+    supportedModels: ['google/gemini-3.7-flash:high', 'google/gemini-3.7-flash', 'google/gemini-3.6-flash', 'google/gemini-2.5-pro'],
+  },
+  grok: {
+    supportedModels: ['grok-cli/grok-4.5', 'grok-2'],
+  },
+  deepseek: {
+    defaultModel: 'deepseek/deepseek-v4-flash-0731:high',
+    supportedModels: ['deepseek/deepseek-v4-flash-0731:high', 'deepseek/deepseek-v4-flash-0731:low', 'accounts/fireworks/models/deepseek-v4-flash-0731', 'deepseek-v4-pro', 'deepseek-r1', 'deepseek-v3'],
+  },
+  glm: {
+    supportedModels: ['glm-5.3-flash', 'glm-5.2', 'synthetic/v1', 'synthetic/glm-5.2-high'],
+  },
+  doppler: {
+    defaultModel: 'doppler-sync-v1',
+    supportedModels: ['doppler-sync-v1'],
+  },
+  ollama: {
+    defaultModel: 'llama3.3',
+    supportedModels: ['llama3.3', 'qwen2.5-coder', 'deepseek-r1:8b'],
+  },
+  'custom-openai': {
+    defaultModel: 'custom-model-v1',
+    supportedModels: ['custom-model-v1'],
+  },
+  codex: {
+    supportedModels: ['codex/gpt-5.6-sol-high', 'gpt-5.6-sol'],
+  },
+  agy: {
+    supportedModels: ['agy/claude-opus-4-6-thinking'],
+  },
+};
 
 export const R4_ALLOWED_MODELS = [
   'openrouter/auto',
@@ -123,6 +180,12 @@ export const R4_ALLOWED_MODELS = [
   'claude/claude-opus-4-8',
   'deepseek-v3',
   'opencode-go/glm-5.2',
+  // Review defaults are flash/light only (operator policy, 2026-09-19). glm-5.2 is retired
+  // upstream; the ids above stay listed so an existing repo config that still names one keeps
+  // parsing rather than failing closed on a model string, but nothing defaults to them.
+  'glm-5.3-flash',
+  'opencode-go/glm-5.3-flash',
+  'claude/claude-haiku-4-5',
 ];
 
 export type ProviderId = string;
@@ -334,6 +397,13 @@ export const analyzersPreCheckSchema = z.object({
 
 export type PreChecksAnalyzersConfig = z.infer<typeof analyzersPreCheckSchema>;
 
+export const symbolAppendixPreCheckSchema = z.object({
+  enabled: z.boolean().default(true),
+  indexDir: z.string().optional(),
+}).default({ enabled: true });
+
+export type PreChecksSymbolAppendixConfig = z.infer<typeof symbolAppendixPreCheckSchema>;
+
 export const preChecksSchema = z.preprocess(
   (val: unknown) => {
     if (val === null || val === undefined) {
@@ -344,6 +414,7 @@ export const preChecksSchema = z.preprocess(
         enabled: false,
         zoekt: { enabled: false },
         analyzers: { enabled: false },
+        symbolAppendix: { enabled: false },
       };
     }
     if (val === true) {
@@ -351,6 +422,7 @@ export const preChecksSchema = z.preprocess(
         enabled: true,
         zoekt: { enabled: true },
         analyzers: { enabled: true },
+        symbolAppendix: { enabled: true },
       };
     }
     if (typeof val === 'object' && !Array.isArray(val)) {
@@ -365,6 +437,11 @@ export const preChecksSchema = z.preprocess(
       } else if (copy.analyzers === true) {
         copy.analyzers = { enabled: true };
       }
+      if (copy.symbolAppendix === false) {
+        copy.symbolAppendix = { enabled: false };
+      } else if (copy.symbolAppendix === true) {
+        copy.symbolAppendix = { enabled: true };
+      }
       if (copy.enabled === false) {
         copy.zoekt = {
           ...(typeof copy.zoekt === 'object' ? copy.zoekt : {}),
@@ -373,6 +450,10 @@ export const preChecksSchema = z.preprocess(
         copy.analyzers = {
           ...(typeof copy.analyzers === 'object' ? copy.analyzers : {}),
           enabled: copy.analyzers?.enabled === true,
+        };
+        copy.symbolAppendix = {
+          ...(typeof copy.symbolAppendix === 'object' ? copy.symbolAppendix : {}),
+          enabled: copy.symbolAppendix?.enabled === true,
         };
       }
       return copy;
@@ -383,6 +464,7 @@ export const preChecksSchema = z.preprocess(
     enabled: z.boolean().default(true),
     zoekt: zoektPreCheckSchema.default({}),
     analyzers: analyzersPreCheckSchema.default({}),
+    symbolAppendix: symbolAppendixPreCheckSchema.default({}),
   })
 ).default({});
 
@@ -400,6 +482,7 @@ export function resolvePreChecksConfig(rawConfig: any): PreChecksConfig {
       enabled: false,
       zoekt: { enabled: false, max_symbols: 200, timeoutMs: 10000 },
       analyzers: { enabled: false, linters: false, security: false, secrets: false },
+      symbolAppendix: { enabled: false },
     };
   }
   const parsed = preChecksSchema.parse(rawConfig.pre_checks);
@@ -415,10 +498,52 @@ export function resolvePreChecksConfig(rawConfig: any): PreChecksConfig {
         ...parsed.analyzers,
         enabled: rawPreChecks.analyzers?.enabled === true,
       },
+      symbolAppendix: {
+        ...parsed.symbolAppendix,
+        enabled: rawPreChecks.symbolAppendix?.enabled === true,
+      },
     };
   }
   return parsed;
 }
+
+/**
+ * Selects between the fan-out persona panel (`panel`, the default) and the single-context
+ * composed engine (`composed`, `src/panel/composedEngine.ts`). `shadow` is reserved for a future
+ * comparison-only mode and currently resolves to `panel` at every runtime call site -- see
+ * `resolveReviewEngine` in `src/cli/publishingReview.ts`. This is base-policy-projected
+ * (`resolveWorkerConfig` in `src/config/publishingWorkerConfig.ts`); a pull request cannot set its
+ * own value for this field.
+ */
+export const reviewEngineSchema = z.enum(['panel', 'composed', 'shadow']);
+export type ReviewEngineName = z.infer<typeof reviewEngineSchema>;
+
+/**
+ * Policy-authored bounds for the composed engine (`src/panel/composedEngine.ts`). Every field is
+ * optional and, when present, only ever narrows the engine's own hard-coded defaults/caps
+ * (`DEFAULT_MAX_TASKS`, `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`, `COMPOSED_TASK_MAX_TURNS`) --
+ * policy can lower these, never raise them. `max_tasks` and `max_turns_total` are wired into
+ * `composedEngine.ts`, and `max_turns_per_task` clamps each task's own turn budget.
+ *
+ * `task_dimensions` is projected and validated for forward-compatible policy authoring but is not
+ * yet consumed -- the plan turn still seeds from the engine's own `TASK_DIMENSIONS`. Stated here
+ * rather than left to be discovered: a config key that silently does nothing is a lie in the
+ * operator's surface.
+ *
+ * There is deliberately NO `require_security_task` key. The composed plan's security floor -- any
+ * file the deterministic classifier puts in the security lane must be covered by a `security`
+ * task -- is the defence against a diff whose own text coaxes the model into skipping auth review
+ * (ADR 0639). It is heuristic-derived, not model-derived, and not satisfiable by a corrective
+ * turn. Exposing it as a boolean would offer exactly one meaningful value, `false`, and would
+ * invite a future wiring pass to turn a non-negotiable control into an operator toggle.
+ */
+export const composedEngineConfigSchema = z.object({
+  max_tasks: z.number().int().positive().max(64).optional(),
+  max_turns_total: z.number().int().positive().max(200).optional(),
+  max_turns_per_task: z.number().int().positive().max(50).optional(),
+  task_dimensions: z.array(z.string().min(1)).min(1).optional(),
+}).strict();
+export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
 
 const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
@@ -453,6 +578,8 @@ const ctReviewConfigV3ObjectSchema = z.object({
   on_pr_close: onPRCloseSchema,
   evidence: evidenceSchema.optional(),
   pre_checks: preChecksSchema.optional(),
+  review_engine: reviewEngineSchema.optional(),
+  composed: composedEngineConfigSchema.optional(),
 
   reviewers: z.object({
     execution: z.literal('personas'),

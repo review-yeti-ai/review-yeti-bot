@@ -23,6 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
+import { executeComposedReview } from '../panel/composedEngine';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
 import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
@@ -565,6 +566,8 @@ export interface PublishingReviewDeps {
   /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
   visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
   panelRunner?: typeof executePersonaPanel;
+  /** Injectable for tests. Used only when `resolveReviewEngine(workerConfig)` selects `'composed'`. */
+  composedReviewRunner?: typeof executeComposedReview;
   client?: ReviewModelClient;
   now?: () => number;
   /** Worker/runtime shutdown signal; linked to the panel's configured deadline. */
@@ -663,6 +666,30 @@ export function zoektGroundingEnabledFor(
     && (config as { pre_checks?: { zoekt?: { enabled?: boolean } } })?.pre_checks?.zoekt?.enabled !== false;
 }
 
+export type ReviewEngine = 'panel' | 'composed' | 'shadow';
+
+/**
+ * Selects between the fan-out persona panel (`panel`, the default), the single-context composed
+ * engine (`composed`, `src/panel/composedEngine.ts`), and `shadow` -- run both, gate on the panel
+ * (see the `isShadow` block in `runPublishingReviewWorker`: the composed run there is additive,
+ * non-gating evidence and can never influence `rawPublicationRoster`/`computeArbitration` or the
+ * published conclusion). Fail-inert: any value other than the exact strings `'composed'` or
+ * `'shadow'` -- unset, a typo, anything else -- stays `'panel'`.
+ *
+ * Deliberately reads the resolved worker config's `review_engine` field, never a raw env var: the
+ * worker config is projected from base policy (`resolveWorkerConfig` in
+ * `../config/publishingWorkerConfig`, or the digest-verified `parsePreparedReviewExecution` on the
+ * authoritative path), neither of which a pull request can influence. Reading an env var here
+ * instead would let whatever triggered this run pick its own review engine -- e.g. escaping the
+ * stricter composed engine an operator enabled for this repository, or opting into an engine that
+ * was never enabled at all.
+ */
+export function resolveReviewEngine(config: { review_engine?: unknown }): ReviewEngine {
+  if (config?.review_engine === 'composed') return 'composed';
+  if (config?.review_engine === 'shadow') return 'shadow';
+  return 'panel';
+}
+
 export async function runPublishingReviewWorker(
   env: NodeJS.ProcessEnv,
   deps: PublishingReviewDeps,
@@ -684,7 +711,9 @@ export async function runPublishingReviewWorker(
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
-  const panelRunner = deps.panelRunner || executePersonaPanel;
+  // `reviewEngine`/`panelRunner` are resolved below, once `workerConfig` exists -- see
+  // `resolveReviewEngine`'s doc comment for why this must read the resolved base-policy config
+  // rather than a raw env var this early.
   let preparedPersonaIds: string[] = [];
   let authoritativeCompletionAttempted = false;
   let legacySuccessCompletionAttempted = false;
@@ -879,6 +908,17 @@ export async function runPublishingReviewWorker(
         { baseUrl: transport.baseUrl, model: transport.model }).config
       : resolveWorkerConfig(env, transport);
     if (authoritative) preparedPersonaIds = workerConfig.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
+    // Base-policy driven (see `resolveReviewEngine`'s doc comment): a PR cannot switch its own
+    // review engine by setting an env var, only by what `workerConfig.review_engine` resolved to.
+    const reviewEngine = resolveReviewEngine(workerConfig);
+    const panelRunner = reviewEngine === 'composed'
+      ? (deps.composedReviewRunner || executeComposedReview)
+      : (deps.panelRunner || executePersonaPanel);
+    // Shadow mode always gates on the fan-out panel -- `panelRunner` above already resolved to it
+    // for any `reviewEngine` other than `'composed'`, `'shadow'` included. `shadowRunner` is the
+    // second, non-gating engine invoked alongside it purely to collect comparison evidence.
+    const isShadow = reviewEngine === 'shadow';
+    const shadowRunner = deps.composedReviewRunner || executeComposedReview;
     const repositoryVisibility = await resolveRepositoryVisibility(
       normalizeRepositoryVisibility(value(env, 'REVIEW_REPOSITORY_VISIBILITY')),
       {
@@ -962,6 +1002,16 @@ export async function runPublishingReviewWorker(
     // `zoektDuration` (panelEngine.ts) measures query time against an already-built index; this
     // measures materializing the worktree and building that index in the first place.
     let zoektIndexBuildMs = 0;
+    type ShadowOutcome =
+      | { status: 'skipped' }
+      | { status: 'settled'; result: PanelResult }
+      | { status: 'error'; error: unknown };
+    // Declared here (not `const` inside the `try` below) for the same reason `zoektScratchRoot`
+    // and `zoektIndexBuildMs` above are: the `finally` at the bottom of this `try` needs to read
+    // them, and a `try`/`finally` pair does not share block scope -- a `const` declared inside the
+    // `try` is not visible inside `finally`.
+    let shadowDeadline: ReturnType<typeof createPanelDeadlineSignal> | undefined;
+    let shadowOutcomePromise: Promise<ShadowOutcome> = Promise.resolve({ status: 'skipped' });
     try {
       // A throwing grounding dep still fails soft: grounding is evidence
       // enrichment, never a precondition of the review.
@@ -1015,6 +1065,60 @@ export async function runPublishingReviewWorker(
             },
           }
         : workerConfig;
+      // Shadow evidence: its OWN independent deadline derived from the same `overall_timeout_s`
+      // (`createPanelDeadlineSignal` mints a fresh timer each call), so a hung composed run times
+      // out on its own schedule and can never extend this job past the panel's deadline below.
+      // Started here, before the panel await, so the two engines run CONCURRENTLY -- wall time is
+      // max(panel, composed), never the sum. The panel holds up to `MAX_CONCURRENT_PERSONAS` (4)
+      // provider slots and the composed run holds 1; both fitting inside the account's ceiling of
+      // 10 is what makes running them side by side safe. `shadowOutcomePromise` is awaited only
+      // once evidence is built (`buildReviewResult({ includeShadow: true })`), well after the
+      // panel's own check publication below, so a slow shadow lane never delays it.
+      shadowDeadline = isShadow
+        ? createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal)
+        : undefined;
+      // TOTAL, never rejects: a composed-engine throw, timeout, or abort must never propagate out
+      // of this run and must never be added to the panel's own `optionalFailures`/`failedLanes` --
+      // the panel is the only engine allowed to gate the published verdict. Swallowed and logged
+      // here instead, and carried forward as a tagged outcome so a genuine empty/zero-lane composed
+      // result ("produces nothing") and an outright failure both resolve to zero shadow evidence
+      // entries, without either one ever reaching `panelResult`, `rawPublicationRoster`, or
+      // `computeArbitration`.
+      // Narrowed to a local `const`: `shadowDeadline` above is a `let` (reassigned once, but still
+      // mutable to `tsc`), and its `.signal` is read inside the closures below -- `tsc` cannot
+      // narrow a captured `let` across a closure boundary the way it can a `const`.
+      const activeShadowDeadline = shadowDeadline;
+      shadowOutcomePromise = isShadow && activeShadowDeadline
+        ? Promise.resolve()
+          .then(() => raceWithPanelAbort(
+            Promise.resolve().then(() => shadowRunner({
+              config: groundedConfig,
+              changedFiles,
+              repository: identity.repo,
+              headSha: identity.headSha,
+              baseSha: identity.baseSha,
+              prNumber: identity.prNumber,
+              repositoryVisibility,
+              client,
+              jobId: identity.runId,
+              signal: activeShadowDeadline.signal,
+              repoFileProvider,
+              isCurrentHead: deps.isCurrentHead,
+              // Same upstream production Bifrost native JSON contract as the panel call below.
+              requestPolicy: { responseFormat: { type: 'json_object' } },
+            } as Parameters<typeof executeComposedReview>[0])),
+            activeShadowDeadline.signal,
+          ))
+          .then((result): ShadowOutcome => ({ status: 'settled', result }))
+          .catch((error): ShadowOutcome => {
+            logger.warn('Shadow composed review lane failed; recorded as non-gating evidence only, panel verdict unaffected', {
+              runId: identity.runId,
+              repository: identity.repo,
+              reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+            });
+            return { status: 'error', error };
+          })
+        : Promise.resolve({ status: 'skipped' });
       const panelResult = await raceWithPanelAbort(
         Promise.resolve().then(() => panelRunner({
           config: groundedConfig,
@@ -1051,6 +1155,11 @@ export async function runPublishingReviewWorker(
         changedFiles,
         coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && unreadable.length === 0,
         ...(unreadable.length > 0 ? { coverageGaps: ['unreadable diff header(s)'] } : {}),
+        // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
+        // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
+        // would let a longer task plan silently raise its own P1 blocking threshold (7 tasks moves
+        // it from 3 to 4). See `reviewCore.js`'s `resolvePanelSize` doc comment.
+        ...(reviewEngine === 'composed' ? { panelSize: 1 } : {}),
       });
       const coverage: PublishingCoverageProjection = {
         mode: rawRoster.mode,
@@ -1253,11 +1362,21 @@ export async function runPublishingReviewWorker(
     });
 
     const completedAt = new Date(now()).toISOString();
+    // Resolved lazily, only where shadow evidence is actually consumed (the non-authoritative
+    // evidence branch below) -- never on the authoritative `reportReviewResult` path, which never
+    // requests `includeShadow` and so never needs to wait for it. `deriveCanonicalWorkerReviewEvidence`
+    // (the authoritative gate's server-side re-arbitration) rejects ANY persona id outside its
+    // trusted `expectedPersonaIds` roster as an "unknown persona lane" -- an invalid-evidence,
+    // published-failure outcome. A composed-engine task id was never one of the panel's configured
+    // persona ids, so a shadow lane reaching that path would not just be inert extra evidence, it
+    // would flip the authoritative decision to failure. `buildReviewResult()`'s default
+    // (`includeShadow` unset/false) is what keeps the two engines' evidence on separate rails.
+    let shadowOutcome: ShadowOutcome = { status: 'skipped' };
     // The persona lanes and findings behind the published check, in the shape
     // the service's completion contract accepts. Built once and reported on
     // both paths: the authoritative gate re-arbitrates from it; the legacy
     // terminal success carries it as evidence so the service can keep it.
-    const buildReviewResult = () => {
+    const buildReviewResult = (options: { includeShadow?: boolean } = {}) => {
       const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
         'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
       // Additive, OPTIONAL per-persona telemetry: the accumulated per-turn usage this lane's
@@ -1292,12 +1411,52 @@ export async function runPublishingReviewWorker(
       const errors = (panelResult.optionalFailures || []).map((failure) => ({ id: failure.id,
         decision: 'ERROR' as const, status: 'ERROR' as const, findings: [],
         errorClass: failure.failureClass ?? classifyFailure(failure.error) }));
+      // Additive, non-gating shadow evidence (`evidenceSource: 'shadow'`, see
+      // `personaSchema.evidenceSource` in `workerReviewCompletion.ts`). ONLY appended when the
+      // caller explicitly opts in with `includeShadow` -- the authoritative `reportReviewResult`
+      // call below never does, for the reason in the comment above `shadowOutcome`'s declaration.
+      // A skipped shadow run (not `'shadow'` mode) or one that produced neither a persona nor a
+      // failure yields an empty array, which is what keeps a shadow run whose composed lane
+      // produced nothing byte-identical to a plain panel run's evidence.
+      const shadowPersonas = options.includeShadow && shadowOutcome.status === 'settled'
+        ? (shadowOutcome.result.personas || []).map((persona) => {
+          const telemetry = buildPersonaTelemetryPayload(persona);
+          return {
+            id: persona.id,
+            decision: persona.decision ?? (persona.findings.length > 0 ? 'FINDINGS' : 'APPROVE'),
+            status: 'COMPLETE' as const,
+            findings: persona.findings.map((finding) => Object.fromEntries(
+              Object.entries(finding).filter(([key, value]) => findingKeys.has(key) && value !== undefined))),
+            evidenceSource: 'shadow' as const,
+            ...(telemetry ? { telemetry } : {}),
+          };
+        })
+        : [];
+      const shadowErrors = options.includeShadow && shadowOutcome.status === 'settled'
+        ? (shadowOutcome.result.optionalFailures || []).map((failure) => ({
+          id: failure.id, decision: 'ERROR' as const, status: 'ERROR' as const, findings: [],
+          evidenceSource: 'shadow' as const,
+          errorClass: failure.failureClass ?? classifyFailure(failure.error),
+        }))
+        : [];
+      // The composed engine itself never started, threw, or timed out (as opposed to running and
+      // reporting its own per-task `optionalFailures` above): one synthetic ERROR lane records
+      // that the shadow lane failed at all, still tagged `evidenceSource: 'shadow'` and still never
+      // touching `panelResult`/`rawPublicationRoster`/`computeArbitration`.
+      const shadowRunFailure = options.includeShadow && shadowOutcome.status === 'error'
+        ? [{ id: 'shadow_composed_engine', decision: 'ERROR' as const, status: 'ERROR' as const, findings: [],
+          evidenceSource: 'shadow' as const, errorClass: classifyFailure(shadowOutcome.error) }]
+        : [];
       return parseWorkerReviewCompletion({ version: 'WorkerReviewCompletion.v1',
         runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
         prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
         policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
         executionAttempt: identity.executionAttempt,
-        result: { version: 'WorkerReviewResult.v1', completedAt, personas: [...personas, ...errors],
+        result: { version: 'WorkerReviewResult.v1', completedAt,
+          // Bounded the same way `rawPublicationRoster` bounds its own lane array: MAX_PERSONAS
+          // caps the combined panel + shadow lane count so an oversized composed task plan cannot
+          // push this past `resultSchema.personas`'s own bound.
+          personas: [...personas, ...errors, ...shadowPersonas, ...shadowErrors, ...shadowRunFailure].slice(0, MAX_PERSONAS),
           coverageComplete: unreadable.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true,
           // See `resultSchema.panelWallClockMs`: the panel's own wall-clock measurement, carried
           // across the completion boundary so downstream comparisons stop relying on a summed
@@ -1310,6 +1469,11 @@ export async function runPublishingReviewWorker(
       await reportReviewResult(buildReviewResult());
     }
     if (!authoritative && !recoverablePanelFailure && deps.completion?.reportReviewEvidence) {
+      // Resolved here, immediately before it is needed, and nowhere earlier: `completeCheck` (or
+      // `reportTerminalFailure` on the recoverable branch, which never reaches this guard) has
+      // already published above, so waiting on the shadow lane here cannot delay it. `finally`
+      // below is the backstop for every path that does NOT reach this line.
+      if (isShadow) shadowOutcome = await shadowOutcomePromise;
       // The findings behind the check just published, for either conclusion: a
       // failing check carries the P0/P1 findings that made it fail. Evidence is
       // never allowed to be the reason a published check goes unreported: a
@@ -1322,7 +1486,7 @@ export async function runPublishingReviewWorker(
           prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
           policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
           executionAttempt: identity.executionAttempt,
-          checkId, conclusion, result: buildReviewResult(),
+          checkId, conclusion, result: buildReviewResult({ includeShadow: true }),
         });
       } catch (error) {
         logger.warn('Review evidence was not reported', {
@@ -1383,6 +1547,16 @@ export async function runPublishingReviewWorker(
     };
     } finally {
       panelDeadline.cleanup();
+      // Bounded by the shadow run's own deadline (already elapsed on every path that reached
+      // evidence-building above, where it is awaited explicitly -- this is a no-op there). On an
+      // early throw or a `recoverablePanelFailure` return (which skips evidence-building
+      // entirely), this is what stops an in-flight composed call from outliving the job with its
+      // deadline timer disarmed underneath it: `cleanup()` only clears the timer, it does not
+      // abort the run, so the wait must happen before it.
+      if (shadowDeadline) {
+        await shadowOutcomePromise.catch(() => undefined);
+        shadowDeadline.cleanup();
+      }
       // One shared deletion contract (async, fail-soft) — the worker must not
       // hand-roll its own rm for the scratch tree.
       await removeScratchTree(zoektScratchRoot.scratchDir);

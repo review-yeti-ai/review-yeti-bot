@@ -73,6 +73,14 @@ export interface ArbitrationOptions {
    * reusing the clean-panel "Quorum satisfied" sentence (REL-491).
    */
   p2BlocksMerge?: boolean;
+  /**
+   * Overrides the panel-size the blocking/nit thresholds scale from (see `resolvePanelSize` in
+   * `reviewCore.js`). Required from any caller whose `personaResults.length` is not a count of
+   * independent reviewers -- the composed engine's lanes are planned TASKS, not reviewers, and
+   * defaulting this to the lane count would let a longer task plan silently raise its own P1
+   * blocking threshold.
+   */
+  panelSize?: number;
   nearDuplicate?: {
     threshold?: number;
     strongThreshold?: number;

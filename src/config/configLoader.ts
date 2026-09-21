@@ -11,6 +11,16 @@ export class ConfigValidationError extends Error {
   }
 }
 
+/**
+ * Per-lane budget for the opencode provider, in seconds.
+ *
+ * Measured, not guessed: at the shared 90s default every lane failed with "Streaming response
+ * exceeded total deadline of 90000ms" on a ~2,500 line diff, while the same transport answers a
+ * small prompt in ~2s. Exported so the value is assertable rather than a literal buried in a
+ * provider list.
+ */
+export const OPENCODE_LANE_TIMEOUT_S = 300;
+
 export function createDefaultV3Config(): CtReviewConfigV3 {
   return {
     version: 3,
@@ -62,16 +72,16 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
       ticket_enforcement: false,
     },
     personas: [
-      { id: 'sec-lane', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['synthetic', 'claude'] },
-      { id: 'arch-lane', enabled: true, required: false, charter: 'builtin:constitutional-goals', paths: ['src/**', 'lib/**', 'app/**', 'cmd/**', 'pkg/**', 'k8s/**', '.github/**', 'helm/**', 'Dockerfile*', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.go', '**/*.rs', '**/*.py'], providers: ['synthetic', 'claude'] },
-      { id: 'qual-lane', enabled: true, required: false, charter: 'builtin:consistency', paths: ['src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.rs', '**/*.py'], providers: ['synthetic', 'claude'] },
-      { id: 'devops-lane', enabled: true, required: false, charter: 'builtin:devops', paths: ['Dockerfile*', 'k8s/**', '.github/**', 'helm/**', '**/*.yaml', '**/*.yml', 'scripts/**', 'Tiltfile*', 'Procfile*', 'Makefile*'], providers: ['synthetic', 'claude'] },
-      { id: 'correctness-lane', enabled: true, required: false, charter: 'builtin:correctness', paths: ['src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.tsx', '**/*.js', '**/*.go', '**/*.rs', '**/*.py', 'scripts/**'], providers: ['synthetic', 'claude'] },
-      { id: 'contract-lane', enabled: true, required: false, charter: 'builtin:contract', paths: ['**/api/**', '**/controllers/**', '**/routes/**', '**/proto/**', '**/*.proto', '**/*.graphql', '**/schema/**', '**/contracts/**', '**/openapi*', '**/*.swagger*'], providers: ['synthetic', 'claude'] },
-      { id: 'policy-lane', enabled: true, required: false, charter: 'builtin:policy-compliance', paths: ['**'], providers: ['synthetic', 'claude'] },
-      { id: 'perf-lane', enabled: true, required: false, charter: 'builtin:performance', paths: ['src/**', 'lib/**', 'app/**', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.rs', '**/*.py', '**/benchmarks/**'], providers: ['synthetic', 'claude'] },
-      { id: 'db-lane', enabled: true, required: false, charter: 'builtin:database', paths: ['**/repo/**', '**/priv/repo/**', '**/migrations/**', '**/schema/**', '**/*.sql', '**/db/**', '**/models/**', '**/entities/**', '**/timescale/**', '**/cagg/**'], providers: ['synthetic', 'claude'] },
-      { id: 'finops-lane', enabled: true, required: false, charter: 'builtin:finops', paths: ['k8s/**', 'helm/**', 'terraform/**', '.github/**', 'Dockerfile*', 'docker-compose*.yml', '**/billing/**', '**/costs/**', '**/pricing/**'], providers: ['synthetic', 'claude'] },
+      { id: 'sec-lane', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['opencode', 'claude'] },
+      { id: 'arch-lane', enabled: true, required: false, charter: 'builtin:constitutional-goals', paths: ['src/**', 'lib/**', 'app/**', 'cmd/**', 'pkg/**', 'k8s/**', '.github/**', 'helm/**', 'Dockerfile*', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.go', '**/*.rs', '**/*.py'], providers: ['opencode', 'claude'] },
+      { id: 'qual-lane', enabled: true, required: false, charter: 'builtin:consistency', paths: ['src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.rs', '**/*.py'], providers: ['opencode', 'claude'] },
+      { id: 'devops-lane', enabled: true, required: false, charter: 'builtin:devops', paths: ['Dockerfile*', 'k8s/**', '.github/**', 'helm/**', '**/*.yaml', '**/*.yml', 'scripts/**', 'Tiltfile*', 'Procfile*', 'Makefile*'], providers: ['opencode', 'claude'] },
+      { id: 'correctness-lane', enabled: true, required: false, charter: 'builtin:correctness', paths: ['src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.tsx', '**/*.js', '**/*.go', '**/*.rs', '**/*.py', 'scripts/**'], providers: ['opencode', 'claude'] },
+      { id: 'contract-lane', enabled: true, required: false, charter: 'builtin:contract', paths: ['**/api/**', '**/controllers/**', '**/routes/**', '**/proto/**', '**/*.proto', '**/*.graphql', '**/schema/**', '**/contracts/**', '**/openapi*', '**/*.swagger*'], providers: ['opencode', 'claude'] },
+      { id: 'policy-lane', enabled: true, required: false, charter: 'builtin:policy-compliance', paths: ['**'], providers: ['opencode', 'claude'] },
+      { id: 'perf-lane', enabled: true, required: false, charter: 'builtin:performance', paths: ['src/**', 'lib/**', 'app/**', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.rs', '**/*.py', '**/benchmarks/**'], providers: ['opencode', 'claude'] },
+      { id: 'db-lane', enabled: true, required: false, charter: 'builtin:database', paths: ['**/repo/**', '**/priv/repo/**', '**/migrations/**', '**/schema/**', '**/*.sql', '**/db/**', '**/models/**', '**/entities/**', '**/timescale/**', '**/cagg/**'], providers: ['opencode', 'claude'] },
+      { id: 'finops-lane', enabled: true, required: false, charter: 'builtin:finops', paths: ['k8s/**', 'helm/**', 'terraform/**', '.github/**', 'Dockerfile*', 'docker-compose*.yml', '**/billing/**', '**/costs/**', '**/pricing/**'], providers: ['opencode', 'claude'] },
     ],
     reviewers: {
       execution: 'personas',
@@ -79,8 +89,37 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
       overall_timeout_s: 900,
       providers: [
         {
-          id: 'synthetic',
+          id: 'opencode',
           enabled: true,
+          model: V3_PROVIDER_MODELS.opencode,
+          effort: 'low',
+          // Measured, not guessed. At 90s -- the shared default -- every lane failed with
+          // "Streaming response exceeded total deadline of 90000ms" on a ~2,500 line diff, while
+          // the same transport answers a small prompt in ~2s. glm-5.3-flash via opencode is
+          // simply slower per token than the OpenRouter route this default was tuned for.
+          //
+          // Raised only for THIS provider. Lifting the shared default would hide genuine
+          // stalls on the faster transports, and a timeout that never fires is not a timeout.
+          //
+          // Related but deliberately NOT shared with REVIEW_LANE_TIMEOUT_MS in
+          // .github/workflows/pipelines/review-pipeline.js. They govern different execution
+          // paths -- this is the per-provider budget for the TypeScript panel, that is the
+          // per-lane deadline for the transports the composite action synthesizes -- and neither
+          // can read the other: one is a compiled TS default, the other a workflow variable.
+          // The action's value is intentionally the larger of the two so its outer deadline
+          // cannot cut off a lane that this inner budget still considers live.
+          review_timeout_s: OPENCODE_LANE_TIMEOUT_S,
+          arbiter_timeout_s: OPENCODE_LANE_TIMEOUT_S,
+        },
+        {
+          // Defined but DISABLED, mirroring how `codex` is carried below. Deleting the entry
+          // outright would orphan any persona whose `providers` list still names `synthetic` --
+          // a repo config, or a test fixture that pushes its own persona -- and an orphaned
+          // persona resolves to no provider and silently stops producing a lane. Keeping the
+          // entry means such a config degrades to "this provider is off", which is legible,
+          // rather than "this lane vanished", which is not.
+          id: 'synthetic',
+          enabled: false,
           model: V3_PROVIDER_MODELS.synthetic,
           effort: 'low',
           review_timeout_s: 90,
@@ -89,7 +128,11 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
         {
           id: 'claude',
           enabled: true,
-          model: 'claude-opus-4-8',
+          // Flash/light only for review lanes (operator policy, 2026-09-19). A reviewer reads a
+          // bounded diff and emits bounded JSON; the frontier-tier model that used to sit here
+          // bought latency and concurrency cost, not recall -- and recall is what this panel is
+          // measured on. Escalation belongs behind an explicit policy decision, not the default.
+          model: 'claude-haiku-4-5',
           effort: 'low',
           review_timeout_s: 90,
           arbiter_timeout_s: 90,
@@ -104,7 +147,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
         },
       ],
       arbiter: {
-        order: ['synthetic', 'claude'],
+        order: ['opencode', 'claude'],
       },
     },
     path_instructions: [],

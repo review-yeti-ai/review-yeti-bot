@@ -22,6 +22,14 @@ export interface DiscoveredSymbolContext {
   sourcePath: string;
   isModifiedDefinition: boolean;
   definitions: ZoektSymbolMatch[];
+  /**
+   * True when NO line matched `isDefinitionLine` and the first non-import match was adopted as a
+   * stand-in. That is a guess, and it must not be rendered to a reviewer as a canonical
+   * definition: a model told "the definition of X is at file:line" will reason from it as fact,
+   * and a wrong location produces exactly the confident, specific, false finding this pipeline
+   * exists to avoid.
+   */
+  definitionsAreInferred?: boolean;
   callSites: ZoektSymbolMatch[];
 }
 
@@ -695,10 +703,12 @@ export async function executeZoektPreCheck(
       }
 
       // For referenced symbols: if no definition line was matched, pick first non-import as definition candidate
+      let definitionsAreInferred = false;
       if (!candidate.isModifiedDefinition && definitions.length === 0 && externalMatches.length > 0) {
         const nonImport = externalMatches.find((m) => !isImportLine(m.text));
         if (nonImport) {
           definitions.push(nonImport);
+          definitionsAreInferred = true;
         }
       }
 
@@ -710,6 +720,7 @@ export async function executeZoektPreCheck(
           sourcePath: candidate.sourcePath,
           isModifiedDefinition: candidate.isModifiedDefinition,
           definitions: definitions.slice(0, 10),
+          definitionsAreInferred,
           callSites: callSites.slice(0, 25),
         };
       }
@@ -873,7 +884,12 @@ export function formatZoektPreCheckPrompt(
       } else {
         symLines.push(`- Symbol '${sym.symbol}'${kindStr} (referenced in ${sym.sourcePath}):`);
         if (sym.definitions && sym.definitions.length > 0) {
-          symLines.push(`  Canonical definition:`);
+          // Say which of the two this is. "Canonical definition" is a claim; when no line matched
+          // the definition heuristic it is not one, and labelling a guess as canonical invites the
+          // model to build a blocking finding on top of it.
+          symLines.push(sym.definitionsAreInferred
+            ? `  Possible definition (UNCONFIRMED -- no definition-shaped line matched; this is the first non-import match and may be the wrong location. Verify before relying on it):`
+            : `  Canonical definition:`);
           const displayDefs = sym.definitions.slice(0, 5);
           for (const def of displayDefs) {
             symLines.push(`    - ${def.path}:${def.line}: ${def.text.trim()}`);

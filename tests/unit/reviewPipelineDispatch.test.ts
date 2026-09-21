@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -609,3 +609,102 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
     expect(ciWorkflow).toMatch(/jobs:\n  test:[\s\S]*?timeout-minutes: 15/u);
   });
 });
+describe('resolvesToOpenRouterDestination', () => {
+  // The core behavioural fix: OpenRouter-only request fields (`session_id`, `reasoning`,
+  // `provider`, `plugins`, `models`) are unknown inputs anywhere else and produce
+  // `HTTP 400 Extra inputs are not permitted`, failing every persona lane. This predicate is what
+  // stops that, so it is asserted directly rather than inferred from a green pipeline run.
+  const { resolvesToOpenRouterDestination } = require('../../.github/workflows/pipelines/review-pipeline.js');
+
+  it('is true for an OpenRouter destination', () => {
+    expect(resolvesToOpenRouterDestination({ provider: 'openrouter' }, 'https://openrouter.ai/api/v1')).toBe(true);
+  });
+
+  it('is FALSE when a transport named openrouter points somewhere else', () => {
+    // The regression this PR exists to fix. The name does not change what the server parses.
+    expect(resolvesToOpenRouterDestination({ provider: 'openrouter', compat: 'openrouter' }, 'https://opencode.ai/zen/v1')).toBe(false);
+  });
+
+  it('falls back to the name/compat labels only when no base URL is configured', () => {
+    // Keeps legacy transports that rely on the label working.
+    expect(resolvesToOpenRouterDestination({ provider: 'openrouter' }, '')).toBe(true);
+    expect(resolvesToOpenRouterDestination({ compat: 'openrouter' }, undefined)).toBe(true);
+    expect(resolvesToOpenRouterDestination({ provider: 'fireworks' }, '   ')).toBe(false);
+  });
+
+  it('does not admit an unrelated host by name alone', () => {
+    expect(resolvesToOpenRouterDestination({ provider: 'openrouter' }, 'https://api.fireworks.ai/inference/v1')).toBe(false);
+  });
+
+  // A genuine lookalike, which the previous version of this test did NOT cover -- it asserted
+  // against fireworks.ai and called it a lookalike. Worth stating what this predicate does and
+  // does not promise: substring matching means a hostile host CAN satisfy it. That is acceptable
+  // here only because the base URL is separately pinned to a closed allowlist in
+  // openrouter-policy.js, which is the control that actually stops an attacker-chosen
+  // destination. This predicate decides request SHAPE for an already-trusted host.
+  it('substring matching admits a lookalike, which the policy allowlist is what actually blocks', () => {
+    expect(resolvesToOpenRouterDestination({}, 'https://openrouter.ai.evil.example/v1')).toBe(true);
+  });
+
+  describe('resolveAutoTransportTimeoutMs', () => {
+    const { resolveAutoTransportTimeoutMs, DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS } =
+      require('../../.github/workflows/pipelines/review-pipeline.js');
+
+    it('accepts a positive safe integer', () => {
+      expect(resolveAutoTransportTimeoutMs({ REVIEW_LANE_TIMEOUT_MS: '420000' })).toBe(420000);
+    });
+
+    it('falls back to the default for every non-positive or non-integer input', () => {
+      for (const raw of ['0', '-1', 'abc', '', '1.5', 'Infinity', String(Number.MAX_SAFE_INTEGER) + '0']) {
+        expect(resolveAutoTransportTimeoutMs({ REVIEW_LANE_TIMEOUT_MS: raw }), raw)
+          .toBe(DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS);
+      }
+      expect(resolveAutoTransportTimeoutMs({})).toBe(DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS);
+    });
+  });
+});
+describe('getStreamingFetchDispatcher without an undici Agent', () => {
+  // review-pipeline.js memoises the dispatcher in a module-level `streamingFetchDispatcher`.
+  // Without resetting the module between cases these tests are order-dependent: whichever runs
+  // second reads the first one's cached value instead of exercising its own loader, and the
+  // null-loader case would silently assert against a cached Agent. Reload per test so each one
+  // actually runs the branch it names.
+  let mod: any;
+  beforeEach(() => {
+    vi.resetModules();
+    mod = require('../../.github/workflows/pipelines/review-pipeline.js');
+  });
+
+  // The Agent only lifts undici's default 300s headersTimeout. Throwing on its absence tripped
+  // the transport circuit breaker and failed EVERY persona lane -- a missing optional performance
+  // shim became a total review failure with zero findings.
+  //
+  // The loader is injected rather than mocked out of the module graph. The previous version of
+  // this test asserted only `.not.toThrow()` with the real loader, and undici IS resolvable in
+  // this repo -- so it passed whether or not the fallback existed and could not fail for the
+  // behaviour it claimed to pin.
+  it('returns undefined instead of throwing when no Agent can be loaded', () => {
+    expect(mod.getStreamingFetchDispatcher(() => null)).toBeUndefined();
+  });
+
+  it('still returns a dispatcher when an Agent is available', () => {
+    class FakeAgent { constructor(public opts: unknown) {} }
+    expect(mod.getStreamingFetchDispatcher(() => FakeAgent)).toBeInstanceOf(FakeAgent);
+  });
+});
+describe('synthesized transports consume the configured lane deadline', () => {
+  // The helper was tested but nothing pinned that the six call sites actually USE it -- replacing
+  // the literal at five of six would have passed every existing test.
+  it('every synthesized transport carries the resolved timeout, not a literal', () => {
+    const source = require('node:fs').readFileSync(
+      require('node:path').resolve(__dirname, '../../.github/workflows/pipelines/review-pipeline.js'),
+      'utf8',
+    );
+    const autoBlock = source.slice(source.indexOf('autoTransports.push({'), source.indexOf('function ', source.indexOf('autoTransports.push({')));
+    expect(autoBlock).not.toMatch(/timeoutMs:\s*90_000/);
+    expect((autoBlock.match(/timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,/g) || []).length).toBeGreaterThan(0);
+  });
+});
+
+
+

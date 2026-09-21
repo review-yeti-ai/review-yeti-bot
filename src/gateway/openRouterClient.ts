@@ -77,6 +77,12 @@ export interface OpenRouterRequest {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   reasoning?: Record<string, unknown>;
   maxTokens?: number;
+  /**
+   * Flatten `OpenRouterContentBlock[]` message content to a plain string before sending.
+   * Opt-in per request: only a transport that cannot parse the block array should set it, because
+   * flattening drops the `cache_control` prefix breakpoint. See `flattenMessageContent`.
+   */
+  flattenContentBlocks?: boolean;
   temperature?: number;
   responseFormat?: Record<string, unknown>;
   provider?: Record<string, unknown>;
@@ -181,11 +187,44 @@ function raceWithAbort<T>(
  * Optional fields are omitted rather than sent as `undefined`, which keeps request fingerprints
  * stable across smoke, replay, and live qualification callers.
  */
+/**
+ * Collapse `OpenRouterContentBlock[]` message content into a plain string.
+ *
+ * Not every OpenAI-compatible gateway accepts the array form. opencode rejects it outright:
+ * `Input should be a valid string, field: 'messages[1].content.str'`. The panel uses the array
+ * form because it carries the `cache_control` prefix breakpoint, so a transport that cannot read
+ * it needs the content flattened rather than every caller rebuilding its prompts.
+ *
+ * LOSSY in exactly one direction, deliberately: `cache_control` markers are dropped, because a
+ * gateway that cannot parse the block array cannot honour the breakpoint either. Text blocks are
+ * joined with a blank line, matching how a block-capable provider renders consecutive text
+ * blocks. A non-text block is replaced by an explicit marker naming its type, so a silently
+ * vanished image can never be mistaken for one that was never sent.
+ *
+ * Returns the SAME array by reference when nothing needs flattening, so a transport that accepts
+ * blocks is byte-identical to not calling this at all.
+ */
+export function flattenMessageContent(messages: OpenRouterMessage[]): OpenRouterMessage[] {
+  let changed = false;
+  const out = messages.map((message) => {
+    if (typeof message.content === 'string' || !Array.isArray(message.content)) return message;
+    changed = true;
+    const parts: string[] = [];
+    for (const block of message.content as any[]) {
+      if (typeof block === 'string') { parts.push(block); continue; }
+      if (block && block.type === 'text' && typeof block.text === 'string') { parts.push(block.text); continue; }
+      parts.push(`[unsupported content block omitted: ${String(block?.type ?? 'unknown')}]`);
+    }
+    return { ...message, content: parts.join('\n\n') };
+  });
+  return changed ? out : messages;
+}
+
 export function buildOpenRouterChatRequest(request: OpenRouterRequest): Record<string, unknown> {
   return {
     model: normalizeOpenRouterModel(request.model),
     ...(request.models !== undefined ? { models: request.models.map(normalizeOpenRouterModel) } : {}),
-    messages: request.messages,
+    messages: request.flattenContentBlocks ? flattenMessageContent(request.messages) : request.messages,
     stream: request.stream ?? true,
     ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
     ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
@@ -276,7 +315,7 @@ export function buildOpenRouterSdkChatRequest(request: OpenRouterRequest): Recor
   return {
     model: normalizeOpenRouterModel(request.model),
     ...(request.models !== undefined ? { models: request.models.map(normalizeOpenRouterModel) } : {}),
-    messages: request.messages,
+    messages: request.flattenContentBlocks ? flattenMessageContent(request.messages) : request.messages,
     stream: request.stream ?? true,
     ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
     ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
@@ -302,6 +341,16 @@ export function normalizeOpenRouterModel(model: string): string {
     'grok-cli/grok-4.5': 'x-ai/grok-4.5',
     'codex/gpt-5.6-sol-high': 'openai/gpt-5.6-sol',
     'codex-gateway/gpt-5.6-sol-high': 'openai/gpt-5.6-sol',
+    'opencode-go/glm-5.3-flash': 'z-ai/glm-5.3-flash',
+    'claude/claude-haiku-4-5': 'anthropic/claude-haiku-4.5',
+    // Deliberately NO bare 'glm-5.3-flash' entry. This table is applied to every request
+    // regardless of which gateway the client points at, so a bare id mapped here is rewritten
+    // for non-OpenRouter transports too. `glm-5.3-flash` is now the default synthetic model and
+    // is the literal id opencode and bifrost expect; aliasing it to `z-ai/glm-5.3-flash` made
+    // those transports answer `HTTP 401: Model z-ai/glm-5.3-flash is not supported`. Namespaced
+    // ids are safe to map because they are never what a non-OpenRouter gateway is asked for.
+    // (The pre-existing bare 'glm-5.2' entry below has the same hazard; it is left as-is because
+    // nothing defaults to it any more, but it should not be copied.)
     'opencode-go/glm-5.2': 'z-ai/glm-5.2',
     'synthetic/glm-5.2': 'z-ai/glm-5.2',
     'synthetic-new/glm-5.2-high': 'z-ai/glm-5.2',

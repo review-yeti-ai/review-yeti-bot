@@ -175,7 +175,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
         required: false,
         charter: 'builtin:review-flowchart',
         paths: ['**/*'],
-        providers: ['synthetic'],
+        providers: ['opencode'],
       });
 
       const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });
@@ -239,7 +239,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
         required: false,
         charter: 'builtin:review-flowchart',
         paths: ['**/*'],
-        providers: ['synthetic'],
+        providers: ['opencode'],
       });
 
       const mockClient = new OmniRouteClient({ baseUrl: 'http://localhost:9999/v1', accessToken: 'mock' });

@@ -329,7 +329,7 @@ describe('Challenger 2 — Milestone 1: Schema Validation & Model Ensemble Mappi
     });
 
     it('verifies V3_PROVIDER_MODELS exports correct provider default mappings', () => {
-      expect(V3_PROVIDER_MODELS.synthetic).toBe('glm-5.2');
+      expect(V3_PROVIDER_MODELS.synthetic).toBe('glm-5.3-flash');
       expect(V3_PROVIDER_MODELS.codex).toBe('codex/gpt-5.6-sol-high');
       expect(V3_PROVIDER_MODELS.grok).toBe('grok-cli/grok-4.5');
       expect(V3_PROVIDER_MODELS['agy-opus']).toBe('agy/claude-opus-4-6-thinking');

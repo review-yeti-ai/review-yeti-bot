@@ -52,6 +52,19 @@ jobs:
             rm -f "$f"
           done
 
+      # Both invariants live in a script so they are testable; branching buried in workflow YAML
+      # cannot be exercised by the suite. See scripts/assert-review-transport-config.sh.
+      - name: Assert the review transport configuration is consistent
+        id: transport
+        shell: bash
+        env:
+          REVIEW_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          OPENCODE_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY != '' }}
+          OPENROUTER_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY != '' }}
+          GATEWAY_KEY_PRESENT: ${{ secrets.CT_REVIEW_GATEWAY_API_KEY != '' }}
+          REVIEW_LANE_TIMEOUT_MS: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
+        run: ./scripts/assert-review-transport-config.sh
+
       - name: Execute AI Review Panel
         id: review
         uses: ./
@@ -60,13 +73,40 @@ jobs:
           pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           personas: ${{ vars.ACTIVE_PERSONAS }}
           model: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
-          # Use only the role-scoped review key; generic provider secrets are not admitted here.
-          llm-api-key: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          # Use only role-scoped review keys (CT_REVIEW_*); generic provider secrets such as a
+          # bare OPENROUTER_API_KEY are deliberately NOT admitted here.
+          #
+          # Keyed on the DESTINATION (`vars.OPENROUTER_BASE_URL`), the same value that decides
+          # where the request goes -- not on a second variable that can disagree with it.
+          #
+          # This expression ALONE is not fail-closed, and an earlier version's comment wrongly
+          # claimed it was: GitHub Actions `&&`/`||` return operands rather than booleans, and an
+          # unset secret is an empty string, which is falsy. So a missing opencode secret would
+          # fall straight through to the OpenRouter credential and transmit it to opencode.ai.
+          # The preceding guard step is what actually prevents that; this line only picks.
+          #
+          # Keyed on the destination class the GUARD resolved, not re-derived here. An earlier
+          # version identified the digest-pinned gateway by elimination ("not opencode, not
+          # openrouter, not empty"), which held only while those were the sole destinations: a
+          # fourth destination admitted by the guard and the policy allowlist would have inherited
+          # the gateway arm and received the gateway credential with every check green.
+          #
+          # There is deliberately NO catch-all arm. An unrecognised class yields an empty key and
+          # the lane fails, rather than handing some other provider's credential to it.
+          llm-api-key: >-
+            ${{ steps.transport.outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY
+             || steps.transport.outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY
+             || steps.transport.outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
           # OpenRouter remains the primary direct DeepSeek -> GLM route.
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}
           synthetic-api-key: ${{ secrets.CT_REVIEW_SYNTHETIC_API_KEY || secrets.SYNTHETIC_API_KEY }}
           llm-base-url: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          # Set `vars.REVIEW_TRANSPORT_COMPAT=opencode` alongside an opencode `llm-base-url`.
+          # Unset for OpenRouter and for the digest-pinned gateway: both accept the content-block
+          # message form natively, so flattening them would destroy the prompt-cache breakpoint.
+          transport-compat: ${{ vars.REVIEW_TRANSPORT_COMPAT }}
+          lane-timeout-ms: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
           github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
