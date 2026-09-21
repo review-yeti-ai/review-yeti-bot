@@ -22,7 +22,7 @@ concurrency:
 jobs:
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     services:
       postgres:
         image: postgres:17-alpine
@@ -97,7 +97,7 @@ jobs:
 
   typecheck:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     # REL-585. `tsconfig.json` stopped excluding `tests/` and `scripts/` (REL-570/REL-573), so
     # `npm run lint:src` (tsc --noEmit) now typechecks the whole tree -- but nothing in CI ran it,
     # so the 464 errors that were burned down to reach that state could silently return unnoticed.
@@ -137,7 +137,7 @@ jobs:
 
   operator-test:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     # REL-896. `k8s-operator/` is a Go module with its own controller tests, but no workflow ever
     # ran them: the only place Go was touched in CI was the `go build` inside Dockerfile.operator,
     # so a reconciler regression could ship with a fully green PR. This job runs vet and the
@@ -166,7 +166,7 @@ jobs:
 
   legacy-runtime:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
@@ -226,9 +226,9 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: ubuntu-latest
           - arch: arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -353,7 +353,7 @@ jobs:
   publish-ghcr:
     needs: [publish-ghcr-arch]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     permissions:
       contents: read
@@ -465,7 +465,7 @@ jobs:
   attest-published-indexes:
     needs: publish-ghcr
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Attest the multi-arch GHCR indexes
