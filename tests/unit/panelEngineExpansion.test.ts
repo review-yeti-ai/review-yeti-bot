@@ -78,8 +78,52 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
       client: mockClient as unknown as OmniRouteClient,
     });
     expect(result.zeroLaneNonEvidence).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(result, 'applicablePersonaIds')).toBe(true);
+    expect(result.applicablePersonaIds).toEqual([]);
     expect(result.arbiter.verdict).toBe('SHIP');
     expect(result.personas).toHaveLength(0);
+  });
+
+  it('records configured applicable persona ids on a classifier-approved fast-ship result', async () => {
+    const config = buildMinimalConfig();
+    config.personas = [
+      {
+        id: 'docs-lane',
+        enabled: true,
+        required: true,
+        charter: 'builtin:consistency',
+        paths: ['docs/**'],
+        providers: ['claude'],
+      },
+    ];
+
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      expect(opts.persona).toBe('classifier');
+      return {
+        model: opts.model,
+        content: JSON.stringify({
+          fastShip: true,
+          selectedPersonas: [],
+          effortTier: 'low',
+          rationale: 'Documentation-only change.',
+        }),
+        usage: null,
+        costUSD: null,
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'docs/README.md', patch: '+ documentation' }],
+      repository: 'owner/repo',
+      headSha: 'sha-fast-ship-applicable-ids',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+
+    expect((result as any).isFastShip).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(result, 'applicablePersonaIds')).toBe(true);
+    expect(result.applicablePersonaIds).toEqual(['docs-lane']);
+    expect(result.applicablePersonaIds).not.toEqual(['fast-ship']);
   });
 
   it('throws PanelConfigurationError when required persona fails closed', async () => {

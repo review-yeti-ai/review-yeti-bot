@@ -46,6 +46,7 @@ export function buildFastShipPanelResult(
 
   return {
     headSha,
+    applicablePersonaIds: [],
     personas: [fastShipLane],
     optionalFailures: [],
     quorum: {
