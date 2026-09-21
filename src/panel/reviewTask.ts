@@ -187,8 +187,15 @@ function reject(
   return { valid: false, reason, message, ...extra };
 }
 
-function isValidTaskText(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0 && value.length <= MAX_TASK_TEXT_LENGTH;
+/**
+ * Blank text is a plan defect and stays rejected. Oversized text is clamped.
+ * A question or rationale past the cap is planning prose, not a coverage or
+ * security decision, and failing the whole review on it took live composed
+ * runs down after the one corrective turn still came back too long.
+ */
+function boundedTaskText(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim().length === 0) return null;
+  return value.length <= MAX_TASK_TEXT_LENGTH ? value : value.slice(0, MAX_TASK_TEXT_LENGTH);
 }
 
 function resolveMaxTasks(maxTasks: number | undefined): number {
@@ -275,17 +282,22 @@ export function validateTaskPlan(
     );
   }
 
-  // --- Field shape: question/rationale are non-empty and bounded ----------
+  // --- Field shape: question/rationale must be non-empty. Over-long text is clamped. ---
+  const clampedText = new Map<RawReviewTask, { question: string; rationale: string }>();
   const invalidFieldIds: string[] = [];
   for (const raw of rawTasks) {
-    if (!isValidTaskText(raw?.question) || !isValidTaskText(raw?.rationale)) {
+    const question = boundedTaskText(raw?.question);
+    const rationale = boundedTaskText(raw?.rationale);
+    if (question === null || rationale === null) {
       invalidFieldIds.push(idOf(raw));
+      continue;
     }
+    clampedText.set(raw, { question, rationale });
   }
   if (invalidFieldIds.length > 0) {
     return reject(
       'invalid_task_fields',
-      `Task(s) have a missing/oversized question or rationale (max ${MAX_TASK_TEXT_LENGTH} chars): ${invalidFieldIds.join(', ')}.`,
+      `Task(s) have a missing or blank question or rationale: ${invalidFieldIds.join(', ')}.`,
       { offendingIds: invalidFieldIds },
     );
   }
@@ -312,12 +324,18 @@ export function validateTaskPlan(
       continue;
     }
 
+    const text = clampedText.get(raw);
+    if (!text) {
+      return reject('invalid_task_fields', `Task ${idOf(raw)} lost its question or rationale during validation.`, {
+        offendingIds: [idOf(raw)],
+      });
+    }
     normalizedTasks.push({
       id: raw.id as string,
       dimension: raw.dimension as TaskDimension,
       paths: keptPaths,
-      question: raw.question as string,
-      rationale: raw.rationale as string,
+      question: text.question,
+      rationale: text.rationale,
     });
   }
 
