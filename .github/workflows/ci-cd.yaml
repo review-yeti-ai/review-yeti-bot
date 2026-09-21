@@ -7,11 +7,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      deploy:
-        description: "Also build and deploy to the cluster (main only)"
-        type: boolean
-        default: false
 
 concurrency:
   group: ct-review-system-${{ github.ref }}
@@ -23,10 +18,6 @@ concurrency:
   # looked like more of the same. Branch runs keep cancelling; that is free runner time and
   # nothing depends on their history.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
-env:
-  CLUSTER_NAME: cluster-ny1
-  REGISTRY: registry.digitalocean.com/calltelemetry
 
 jobs:
   test:
@@ -84,9 +75,10 @@ jobs:
       # files, so the `||` fallback never fired and the job reported success having
       # executed zero tests (#234). Its sibling step was gated on
       # `github.event_name == 'push'` while the workflow had no `push:` trigger, so
-      # main was never verified after merge either. The trigger is added here, and
-      # build-and-deploy is re-gated below so that adding it does not silently start
-      # deploying on every merge.
+      # main was never verified after merge either. The trigger is added here.
+      # Cluster rollout is not this workflow: Flux owns the pins in
+      # calltelemetry/ct-infrastructure, and a kubectl apply from this public
+      # repo cannot move them.
       - name: Run Full Test Suite
         run: npm test
 
@@ -448,144 +440,56 @@ jobs:
           set -euo pipefail
           node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
 
-  build-and-deploy:
-    needs: test
-    # Deploy is opt-in, never automatic. This job has never run: it was gated on
-    # `push` while the workflow had no `push:` trigger. Now that push to main runs
-    # the suite, an unchanged condition would have started deploying on every merge.
-    # Requiring an explicit dispatch input keeps deploy exactly as manual as it has
-    # been in practice, while making it reachable on purpose rather than dead code.
-    # OSS image publishing is publish-ghcr (GHCR). This job still talks to
-    # DigitalOcean and must not be used to wire the public repo to CallTelemetry k8s.
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
-    runs-on: blacksmith-2vcpu-ubuntu-2204-arm
-    permissions:
-      contents: read
+
+  attest-published-indexes:
+    needs: publish-ghcr
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-      - uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
-        with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-      - run: doctl registry login
-
-      - id: bot
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: true
-          sbom: true
-          tags: ${{ env.REGISTRY }}/ct-review-bot:${{ github.sha }}
-          cache-from: type=gha,mode=max,scope=bot-${{ github.ref_name }}
-          cache-to: type=gha,mode=max,scope=bot-${{ github.ref_name }}
-
-      - id: worker-base
-        name: Resolve reviewed worker base image
+      - name: Attest the multi-arch GHCR indexes
         run: |
           set -euo pipefail
-          image="$(sed -n 's/^NODE_BASE_IMAGE=//p' .github/worker-image.env | head -n 1)"
-          [[ "$image" =~ ^node:24-bookworm-slim@sha256:[a-f0-9]{64}$ ]]
-          echo "image=$image" >> "$GITHUB_OUTPUT"
-
-      - id: legacy-runtime
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: Dockerfile.legacy-runtime
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: true
-          sbom: true
-          build-args: |
-            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
-          tags: ${{ env.REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}
-          cache-from: type=gha,mode=max,scope=legacy-runtime
-          cache-to: type=gha,mode=max,scope=legacy-runtime
-
-      - name: Prove the published legacy-runtime image
-        run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
-
-      - id: worker
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: Dockerfile.worker
-          platforms: linux/amd64
-          push: true
-          provenance: true
-          sbom: true
-          build-args: |
-            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
-          tags: ${{ env.REGISTRY }}/review-yeti-worker:${{ github.sha }}
-          cache-from: type=gha,mode=max,scope=worker
-          cache-to: type=gha,mode=max,scope=worker
-
-      - name: Run immutable worker self-test
-        env:
-          WORKER_IMAGE: ${{ env.REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
-        run: |
-          set -euo pipefail
-          [[ "$WORKER_IMAGE" =~ ^${REGISTRY}/review-yeti-worker@sha256:[a-f0-9]{64}$ ]]
-          docker pull "$WORKER_IMAGE"
-          docker run --platform linux/amd64 --rm --read-only \
-            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-            "$WORKER_IMAGE" --self-test
-
-      - name: Enforce worker image size gates
-        env:
-          WORKER_IMAGE: ${{ env.REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
-          SERVICE_IMAGE: ${{ env.REGISTRY }}/ct-review-bot@${{ steps.bot.outputs.digest }}
-        run: |
-          set -euo pipefail
-          node scripts/verify-worker-image-size.mjs --worker "$WORKER_IMAGE" --service "$SERVICE_IMAGE"
-
-      - id: omniroute
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: Dockerfile.omniroute
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: true
-          sbom: true
-          tags: ${{ env.REGISTRY }}/ct-review-bot:omniroute-3.8.48-${{ github.sha }}
-          cache-from: type=gha,mode=max,scope=omniroute
-          cache-to: type=gha,mode=max,scope=omniroute
-
-      - name: Configure cluster and managed runtime secrets
-        env:
-          GITHUB_APP_ID_VALUE: ${{ secrets.CT_REVIEW_GITHUB_APP_ID }}
-          GITHUB_APP_PRIVATE_KEY_VALUE: ${{ secrets.CT_REVIEW_GITHUB_APP_PRIVATE_KEY }}
-          GITHUB_INSTALLATION_ID_VALUE: ${{ secrets.CT_REVIEW_GITHUB_INSTALLATION_ID }}
-          WEBHOOK_SECRET_VALUE: ${{ secrets.CT_REVIEW_WEBHOOK_SECRET }}
-          OMNIROUTE_STORAGE_KEY_VALUE: ${{ secrets.CT_REVIEW_OMNIROUTE_STORAGE_KEY }}
-          OPENROUTER_API_KEY_VALUE: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}
-          OMNIROUTE_API_KEY_VALUE: ${{ secrets.CT_REVIEW_OMNIROUTE_API_KEY }}
-        run: |
-          set -euo pipefail
-          doctl kubernetes cluster kubeconfig save "$CLUSTER_NAME"
-          kubectl apply --server-side -f k8s/namespace.yaml
-          kubectl -n ct-review-system create secret generic ct-review-bot-runtime \
-            --from-literal=GITHUB_APP_ID="$GITHUB_APP_ID_VALUE" \
-            --from-literal=GITHUB_APP_PRIVATE_KEY="$GITHUB_APP_PRIVATE_KEY_VALUE" \
-            --from-literal=GITHUB_INSTALLATION_ID="$GITHUB_INSTALLATION_ID_VALUE" \
-            --from-literal=WEBHOOK_SECRET="$WEBHOOK_SECRET_VALUE" \
-            --from-literal=OPENROUTER_API_KEY="$OPENROUTER_API_KEY_VALUE" \
-            --dry-run=client -o yaml | kubectl apply --server-side -f -
-          kubectl -n ct-review-system create secret generic omniroute-runtime \
-            --from-literal=STORAGE_ENCRYPTION_KEY="$OMNIROUTE_STORAGE_KEY_VALUE" \
-            --from-literal=OMNIROUTE_API_KEY="$OMNIROUTE_API_KEY_VALUE" \
-            --dry-run=client -o yaml | kubectl apply --server-side -f -
-
-      - name: Deploy digest-pinned workloads
-        env:
-          CT_REVIEW_BOT_IMAGE: ${{ env.REGISTRY }}/ct-review-bot@${{ steps.bot.outputs.digest }}
-          OMNIROUTE_IMAGE: ${{ env.REGISTRY }}/ct-review-bot@${{ steps.omniroute.outputs.digest }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gettext-base
-          scripts/deploy-doks.sh
-          scripts/verify-doks.sh
+          # Production rolls when calltelemetry/ct-infrastructure pins these
+          # index digests. This public workflow only proves the indexes exist
+          # and contain both platforms. It does not kubectl or doctl.
+          index_digest() {
+            local pkg="$1"
+            local token digest body
+            token="$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:review-yeti-ai/${pkg}:pull" | jq -er .token)"
+            digest="$(curl -fsSI \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json" \
+              "https://ghcr.io/v2/review-yeti-ai/${pkg}/manifests/${GITHUB_SHA}" \
+              | awk 'tolower($1)=="docker-content-digest:" {gsub(/\r/,"",$2); print $2}' \
+              | tail -n 1)"
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            body="$(curl -fsS \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json" \
+              "https://ghcr.io/v2/review-yeti-ai/${pkg}/manifests/${GITHUB_SHA}")"
+            python3 -c '
+          import json, sys
+          document = json.loads(sys.argv[1])
+          arches = {
+              item.get("platform", {}).get("architecture")
+              for item in document.get("manifests", [])
+              if item.get("platform", {}).get("os") == "linux"
+              and item.get("annotations", {}).get("vnd.docker.reference.type") != "attestation-manifest"
+          }
+          missing = {"amd64", "arm64"} - arches
+          if missing:
+              raise SystemExit("missing platforms: " + ",".join(sorted(missing)))
+          ' "$body"
+            printf '%s\n' "$digest"
+          }
+          {
+            echo "## Published GHCR indexes"
+            echo
+            echo "Cluster rollout is the ct-infrastructure review-yeti-image-roll workflow."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for pkg in review-yeti-worker review-yeti-bot review-yeti-operator review-yeti-legacy-runtime; do
+            digest="$(index_digest "$pkg")"
+            echo "- \`ghcr.io/review-yeti-ai/${pkg}@${digest}\`" >> "$GITHUB_STEP_SUMMARY"
+          done
