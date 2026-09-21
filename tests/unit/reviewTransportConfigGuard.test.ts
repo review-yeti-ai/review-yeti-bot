@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import os from 'node:os';
 import { OPENCODE_LANE_TIMEOUT_S } from '../../src/config/configLoader';
 
 /**
@@ -156,5 +157,57 @@ describe('review transport configuration guard', () => {
     const inPolicy = [...policy.matchAll(/'([0-9a-f]{64})'/g)].map((m) => m[1]);
     expect(inScript).toMatch(/^[0-9a-f]{64}$/);
     expect(inPolicy).toContain(inScript);
+  });
+
+  // --- destination class emitted for the workflow's credential selection -----------------------
+
+  /**
+   * The workflow picks the credential from this output. The binding used to be prose only -- the
+   * selector identified the gateway by elimination, which held while those were the only
+   * destinations and would have handed the gateway credential to any fourth one admitted later.
+   * These assert the contract the selector actually consumes.
+   */
+  function destinationOf(env: Record<string, string>): { ok: boolean; destination: string } {
+    const outPath = path.join(os.tmpdir(), `gh-output-${Math.random().toString(36).slice(2)}`);
+    fs.writeFileSync(outPath, '');
+    try {
+      const r = run({ ...env, GITHUB_OUTPUT: outPath });
+      const written = fs.readFileSync(outPath, 'utf8');
+      return { ok: r.ok, destination: written.match(/^destination=(.*)$/m)?.[1] ?? '' };
+    } finally {
+      fs.rmSync(outPath, { force: true });
+    }
+  }
+
+  it.each([
+    ['opencode', { REVIEW_BASE_URL: OPENCODE, OPENCODE_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }],
+    ['openrouter', { REVIEW_BASE_URL: OPENROUTER, OPENROUTER_KEY_PRESENT: 'true' }],
+    ['gateway', gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' })],
+  ])('emits the %s destination class for the credential selector', (expected, env) => {
+    const r = destinationOf(env as Record<string, string>);
+    expect(r.ok).toBe(true);
+    expect(r.destination).toBe(expected);
+  });
+
+  // The selector has no catch-all arm, so an empty class yields an empty key rather than another
+  // provider's credential. A rejected destination must therefore emit nothing at all.
+  it('emits no destination class when the configuration is rejected', () => {
+    const r = destinationOf({ REVIEW_BASE_URL: 'https://evil.example/v1' });
+    expect(r.ok).toBe(false);
+    expect(r.destination).toBe('');
+  });
+
+  // Each class must map to exactly one credential in the workflow, and no arm may be a catch-all.
+  it('maps every emitted class to its own credential in the workflow', () => {
+    const workflow = fs.readFileSync(
+      path.resolve(__dirname, '../../.github/workflows/review-bot.yaml'),
+      'utf8',
+    );
+    const selector = workflow.match(/llm-api-key: >-\n([\s\S]*?)\n\s{10}[a-z#]/)?.[1] ?? '';
+    expect(selector).toContain("outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY");
+    expect(selector).toContain("outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY");
+    expect(selector).toContain("outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY");
+    // No bare trailing `|| secrets.X` arm: that is the elimination fallback this replaced.
+    expect(selector).not.toMatch(/\|\|\s*secrets\.[A-Z_]+\s*\}\}/);
   });
 });

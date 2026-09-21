@@ -38,6 +38,15 @@ GATEWAY_BASE_URL_SHA256="${GATEWAY_BASE_URL_SHA256:-ca8309dbe7eb85c5c7da280d4857
 
 fail() { echo "::error::$1" >&2; exit 1; }
 
+# Emit the destination CLASS the guard actually matched, so the workflow's credential selection
+# binds to this resolution instead of re-deriving it. Without this the selector identified the
+# gateway by elimination ("not opencode, not openrouter, not empty"), which silently mis-routes the
+# gateway credential to any FOURTH destination a later change admits here.
+emit_destination() {
+  [ -n "${GITHUB_OUTPUT:-}" ] && printf 'destination=%s\n' "$1" >> "$GITHUB_OUTPUT"
+  return 0
+}
+
 # sha256sum on GitHub's Linux runners, shasum on developer macOS. Absent both, fail closed rather
 # than skipping the destination check.
 sha256_of() {
@@ -64,6 +73,7 @@ if [ -n "$BASE_URL" ] && [ "$(sha256_of "$NORMALIZED_BASE_URL")" = "$GATEWAY_BAS
   [ "$GATEWAY_KEY_PRESENT" = "true" ] || fail \
     "Review destination is the digest-pinned gateway but CT_REVIEW_GATEWAY_API_KEY is unset. Refusing to run rather than falling back to another provider's credential, which the workflow's key-selection expression would otherwise transmit to it."
   require_lane_timeout "$GATEWAY_MIN_LANE_TIMEOUT_MS" "digest-pinned gateway"
+  emit_destination gateway
   # Deliberately does not echo the URL: this repository is public and so are its workflow logs.
   echo "Review transport configuration is consistent: digest-pinned gateway destination"
   exit 0
@@ -74,10 +84,12 @@ case "$BASE_URL" in
     [ "$OPENCODE_KEY_PRESENT" = "true" ] || fail \
       "Review destination is opencode but CT_REVIEW_OPENCODE_API_KEY is unset. Refusing to run rather than falling back to the OpenRouter credential, which would transmit it to opencode.ai."
     require_lane_timeout "$OPENCODE_MIN_LANE_TIMEOUT_MS" "opencode"
+    emit_destination opencode
     ;;
   *openrouter.ai*)
     [ "$OPENROUTER_KEY_PRESENT" = "true" ] || fail \
       "Review destination is OpenRouter but CT_REVIEW_OPENROUTER_API_KEY is unset."
+    emit_destination openrouter
     ;;
   *)
     fail "Review destination has no matching role-scoped credential rule (sha256 $(sha256_of "$NORMALIZED_BASE_URL")). The URL is withheld because this repository's workflow logs are public."

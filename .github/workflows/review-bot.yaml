@@ -55,6 +55,7 @@ jobs:
       # Both invariants live in a script so they are testable; branching buried in workflow YAML
       # cannot be exercised by the suite. See scripts/assert-review-transport-config.sh.
       - name: Assert the review transport configuration is consistent
+        id: transport
         shell: bash
         env:
           REVIEW_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
@@ -84,17 +85,18 @@ jobs:
           # fall straight through to the OpenRouter credential and transmit it to opencode.ai.
           # The preceding guard step is what actually prevents that; this line only picks.
           #
-          # The final arm is the digest-pinned gateway. It is identified by ELIMINATION rather than
-          # by naming it, for two reasons: this repository is public and must not carry that
-          # hostname, and a second "which destination is the gateway" variable could disagree with
-          # the destination variable -- the exact hazard called out above. Elimination is sound
-          # here only because the guard step has already exited non-zero for every destination
-          # except the two named below and that one pinned digest.
+          # Keyed on the destination class the GUARD resolved, not re-derived here. An earlier
+          # version identified the digest-pinned gateway by elimination ("not opencode, not
+          # openrouter, not empty"), which held only while those were the sole destinations: a
+          # fourth destination admitted by the guard and the policy allowlist would have inherited
+          # the gateway arm and received the gateway credential with every check green.
+          #
+          # There is deliberately NO catch-all arm. An unrecognised class yields an empty key and
+          # the lane fails, rather than handing some other provider's credential to it.
           llm-api-key: >-
-            ${{ contains(vars.OPENROUTER_BASE_URL, 'opencode.ai') && secrets.CT_REVIEW_OPENCODE_API_KEY
-             || contains(vars.OPENROUTER_BASE_URL, 'openrouter.ai') && secrets.CT_REVIEW_OPENROUTER_API_KEY
-             || vars.OPENROUTER_BASE_URL == '' && secrets.CT_REVIEW_OPENROUTER_API_KEY
-             || secrets.CT_REVIEW_GATEWAY_API_KEY }}
+            ${{ steps.transport.outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY
+             || steps.transport.outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY
+             || steps.transport.outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
           # OpenRouter remains the primary direct DeepSeek -> GLM route.
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}
