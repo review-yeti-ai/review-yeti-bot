@@ -324,6 +324,7 @@ describe('openrouter review policy', () => {
       ['openrouter fallback', 'https://openrouter.ai/api/v1', 'deepseek/deepseek-v4-flash-0731'],
       ['opencode', 'https://opencode.ai/zen/v1', 'glm-5.3-flash'],
       ['digest-pinned gateway', 'https://gateway.test.invalid/v1', 'neuralwatt/glm-5.3-flash'],
+      ['digest-pinned gateway (deepseek)', 'https://gateway.test.invalid/v1', 'neuralwatt/deepseek-v4-flash'],
     ])('resolves a valid policy for the %s destination', (_label, baseUrl, model) => {
       const resolve = () =>
         resolveOpenRouterReviewPolicy({
@@ -361,6 +362,29 @@ describe('openrouter review policy', () => {
       for (const inherited of DEFAULT_OPENROUTER_REVIEW_POLICY.allowed_models) {
         expect(resolved.allowed_models).toContain(inherited);
       }
+    });
+
+    // The gate has two sources -- action inputs and trustedConfig -- and the trustedConfig half
+    // was untested: dropping its clause left the whole suite green while a deliberately narrowed
+    // trusted list got the selected model silently prepended.
+    it('leaves an allowed_models narrowed through trustedConfig untouched', () => {
+      expect(() =>
+        resolveOpenRouterReviewPolicy({
+          actionInputs: { 'llm-base-url': 'https://opencode.ai/zen/v1', model: 'neuralwatt/glm-5.3-flash' },
+          trustedConfig: { github_action: { openrouter: { allowed_models: ['glm-5.3-flash'] } } },
+        }),
+      ).toThrow(/must be present in allowed_models/);
+    });
+
+    // The mirror mutation -- treating ANY present trustedConfig as an explicit list -- would
+    // resurrect the zero-findings failure for every trusted-config deployment.
+    it('still admits the selected model when trustedConfig omits allowed_models', () => {
+      const resolved = resolveOpenRouterReviewPolicy({
+        actionInputs: { 'llm-base-url': 'https://opencode.ai/zen/v1', model: 'neuralwatt/glm-5.3-flash' },
+        trustedConfig: { github_action: { openrouter: { cost_quality_tradeoff: 5 } } },
+      });
+      expect(resolved.allowed_models).toContain('neuralwatt/glm-5.3-flash');
+      expect(resolved.cost_quality_tradeoff).toBe(5);
     });
 
     // An explicit list is a deliberate narrowing and must not be silently widened.
