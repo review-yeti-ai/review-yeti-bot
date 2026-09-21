@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, TRANSPORT_MAX_RETRIES, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, transportRetryDelayMs } from '../../src/panel/panelEngine';
+import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, INCOMPLETE_REVIEW_MAX_ATTEMPTS, TRANSPORT_MAX_RETRIES, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, transportRetryDelayMs } from '../../src/panel/panelEngine';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { OpenRouterResponseError } from '../../src/gateway/openRouterClient';
@@ -637,6 +637,90 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       && request.metadata?.persona === 'sec-lane'
       && request.model === 'bifrost/pr-reviewer');
     expect(bifrostCalls).toHaveLength(EMPTY_COMPLETION_MAX_ATTEMPTS);
+  });
+
+  // An INCOMPLETE decision is a WELL-FORMED answer -- the persona contract
+  // explicitly asks for it when evidence is insufficient, rather than inventing
+  // a finding or approving to burn the last turn. It used to be thrown as a
+  // structured-output failure, which sent it down the provider-identity
+  // failover path; with one configured alias there is no second identity, so a
+  // required lane failed closed on the very answer the contract requested.
+  // It now re-enters the same alias, exactly like the empty-completion
+  // signature, so the router can land on a different backend.
+  it('retries the same alias on INCOMPLETE and completes without a second provider', async () => {
+    const config = buildSingleAliasDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    let bifrostAttempts = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Both lanes completed' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.model === 'bifrost/pr-reviewer') {
+        bifrostAttempts++;
+        // Well-formed, schema-valid, and undecided -- not malformed output.
+        if (bifrostAttempts < INCOMPLETE_REVIEW_MAX_ATTEMPTS) {
+          return { model: opts.model, content: JSON.stringify({ nonce, decision: 'INCOMPLETE', findings: [] }), usage: null, costUSD: null, raw: {} };
+        }
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-incomplete-same-alias',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    const secLane = result.personas.find((persona) => persona.id === 'sec-lane');
+    expect(secLane?.providerId).toBe('bifrost');
+    expect(secLane?.decision).toBe('APPROVE');
+    expect(bifrostAttempts).toBe(INCOMPLETE_REVIEW_MAX_ATTEMPTS);
+    // Same alias throughout -- no second provider identity was reached for.
+    const secLaneCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
+      request.metadata?.role === 'persona' && request.metadata?.persona === 'sec-lane');
+    expect(secLaneCalls.every(([request]: any[]) => request.model === 'bifrost/pr-reviewer')).toBe(true);
+  });
+
+  // Widening the retry budget must not loosen `required: true` or the
+  // fail-closed contract: a lane that is INCOMPLETE on every attempt still
+  // fails closed, it just gets re-entered a bounded number of times first.
+  it('fails the required lane closed once the INCOMPLETE budget is exhausted on the same alias', async () => {
+    const config = buildSingleAliasDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (opts.model === 'bifrost/pr-reviewer') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'INCOMPLETE', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'n/a' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-incomplete-exhausted',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    })).rejects.toThrow(/persona sec-lane failed closed/iu);
   });
 
   // isEmptyCompletionError's message guard must discriminate the specific
