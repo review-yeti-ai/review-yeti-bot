@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.81.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.6...v1.81.7) (2026-09-21)
+
+
+### Bug Fixes
+
+* **composed:** name a spent turn budget separately from a missing verdict ([#918](https://github.com/review-yeti-ai/review-yeti-bot/issues/918)) ([84aa557](https://github.com/review-yeti-ai/review-yeti-bot/commit/84aa55760ff55e776e4cbdb9eb375a4c5874870b))
+
 ## [1.81.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.5...v1.81.6) (2026-09-21)
 
 
