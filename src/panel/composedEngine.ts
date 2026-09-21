@@ -1024,8 +1024,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     let planUsageFolded = false;
 
     for (let i = 0; i < planOutcome.tasks.length; i++) {
-      if (remainingBudget() <= 0) break;
       const task = planOutcome.tasks[i];
+      if (remainingBudget() <= 0) {
+        // Leave the task out of personas and optionalFailures. Either record
+        // would put its id on the published roster and could ship a partial
+        // plan. Later tasks still run; the missing id keeps the roster invalid.
+        continue;
+      }
       const outcome = await runTaskWorkPhase({
         maxTurnsPerTask: config.composed?.max_turns_per_task,
         deadlineAtMs: composedDeadlineAtMs,
@@ -1092,13 +1097,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
         ];
       } else {
-        // Turn-cap exhaustion (this task's own budget or the engine's total budget) with the
-        // task still open. Deliberately left OUT of both `personas` and `optionalFailures`: the
-        // caller derives roster validity from `applicablePersonaIds` (every planned task) versus
-        // the union of returned lane ids, so an unreported task forces an incomplete/BLOCK review
-        // through that existing mechanism -- never a forced SHIP or FIX_FIRST, and never
-        // double-counted as a failure either.
-        break;
+        // The task ran and returned no verdict. Do not invent an APPROVE and
+        // do not record an optional failure: both would satisfy the roster.
+        // Later tasks still run, and the gap forces an incomplete BLOCK.
       }
     }
 

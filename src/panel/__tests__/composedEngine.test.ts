@@ -309,4 +309,108 @@ describe('executeComposedReview', () => {
     expect(calls).toBe(1);
   });
 
+  function threeTasks() {
+    return [
+      { id: 'task-1', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Is the first change safe?', rationale: 'first' },
+      { id: 'task-2', dimension: 'testing', paths: ['src/auth/guard.ts'], question: 'Is the second change covered?', rationale: 'second' },
+      { id: 'task-3', dimension: 'architecture', paths: ['src/auth/guard.ts'], question: 'Does the third change fail closed?', rationale: 'third' },
+    ];
+  }
+
+  function issuedNonce(messages: any[]): string {
+    const text = messages.map((message) => {
+      if (typeof message?.content === 'string') return message.content;
+      if (Array.isArray(message?.content)) return message.content.map((block: any) => block.text || '').join('\n');
+      return '';
+    }).join('\n');
+    const matches = [...text.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/g)];
+    return matches.length ? matches[matches.length - 1][1] : 'nonce';
+  }
+
+  function routedClient(decide: (taskId: string, text: string, nonce: string) => string) {
+    const workTurns: string[] = [];
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
+      }
+      if (text.includes('WORK TURN')) {
+        const taskId = threeTasks().find((task) => text.includes(`TASK`) && text.includes(task.id))?.id
+          ?? threeTasks().find((task) => text.includes(task.id))?.id;
+        if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
+        workTurns.push(taskId);
+        return fakeResponse(decide(taskId, text, nonce));
+      }
+      throw new Error(`unexpected turn: ${text.slice(0, 80)}`);
+    });
+    return { complete, workTurns };
+  }
+
+  it('keeps later lanes running when a middle task produces no verdict', async () => {
+    const { complete, workTurns } = routedClient((taskId, _text, nonce) => {
+      if (taskId === 'task-2') return 'not a verdict';
+      return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
+    });
+    const cfg: any = config();
+    cfg.composed = { max_turns_per_task: 1 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(workTurns).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(result.personas.map((lane) => lane.id).sort()).toEqual(['task-1', 'task-3']);
+    expect(result.personas.every((lane) => lane.decision === 'APPROVE')).toBe(true);
+    expect(result.optionalFailures ?? []).toEqual([]);
+    const returned = new Set(result.personas.map((lane) => lane.id));
+    expect(returned.has('task-2')).toBe(false);
+    expect(result.applicablePersonaIds).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(result.applicablePersonaIds!.every((id) => returned.has(id))).toBe(false);
+  });
+
+  it('fails closed when every planned task produces no verdict', async () => {
+    const { complete, workTurns } = routedClient(() => 'not a verdict');
+    const cfg: any = config();
+    cfg.composed = { max_turns_per_task: 1 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(workTurns).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(result.personas).toEqual([]);
+    expect(result.optionalFailures ?? []).toEqual([]);
+    expect(result.applicablePersonaIds).toEqual(['task-1', 'task-2', 'task-3']);
+  });
+
+  it('settles the tasks that never start once the turn budget is spent', async () => {
+    const { complete, workTurns } = routedClient((taskId, _text, nonce) => (
+      JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] })
+    ));
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 2, max_turns_per_task: 1 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(workTurns).toEqual(['task-1']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1']);
+    expect(result.optionalFailures ?? []).toEqual([]);
+    expect(result.applicablePersonaIds).toEqual(['task-1', 'task-2', 'task-3']);
+  });
+
 });
