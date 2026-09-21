@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.81.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.2...v1.81.3) (2026-09-21)
+
+
+### Bug Fixes
+
+* **composed:** clamp oversized plan text instead of failing the review ([49c62f1](https://github.com/review-yeti-ai/review-yeti-bot/commit/49c62f163184b904aca0a32475473478aaf69e9c))
+
 ## [1.81.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.1...v1.81.2) (2026-09-21)
 
 
