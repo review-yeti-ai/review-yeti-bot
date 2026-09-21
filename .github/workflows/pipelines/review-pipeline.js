@@ -177,7 +177,54 @@ const STREAMING_FETCH_DISPATCHER_OPTIONS = Object.freeze({
   bodyTimeout: 0,
 });
 
+/**
+ * Per-lane streaming deadline for the transports this action synthesizes when no explicit plan is
+ * supplied. Was a bare 90_000 with no override, which is fine for the OpenRouter route it was
+ * tuned against and fatal for a slower one: every lane died with "Streaming response exceeded
+ * total deadline of 90000ms" while the same endpoint answered a small prompt in ~2s.
+ *
+ * A hardcoded deadline with no lever is not a safety property, it is a ceiling on which
+ * transports can be used at all. Still bounded and still defaulted, just nameable.
+ */
+const DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS = 90_000;
+
+/** Exported and pure so the boundary parsing is testable. Computing it inline in a module-load
+ * IIFE made it unreachable from a test, which is how it shipped unasserted. */
+function resolveAutoTransportTimeoutMs(env = process.env) {
+  const raw = Number(env.REVIEW_LANE_TIMEOUT_MS);
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS;
+}
+
+const AUTO_TRANSPORT_TIMEOUT_MS = resolveAutoTransportTimeoutMs();
+
+/**
+ * Does this transport actually TALK to OpenRouter?
+ *
+ * OpenRouter-only request fields (`session_id`, `reasoning`, `provider`, `plugins`, `models`)
+ * are unknown inputs anywhere else, and sending them makes every persona lane fail with
+ * HTTP 400. The same hazard is documented further down for Fireworks and Ollama.
+ *
+ * Keyed on the DESTINATION, because that is the only thing that determines what the far end will
+ * accept. A transport may still be NAMED `openrouter` while `llm-base-url` points elsewhere, and
+ * the name does not change what the server parses. The name/compat labels are honoured only when
+ * no base URL is configured at all, so legacy transports that rely on them are unaffected.
+ *
+ * Distinct from `resolveTransportCompat` in src/cli/runLiveReview.ts, and the two are NOT
+ * redundant:
+ *   - this answers "is the far end OpenRouter", which the host settles definitively;
+ *   - that answers "what quirks does this non-OpenRouter host have" (content-block support,
+ *     streaming), which the host does NOT reveal and which must therefore be declared.
+ * Host for the fact, declaration for the quirks.
+ */
+function resolvesToOpenRouterDestination(transport, transportBaseUrl) {
+  const baseUrl = String(transportBaseUrl || '').trim();
+  if (baseUrl) return baseUrl.toLowerCase().includes('openrouter.ai');
+  return String(transport?.provider || '').toLowerCase() === 'openrouter'
+    || String(transport?.compat || '').toLowerCase() === 'openrouter';
+}
+
 let streamingFetchDispatcher = null;
+let loggedMissingUndiciAgent = false;
 
 function loadUndiciAgentClass() {
   try {
@@ -196,16 +243,42 @@ function loadUndiciAgentClass() {
   );
   try {
     return require(nested).Agent;
-  } catch (error) {
-    throw new Error(
-      `undici Agent is required to disable the 300s headersTimeout on streaming fetches: ${error?.message || error}`,
-    );
+  } catch {
+    // fall through
   }
+  // `undici` IS a declared dependency of this repo, but this file runs from
+  // .github/workflows/pipelines/ inside a composite action, where plain resolution does not
+  // always reach the repo-root node_modules. Try it explicitly before giving up.
+  try {
+    const repoRoot = path.resolve(__dirname, '..', '..', '..');
+    return require(require.resolve('undici', { paths: [repoRoot] })).Agent;
+  } catch {
+    // fall through
+  }
+  return null;
 }
 
-function getStreamingFetchDispatcher() {
+function getStreamingFetchDispatcher(loadAgent = loadUndiciAgentClass) {
   if (!streamingFetchDispatcher) {
-    const Agent = loadUndiciAgentClass();
+    const Agent = loadAgent();
+    if (!Agent) {
+      // The Agent exists ONLY to lift undici's default 300s headersTimeout so a long generation
+      // is not cut off mid-stream. It is a timeout extension, not a correctness requirement.
+      //
+      // Throwing here previously tripped the transport circuit breaker and failed EVERY persona
+      // lane, turning a missing optional performance shim into a total review failure with zero
+      // findings -- strictly worse than a review that runs under the default timeout.
+      //
+      // Warn once and proceed with the platform default dispatcher.
+      if (!loggedMissingUndiciAgent) {
+        loggedMissingUndiciAgent = true;
+        console.warn(
+          '[Streaming] undici Agent unavailable; streaming proceeds under the default 300s '
+          + 'headersTimeout. A very long generation may be cut off, but reviews still run.',
+        );
+      }
+      return undefined;
+    }
     streamingFetchDispatcher = new Agent(STREAMING_FETCH_DISPATCHER_OPTIONS);
   }
   return streamingFetchDispatcher;
@@ -1520,7 +1593,7 @@ function resolveModelConfig(env = process.env) {
         compat: 'openrouter',
         stream: true,
         reasoningEffort: 'high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
         ttftTimeoutMs: 30_000,
         connectTimeoutMs: 30_000,
       });
@@ -1534,7 +1607,7 @@ function resolveModelConfig(env = process.env) {
         compat: 'openrouter',
         stream: true,
         reasoningEffort: 'high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
         ttftTimeoutMs: 30_000,
         connectTimeoutMs: 30_000,
       });
@@ -1546,7 +1619,7 @@ function resolveModelConfig(env = process.env) {
         model,
         compat: 'openrouter',
         stream: true,
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
       });
     }
 
@@ -1575,7 +1648,7 @@ function resolveModelConfig(env = process.env) {
         model: env.OLLAMA_MODEL || 'glm-5.3-flash',
         stream: true,
         reasoningEffort: 'high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
         ttftTimeoutMs: 30_000,
         connectTimeoutMs: 30_000,
       });
@@ -1588,7 +1661,7 @@ function resolveModelConfig(env = process.env) {
         model: env.SYNTHETIC_MODEL || 'glm-5.3-flash',
         stream: true,
         reasoningEffort: 'high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
         ttftTimeoutMs: 30_000,
         connectTimeoutMs: 30_000,
       });
@@ -1609,7 +1682,7 @@ function resolveModelConfig(env = process.env) {
         baseUrl: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/+$/, ''),
         apiKey: env.GEMINI_API_KEY,
         model: env.GEMINI_MODEL || 'google/gemini-3.7-flash:high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
       });
     }
     if (!apiKey && env.OPENAI_API_KEY) {
@@ -1618,7 +1691,7 @@ function resolveModelConfig(env = process.env) {
         baseUrl: (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, ''),
         apiKey: env.OPENAI_API_KEY,
         model: env.OPENAI_MODEL || 'openai/gpt-5.6-luna:high',
-        timeoutMs: 90_000,
+        timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
       });
     }
     if (autoTransports.length > 0) {
@@ -3909,10 +3982,8 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const transportTimeoutMs = transport.timeoutMs || transport.timeout_ms || options.timeoutMs || 90_000;
       const streamEnabled = transport.stream === true;
       const configuredProvider = resolveConfiguredProvider(transport, transportName, transportBaseUrl);
-      const isOpenRouterTransport =
-        String(transport.provider || '').toLowerCase() === 'openrouter' ||
-        String(transport.compat || '').toLowerCase() === 'openrouter' ||
-        transportBaseUrl.toLowerCase().includes('openrouter.ai');
+      // See `resolvesToOpenRouterDestination`: keyed on where the request actually goes.
+      const isOpenRouterTransport = resolvesToOpenRouterDestination(transport, transportBaseUrl);
       const isOllama = isOllamaTransport(transport, transportBaseUrl);
       const isDirectReasoning = isDirectReasoningTransport(transport, transportBaseUrl);
       const configuredMaxOutputTokens =
@@ -3956,6 +4027,15 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
       const requestBody = {
         model: requestModel,
+        // Why this path needs no content-block flattening, unlike `resolveTransportCompat` in
+        // src/cli/runLiveReview.ts: a non-OpenRouter destination gets PLAIN STRING content here,
+        // built fresh below. It never sees the `OpenRouterContentBlock[]` form that carries the
+        // cache_control breakpoint, so there is nothing to flatten. The TS panel path does send
+        // that form and therefore does need the shim.
+        //
+        // The asymmetry is a consequence of where each path builds its messages, not an
+        // oversight -- adding a flatten step here would be dead code that future readers would
+        // have to reason about.
         messages: isOpenRouterTransport
           ? openRouterMessages.map((message) => ({ ...message }))
           : [
@@ -7973,6 +8053,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  resolvesToOpenRouterDestination,
+  resolveAutoTransportTimeoutMs,
+  DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS,
   PERSONA_CHARTERS,
   DEFAULT_PERSONA_IDS,
   DEFAULT_MODEL,
