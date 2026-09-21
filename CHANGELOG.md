@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.81.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.0...v1.81.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **publish:** enforce auto_review.ignore_patterns as declared not-applicable (skip, never SHIP) ([#897](https://github.com/review-yeti-ai/review-yeti-bot/issues/897)) ([1853e43](https://github.com/review-yeti-ai/review-yeti-bot/commit/1853e436741718d3971504b9108a0e56983f1ca8))
+
 ## [1.81.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.80.1...v1.81.0) (2026-09-21)
 
 
