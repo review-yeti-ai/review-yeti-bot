@@ -44,7 +44,7 @@ import {
   BLOCKED_BUILD_OR_DEP_FILENAMES,
   SENSITIVE_PATH_PATTERNS,
 } from './classifierEngine';
-import { buildFastShipPanelResult } from './fastShipResult';
+import { buildFastShipPanelResult, buildDocumentationOnlyPanelResult } from './fastShipResult';
 import { compactMessageWindow, MessageWindowPolicy } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import { TASK_DIMENSIONS } from './reviewTask';
@@ -840,6 +840,20 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
     normalized.startsWith('docs/') ||
     normalized.startsWith('.github/') ||
     normalized.startsWith('.changeset/') ||
+    // Serialized data under a run/evidence location only. The directory
+    // rules are constrained by file type the way the extension list below
+    // is: a blanket directory rule would also exempt executable content (a
+    // contributor-placed runs/deploy.sh or artifacts/loader.js) from all
+    // review, which fails closed today and must keep failing closed. Only
+    // data/serialization extensions are records of an execution; anything
+    // else under these directories stays analyzable.
+    (
+      (normalized.startsWith('runs/') ||
+        normalized.includes('/runs/') ||
+        /^(evidence|artifacts)\//.test(normalized) ||
+        /\/(evidence|artifacts)\//.test(normalized)) &&
+      /\.(json|jsonl|ndjson|csv|tsv|log|xml|yaml|yml)$/i.test(normalized)
+    ) ||
     /\.(md|markdown|txt|rst|adoc|png|jpg|jpeg|gif|svg|ico|pdf|drawio)$/i.test(normalized)
   );
 }
@@ -3504,33 +3518,22 @@ export async function executePersonaPanel(options: {
         );
       }
 
+      // Reaching here means every changed path is documentation, an asset or
+      // data -- an unmatched source path throws above rather than falling
+      // through. So this is not "the roster is misconfigured", it is "there is
+      // nothing to analyze", and those need opposite outcomes. Emitting a
+      // zero-lane non-evidence receipt made documentation- and evidence-only
+      // pull requests permanently unmergeable: publishing refuses a zero-lane
+      // run as review evidence, correctly, and no amount of retrying produces
+      // a lane when no lane applies.
       const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
       return {
-        headSha,
-        applicablePersonaIds: [],
-        personas: [],
-        optionalFailures: [],
-        zeroLaneNonEvidence: true,
+        ...buildDocumentationOnlyPanelResult(
+          headSha,
+          arbiterId,
+          'No analyzable source changed: every path is documentation, an asset, a run artifact or data.',
+        ),
         panelWallClockMs: Date.now() - panelStartedAt,
-        quorum: { required: 0, distinctProviders: [], satisfied: true },
-        moderator: {
-          providerId: arbiterId,
-          model: 'none',
-          decision: 'RECONCILED',
-          findings: [],
-          usage: null,
-          costUSD: null,
-          durationMs: 0,
-        },
-        arbiter: {
-          providerId: arbiterId,
-          model: 'none',
-          verdict: 'SHIP',
-          rationale: 'No enabled persona paths matched the changed files; zero-lane run is a non-evidence clean receipt.',
-          usage: null,
-          costUSD: null,
-          durationMs: 0,
-        },
       };
     }
 
