@@ -499,7 +499,7 @@ describe('full-panel qualification worker contract', () => {
         'security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing',
       ]);
       expect(options.config.personas.map((persona: any) => persona.charter)).toEqual([
-        'builtin:security', 'builtin:performance', 'builtin:constitutional-goals',
+        'builtin:security', 'builtin:performance', 'builtin:architecture',
         'builtin:correctness', 'builtin:contract', 'builtin:docs',
       ]);
       expect(options.config.personas.every((persona: any) => persona.required)).toBe(true);
