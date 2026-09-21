@@ -1156,9 +1156,29 @@ export async function runPublishingReviewWorker(
       // the honest outcome is a skipped check that claims no verdict -- not the
       // zero-lane non-evidence failure ADR 0333 forbids from counting as evidence,
       // and never a SHIP. A single non-ignored path keeps the normal review.
-      const ignorePatterns = Array.isArray((workerConfig as any)?.auto_review?.ignore_patterns)
-        ? ((workerConfig as any).auto_review.ignore_patterns as string[]).filter((g) => typeof g === 'string' && g.length > 0)
-        : [];
+      // The resolved worker config does not carry `auto_review` through, so read
+      // the policy from the config when present and fall back to the app-gate
+      // policy JSON (the path DOKS/app-gate runs use). Malformed policy is left
+      // to resolveWorkerConfig, which already fails closed on it.
+      const ignorePatterns = ((): string[] => {
+        const fromConfig = (workerConfig as any)?.auto_review?.ignore_patterns;
+        if (Array.isArray(fromConfig)) {
+          return (fromConfig as unknown[]).filter((g): g is string => typeof g === 'string' && g.length > 0);
+        }
+        const raw = env.REVIEW_YETI_POLICY_JSON;
+        if (typeof raw === 'string' && raw.length > 0) {
+          try {
+            const parsed = JSON.parse(raw) as { auto_review?: { ignore_patterns?: unknown } };
+            const value = parsed?.auto_review?.ignore_patterns;
+            if (Array.isArray(value)) {
+              return value.filter((g): g is string => typeof g === 'string' && g.length > 0);
+            }
+          } catch {
+            // Intentionally swallowed: the policy parser above owns fail-closed.
+          }
+        }
+        return [];
+      })();
       const notApplicable = Boolean((panelResult as any).zeroLaneNonEvidence)
         && ignorePatterns.length > 0
         && changedFiles.length > 0
@@ -1495,7 +1515,10 @@ export async function runPublishingReviewWorker(
     if (authoritative) {
       await reportReviewResult(buildReviewResult());
     }
-    if (!authoritative && !recoverablePanelFailure && deps.completion?.reportReviewEvidence) {
+    // A not-applicable run claims no verdict, so there is no evidence to report:
+    // reporting it as success would be a false approval and as failure a false
+    // rejection. It is omitted, exactly like a skipped check.
+    if (!authoritative && !recoverablePanelFailure && conclusion !== 'neutral' && deps.completion?.reportReviewEvidence) {
       // Resolved here, immediately before it is needed, and nowhere earlier: `completeCheck` (or
       // `reportTerminalFailure` on the recoverable branch, which never reaches this guard) has
       // already published above, so waiting on the shadow lane here cannot delay it. `finally`
@@ -1513,7 +1536,7 @@ export async function runPublishingReviewWorker(
           prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
           policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
           executionAttempt: identity.executionAttempt,
-          checkId, conclusion, result: buildReviewResult({ includeShadow: true }),
+          checkId, conclusion: conclusion as 'success' | 'failure', result: buildReviewResult({ includeShadow: true }),
         });
       } catch (error) {
         logger.warn('Review evidence was not reported', {
