@@ -377,6 +377,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve release version for this commit
+        id: version
+        run: |
+          set -euo pipefail
+          subject="$(git log -1 --format=%s)"
+          if [[ "$subject" =~ ^chore\(main\):\ release\ ([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "tag=v${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "Release commit detected; also publishing image tag v${BASH_REMATCH[1]}"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "Not a release commit; publishing SHA and latest tags only"
+          fi
+
       - name: Merge native platform images into public multi-arch indexes
         id: merge
         env:
@@ -414,12 +427,20 @@ jobs:
           for pkg in review-yeti-worker review-yeti-bot review-yeti-operator review-yeti-legacy-runtime; do
             amd64_digest="$(platform_digest "${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}-amd64" amd64)"
             arm64_digest="$(platform_digest "${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}-arm64" arm64)"
+            version_args=()
+            if [ -n "${{ steps.version.outputs.tag }}" ]; then
+              version_args+=(-t "${GHCR_REGISTRY}/${pkg}:${{ steps.version.outputs.tag }}")
+            fi
             docker buildx imagetools create \
               -t "${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}" \
               -t "${GHCR_REGISTRY}/${pkg}:latest" \
+              "${version_args[@]}" \
               "${GHCR_REGISTRY}/${pkg}@${amd64_digest}" \
               "${GHCR_REGISTRY}/${pkg}@${arm64_digest}"
             echo "- \`${GHCR_REGISTRY}/${pkg}:${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+            if [ -n "${{ steps.version.outputs.tag }}" ]; then
+              echo "- \`${GHCR_REGISTRY}/${pkg}:${{ steps.version.outputs.tag}\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
           done
 
           echo "- \`docker pull ghcr.io/review-yeti-ai/review-yeti-worker:latest\`" >> "$GITHUB_STEP_SUMMARY"
