@@ -62,7 +62,7 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
-  it('short-circuits the zero-lane path exactly like the fan-out engine, before any provider call', async () => {
+  it('approves a diff with nothing analyzable, before any provider call, exactly like the fan-out engine', async () => {
     const complete = vi.fn();
     const result = await executeComposedReview({
       config: config(),
@@ -71,8 +71,16 @@ describe('executeComposedReview', () => {
       headSha: 'a'.repeat(40),
       client: { complete },
     });
-    expect(result.zeroLaneNonEvidence).toBe(true);
-    expect(result.personas).toEqual([]);
+    // Nothing to analyze is an approval, not missing evidence. A zero-lane
+    // result is refused by publishing, which made documentation-only pull
+    // requests unmergeable on this path too -- the fan-out engine was fixed
+    // first and this one silently kept the old shape.
+    expect(result.zeroLaneNonEvidence).toBeUndefined();
+    expect((result as any).documentationOnly).toBe(true);
+    expect(result.arbiter.verdict).toBe('SHIP');
+    expect(result.quorum.satisfied).toBe(true);
+    expect(result.personas).toHaveLength(1);
+    expect(result.personas[0].decision).toBe('APPROVE');
     expect(complete).not.toHaveBeenCalled();
   });
 

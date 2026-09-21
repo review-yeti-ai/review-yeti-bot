@@ -23,6 +23,7 @@
  * `validateFindings` (identical findings contract), and `buildPanelResponseFormat`'s new `plan`
  * role (additive; every existing role's schema is byte-identical to before this file existed).
  */
+import { buildDocumentationOnlyPanelResult } from './fastShipResult';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
 import { resolvePreChecksConfig } from '../config/schema';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, ZoektPreCheckResult } from '../services/zoektPreCheckService';
@@ -387,33 +388,23 @@ function sumAggregateUsage(turnUsages: LaneTurnUsage[]): LaneAggregateUsage {
 // ---------------------------------------------------------------------------
 
 function buildZeroLaneResult(headSha: string, config: CtReviewConfigV3, panelWallClockMs: number): PanelResult {
+  // Same outcome as executePersonaPanel's: a diff with nothing analyzable in it
+  // is an approval, not missing evidence. Publishing refuses a zero-lane result
+  // as non-evidence, so returning one here made every documentation- or
+  // evidence-only pull request permanently unmergeable on the composed path.
+  //
+  // This function previously duplicated the panel path's shape and claimed to be
+  // "byte-identical" to it in a comment -- which is precisely how it silently
+  // drifted when that path was fixed and this one was not. It now delegates to
+  // the shared builder so the two cannot disagree again.
   const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
   return {
-    headSha,
-    applicablePersonaIds: [],
-    personas: [],
-    optionalFailures: [],
-    zeroLaneNonEvidence: true,
+    ...buildDocumentationOnlyPanelResult(
+      headSha,
+      arbiterId,
+      'No analyzable source changed: every path is documentation, an asset, a run artifact or data.',
+    ),
     panelWallClockMs,
-    quorum: { required: 0, distinctProviders: [], satisfied: true },
-    moderator: {
-      providerId: arbiterId,
-      model: 'none',
-      decision: 'RECONCILED',
-      findings: [],
-      usage: null,
-      costUSD: null,
-      durationMs: 0,
-    },
-    arbiter: {
-      providerId: arbiterId,
-      model: 'none',
-      verdict: 'SHIP',
-      rationale: 'No changed file requires review; composed zero-lane run is a non-evidence clean receipt.',
-      usage: null,
-      costUSD: null,
-      durationMs: 0,
-    },
   };
 }
 
