@@ -18,6 +18,58 @@ const OPENCODE_BASE_URL = 'https://opencode.ai/zen/v1';
  * destination without review.
  */
 const ALLOWED_REVIEW_BASE_URLS = Object.freeze([OPENROUTER_BASE_URL, OPENCODE_BASE_URL]);
+/**
+ * A third funded destination, pinned by digest rather than plaintext.
+ *
+ * This repository is public, and the operator's hygiene rule bars first-party hostnames from it.
+ * The allowlist above cannot simply gain a fourth string without publishing that hostname, and it
+ * must NOT become env-configurable -- "whatever a repository variable says" is not an exfiltration
+ * control, which is the whole point of the comment above.
+ *
+ * Pinning the SHA-256 of the normalized base URL keeps both properties: the allowlist stays closed
+ * (only one exact URL matches, and changing it still requires a reviewed commit), while the
+ * hostname stays out of public source, greps, and code search.
+ *
+ * Honest about what this is NOT: the destination is a public DNS name, so the digest is guessable
+ * by anyone who thinks to try it. This is hygiene, not secrecy. It buys absence from the public
+ * source tree, not confidentiality of the endpoint.
+ */
+const ALLOWED_REVIEW_BASE_URL_DIGESTS = Object.freeze([
+  'ca8309dbe7eb85c5c7da280d48572eb44d159c1244ebea3548b82784cbc27c53',
+]);
+
+function digestBaseUrl(baseUrl) {
+  return crypto.createHash('sha256').update(baseUrl).digest('hex');
+}
+
+/**
+ * Built as a factory purely so the digest branch is testable. The suite cannot exercise it against
+ * the production pin without hardcoding the very hostname the pin exists to keep out of this public
+ * repository, so tests build a predicate over their own URL and digest instead. The exported
+ * production predicate stays bound to the frozen constants, so this is a testing seam, not a
+ * widening of the control.
+ */
+function createReviewBaseUrlAllowlist(baseUrls, digests) {
+  const urlSet = new Set(baseUrls);
+  const digestSet = new Set(digests);
+  const isAllowed = function isAllowed(baseUrl) {
+    if (typeof baseUrl !== 'string' || baseUrl.length === 0) return false;
+    if (urlSet.has(baseUrl)) return true;
+    return digestSet.has(digestBaseUrl(baseUrl));
+  };
+  // Surfaced so the suite can assert the production predicate is actually WIRED to the production
+  // pins. Without this, emptying the digest list at the call site leaves the exported constant
+  // intact and every test still passes while the destination silently stops being admitted --
+  // verified: that mutation was green across the whole file before this existed.
+  isAllowed.plaintextCount = urlSet.size;
+  isAllowed.pinnedDigestCount = digestSet.size;
+  return isAllowed;
+}
+
+const isAllowedReviewBaseUrl = createReviewBaseUrlAllowlist(
+  ALLOWED_REVIEW_BASE_URLS,
+  ALLOWED_REVIEW_BASE_URL_DIGESTS,
+);
 const OPENROUTER_AUTO_MODEL = 'openrouter/auto';
 const OPENROUTER_DIRECT_PRIMARY_MODEL = 'z-ai/glm-5.3-flash';
 const OPENROUTER_DIRECT_FALLBACK_MODEL = 'deepseek/deepseek-v4-flash-0731';
@@ -33,6 +85,10 @@ const CANONICAL_ALLOWED_MODELS = Object.freeze([
   // OpenRouter entries above, reached by a different name on a different destination.
   'glm-5.3-flash',
   'deepseek-v4-flash-0731',
+  // The digest-pinned destination namespaces models by the provider it fronts. Same flash-class
+  // model family as the entries above, reached by a third name on a third destination.
+  'neuralwatt/glm-5.3-flash',
+  'neuralwatt/deepseek-v4-flash',
 ]);
 const CANONICAL_ALLOWED_MODEL_SET = new Set(CANONICAL_ALLOWED_MODELS);
 const POLICY_KEYS = Object.freeze([
@@ -131,9 +187,10 @@ function validateOpenRouterReviewPolicy(policy) {
 
   const normalized = normalizePolicyShape(policy);
 
-  if (!ALLOWED_REVIEW_BASE_URLS.includes(normalized.base_url)) {
+  if (!isAllowedReviewBaseUrl(normalized.base_url)) {
     throw new Error(
-      `Review policy base url must normalize exactly to one of: ${ALLOWED_REVIEW_BASE_URLS.join(', ')}`,
+      `Review policy base url must normalize exactly to one of: ${ALLOWED_REVIEW_BASE_URLS.join(', ')}`
+        + `, or match one of ${ALLOWED_REVIEW_BASE_URL_DIGESTS.length} digest-pinned destination(s)`,
     );
   }
 
@@ -255,6 +312,10 @@ function buildOpenRouterRequestOptions(policy) {
 
 module.exports = {
   DEFAULT_OPENROUTER_REVIEW_POLICY,
+  ALLOWED_REVIEW_BASE_URLS,
+  ALLOWED_REVIEW_BASE_URL_DIGESTS,
+  createReviewBaseUrlAllowlist,
+  isAllowedReviewBaseUrl,
   resolveOpenRouterReviewPolicy,
   validateOpenRouterReviewPolicy,
   buildOpenRouterRequestOptions,

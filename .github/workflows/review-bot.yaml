@@ -60,6 +60,7 @@ jobs:
           REVIEW_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
           OPENCODE_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY != '' }}
           OPENROUTER_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY != '' }}
+          GATEWAY_KEY_PRESENT: ${{ secrets.CT_REVIEW_GATEWAY_API_KEY != '' }}
           REVIEW_LANE_TIMEOUT_MS: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
         run: ./scripts/assert-review-transport-config.sh
 
@@ -77,19 +78,31 @@ jobs:
           # Keyed on the DESTINATION (`vars.OPENROUTER_BASE_URL`), the same value that decides
           # where the request goes -- not on a second variable that can disagree with it.
           #
-          # This expression ALONE is not fail-closed, and the previous version's comment wrongly
+          # This expression ALONE is not fail-closed, and an earlier version's comment wrongly
           # claimed it was: GitHub Actions `&&`/`||` return operands rather than booleans, and an
           # unset secret is an empty string, which is falsy. So a missing opencode secret would
           # fall straight through to the OpenRouter credential and transmit it to opencode.ai.
           # The preceding guard step is what actually prevents that; this line only picks.
-          llm-api-key: ${{ contains(vars.OPENROUTER_BASE_URL, 'opencode.ai') && secrets.CT_REVIEW_OPENCODE_API_KEY || secrets.CT_REVIEW_OPENROUTER_API_KEY }}
+          #
+          # The final arm is the digest-pinned gateway. It is identified by ELIMINATION rather than
+          # by naming it, for two reasons: this repository is public and must not carry that
+          # hostname, and a second "which destination is the gateway" variable could disagree with
+          # the destination variable -- the exact hazard called out above. Elimination is sound
+          # here only because the guard step has already exited non-zero for every destination
+          # except the two named below and that one pinned digest.
+          llm-api-key: >-
+            ${{ contains(vars.OPENROUTER_BASE_URL, 'opencode.ai') && secrets.CT_REVIEW_OPENCODE_API_KEY
+             || contains(vars.OPENROUTER_BASE_URL, 'openrouter.ai') && secrets.CT_REVIEW_OPENROUTER_API_KEY
+             || vars.OPENROUTER_BASE_URL == '' && secrets.CT_REVIEW_OPENROUTER_API_KEY
+             || secrets.CT_REVIEW_GATEWAY_API_KEY }}
           # Optional direct fallbacks. They are only admitted when their own keys are present;
           # OpenRouter remains the primary direct DeepSeek -> GLM route.
           ollama-api-key: ${{ secrets.CT_REVIEW_OLLAMA_API_KEY || secrets.OLLAMA_API_KEY }}
           synthetic-api-key: ${{ secrets.CT_REVIEW_SYNTHETIC_API_KEY || secrets.SYNTHETIC_API_KEY }}
           llm-base-url: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
           # Set `vars.REVIEW_TRANSPORT_COMPAT=opencode` alongside an opencode `llm-base-url`.
-          # Unset for OpenRouter, which needs no shims.
+          # Unset for OpenRouter and for the digest-pinned gateway: both accept the content-block
+          # message form natively, so flattening them would destroy the prompt-cache breakpoint.
           transport-compat: ${{ vars.REVIEW_TRANSPORT_COMPAT }}
           lane-timeout-ms: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is

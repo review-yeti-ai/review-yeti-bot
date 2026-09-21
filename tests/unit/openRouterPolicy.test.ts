@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'node:crypto';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/openrouter-policy.js'))
   ? path.resolve(__dirname, '../..')
@@ -246,6 +247,81 @@ describe('openrouter review policy', () => {
     it('still forces data_collection deny', () => {
       const policy = { ...base('https://opencode.ai/zen/v1', 'glm-5.3-flash'), data_collection: 'allow' };
       expect(() => validateOpenRouterReviewPolicy(policy)).toThrow();
+    });
+  });
+
+  // --- review destination allowlist ----------------------------------------------------------
+
+  describe('review destination allowlist', () => {
+    const {
+      ALLOWED_REVIEW_BASE_URLS,
+      ALLOWED_REVIEW_BASE_URL_DIGESTS,
+      createReviewBaseUrlAllowlist,
+      isAllowedReviewBaseUrl,
+    } = policyModule;
+
+    it('admits each plaintext destination exactly', () => {
+      for (const url of ALLOWED_REVIEW_BASE_URLS) {
+        expect(isAllowedReviewBaseUrl(url)).toBe(true);
+      }
+    });
+
+    // This is an exfiltration control, not configuration: private diffs go to the destination.
+    it('rejects destinations outside the allowlist', () => {
+      for (const url of [
+        'https://evil.example/v1',
+        'https://openrouter.ai.evil.example/api/v1',
+        'https://openrouter.ai/api/v2',
+        'http://openrouter.ai/api/v1',
+        '',
+      ]) {
+        expect(isAllowedReviewBaseUrl(url)).toBe(false);
+      }
+      expect(isAllowedReviewBaseUrl(undefined as any)).toBe(false);
+      expect(isAllowedReviewBaseUrl(null as any)).toBe(false);
+    });
+
+    // Exercised through the factory rather than the production pin: asserting the real digest
+    // branch directly would mean hardcoding the hostname this repository must not carry.
+    it('admits a destination matching a pinned digest, and only that one', () => {
+      const pinned = 'https://gateway.test.invalid/v1';
+      const digest = createHash('sha256').update(pinned).digest('hex');
+      const isAllowed = createReviewBaseUrlAllowlist([], [digest]);
+      expect(isAllowed(pinned)).toBe(true);
+      expect(isAllowed('https://gateway.test.invalid/v2')).toBe(false);
+      expect(isAllowed('https://gateway.test.invalid')).toBe(false);
+      expect(isAllowed(digest)).toBe(false);
+    });
+
+    // A pin that silently emptied would reopen the destination to the plaintext list only, which
+    // is a quiet outage rather than a loud one.
+    it('carries exactly one well-formed production pin', () => {
+      expect(ALLOWED_REVIEW_BASE_URL_DIGESTS).toHaveLength(1);
+      for (const digest of ALLOWED_REVIEW_BASE_URL_DIGESTS) {
+        expect(digest).toMatch(/^[0-9a-f]{64}$/);
+      }
+    });
+
+    // Checking the constant is not enough: the predicate is constructed at a separate call site,
+    // and emptying the digest list THERE leaves the constant intact. That mutation passed this
+    // entire file before this assertion existed, silently un-admitting the destination.
+    it('wires the production pins into the production predicate', () => {
+      expect(isAllowedReviewBaseUrl.pinnedDigestCount).toBe(ALLOWED_REVIEW_BASE_URL_DIGESTS.length);
+      expect(isAllowedReviewBaseUrl.plaintextCount).toBe(ALLOWED_REVIEW_BASE_URLS.length);
+    });
+
+    // The whole reason the third destination is digest-pinned is that this repository is public.
+    // A later edit pasting the URL in "for readability" would undo that silently.
+    //
+    // Asserted structurally rather than by naming the forbidden host: spelling it out here would
+    // publish in the test the exact string the test exists to keep out of the source.
+    it('keeps every URL literal in the policy source within the public allowlist', () => {
+      const source = fs.readFileSync(policyModulePath, 'utf8');
+      const literals = [...new Set(source.match(/https:\/\/[^'"`\s)]+/g) ?? [])];
+      expect(literals.length).toBeGreaterThan(0);
+      for (const literal of literals) {
+        expect(ALLOWED_REVIEW_BASE_URLS).toContain(literal);
+      }
     });
   });
 });

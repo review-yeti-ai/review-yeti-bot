@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { OPENCODE_LANE_TIMEOUT_S } from '../../src/config/configLoader';
 
 /**
@@ -21,6 +22,19 @@ function run(env: Record<string, string>): { ok: boolean; out: string } {
 
 const OPENCODE = 'https://opencode.ai/zen/v1';
 const OPENROUTER = 'https://openrouter.ai/api/v1';
+
+/**
+ * The third destination is pinned by digest, not hostname, because this repository is public.
+ * These tests must not hardcode the hostname either -- so they drive the guard with a destination
+ * synthesised from the SAME pin the guard uses, overriding it to a value the tests do own.
+ */
+const TEST_GATEWAY = 'https://gateway.test.invalid/v1';
+const TEST_GATEWAY_SHA256 = createHash('sha256').update(TEST_GATEWAY).digest('hex');
+const gatewayEnv = (extra: Record<string, string> = {}) => ({
+  REVIEW_BASE_URL: TEST_GATEWAY,
+  GATEWAY_BASE_URL_SHA256: TEST_GATEWAY_SHA256,
+  ...extra,
+});
 
 describe('review transport configuration guard', () => {
   it('accepts a fully consistent opencode configuration', () => {
@@ -77,5 +91,70 @@ describe('review transport configuration guard', () => {
     const match = source.match(/OPENCODE_MIN_LANE_TIMEOUT_MS:-(\d+)/);
     expect(match, 'guard must declare a default minimum').toBeTruthy();
     expect(Number(match![1])).toBe(OPENCODE_LANE_TIMEOUT_S * 1000);
+  });
+
+  // --- digest-pinned gateway destination ---------------------------------------------------
+
+  it('accepts a consistent digest-pinned gateway configuration', () => {
+    const r = run(gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }));
+    expect(r.ok).toBe(true);
+    expect(r.out).toMatch(/digest-pinned gateway destination/);
+  });
+
+  it('normalizes a trailing slash before matching the pinned digest', () => {
+    const r = run(gatewayEnv({ REVIEW_BASE_URL: `${TEST_GATEWAY}/`, GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }));
+    expect(r.ok).toBe(true);
+  });
+
+  // Same leak as the opencode case: with the gateway secret empty, the workflow's key-selection
+  // expression falls through to another provider's credential and transmits it to the gateway.
+  it('refuses the gateway without its own key rather than falling back', () => {
+    const r = run(gatewayEnv({ GATEWAY_KEY_PRESENT: 'false', OPENROUTER_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }));
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/CT_REVIEW_GATEWAY_API_KEY is unset/);
+  });
+
+  it('requires an explicit lane timeout for the gateway', () => {
+    const r = run(gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '' }));
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/REVIEW_LANE_TIMEOUT_MS is unset/);
+  });
+
+  it('rejects a lane timeout tighter than the gateway budget', () => {
+    const r = run(gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '90000' }));
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/tighter than the digest-pinned gateway provider budget/);
+  });
+
+  // A near-miss of the pinned URL must fall to the catch-all, not be waved through.
+  it('rejects a destination that merely resembles the pinned one', () => {
+    const r = run(gatewayEnv({ REVIEW_BASE_URL: 'https://gateway.test.invalid/v2', GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }));
+    expect(r.ok).toBe(false);
+    expect(r.out).toMatch(/no matching role-scoped credential rule/);
+  });
+
+  // This repository's workflow logs are public, and the likeliest unrecognised destination is a
+  // typo of a first-party hostname. The guard must report the digest, never the URL.
+  it('never echoes an unrecognised destination back into the log', () => {
+    const secretish = 'https://internal-host.example.com/v1';
+    const r = run({ REVIEW_BASE_URL: secretish });
+    expect(r.ok).toBe(false);
+    expect(r.out).not.toContain(secretish);
+    expect(r.out).not.toContain('internal-host');
+    expect(r.out).toContain(createHash('sha256').update(secretish).digest('hex'));
+  });
+
+  // The guard and the policy module each carry the pin. If they drift, the workflow admits a
+  // destination the policy rejects (or the reverse) and the failure surfaces only in production.
+  it('pins the same gateway digest as the review policy module', () => {
+    const script = fs.readFileSync(SCRIPT, 'utf8');
+    const policy = fs.readFileSync(
+      path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'),
+      'utf8',
+    );
+    const inScript = script.match(/GATEWAY_BASE_URL_SHA256:-([0-9a-f]{64})/)?.[1];
+    const inPolicy = [...policy.matchAll(/'([0-9a-f]{64})'/g)].map((m) => m[1]);
+    expect(inScript).toMatch(/^[0-9a-f]{64}$/);
+    expect(inPolicy).toContain(inScript);
   });
 });
