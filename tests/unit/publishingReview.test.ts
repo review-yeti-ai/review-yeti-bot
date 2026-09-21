@@ -928,6 +928,59 @@ describe('runPublishingReviewWorker', () => {
     });
   });
 
+  it('publishes a skipped not-applicable check when every changed path is owner-ignored', async () => {
+    // Owner-declared not-applicable: every changed path matches
+    // auto_review.ignore_patterns. Materially different from a zero-lane
+    // coverage gap (ADR 0333): the owner declared these paths need no review, so
+    // publish a NEUTRAL check that claims no verdict -- never SHIP.
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: [],
+        personas: [],
+        optionalFailures: [],
+        zeroLaneNonEvidence: true,
+        quorum: { required: 0, distinctProviders: [], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+      sourceLoader: vi.fn(async () => ({
+        diff: 'diff --git a/docs/uat/runs/benchmarks/x.json b/docs/uat/runs/benchmarks/x.json\n@@ -1 +1 @@\n-a\n+b\n',
+        githubReads: 1,
+      })) as never,
+    });
+    const policy = JSON.stringify({ auto_review: { ignore_patterns: ['docs/uat/runs/**'] } });
+
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: policy }), d as never);
+
+    expect(receipt.conclusion).toBe('neutral');
+    expect(receipt.coverage.mode).toBe('not_applicable');
+    expect(receipt.verdict).not.toBe('SHIP');
+  });
+
+  it('keeps zero-lane non-evidence when the ignore list does not cover the whole diff', async () => {
+    // Negative case (ADR 0641): a partially-ignored diff must NOT be laundered
+    // into a skipped check.
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: [],
+        personas: [],
+        optionalFailures: [],
+        zeroLaneNonEvidence: true,
+        quorum: { required: 0, distinctProviders: [], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+      sourceLoader: vi.fn(async () => ({
+        diff: 'diff --git a/docs/uat/runs/benchmarks/x.json b/docs/uat/runs/benchmarks/x.json\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-a\n+b\n',
+        githubReads: 1,
+      })) as never,
+    });
+    const policy = JSON.stringify({ auto_review: { ignore_patterns: ['docs/uat/runs/**'] } });
+
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: policy }), d as never);
+
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.coverage.mode).toBe('zero_lane');
+  });
+
   it('does not count a finding that arbitration discarded', async () => {
     // Regression: the blocking count came from raw persona output while the
     // verdict came from the canonical set, so a check could read `SHIP` and
