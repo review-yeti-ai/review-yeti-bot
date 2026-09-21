@@ -381,9 +381,16 @@ describe('openrouter review policy', () => {
     //
     // Asserted structurally rather than by naming the forbidden host: spelling it out here would
     // publish in the test the exact string the test exists to keep out of the source.
-    it('keeps every URL literal in the policy source within the public allowlist', () => {
+    // Scheme-agnostic on purpose. An earlier version matched only `https://`, so an `http://`
+    // spelling of the same host would have published it while this test stayed green -- the
+    // enforcement was narrower than the name claimed.
+    //
+    // Boundary stated rather than overclaimed: this catches URLs with an authority component. A
+    // BARE hostname with no scheme would still slip past, and a regex that reliably told
+    // hostnames from filenames like `providers.generated.ts` is not worth its false positives.
+    it('keeps every scheme-qualified URL in the policy source within the public allowlist', () => {
       const source = fs.readFileSync(policyModulePath, 'utf8');
-      const literals = [...new Set(source.match(/https:\/\/[^'"`\s)]+/g) ?? [])];
+      const literals = [...new Set(source.match(/(?:[a-z][a-z0-9+.-]*:)?\/\/[^'"`\s)]+/gi) ?? [])];
       expect(literals.length).toBeGreaterThan(0);
       for (const literal of literals) {
         expect(ALLOWED_REVIEW_BASE_URLS).toContain(literal);
