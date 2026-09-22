@@ -3,6 +3,8 @@ import {
   isSubmoduleEntry,
   isArchitecturePersona,
   personaCoversFile,
+  scopeFilesForPersona,
+  computeUnmatchedPaths,
 } from '../../src/panel/panelEngine';
 import { deriveApplicablePersonas } from '../../src/review/personaApplicability';
 import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domainIndex';
@@ -31,18 +33,20 @@ describe('Submodule Architecture Persona Routing', () => {
   });
 
   describe('isArchitecturePersona', () => {
-    it('matches architecture persona variants', () => {
+    it('matches architecture persona variants by stable id, charter, or capability flag', () => {
       expect(isArchitecturePersona({ id: 'architecture' })).toBe(true);
       expect(isArchitecturePersona({ id: 'arch-lane' })).toBe(true);
-      expect(isArchitecturePersona({ id: 'custom-arch', name: 'System Architecture' })).toBe(true);
       expect(isArchitecturePersona({ id: 'custom', charter: 'builtin:architecture' })).toBe(true);
+      expect(isArchitecturePersona({ id: 'custom-lane', coversSubmodules: true })).toBe(true);
     });
 
-    it('rejects non-architecture personas', () => {
+    it('rejects non-architecture personas, including those with architecture in display name', () => {
       expect(isArchitecturePersona({ id: 'security', charter: 'builtin:security' })).toBe(false);
       expect(isArchitecturePersona({ id: 'sec-lane', charter: 'builtin:security' })).toBe(false);
       expect(isArchitecturePersona({ id: 'documentation', charter: 'builtin:documentation' })).toBe(false);
       expect(isArchitecturePersona({ id: 'qual-lane', charter: 'builtin:consistency' })).toBe(false);
+      // Display name substring alone must NOT match:
+      expect(isArchitecturePersona({ id: 'docs-lane', name: 'Architecture Decision Records Reviewer' })).toBe(false);
       expect(isArchitecturePersona(null)).toBe(false);
     });
   });
@@ -50,6 +54,7 @@ describe('Submodule Architecture Persona Routing', () => {
   describe('personaCoversFile', () => {
     const archPersona = { id: 'architecture', name: 'Architecture', paths: ['arch/**', 'system/**'] };
     const secPersona = { id: 'security', name: 'Security', paths: ['auth/**', 'crypto/**'] };
+    const wildcardPersona = { id: 'general', name: 'General', paths: ['**'] };
 
     it('routes submodule gitlinks to architecture persona even when paths do not match', () => {
       const submoduleFile = { path: 'ct-dashboard', mode: '160000' };
@@ -62,17 +67,9 @@ describe('Submodule Architecture Persona Routing', () => {
       expect(personaCoversFile(archPersona, { path: 'other/random.ts', mode: '100644' })).toBe(false);
     });
 
-    it('scopes changedFiles in runPersona such that submodule changes belong to arch lane only', () => {
-      const changedFiles = [
-        { path: 'ct-dashboard', mode: '160000' },
-        { path: 'auth/login.ts', mode: '100644' },
-      ];
-
-      const archScoped = changedFiles.filter((f) => personaCoversFile(archPersona, f));
-      const secScoped = changedFiles.filter((f) => personaCoversFile(secPersona, f));
-
-      expect(archScoped.map((f) => f.path)).toEqual(['ct-dashboard']);
-      expect(secScoped.map((f) => f.path)).toEqual(['auth/login.ts']);
+    it('handles bare "**" wildcard path correctly', () => {
+      expect(personaCoversFile(wildcardPersona, { path: 'any/path/file.ts', mode: '100644' })).toBe(true);
+      expect(personaCoversFile(wildcardPersona, { path: 'README.md', mode: '100644' })).toBe(true);
     });
 
     it('handles null and undefined files safely', () => {
@@ -81,19 +78,61 @@ describe('Submodule Architecture Persona Routing', () => {
     });
   });
 
-  describe('unmatched path filtering in executePersonaPanel', () => {
-    it('excludes submodule gitlink entries from the unmatched paths assertion', () => {
+  describe('scopeFilesForPersona', () => {
+    const archPersona = { id: 'architecture', name: 'Architecture', paths: ['arch/**'] };
+    const secPersona = { id: 'security', name: 'Security', paths: ['auth/**'] };
+
+    it('scopes changedFiles in runPersona such that submodule changes belong to arch lane only', () => {
+      const changedFiles = [
+        { path: 'ct-dashboard', mode: '160000' },
+        { path: 'auth/login.ts', mode: '100644' },
+      ];
+
+      const archScoped = scopeFilesForPersona(archPersona, changedFiles);
+      const secScoped = scopeFilesForPersona(secPersona, changedFiles);
+
+      expect(archScoped.map((f) => f.path)).toEqual(['ct-dashboard']);
+      expect(secScoped.map((f) => f.path)).toEqual(['auth/login.ts']);
+    });
+  });
+
+  describe('computeUnmatchedPaths in executePersonaPanel', () => {
+    const archPersona = { id: 'architecture', name: 'Architecture', paths: ['arch/**'] };
+    const secPersona = { id: 'security', name: 'Security', paths: ['auth/**'] };
+
+    it('excludes submodule gitlink entries from unmatched paths when architecture persona is active', () => {
       const effectiveFiles = [
         { path: 'ct-dashboard', mode: '160000' },
         { path: 'uncovered/code.ts', mode: '100644' },
       ];
 
-      const unmatched = effectiveFiles
-        .filter((f) => !isSubmoduleEntry(f))
-        .map((f) => f.path);
+      const unmatched = computeUnmatchedPaths(effectiveFiles, [archPersona]);
 
       expect(unmatched).toEqual(['uncovered/code.ts']);
       expect(unmatched).not.toContain('ct-dashboard');
+    });
+
+    it('includes submodule entries in unmatched paths when NO architecture persona is active', () => {
+      const effectiveFiles = [
+        { path: 'ct-dashboard', mode: '160000' },
+        { path: 'auth/login.ts', mode: '100644' },
+      ];
+
+      // Only security persona active: ct-dashboard is uncovered
+      const unmatched = computeUnmatchedPaths(effectiveFiles, [secPersona]);
+
+      expect(unmatched).toEqual(['ct-dashboard']);
+      expect(unmatched).not.toContain('auth/login.ts');
+    });
+
+    it('excludes documentation and asset paths from unmatched list', () => {
+      const effectiveFiles = [
+        { path: 'docs/guide.md', mode: '100644' },
+        { path: 'assets/logo.png', mode: '100644' },
+      ];
+
+      const unmatched = computeUnmatchedPaths(effectiveFiles, []);
+      expect(unmatched).toHaveLength(0);
     });
   });
 
