@@ -9,6 +9,7 @@ import {
 } from '../../src/api/actionDispatchApi';
 import type { WorkerCompletionProof } from '../../src/review/workerCompletion';
 import type { WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
+import { WorkerCompletionPersistenceError } from '../../src/review/workerCompletionPersistenceError';
 import { logger } from '../../src/utils/logger';
 
 const ENDPOINT = '/api/dispatch/completion';
@@ -163,7 +164,22 @@ describe('authoritative worker completion API', () => {
     expect(f.recordWorkerResult).toHaveBeenCalledTimes(1);
     expect(f.markWorkerFailure).not.toHaveBeenCalled();
     expect(f.errorLog).toHaveBeenCalledExactlyOnceWith('Failed to persist authoritative worker completion', {
-      reason: 'persistence_unavailable', runId: event().runId,
+      reason: 'persistence_unavailable', stage: 'unknown', runId: event().runId,
+    });
+    const logged = JSON.stringify(f.errorLog.mock.calls);
+    expect(logged).not.toContain(PRIVATE_DETAIL);
+    expect(logged).not.toContain(TOKEN);
+  });
+
+  it('logs only the classified persistence stage for a typed completion failure', async () => {
+    const f = fixture();
+    f.recordWorkerResult.mockRejectedValue(new WorkerCompletionPersistenceError('outbox-update'));
+    const response = await request(f.app).post(ENDPOINT).auth(TOKEN, { type: 'bearer' }).send(event());
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Worker review completion could not be persisted' });
+    expect(f.errorLog).toHaveBeenCalledExactlyOnceWith('Failed to persist authoritative worker completion', {
+      reason: 'persistence_unavailable', stage: 'outbox-update', runId: event().runId,
     });
   });
 
