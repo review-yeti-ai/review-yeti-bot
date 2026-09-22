@@ -66,6 +66,19 @@ const centralManualClaims = {
   job_workflow_sha: 'd'.repeat(40),
 };
 
+const centralExternalRepositories = new Map([
+  ['review-yeti-ai/review-yeti-bot', 1326169548],
+]);
+
+const centralManualTarget = {
+  deliveryId: `actions:98765:2:1326169548:42:${body.headSha}`,
+  repositoryId: 1326169548,
+  owner: 'review-yeti-ai',
+  repo: 'review-yeti-bot',
+  publishMode: 'app-gate',
+  expectedGeneration: 2,
+} as const;
+
 function app(overrides: Record<string, any> = {}) {
   const verifier = { verify: vi.fn(async () => verified), ...(overrides.verifier || {}) };
   const admission = { admit: vi.fn(async () => ({
@@ -374,25 +387,20 @@ describe('POST /api/dispatch/action', () => {
     const fixture = app({
       allowAppGate: true,
       verifier: { verify: vi.fn(async () => centralVerified) },
-      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+      centralExternalRepositories,
     });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
       .set('Authorization', 'Bearer signed-oidc-token')
       .send({
         ...body,
-        deliveryId: `actions:98765:2:1326169548:42:${body.headSha}`,
-        repositoryId: 1326169548,
-        owner: 'review-yeti-ai',
-        repo: 'review-yeti-bot',
+        ...centralManualTarget,
         caller: {
           ...body.caller,
           eventName: 'workflow_dispatch',
           workflowRef: centralVerified.workflow_ref,
           workflowSha: centralVerified.workflow_sha,
         },
-        publishMode: 'app-gate',
-        expectedGeneration: 2,
       });
 
     expect(response.status).toBe(202);
@@ -410,12 +418,17 @@ describe('POST /api/dispatch/action', () => {
       workflow_sha: 'e'.repeat(40), job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
       job_workflow_sha: 'd'.repeat(40),
     };
-    const fixture = app({ verifier: { verify: vi.fn(async () => centralVerified) } });
+    const fixture = app({
+      allowAppGate: true,
+      verifier: { verify: vi.fn(async () => centralVerified) },
+      centralExternalRepositories,
+    });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
       .set('Authorization', 'Bearer signed-oidc-token')
       .send({
         ...body,
+        ...centralManualTarget,
         caller: { ...body.caller, eventName: 'workflow_dispatch',
           workflowRef: centralVerified.workflow_ref, workflowSha: centralVerified.workflow_sha },
       });
@@ -438,12 +451,17 @@ describe('POST /api/dispatch/action', () => {
       ...(jobWorkflowRef ? { job_workflow_ref: jobWorkflowRef } : {}),
       job_workflow_sha: 'd'.repeat(40),
     };
-    const fixture = app({ verifier: { verify: vi.fn(async () => centralVerified) } });
+    const fixture = app({
+      allowAppGate: true,
+      verifier: { verify: vi.fn(async () => centralVerified) },
+      centralExternalRepositories,
+    });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
       .set('Authorization', 'Bearer signed-oidc-token')
       .send({
         ...body,
+        ...centralManualTarget,
         caller: { ...body.caller, eventName: 'workflow_dispatch',
           workflowRef: centralVerified.workflow_ref, workflowSha: centralVerified.workflow_sha },
       });
@@ -465,12 +483,17 @@ describe('POST /api/dispatch/action', () => {
     _reason,
     callerIdentity,
   ) => {
-    const fixture = app({ verifier: { verify: vi.fn(async () => centralManualClaims) } });
+    const fixture = app({
+      allowAppGate: true,
+      verifier: { verify: vi.fn(async () => centralManualClaims) },
+      centralExternalRepositories,
+    });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
       .set('Authorization', 'Bearer signed-oidc-token')
       .send({
         ...body,
+        ...centralManualTarget,
         caller: {
           ...body.caller,
           eventName: 'workflow_dispatch',
