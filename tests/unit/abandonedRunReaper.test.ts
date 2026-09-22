@@ -38,6 +38,41 @@ function fixture() {
 }
 
 describe('AbandonedRunReaper exact-attempt ownership', () => {
+  it('uses the repository-selected publisher App id for fail-closed publication', async () => {
+    const f = fixture();
+    const publisherAppIdFor = vi.fn(() => 7_654_321);
+    const subject = new AbandonedRunReaper({
+      repository: f.repository,
+      checkClientFor: f.checkClientFor,
+      workerId: 'reaper-a',
+      publisherAppId: 4_385_771,
+      publisherAppIdFor,
+      now: () => 900_000,
+    });
+
+    await subject.runOnce();
+
+    expect(publisherAppIdFor).toHaveBeenCalledWith(run);
+    expect(f.client.failAbandonedCheck).toHaveBeenCalledWith(run, 7_654_321, expect.any(AbortSignal));
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'fails closed before publication when the repository-selected App id is %s',
+    async (selectedAppId) => {
+      const f = fixture();
+      const subject = new AbandonedRunReaper({
+        repository: f.repository,
+        checkClientFor: f.checkClientFor,
+        workerId: 'reaper-a',
+        publisherAppId: 4_385_771,
+        publisherAppIdFor: () => selectedAppId,
+        now: () => 900_000,
+      });
+
+      await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 0, failed: 1 });
+      expect(f.client.failAbandonedCheck).not.toHaveBeenCalled();
+    },
+  );
   it('publishes only through the locked attempt and authenticated App failure-only operation', async () => {
     const { subject, client, repository } = fixture();
     await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 1, failed: 0 });

@@ -101,6 +101,33 @@ describe('dispatcher publishing ownership composition', () => {
     expectIdleCompletionPool();
   });
 
+  it('routes only the exact public target through its dedicated worker and reaper App', async () => {
+    vi.spyOn(process, 'once').mockReturnValue(process);
+    vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', '7654321');
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY', 'public-key');
+
+    await import('../../src/reviewJobDispatcherIndex');
+    await vi.waitFor(() => expect(state.close).toHaveBeenCalled());
+
+    const credentialsForRepository = state.credentials!.credentialsForRepository as
+      (owner: string, repo: string) => { appId: string; privateKey: string };
+    expect(credentialsForRepository('review-yeti-ai', 'review-yeti-bot')).toEqual({
+      appId: '7654321', privateKey: 'public-key',
+    });
+    expect(credentialsForRepository('calltelemetry', 'ct-meta')).toEqual({
+      appId: '4385771', privateKey: 'offline-key',
+    });
+
+    const publicRun = { owner: 'review-yeti-ai', repo: 'review-yeti-bot' };
+    expect(state.reaperOptions!.publisherAppIdFor(publicRun)).toBe(7_654_321);
+    await state.reaperOptions!.checkClientFor(publicRun, AbortSignal.timeout(1_000));
+    expect(state.mint).toHaveBeenLastCalledWith({
+      appId: '7654321', privateKey: 'public-key', owner: 'review-yeti-ai', repo: 'review-yeti-bot',
+      signal: expect.any(AbortSignal),
+    });
+  });
+
   it.each(['SIGTERM', 'SIGINT'] as const)('passes loop options and drains reaping before close after captured %s', async (shutdown) => {
     const handlers = new Map<string | symbol, () => void>();
     vi.spyOn(process, 'once').mockImplementation((event, listener) => {

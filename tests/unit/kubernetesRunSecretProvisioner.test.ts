@@ -347,4 +347,53 @@ describe('KubernetesRunSecretProvisioner', () => {
     expect(mintToken).toHaveBeenCalledWith(expected);
     expect(mintReadToken).toHaveBeenCalledWith(expected);
   });
+
+  it('uses repository-selected App credentials for both least-privilege worker tokens', async () => {
+    const client = {
+      createNamespacedSecret: vi.fn(async () => undefined),
+      readNamespacedSecret: vi.fn(async () => { throw { code: 404 }; }),
+    };
+    const mintToken = vi.fn(async () => ({
+      token: 'ghs_public_publish', expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      permissions: { checks: 'write' },
+    }));
+    const mintReadToken = vi.fn(async () => ({
+      token: 'ghs_public_read', expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      permissions: { contents: 'read', pull_requests: 'read' },
+    }));
+    const credentialsForRepository = vi.fn(() => ({ appId: '7654321', privateKey: 'public-key' }));
+    const subject = new KubernetesRunSecretProvisioner({
+      client, appId: '4385771', privateKey: 'primary-key', credentialsForRepository,
+      mintToken: mintToken as never, mintReadToken: mintReadToken as never,
+    });
+
+    await subject.provision({ ...request, owner: 'review-yeti-ai', repo: 'review-yeti-bot' });
+
+    expect(credentialsForRepository).toHaveBeenCalledExactlyOnceWith('review-yeti-ai', 'review-yeti-bot');
+    const expected = {
+      appId: '7654321', privateKey: 'public-key', owner: 'review-yeti-ai', repo: 'review-yeti-bot',
+    };
+    expect(mintToken).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(mintReadToken).toHaveBeenCalledExactlyOnceWith(expected);
+  });
+
+  it.each([
+    [{ appId: '', privateKey: 'public-key' }],
+    [{ appId: '   ', privateKey: 'public-key' }],
+    [{ appId: '7654321', privateKey: '' }],
+    [{ appId: '7654321', privateKey: '   ' }],
+  ])('rejects invalid repository-selected credentials before either token mint: %j', async (selected) => {
+    const { client, mintToken, mintReadToken } = provisioner();
+    const guarded = new KubernetesRunSecretProvisioner({
+      client, appId: '4385771', privateKey: 'primary-key',
+      credentialsForRepository: () => selected,
+      mintToken: mintToken as never, mintReadToken: mintReadToken as never,
+    });
+
+    await expect(guarded.provision({ ...request, owner: 'review-yeti-ai', repo: 'review-yeti-bot' }))
+      .rejects.toThrow('run secret provisioner resolved invalid GitHub App credentials');
+    expect(mintToken).not.toHaveBeenCalled();
+    expect(mintReadToken).not.toHaveBeenCalled();
+    expect(client.createNamespacedSecret).not.toHaveBeenCalled();
+  });
 });
