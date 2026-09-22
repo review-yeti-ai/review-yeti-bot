@@ -265,3 +265,26 @@ test('Review Yeti verdict publication cannot trigger target repository workflows
   assert.doesNotMatch(reusable, /Trigger target repository CI validation on SHIP/u);
   assert.doesNotMatch(reusable, /gh workflow run/u);
 });
+
+test('DOKS reviews delegate provider health to the cluster worker', () => {
+  const reusable = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
+  const smokeStep = reusable.match(
+    /- name: Smoke-test Review Yeti transports[\s\S]*?(?=\n\s+- name: Validate admitted transport handoff)/u,
+  )?.[0] ?? '';
+  const handoffStep = reusable.match(
+    /- name: Validate admitted transport handoff[\s\S]*?(?=\n\s+- name: Resolve Review Yeti release channel)/u,
+  )?.[0] ?? '';
+  const seedStep = reusable.match(
+    /- name: Align panel seed key[\s\S]*?(?=\n\s+- name: Run Review Yeti review panel)/u,
+  )?.[0] ?? '';
+  const reviewStep = reusable.match(
+    /- name: Run Review Yeti review panel[\s\S]*?(?=\n\s+# Loud, not silent:)/u,
+  )?.[0] ?? '';
+
+  for (const step of [smokeStep, handoffStep, seedStep]) {
+    assert.match(step, /env\.TRUSTED_EXECUTION_BACKEND != 'doks'/u);
+  }
+  assert.match(reviewStep, /execution-backend:\s*\$\{\{ env\.TRUSTED_EXECUTION_BACKEND \}\}/u);
+  assert.match(reviewStep, /\n\s+if: steps\.policy\.outputs\.passthrough != 'true'\n/u);
+  assert.doesNotMatch(reviewStep, /\n\s+if:[^\n]*TRUSTED_EXECUTION_BACKEND != 'doks'/u);
+});
