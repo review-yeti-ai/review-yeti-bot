@@ -205,6 +205,18 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     expect(f.fetchImplementation).toHaveBeenCalledOnce();
   });
 
+  it('rejects a followed HTTP 503 without retrying or reading its body', async () => {
+    const wire = streamingResponse([Buffer.from(diagnostic)], false);
+    const response = new Response(wire.response.body, { status: 503 });
+    Object.defineProperty(response, 'redirected', { value: true });
+    const f = fixture(response);
+    await expectRedacted(f.adapter.reportReviewResult(event()));
+    expect(f.fetchImplementation).toHaveBeenCalledOnce();
+    expect(wire.pull).not.toHaveBeenCalled();
+    expect(wire.cancel).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each([
     '', diagnostic, 'null', '[]', '{}', JSON.stringify({ ...receipt(), runId: `run_${'f'.repeat(32)}` }),
     JSON.stringify(receipt({ version: 'WorkerReviewCompletionAccepted.v2' })),

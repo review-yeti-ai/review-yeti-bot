@@ -257,6 +257,17 @@ describe('service-owned authoritative completion context', () => {
     expect(failure).toMatchObject({ substage });
   });
 
+  it('classifies a failed resolver-race re-read as current-candidate', async () => {
+    const f = fixture();
+    f.resolve.mockRejectedValue(new Error(privateText));
+    f.currentCandidate.mockResolvedValueOnce(current).mockRejectedValueOnce(new Error(privateText));
+    const failure = await rejected(f.context(f.gate));
+    redacted(failure);
+    expect(failure).toMatchObject({ substage: 'current-candidate' });
+    expect(f.currentCandidate).toHaveBeenCalledTimes(2);
+    expect(f.exactCurrentDiff).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['storage', 'stored-policy'], ['factory', 'token'], ['current', 'current-candidate'],
     ['policy', 'policy-refresh'], ['diff', 'exact-diff'],
