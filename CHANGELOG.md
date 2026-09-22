@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.82.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.7...v1.82.0) (2026-09-22)
+
+
+### Features
+
+* **mcp:** remote Model Context Protocol endpoint and 8-tool catalog on action dispatch [no-linear] ([#922](https://github.com/review-yeti-ai/review-yeti-bot/issues/922)) ([0c0115f](https://github.com/review-yeti-ai/review-yeti-bot/commit/0c0115fe53070b837f5c4df8e8a7d3b631905a3c))
+
 ## [1.81.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.6...v1.81.7) (2026-09-21)
 
 
