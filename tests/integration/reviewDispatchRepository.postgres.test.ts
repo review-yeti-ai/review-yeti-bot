@@ -2287,6 +2287,34 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         .toBe(0);
     });
 
+    it.each([
+      ['mismatched retry metadata', { retryRequested: true, retryAfterExecutionAttempt: 7 }],
+      ['a non-retry central admission', { retryRequested: false }],
+    ])('rejects %s before external recovery can be applied', async (_label, retry) => {
+      const resolveGenerationRecovery = vi.fn(async () => { throw new Error('resolver must not run'); });
+      const { repository, client } = await createRepository({
+        lifecycleEvents: 'disabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      });
+      const input = {
+        ...authoritativeAdmission(`central-invalid-recovery-${'retryAfterExecutionAttempt' in retry
+          ? retry.retryAfterExecutionAttempt : 'not-retry'}`),
+        eventName: 'workflow_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 2,
+        ...retry,
+      };
+
+      await expect(repository.admit(input))
+        .rejects.toThrow(/expected generation 2.*next durable generation is 1/i);
+      expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+      for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs',
+        'review_dispatch_outbox', 'review_gate_attempts', 'review_generation_recoveries']) {
+        expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
+      }
+    });
+
     it('keeps an invalid external recovery ledger as a generation conflict with no durable writes', async () => {
       const { repository, client } = await createRepository({
         lifecycleEvents: 'disabled',

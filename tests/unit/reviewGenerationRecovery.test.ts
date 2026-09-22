@@ -124,6 +124,29 @@ describe('Review Yeti worker-generation recovery ledger', () => {
       expect.objectContaining({ generation: 1, checkId: 1_001 }),
     ]);
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    const [firstPageUrl] = fetchImplementation.mock.calls[0] as unknown as [string];
+    const [secondPageUrl] = fetchImplementation.mock.calls[1] as unknown as [string];
+    expect(new URL(firstPageUrl).searchParams.get('page')).toBe('1');
+    expect(new URL(secondPageUrl).searchParams.get('page')).toBe('2');
+  });
+
+  it('sorts and validates both prior generations for an a3 recovery', async () => {
+    const { client } = clientFor([workerCheck(2), workerCheck(1)]);
+
+    await expect(client.readReviewGenerationRecovery(request({ expectedGeneration: 3 })))
+      .resolves.toEqual([
+        expect.objectContaining({ generation: 1, checkId: 1_001, externalId: `${runId}:a1` }),
+        expect.objectContaining({ generation: 2, checkId: 1_002, externalId: `${runId}:a2` }),
+      ]);
+  });
+
+  it('refuses recovery beyond the bounded a3 generation without calling GitHub', async () => {
+    const fetchImplementation = vi.fn();
+    const client = new GitHubInstallationClient({ token: 'ghs_test', fetchImplementation });
+
+    await expect(client.readReviewGenerationRecovery(request({ expectedGeneration: 4 })))
+      .rejects.toThrow(/generation recovery ledger/u);
+    expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
   it.each([
