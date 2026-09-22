@@ -521,7 +521,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       }
     });
 
-    it('RACE-004: Concurrent trigger_review(force: true) successfully supersedes active run and dispatches new attempt', async () => {
+    it('RACE-004: force dispatches a new identity without pre-cancelling active state', async () => {
       const db = new MockReviewDatabase([
         {
           run_id: 'run_to_supersede_300',
@@ -537,12 +537,23 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       const mockAdmit = vi.fn(async () => ({
         run: { runId: 'run_new_superseded_300' },
       }));
-      const mockProjector = { ensure: vi.fn(async () => {}) };
-
       const triggerTool = createTriggerReviewTool({
         queryableDatabase: db as any,
         admissionRepository: { admit: mockAdmit as any },
-        projector: mockProjector as any,
+        resolveGitHubPullRequest: async () => ({
+          headSha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+          baseSha: 'f'.repeat(40), repositoryId: 1001, installationId: 2001,
+        }),
+        authoritativePublishing: {
+          expectedAppId: 4385771, repositoryIds: [1001],
+          resolver: { resolve: async (requested: any) => ({
+            identity: requested,
+            prepared: { policy: {
+              effectivePolicyDigest: '1'.repeat(64),
+              effectiveConfigDigest: '2'.repeat(64),
+            } },
+          }) },
+        } as any,
       });
 
       const outcome = await triggerTool.execute({
@@ -555,10 +566,9 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
 
       const data = JSON.parse((outcome.content[0] as any).text);
       expect(data.dispatched).toBe(true);
-      expect(data.job_crd_created).toBe(true);
-      expect(db.getRun('run_to_supersede_300')?.status).toBe('cancelled');
+      expect(data.job_crd_created).toBe(false);
+      expect(db.getRun('run_to_supersede_300')?.status).toBe('running');
       expect(mockAdmit).toHaveBeenCalled();
-      expect(mockProjector.ensure).toHaveBeenCalled();
     });
   });
 });

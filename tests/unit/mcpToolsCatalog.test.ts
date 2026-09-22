@@ -599,12 +599,23 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const mockAdmit = vi.fn(async () => ({
         run: { runId: 'run_' + 'a'.repeat(32) },
       }));
-      const mockProjector = { ensure: vi.fn(async () => {}) };
-
       const tool = createTriggerReviewTool({
         queryableDatabase: mockDb,
         admissionRepository: { admit: mockAdmit as any },
-        projector: mockProjector as any,
+        resolveGitHubPullRequest: async () => ({
+          headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+          repositoryId: 1001, installationId: 2001,
+        }),
+        authoritativePublishing: {
+          expectedAppId: 4385771, repositoryIds: [1001],
+          resolver: { resolve: async (requested: any) => ({
+            identity: requested,
+            prepared: { policy: {
+              effectivePolicyDigest: 'c'.repeat(64),
+              effectiveConfigDigest: 'd'.repeat(64),
+            } },
+          }) },
+        } as any,
       });
 
       const result = await tool.execute({
@@ -618,10 +629,9 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.dispatched).toBe(true);
       expect(data.attempt_id).toContain('review-attempt-60-');
-      expect(data.job_crd_created).toBe(true);
+      expect(data.job_crd_created).toBe(false);
       expect(data.message).toContain('expedited');
       expect(mockAdmit).toHaveBeenCalled();
-      expect(mockProjector.ensure).toHaveBeenCalled();
     });
 
     it('TC-TRIG-002: Retrigger on active attempt without force throws 409 Conflict', async () => {
@@ -644,11 +654,10 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       ).rejects.toThrow(/Conflict.*currently running/);
     });
 
-    it('TC-TRIG-003: Retrigger on active attempt with force: true cancels prior run', async () => {
-      mockDb.query
-        .mockResolvedValueOnce({ rows: [{ run_id: 'run_active_2', status: 'running' }] }) // check active
-        .mockResolvedValueOnce({ rows: [] }) // update review_runs
-        .mockResolvedValueOnce({ rows: [] }); // update outbox
+    it('TC-TRIG-003: force never pre-cancels an active review before governed admission', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ run_id: 'run_active_2', status: 'running' }],
+      });
 
       const tool = createTriggerReviewTool({
         queryableDatabase: mockDb,
@@ -664,7 +673,10 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.dispatched).toBe(true);
-      expect(mockDb.query).toHaveBeenCalledWith(expect.stringContaining('UPDATE review_runs'), expect.anything());
+      expect(mockDb.query).toHaveBeenCalledOnce();
+      expect(mockDb.query).not.toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE review_runs'), expect.anything(),
+      );
     });
   });
 

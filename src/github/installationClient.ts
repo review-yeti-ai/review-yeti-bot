@@ -108,6 +108,7 @@ export interface PullRequestSnapshot {
   baseSha: string;
   title: string;
   body: string;
+  repositoryId?: number;
 }
 
 export interface ReviewComment {
@@ -293,11 +294,13 @@ export class GitHubInstallationClient {
 
   async getPullRequest(owner: string, repo: string, prNumber: number): Promise<PullRequestSnapshot> {
     const data = await this.request(`/repos/${owner}/${repo}/pulls/${prNumber}`);
+    const repositoryId = Number(data.base?.repo?.id);
     return {
       headSha: String(data.head?.sha || ''),
       baseSha: String(data.base?.sha || ''),
       title: String(data.title || ''),
       body: String(data.body || ''),
+      ...(Number.isSafeInteger(repositoryId) && repositoryId > 0 ? { repositoryId } : {}),
     };
   }
 

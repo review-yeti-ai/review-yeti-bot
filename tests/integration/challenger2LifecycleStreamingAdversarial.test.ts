@@ -197,7 +197,7 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       expect(res.body.error.message).toContain('Conflict: Review attempt run_active_http is currently running');
     });
 
-    it('ADV-TRIG-003: force: true explicitly supersedes and cancels active run, allowing dispatch', async () => {
+    it('ADV-TRIG-003: force delegates supersession to governed admission without pre-cancelling', async () => {
       let runCancelled = false;
       let outboxTerminal = false;
 
@@ -228,12 +228,23 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       const mockAdmit = vi.fn(async () => ({
         run: { runId: 'run_newly_admitted_33333333333333' },
       }));
-      const mockProjector = { ensure: vi.fn(async () => {}) };
-
       const tool = createTriggerReviewTool({
         queryableDatabase: mockDb,
         admissionRepository: { admit: mockAdmit as any },
-        projector: mockProjector as any,
+        resolveGitHubPullRequest: async () => ({
+          headSha: '3333333333333333333333333333333333333333',
+          baseSha: '4'.repeat(40), repositoryId: 1001, installationId: 2001,
+        }),
+        authoritativePublishing: {
+          expectedAppId: 4385771, repositoryIds: [1001],
+          resolver: { resolve: async (requested: any) => ({
+            identity: requested,
+            prepared: { policy: {
+              effectivePolicyDigest: '5'.repeat(64),
+              effectiveConfigDigest: '6'.repeat(64),
+            } },
+          }) },
+        } as any,
       });
 
       const result = await tool.execute({
@@ -246,11 +257,10 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.dispatched).toBe(true);
-      expect(data.job_crd_created).toBe(true);
-      expect(runCancelled).toBe(true);
-      expect(outboxTerminal).toBe(true);
+      expect(data.job_crd_created).toBe(false);
+      expect(runCancelled).toBe(false);
+      expect(outboxTerminal).toBe(false);
       expect(mockAdmit).toHaveBeenCalled();
-      expect(mockProjector.ensure).toHaveBeenCalled();
     });
 
     it('ADV-TRIG-004: Head SHA mismatch against GitHub PR throws error', async () => {
