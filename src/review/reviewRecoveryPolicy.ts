@@ -1,13 +1,16 @@
 import {
+  CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
   CENTRAL_REVIEW_REPOSITORY,
   CENTRAL_REVIEW_WORKFLOW_REF,
   RECOVERABLE_FAILURE_TITLES,
   REVIEW_REFRESH_ACTION,
   isAllowlistedWorkflowRef,
+  isCentralReviewDispatchIdentity,
   type WorkflowRefAllowlist,
 } from './reviewCheckIdentity';
 
 export {
+  CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
   CENTRAL_REVIEW_REPOSITORY,
   CENTRAL_REVIEW_WORKFLOW_REF,
   RECOVERABLE_FAILURE_TITLES,
@@ -28,6 +31,7 @@ export interface CentralRefreshDispatchRequest {
 
 export interface CentralRefreshDispatchClaims {
   repository: string;
+  workflow_ref?: string;
   job_workflow_ref?: string;
 }
 
@@ -42,11 +46,10 @@ export function isCentralRefreshAuthorized(
   policy: WorkflowRefAllowlist | undefined,
 ): boolean {
   return request.publishMode === 'app-gate'
-    && request.caller.eventName === 'repository_dispatch'
+    && ['repository_dispatch', 'workflow_dispatch'].includes(request.caller.eventName)
     && request.refreshRequested === true
     && claims.repository === CENTRAL_REVIEW_REPOSITORY
-    && claims.job_workflow_ref === CENTRAL_REVIEW_WORKFLOW_REF
-    && request.caller.workflowRef === CENTRAL_REVIEW_WORKFLOW_REF
+    && isCentralReviewDispatchIdentity(request.caller, claims)
     && policy !== undefined
     && isAllowlistedWorkflowRef(policy, CENTRAL_REVIEW_WORKFLOW_REF);
 }
