@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { buildWorkerFailureDiagnostics } from '../../src/review/workerCompletion';
-import { runPublishingReviewWorker, type PublishingReviewDeps } from '../../src/cli/publishingReview';
+import { buildWorkerFailureDiagnostics, type WorkerCompletionAdapter } from '../../src/review/workerCompletion';
+import { runPublishingReviewWorker, type PublishingCheckClient, type PublishingReviewDeps } from '../../src/cli/publishingReview';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
@@ -52,12 +52,15 @@ function fixture() {
   };
   const source = { baseSha: BASE, headSha: HEAD, diff: DIFF,
     diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 as const };
-  const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => undefined) };
+  const checkClient = {
+  createCheck: vi.fn<PublishingCheckClient['createCheck']>(async () => 4242),
+  completeCheck: vi.fn<PublishingCheckClient['completeCheck']>(async () => undefined),
+};
   const sourceLoader = vi.fn<NonNullable<PublishingReviewDeps['sourceLoader']>>().mockResolvedValue(source);
   const panelRunner = vi.fn<NonNullable<PublishingReviewDeps['panelRunner']>>().mockResolvedValue(panel);
   const client = { complete: vi.fn().mockRejectedValue(new Error('A test must never invoke a provider')) };
   const reportReviewResult = vi.fn<WorkerReviewCompletionAdapter['reportReviewResult']>().mockResolvedValue(undefined);
-  const legacyFailure = vi.fn(async () => undefined);
+  const legacyFailure = vi.fn<WorkerCompletionAdapter['reportTerminalFailure']>(async () => undefined);
   const now = vi.fn().mockReturnValueOnce(START).mockReturnValue(START + 1_000);
   const deps: PublishingReviewDeps = { checkClient, sourceLoader, panelRunner, client, now,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const), reviewCompletion: { reportReviewResult } };
@@ -161,6 +164,106 @@ describe('authoritative prepared publishing worker', () => {
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
     expectEvidenceOnlyCallback(f.reportReviewResult.mock.calls[0][0]);
     expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it('durably records the authoritative completion before publishing the raw check conclusion', async () => {
+    // Publication-order invariant: the service's gate publisher replays the
+    // durably recorded terminal desired state onto the `Review Yeti Gate`
+    // check. If the raw check reached GitHub first, a one-shot gate reader
+    // would see raw success next to a still-pending gate -- the exact-head
+    // window where the gate raced the durable verdict.
+    const f = fixture();
+    const order: string[] = [];
+    f.reportReviewResult.mockImplementation(async () => { order.push('completion'); });
+    f.deps.checkClient = {
+      ...f.deps.checkClient,
+      completeCheck: vi.fn(async () => { order.push('raw-check'); }),
+    };
+    await runPublishingReviewWorker(f.env, f.deps);
+    expect(order).toEqual(['completion', 'raw-check']);
+    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
+  });
+
+  it('preserves failure when a configured lane never returned (silently missing)', async () => {
+    // The silently-missing shape is the newest recoverable evidence: the
+    // configured roster lists a lane that returned nothing at all -- no error,
+    // no finding, no lane record. The wiring under test is the derivation
+    // chain a hand-built-input test cannot pin: the panel's configured/returned
+    // sets must produce missingConfiguredLaneCount > 0 with zero failed and
+    // zero malformed lanes, or the unrepeatable terminal BLOCK comes back.
+    const f = fixture();
+    delete f.env.REVIEW_AUTHORITATIVE_GATE;
+    delete f.env.REVIEW_PREPARED_CONFIG_JSON;
+    delete f.deps.reviewCompletion;
+    f.deps.completion = {
+      reportTerminalFailure: f.legacyFailure,
+      reportTerminalSuccess: vi.fn(async () => undefined),
+    };
+    f.env.REVIEW_PERSONAS = 'licensing';
+    // Quorum cannot be satisfied while a configured lane is absent, and the
+    // returned set is missing exactly one configured lane with zero failures.
+    f.panel.quorum = { ...f.panel.quorum, satisfied: false };
+    f.panel.personas = f.panel.personas.slice(1);
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    // Fail closed: the raw check is a terminal failure, never green.
+    expect(f.checkClient.completeCheck).toHaveBeenCalledTimes(1);
+    const rawCall = f.checkClient.completeCheck.mock.calls[0] as unknown as [
+      { conclusion: string; title: string; summary: string },
+    ];
+    const raw = rawCall[0];
+    expect(raw.conclusion).toBe('failure');
+    expect(raw.title).toBe('Review Yeti: review did not complete');
+    expect(raw.summary).toContain('A configured reviewer lane did not return a result.');
+    // The durable terminal event classifies the silent dropout as transport.
+    expect(f.legacyFailure).toHaveBeenCalledTimes(1);
+    const eventCall = f.legacyFailure.mock.calls[0] as unknown as [
+      { failureClass: string; diagnostics: { recoverableIncompletePanel?: boolean } },
+    ];
+    const event = eventCall[0];
+    expect(event.failureClass).toBe('transport');
+    expect(event.diagnostics.recoverableIncompletePanel).toBe(true);
+    expect(f.reportReviewResult).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a SHIP verdict stands on coverage that denies quorum', async () => {
+    // The coverage guard is only reachable through runPublishingReviewWorker:
+    // production is the sole caller, so a worker-level pin is what catches the
+    // optional-argument regression (dropping the third argument at line 1351
+    // compiles cleanly and would silently re-enable a SHIP published over a
+    // quorum its own coverage line denies).
+    const f = fixture();
+    f.panel.quorum = { ...f.panel.quorum, satisfied: false };
+    const rawCheck = vi.fn<PublishingCheckClient['completeCheck']>(async () => undefined);
+    f.deps.checkClient = {
+      ...f.deps.checkClient,
+      completeCheck: rawCheck,
+    };
+    await runPublishingReviewWorker(f.env, f.deps);
+    const conclusions = rawCheck.mock.calls
+      .map((call: unknown[]) => ((call[0] as { conclusion: string }).conclusion));
+    expect(conclusions).toEqual(['failure']);
+    expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
+  });
+
+  it('never publishes a green raw check when the completion acknowledgement fails', async () => {
+    const f = fixture();
+    const order2: string[] = [];
+    f.reportReviewResult.mockRejectedValue(new Error('completion endpoint unreachable'));
+    const rawCheckMock = vi.fn<PublishingCheckClient['completeCheck']>(async () => { order2.push('raw-check'); });
+    f.deps.checkClient = {
+      ...f.deps.checkClient,
+      completeCheck: rawCheckMock,
+    };
+    // The worker rethrows after its fail-closed catch; the invariant under
+    // test is that the raw check never carried a success conclusion.
+    await expect(runPublishingReviewWorker(f.env, f.deps))
+      .rejects.toThrow('completion endpoint unreachable');
+    expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
+    const conclusions = rawCheckMock.mock.calls
+      .map((call: unknown[]) => (call[0] as { conclusion: string }).conclusion);
+    expect(conclusions).toEqual(['failure']);
   });
 
   it('emits optional persona failure evidence without provider transcripts or credentials', async () => {
