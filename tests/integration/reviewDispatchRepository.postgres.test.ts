@@ -148,6 +148,50 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
     expect(connect).toHaveBeenCalledOnce();
   });
 
+  it('reads lost-generation evidence before opening the admission transaction', async () => {
+    const order: string[] = [];
+    const input = {
+      ...authoritativeAdmission('manual-central-state-loss-retry'),
+      eventName: 'workflow_dispatch',
+      centralActionDispatch: true,
+      expectedGeneration: 2,
+      retryRequested: true,
+      retryAfterExecutionAttempt: 1,
+    };
+    const pool = {
+      query: vi.fn(async () => {
+        order.push('probe');
+        return { rows: [] };
+      }),
+      connect: vi.fn(async () => {
+        order.push('connect');
+        throw new Error('durable-admission-sentinel');
+      }),
+    };
+    const repository = new PostgresReviewDispatchRepository(
+      pool as unknown as Pool,
+      undefined,
+      {
+        lifecycleEvents: 'disabled',
+        requireExpectedGeneration: true,
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery: async () => {
+          order.push('resolve');
+          return [{
+            generation: 1,
+            checkId: 10_001,
+            externalId: `${deriveReviewRunId(input.identity)}:a1`,
+            conclusion: 'failure',
+            title: 'Review Yeti: review did not complete',
+          }];
+        },
+      },
+    );
+
+    await expect(repository.admit(input)).rejects.toThrow('durable-admission-sentinel');
+    expect(order).toEqual(['probe', 'resolve', 'connect']);
+  });
+
   it.each(['pull_request', 'pull_request_target'])(
     'rejects a central classification carried by %s before persistence',
     async (eventName) => {
@@ -2194,6 +2238,35 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         retryRequested: true,
         retryAfterExecutionAttempt: 1,
       };
+
+      await expect(repository.admit(input))
+        .rejects.toThrow(/expected generation 2.*next durable generation is 1/i);
+      for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs',
+        'review_dispatch_outbox', 'review_gate_attempts', 'review_generation_recoveries']) {
+        expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
+      }
+    });
+
+    it('rejects recovery evidence that violates the domain contract with no durable writes', async () => {
+      const input = {
+        ...authoritativeAdmission('central-a2-invalid-evidence'),
+        eventName: 'workflow_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 2,
+        retryRequested: true,
+        retryAfterExecutionAttempt: 1,
+      };
+      const { repository, client } = await createRepository({
+        lifecycleEvents: 'disabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery: async () => [{
+          generation: 1,
+          checkId: 10_001,
+          externalId: `${deriveReviewRunId(input.identity)}:a2`,
+          conclusion: 'failure',
+          title: 'Review Yeti: review did not complete',
+        }],
+      });
 
       await expect(repository.admit(input))
         .rejects.toThrow(/expected generation 2.*next durable generation is 1/i);

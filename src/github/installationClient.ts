@@ -16,7 +16,9 @@ import type { DelegatedFailureReason } from '../review/workerCompletion';
 import { createBoundedGitHubJsonClient } from './boundedGitHubJson';
 import {
   evaluateReviewGenerationRecoveryLedger,
+  REVIEW_WORKER_CHECK_NAME,
   ReviewGenerationRecoveryLedgerError,
+  validateReviewGenerationRecoveryRequest,
   type ReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryRequest,
 } from '../review/reviewGenerationRecovery';
@@ -308,6 +310,7 @@ export class GitHubInstallationClient {
   async readReviewGenerationRecovery(
     input: ReviewGenerationRecoveryRequest,
   ): Promise<ReviewGenerationRecoveryEvidence[]> {
+    validateReviewGenerationRecoveryRequest(input);
     const github = createBoundedGitHubJsonClient({
       token: this.token,
       baseUrl: this.baseUrl,
@@ -318,7 +321,7 @@ export class GitHubInstallationClient {
     let expectedTotal: number | undefined;
     for (let page = 1; page <= 10; page += 1) {
       const query = new URLSearchParams({
-        check_name: 'Review Yeti',
+        check_name: REVIEW_WORKER_CHECK_NAME,
         filter: 'all',
         app_id: String(input.expectedAppId),
         per_page: '100',
@@ -326,7 +329,7 @@ export class GitHubInstallationClient {
       });
       const result = await github.request(
         `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}`
-        + `/commits/${input.headSha}/check-runs?${query}`,
+        + `/commits/${encodeURIComponent(input.headSha)}/check-runs?${query}`,
       );
       if (!Number.isSafeInteger(result?.total_count) || result.total_count < 0
         || result.total_count >= 1_000 || !Array.isArray(result.check_runs)

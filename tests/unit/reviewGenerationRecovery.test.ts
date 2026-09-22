@@ -33,14 +33,34 @@ function clientFor(checks: unknown[]) {
   };
 }
 
+function request(overrides: Record<string, unknown> = {}) {
+  return {
+    owner: 'calltelemetry', repo: 'cisco-cdr', headSha, runId,
+    expectedGeneration: 2, expectedAppId: 4_385_771,
+    ...overrides,
+  };
+}
+
+function clientForPages(pages: Array<{ total_count: number; check_runs: unknown[] }>) {
+  const fetchImplementation = vi.fn(async () => {
+    const page = pages.shift();
+    if (!page) throw new Error('unexpected recovery-ledger page');
+    return new Response(JSON.stringify(page), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  return {
+    client: new GitHubInstallationClient({ token: 'ghs_test', fetchImplementation }),
+    fetchImplementation,
+  };
+}
+
 describe('Review Yeti worker-generation recovery ledger', () => {
   it('accepts only a contiguous recoverable App-owned ledger for the exact run and head', async () => {
     const { client, fetchImplementation } = clientFor([workerCheck(1)]);
 
-    await expect(client.readReviewGenerationRecovery({
-      owner: 'calltelemetry', repo: 'cisco-cdr', headSha, runId,
-      expectedGeneration: 2, expectedAppId: 4_385_771,
-    })).resolves.toEqual([{
+    await expect(client.readReviewGenerationRecovery(request())).resolves.toEqual([{
       generation: 1,
       checkId: 1_001,
       externalId: `${runId}:a1`,
@@ -59,19 +79,87 @@ describe('Review Yeti worker-generation recovery ledger', () => {
     ['a later generation', workerCheck(2)],
   ])('rejects %s instead of reconstructing service state', async (_label, check) => {
     const { client } = clientFor([check]);
-    await expect(client.readReviewGenerationRecovery({
-      owner: 'calltelemetry', repo: 'cisco-cdr', headSha, runId,
-      expectedGeneration: 2, expectedAppId: 4_385_771,
-    })).rejects.toThrow(/generation recovery ledger/u);
+    await expect(client.readReviewGenerationRecovery(request()))
+      .rejects.toThrow(/generation recovery ledger/u);
   });
 
   it('rejects a missing, duplicate, or non-contiguous prior generation', async () => {
     for (const checks of [[], [workerCheck(1), workerCheck(1, { id: 2_001 })]]) {
       const { client } = clientFor(checks);
-      await expect(client.readReviewGenerationRecovery({
-        owner: 'calltelemetry', repo: 'cisco-cdr', headSha, runId,
-        expectedGeneration: 2, expectedAppId: 4_385_771,
-      })).rejects.toThrow(/generation recovery ledger/u);
+      await expect(client.readReviewGenerationRecovery(request()))
+        .rejects.toThrow(/generation recovery ledger/u);
     }
+  });
+
+  it('accepts an exact merge-group row without treating it as worker evidence', async () => {
+    const mergeGroup = workerCheck(99, {
+      id: 9_999,
+      external_id: `merge-group:${headSha}`,
+    });
+    const { client } = clientFor([workerCheck(1), mergeGroup]);
+
+    await expect(client.readReviewGenerationRecovery(request())).resolves.toEqual([
+      expect.objectContaining({ generation: 1, checkId: 1_001 }),
+    ]);
+
+    const { client: malformed } = clientFor([
+      workerCheck(1),
+      { ...mergeGroup, head_sha: 'c'.repeat(40) },
+    ]);
+    await expect(malformed.readReviewGenerationRecovery(request()))
+      .rejects.toThrow(/generation recovery ledger/u);
+  });
+
+  it('reads a complete stable two-page ledger', async () => {
+    const mergeGroups = Array.from({ length: 100 }, (_, index) => workerCheck(99, {
+      id: 10_000 + index,
+      external_id: `merge-group:${headSha}`,
+    }));
+    const { client, fetchImplementation } = clientForPages([
+      { total_count: 101, check_runs: mergeGroups },
+      { total_count: 101, check_runs: [workerCheck(1)] },
+    ]);
+
+    await expect(client.readReviewGenerationRecovery(request())).resolves.toEqual([
+      expect.objectContaining({ generation: 1, checkId: 1_001 }),
+    ]);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['a changing total count', [
+      { total_count: 101, check_runs: Array.from({ length: 100 }, (_, index) => workerCheck(99, {
+        id: 20_000 + index, external_id: `merge-group:${headSha}`,
+      })) },
+      { total_count: 102, check_runs: [workerCheck(1)] },
+    ]],
+    ['an id repeated across pages', [
+      { total_count: 101, check_runs: Array.from({ length: 100 }, (_, index) => workerCheck(99, {
+        id: 30_000 + index, external_id: `merge-group:${headSha}`,
+      })) },
+      { total_count: 101, check_runs: [workerCheck(1, { id: 30_000 })] },
+    ]],
+    ['an incomplete short page', [
+      { total_count: 2, check_runs: [workerCheck(1)] },
+    ]],
+    ['an unbounded ledger', [
+      { total_count: 1_000, check_runs: [] },
+    ]],
+  ] as const)('rejects %s', async (_label, pages) => {
+    const { client } = clientForPages(pages.map((page) => ({
+      total_count: page.total_count,
+      check_runs: [...page.check_runs],
+    })));
+    await expect(client.readReviewGenerationRecovery(request()))
+      .rejects.toThrow(/generation recovery ledger/u);
+  });
+
+  it('rejects malformed immutable identity before issuing a GitHub request', async () => {
+    const fetchImplementation = vi.fn();
+    const client = new GitHubInstallationClient({ token: 'ghs_test', fetchImplementation });
+
+    await expect(client.readReviewGenerationRecovery(request({ headSha: '../check-runs?app_id=1' }) as any))
+      .rejects.toThrow(/generation recovery ledger/u);
+    expect(fetchImplementation).not.toHaveBeenCalled();
   });
 });

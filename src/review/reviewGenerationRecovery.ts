@@ -42,10 +42,9 @@ function refuse(): never {
   throw new ReviewGenerationRecoveryLedgerError();
 }
 
-export function evaluateReviewGenerationRecoveryLedger(
+export function validateReviewGenerationRecoveryRequest(
   request: ReviewGenerationRecoveryRequest,
-  rows: unknown[],
-): ReviewGenerationRecoveryEvidence[] {
+): void {
   if (!/^[A-Za-z0-9_.-]{1,100}$/u.test(request.owner)
     || !/^[A-Za-z0-9_.-]{1,100}$/u.test(request.repo)
     || !/^[a-f0-9]{40}$/u.test(request.headSha)
@@ -53,8 +52,33 @@ export function evaluateReviewGenerationRecoveryLedger(
     || !Number.isSafeInteger(request.expectedAppId) || request.expectedAppId <= 0
     || !Number.isSafeInteger(request.expectedGeneration)
     || request.expectedGeneration < 2
-    || request.expectedGeneration > MAX_RECOVERABLE_REVIEW_GENERATION
-    || !Array.isArray(rows)) refuse();
+    || request.expectedGeneration > MAX_RECOVERABLE_REVIEW_GENERATION) refuse();
+}
+
+export function validateReviewGenerationRecoveryEvidence(
+  request: ReviewGenerationRecoveryRequest,
+  evidence: ReviewGenerationRecoveryEvidence[],
+): ReviewGenerationRecoveryEvidence[] {
+  validateReviewGenerationRecoveryRequest(request);
+  if (!Array.isArray(evidence) || evidence.length !== request.expectedGeneration - 1) refuse();
+  for (let index = 0; index < evidence.length; index += 1) {
+    const entry = evidence[index];
+    const generation = index + 1;
+    if (entry?.generation !== generation
+      || !Number.isSafeInteger(entry.checkId) || entry.checkId <= 0
+      || entry.externalId !== `${request.runId}:a${generation}`
+      || !RECOVERABLE_WORKER_CONCLUSIONS.has(entry.conclusion)
+      || !RECOVERABLE_FAILURE_TITLES.has(entry.title)) refuse();
+  }
+  return evidence;
+}
+
+export function evaluateReviewGenerationRecoveryLedger(
+  request: ReviewGenerationRecoveryRequest,
+  rows: unknown[],
+): ReviewGenerationRecoveryEvidence[] {
+  validateReviewGenerationRecoveryRequest(request);
+  if (!Array.isArray(rows)) refuse();
 
   const evidence: ReviewGenerationRecoveryEvidence[] = [];
   const seenIds = new Set<number>();
@@ -88,7 +112,5 @@ export function evaluateReviewGenerationRecoveryLedger(
   }
 
   evidence.sort((left, right) => left.generation - right.generation);
-  if (evidence.length !== request.expectedGeneration - 1
-    || evidence.some((entry, index) => entry.generation !== index + 1)) refuse();
-  return evidence;
+  return validateReviewGenerationRecoveryEvidence(request, evidence);
 }
