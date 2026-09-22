@@ -31,6 +31,7 @@ import { dashboardStore } from '../persistence/dashboardStore';
 import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { generatePRSummary } from '../review/summaryEngine';
 import { validateReviewFindings } from '../review/reviewCore';
+import { isDocumentationOrAssetPath } from '../review/reviewableContent';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -76,6 +77,7 @@ export type {
   PanelResult,
   PanelRequestPolicy,
 } from './types';
+export { isDocumentationOrAssetPath } from '../review/reviewableContent';
 import type {
   FindingSeverity,
   FixOption,
@@ -832,30 +834,6 @@ function globRegex(pattern: string): RegExp {
 function pathMatches(pattern: string, path: string): boolean {
   if (pattern === '**') return true;
   return matchOne(pattern, path);
-}
-
-export function isDocumentationOrAssetPath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-  return (
-    normalized.startsWith('docs/') ||
-    normalized.startsWith('.github/') ||
-    normalized.startsWith('.changeset/') ||
-    // Serialized data under a run/evidence location only. The directory
-    // rules are constrained by file type the way the extension list below
-    // is: a blanket directory rule would also exempt executable content (a
-    // contributor-placed runs/deploy.sh or artifacts/loader.js) from all
-    // review, which fails closed today and must keep failing closed. Only
-    // data/serialization extensions are records of an execution; anything
-    // else under these directories stays analyzable.
-    (
-      (normalized.startsWith('runs/') ||
-        normalized.includes('/runs/') ||
-        /^(evidence|artifacts)\//.test(normalized) ||
-        /\/(evidence|artifacts)\//.test(normalized)) &&
-      /\.(json|jsonl|ndjson|csv|tsv|log|xml|yaml|yml)$/i.test(normalized)
-    ) ||
-    /\.(md|markdown|txt|rst|adoc|png|jpg|jpeg|gif|svg|ico|pdf|drawio)$/i.test(normalized)
-  );
 }
 
 function nonce(): string {

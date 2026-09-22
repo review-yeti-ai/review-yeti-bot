@@ -4,6 +4,7 @@ import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane
 import { canonicalJson, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
+import { isDocumentationOrAssetPath } from './reviewableContent';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 
@@ -451,6 +452,31 @@ function hasInfrastructureFailure(persona: WorkerReviewPersonaEvidence): boolean
   return persona.decision === 'ERROR' || persona.status === 'ERROR' || persona.errorClass !== undefined;
 }
 
+function isDocumentationOnlyCompletion(result: WorkerReviewResult): boolean {
+  if (result.personas.length !== 1) return false;
+  const lane = result.personas[0];
+  return lane?.id === 'documentation-only'
+    && lane.decision === 'APPROVE'
+    && lane.status === 'COMPLETE'
+    && lane.findings.length === 0;
+}
+
+function noReviewableContentAuditDigest(
+  coordinates: TrustedWorkerReviewCoordinates,
+  changedFiles: readonly ReviewChangedFile[],
+): string {
+  return sha256(canonicalJson({
+    version: 'NoReviewableContentAudit.v1',
+    repositoryId: coordinates.repositoryId,
+    prNumber: coordinates.prNumber,
+    headSha: coordinates.headSha,
+    baseSha: coordinates.baseSha,
+    policyDigest: coordinates.policyDigest,
+    configDigest: coordinates.configDigest,
+    paths: changedFiles.map((file) => file.path),
+  }));
+}
+
 function rawFieldsMatchCanonical(result: WorkerReviewResult, canonical: CanonicalArbitration): string | null {
   if (result.verdict !== undefined && result.verdict !== canonical.verdict) {
     return `worker verdict ${result.verdict} disagrees with canonical verdict ${canonical.verdict}`;
@@ -480,6 +506,41 @@ export function deriveCanonicalWorkerReviewEvidence(
   if (!coordinatesMatch(completion, expectedCoordinates)) {
     return invalidEvidence('worker completion coordinates do not match the trusted review run identity');
   }
+  const changedFiles = validateChangedFiles(contract.changedFiles);
+  if (isDocumentationOnlyCompletion(completion.result)) {
+    if (!changedFiles.every((file) => isDocumentationOrAssetPath(file.path))) {
+      return invalidEvidence('documentation-only completion contains analyzable source paths');
+    }
+    const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;
+    const marker = completion.result.personas[0];
+    const canonical = computeAppVerdict({
+      lanes: [{ id: marker.id, decision: marker.decision, status: marker.status, findings: [] }],
+      expectedLanes: 1,
+      changedFiles,
+      coverageComplete,
+    });
+    const quorumSatisfied = contract.quorumSatisfied
+      && completion.result.quorumSatisfied
+      && canonical.quorumSatisfied;
+    const evidence: ReviewGateEvidence = {
+      verdict: canonical.verdict,
+      completedAt: completion.result.completedAt,
+      coverageComplete,
+      quorumSatisfied,
+      infrastructureFailure: false,
+      p0Count: 0,
+      p1Count: 0,
+      exemption: {
+        kind: 'no-reviewable-content',
+        auditDigest: noReviewableContentAuditDigest(expectedCoordinates, changedFiles),
+      },
+      expectedLanes: 0,
+      completedLanes: 0,
+    };
+    const mismatch = rawFieldsMatchCanonical(completion.result, canonical);
+    if (mismatch) return invalidEvidence(mismatch, canonical, evidence);
+    return { valid: true, canonical, evidence };
+  }
   const expected = new Set(expectedPersonaIds);
   const seen = new Set<string>();
 
@@ -489,7 +550,6 @@ export function deriveCanonicalWorkerReviewEvidence(
     seen.add(persona.id);
   }
 
-  const changedFiles = validateChangedFiles(contract.changedFiles);
   const lanes: ReviewLane[] = [];
   for (const persona of completion.result.personas) {
     const validation = validateReviewFindings(persona.findings, changedFiles);
