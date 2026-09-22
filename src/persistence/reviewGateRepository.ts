@@ -20,6 +20,7 @@ import {
 } from './reviewEventRepository';
 import {
   WorkerCompletionPersistenceError,
+  TrustedCompletionResolutionError,
   type WorkerCompletionPersistenceStage,
 } from '../review/workerCompletionPersistenceError';
 export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
@@ -260,9 +261,10 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         await this.options.onEligibleCompletion?.(client, gate, now);
       }
       return await finish('recorded');
-    } catch {
+    } catch (error) {
       if (client) await client.query('ROLLBACK').catch(() => undefined);
-      throw new WorkerCompletionPersistenceError(stage);
+      throw new WorkerCompletionPersistenceError(stage,
+        error instanceof TrustedCompletionResolutionError ? error.substage : undefined);
     } finally { client?.release(); }
   }
 
