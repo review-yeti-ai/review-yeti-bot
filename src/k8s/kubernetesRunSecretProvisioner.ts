@@ -28,6 +28,7 @@ export interface KubernetesRunSecretProvisionerOptions {
   client: CoreSecretClient;
   appId: string;
   privateKey: string;
+  credentialsForRepository?: (owner: string, repo: string) => { appId: string; privateKey: string };
   fieldManager?: string;
   mintToken?: typeof getGitHubAppRepositoryPublishToken;
   mintReadToken?: typeof getGitHubAppRepositoryReadToken;
@@ -77,9 +78,16 @@ export class KubernetesRunSecretProvisioner implements RunSecretProvisioner {
     const existing = await readExistingRunSecret(this.options.client, request);
     if (existing) return existing;
 
-    const credentials = {
+    const selected = this.options.credentialsForRepository?.(request.owner, request.repo) || {
       appId: this.options.appId,
       privateKey: this.options.privateKey,
+    };
+    if (!selected.appId.trim() || !selected.privateKey.trim()) {
+      throw new Error('run secret provisioner resolved invalid GitHub App credentials');
+    }
+    const credentials = {
+      appId: selected.appId,
+      privateKey: selected.privateKey,
       owner: request.owner,
       repo: request.repo,
     };
