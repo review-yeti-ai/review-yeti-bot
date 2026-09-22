@@ -24,9 +24,7 @@ import { createMergeGroupGate } from './review/mergeGroupGate';
 import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
 import { createReviewCiRuntime } from './reviewCiRuntime';
 import { findReviewCiEnrollment } from './review/reviewCi';
-import {
-  actionDispatchConfigFromEnv, SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY,
-} from './config/actionDispatchConfig';
+import { actionDispatchConfigFromEnv } from './config/actionDispatchConfig';
 import { initTelemetry } from './telemetry';
 import { deriveReviewRunId } from './review/reviewAdmission';
 
@@ -50,7 +48,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   // publishing, merge groups, and MCP remains bound to the primary service App.
   const installationCredentialsForRepository = (owner: string, repo: string) => {
     const external = dispatchConfig.centralExternalAppCredentials;
-    return external && `${owner}/${repo}` === SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY
+    return external && dispatchConfig.centralExternalRepositories.has(`${owner}/${repo}`)
       ? { ...external, owner, repo, baseUrl }
       : { appId, privateKey, owner, repo, baseUrl };
   };
