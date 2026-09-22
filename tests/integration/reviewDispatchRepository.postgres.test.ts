@@ -189,7 +189,7 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
     );
 
     await expect(repository.admit(input)).rejects.toThrow('durable-admission-sentinel');
-    expect(order).toEqual(['probe', 'validate', 'resolve', 'connect']);
+    expect(order).toEqual(['validate', 'resolve', 'connect']);
   });
 
   it('does not read recovery evidence when early authoritative validation fails', async () => {
@@ -2252,8 +2252,68 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       ]);
     });
 
-    it('uses an existing durable generation without consulting external recovery evidence', async () => {
-      const resolveGenerationRecovery = vi.fn(async () => { throw new Error('resolver must not run'); });
+    it('reconciles a partially persisted durable generation from the exact worker check ledger', async () => {
+      const recovery = [{
+        generation: 1,
+        checkId: 10_001,
+        externalId: `${deriveReviewRunId(authoritativeAdmission().identity)}:a1`,
+        conclusion: 'failure' as const,
+        title: 'Review Yeti: review did not complete',
+      }, {
+        generation: 2,
+        checkId: 10_002,
+        externalId: `${deriveReviewRunId(authoritativeAdmission().identity)}:a2`,
+        conclusion: 'failure' as const,
+        title: 'Review Yeti: review did not complete',
+      }];
+      const resolveGenerationRecovery = vi.fn(async () => recovery);
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'enabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      }, true);
+      const firstInput = {
+        ...authoritativeAdmission('central-partial-a1'),
+        eventName: 'repository_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 1,
+      };
+      const first = await repository.admit(firstInput);
+      await bindPendingGate(gateRepository);
+      await client.query("UPDATE review_runs SET status = 'failed', error_text = 'review gate: review-deadline-exceeded' WHERE run_id = $1", [first.run.runId]);
+      // Model partial service-state loss: the run/gate survived, but the
+      // projection evidence needed by the ordinary retry allocator did not.
+      await client.query("UPDATE review_dispatch_outbox SET status = 'pending', worker_token_digest = NULL, projection_name = NULL WHERE run_id = $1", [first.run.runId]);
+      const retryInput = {
+        ...authoritativeAdmission('central-partial-a3', 2_000),
+        eventName: 'workflow_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 3,
+        retryRequested: true,
+        retryAfterExecutionAttempt: 2,
+      };
+
+      const retried = await repository.admit(retryInput);
+
+      expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+      expect(retried.run.attempt).toBe(2);
+      expect((await dispatchState(client, retried.run.runId)).outbox.execution_attempt).toBe(2);
+      expect((await client.query(`SELECT recovered_generation, worker_check_id
+        FROM review_generation_recoveries WHERE run_id = $1 ORDER BY recovered_generation`, [retried.run.runId])).rows).toEqual([
+        { recovered_generation: 1, worker_check_id: '10001' },
+        { recovered_generation: 2, worker_check_id: '10002' },
+      ]);
+    });
+
+    it('confirms an existing durable generation against external recovery evidence', async () => {
+      const recovery = [{
+        generation: 1,
+        checkId: 10_001,
+        externalId: `${deriveReviewRunId(authoritativeAdmission().identity)}:a1`,
+        conclusion: 'failure' as const,
+        title: 'Review Yeti: review did not complete',
+      }];
+      const resolveGenerationRecovery = vi.fn(async () => recovery);
       const { repository, client, gateRepository } = await createRepository({
         lifecycleEvents: 'disabled',
         validateAuthoritativeAdmission: async () => undefined,
@@ -2281,10 +2341,10 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       const retried = await repository.admit(retryInput);
 
       expect(retried.run.attempt).toBe(1);
-      expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+      expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
       expect((await dispatchState(client, retried.run.runId)).outbox.execution_attempt).toBe(1);
       expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count)
-        .toBe(0);
+        .toBe(1);
     });
 
     it.each([
