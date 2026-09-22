@@ -48,7 +48,7 @@ function policyFixture() {
         { name: 'bifrost', enabled: true, base_url: 'https://gateway-internal.netguysolutions.com/v1', api_key_env: 'BIFROST_PR_REVIEW_API_KEY', model: 'ollama/glm-5.3-flash', compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 90000, stream: true, reasoning_effort: 'medium', max_tokens: 32768 },
         {
           name: 'openrouter-primary',
-          enabled: true,
+          enabled: false, // ADR 0652: declared-but-disabled; shape retained for contract assertions
           base_url: 'https://openrouter.test/api/v1',
           api_key_env: 'OPENROUTER_PR_REVIEW_API_KEY',
           model: EXPECTED_OPENROUTER_MODEL,
@@ -118,10 +118,10 @@ test('the smoke contract pins Bifrost primary with OpenRouter fleet fallback', (
   const gemini = policy.review_yeti.transports.find((transport) => transport.name === 'gemini');
   const openrouter = policy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary');
   assert.deepEqual(transports.map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
-  assert.deepEqual(EXPECTED_TRANSPORT_ORDER, ['bifrost', 'openrouter-primary']);
+  assert.deepEqual(EXPECTED_TRANSPORT_ORDER, ['bifrost']);
   assert.equal(bifrost.enabled, true);
-  assert.equal(openrouter.enabled, true);
-  for (const disabled of ['gemini', 'fixture-provider', 'fireworks', 'ollama']) {
+  assert.equal(openrouter.enabled, false, 'ADR 0652: no OpenRouter review lane');
+  for (const disabled of ['gemini', 'fixture-provider', 'fireworks', 'ollama', 'openrouter-primary']) {
     const declared = policy.review_yeti.transports.find((transport) => transport.name === disabled);
     assert.equal(declared.enabled, false, `${disabled} must remain declared but disabled`);
   }
@@ -140,7 +140,7 @@ test('the smoke contract pins Bifrost primary with OpenRouter fleet fallback', (
   assert.deepEqual(buildRequest(openrouter).reasoning, { effort: 'high' });
 });
 
-test('Example API resolves Bifrost primary plus OpenRouter fleet fallback and a 90s Bifrost connect deadline', async () => {
+test('Example API resolves the single Bifrost lane and a 90s Bifrost connect deadline (ADR 0652)', async () => {
   const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
   const resolved = resolvePolicyForRepository(policy, EXAMPLE_API_REPOSITORY);
   const transports = validatePolicy(resolved, EXAMPLE_API_REPOSITORY);
@@ -152,8 +152,7 @@ test('Example API resolves Bifrost primary plus OpenRouter fleet fallback and a 
   assert.equal(transports[0].concurrency_scope, 'provider');
   assert.equal(transports[0].capacity_wait_timeout_ms, 30000);
   assert.equal(transports[0].connect_timeout_ms, 90000);
-  assert.equal(transports.length, 2, 'bifrost primary plus OpenRouter fleet fallback');
-  assert.equal(transports[1].name, 'openrouter-primary');
+  assert.equal(transports.length, 1, 'bifrost-only review lane (ADR 0652)');
 
   const calls = [];
   const result = await runSmoke({
@@ -179,9 +178,8 @@ test('Example API resolves Bifrost primary plus OpenRouter fleet fallback and a 
 
   assert.deepEqual(calls, [
     'https://gateway-internal.netguysolutions.com/v1/chat/completions',
-    'https://openrouter.ai/api/v1/chat/completions',
   ]);
-  assert.deepEqual(result.healthy, ['bifrost', 'openrouter-primary']);
+  assert.deepEqual(result.healthy, ['bifrost']);
 });
 
 test('isPassthroughRepository respects environment toggles, repository lists, and defaults', (t) => {
@@ -331,7 +329,7 @@ test('the committed OpenRouter primary delegates quantization and keeps throughp
   assert.equal(openrouter.provider_routing.only, undefined);
   assert.equal(openrouter.provider_routing.order, undefined);
   assert.equal(openrouter.quarantine_on_timeout, false);
-  assert.equal(openrouter.enabled, true, 'OpenRouter is the inherited fleet fallback');
+  assert.equal(openrouter.enabled, false, 'ADR 0652: OpenRouter is not a review lane (declared-but-disabled)');
   assert.equal(openrouter.timeout_ms, Number(policy.review_yeti.openrouter_timeout_ms));
   assert.equal(openrouter.max_tokens, undefined);
   assert.equal(openrouter.reasoning_effort, 'high');
@@ -441,7 +439,7 @@ test('validatePolicy rejects a transport that pins provider routing', () => {
   }
 });
 
-test('the smoke suite probes every configured transport without logging credentials', async () => {
+test('the smoke suite probes every enabled transport without logging credentials (ADR 0652)', async () => {
   const calls = [];
   const logs = [];
   const env = {
@@ -460,8 +458,7 @@ test('the smoke suite probes every configured transport without logging credenti
 
   assert.deepEqual(calls.map((call) => call.url), [
     'https://gateway-internal.netguysolutions.com/v1/chat/completions',
-    'https://openrouter.test/api/v1/chat/completions',
-  ]);
+  ], 'ADR 0652: only the enabled Bifrost lane is probed');
   assert.deepEqual(result.healthy, EXPECTED_TRANSPORT_ORDER);
   assert.equal(logs.some((line) => line.includes('secret')), false);
   assert.match(logs.join('\n'), /bifrost: healthy elapsed_ms=\d+ http=200/);
@@ -562,22 +559,36 @@ test('the smoke suite treats missing keys as unavailable and still accepts the h
   });
 
   assert.deepEqual(result.healthy, ['bifrost']);
-  assert.equal(result.results.find((entry) => entry.name === 'openrouter-primary').status, 'missing');
+  assert.equal(
+    result.results.find((entry) => entry.name === 'openrouter-primary'),
+    undefined,
+    'ADR 0652: the disabled OpenRouter lane is not probed at all',
+  );
 });
 
-test('the smoke suite admits OpenRouter fleet fallback when Bifrost is missing its key (REL-710)', async () => {
+// ADR 0652 supersedes REL-710's OpenRouter fleet fallback: the review lane is
+// the single Bifrost flash-pool route and a key outage there is a review
+// outage by design (no silent failover to a disabled provider).
+test('the smoke suite does not admit the disabled OpenRouter lane when Bifrost lacks its key (ADR 0652)', async () => {
+  await assert.rejects(
+    runSmoke({
+      policy: policyFixture(),
+      env: { OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret' },
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }) }),
+      log: () => {},
+    }),
+    /no healthy Review Yeti transport/,
+  );
   const result = await runSmoke({
     policy: policyFixture(),
-    env: { OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret' },
+    env: { BIFROST_PR_REVIEW_API_KEY: 'bifrost-secret' },
     fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"ok":true,"review":"SMOKE_OK"}' } }] }) }),
     log: () => {},
   });
-
-  assert.deepEqual(result.healthy, ['openrouter-primary']);
-  assert.equal(result.results.find((entry) => entry.name === 'bifrost').status, 'missing');
+  assert.deepEqual(result.healthy, ['bifrost']);
   const resolved = resolveTransport(policyFixture().review_yeti.transports, result.healthy);
-  assert.equal(resolved.name, 'openrouter-primary');
-  assert.equal(resolved.api_key_env, 'OPENROUTER_PR_REVIEW_API_KEY');
+  assert.equal(resolved.name, 'bifrost');
+  assert.equal(resolved.api_key_env, 'BIFROST_PR_REVIEW_API_KEY');
 });
 
 test('the smoke suite handles thinking tokens in think tags before json object', async () => {
@@ -628,7 +639,7 @@ test('the smoke suite rejects policy drift before any network request', () => {
   const committedOrder = policy.review_yeti.transports
     .filter((transport) => transport.enabled)
     .map((transport) => transport.name);
-  assert.deepEqual(committedOrder, ['bifrost', 'openrouter-primary'], 'committed policy is Bifrost primary with OpenRouter fallback');
+  assert.deepEqual(committedOrder, ['bifrost'], 'committed policy is the single Bifrost flash-pool lane (ADR 0652)');
   assert.deepEqual(committedOrder, EXAMPLE_API_TRANSPORT_ORDER, 'the committed order must equal the allowed transport order');
   // Drift detection: dropping Bifrost while leaving only OpenRouter is contract
   // drift, checked by emit-policy.mjs before any network request.
@@ -903,9 +914,8 @@ test('the committed policy retains disabled providers as non-admitted transports
   const fireworks = policy.review_yeti.transports.find((transport) => transport.name === 'fireworks');
   const openrouter = policy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary');
   assert.deepEqual(policy.review_yeti.transports.map((transport) => transport.name), EXPECTED_CONFIGURED_TRANSPORT_ORDER);
-  assert.equal(bifrost.enabled, true, 'bifrost is the primary enabled transport');
-  assert.equal(openrouter.enabled, true, 'openrouter-primary is the fleet fallback');
-  for (const disabled of [gemini, fireworks, ollama]) {
+  assert.equal(bifrost.enabled, true, 'bifrost is the only enabled transport (ADR 0652)');
+  for (const disabled of [gemini, fireworks, ollama, openrouter]) {
     assert.equal(disabled.enabled, false, `${disabled.name} must stay declared-but-disabled`);
   }
   assert.deepEqual(validatePolicy(policy).map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);

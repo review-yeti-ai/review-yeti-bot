@@ -27,10 +27,10 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.deepEqual(fixture, committedFixture);
   assert.match(fixture.normalized_plan_sha256, /^[0-9a-f]{64}$/);
   assert.equal(fixture.normalized_plan_sha256, sha256(canonicalJson(fixture.plan)));
-  assert.deepEqual(fixture.plan.transport_order, ['bifrost', 'openrouter-primary']);
+  assert.deepEqual(fixture.plan.transport_order, ['bifrost']);
   assert.deepEqual(fixture.plan.dispatch, {
     mode: 'ordered',
-    weights: { bifrost: 1, 'openrouter-primary': 2 },
+    weights: { bifrost: 1 },
   });
   assert.deepEqual(fixture.plan.scope, {
     max_diff_chars: 2000000,
@@ -40,7 +40,7 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   assert.equal(fixture.plan.lane.max_review_assignments, 24);
   assert.deepEqual(
     fixture.plan.transports.map((transport) => transport.base_url_class),
-    ['exampleorg-bifrost-openai-compatible', 'openrouter-gateway'],
+    ['exampleorg-bifrost-openai-compatible'],
   );
   const bifrost = fixture.plan.transports.find((transport) => transport.name === 'bifrost');
   assert.equal(bifrost.reasoning.wire_shape, 'reasoning_effort');
@@ -97,14 +97,14 @@ test('derives execution deadlines from each transport handoff contract', () => {
   }
 });
 
-test('Every repository emits Bifrost primary plus OpenRouter fleet fallback', () => {
+test('Every repository emits the single Bifrost flash-pool transport (ADR 0652)', () => {
   const defaultPlan = buildExecutionPlan(committedPolicy);
   const ciscoPlan = buildExecutionPlan(committedPolicy, EXAMPLE_API_REPOSITORY);
 
-  assert.deepEqual(defaultPlan.transport_order, ['bifrost', 'openrouter-primary']);
+  assert.deepEqual(defaultPlan.transport_order, ['bifrost']);
   assert.equal(defaultPlan.dispatch.mode, 'ordered');
-  assert.deepEqual(ciscoPlan.transport_order, ['bifrost', 'openrouter-primary']);
-  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { bifrost: 1, 'openrouter-primary': 2 } });
+  assert.deepEqual(ciscoPlan.transport_order, ['bifrost']);
+  assert.deepEqual(ciscoPlan.dispatch, { mode: 'ordered', weights: { bifrost: 1 } });
   assert.deepEqual(ciscoPlan.transports[0].capacity, {
     max_in_flight: 4,
     concurrency_scope: 'provider',
@@ -112,8 +112,8 @@ test('Every repository emits Bifrost primary plus OpenRouter fleet fallback', ()
   });
   assert.equal(ciscoPlan.transports[0].timeouts.connect_ms, 90000);
   assert.equal(ciscoPlan.transports[0].base_url_class, 'exampleorg-bifrost-openai-compatible');
-  assert.equal(ciscoPlan.transports.length, 2, 'bifrost primary plus OpenRouter fallback');
-  assert.equal(ciscoPlan.transports[1].name, 'openrouter-primary');
+  assert.equal(ciscoPlan.transports.length, 1, 'bifrost-only review lane (ADR 0652)');
+  assert.equal(ciscoPlan.transports[0].name, 'bifrost');
   assert.equal(ciscoPlan.transport_order.includes('synthetic'), false);
   assert.equal(ciscoPlan.transport_order.includes('fireworks'), false);
   assert.equal(ciscoPlan.transport_order.includes('ollama'), false);

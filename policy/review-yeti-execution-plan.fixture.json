@@ -1,19 +1,17 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "628e8b041672d4dc6e7af7f91e39f6758b8e0e84ee1ad71b3c0a1c00c877934a",
+  "normalized_plan_sha256": "2e62a309f8a00565e1ee0eb871c312ec44a0c60b7df2f8e0e6621d8bda821b74",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
     "release_channel": "v1",
     "transport_order": [
-      "bifrost",
-      "openrouter-primary"
+      "bifrost"
     ],
     "dispatch": {
       "mode": "ordered",
       "weights": {
-        "bifrost": 1,
-        "openrouter-primary": 2
+        "bifrost": 1
       }
     },
     "lane": {
@@ -31,7 +29,7 @@
       {
         "name": "bifrost",
         "base_url_class": "exampleorg-bifrost-openai-compatible",
-        "model": "glm-5.3-flash-pool",
+        "model": "pr-reviewer",
         "compatibility_mode": "openai",
         "timeouts": {
           "connect_ms": 90000,
@@ -62,75 +60,6 @@
           "max_in_flight": 4,
           "concurrency_scope": "provider",
           "wait_timeout_ms": 30000
-        },
-        "quota": {
-          "probe": "none"
-        },
-        "retry": {
-          "max_attempts": 2,
-          "classification": "http-status-and-retry-after",
-          "rate_limit": {
-            "scope": "provider",
-            "max_retries": 1,
-            "max_retry_after_ms": 5000
-          }
-        },
-        "quarantine": {
-          "on_timeout": false
-        }
-      },
-      {
-        "name": "openrouter-primary",
-        "base_url_class": "openrouter-gateway",
-        "model": "z-ai/glm-5.3-flash",
-        "models": [],
-        "compatibility_mode": "openrouter",
-        "timeouts": {
-          "connect_ms": 20000,
-          "request_ms": 90000,
-          "stall_ms": 30000,
-          "ttft_ms": 75000
-        },
-        "max_output_tokens": "runtime-default-uncharacterized",
-        "streaming": true,
-        "structured_output": "strict",
-        "reasoning": {
-          "effort": "high",
-          "wire_shape": "reasoning.effort"
-        },
-        "request_extensions": {
-          "perf_metrics_in_response": false
-        },
-        "routing": {
-          "mode": "gateway-delegated",
-          "ignore_providers": [
-            "morph",
-            "fireworks"
-          ],
-          "provider": {
-            "allow_fallbacks": true,
-            "require_parameters": true,
-            "ignore": [
-              "morph",
-              "fireworks"
-            ],
-            "sort": "throughput",
-            "preferred_min_throughput": {
-              "p90": 40
-            },
-            "preferred_max_latency": {
-              "p99": 3
-            },
-            "data_collection": "deny"
-          }
-        },
-        "privacy": {
-          "data_collection": "deny"
-        },
-        "capacity": {
-          "max_in_flight": 2,
-          "concurrency_scope": "provider",
-          "wait_timeout_ms": 180000
         },
         "quota": {
           "probe": "none"

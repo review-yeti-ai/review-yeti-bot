@@ -28,8 +28,7 @@ export {
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'bifrost',
-  'openrouter-primary',
-]);
+]); // ADR 0652: single Bifrost flash-pool lane; OpenRouter is declared-but-disabled
 export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
   'bifrost',
   'openrouter-primary',

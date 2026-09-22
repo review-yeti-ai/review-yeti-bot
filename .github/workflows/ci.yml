@@ -148,7 +148,9 @@ jobs:
           grep -Fq '"sort": "throughput"' policy/review-yeti.json
           grep -Fq '"p90": 40' policy/review-yeti.json
           grep -Fq '"p99": 3' policy/review-yeti.json
-          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .enabled == true' policy/review-yeti.json >/dev/null
+          # ADR 0652 (operator decision 2026-09-22): no OpenRouter review lane.
+          # The transport stays declared for shape/contract checks but must not be enabled.
+          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .enabled == false' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .provider_routing.ignore == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .ignore_providers == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           if [ "$(grep -c '^[[:space:]]*max-file-diff-chars:' .github/workflows/review-yeti.yml)" -ne 1 ]; then

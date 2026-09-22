@@ -82,9 +82,15 @@ for (const transport of review.transports) {
   }
   validateTransportEnvelope(transport);
 }
-const expectedTransportNames = ['bifrost', 'openrouter-primary'];
+// ADR 0652 + operator decision 2026-09-22: review traffic runs on the
+// Bifrost-routed flash pool only. OpenRouter is not a review lane.
+const expectedTransportNames = ['bifrost'];
 if (JSON.stringify(transportNames) !== JSON.stringify(expectedTransportNames)) {
   throw new Error(`enabled transport order must be ${expectedTransportNames.join(' -> ')}`);
+}
+const openrouterLaneGuard = review.transports.find((transport) => transport.name === 'openrouter-primary');
+if (!openrouterLaneGuard || openrouterLaneGuard.enabled !== false) {
+  throw new Error('openrouter-primary must remain declared with enabled: false (ADR 0652: no OpenRouter review lane)');
 }
 if (review.dispatch_mode !== 'ordered') {
   throw new Error('policy must use ordered Bifrost dispatch for every repository');

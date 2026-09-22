@@ -37,12 +37,12 @@ configured_transports = review.get('transports', [])
 if any(type(item.get('enabled')) is not bool for item in configured_transports):
     raise SystemExit('every configured transport must declare enabled as a boolean')
 transports = [item for item in configured_transports if item.get('enabled') is True]
-if [item.get('name') for item in transports] != ['bifrost', 'openrouter-primary']:
-    raise SystemExit('policy must be Bifrost primary with OpenRouter fleet fallback (REL-710)')
+if [item.get('name') for item in transports] != ['bifrost']:
+    raise SystemExit('policy must be the single Bifrost flash-pool lane (ADR 0652 supersedes REL-710)')
 if review.get('dispatch_mode') != 'ordered':
     raise SystemExit('policy must use ordered persona dispatch with Bifrost first')
-if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'bifrost': 1, 'openrouter-primary': 2}:
-    raise SystemExit('active provider weights must keep Bifrost at 1 and OpenRouter fleet fallback at 2')
+if {item.get('name'): item.get('dispatch_weight') for item in transports} != {'bifrost': 1}:
+    raise SystemExit('the single Bifrost lane must carry dispatch_weight 1')
 # Measured ablation 2026-08-20: reasoning_effort=max scored recall 0.425 with 25/72 errors,
 # versus unset at 0.750 with 7/72. Never 'max'. Operator 2026-09-03 (REL-525):
 # with NO max_tokens on the wire the provider's own limit ended high-effort
@@ -68,13 +68,15 @@ if not openrouter or not ollama or not gemini or not bifrost:
     raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, and Bifrost transports')
 if gemini.get('enabled') is not False or ollama.get('enabled') is not False or bifrost.get('enabled') is not True:
     raise SystemExit('Bifrost must stay enabled; Gemini and Ollama must stay declared-but-disabled')
+if openrouter.get('enabled') is not False:
+    raise SystemExit('OpenRouter must stay declared-but-disabled (ADR 0652: no OpenRouter review lane)')
 # REL-896: the synthetic.new account was cancelled and the transport was fully removed (not
 # merely disabled). It must never resurface -- a reintroduced declaration, even disabled, means
 # the removal PR was reverted or partially reapplied without a fresh review of this contract.
 if any(item.get('name') == 'synthetic' for item in configured_transports):
     raise SystemExit('Synthetic transport must not be declared -- the provider account was cancelled (REL-896)')
-if openrouter is None or openrouter.get('enabled') is not True:
-    raise SystemExit('OpenRouter fleet fallback must be enabled (REL-710)')
+if openrouter is None or openrouter.get('enabled') is not False:
+    raise SystemExit('OpenRouter must be declared-but-disabled; ADR 0652 supersedes the REL-710 fleet fallback')
 if any(item.get('name') == 'fireworks' for item in transports):
     raise SystemExit('Fireworks transport must be disabled')
 fireworks = next((item for item in configured_transports if item.get('name') == 'fireworks'), None)
@@ -502,8 +504,8 @@ transport_plan_b64=$(awk '/^transport_plan_b64<</{getline; print; exit}' "$tmp_d
 TRANSPORT_PLAN_B64="$transport_plan_b64" python3 - <<'PY'
 import base64, json, os
 plan = json.loads(base64.b64decode(os.environ['TRANSPORT_PLAN_B64']).decode())
-if [item.get('name') for item in plan] != ['bifrost', 'openrouter-primary']:
-    raise SystemExit('base64 transport plan must be Bifrost primary with OpenRouter fleet fallback (REL-710)')
+if [item.get('name') for item in plan] != ['bifrost']:
+    raise SystemExit('base64 transport plan must carry the single Bifrost lane (ADR 0652)')
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
@@ -737,8 +739,8 @@ lines = open(sys.argv[1]).read().splitlines()
 start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
 end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
 transports = json.loads('\n'.join(lines[start + 1:end]))
-if [transport['name'] for transport in transports] != ['bifrost', 'openrouter-primary']:
-    raise SystemExit('Example API must emit Bifrost primary plus OpenRouter fleet fallback (REL-710)')
+if [transport['name'] for transport in transports] != ['bifrost']:
+    raise SystemExit('Example API must emit the single Bifrost lane (ADR 0652)')
 bifrost = transports[0]
 if (bifrost.get('max_in_flight'), bifrost.get('concurrency_scope'), bifrost.get('capacity_wait_timeout_ms'), bifrost.get('connect_timeout_ms'), bifrost.get('max_wall_clock_ms')) != (4, 'provider', 30000, 90000, 900000):
     raise SystemExit('Example API Bifrost admission must cover the 4-lane ceiling, a 90s connect deadline, and a 15-minute live thinking stream')
@@ -757,8 +759,8 @@ lines = open(sys.argv[1]).read().splitlines()
 start = next(i for i, line in enumerate(lines) if line.startswith('transports<<'))
 end = next(i for i in range(start + 1, len(lines)) if lines[i] == lines[start].split('<<', 1)[1])
 transports = json.loads('\n'.join(lines[start + 1:end]))
-if [transport['name'] for transport in transports] != ['bifrost', 'openrouter-primary']:
-    raise SystemExit(f'{sys.argv[2]} must emit Bifrost primary plus OpenRouter fleet fallback (REL-710)')
+if [transport['name'] for transport in transports] != ['bifrost']:
+    raise SystemExit(f'{sys.argv[2]} must emit the single Bifrost lane (ADR 0652)')
 if transports[0].get('max_in_flight') != 4 or transports[0].get('connect_timeout_ms') != 90000:
     raise SystemExit(f'{sys.argv[2]} Bifrost admission must cover the 4-lane ceiling and a 90s connect deadline')
 PY
