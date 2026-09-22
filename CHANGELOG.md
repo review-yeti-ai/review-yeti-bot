@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.3...v1.83.4) (2026-09-22)
+
+
+### Bug Fixes
+
+* derive authoritative review roster from changed paths ([#963](https://github.com/review-yeti-ai/review-yeti-bot/issues/963)) ([ca5577e](https://github.com/review-yeti-ai/review-yeti-bot/commit/ca5577e8a834d613803f5b1659bd8c9d2d34d5dc))
+
 ## [1.83.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.2...v1.83.3) (2026-09-22)
 
 
