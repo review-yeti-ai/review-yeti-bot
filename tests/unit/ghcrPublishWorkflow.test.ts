@@ -43,6 +43,16 @@ describe('GHCR publish contract', () => {
     );
     expect(archJob).toContain("needs.typecheck.result == 'success'");
 
+    const mergeJob = workflowJob('publish-ghcr');
+    expect(mergeJob).toMatch(/needs:\s*\[publish-ghcr-arch\]/u);
+    expect(mergeJob).toMatch(/if:[\s\S]*?\balways\(\)/u);
+    expect(mergeJob).toContain("needs.publish-ghcr-arch.result == 'success'");
+
+    const attestJob = workflowJob('attest-published-indexes');
+    expect(attestJob).toMatch(/needs:\s*publish-ghcr(?!-)/u);
+    expect(attestJob).toMatch(/if:[\s\S]*?\balways\(\)/u);
+    expect(attestJob).toContain("needs.publish-ghcr.result == 'success'");
+
     const publishJobs = `${workflowJob('publish-ghcr-arch')}\n${workflowJob('publish-ghcr')}`;
     expect(publishJobs).not.toContain('digitalocean/action-doctl');
     expect(publishJobs).not.toMatch(/\b(?:doctl|kubectl|DIGITALOCEAN_ACCESS_TOKEN|CLUSTER_NAME)\b/u);
