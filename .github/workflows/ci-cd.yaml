@@ -452,20 +452,6 @@ jobs:
           tags: |
             ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}-${{ matrix.arch }}
 
-        with:
-          context: .
-          file: Dockerfile.operator
-          platforms: linux/${{ matrix.arch }}
-          push: true
-          provenance: true
-          sbom: true
-          labels: |
-            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
-          tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}-${{ matrix.arch }}
-          cache-from: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
-
   publish-ghcr:
     needs: [publish-ghcr-arch]
     # Release commits intentionally skip test and legacy-runtime. Even though the
