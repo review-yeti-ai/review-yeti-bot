@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.82.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.2...v1.82.3) (2026-09-22)
+
+
+### Bug Fixes
+
+* publish release multiarch indexes ([#936](https://github.com/review-yeti-ai/review-yeti-bot/issues/936)) ([6fd4357](https://github.com/review-yeti-ai/review-yeti-bot/commit/6fd43570aa9bc661b40644793b3834c40dc38c89))
+
 ## [1.82.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.1...v1.82.2) (2026-09-22)
 
 
