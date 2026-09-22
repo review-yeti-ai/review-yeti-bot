@@ -128,6 +128,17 @@ describe('actionDispatchConfig', () => {
         expect(config.centralExternalAppCredentials?.privateKey).toBe('first\nsecond');
       });
 
+      it('trims the dedicated credential pair before use', () => {
+        const config = actionDispatchConfigFromEnv({
+          ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY,
+          REVIEW_YETI_PUBLIC_TARGET_APP_ID: ' 7654321 ',
+          REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY: ' synthetic-public-target-private-key ',
+        });
+        expect(config.centralExternalAppCredentials).toEqual({
+          appId: '7654321', privateKey: 'synthetic-public-target-private-key',
+        });
+      });
+
       it('ignores dormant dedicated credentials when external dispatch is not enabled', () => {
         const config = actionDispatchConfigFromEnv({
           REVIEW_YETI_PUBLIC_TARGET_APP_ID: '7654321',
