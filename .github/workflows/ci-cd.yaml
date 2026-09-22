@@ -25,7 +25,9 @@ jobs:
     # bumps the version and changelog, so re-running the ~10-minute gate on
     # every release commit serialized the 1.81.5/1.81.6/1.81.7 publishes and
     # delayed each tag by a full gate. Typecheck still gates the commit.
-    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+      && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -169,7 +171,9 @@ jobs:
         run: go test -count=1 ./...
 
   legacy-runtime:
-    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+      && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
