@@ -1,6 +1,9 @@
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
 import { PostgresWorkerCompletionStore } from './persistence/workerCompletionStore';
 import { createActionDispatchApp } from './dispatchServer';
+import { McpAuthenticator } from './mcp/server/mcpAuthenticator';
+import { SlidingWindowRateLimiter } from './mcp/server/mcpRateLimiter';
+import { createRemoteMcpRouter, type RemoteMcpRouter } from './mcp/server/remoteMcpRouter';
 import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
 import {
   getBoundedRepositoryInstallationId, getBoundedRepositoryToken, validateGitHubAppApiBaseUrl,
@@ -82,12 +85,41 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       }),
     }),
   } : undefined;
+  const verifier = new GitHubActionsOidcVerifier({ policy });
+
+  let mcpAuthenticator: McpAuthenticator | undefined;
+  let mcpRateLimiter: SlidingWindowRateLimiter | undefined;
+  let mcpRouter: RemoteMcpRouter | undefined;
+
+  if (dispatchConfig.mcp.enabled) {
+    mcpAuthenticator = new McpAuthenticator({
+      staticAuthToken: dispatchConfig.mcp.authToken,
+      oidcVerifier: verifier,
+    });
+    mcpRateLimiter = new SlidingWindowRateLimiter({
+      windowMs: dispatchConfig.mcp.rateLimitWindowMs,
+      maxRequests: dispatchConfig.mcp.rateLimitMax,
+    });
+    mcpRouter = createRemoteMcpRouter({
+      db: pool,
+      admissionRepository: repository,
+      authenticator: mcpAuthenticator,
+      sessionTtlMs: dispatchConfig.mcp.sessionTtlMs,
+      maxSessions: dispatchConfig.mcp.maxSessions,
+    });
+    logger.info('Remote MCP endpoint initialized', { path: dispatchConfig.mcp.path });
+  }
+
   const app = createActionDispatchApp({
-    verifier: new GitHubActionsOidcVerifier({ policy }),
+    verifier,
     admission: repository,
     allowAppGate: policy.allowAppGate,
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
     centralExternalRepositories: dispatchConfig.centralExternalRepositories,
+    mcpConfig: dispatchConfig.mcp,
+    mcpRouter,
+    mcpAuthenticator,
+    mcpRateLimiter,
     ...(ci ? { ci: ci.routes } : {}),
     ...(authoritative ? { authoritativePublishing: authoritative.admission,
       authoritativeWorkerCompletion: authoritative.completion } : {}),
@@ -128,6 +160,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     logger.info('Stopping Review Yeti Action dispatch service', { signal });
     if (authoritativeTimer) clearInterval(authoritativeTimer);
     if (ciTimer) clearInterval(ciTimer);
+    if (mcpRateLimiter) mcpRateLimiter.close();
+    if (mcpRouter) mcpRouter.destroy();
     server.close(() => void store.close().finally(() => process.exit(0)));
     setTimeout(() => process.exit(1), 10_000).unref();
   };

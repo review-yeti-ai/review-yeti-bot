@@ -73,6 +73,7 @@
     "@earendil-works/pi-coding-agent": "0.84.1",
     "@earendil-works/pi-tui": "0.84.1",
     "@kubernetes/client-node": "^1.4.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "@nats-io/jetstream": "3.4.0",
     "@nats-io/transport-node": "3.4.0",
     "@octokit/core": "^6.1.2",
