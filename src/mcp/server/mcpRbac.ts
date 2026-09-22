@@ -13,22 +13,22 @@ export class McpRbacError extends Error {
 
 const REPO_NAME_REGEX = /^[A-Za-z0-9_.-]+$/u;
 
-export function verifyRepositoryAccess(
+export function canAccessRepository(
   caller: McpAuthenticatedCaller,
   owner: string,
   repo: string
-): void {
-  if (caller.isAdmin) return;
+): boolean {
+  if (caller.isAdmin) return true;
 
   if (!REPO_NAME_REGEX.test(owner) || !REPO_NAME_REGEX.test(repo)) {
-    throw new McpRbacError(owner, repo);
+    return false;
   }
 
   const targetRepo = `${owner}/${repo}`.toLowerCase();
 
   // Check explicit allowed repository set
   if (caller.allowedRepositories?.has(targetRepo)) {
-    return;
+    return true;
   }
 
   // Central dispatch workflow authorization
@@ -37,10 +37,20 @@ export function verifyRepositoryAccess(
     caller.claims?.event_name === 'repository_dispatch' &&
     owner.toLowerCase() === 'calltelemetry'
   ) {
-    return;
+    return true;
   }
 
-  throw new McpRbacError(owner, repo);
+  return false;
+}
+
+export function verifyRepositoryAccess(
+  caller: McpAuthenticatedCaller,
+  owner: string,
+  repo: string
+): void {
+  if (!canAccessRepository(caller, owner, repo)) {
+    throw new McpRbacError(owner, repo);
+  }
 }
 
 export function formatRbacErrorResponse(error: McpRbacError): JsonRpcErrorResponse {

@@ -4,6 +4,7 @@ import {
   buildToolResultJson,
 } from '../mcpTypes';
 import type { McpExecutionContext } from '../remoteMcpRouter';
+import { canAccessRepository } from '../mcpRbac';
 import {
   ExplainFindingInputSchema,
   type ExplainFindingInput,
@@ -97,11 +98,8 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
               rows = res.rows;
             }
 
-            if (context?.caller && !context.caller.isAdmin) {
-              const target = `${owner}/${repo}`.toLowerCase();
-              if (!context.caller.allowedRepositories || !context.caller.allowedRepositories.has(target)) {
-                rows = [];
-              }
+            if (context?.caller && !canAccessRepository(context.caller, owner, repo)) {
+              rows = [];
             }
           } else {
             // Tenancy scoping: Joined repository retrieval with caller access filtering
@@ -122,25 +120,17 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
                 // Table or join may not exist in mock environment
               }
             } else {
-              // Non-admin caller with allowed repositories
-              if (!context.caller.allowedRepositories || context.caller.allowedRepositories.size === 0) {
-                rows = [];
-              } else {
-                try {
-                  const res = await deps.queryableDatabase.query(
-                    `SELECT c.payload, r.owner, r.repo, r.run_id
-                       FROM review_runs r
-                       JOIN review_worker_completions c ON c.run_id = r.run_id
-                      ORDER BY r.created_at DESC, c.execution_attempt DESC
-                      LIMIT 50`
-                  );
-                  rows = res.rows.filter((r) => {
-                    const target = `${r.owner}/${r.repo}`.toLowerCase();
-                    return context.caller!.allowedRepositories!.has(target);
-                  });
-                } catch {
-                  // Table or join may not exist in mock environment
-                }
+              try {
+                const res = await deps.queryableDatabase.query(
+                  `SELECT c.payload, r.owner, r.repo, r.run_id
+                     FROM review_runs r
+                     JOIN review_worker_completions c ON c.run_id = r.run_id
+                    ORDER BY r.created_at DESC, c.execution_attempt DESC
+                    LIMIT 50`
+                );
+                rows = res.rows.filter((r) => canAccessRepository(context.caller!, r.owner, r.repo));
+              } catch {
+                // Table or join may not exist in mock environment
               }
             }
           }

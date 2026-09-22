@@ -3,6 +3,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { GitHubActionsOidcVerifier, GitHubActionsOidcClaims } from '../../auth/githubActionsOidc';
 import { logger } from '../../utils/logger';
 import { MCP_ERRORS, buildJsonRpcError } from './mcpTypes';
+import { canAccessRepository } from './mcpRbac';
 
 export interface McpAuthenticatedCaller {
   /** Authentication pathway: cluster static admin token or GitHub Actions OIDC */
@@ -125,20 +126,7 @@ export class McpAuthenticator {
   }
 
   checkRepositoryAccess(caller: McpAuthenticatedCaller, owner: string, repo: string): boolean {
-    if (caller.isAdmin) return true;
-    const targetRepo = `${owner}/${repo}`.toLowerCase();
-    if (caller.allowedRepositories?.has(targetRepo)) return true;
-
-    // Central dispatch workflow authorization
-    if (
-      caller.claims?.repository === 'calltelemetry/ct-review-actions' &&
-      caller.claims?.event_name === 'repository_dispatch' &&
-      owner.toLowerCase() === 'calltelemetry'
-    ) {
-      return true;
-    }
-
-    return false;
+    return canAccessRepository(caller, owner, repo);
   }
 
   middleware(): RequestHandler {
