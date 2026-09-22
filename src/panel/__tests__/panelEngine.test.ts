@@ -488,6 +488,7 @@ describe('documentation, asset and data paths are not analyzable', () => {
       'docs/bootstrap.sh',
       '.github/workflows/publish.yml',
       '.github/CODEOWNERS',
+      '.changeset/config.json',
     ]) {
       expect(isDocumentationOrAssetPath(path)).toBe(false);
     }

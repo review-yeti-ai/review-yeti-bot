@@ -169,6 +169,7 @@ describe('authoritative prepared publishing worker', () => {
     'docs/bootstrap.sh',
     '.github/workflows/publish.yml',
     '.github/CODEOWNERS',
+    '.changeset/config.json',
   ])(
     'never exempts a forged documentation-only marker for analyzable path %s',
     (path) => {
