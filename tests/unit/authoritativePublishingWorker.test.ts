@@ -186,9 +186,10 @@ describe('authoritative prepared publishing worker', () => {
   it('forwards findings through the strict typed boundary while omitting operational metadata', async () => {
     const f = fixture();
     const finding = { severity: 'P2' as const, path: 'src/a.ts', line: 1, title: 'Validate input', body: 'Validate before use.',
-      confidence: 80, fixOptions: [{ rank: 1, title: 'Guard', suggestionCode: 'validate();' }] };
+      confidence: 80, recommendation: 'Validate before calling the dependency.', isArchitectural: true,
+      fixOptions: [{ rank: 1, title: 'Guard', suggestionCode: 'validate();' }] };
     f.panel.personas[0].decision = 'FINDINGS';
-    f.panel.personas[0].findings = [{ ...finding, reporters: 2, providerTranscript: PRIVATE_DETAIL } as typeof finding];
+    f.panel.personas[0].findings = [{ ...finding, suggestion: undefined, reporters: 2, providerTranscript: PRIVATE_DETAIL } as typeof finding];
     f.panel.personas[0].toolCalls = [{ tool: 'read', args: { token: TOKEN } }];
     await runPublishingReviewWorker(f.env, f.deps);
     const expected = cleanResult();
@@ -197,6 +198,7 @@ describe('authoritative prepared publishing worker', () => {
     expected.personas[0] = { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [finding],
       telemetry: { model: transport.model, durationMs: 25, toolCalls: 1 } };
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
+    expect(f.reportReviewResult.mock.calls[0][0].result.personas[0].findings[0]).not.toHaveProperty('suggestion');
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(TOKEN);
   });
