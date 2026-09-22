@@ -32,7 +32,11 @@ import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { generatePRSummary } from '../review/summaryEngine';
 import { validateReviewFindings } from '../review/reviewCore';
 import { isDocumentationOrAssetPath } from '../review/reviewableContent';
-import { deriveApplicablePersonas } from '../review/personaApplicability';
+import {
+  deriveApplicablePersonas,
+  isSubmoduleEntry,
+  isArchitecturePersona,
+} from '../review/personaApplicability';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -79,6 +83,8 @@ export type {
   PanelRequestPolicy,
 } from './types';
 export { isDocumentationOrAssetPath } from '../review/reviewableContent';
+export { isSubmoduleEntry, isArchitecturePersona } from '../review/personaApplicability';
+
 import type {
   FindingSeverity,
   FixOption,
@@ -2569,8 +2575,10 @@ async function runPersona(
     // already uses, so it gets the same treatment as any other diagnostic that crosses out of a
     // single request/response pair.
     let lastKnownCompletionExcerpt: string | undefined;
+    const isArch = isArchitecturePersona(persona);
     const scopedFiles = changedFiles.filter((file) =>
-      persona.paths.some((pattern) => pathMatches(pattern, file.path)),
+      persona.paths.some((pattern) => pathMatches(pattern, file.path)) ||
+      (isArch && isSubmoduleEntry(file)),
     );
 
     // Scope pre-check evidence to files evaluated by this persona
@@ -3486,6 +3494,7 @@ export async function executePersonaPanel(options: {
         // fix, not something to wave through. The fix is to extend the
         // persona's paths -- so the message now says which paths to extend.
         const unmatched = effectiveFiles
+          .filter((f: any) => !isSubmoduleEntry(f))
           .map((f: any) => f.path || f.filePath || '')
           .filter((p: string) => p.length > 0)
           .filter((p: string) => !isDocumentationOrAssetPath(p));
