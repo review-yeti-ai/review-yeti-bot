@@ -485,6 +485,9 @@ describe('documentation, asset and data paths are not analyzable', () => {
       // lane. See tests/unit/personaGating.test.ts.
       'package.json',
       'k8s/overlays/prod/values.json',
+      'docs/bootstrap.sh',
+      '.github/workflows/publish.yml',
+      '.github/CODEOWNERS',
     ]) {
       expect(isDocumentationOrAssetPath(path)).toBe(false);
     }

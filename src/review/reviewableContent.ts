@@ -7,9 +7,6 @@
 export function isDocumentationOrAssetPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/').toLowerCase();
   return (
-    normalized.startsWith('docs/') ||
-    normalized.startsWith('.github/') ||
-    normalized.startsWith('.changeset/') ||
     (
       (normalized.startsWith('runs/') ||
         normalized.includes('/runs/') ||
