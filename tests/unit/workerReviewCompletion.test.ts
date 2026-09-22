@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import {
   MAX_COMPLETION_BYTES,
   MAX_TURN_USAGES,
@@ -332,6 +333,13 @@ describe('WorkerReviewCompletion.v1', () => {
       derive(completion(), { ...contract, expectedCoordinates: { ...expectedCoordinates, configDigest: 'f'.repeat(64) } }),
       /coordinates do not match/u,
     );
+  });
+
+  it('accepts the shared per-file patch limit and rejects the next UTF-8 byte', () => {
+    const atLimit = { ...contract, changedFiles: [{ path: 'src/limit.ts', patch: 'x'.repeat(MAX_CHANGED_FILE_PATCH_BYTES) }] };
+    expect(derive(completion(), atLimit).valid).toBe(true);
+    expect(() => derive(completion(), { ...atLimit, changedFiles: [{ ...atLimit.changedFiles[0],
+      patch: `${atLimit.changedFiles[0].patch}x` }] })).toThrow(/patch exceeds its bound/u);
   });
 
   describe('optional per-persona telemetry (Stage 0: turn-accumulated usage)', () => {

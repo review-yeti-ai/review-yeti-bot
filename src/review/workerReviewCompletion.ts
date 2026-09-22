@@ -5,8 +5,11 @@ import { canonicalJson, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 import { isDocumentationOrAssetPath } from './reviewableContent';
+import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
+
+export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 
 /**
  * The success callback is deliberately smaller than the worker's operational receipt. It carries
@@ -22,12 +25,9 @@ export const MAX_COMPLETION_BYTES = 1_000_000;
 export const MAX_PERSONAS = 64;
 export const MAX_FINDINGS_PER_PERSONA = 400;
 export const MAX_TOTAL_FINDINGS = MAX_PERSONAS * MAX_FINDINGS_PER_PERSONA;
-export const MAX_CHANGED_FILES = 10_000;
-export const MAX_CHANGED_FILE_PATCH_BYTES = 512_000;
 export const MAX_TEXT_CHARACTERS = 16_000;
 export const MAX_TITLE_CHARACTERS = 4_000;
 export const MAX_CODE_CHARACTERS = 10_000;
-export const MAX_PATH_CHARACTERS = 4_096;
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);

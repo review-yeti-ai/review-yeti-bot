@@ -1,12 +1,15 @@
 import { z } from 'zod';
-import { MAX_AUTHORITATIVE_DIFF_BYTES, type AuthoritativeReviewReader, type ReviewRepositoryIdentity } from '../github/authoritativeReviewReader';
+import {
+  MAX_AUTHORITATIVE_CHANGED_FILES_BYTES, MAX_AUTHORITATIVE_DIFF_BYTES,
+  type AuthoritativeReviewReader, type ReviewRepositoryIdentity,
+} from '../github/authoritativeReviewReader';
 import type { StoredReviewGate, TrustedGateCompletionContext } from './reviewGateContracts';
 import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
 import { parseChangedFiles } from './changedFiles';
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
 import { canonicalJson } from './reviewCore';
-import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './workerReviewCompletion';
+import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { TrustedCompletionResolutionError, type TrustedCompletionResolutionSubstage } from './workerCompletionPersistenceError';
 
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
@@ -135,11 +138,16 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       const final = checkedCurrent(source.current);
       if (changed(final)) return cancellation(final);
       if (typeof source.diff !== 'string' || Buffer.byteLength(source.diff, 'utf8') > MAX_AUTHORITATIVE_DIFF_BYTES) throw unavailable();
-      const { files, unreadable } = parseChangedFiles(source.diff);
+      if (source.changedFiles !== undefined && (source.diff !== '' || !Array.isArray(source.changedFiles))) throw unavailable();
+      const { files, unreadable } = source.changedFiles === undefined
+        ? parseChangedFiles(source.diff) : { files: source.changedFiles, unreadable: [] };
       // Empty/unparseable same-head evidence is unavailable, not an exemption.
       // Empty changedFiles is reserved for cancellation, before derivation.
-      if (files.length === 0 || files.length > MAX_CHANGED_FILES || files.some((file) => file.path.length > MAX_PATH_CHARACTERS
-        || Buffer.byteLength(file.patch, 'utf8') > MAX_CHANGED_FILE_PATCH_BYTES)) throw unavailable();
+      if (files.length === 0 || files.length > MAX_CHANGED_FILES || files.some((file) => !file
+        || typeof file.path !== 'string' || file.path.length === 0 || file.path.length > MAX_PATH_CHARACTERS
+        || typeof file.patch !== 'string' || file.patch.length === 0 || Buffer.byteLength(file.patch, 'utf8') > MAX_CHANGED_FILE_PATCH_BYTES)
+        || files.reduce((bytes, file) => bytes + Buffer.byteLength(file.patch, 'utf8'), 0)
+          > (source.changedFiles === undefined ? MAX_AUTHORITATIVE_DIFF_BYTES : MAX_AUTHORITATIVE_CHANGED_FILES_BYTES)) throw unavailable();
       const coverageComplete = unreadable.length === 0
         && Number.isSafeInteger(source.expectedFileCount) && files.length === source.expectedFileCount
         && new Set(files.map((file) => file.path)).size === files.length;
