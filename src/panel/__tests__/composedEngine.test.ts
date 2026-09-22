@@ -256,6 +256,76 @@ describe('executeComposedReview', () => {
     })).rejects.toThrow(/empty_plan/);
   });
 
+  // Degenerate-provider discrimination for plan rejections (issue #950). During the
+  // 2026-09-21 gateway outage the provider returned HTTP 200 with non-empty-but-garbage
+  // content -- blank task fields at zero completion tokens -- which sailed through the
+  // transport retry ladders (they only catch empty/transport errors) and then published
+  // as terminal `contract` failures. Degenerate evidence means the transport produced
+  // garbage, so the honest published class is `provider_error`, not a contract breach.
+  function degenerateResponse(content: string): OpenRouterResponse {
+    return { model: 'test-model', content, usage: { prompt: 10, completion: 0, total: 10 }, costUSD: 0.001, raw: {} };
+  }
+
+  const BLANK_FIELD_TASK = { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: '', rationale: '' };
+
+  it('classifies a blank-field plan rejection as provider_error when the turns were degenerate (0 completion tokens)', async () => {
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
+        return degenerateResponse(JSON.stringify({ nonce, tasks: [BLANK_FIELD_TASK] }));
+      }
+      throw new Error(`unexpected turn: ${text.slice(0, 80)}`);
+    });
+
+    await expect(executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    })).rejects.toMatchObject({ failureClass: 'provider_error' });
+  });
+
+  it('keeps contract classification for a blank-field plan rejection backed by healthy token usage', async () => {
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [BLANK_FIELD_TASK] }));
+      }
+      throw new Error(`unexpected turn: ${text.slice(0, 80)}`);
+    });
+
+    await expect(executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    })).rejects.toMatchObject({ failureClass: 'contract' });
+  });
+
+  it('classifies a nonce-mismatch rejection as provider_error when the completion was blank at zero tokens', async () => {
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
+        // Blank content with present-but-zero-completion usage: the gateway answered
+        // with nothing real. This is transport degeneracy, not a contract breach.
+        return degenerateResponse('');
+      }
+      throw new Error(`unexpected turn: ${text.slice(0, 80)}`);
+    });
+
+    await expect(executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    })).rejects.toMatchObject({ failureClass: 'provider_error' });
+  });
+
   // The plan and work prompts both embed untrusted diff text by construction. The nonce is what
   // binds a returned object back to the request that asked for it; without the check the field is
   // decorative and an object echoing an earlier turn's shape -- or one supplied by injected diff
