@@ -64,6 +64,7 @@ import {
   TRANSPORT_MAX_RETRIES,
   type RepoFileProvider,
 } from './panelEngine';
+import type { WorkerFailureClass } from '../types/workerFailure';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import {
@@ -628,6 +629,36 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
   ].join('\n');
 }
 
+/**
+ * Issue #950: discriminate degenerate provider output from a genuine contract
+ * breach at plan-rejection time.
+ *
+ * The transport retry ladders in `callTurn` only catch *empty* completions and
+ * transport faults. A gateway that answers HTTP 200 with non-empty garbage --
+ * blank task fields at zero completion tokens, or a blank body whose usage
+ * block still arrives -- sails through every ladder and then fails plan
+ * validation, which used to publish as terminal `contract`. During the
+ * 2026-09-21 outage that class masked an infrastructure failure as a review
+ * failure.
+ *
+ * The evidence is deliberately conservative: degenerate means either the
+ * completion body carried no real text, or the gateway reported zero
+ * completion tokens while usage data was present. Usage data absent tells us
+ * nothing and is never treated as evidence either way.
+ */
+function planTurnDegenerate(turnUsages: LaneTurnUsage[]): boolean {
+  for (const usage of turnUsages) {
+    if (usage.completionTokens === 0) return true;
+  }
+  return false;
+}
+
+/** The plan-phase failure class for a rejection, given its turn evidence. */
+function planRejectionFailureClass(turnUsages: LaneTurnUsage[]): WorkerFailureClass {
+  return planTurnDegenerate(turnUsages) ? 'provider_error' : 'contract';
+}
+
+
 // ---------------------------------------------------------------------------
 // PLAN phase
 // ---------------------------------------------------------------------------
@@ -716,7 +747,7 @@ async function runPlanPhase(input: {
       if (correctionUsed || isLastLocalTurn) {
         throw new PanelConfigurationError(
           'composed review plan rejected: plan "nonce" did not match the nonce issued for this request',
-          { failureClass: 'contract' },
+          { failureClass: planRejectionFailureClass(turnUsages) },
         );
       }
       correctionUsed = true;
@@ -746,11 +777,11 @@ async function runPlanPhase(input: {
     // decoy. See `validateTaskPlan`'s own doc comment for why the floor specifically cannot be a
     // second bounded turn.
     if (validation.reason === 'security_floor_violation' || validation.reason === 'empty_plan') {
-      throw new PanelConfigurationError(`composed review plan rejected (${validation.reason}): ${validation.message}`, { failureClass: 'contract' });
+      throw new PanelConfigurationError(`composed review plan rejected (${validation.reason}): ${validation.message}`, { failureClass: planRejectionFailureClass(turnUsages) });
     }
 
     if (correctionUsed || isLastLocalTurn) {
-      throw new PanelConfigurationError(`composed review plan rejected (${validation.reason}) after its one corrective turn: ${validation.message}`, { failureClass: 'contract' });
+      throw new PanelConfigurationError(`composed review plan rejected (${validation.reason}) after its one corrective turn: ${validation.message}`, { failureClass: planRejectionFailureClass(turnUsages) });
     }
     correctionUsed = true;
     const uncovered = validation.reason === 'coverage_gap' ? ` Uncovered paths: ${(validation.uncoveredPaths || []).join(', ')}.` : '';
