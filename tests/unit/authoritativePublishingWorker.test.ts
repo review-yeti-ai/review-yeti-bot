@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { buildWorkerFailureDiagnostics } from '../../src/review/workerCompletion';
-import { runPublishingReviewWorker, type PublishingReviewDeps } from '../../src/cli/publishingReview';
+import { runPublishingReviewWorker, type PublishingCheckClient, type PublishingReviewDeps } from '../../src/cli/publishingReview';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
@@ -183,13 +183,19 @@ describe('authoritative prepared publishing worker', () => {
 
   it('never publishes a green raw check when the completion acknowledgement fails', async () => {
     const f = fixture();
+    const order2: string[] = [];
     f.reportReviewResult.mockRejectedValue(new Error('completion endpoint unreachable'));
+    const rawCheckMock = vi.fn<PublishingCheckClient['completeCheck']>(async () => { order2.push('raw-check'); });
+    f.deps.checkClient = {
+      ...f.deps.checkClient,
+      completeCheck: rawCheckMock,
+    };
     // The worker rethrows after its fail-closed catch; the invariant under
     // test is that the raw check never carried a success conclusion.
     await expect(runPublishingReviewWorker(f.env, f.deps))
       .rejects.toThrow('completion endpoint unreachable');
     expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
-    const conclusions = f.deps.checkClient.completeCheck.mock.calls
+    const conclusions = rawCheckMock.mock.calls
       .map((call: unknown[]) => (call[0] as { conclusion: string }).conclusion);
     expect(conclusions).toEqual(['failure']);
   });
