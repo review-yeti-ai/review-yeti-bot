@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
   CENTRAL_REVIEW_REPOSITORY,
   CENTRAL_REVIEW_WORKFLOW_REF,
   isCentralRefreshAuthorized,
@@ -13,7 +14,7 @@ function request(overrides: Partial<CentralRefreshDispatchRequest> = {}): Centra
   return {
     publishMode: 'app-gate',
     refreshRequested: true,
-    caller: { eventName: 'repository_dispatch', workflowRef: CENTRAL_REVIEW_WORKFLOW_REF },
+    caller: { eventName: 'repository_dispatch', workflowRef: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF },
     ...overrides,
   };
 }
@@ -21,6 +22,7 @@ function request(overrides: Partial<CentralRefreshDispatchRequest> = {}): Centra
 function claims(overrides: Partial<CentralRefreshDispatchClaims> = {}): CentralRefreshDispatchClaims {
   return {
     repository: CENTRAL_REVIEW_REPOSITORY,
+    workflow_ref: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
     job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
     ...overrides,
   };
@@ -29,15 +31,19 @@ function claims(overrides: Partial<CentralRefreshDispatchClaims> = {}): CentralR
 describe('central Review Yeti refresh policy', () => {
   it('authorizes only the exact central workflow identity with an explicit refresh', () => {
     expect(isCentralRefreshAuthorized(request(), claims(), policy)).toBe(true);
+    expect(isCentralRefreshAuthorized(request({
+      caller: { eventName: 'workflow_dispatch', workflowRef: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF },
+    }), claims(), policy)).toBe(true);
   });
 
   it.each([
     ['disabled publication', request({ publishMode: 'disabled' }), claims(), policy],
     ['missing refresh request', request({ refreshRequested: false }), claims(), policy],
-    ['non-central event', request({ caller: { eventName: 'workflow_dispatch', workflowRef: CENTRAL_REVIEW_WORKFLOW_REF } }), claims(), policy],
+    ['non-central event', request({ caller: { eventName: 'pull_request', workflowRef: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF } }), claims(), policy],
     ['wrong repository', request(), claims({ repository: 'calltelemetry/other' }), policy],
+    ['wrong verified parent workflow', request(), claims({ workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/other.yml@refs/heads/main' }), policy],
     ['wrong verified workflow', request(), claims({ job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/other.yml@refs/heads/v1' }), policy],
-    ['wrong caller workflow', request({ caller: { eventName: 'repository_dispatch', workflowRef: 'calltelemetry/ct-review-actions/.github/workflows/other.yml@refs/heads/v1' } }), claims(), policy],
+    ['wrong caller workflow', request({ caller: { eventName: 'repository_dispatch', workflowRef: 'calltelemetry/ct-review-actions/.github/workflows/other.yml@refs/heads/main' } }), claims(), policy],
     ['missing verifier policy', request(), claims(), undefined],
     ['unallowlisted workflow', request(), claims(), { workflowRefs: new Set<string>() }],
   ])('rejects %s', (_reason, candidate, candidateClaims, candidatePolicy) => {

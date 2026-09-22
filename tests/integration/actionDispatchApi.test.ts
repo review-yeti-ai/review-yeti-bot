@@ -15,7 +15,10 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { actionDispatchDigestInput, actionDispatchRequestSchema, type ActionDispatchRequest } from '../../src/review/actionDispatch';
 import { sha256 } from '../../src/review/reviewCore';
-import { CENTRAL_REVIEW_WORKFLOW_REF } from '../../src/review/reviewCheckIdentity';
+import {
+  CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
+  CENTRAL_REVIEW_WORKFLOW_REF,
+} from '../../src/review/reviewCheckIdentity';
 import { ReviewGenerationConflictError } from '../../src/review/reviewRun';
 
 const body = {
@@ -342,7 +345,7 @@ describe('POST /api/dispatch/action', () => {
     expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
-  it('rejects the configured external target when the central caller event is not repository_dispatch', async () => {
+  it('accepts manual central dispatch only from the exact parent and reusable workflow identities', async () => {
     const centralVerified = {
       repository: 'calltelemetry/ct-review-actions',
       repository_id: '99999',
@@ -350,10 +353,13 @@ describe('POST /api/dispatch/action', () => {
       run_id: '98765',
       run_attempt: '2',
       event_name: 'workflow_dispatch',
+      workflow_ref: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
+      workflow_sha: 'e'.repeat(40),
       job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
       job_workflow_sha: 'd'.repeat(40),
     };
     const fixture = app({
+      allowAppGate: true,
       verifier: { verify: vi.fn(async () => centralVerified) },
       centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
     });
@@ -369,12 +375,67 @@ describe('POST /api/dispatch/action', () => {
         caller: {
           ...body.caller,
           eventName: 'workflow_dispatch',
-          workflowRef: centralVerified.job_workflow_ref,
+          workflowRef: centralVerified.workflow_ref,
+          workflowSha: centralVerified.workflow_sha,
         },
+        publishMode: 'app-gate',
+        expectedGeneration: 2,
+      });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+      centralActionDispatch: true,
+      expectedGeneration: 2,
+    }));
+  });
+
+  it('rejects manual central dispatch from any other parent workflow', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: '98765', run_attempt: '2', event_name: 'workflow_dispatch',
+      workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/other.yml@refs/heads/main',
+      workflow_sha: 'e'.repeat(40), job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({ verifier: { verify: vi.fn(async () => centralVerified) } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        caller: { ...body.caller, eventName: 'workflow_dispatch',
+          workflowRef: centralVerified.workflow_ref, workflowSha: centralVerified.workflow_sha },
       });
 
     expect(response.status).toBe(403);
-    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['wrong', 'calltelemetry/ct-review-actions/.github/workflows/other.yml@refs/heads/v1'],
+    ['missing', undefined],
+  ])('rejects manual central dispatch with a %s reusable workflow identity', async (
+    _reason,
+    jobWorkflowRef,
+  ) => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: '98765', run_attempt: '2', event_name: 'workflow_dispatch',
+      workflow_ref: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF, workflow_sha: 'e'.repeat(40),
+      ...(jobWorkflowRef ? { job_workflow_ref: jobWorkflowRef } : {}),
+      job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({ verifier: { verify: vi.fn(async () => centralVerified) } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        caller: { ...body.caller, eventName: 'workflow_dispatch',
+          workflowRef: centralVerified.workflow_ref, workflowSha: centralVerified.workflow_sha },
+      });
+
+    expect(response.status).toBe(403);
     expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
@@ -395,6 +456,7 @@ describe('POST /api/dispatch/action', () => {
       run_id: '98765',
       run_attempt: '2',
       event_name: 'repository_dispatch',
+      workflow_ref: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
       job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
       job_workflow_sha: 'd'.repeat(40),
     };
@@ -412,7 +474,7 @@ describe('POST /api/dispatch/action', () => {
         caller: {
           ...body.caller,
           eventName: 'repository_dispatch',
-          workflowRef: centralVerified.job_workflow_ref,
+          workflowRef: centralVerified.workflow_ref,
         },
       });
 
@@ -429,6 +491,7 @@ describe('POST /api/dispatch/action', () => {
       run_id: '98765',
       run_attempt: '2',
       event_name: 'repository_dispatch',
+      workflow_ref: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
       job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
       job_workflow_sha: 'd'.repeat(40),
     };
@@ -447,13 +510,42 @@ describe('POST /api/dispatch/action', () => {
         caller: {
           ...body.caller,
           eventName: 'repository_dispatch',
-          workflowRef: centralVerified.job_workflow_ref,
+          workflowRef: centralVerified.workflow_ref,
         },
       });
 
     expect(response.status).toBe(202);
     expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
       retryRequested: true, retryAfterExecutionAttempt: 1,
+    }));
+  });
+
+  it('forwards refresh from the exact manual central recovery workflow', async () => {
+    const centralVerified = {
+      repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
+      run_id: '98765', run_attempt: '2', event_name: 'workflow_dispatch',
+      workflow_ref: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF, workflow_sha: 'e'.repeat(40),
+      job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF, job_workflow_sha: 'd'.repeat(40),
+    };
+    const fixture = app({ allowAppGate: true, verifier: {
+      verify: vi.fn(async () => centralVerified),
+      policy: { workflowRefs: new Set([CENTRAL_REVIEW_WORKFLOW_REF]) },
+    } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        publishMode: 'app-gate',
+        refreshRequested: true,
+        refreshExecutionAttempt: 1,
+        caller: { ...body.caller, eventName: 'workflow_dispatch',
+          workflowRef: centralVerified.workflow_ref, workflowSha: centralVerified.workflow_sha },
+      });
+
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+      centralActionDispatch: true, retryRequested: true, retryAfterExecutionAttempt: 1,
     }));
   });
 

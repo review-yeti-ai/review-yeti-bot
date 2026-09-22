@@ -18,6 +18,9 @@ export const REVIEW_REFRESH_ACTION = Object.freeze({
 
 /** Exact reusable workflow identity authorized to forward a persisted refresh. */
 export const CENTRAL_REVIEW_REPOSITORY = 'calltelemetry/ct-review-actions';
+/** Exact top-level receiver authorized to originate central review requests. */
+export const CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF =
+  `${CENTRAL_REVIEW_REPOSITORY}/.github/workflows/repository-dispatch.yml@refs/heads/main`;
 export const CENTRAL_REVIEW_WORKFLOW_REF =
   `${CENTRAL_REVIEW_REPOSITORY}/.github/workflows/review-yeti.yml@refs/heads/v1`;
 

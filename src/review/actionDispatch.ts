@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import type { GitHubActionsOidcClaims } from '../auth/githubActionsOidc';
-import { CENTRAL_REVIEW_REPOSITORY } from './reviewCheckIdentity';
+import {
+  CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
+  CENTRAL_REVIEW_REPOSITORY,
+  CENTRAL_REVIEW_WORKFLOW_REF,
+} from './reviewCheckIdentity';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
@@ -70,9 +74,19 @@ export function assertActionDispatchMatchesClaims(
   const repository = `${request.owner}/${request.repo}`;
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
   const isSupportedExternalTarget = centralExternalRepositories.get(repository) === request.repositoryId;
-  const isCentral = request.caller.eventName === 'repository_dispatch'
+  const isCentralTarget = request.owner === 'calltelemetry' || isSupportedExternalTarget;
+  const isCentralRepositoryDispatch = request.caller.eventName === 'repository_dispatch';
+  // A manual retry is signed as workflow_dispatch even though it enters through the same
+  // central receiver. Admit it only when both GitHub's parent and reusable-workflow claims
+  // match the two immutable workflow identities and the request binds the parent claim.
+  const isCentralManualDispatch = request.caller.eventName === 'workflow_dispatch'
+    && claims.workflow_ref === CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF
+    && claims.job_workflow_ref === CENTRAL_REVIEW_WORKFLOW_REF
+    && request.caller.workflowRef === claims.workflow_ref
+    && request.caller.workflowSha === claims.workflow_sha;
+  const isCentral = (isCentralRepositoryDispatch || isCentralManualDispatch)
     && claims.repository === CENTRAL_REVIEW_REPOSITORY
-    && (request.owner === 'calltelemetry' || isSupportedExternalTarget);
+    && isCentralTarget;
   // The central repository can review itself, which makes both predicates true.
   // Preserve the central ledger contract in that overlap; direct compatibility
   // applies only when the trusted central identity did not originate the run.
