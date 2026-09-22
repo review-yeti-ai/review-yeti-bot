@@ -39,7 +39,7 @@ function fixture(overrides: Partial<AuthoritativeCompletionContextOptions> = {})
   };
   const getStoredPrepared = vi.fn<AuthoritativeCompletionContextOptions['getStoredPrepared']>(async () => stored);
   const currentCandidate = vi.fn(async () => ({ ...current }));
-  const exactCurrentDiff = vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 as number | undefined }));
+  const exactCurrentDiff = vi.fn<AuthoritativeReviewReader['exactCurrentDiff']>(async () => ({ current: { ...current }, diff, expectedFileCount: 1 }));
   const readerFactory = vi.fn<AuthoritativeCompletionContextOptions['readerFactory']>(async () => ({ currentCandidate, exactCurrentDiff }));
   const resolve = vi.fn<AuthoritativeCompletionContextOptions['publishingResolver']['resolve']>(async () => resolution());
   const options = { getStoredPrepared, readerFactory, publishingResolver: { resolve }, ...overrides };
@@ -93,6 +93,69 @@ describe('service-owned authoritative completion context', () => {
     expect(derived.valid).toBe(true);
     expect(derived.evidence?.quorumSatisfied).toBe(false);
     expect(evaluateReviewGate({ candidate: f.gate.coordinates, current: context.current, evidence: derived.evidence }).status).toBe('failure');
+  });
+
+  it('completes a 130-file oversized PR through the real reader and still requires complete worker coverage', async () => {
+    const entries = Array.from({ length: 130 }, (_, index) => ({ sha: 'd'.repeat(40), filename: `src/file-${index}.ts`,
+      status: 'modified', additions: 1, deletions: 1, changes: 2, patch: '@@ -1 +1 @@\n-old\n+new' }));
+    const body = { number: target.prNumber, state: 'open', draft: false, merged: false, changed_files: 130,
+      head: { sha: target.headSha }, base: { sha: target.baseSha, repo: { id: target.repositoryId, full_name: 'example/candidate' } } };
+    const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
+    const fetcher = vi.fn<typeof fetch>();
+    for (const value of [response(body), response(body), response({ errors: [
+      { resource: 'PullRequest', field: 'diff', code: 'too_large' },
+    ] }, 406), response({
+      url: `https://api.github.com/repos/example/candidate/compare/${target.baseSha}...${target.headSha}`,
+      base_commit: { sha: target.baseSha }, merge_base_commit: { sha: target.baseSha },
+      status: 'ahead', ahead_by: 1, behind_by: 0, total_commits: 1, files: entries,
+    }), response(body)]) {
+      fetcher.mockResolvedValueOnce(value);
+    }
+    const reader = new AuthoritativeReviewReader({ token: 'ghs_large-pr.header.signature', fetchImplementation: fetcher });
+    const f = fixture({ readerFactory: async () => reader });
+    const context = await f.context(f.gate);
+    expect(context.coverage.coverageComplete).toBe(true);
+    expect(context.coverage.changedFiles).toHaveLength(130);
+    const { attemptId: _, ...coordinates } = f.gate.coordinates;
+    const expectedCoordinates = { ...coordinates, configDigest: f.stored.policy.effectiveConfigDigest };
+    for (const coverageComplete of [true, false]) {
+      const derived = deriveCanonicalWorkerReviewEvidence({ version: 'WorkerReviewCompletion.v1', ...expectedCoordinates,
+        result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-22T18:00:00Z', coverageComplete,
+          quorumSatisfied: true, personas: ['sec-lane', 'qual-lane'].map((id) => ({ id, decision: 'APPROVE', findings: [] })) } },
+      { ...context.coverage, expectedCoordinates });
+      expect(derived.valid).toBe(true);
+      expect(evaluateReviewGate({ candidate: f.gate.coordinates, current: context.current, evidence: derived.evidence }).status)
+        .toBe(coverageComplete ? 'success' : 'failure');
+    }
+    for (const finding of [{ path: 'src/file-129.ts', line: 2 }, { path: 'src/not-changed.ts', line: 1 }]) {
+      const derived = deriveCanonicalWorkerReviewEvidence({ version: 'WorkerReviewCompletion.v1', ...expectedCoordinates,
+        result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-22T18:00:00Z', coverageComplete: true,
+          quorumSatisfied: true, personas: ['sec-lane', 'qual-lane'].map((id) => ({ id, decision: 'FINDINGS', findings: [
+            { ...finding, severity: 'P1', title: 'Invalid authorization', body: 'The check accepts the wrong identity.' },
+          ] })) } }, { ...context.coverage, expectedCoordinates });
+      expect(derived.valid).toBe(false);
+    }
+  });
+
+  it.each([
+    { diff, changedFiles: [{ path: 'src/a.ts', patch: diff }] },
+    { diff: '', changedFiles: [] },
+    { diff: '', changedFiles: [{ path: '', patch: diff }] },
+    { diff: '', changedFiles: [{ path: 'src/a.ts', patch: '' }] },
+    { diff: '', changedFiles: [{ path: 'src/a.ts', patch: 'x'.repeat(1_100_001) }] },
+    { diff: '', changedFiles: Array.from({ length: 5 }, (_, i) => ({ path: `${i}.ts`, patch: 'x'.repeat(900_000) })) },
+  ])('rejects conflicting/empty/unbounded trusted file representations %#', async (source) => {
+    const f = fixture(); f.exactCurrentDiff.mockResolvedValue({ current, expectedFileCount: 1, ...source });
+    redacted(await rejected(f.context(f.gate)));
+  });
+
+  it.each([
+    { changedFiles: [{ path: 'src/a.ts', patch: diff }], expectedFileCount: undefined },
+    { changedFiles: [{ path: 'src/a.ts', patch: diff }], expectedFileCount: 2 },
+    { changedFiles: [{ path: 'src/a.ts', patch: diff }, { path: 'src/a.ts', patch: diff }], expectedFileCount: 2 },
+  ])('does not certify incomplete or duplicate trusted file inventories %#', async (source) => {
+    const f = fixture(); f.exactCurrentDiff.mockResolvedValue({ current, diff: '', ...source });
+    expect((await f.context(f.gate)).coverage.coverageComplete).toBe(false);
   });
 
   it('refreshes through the existing configured publishing resolver without candidate-selected policy', async () => {
@@ -237,7 +300,7 @@ describe('service-owned authoritative completion context', () => {
     },
   );
 
-  it.each([2_000_001, 512_001])('rejects oversized diff/individual patch (%i bytes) rather than truncating it', async (size) => {
+  it.each([2_000_001, 1_100_001])('rejects oversized diff/individual patch (%i bytes) rather than truncating it', async (size) => {
     const f = fixture(); f.exactCurrentDiff.mockResolvedValue({ current, diff: diff + 'a'.repeat(size), expectedFileCount: 1 });
     redacted(await rejected(f.context(f.gate)));
   });

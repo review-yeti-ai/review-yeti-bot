@@ -241,13 +241,24 @@ describe('AuthoritativeReviewReader', () => {
       expect((await f.reader.exactCurrentDiff(request)).diff).toBe(exact);
     });
 
-    it('stops an oversized multibyte stream and never performs the final metadata read', async () => {
+    it('cancels an oversized HTTP 200 diff stream and returns immutable comparison evidence', async () => {
       const wire = streamed(Buffer.from('é'.repeat(MAX_AUTHORITATIVE_DIFF_BYTES)), 50_000);
-      const f = fixture(before(), wire.response, before());
-      expectRedacted(await rejected(f.reader.exactCurrentDiff(request)));
+      const comparisonPath = `/repos/calltelemetry/central-policy/compare/${BASE}...${HEAD}`;
+      const comparison = jsonResponse({
+        url: `${API}${comparisonPath}`, base_commit: { sha: BASE }, merge_base_commit: { sha: BASE },
+        status: 'ahead', ahead_by: 1, behind_by: 0, total_commits: 1,
+        files: [{ sha: 'd'.repeat(40), filename: 'café.ts', status: 'modified',
+          additions: 1, deletions: 1, changes: 2, patch: '@@ -1 +1 @@\n-old\n+new' }],
+      });
+      const f = fixture(before(), wire.response, comparison, before());
+      await expect(f.reader.exactCurrentDiff(request)).resolves.toEqual({
+        current: { ...request, open: true, draft: false }, diff: '', expectedFileCount: 1,
+        changedFiles: [{ path: 'café.ts', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      });
       expect(wire.bytesRead()).toBe(MAX_AUTHORITATIVE_DIFF_BYTES + 50_000);
       expect(wire.cancel).toHaveBeenCalledOnce(); expect(wire.body.locked).toBe(false);
-      expect(f.fetcher).toHaveBeenCalledTimes(2);
+      expect(f.fetcher).toHaveBeenCalledTimes(4);
+      expect(f.fetcher.mock.calls[2][0]).toBe(`${API}${comparisonPath}?per_page=1&page=1`);
     });
 
     it.each([206, 302, 403, 500])('rejects partial/error diff HTTP %i without reading further', async (status) => {
