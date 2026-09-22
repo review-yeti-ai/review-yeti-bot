@@ -100,7 +100,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
   // SUITE 1: Tool Registry & Discovery Verification (tools/list)
   // =========================================================================
   describe('Suite 1: Tool Registry & Discovery Verification', () => {
-    it('TC-REG-001: Enumerates exactly 8 registered core tools', async () => {
+    it('TC-REG-001: Enumerates exactly 12 registered core tools', async () => {
       const res = await request(app)
         .post('/api/mcp')
         .set('Authorization', `Bearer ${validToken}`)
@@ -108,7 +108,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       expect(res.status).toBe(200);
       expect(res.body.result).toBeDefined();
-      expect(res.body.result.tools).toHaveLength(8);
+      expect(res.body.result.tools).toHaveLength(12);
 
       const toolNames = res.body.result.tools.map((t: any) => t.name);
       expect(toolNames).toEqual([
@@ -120,6 +120,10 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         'watch_review_progress',
         'preflight_diff_review',
         'explain_finding',
+        'generate_fix_diff',
+        'dispute_finding',
+        'attest_pr_gate',
+        'reply_review_thread',
       ]);
     });
 

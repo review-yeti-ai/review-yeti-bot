@@ -185,7 +185,10 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
         id: 1,
         result: {
           protocolVersion: '2024-11-05',
-          capabilities: { tools: { listChanged: true } },
+          capabilities: {
+            tools: { listChanged: true },
+            resources: { subscribe: true, listChanged: true },
+          },
           serverInfo: {
             name: 'review-yeti-action-dispatch',
             version: '1.45.3',
