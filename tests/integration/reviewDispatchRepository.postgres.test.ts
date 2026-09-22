@@ -116,6 +116,51 @@ function mutateClaim(repository: PostgresReviewDispatchRepository, mutation: typ
   }
 }
 
+describe('PostgresReviewDispatchRepository central dispatch validation', () => {
+  function repositoryThatStopsAtPersistence() {
+    const connect = vi.fn(async () => { throw new Error('durable-admission-sentinel'); });
+    const repository = new PostgresReviewDispatchRepository(
+      { connect } as unknown as Pool,
+      undefined,
+      {
+        lifecycleEvents: 'disabled',
+        requireExpectedGeneration: true,
+        validateAuthoritativeAdmission: async () => undefined,
+      },
+    );
+    return { repository, connect };
+  }
+
+  it('allows an exact central workflow_dispatch retry to reach durable admission', async () => {
+    const { repository, connect } = repositoryThatStopsAtPersistence();
+    const input = {
+      ...authoritativeAdmission('manual-central-retry'),
+      eventName: 'workflow_dispatch',
+      centralActionDispatch: true,
+      expectedGeneration: 2,
+      retryRequested: true,
+      retryAfterExecutionAttempt: 1,
+    };
+
+    await expect(repository.admit(input)).rejects.toThrow('durable-admission-sentinel');
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it.each(['pull_request', 'pull_request_target'])(
+    'rejects a central classification carried by %s before persistence',
+    async (eventName) => {
+      const { repository, connect } = repositoryThatStopsAtPersistence();
+      await expect(repository.admit({
+        ...authoritativeAdmission(`invalid-central-${eventName}`),
+        eventName,
+        centralActionDispatch: true,
+        expectedGeneration: 1,
+      })).rejects.toThrow('central Action dispatch classification is invalid');
+      expect(connect).not.toHaveBeenCalled();
+    },
+  );
+});
+
 async function dispatchState(client: PoolClient, runId: string) {
   return {
     run: (await client.query('SELECT * FROM review_runs WHERE run_id = $1', [runId])).rows[0],
@@ -2056,7 +2101,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries WHERE delivery_id = $1', [mismatched.deliveryId])).rows[0].count).toBe(0);
 
       const exact = {
-        ...authoritativeAdmission('central-a2', 2_000), eventName: 'repository_dispatch', centralActionDispatch: true, expectedGeneration: 2,
+        ...authoritativeAdmission('central-a2', 2_000), eventName: 'workflow_dispatch', centralActionDispatch: true, expectedGeneration: 2,
       };
       const retried = await repository.admit(exact);
       expect(retried.run.attempt).toBe(1);
