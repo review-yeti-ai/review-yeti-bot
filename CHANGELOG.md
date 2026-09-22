@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.4...v1.83.5) (2026-09-22)
+
+
+### Bug Fixes
+
+* **dispatch:** reconcile lost review generations ([#966](https://github.com/review-yeti-ai/review-yeti-bot/issues/966)) ([0b4a7f0](https://github.com/review-yeti-ai/review-yeti-bot/commit/0b4a7f07298138cbf7e38cf1f0a8f8a3188b1a36))
+
 ## [1.83.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.3...v1.83.4) (2026-09-22)
 
 
