@@ -12,6 +12,7 @@ import {
 } from './dashboardStore';
 import { logger } from '../utils/logger';
 import { REVIEW_GATE_SCHEMA_SQL } from './reviewGateSchema';
+import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from './reviewGenerationRecoverySchema';
 import { PREPARED_REVIEW_SCHEMA_SQL } from './preparedReviewRepository';
 import { REVIEW_CI_SCHEMA_SQL } from './reviewCiSchema';
 import { REVIEW_CI_CHECK_SCHEMA_SQL } from './reviewCiCheckSchema';
@@ -387,6 +388,7 @@ export class PostgresStore {
 
       // 2. Check if database tables are empty and seed if initial startup
       await client.query(REVIEW_GATE_SCHEMA_SQL);
+      await client.query(REVIEW_GENERATION_RECOVERY_SCHEMA_SQL);
       await client.query(PREPARED_REVIEW_SCHEMA_SQL);
       await client.query(REVIEW_CI_SCHEMA_SQL);
       await client.query(REVIEW_CI_CHECK_SCHEMA_SQL);
