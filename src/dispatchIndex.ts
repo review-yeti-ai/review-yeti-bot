@@ -26,6 +26,7 @@ import { createReviewCiRuntime } from './reviewCiRuntime';
 import { findReviewCiEnrollment } from './review/reviewCi';
 import { actionDispatchConfigFromEnv } from './config/actionDispatchConfig';
 import { initTelemetry } from './telemetry';
+import { deriveReviewRunId } from './review/reviewAdmission';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -68,6 +69,22 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   }) : undefined;
   const repository = new PostgresReviewDispatchRepository(pool, undefined, { lifecycleEvents: 'enabled',
     ...(authoritative ? { validateAuthoritativeAdmission: authoritative.validateAdmission } : {}),
+    ...(authoritative ? { resolveGenerationRecovery: async (input) => {
+      if (!input.authoritativeGate || input.expectedGeneration === undefined) {
+        throw new Error('Authoritative generation recovery identity is unavailable');
+      }
+      const minted = await getBoundedRepositoryToken({
+        appId, privateKey, owner: input.identity.owner, repo: input.identity.repo, baseUrl,
+      }, 'publish');
+      return new GitHubInstallationClient({ token: minted.token, baseUrl }).readReviewGenerationRecovery({
+        owner: input.identity.owner,
+        repo: input.identity.repo,
+        headSha: input.identity.headSha,
+        runId: deriveReviewRunId(input.identity),
+        expectedGeneration: input.expectedGeneration,
+        expectedAppId: input.authoritativeGate.expectedAppId,
+      });
+    } } : {}),
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
   });
   const githubWebhook = webhookConfig ? {

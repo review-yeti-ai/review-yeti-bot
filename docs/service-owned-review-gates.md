@@ -40,8 +40,28 @@ repository always compares a supplied value with the exact identity's zero-based
 `review_runs.attempt + 1`. A new or identity-drifted row can therefore satisfy
 only `a1`; an admitted `a2` or `a3` must match that exact identity's durable
 next generation. Mismatch rolls back the delivery, run, outbox, prepared policy,
-and gate reservation together and returns HTTP 409. Existing tables already
-carry the required counter, so this contract needs no schema migration.
+and gate reservation together and returns HTTP 409. Existing tables carry the
+ordinary generation counter; the state-loss recovery path below adds only an
+audit-receipt table and does not replace that counter.
+
+The sole state-loss exception is an explicit, OIDC-authenticated central
+refresh for the same immutable identity. If the service has no matching run but
+the central ledger admits `a2` or `a3`, the service independently rereads the
+complete App-owned `Review Yeti` check ledger with a repository-scoped
+installation token. Recovery requires one contiguous prior sequence from the
+same derived run ID and exact head; every prior check must be completed with a
+fail-closed infrastructure/no-verdict title and a `failure` or
+`action_required` conclusion. Success, `SHIP`, `FIX_FIRST`, `BLOCK`, another
+App/run/head, duplicate or missing generations, ambiguous pagination, and any
+current-or-later generation all fail closed.
+
+Accepted recovery evidence is written to
+`review_generation_recoveries` and emitted as a
+`review.lifecycle.generation_reconciled` audit event in the same transaction
+that seeds the recovered run/outbox counters and reserves the next gate. A
+recovered generation is never re-executed and never converted into approval.
+`SHIP` remains only the terminal review verdict/check conclusion; it does not
+dispatch a workflow, merge, deploy, release, or trigger any other action.
 
 `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION` is the service-side rollout fence.
 It defaults to `false`: missing central app-gate generation remains temporarily
