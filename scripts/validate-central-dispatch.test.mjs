@@ -270,6 +270,8 @@ function normalizeWithReceiver(eventName, input) {
         PATH: process.env.PATH,
         GITHUB_OUTPUT: outputPath,
         EVENT_NAME: eventName,
+        EXECUTION_RUN_ID: String(callerRunId),
+        EXECUTION_RUN_ATTEMPT: String(callerRunAttempt),
         RAW_CENTRAL_DISPATCH_PAYLOAD: JSON.stringify(input),
       },
     });
@@ -310,6 +312,73 @@ test('new receiver works with the prior promoted validator and still binds the g
         },
       }));
     }
+  }
+});
+
+test('manual dispatch synthesizes an immutable request identity from its own run when omitted', () => {
+  const manual = { ...payload, request_id: '', pr_number: '4527', refresh_requested: 'true' };
+  const expected = {
+    ...payload,
+    request_id: `example-api:4527:${headSha}:${callerRunId}:${callerRunAttempt}`,
+    refresh_requested: true,
+  };
+  assert.deepEqual(normalizeCentralDispatchPayload({
+    eventName: 'workflow_dispatch', payload: manual,
+    runId: callerRunId, runAttempt: callerRunAttempt,
+  }), expected);
+  assert.deepEqual(normalizeWithReceiver('workflow_dispatch', manual), expected);
+});
+
+test('manual dispatch validates its central run without requiring a target caller workflow', async () => {
+  const calls = [];
+  const manualPayload = { ...payload, refresh_requested: true };
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url.endsWith('/pulls/4527')) {
+      return response({
+        state: 'open',
+        base: { sha: baseSha, ref: '0.8.7-stable', repo: { full_name: TARGET_REPOSITORY, default_branch: '0.8.7-stable' } },
+        head: { sha: headSha, ref: 'feat/manual-review' },
+      });
+    }
+    if (url.endsWith(`/repos/${CENTRAL_REPOSITORY}/actions/runs/${callerRunId}`)) {
+      return response({
+        repository: { full_name: CENTRAL_REPOSITORY }, event: 'workflow_dispatch',
+        path: '.github/workflows/repository-dispatch.yml', head_sha: 'c'.repeat(40),
+        run_attempt: callerRunAttempt, status: 'in_progress',
+      });
+    }
+    if (url.includes('/actions/workflows/repository-dispatch.yml/runs')) return response({ workflow_runs: [] });
+    if (url.includes(`/commits/${headSha}/check-runs?`)) {
+      return response({ total_count: 1, check_runs: [infrastructureFailedFirstAttemptCheck()] });
+    }
+    if (url.includes(`/repos/${CENTRAL_REPOSITORY}/contents/.github/workflows/repository-dispatch.yml?ref=`)) {
+      return response({ encoding: 'base64', content: Buffer.from(receiverWorkflow).toString('base64') });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const result = await validateCentralDispatch({
+    payload: manualPayload, targetToken: 'target-token', centralToken: 'central-token', fetchImpl,
+    eventName: 'workflow_dispatch', executionRunId: callerRunId, executionRunAttempt: callerRunAttempt,
+  });
+  assert.equal(result.caller_run_id, callerRunId);
+  assert.equal(result.caller_workflow_path, '.github/workflows/repository-dispatch.yml');
+  assert.equal(result.review_generation, 2);
+  assert.equal(result.refresh_requested, true);
+  assert.equal(calls.some(({ url }) => url.includes('/contents/.github/workflows/ct-review-bot.yml')), false);
+  for (const mutation of [
+    { event: 'repository_dispatch' }, { path: '.github/workflows/other.yml' },
+    { head_sha: 'not-a-sha' }, { run_attempt: 99 }, { status: 'completed' },
+  ]) {
+    await assert.rejects(validateCentralDispatch({
+      payload: manualPayload, targetToken: 'target-token', centralToken: 'central-token',
+      eventName: 'workflow_dispatch', executionRunId: callerRunId, executionRunAttempt: callerRunAttempt,
+      fetchImpl: async (url, init) => {
+        const res = await fetchImpl(url, init);
+        if (!url.endsWith(`/repos/${CENTRAL_REPOSITORY}/actions/runs/${callerRunId}`)) return res;
+        return response({ ...await res.json(), ...mutation });
+      },
+    }), /manual dispatch run identity changed/u);
   }
 });
 
@@ -496,7 +565,7 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   const reusable = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
 
   assert.match(receiver, /types:\s*\[review-yeti-request\]/u);
-  assert.match(receiver, /run-name:\s*Review Yeti central \/ \$\{\{ github\.event\.client_payload\.request_id \|\| inputs\.request_id \}\}/u);
+  assert.match(receiver, /run-name:\s*Review Yeti central \/ \$\{\{ github\.event\.client_payload\.request_id \|\| inputs\.request_id \|\| format\(/u);
   assert.match(receiver, /group:\s*central-review-yeti-\$\{\{ github\.event\.client_payload\.repository \|\| inputs\.repository \}\}-\$\{\{ github\.event\.client_payload\.pr_number \|\| inputs\.pr_number \}\}-\$\{\{ github\.event\.client_payload\.head_sha \|\| inputs\.head_sha \}\}/u);
   assert.match(receiver, /cancel-in-progress:\s*false/u);
   assert.match(receiver, /uses: exampleorg\/example-review-actions\/\.github\/workflows\/review-yeti\.yml@v1/u);
@@ -518,6 +587,8 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(checkout, /ref: v1/u);
   assert.match(checkout, /persist-credentials: false/u);
   assert.match(normalizationBlock, /EVENT_NAME: \$\{\{ github\.event_name \}\}/u);
+  assert.match(normalizationBlock, /EXECUTION_RUN_ID: \$\{\{ github\.run_id \}\}/u);
+  assert.match(normalizationBlock, /EXECUTION_RUN_ATTEMPT: \$\{\{ github\.run_attempt \}\}/u);
   assert.match(normalizationBlock, /RAW_CENTRAL_DISPATCH_PAYLOAD: \$\{\{ toJSON\(github\.event\.client_payload \|\| inputs\) \}\}/u);
   assert.match(receiver, /CENTRAL_DISPATCH_PAYLOAD: \$\{\{ steps\.payload\.outputs\.payload \}\}/u);
   assert.doesNotMatch(receiver, /^\s{10}CENTRAL_DISPATCH_PAYLOAD: \$\{\{ toJSON\(github\.event\.client_payload \|\| inputs\) \}\}$/mu);

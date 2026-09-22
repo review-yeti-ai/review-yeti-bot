@@ -163,7 +163,7 @@ function assertPlainObject(value, label) {
 // dispatch validator runs; repository_dispatch values and types remain
 // untouched so their type contract stays fail-closed. The receiver carries a
 // workflow-owned equivalent to tolerate main/v1 skew; boundary tests cover both.
-export function normalizeCentralDispatchPayload({ eventName, payload }) {
+export function normalizeCentralDispatchPayload({ eventName, payload, runId, runAttempt }) {
   if (eventName !== 'workflow_dispatch') return payload;
 
   assertPlainObject(payload, 'workflow_dispatch inputs');
@@ -190,7 +190,22 @@ export function normalizeCentralDispatchPayload({ eventName, payload }) {
     throw new Error('workflow_dispatch refresh_requested must be a boolean');
   }
 
-  return { ...payload, pr_number: prNumber, refresh_requested: refreshRequested };
+  let requestId = payload.request_id;
+  if (requestId === undefined || requestId === '') {
+    const repositoryName = typeof payload.repository === 'string' ? payload.repository.split('/')[1] : '';
+    const executionRunId = typeof runId === 'number' ? runId
+      : typeof runId === 'string' && WORKFLOW_DISPATCH_PR_NUMBER_PATTERN.test(runId) ? Number(runId) : NaN;
+    const executionRunAttempt = typeof runAttempt === 'number' ? runAttempt
+      : typeof runAttempt === 'string' && WORKFLOW_DISPATCH_PR_NUMBER_PATTERN.test(runAttempt) ? Number(runAttempt) : NaN;
+    if (!repositoryName || !REPOSITORY_NAME_PATTERN.test(repositoryName)
+        || !Number.isSafeInteger(executionRunId) || executionRunId < 1
+        || !Number.isSafeInteger(executionRunAttempt) || executionRunAttempt < 1) {
+      throw new Error('workflow_dispatch run identity is invalid');
+    }
+    requestId = `${repositoryName}:${prNumber}:${payload.head_sha}:${executionRunId}:${executionRunAttempt}`;
+  }
+
+  return { ...payload, request_id: requestId, pr_number: prNumber, refresh_requested: refreshRequested };
 }
 
 export function validateDispatchPayload(payload) {
@@ -737,6 +752,9 @@ export async function validateCentralDispatch({
   targetToken = token,
   centralToken = token,
   fetchImpl = globalThis.fetch,
+  eventName = 'repository_dispatch',
+  executionRunId,
+  executionRunAttempt,
 }) {
   const request = validateDispatchPayload(payload);
   const admittedTarget = resolveAdmittedTarget(request.repository);
@@ -777,23 +795,52 @@ export async function validateCentralDispatch({
   if (pull?.state !== 'open') throw new Error('PR is not open');
   if (pull?.base?.sha !== request.base_sha) throw new Error('PR base SHA changed');
   if (pull?.head?.sha !== request.head_sha) throw new Error('PR head SHA changed');
-
-  const callerRun = await githubJson(`${apiBase}/actions/runs/${callerRunId}`, targetToken, fetchImpl);
-  if (callerRun?.repository?.full_name !== request.repository) throw new Error('caller run repository identity changed');
-  if (callerRun?.event !== 'pull_request_target') throw new Error('caller run must use pull_request_target');
-  if (callerRun?.path !== admittedTarget.callerWorkflowPath) throw new Error('caller run workflow path changed');
-  // A pull_request_target run reports the PR *head* as head_sha and the PR source branch as
-  // head_branch (the base-owned workflow code is what executes, but the run identity is the PR).
-  // Bind the caller run to the exact requested PR head; the base-owned workflow bytes are read
-  // from the base branch below.
-  if (callerRun?.head_sha !== request.head_sha) throw new Error('caller run is not bound to the requested PR head');
-  if (typeof pull?.head?.ref === 'string' && callerRun?.head_branch !== pull.head.ref) {
-    throw new Error('caller run is not bound to the PR source branch');
-  }
-  if (callerRun?.run_attempt !== callerRunAttempt) throw new Error('caller run attempt changed');
-  if (!Array.isArray(callerRun?.pull_requests)
-      || !callerRun.pull_requests.some((candidate) => candidate?.number === request.pr_number)) {
-    throw new Error('caller run is not bound to the requested PR');
+  const directManualDispatch = eventName === 'workflow_dispatch'
+    && String(callerRunId) === String(executionRunId)
+    && String(callerRunAttempt) === String(executionRunAttempt);
+  let callerRun;
+  let callerWorkflowPath;
+  let callerWorkflowToken;
+  let callerWorkflowRepository;
+  let callerWorkflowRevision;
+  if (directManualDispatch) {
+    callerRun = await githubJson(
+      `https://api.github.com/repos/${CENTRAL_REPOSITORY}/actions/runs/${callerRunId}`,
+      centralToken,
+      fetchImpl,
+    );
+    callerWorkflowPath = '.github/workflows/repository-dispatch.yml';
+    callerWorkflowToken = centralToken;
+    callerWorkflowRepository = CENTRAL_REPOSITORY;
+    callerWorkflowRevision = callerRun?.head_sha;
+    if (callerRun?.repository?.full_name !== CENTRAL_REPOSITORY
+        || callerRun?.event !== 'workflow_dispatch'
+        || callerRun?.path !== callerWorkflowPath
+        || !SHA_PATTERN.test(callerWorkflowRevision ?? '')
+        || callerRun?.run_attempt !== callerRunAttempt
+        || !['queued', 'in_progress'].includes(callerRun?.status)) {
+      throw new Error('manual dispatch run identity changed');
+    }
+  } else {
+    callerRun = await githubJson(`${apiBase}/actions/runs/${callerRunId}`, targetToken, fetchImpl);
+    callerWorkflowPath = admittedTarget.callerWorkflowPath;
+    callerWorkflowToken = targetToken;
+    callerWorkflowRepository = request.repository;
+    callerWorkflowRevision = pull?.base?.repo?.default_branch;
+    if (callerRun?.repository?.full_name !== request.repository) throw new Error('caller run repository identity changed');
+    if (callerRun?.event !== 'pull_request_target') throw new Error('caller run must use pull_request_target');
+    if (callerRun?.path !== admittedTarget.callerWorkflowPath) throw new Error('caller run workflow path changed');
+    // A pull_request_target run reports the PR *head* as head_sha and the PR source branch as
+    // head_branch (the base-owned workflow code is what executes, but the run identity is the PR).
+    if (callerRun?.head_sha !== request.head_sha) throw new Error('caller run is not bound to the requested PR head');
+    if (typeof pull?.head?.ref === 'string' && callerRun?.head_branch !== pull.head.ref) {
+      throw new Error('caller run is not bound to the PR source branch');
+    }
+    if (callerRun?.run_attempt !== callerRunAttempt) throw new Error('caller run attempt changed');
+    if (!Array.isArray(callerRun?.pull_requests)
+        || !callerRun.pull_requests.some((candidate) => candidate?.number === request.pr_number)) {
+      throw new Error('caller run is not bound to the requested PR');
+    }
   }
 
   // Capacity is checked only after identity is proven, so an invalid request
@@ -823,10 +870,12 @@ export async function validateCentralDispatch({
   // 33675866048): GitHub executed the caller from the repository DEFAULT branch — whose
   // pull_request_target filter lists every stable line — not the PR base branch's copy. Read
   // the caller from the default branch so the contract checks the bytes that actually ran.
-  const defaultBranch = pull?.base?.repo?.default_branch;
-  if (typeof defaultBranch !== 'string' || defaultBranch.length === 0) throw new Error('repository default branch is missing');
-  const workflowUrl = `${apiBase}/contents/${admittedTarget.callerWorkflowPath}?ref=${encodeURIComponent(defaultBranch)}`;
-  const workflow = await githubJson(workflowUrl, targetToken, fetchImpl);
+  if (typeof callerWorkflowRevision !== 'string' || callerWorkflowRevision.length === 0) {
+    throw new Error('caller workflow revision is missing');
+  }
+  const workflowUrl = `https://api.github.com/repos/${callerWorkflowRepository}/contents/${callerWorkflowPath}`
+    + `?ref=${encodeURIComponent(callerWorkflowRevision)}`;
+  const workflow = await githubJson(workflowUrl, callerWorkflowToken, fetchImpl);
   if (workflow?.encoding !== 'base64' || typeof workflow.content !== 'string') {
     throw new Error('base-owned caller workflow response is invalid');
   }
@@ -836,14 +885,16 @@ export async function validateCentralDispatch({
   } catch {
     throw new Error('base-owned caller workflow could not be decoded');
   }
-  const callerWorkflowSha256 = admittedTarget.owner === TARGET_OWNER
-    ? validateCallerWorkflow(callerContent)
-    : validatePublicCallerWorkflow(callerContent);
+  const callerWorkflowSha256 = directManualDispatch
+    ? createHash('sha256').update(callerContent).digest('hex')
+    : admittedTarget.owner === TARGET_OWNER
+      ? validateCallerWorkflow(callerContent)
+      : validatePublicCallerWorkflow(callerContent);
   return {
     ...request,
     caller_run_id: callerRunId,
     caller_run_attempt: callerRunAttempt,
-    caller_workflow_path: admittedTarget.callerWorkflowPath,
+    caller_workflow_path: callerWorkflowPath,
     caller_workflow_sha256: callerWorkflowSha256,
     ...generation,
   };
@@ -872,6 +923,9 @@ async function main() {
     payload,
     targetToken: process.env.GH_TARGET_TOKEN,
     centralToken: process.env.GH_CENTRAL_TOKEN,
+    eventName: process.env.GITHUB_EVENT_NAME,
+    executionRunId: process.env.GITHUB_RUN_ID,
+    executionRunAttempt: process.env.GITHUB_RUN_ATTEMPT,
   });
   writeOutputs(result, process.env.GITHUB_OUTPUT);
   console.log(`Validated central Review Yeti request ${result.request_id} for ${result.repository}#${result.pr_number} at exact head ${result.head_sha}.`);

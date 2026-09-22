@@ -1,5 +1,5 @@
 name: Central Review Yeti Dispatch
-run-name: Review Yeti central / ${{ github.event.client_payload.request_id || inputs.request_id }}
+run-name: Review Yeti central / ${{ github.event.client_payload.request_id || inputs.request_id || format('{0}:{1}:{2}', inputs.repository, inputs.pr_number, inputs.head_sha) }}
 
 on:
   repository_dispatch:
@@ -23,8 +23,9 @@ on:
         required: true
         type: string
       request_id:
-        description: 'Request ID'
-        required: true
+        description: 'Optional originating caller request ID; omitted manual runs bind to this central run'
+        required: false
+        default: ''
         type: string
       refresh_requested:
         description: 'Explicit same-head retry requested by review-yeti/refresh'
@@ -74,11 +75,13 @@ jobs:
         id: payload
         env:
           EVENT_NAME: ${{ github.event_name }}
+          EXECUTION_RUN_ID: ${{ github.run_id }}
+          EXECUTION_RUN_ATTEMPT: ${{ github.run_attempt }}
           RAW_CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload || inputs) }}
         run: |
           set -euo pipefail
           node --input-type=module <<'NODE' >> "$GITHUB_OUTPUT"
-          function normalizeCentralDispatchPayload({ eventName, payload }) {
+          function normalizeCentralDispatchPayload({ eventName, payload, runId, runAttempt }) {
             if (eventName !== 'workflow_dispatch') return payload;
             if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
               throw new Error('workflow_dispatch inputs must be an object');
@@ -103,13 +106,29 @@ jobs:
             if (refreshRequested === null) {
               throw new Error('workflow_dispatch refresh_requested must be a boolean');
             }
-            return { ...payload, pr_number: prNumber, refresh_requested: refreshRequested };
+            let requestId = payload.request_id;
+            if (requestId === undefined || requestId === '') {
+              const repositoryName = typeof payload.repository === 'string' ? payload.repository.split('/')[1] : '';
+              const parseRunCoordinate = (value) => typeof value === 'number' ? value
+                : typeof value === 'string' && /^[1-9][0-9]*$/u.test(value) ? Number(value) : NaN;
+              const executionRunId = parseRunCoordinate(runId);
+              const executionRunAttempt = parseRunCoordinate(runAttempt);
+              if (!repositoryName || !/^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$/u.test(repositoryName)
+                  || !Number.isSafeInteger(executionRunId) || executionRunId < 1
+                  || !Number.isSafeInteger(executionRunAttempt) || executionRunAttempt < 1) {
+                throw new Error('workflow_dispatch run identity is invalid');
+              }
+              requestId = `${repositoryName}:${prNumber}:${payload.head_sha}:${executionRunId}:${executionRunAttempt}`;
+            }
+            return { ...payload, request_id: requestId, pr_number: prNumber, refresh_requested: refreshRequested };
           }
 
           const payload = JSON.parse(process.env.RAW_CENTRAL_DISPATCH_PAYLOAD || '');
           const normalized = normalizeCentralDispatchPayload({
             eventName: process.env.EVENT_NAME,
             payload,
+            runId: process.env.EXECUTION_RUN_ID,
+            runAttempt: process.env.EXECUTION_RUN_ATTEMPT,
           });
           process.stdout.write(`payload=${JSON.stringify(normalized)}\n`);
           NODE
