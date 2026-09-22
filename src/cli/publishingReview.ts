@@ -48,7 +48,7 @@ import {
   type OpenAITransportConfig,
 } from '../review/openaiTransport';
 import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
-import { computeArbitration } from '../review/reviewCore';
+import { computeArbitration, sanitizeFinding } from '../review/reviewCore';
 import { isRecoverableIncompletePanel, isRecoverablePanelRetryEligible, RECOVERABLE_PANEL_AUTO_RETRY_CAP } from '../review/publicationFailurePolicy';
 import {
   buildWorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
@@ -1538,8 +1538,20 @@ export async function runPublishingReviewWorker(
           // findings: evidence must not be dropped for a missing label.
           decision: persona.decision ?? (persona.findings.length > 0 ? 'FINDINGS' : 'APPROVE'),
           status: 'COMPLETE' as const,
-          findings: persona.findings.map((finding) => Object.fromEntries(
-            Object.entries(finding).filter(([key, value]) => findingKeys.has(key) && value !== undefined))),
+          // Use the same anchored inputs as raw-check arbitration. Keep each
+          // contribution on its original lane: copying canonical.findings to
+          // every persona would duplicate clusters and erase ownership. The
+          // service still performs strict validation and canonical arbitration;
+          // unanchorable raw findings must not cross this trusted worker boundary.
+          findings: persona.findings.flatMap((finding) => {
+            const anchored = sanitizeFinding(finding, changedFiles);
+            if (!anchored) return [];
+            // These typed advisory fields are not part of arbitration's claim
+            // identity, but remain useful callback evidence for the same finding.
+            const { recommendation, fixOptions, isArchitectural } = finding;
+            return [Object.fromEntries(Object.entries({ ...anchored, recommendation, fixOptions, isArchitectural })
+              .filter(([key, value]) => findingKeys.has(key) && value !== undefined))];
+          }),
           ...(telemetry ? { telemetry } : {}),
         };
       });

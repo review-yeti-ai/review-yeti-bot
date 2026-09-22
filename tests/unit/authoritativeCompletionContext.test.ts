@@ -242,17 +242,36 @@ describe('service-owned authoritative completion context', () => {
     redacted(await rejected(f.context(f.gate)));
   });
 
-  it.each(['storage', 'factory', 'current', 'policy', 'diff'])('redacts %s failures', async (stage) => {
+  it.each([
+    ['storage', 'stored-policy'], ['factory', 'token'], ['current', 'current-candidate'],
+    ['policy', 'policy-refresh'], ['diff', 'exact-diff'],
+  ])('redacts and classifies %s failures as %s', async (stage, substage) => {
     const f = fixture(); const fail = new Error(privateText);
     if (stage === 'storage') f.getStoredPrepared.mockRejectedValue(fail);
     if (stage === 'factory') f.readerFactory.mockRejectedValue(fail);
     if (stage === 'current') f.currentCandidate.mockRejectedValue(fail);
     if (stage === 'policy') f.resolve.mockRejectedValue(fail);
     if (stage === 'diff') f.exactCurrentDiff.mockRejectedValue(fail);
-    redacted(await rejected(f.context(f.gate)));
+    const failure = await rejected(f.context(f.gate));
+    redacted(failure);
+    expect(failure).toMatchObject({ substage });
   });
 
-  it.each(['storage', 'factory', 'current', 'policy', 'diff'])('bounds a non-cooperative %s promise at 10 seconds', async (stage) => {
+  it('classifies a failed resolver-race re-read as current-candidate', async () => {
+    const f = fixture();
+    f.resolve.mockRejectedValue(new Error(privateText));
+    f.currentCandidate.mockResolvedValueOnce(current).mockRejectedValueOnce(new Error(privateText));
+    const failure = await rejected(f.context(f.gate));
+    redacted(failure);
+    expect(failure).toMatchObject({ substage: 'current-candidate' });
+    expect(f.currentCandidate).toHaveBeenCalledTimes(2);
+    expect(f.exactCurrentDiff).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['storage', 'stored-policy'], ['factory', 'token'], ['current', 'current-candidate'],
+    ['policy', 'policy-refresh'], ['diff', 'exact-diff'],
+  ] as const)('bounds a non-cooperative %s promise at 10 seconds as %s', async (stage, substage) => {
     const f = fixture(); const hang = () => new Promise<never>(() => undefined);
     if (stage === 'storage') f.getStoredPrepared.mockImplementation(hang);
     if (stage === 'factory') f.readerFactory.mockImplementation(hang);
@@ -262,7 +281,8 @@ describe('service-owned authoritative completion context', () => {
     let settled = false;
     const pending = rejected(f.context(f.gate)).then((error) => { settled = true; return error; });
     await vi.advanceTimersByTimeAsync(9_999); expect(settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(1); redacted(await pending);
+    await vi.advanceTimersByTimeAsync(1); const failure = await pending; redacted(failure);
+    expect(failure).toMatchObject({ substage });
     expect(f.getStoredPrepared.mock.calls[0][1].aborted).toBe(true);
     if (stage !== 'diff') expect(f.exactCurrentDiff).not.toHaveBeenCalled();
   });

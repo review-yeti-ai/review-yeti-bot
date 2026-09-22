@@ -193,6 +193,20 @@ describe('authoritative worker completion API', () => {
     expectNoPersistence(f);
   });
 
+  it.each(['stored-policy', 'token', 'current-candidate', 'policy-refresh', 'exact-diff'] as const)
+  ('logs only the finite trusted-resolution substage %s without changing the public 503', async (substage) => {
+    const f = fixture();
+    f.recordWorkerResult.mockRejectedValue(new WorkerCompletionPersistenceError('trusted-completion-resolution', substage));
+    const response = await request(f.app).post(ENDPOINT).auth(TOKEN, { type: 'bearer' }).send(event());
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Worker review completion could not be persisted' });
+    expect(f.errorLog).toHaveBeenCalledExactlyOnceWith('Failed to persist authoritative worker completion', {
+      reason: 'persistence_unavailable', stage: 'trusted-completion-resolution', substage, runId: event().runId,
+    });
+    expect(JSON.stringify(f.errorLog.mock.calls)).not.toContain(TOKEN);
+    expect(JSON.stringify(f.errorLog.mock.calls)).not.toContain(PRIVATE_DETAIL);
+  });
+
   it('accepts strict evidence without optional worker summaries or the legacy handler', async () => {
     const f = fixture({ legacy: false });
     const payload = event();
