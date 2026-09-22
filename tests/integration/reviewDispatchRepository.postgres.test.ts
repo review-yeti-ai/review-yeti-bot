@@ -12,6 +12,7 @@ import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/revi
 import { sha256 } from '../../src/review/reviewCore';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from '../../src/persistence/reviewGenerationRecoverySchema';
 import { PREPARED_REVIEW_SCHEMA_SQL } from '../../src/persistence/preparedReviewRepository';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { PostgresReviewGateRepository } from '../../src/persistence/reviewGateRepository';
@@ -27,6 +28,7 @@ import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
 import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS } from '../../src/review/publicationFailurePolicy';
 import { requeueRecoverableIncompletePanelFailure } from '../../src/review/recoverablePanelRetry';
 import { logger } from '../../src/utils/logger';
+import { ReviewGenerationRecoveryLedgerError } from '../../src/review/reviewGenerationRecovery';
 
 /** Mirrors the production caller (`actionDispatchApi.ts`'s worker-completion
  * handler): invoke the recoverable-panel-retry service only after
@@ -195,7 +197,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         if (!ownedSharedSchema.test(sharedSchema)) throw new Error('Refusing to remove an unowned test schema');
         await client.query(`DROP SCHEMA ${sharedSchema} CASCADE`);
       } else {
-        await client.query('DROP TABLE IF EXISTS pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
+        await client.query('DROP TABLE IF EXISTS pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
       }
       client.release();
       client = undefined;
@@ -279,6 +281,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     `;
     await client.query(sharedSchema ? fixtureSql.replaceAll('CREATE TEMP TABLE pg_temp.', 'CREATE TABLE ') : fixtureSql);
     await client.query(sharedSchema ? REVIEW_GATE_SCHEMA_SQL : REVIEW_GATE_SCHEMA_SQL.replaceAll('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
+    await client.query(sharedSchema ? REVIEW_GENERATION_RECOVERY_SCHEMA_SQL : REVIEW_GENERATION_RECOVERY_SCHEMA_SQL.replaceAll('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
     await client.query(sharedSchema ? PREPARED_REVIEW_SCHEMA_SQL : PREPARED_REVIEW_SCHEMA_SQL.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
     await client.query(sharedSchema ? REVIEW_EVENT_SCHEMA_SQL : REVIEW_EVENT_SCHEMA_SQL.replaceAll('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
 
@@ -2120,6 +2123,82 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       await expect(repository.admit(input))
         .rejects.toThrow(/expected generation 2.*next durable generation is 1/i);
       for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs', 'review_dispatch_outbox', 'review_gate_attempts']) {
+        expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
+      }
+    });
+
+    it('reconstructs a missing durable generation only from trusted exact-head recovery evidence', async () => {
+      const recovery = [{
+        generation: 1,
+        checkId: 10_001,
+        externalId: `${deriveReviewRunId(authoritativeAdmission().identity)}:a1`,
+        conclusion: 'failure' as const,
+        title: 'Review Yeti: review did not complete',
+      }];
+      const resolveGenerationRecovery = vi.fn(async () => recovery);
+      const { repository, client } = await createRepository({
+        lifecycleEvents: 'enabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      }, true);
+      const input = {
+        ...authoritativeAdmission('central-a2-after-state-loss'),
+        eventName: 'workflow_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 2,
+        retryRequested: true,
+        retryAfterExecutionAttempt: 1,
+      };
+
+      const admitted = await repository.admit(input);
+
+      expect(admitted.run.attempt).toBe(1);
+      expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+      expect((await dispatchState(client, admitted.run.runId)).outbox.execution_attempt).toBe(1);
+      expect((await client.query(`SELECT recovered_generation, worker_check_id, external_id, conclusion, title
+        FROM review_generation_recoveries WHERE run_id = $1`, [admitted.run.runId])).rows).toEqual([{
+        recovered_generation: 1,
+        worker_check_id: '10001',
+        external_id: `${admitted.run.runId}:a1`,
+        conclusion: 'failure',
+        title: 'Review Yeti: review did not complete',
+      }]);
+      expect((await client.query('SELECT review_generation, execution_attempt FROM review_gate_attempts')).rows)
+        .toEqual([{ review_generation: 1, execution_attempt: 2 }]);
+      expect(await lifecycleEvents(client, admitted.run.runId)).toEqual([
+        { eventKind: 'review.lifecycle.admission', sequence: 1,
+          data: { policy_digest: input.effectivePolicyDigest, stage: 'admission' } },
+        { eventKind: 'review.lifecycle.generation_reconciled', sequence: 2,
+          data: { evidence_pointers: ['github-check-run:10001:a1'],
+            policy_digest: input.effectivePolicyDigest,
+            retry_class: 'service_state_loss_reconciled', stage: 'admission' } },
+        { eventKind: 'review.lifecycle.queued', sequence: 3,
+          data: { policy_digest: input.effectivePolicyDigest, stage: 'queued' } },
+        { eventKind: 'review.lifecycle.retrying', sequence: 4,
+          data: { policy_digest: input.effectivePolicyDigest,
+            retry_class: 'same_identity_redelivery', stage: 'admission' } },
+      ]);
+    });
+
+    it('keeps an invalid external recovery ledger as a generation conflict with no durable writes', async () => {
+      const { repository, client } = await createRepository({
+        lifecycleEvents: 'disabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery: async () => { throw new ReviewGenerationRecoveryLedgerError(); },
+      });
+      const input = {
+        ...authoritativeAdmission('central-a2-invalid-ledger'),
+        eventName: 'workflow_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 2,
+        retryRequested: true,
+        retryAfterExecutionAttempt: 1,
+      };
+
+      await expect(repository.admit(input))
+        .rejects.toThrow(/expected generation 2.*next durable generation is 1/i);
+      for (const table of ['github_deliveries', 'prepared_review_policies', 'review_runs',
+        'review_dispatch_outbox', 'review_gate_attempts', 'review_generation_recoveries']) {
         expect((await client.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count).toBe(0);
       }
     });

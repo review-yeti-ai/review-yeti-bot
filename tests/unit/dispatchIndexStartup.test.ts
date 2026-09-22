@@ -270,6 +270,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.gateRepository.mock.invocationCallOrder[0]).toBeLessThan(mocks.authoritative.mock.invocationCallOrder[0]);
     expect(mocks.repository).toHaveBeenCalledExactlyOnceWith(mocks.pool, undefined, {
       lifecycleEvents: 'enabled',
+      resolveGenerationRecovery: expect.any(Function),
       validateAuthoritativeAdmission: mocks.validateAdmission,
       requireExpectedGeneration: false,
     });

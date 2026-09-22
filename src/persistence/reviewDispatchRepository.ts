@@ -30,6 +30,11 @@ import {
 } from './reviewEventRepository';
 import { getMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
+import { RECOVERABLE_FAILURE_TITLES } from '../review/reviewCheckIdentity';
+import {
+  ReviewGenerationRecoveryLedgerError,
+  type ReviewGenerationRecoveryEvidence,
+} from '../review/reviewGenerationRecovery';
 
 interface QueryResult {
   rows: any[];
@@ -118,6 +123,8 @@ export interface ReviewDispatchRepositoryOptions extends ReviewLifecycleEventsOp
   admissionValidationTimeoutMs?: number;
   /** Require central app-gate callers to supply the exact generation. */
   requireExpectedGeneration?: boolean;
+  /** Re-reads the App-owned GitHub worker ledger after proven service-state loss. */
+  resolveGenerationRecovery?: (input: ReviewAdmissionInput) => Promise<ReviewGenerationRecoveryEvidence[]>;
 }
 
 function constantTimeDigestEqual(expected: unknown, actual: string): boolean {
@@ -225,6 +232,31 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
     if (sha256(identity) !== sha256(input.identity)
       || input.effectivePolicyDigest !== prepared.policy.effectivePolicyDigest) {
       throw new Error('Authoritative admission does not match its prepared identity');
+    }
+  }
+}
+
+function validateGenerationRecovery(
+  input: ReviewAdmissionInput,
+  runId: string,
+  evidence: ReviewGenerationRecoveryEvidence[],
+): void {
+  const expected = input.expectedGeneration;
+  if (!input.centralActionDispatch || input.publicationMode !== 'app-gate'
+    || !input.authoritativeGate || input.retryRequested !== true
+    || expected === undefined || expected < 2
+    || input.retryAfterExecutionAttempt !== expected - 1
+    || evidence.length !== expected - 1) {
+    throw new ReviewGenerationConflictError(expected ?? 1, 1);
+  }
+  for (let index = 0; index < evidence.length; index += 1) {
+    const entry = evidence[index];
+    const generation = index + 1;
+    if (entry.generation !== generation || !Number.isSafeInteger(entry.checkId) || entry.checkId <= 0
+      || entry.externalId !== `${runId}:a${generation}`
+      || (entry.conclusion !== 'failure' && entry.conclusion !== 'action_required')
+      || !RECOVERABLE_FAILURE_TITLES.has(entry.title)) {
+      throw new ReviewGenerationConflictError(expected, 1);
     }
   }
 }
@@ -479,7 +511,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     this.lifecycleEventsEnabled = requireLifecycleEventsMode(options, 'Review dispatch repository');
     const timeoutMs = options.admissionValidationTimeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeoutMs)
-      || (options.validateAuthoritativeAdmission !== undefined && typeof options.validateAuthoritativeAdmission !== 'function')) {
+      || (options.validateAuthoritativeAdmission !== undefined && typeof options.validateAuthoritativeAdmission !== 'function')
+      || (options.resolveGenerationRecovery !== undefined && typeof options.resolveGenerationRecovery !== 'function')) {
       throw new Error('Invalid authoritative admission validation configuration');
     }
     this.admissionValidationTimeoutMs = Math.min(30_000, Math.max(250, timeoutMs));
@@ -556,6 +589,32 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     } finally { if (timer !== undefined) clearTimeout(timer); }
   }
 
+  private async resolveGenerationRecovery(
+    input: ReviewAdmissionInput,
+  ): Promise<ReviewGenerationRecoveryEvidence[]> {
+    const resolve = this.options.resolveGenerationRecovery;
+    if (!resolve) return [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => resolve(input)),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Review generation recovery evidence is unavailable')),
+            this.admissionValidationTimeoutMs,
+          );
+        }),
+      ]);
+    } catch (error) {
+      if (error instanceof ReviewGenerationRecoveryLedgerError) {
+        throw new ReviewGenerationConflictError(input.expectedGeneration ?? 1, 1);
+      }
+      throw new Error('Review generation recovery evidence is unavailable');
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   async admit(input: ReviewAdmissionInput): Promise<ReviewAdmission> {
     validateAdmission(input, this.options.requireExpectedGeneration === true);
     if (input.authoritativeGate && !this.options.validateAuthoritativeAdmission) {
@@ -572,6 +631,21 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       if (input.authoritativeGate) {
         await this.validateAuthoritativeAdmission(input);
         await savePreparedPublishingPolicy(client, input.authoritativeGate.prepared);
+      }
+      const identityDigest = sha256(input.identity);
+      const runId = deriveReviewRunId(input.identity);
+      let generationRecovery: ReviewGenerationRecoveryEvidence[] = [];
+      if ((input.expectedGeneration ?? 1) > 1 && input.retryRequested === true) {
+        const existingIdentity = await client.query(
+          'SELECT attempt FROM review_runs WHERE identity_digest = $1 FOR UPDATE',
+          [identityDigest],
+        );
+        if (existingIdentity.rows.length === 0) {
+          if (this.options.resolveGenerationRecovery) {
+            generationRecovery = await this.resolveGenerationRecovery(input);
+            validateGenerationRecovery(input, runId, generationRecovery);
+          }
+        }
       }
       const delivery = await client.query(
         `INSERT INTO github_deliveries
@@ -615,9 +689,6 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           run: fromRow(row),
         };
       }
-
-      const identityDigest = sha256(input.identity);
-      const runId = deriveReviewRunId(input.identity);
 
       let burstStartedAt = input.receivedAt;
       let availableAt = input.availableAt ?? input.receivedAt;
@@ -684,7 +755,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             burst_started_at, created_at, updated_at)
          VALUES
            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9, $11, $12,
-            'queued', 'admission', 0, '{}'::jsonb, $13, $14, $15,
+            'queued', 'admission', $24, '{}'::jsonb, $13, $14, $15,
             to_timestamp($16 / 1000.0), to_timestamp($17 / 1000.0), $18, $19,
             to_timestamp($23 / 1000.0), to_timestamp($16 / 1000.0), to_timestamp($16 / 1000.0))
          ON CONFLICT (identity_digest) DO UPDATE
@@ -762,6 +833,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           input.retryAfterExecutionAttempt ?? null,
           ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled,
           burstStartedAt,
+          generationRecovery.length,
         ],
       );
       const runRow = inserted.rows[0];
@@ -826,8 +898,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [input.deliveryId, runRow.run_id],
       );
       await client.query(
-        `INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, available_at, created_at, updated_at)
-         VALUES ($1, $2, 'pending', to_timestamp($5 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
+        `INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, execution_attempt, available_at, created_at, updated_at)
+         VALUES ($1, $2, 'pending', $6, to_timestamp($5 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
          ON CONFLICT (run_id) DO UPDATE
            SET status = 'pending', delivery_id = EXCLUDED.delivery_id,
                available_at = EXCLUDED.available_at, lease_owner = NULL,
@@ -860,8 +932,17 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 AND r.delivery_id = EXCLUDED.delivery_id
            )`,
         [runRow.run_id, input.deliveryId, input.receivedAt, runRow.retry_from_reaper_failure === true,
-          availableAt],
+          availableAt, generationRecovery.length],
       );
+      for (const evidence of generationRecovery) {
+        await client.query(
+          `INSERT INTO review_generation_recoveries
+             (run_id, recovered_generation, worker_check_id, external_id, conclusion, title, evidence, recovered_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, to_timestamp($8 / 1000.0))`,
+          [runRow.run_id, evidence.generation, evidence.checkId, evidence.externalId,
+            evidence.conclusion, evidence.title, JSON.stringify(evidence), input.receivedAt],
+        );
+      }
       if (input.authoritativeGate && ['queued', 'running'].includes(runRow.status)) {
         const gate = await PostgresReviewGateRepository.reserveInTransaction(
           client, runRow.run_id, input.authoritativeGate.expectedAppId, input.receivedAt);
@@ -869,6 +950,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       }
       await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.admission', input.receivedAt,
         { stage: 'admission', policy_digest: input.effectivePolicyDigest || input.identity.configDigest });
+      if (generationRecovery.length > 0) {
+        await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.generation_reconciled', input.receivedAt,
+          { stage: 'admission', retry_class: 'service_state_loss_reconciled',
+            evidence_pointers: generationRecovery.map((entry) => `github-check-run:${entry.checkId}:a${entry.generation}`) });
+      }
       await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.queued', input.receivedAt,
         { stage: 'queued', policy_digest: input.effectivePolicyDigest || input.identity.configDigest });
       if (Number(runRow.attempt || 0) > 0) {
