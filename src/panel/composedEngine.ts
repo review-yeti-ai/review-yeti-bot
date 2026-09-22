@@ -575,12 +575,38 @@ function buildSystemPrompt(repository: string): string {
   ].join('\n\n');
 }
 
-function buildPlanDirective(maxTasks: number, changedFilePaths: string[], expectedNonce: string): string {
+function buildPlanDirective(
+  maxTasks: number,
+  changedFilePaths: string[],
+  expectedNonce: string,
+  securityAuthPaths: string[] = [],
+): string {
   return [
     `=== PLAN TURN ===`,
     `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset files do not need their own task).`,
-    `Each task names an id matching [a-z][a-z0-9_-]* (for example "security-auth", not "T1"), a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
-    `Use at most ${maxTasks} tasks. Every non-documentation changed file must be covered by at least one task. Any security-sensitive path (auth, secrets, access control) MUST be covered by a task with dimension "security" -- this is checked and failed closed if missed.`,
+    // Ids are specified with positive examples ONLY. This line used to read
+    // '(for example "security-auth", not "T1")'. Naming the rejected form
+    // inside the instruction primes it: models emitted exactly `T1`..`T7`,
+    // which `validateTaskPlan` rejects as `malformed_ids`, failing the plan
+    // after its single corrective turn. Describe the shape wanted and show
+    // conforming ids; never quote a non-conforming one.
+    `Each task names an id matching [a-z][a-z0-9_-]* -- a short lowercase kebab-case slug naming what the task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape". Each task also names a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
+    `Use at most ${maxTasks} tasks. Every non-documentation changed file must be covered by at least one task.`,
+    // The security floor is enforced against `classifyPathByHeuristic`, a
+    // deterministic model-independent classification of the real changed
+    // paths, and a miss fails the whole plan closed with NO corrective turn
+    // (see validateTaskPlan rule 5). Asking the model to infer which paths are
+    // "security-sensitive" made it guess and miss -- an unrecoverable rejection
+    // for a knowable fact the engine already computed. So name the exact paths
+    // here. This does not soften the floor: the check still runs against the
+    // heuristic, never against what the plan claims about itself.
+    ...(securityAuthPaths.length > 0
+      ? [
+          `SECURITY FLOOR -- these exact path(s) are classified security-sensitive and EACH must appear in the \`paths\` of a task whose dimension is "security". A plan missing any of them is rejected outright with no retry: ${securityAuthPaths.join(', ')}.`,
+        ]
+      : [
+          `No changed path is classified security-sensitive, so no "security" dimension task is required by the security floor.`,
+        ]),
     `On an investigation turn, you may request exactly one read-only tool as {"tool":"tool_name","args":{}}. When ready, return the final plan object with the exact top-level fields "nonce" and "tasks" -- no other fields, no Markdown fences.`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
   ].join('\n');
@@ -999,7 +1025,15 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         role: 'user',
         content: [
           { type: 'text', text: staticPrefixText, cache_control: { type: 'ephemeral' } },
-          { type: 'text', text: buildPlanDirective(maxTasks, effectiveFilePaths, planNonce) },
+          {
+            type: 'text',
+            text: buildPlanDirective(
+              maxTasks,
+              effectiveFilePaths,
+              planNonce,
+              effectiveFilePaths.filter((path) => domainLanes[path] === 'security_auth'),
+            ),
+          },
         ],
       },
     ];
