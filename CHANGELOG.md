@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.0...v1.83.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **ci:** restore Dockerfile.bot matching Dockerfile for multiarch builds ([#957](https://github.com/review-yeti-ai/review-yeti-bot/issues/957)) ([d6bd76c](https://github.com/review-yeti-ai/review-yeti-bot/commit/d6bd76ccdf7131dff8b86d998fca0eeea3033046))
+
 ## [1.83.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.7...v1.83.0) (2026-09-22)
 
 
