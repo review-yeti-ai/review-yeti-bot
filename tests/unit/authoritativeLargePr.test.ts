@@ -188,7 +188,7 @@ describe('authoritative oversized PR fallback', () => {
     expect(applyPatch(base, reconstructed)).toBe(head);
   });
 
-  it('passes deterministic edit-work and synchronous timeout bounds to diff', async () => {
+  it('caps aggregate synchronous diff time below one second across 64 reconstructions', async () => {
     const actual = await vi.importActual<typeof import('diff')>('diff');
     const diffSpy = vi.mocked(structuredPatch);
     diffSpy.mockClear();
@@ -197,7 +197,21 @@ describe('authoritative oversized PR fallback', () => {
     const file = { ...files(1)[0], sha: blobSha(head), patch: null as never };
     await run(reconstructFixture(file, json(contentBody(file.filename, base)), json(contentBody(file.filename, head))));
     expect(diffSpy).toHaveBeenCalledOnce();
-    expect(diffSpy.mock.calls[0]?.[6]).toEqual({ context: 3, timeout: 100, maxEditLength: 500 });
+    expect(diffSpy.mock.calls[0]?.[6]).toEqual({ context: 3, timeout: 10, maxEditLength: 500 });
+    const timeout = (diffSpy.mock.calls[0]?.[6] as { timeout?: number } | undefined)?.timeout;
+    expect(64 * Number(timeout)).toBeLessThan(1_000);
+  });
+
+  it('percent-encodes each pinned-content path segment without encoding separators', async () => {
+    const path = 'src/needs encod?ng#100%.ts'; const base = 'old\n'; const head = 'new\n';
+    const file = { ...files(1)[0], filename: path, sha: blobSha(head), patch: null as never };
+    const f = reconstructFixture(file, json(contentBody(path, base)), json(contentBody(path, head)));
+    const result = await run(f);
+    expect(result.changedFiles).toEqual([{ path, patch: expect.stringMatching(/^@@ /u) }]);
+    expect(f.fetcher.mock.calls.slice(3, 5).map(([url]) => url)).toEqual([
+      `https://api.github.com/repos/example/candidate/contents/src/needs%20encod%3Fng%23100%25.ts?ref=${target.baseSha}`,
+      `https://api.github.com/repos/example/candidate/contents/src/needs%20encod%3Fng%23100%25.ts?ref=${target.headSha}`,
+    ]);
   });
 
   it('round-trips a greater-than-500-edit disjoint change through the full-replacement fallback', async () => {
