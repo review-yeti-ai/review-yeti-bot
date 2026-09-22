@@ -308,6 +308,28 @@ describe('authoritative prepared publishing worker', () => {
     })).toMatchObject({ valid: false, reason: 'invalid-evidence' });
   });
 
+  it('rejects a documentation-only completion whose raw verdict contradicts canonical arbitration', () => {
+    const f = fixture();
+    const completion = parseWorkerReviewCompletion(expectedEvent(f, {
+      version: 'WorkerReviewResult.v1', completedAt: COMPLETED,
+      personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }],
+      coverageComplete: true, quorumSatisfied: true, verdict: 'BLOCK',
+    }));
+    const { version: _version, result: _result, ...expectedCoordinates } = completion;
+
+    expect(deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates,
+      expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+      coverageComplete: true,
+      quorumSatisfied: true,
+    })).toMatchObject({
+      valid: false,
+      reason: 'invalid-evidence',
+      message: 'worker verdict BLOCK disagrees with canonical verdict SHIP',
+    });
+  });
+
   it('keeps composed policy on the deterministic admitted persona roster', async () => {
     const f = fixture({ reviewEngine: 'composed' });
     const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()

@@ -458,8 +458,7 @@ function isDocumentationOnlyCompletion(result: WorkerReviewResult): boolean {
   return lane?.id === 'documentation-only'
     && lane.decision === 'APPROVE'
     && lane.status === 'COMPLETE'
-    && lane.findings.length === 0
-    && !hasInfrastructureFailure(lane);
+    && lane.findings.length === 0;
 }
 
 function noReviewableContentAuditDigest(
