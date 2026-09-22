@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveReleaseImageTag } from '../../scripts/resolve-release-image-tag.mjs';
 
 const workflow = fs.readFileSync(
   path.join(process.cwd(), '.github/workflows/ci-cd.yaml'),
@@ -16,6 +17,29 @@ function workflowJob(name: string): string {
 }
 
 describe('GHCR publish contract', () => {
+  it.each([
+    ['chore(main): release 1.83.7', 'v1.83.7'],
+    ['chore(main): release 1.83.7 (#972)', 'v1.83.7'],
+    ['chore(main): release 1.83.7 (#1)', 'v1.83.7'],
+  ])('resolves the release image tag from GitHub merge subject %j', (subject, expected) => {
+    expect(resolveReleaseImageTag(subject)).toBe(expected);
+  });
+
+  it.each([
+    'chore(main): release 1.83',
+    'chore(main): release 1.83.7 trailing',
+    'chore(main): release 1.83.7 (#0)',
+    'fix: release 1.83.7 (#972)',
+  ])('does not publish a semver image tag for non-release subject %j', (subject) => {
+    expect(resolveReleaseImageTag(subject)).toBe('');
+  });
+
+  it('uses the tested resolver in the publish workflow', () => {
+    const merge = workflowJob('publish-ghcr');
+    expect(merge).toContain('node scripts/resolve-release-image-tag.mjs "$subject"');
+    expect(merge).not.toContain('^chore\\(main\\):\\ release');
+  });
+
   it('publishes digest-pinned images to ghcr.io/review-yeti-ai without Docker Hub or DOKS', () => {
     expect(workflow).toContain('publish-ghcr:');
     expect(workflow).toContain('GHCR_REGISTRY: ghcr.io/review-yeti-ai');
