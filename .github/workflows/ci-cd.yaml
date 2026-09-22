@@ -242,7 +242,11 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            # review-yeti-ai's Blacksmith org provisions ARM runners
+            # (verified live: runner group 'blacksmith runners …' picked up in
+            # ~1.5 min; x86 blacksmith labels stay queued, so amd64 keeps
+            # ubuntu-latest).
+            runner: blacksmith-2vcpu-ubuntu-2404-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -260,6 +264,15 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        if: matrix.arch == 'amd64'
+      # Blacksmith persistent layer cache (docs.blacksmith.sh/blacksmith-caching/docker-builds):
+      # bot, worker and legacy-runtime share their npm/base layers, so they share one
+      # cache-key. Layer state lives on sticky disks; no cache blobs are exported.
+      - name: Set up Blacksmith builder (node-family images)
+        if: matrix.arch == 'arm64'
+        uses: useblacksmith/setup-docker-builder@v2
+        with:
+          cache-key: review-yeti-node-images-arm64
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
@@ -282,6 +295,7 @@ jobs:
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
       - id: worker
+        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -299,12 +313,29 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,mode=max,scope=ghcr-worker-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ghcr-worker-${{ matrix.arch }}
-
+      - id: worker-arm
+        if: matrix.arch == 'arm64'
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          file: Dockerfile.worker
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
+          labels: |
+            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
+            org.opencontainers.image.description=Review Yeti public worker
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}-${{ matrix.arch }}
       - id: bot
+        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: Dockerfile
+          file: Dockerfile.bot
           platforms: linux/${{ matrix.arch }}
           push: true
           provenance: true
@@ -315,8 +346,22 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,mode=max,scope=ghcr-bot-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ghcr-bot-${{ matrix.arch }}
-
+      - id: bot-arm
+        if: matrix.arch == 'arm64'
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          file: Dockerfile.bot
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: true
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}-${{ matrix.arch }}
       - id: legacy-runtime
+        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -333,13 +378,36 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,mode=max,scope=ghcr-legacy-runtime-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ghcr-legacy-runtime-${{ matrix.arch }}
-
+      - id: legacy-runtime-arm
+        if: matrix.arch == 'arm64'
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          file: Dockerfile.legacy-runtime
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
+          labels: |
+            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}-${{ matrix.arch }}
+      - id: resolve-digests
+        name: Resolve the pushed image digests for either leg
+        run: |
+          set -euo pipefail
+          legacy="${{ steps.legacy-runtime.outputs.digest || steps.legacy-runtime-arm.outputs.digest }}"
+          worker="${{ steps.worker.outputs.digest || steps.worker-arm.outputs.digest }}"
+          echo "LEGACY_DIGEST=$legacy" >> "$GITHUB_ENV"
+          echo "WORKER_DIGEST=$worker" >> "$GITHUB_ENV"
       - name: Prove the published legacy-runtime image
-        run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ steps.legacy-runtime.outputs.digest }}
+        run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ env.LEGACY_DIGEST }}
 
       - name: Run immutable worker self-test
         env:
-          WORKER_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-worker@${{ steps.worker.outputs.digest }}
+          WORKER_IMAGE: ${{ env.GHCR_REGISTRY }}/review-yeti-worker@${{ env.WORKER_DIGEST }}
         run: |
           set -euo pipefail
           [[ "$WORKER_IMAGE" =~ ^${GHCR_REGISTRY}/review-yeti-worker@sha256:[a-f0-9]{64}$ ]]
@@ -348,7 +416,13 @@ jobs:
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             "$WORKER_IMAGE" --self-test
 
+      - name: Set up Blacksmith builder (operator image)
+        if: matrix.arch == 'arm64'
+        uses: useblacksmith/setup-docker-builder@v2
+        with:
+          cache-key: review-yeti-operator-arm64
       - id: operator
+        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -363,6 +437,20 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
+      - id: operator-arm
+        if: matrix.arch == 'arm64'
+        uses: useblacksmith/build-push-action@v2
+        with:
+          context: .
+          file: Dockerfile.operator
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: true
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
+          tags: |
+            ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}-${{ matrix.arch }}
 
   publish-ghcr:
     needs: [publish-ghcr-arch]
