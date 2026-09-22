@@ -45,7 +45,7 @@ function policyFixture() {
       stall_ms: '20000',
       budget: { lane_deadline_ms: '960000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
-        { name: 'bifrost', enabled: true, base_url: 'https://llm-gateway.example.com/v1', api_key_env: 'BIFROST_PR_REVIEW_API_KEY', model: 'ollama/glm-5.3-flash', compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 90000, stream: true, reasoning_effort: 'medium', max_tokens: 32768 },
+        { name: 'bifrost', enabled: true, base_url: 'https://gateway-internal.netguysolutions.com/v1', api_key_env: 'BIFROST_PR_REVIEW_API_KEY', model: 'ollama/glm-5.3-flash', compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 90000, stream: true, reasoning_effort: 'medium', max_tokens: 32768 },
         {
           name: 'openrouter-primary',
           enabled: true,
@@ -178,7 +178,7 @@ test('Example API resolves Bifrost primary plus OpenRouter fleet fallback and a 
   });
 
   assert.deepEqual(calls, [
-    'https://llm-gateway.example.com/v1/chat/completions',
+    'https://gateway-internal.netguysolutions.com/v1/chat/completions',
     'https://openrouter.ai/api/v1/chat/completions',
   ]);
   assert.deepEqual(result.healthy, ['bifrost', 'openrouter-primary']);
@@ -459,7 +459,7 @@ test('the smoke suite probes every configured transport without logging credenti
   const result = await runSmoke({ policy: policyFixture(), env, fetchImpl, log: (line) => logs.push(line) });
 
   assert.deepEqual(calls.map((call) => call.url), [
-    'https://llm-gateway.example.com/v1/chat/completions',
+    'https://gateway-internal.netguysolutions.com/v1/chat/completions',
     'https://openrouter.test/api/v1/chat/completions',
   ]);
   assert.deepEqual(result.healthy, EXPECTED_TRANSPORT_ORDER);
