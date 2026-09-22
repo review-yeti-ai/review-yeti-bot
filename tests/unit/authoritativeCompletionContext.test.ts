@@ -92,6 +92,36 @@ describe('service-owned authoritative completion context', () => {
     expect(context.coverage.quorumSatisfied).toBe(true);
   });
 
+  it('fails closed when no enabled immutable persona covers an analyzable source path', async () => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'src/main.lua', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      expectedFileCount: 1,
+    });
+
+    redacted(await rejected(f.context(f.gate)));
+  });
+
+  it('preserves the admitted roster for the audited zero-lane documentation exemption', async () => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'docs/operator-guide.rst', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      expectedFileCount: 1,
+    });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage).toMatchObject({
+      expectedPersonaIds: f.stored.expectedPersonaIds,
+      coverageComplete: true,
+      quorumSatisfied: true,
+    });
+  });
+
   it('does not turn a trusted required-lane contract into successful worker evidence', async () => {
     const f = fixture();
     const context = await f.context(f.gate);
