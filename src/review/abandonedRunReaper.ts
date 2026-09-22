@@ -33,6 +33,8 @@ export interface AbandonedRunReaperOptions {
   checkClientFor(run: AbandonedPublishingRun, signal: AbortSignal): Promise<ReaperCheckClient>;
   /** Authenticated with the worker-token owner's App JWT, never PR metadata. */
   publisherAppId: number;
+  /** Selects the installed publisher App for an explicitly routed repository. */
+  publisherAppIdFor?: (run: AbandonedPublishingRun) => number;
   workerId: string;
   now?: () => number;
   limit?: number;
@@ -110,7 +112,11 @@ export class AbandonedRunReaper {
             const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
             bounded.throwIfAborted();
             const client = await this.options.checkClientFor(run, bounded);
-            const outcome = await client.failAbandonedCheck(run, this.options.publisherAppId, bounded);
+            const publisherAppId = this.options.publisherAppIdFor?.(run) ?? this.options.publisherAppId;
+            if (!Number.isSafeInteger(publisherAppId) || publisherAppId <= 0) {
+              throw new Error('repository publisher App id is invalid');
+            }
+            const outcome = await client.failAbandonedCheck(run, publisherAppId, bounded);
             bounded.throwIfAborted();
             return outcome;
           },

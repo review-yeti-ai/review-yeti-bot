@@ -54,6 +54,42 @@ interface ActionDispatchEnvironment {
   REVIEW_YETI_MCP_RATE_LIMIT_MAX?: string;
 }
 
+export interface CentralExternalTargetConfig {
+  repositories: ReadonlyMap<string, number>;
+  appCredentials?: { appId: string; privateKey: string };
+}
+
+/**
+ * Parses the one explicitly supported public target and its dedicated App.
+ * Both the admission service and the worker-token control plane use this exact
+ * parser so lookup, read-token, check-token, and fail-closed publication routing
+ * cannot drift onto different GitHub App identities.
+ */
+export function centralExternalTargetConfigFromEnv(
+  environment: NodeJS.ProcessEnv | Pick<ActionDispatchEnvironment,
+    'ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES'
+    | 'REVIEW_YETI_PUBLIC_TARGET_APP_ID'
+    | 'REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY'>,
+): CentralExternalTargetConfig {
+  const configuredRepositories = environment.ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES;
+  if (configuredRepositories === undefined) return { repositories: new Map() };
+  if (configuredRepositories !== SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY) {
+    throw new Error('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES must contain only explicit supported repositories');
+  }
+  const publicAppId = environment.REVIEW_YETI_PUBLIC_TARGET_APP_ID?.trim();
+  const publicPrivateKey = environment.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?.trim().replace(/\\n/g, '\n');
+  if (!publicAppId || !/^[1-9][0-9]*$/u.test(publicAppId)
+    || !Number.isSafeInteger(Number(publicAppId)) || !publicPrivateKey) {
+    throw new Error('Dedicated public-target GitHub App credentials are required for external dispatch');
+  }
+  return {
+    repositories: new Map([
+      [SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY, SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID],
+    ]),
+    appCredentials: { appId: publicAppId, privateKey: publicPrivateKey },
+  };
+}
+
 export function actionDispatchConfigFromEnv(
   environment: NodeJS.ProcessEnv | ActionDispatchEnvironment = process.env,
 ): ActionDispatchConfig {
@@ -63,26 +99,9 @@ export function actionDispatchConfigFromEnv(
   else if (value === 'true') requireExpectedGeneration = true;
   else throw new Error('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION must be exactly true or false');
 
-  const configuredRepositories = environment.ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES;
-  let centralExternalRepositories: ReadonlyMap<string, number> = new Map();
-  if (configuredRepositories !== undefined) {
-    if (configuredRepositories !== SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY) {
-      throw new Error('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES must contain only explicit supported repositories');
-    }
-    centralExternalRepositories = new Map([
-      [SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY, SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID],
-    ]);
-  }
-  let centralExternalAppCredentials: ActionDispatchConfig['centralExternalAppCredentials'];
-  if (centralExternalRepositories.size > 0) {
-    const publicAppId = environment.REVIEW_YETI_PUBLIC_TARGET_APP_ID?.trim();
-    const publicPrivateKey = environment.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?.trim().replace(/\\n/g, '\n');
-    if (!publicAppId || !/^[1-9][0-9]*$/u.test(publicAppId)
-      || !Number.isSafeInteger(Number(publicAppId)) || !publicPrivateKey) {
-      throw new Error('Dedicated public-target GitHub App credentials are required for external dispatch');
-    }
-    centralExternalAppCredentials = { appId: publicAppId, privateKey: publicPrivateKey };
-  }
+  const external = centralExternalTargetConfigFromEnv(environment);
+  const centralExternalRepositories = external.repositories;
+  const centralExternalAppCredentials = external.appCredentials;
 
   const mcpEnabledVal = environment.REVIEW_YETI_MCP_ENABLED;
   let mcpEnabled = false;

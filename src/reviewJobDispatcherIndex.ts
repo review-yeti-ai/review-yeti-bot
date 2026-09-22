@@ -21,6 +21,7 @@ import { GitHubInstallationClient } from './github/installationClient';
 import { AbandonedRunReaper } from './review/abandonedRunReaper';
 import { DelegatedFailureReader } from './k8s/delegatedFailureReader';
 import { initTelemetry } from './telemetry';
+import { centralExternalTargetConfigFromEnv } from './config/actionDispatchConfig';
 import {
   closeDispatcherMetricsServer,
   createDispatcherMetricsServer,
@@ -36,6 +37,15 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   // has no publishing ownership, even when it runs under another installed App.
   const appId = String(environment.GITHUB_APP_ID || '').trim();
   const privateKey = String(environment.GITHUB_APP_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
+  const external = centralExternalTargetConfigFromEnv(environment);
+  const credentialsForRepository = (owner: string, repo: string) => {
+    const dedicated = external.appCredentials;
+    return dedicated && external.repositories.has(`${owner}/${repo}`)
+      ? dedicated
+      : { appId, privateKey };
+  };
+  const publisherAppIdForRepository = (owner: string, repo: string): number =>
+    Number(credentialsForRepository(owner, repo).appId);
   const publisher = appId && privateKey ? await getGitHubAppIdentity({ appId, privateKey }) : undefined;
   const store = new PostgresStore();
   await store.initialize();
@@ -76,6 +86,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       })(),
       appId,
       privateKey,
+      credentialsForRepository,
     })
     : undefined;
   if (!runSecretProvisioner) {
@@ -127,6 +138,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     repository,
     workerId: config.workerId,
     publisherAppId: publisher.id,
+    publisherAppIdFor: (run) => publisherAppIdForRepository(run.owner, run.repo),
     // REL-896: defaults to 1 (see f84caf14 -- "One attempt per loop keeps the
     // sweep bounded without starving dispatch"). The reaper is awaited
     // serially before the dispatch engine on every loop, and each reap mints
@@ -138,8 +150,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     limit: config.abandonedReaperLimit,
     delegatedFailureReader,
     checkClientFor: async (run, signal) => {
+      const credentials = credentialsForRepository(run.owner, run.repo);
       const minted = await getGitHubAppRepositoryPublishToken({
-        appId, privateKey, owner: run.owner, repo: run.repo, signal,
+        ...credentials, owner: run.owner, repo: run.repo, signal,
       });
       return new GitHubInstallationClient({ token: minted.token });
     },
