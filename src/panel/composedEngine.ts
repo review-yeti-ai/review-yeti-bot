@@ -887,7 +887,8 @@ async function runTaskWorkPhase(input: {
 /**
  * `no_budget` — the task never started because the composed turn budget was spent.
  * `exhausted` — the task ran and still produced no verdict.
- * Both are failed lanes. Neither is an approval.
+ * These records stay off `personas` and `optionalFailures`, so their ids do not
+ * enter the published roster. A missing id keeps the review incomplete.
  */
 export function unreportedLaneFailure(
   task: ReviewTask,
@@ -1044,14 +1045,14 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     const personas: PersonaLaneResult[] = [];
     const optionalFailures: PanelResult['optionalFailures'] = [];
+    const unreportedLanes: NonNullable<PanelResult['unreportedLanes']> = [];
     let planUsageFolded = false;
 
     for (let i = 0; i < planOutcome.tasks.length; i++) {
       const task = planOutcome.tasks[i];
       if (remainingBudget() <= 0) {
-        // The task never started. Say so. A failed lane still blocks publication;
-        // it is not an approval, and later tasks still run.
-        optionalFailures.push(unreportedLaneFailure(task, 'no_budget'));
+        // Never started. Record the reason off the published roster and keep walking.
+        unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
         continue;
       }
       const outcome = await runTaskWorkPhase({
@@ -1120,10 +1121,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
         ];
       } else {
-        // The task ran and returned no verdict. That is malformed output, not a
-        // spent budget and not an approval. Later tasks still run. A failed
-        // lane blocks publication.
-        optionalFailures.push(unreportedLaneFailure(task, 'exhausted'));
+        // Ran and returned no verdict. Off the published roster, so it cannot
+        // satisfy coverage, and it is not an approval. Later tasks still run.
+        unreportedLanes.push(unreportedLaneFailure(task, 'exhausted'));
       }
     }
 
@@ -1133,6 +1133,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       applicablePersonaIds: planOutcome.tasks.map((t) => t.id),
       personas,
       optionalFailures,
+      unreportedLanes,
       zeroLaneNonEvidence: false,
       panelWallClockMs: Date.now() - panelStartedAt,
       // One composed context is one reviewer. `quorum` here describes this engine's own

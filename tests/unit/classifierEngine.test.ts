@@ -975,6 +975,8 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         expect(classifyPathByHeuristic('src/models/associations.ts')).not.toBe('security_auth');
         expect(classifyPathByHeuristic('src/helpers/escape_hatch.ex')).not.toBe('security_auth');
         expect(classifyPathByHeuristic('docs/authors.md')).toBe('docs_assets');
+        expect(classifyPathByHeuristic('plugins/ct-docs/skills/session-skill-retro/SKILL.md')).toBe('docs_assets');
+        expect(classifyPathByHeuristic('clusters/doks-nyc1/flux-system/policies.yaml')).toBe('security_auth');
       });
 
       it('includes domainLanes in classifyReviewScope result with model enrichment, heuristic protection, and phantom path filtering', async () => {

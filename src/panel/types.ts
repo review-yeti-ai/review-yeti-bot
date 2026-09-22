@@ -134,6 +134,16 @@ export interface PanelResult {
     failureClass?: WorkerFailureClass;
     failureReason?: string;
   }>;
+  /**
+   * Tasks that did not produce a verdict and are deliberately absent from
+   * `personas` and `optionalFailures`. Their ids must not enter the published
+   * roster. A missing id keeps the roster invalid, so a partial plan cannot ship.
+   */
+  unreportedLanes?: Array<{
+    id: string;
+    error: string;
+    failureClass: WorkerFailureClass;
+  }>;
   /** Final path/config/classifier-selected roster used by the panel execution. */
   applicablePersonaIds: string[];
   zeroLaneNonEvidence?: boolean;
