@@ -292,13 +292,55 @@ export type { OpenAITransportConfig };
 const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
+ * Coverage the conclusion may independently verify. Structural: the caller
+ * passes the same projection the check summary renders, so a SHIP verdict and
+ * its own published coverage line can never disagree at the conclusion
+ * boundary without the conclusion noticing.
+ */
+export interface PublishingConclusionCoverage {
+  mode: string;
+  rosterValid: boolean;
+  quorumSatisfied: boolean;
+  fullPanelComplete: boolean;
+}
+
+/**
  * Fail closed. `SHIP` with no blocking finding is the only success. Everything
  * else -- BLOCK, FIX_FIRST, an unrecognised verdict, or a SHIP that still carries
  * a P0/P1 -- concludes `failure`.
+ *
+ * The run's own coverage projection is a required argument: the worker's single
+ * production call site must always pass it, so dropping the argument is a
+ * compile error rather than a silent re-enable of the false-approval shape
+ * this guard exists to close. When the caller supplies the run's own coverage projection, a SHIP must also
+ * survive that projection: a `panel` (or composed, which projects as `panel`)
+ * verdict over a roster the run itself reports as invalid or incomplete is
+ * fail-closed `failure`, and a `fast_ship`/`documentation_only` verdict without
+ * quorum is likewise not approvable. This is the last gate between a verdict
+ * string and a green check: production once published a SHIP whose own coverage
+ * line denied the quorum it was standing on. Modes without a panel-style quorum
+ * contract (`not_applicable`, `zero_lane`) are deliberately unguarded here --
+ * `not_applicable` concludes `neutral` before this function runs, and a
+ * `zero_lane` SHIP cannot be constructed by arbitration (quorum requires a
+ * positive expected lane count), so guarding them would only re-state existing
+ * invariants while inviting drift.
  */
-export function publishingConclusion(verdict: string, blockingFindingCount: number): 'success' | 'failure' {
+export function publishingConclusion(verdict: string, blockingFindingCount: number,
+  coverage: PublishingConclusionCoverage): 'success' | 'failure' {
   if (blockingFindingCount > 0) return 'failure';
-  return String(verdict).toUpperCase() === 'SHIP' ? 'success' : 'failure';
+  if (String(verdict).toUpperCase() !== 'SHIP') return 'failure';
+  if (coverage) {
+    if (coverage.mode === 'panel'
+      && !(coverage.rosterValid === true && coverage.quorumSatisfied === true
+        && coverage.fullPanelComplete === true)) {
+      return 'failure';
+    }
+    if ((coverage.mode === 'fast_ship' || coverage.mode === 'documentation_only')
+      && coverage.quorumSatisfied !== true) {
+      return 'failure';
+    }
+  }
+  return 'success';
 }
 
 type RawPublicationLane = Parameters<typeof computeArbitration>[0][number];
@@ -311,6 +353,8 @@ interface RawPublicationRoster {
   completedLaneCount: number;
   failedLaneCount: number;
   rosterValid: boolean;
+  missingConfiguredLaneCount: number;
+  malformedReturnedLaneCount: number;
 }
 
 /**
@@ -326,6 +370,14 @@ export interface PublishingRosterBoundsProjection {
   returnedLaneCountValid: boolean;
   completedLaneCount: number;
   failedLaneCount: number;
+  /** Configured lanes that returned nothing at all (see
+   * `IncompletePanelEvidence.missingConfiguredLaneCount`). Zero when the
+   * configured roster itself is invalid. */
+  missingConfiguredLaneCount: number;
+  /** Returned lanes outside the configured roster, duplicates, or any lane
+   * at all when the configured roster is invalid (see
+   * `IncompletePanelEvidence.malformedReturnedLaneCount`). */
+  malformedReturnedLaneCount: number;
 }
 
 function hasDuplicate(values: string[]): boolean {
@@ -364,6 +416,31 @@ export function projectPublishingRosterBounds(panelResult: PanelResult): Publish
   }));
   const allLanes: RawPublicationLane[] = [...completed, ...failedLanes];
 
+  // Split an invalid roster into its two causal shapes so recovery policy can
+  // distinguish a transient silent dropout (every returned lane is clean, some
+  // configured lane just never answered) from a broken panel output (ids the
+  // configured roster never asked for). Both counts walk the same configured
+  // and returned sets the roster validity check walks, so they cannot drift
+  // from it. `missingConfiguredLaneCount` is zero when the configured roster
+  // itself is invalid because "which lanes are missing" is then unknowable,
+  // and every returned lane counts as malformed in that case.
+  const configuredSet = new Set(validConfiguredRoster(panelResult.applicablePersonaIds)
+    ? (panelResult.applicablePersonaIds as string[]) : []);
+  const returnedSet = new Set(allLanes.map((lane) => lane.id || ''));
+  const missingConfiguredLaneCount = configuredSet.size > 0
+    ? [...configuredSet].filter((id) => !returnedSet.has(id)).length
+    : 0;
+  const seenReturned = new Set<string>();
+  let malformedReturnedLaneCount = 0;
+  for (const lane of allLanes) {
+    const id = lane.id || '';
+    if (configuredSet.size === 0 || !isRosterId(id) || !configuredSet.has(id) || seenReturned.has(id)) {
+      malformedReturnedLaneCount += 1;
+    } else {
+      seenReturned.add(id);
+    }
+  }
+
   return {
     lanes: allLanes.slice(0, MAX_PERSONAS),
     returnedIds: allLanes.map((lane) => lane.id || ''),
@@ -371,6 +448,8 @@ export function projectPublishingRosterBounds(panelResult: PanelResult): Publish
     returnedLaneCountValid: allLanes.length <= MAX_PERSONAS,
     completedLaneCount: boundedLaneCount(completed.length),
     failedLaneCount: boundedLaneCount(failures.length),
+    missingConfiguredLaneCount,
+    malformedReturnedLaneCount,
   };
 }
 
@@ -392,6 +471,8 @@ function rawPublicationRoster(
     returnedLaneCountValid,
     completedLaneCount,
     failedLaneCount,
+    missingConfiguredLaneCount,
+    malformedReturnedLaneCount,
   } = projectPublishingRosterBounds(panelResult);
 
   if (isFastShip) {
@@ -403,6 +484,8 @@ function rawPublicationRoster(
       completedLaneCount: 0,
       failedLaneCount,
       rosterValid: returnedLaneCountValid,
+      missingConfiguredLaneCount,
+      malformedReturnedLaneCount,
     };
   }
 
@@ -429,6 +512,8 @@ function rawPublicationRoster(
     completedLaneCount,
     failedLaneCount,
     rosterValid,
+    missingConfiguredLaneCount,
+    malformedReturnedLaneCount,
   };
 }
 
@@ -1266,14 +1351,14 @@ export async function runPublishingReviewWorker(
         ? ('failure' as const)
         : notApplicable
           ? ('neutral' as const)
-          : publishingConclusion(verdict, blocking.length);
+          : publishingConclusion(verdict, blocking.length, coverage);
       // A valid roster with failed reviewer calls and no findings is not a
       // code verdict. Preserve failure, but use the existing exact-head
       // recovery protocol instead of publishing an unrepeatable BLOCK while
       // leaving the durable run queued. Never relabel findings, malformed
       // rosters, missing diff coverage, or authoritative service results.
       const firstFailedLane = panelResult.optionalFailures?.[0];
-      const recoverablePanelFailure = firstFailedLane !== undefined && isRecoverableIncompletePanel({
+      const recoverablePanelFailure = isRecoverableIncompletePanel({
         authoritative,
         unreadableDiffCount: unreadable.length,
         mode: rawRoster.mode,
@@ -1282,13 +1367,21 @@ export async function runPublishingReviewWorker(
         quorumSatisfied: canonical.quorumSatisfied,
         rawFindingCount: rawFindings.length,
         canonicalFindingCount: findings.length,
+        missingConfiguredLaneCount: rawRoster.missingConfiguredLaneCount,
+        malformedReturnedLaneCount: rawRoster.malformedReturnedLaneCount,
       })
         // `runPersona` assigns a coded `failureClass` at the exact point it observed the lane's
         // terminal error (REL-892 finding 2); prefer that over re-deriving one from the free-form
         // `error` string here. `classifyFailure` remains the fallback for a lane that failed
-        // before this classification existed in the code path.
-        ? (firstFailedLane.failureClass ?? classifyFailure(firstFailedLane.error))
+        // before this classification existed in the code path. A silently missing lane reported
+        // nothing at all, so there is no lane-level error to classify: the configured lane never
+        // returned, which is a transport-shaped provider dropout, not a worker defect.
+        ? (firstFailedLane
+          ? (firstFailedLane.failureClass ?? classifyFailure(firstFailedLane.error))
+          : 'transport')
         : undefined;
+      const silentlyMissingLanes = recoverablePanelFailure !== undefined
+        && rawRoster.failedLaneCount === 0 && rawRoster.missingConfiguredLaneCount > 0;
 
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
       const pFindings = p.findings || [];
@@ -1406,55 +1499,6 @@ export async function runPublishingReviewWorker(
           }),
         ];
 
-    if (recoverablePanelFailure) {
-      // Failed-lane error strings may contain provider payloads. Keep their
-      // classification and bounded counts, not their free-form text. Everything else here --
-      // transport/resolved model, aggregate telemetry, and per-lane identity/classification/usage
-      // -- carries no provider payload and is safe to publish on the fail-closed check.
-      await reportTerminalFailure(new Error('An optional reviewer did not complete.'), checkId, {
-        failureClass: recoverablePanelFailure,
-        coverage,
-        panelEvidence: {
-          requestedModel: transport.model,
-          resolvedModel: resolvedTransportModel,
-          telemetry: { totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs },
-          failedLanes,
-        },
-      });
-    } else await deps.checkClient.completeCheck({
-      owner: identity.owner,
-      repo: identity.repoName,
-      checkId,
-      conclusion,
-      title,
-      summary: summaryParts.join('\n\n'),
-      text: renderFindingsMarkdown(findings, blocking.length),
-      // Redundant today and deliberately kept: `sanitizeFinding` already drops
-      // any finding whose path is not in `changedFiles`, so this filter removes
-      // nothing. It stays because GitHub rejects an annotation whose path is not
-      // in the diff and fails the whole PATCH -- which would take the verdict
-      // with it -- so a future change to arbitration must not be able to turn a
-      // stray path into a lost verdict. It is a guard, not a behaviour: do not
-      // write a test that claims it moves a finding to the text body.
-      annotations: findings
-        .filter((finding) => changedPaths.has(String(finding?.path || '')))
-        .slice(0, 50)
-        .map((finding) => {
-          const line = Number.isSafeInteger(Number(finding?.line)) && Number(finding?.line) > 0
-            ? Number(finding.line)
-            : 1;
-          const severity = String(finding?.severity || 'P2').toUpperCase();
-          return {
-            path: String(finding.path),
-            start_line: line,
-            end_line: line,
-            annotation_level: BLOCKING_SEVERITIES.has(severity) ? 'failure' as const : 'warning' as const,
-            title: `${severity}: ${String(finding?.title || 'finding').slice(0, 120)}`,
-            message: String(finding?.body || finding?.title || 'No detail provided.').slice(0, 4_000),
-          };
-        }),
-    });
-
     const completedAt = new Date(now()).toISOString();
     // Resolved lazily, only where shadow evidence is actually consumed (the non-authoritative
     // evidence branch below) -- never on the authoritative `reportReviewResult` path, which never
@@ -1559,9 +1603,72 @@ export async function runPublishingReviewWorker(
           ...(typeof panelWallClockMs === 'number' ? { panelWallClockMs } : {}) },
       }).result;
     };
-    if (authoritative) {
-      await reportReviewResult(buildReviewResult());
+    if (recoverablePanelFailure) {
+      // Failed-lane error strings may contain provider payloads. Keep their
+      // classification and bounded counts, not their free-form text. Everything else here --
+      // transport/resolved model, aggregate telemetry, and per-lane identity/classification/usage
+      // -- carries no provider payload and is safe to publish on the fail-closed check.
+      await reportTerminalFailure(new Error(silentlyMissingLanes
+        ? 'A configured reviewer lane did not return a result.'
+        : 'An optional reviewer did not complete.'), checkId, {
+        failureClass: recoverablePanelFailure,
+        coverage,
+        panelEvidence: {
+          requestedModel: transport.model,
+          resolvedModel: resolvedTransportModel,
+          telemetry: { totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs },
+          failedLanes,
+        },
+      });
+    } else {
+      // Publication-order invariant: the authoritative completion is durably
+      // recorded BEFORE this worker publishes its raw check conclusion. The
+      // service's gate publisher replays the durably recorded terminal desired
+      // state onto the `Review Yeti Gate` check; a raw check that reaches
+      // GitHub first leaves a one-shot gate reader looking at raw success next
+      // to a still-pending gate -- the exact-head window where the gate raced
+      // the durable verdict. Reporting first also means a lost completion
+      // acknowledgement can never leave a green raw check over an unrecorded
+      // verdict: the catch path's fail-closed terminal failure is then the
+      // only published conclusion.
+      if (authoritative) {
+        await reportReviewResult(buildReviewResult());
+      }
+      await deps.checkClient.completeCheck({
+      owner: identity.owner,
+      repo: identity.repoName,
+      checkId,
+      conclusion,
+      title,
+      summary: summaryParts.join('\n\n'),
+      text: renderFindingsMarkdown(findings, blocking.length),
+      // Redundant today and deliberately kept: `sanitizeFinding` already drops
+      // any finding whose path is not in `changedFiles`, so this filter removes
+      // nothing. It stays because GitHub rejects an annotation whose path is not
+      // in the diff and fails the whole PATCH -- which would take the verdict
+      // with it -- so a future change to arbitration must not be able to turn a
+      // stray path into a lost verdict. It is a guard, not a behaviour: do not
+      // write a test that claims it moves a finding to the text body.
+      annotations: findings
+        .filter((finding) => changedPaths.has(String(finding?.path || '')))
+        .slice(0, 50)
+        .map((finding) => {
+          const line = Number.isSafeInteger(Number(finding?.line)) && Number(finding?.line) > 0
+            ? Number(finding.line)
+            : 1;
+          const severity = String(finding?.severity || 'P2').toUpperCase();
+          return {
+            path: String(finding.path),
+            start_line: line,
+            end_line: line,
+            annotation_level: BLOCKING_SEVERITIES.has(severity) ? 'failure' as const : 'warning' as const,
+            title: `${severity}: ${String(finding?.title || 'finding').slice(0, 120)}`,
+            message: String(finding?.body || finding?.title || 'No detail provided.').slice(0, 4_000),
+          };
+        }),
+    });
     }
+
     // A not-applicable run claims no verdict, so there is no evidence to report:
     // reporting it as success would be a false approval and as failure a false
     // rejection. It is omitted, exactly like a skipped check.

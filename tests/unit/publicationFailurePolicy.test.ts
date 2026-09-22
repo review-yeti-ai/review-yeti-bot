@@ -15,11 +15,48 @@ const incomplete: IncompletePanelEvidence = {
   quorumSatisfied: false,
   rawFindingCount: 0,
   canonicalFindingCount: 0,
+  missingConfiguredLaneCount: 0,
+  malformedReturnedLaneCount: 0,
 };
 
 describe('incomplete publication evidence policy', () => {
   it('recognizes a no-findings failed panel without granting approval', () => {
     expect(isRecoverableIncompletePanel(incomplete)).toBe(true);
+  });
+
+  it('recognizes silently missing lanes: clean returned subset, no failures, no findings', () => {
+    // The production shape: 1 of 3 configured lanes returned, every returned
+    // id is a clean roster member, nothing failed, nothing was found, and the
+    // roster is invalid only because configured lanes are absent. A fresh
+    // attempt can plausibly complete it; a terminal BLOCK cannot be repeated.
+    expect(isRecoverableIncompletePanel({
+      ...incomplete,
+      rosterValid: false,
+      failedLaneCount: 0,
+      missingConfiguredLaneCount: 2,
+    })).toBe(true);
+  });
+
+  it('does not reclassify a silently missing shape with any malformed return', () => {
+    expect(isRecoverableIncompletePanel({
+      ...incomplete,
+      rosterValid: false,
+      failedLaneCount: 0,
+      missingConfiguredLaneCount: 2,
+      malformedReturnedLaneCount: 1,
+    })).toBe(false);
+  });
+
+  it('does not reclassify an invalid configured roster as silently missing', () => {
+    // `missingConfiguredLaneCount` is defined as zero when the configured
+    // roster itself is invalid, so this shape cannot be a known-lane dropout.
+    expect(isRecoverableIncompletePanel({
+      ...incomplete,
+      rosterValid: false,
+      failedLaneCount: 0,
+      missingConfiguredLaneCount: 0,
+      malformedReturnedLaneCount: 3,
+    })).toBe(false);
   });
 
   it.each<[string, Partial<IncompletePanelEvidence>]>([

@@ -278,20 +278,69 @@ describe('OpenAI gateway is the admitted transport', () => {
 });
 
 describe('fail-closed conclusion mapping', () => {
+  // The coverage argument is required at the production call site (compile
+  // enforced), so the mapping tests exercise verdict/blocking semantics on top
+  // of a fully verified coverage projection.
+  const fullCoverage = {
+    mode: 'panel',
+    rosterValid: true,
+    quorumSatisfied: true,
+    fullPanelComplete: true,
+  };
+
   it('passes only a clean SHIP', () => {
-    expect(publishingConclusion('SHIP', 0)).toBe('success');
+    expect(publishingConclusion('SHIP', 0, fullCoverage)).toBe('success');
   });
 
   it.each([['BLOCK', 0], ['FIX_FIRST', 0], ['', 0], ['UNKNOWN_VERDICT', 0], ['SHIP', 1]] as const)(
     'fails verdict=%s blocking=%s',
     (verdict, blocking) => {
-      expect(publishingConclusion(verdict, blocking)).toBe('failure');
+      expect(publishingConclusion(verdict, blocking, fullCoverage)).toBe('failure');
     },
   );
 
   it('fails a SHIP that still carries a blocking finding', () => {
     // A verdict and its findings can disagree; the findings win.
-    expect(publishingConclusion('SHIP', 2)).toBe('failure');
+    expect(publishingConclusion('SHIP', 2, fullCoverage)).toBe('failure');
+  });
+});
+
+describe('fail-closed conclusion coverage guard', () => {
+  const coverage = {
+    mode: 'panel',
+    rosterValid: true,
+    quorumSatisfied: true,
+    fullPanelComplete: true,
+  };
+
+  it('keeps a SHIP whose own panel coverage it can verify', () => {
+    expect(publishingConclusion('SHIP', 0, coverage)).toBe('success');
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['invalid roster', { rosterValid: false }],
+    ['incomplete panel', { fullPanelComplete: false }],
+    ['denied quorum', { quorumSatisfied: false }],
+  ])('fails a panel SHIP with %s', (_label, partial) => {
+    // A SHIP verdict next to coverage that denies the panel completed is the
+    // production shape that published an approvable check over a review that
+    // never ran to completion. The run's own coverage line wins.
+    expect(publishingConclusion('SHIP', 0, { ...coverage, ...partial })).toBe('failure');
+  });
+
+  it('fails a fast-ship SHIP without quorum but keeps an approved one', () => {
+    expect(publishingConclusion('SHIP', 0, { ...coverage, mode: 'fast_ship', quorumSatisfied: false })).toBe('failure');
+    expect(publishingConclusion('SHIP', 0, { ...coverage, mode: 'fast_ship' })).toBe('success');
+    expect(publishingConclusion('SHIP', 0, { ...coverage, mode: 'documentation_only', quorumSatisfied: false }))
+      .toBe('failure');
+  });
+
+  it('does not gate modes without a panel-style quorum contract', () => {
+    // `not_applicable` concludes neutral before the conclusion runs and a
+    // `zero_lane` SHIP cannot be constructed by arbitration; the guard must
+    // not restate those invariants under its own mode list.
+    expect(publishingConclusion('SHIP', 0, { ...coverage, mode: 'zero_lane', fullPanelComplete: false }))
+      .toBe('success');
   });
 });
 
