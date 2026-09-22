@@ -309,7 +309,10 @@ export interface PublishingConclusionCoverage {
  * else -- BLOCK, FIX_FIRST, an unrecognised verdict, or a SHIP that still carries
  * a P0/P1 -- concludes `failure`.
  *
- * When the caller supplies the run's own coverage projection, a SHIP must also
+ * The run's own coverage projection is a required argument: the worker's single
+ * production call site must always pass it, so dropping the argument is a
+ * compile error rather than a silent re-enable of the false-approval shape
+ * this guard exists to close. When the caller supplies the run's own coverage projection, a SHIP must also
  * survive that projection: a `panel` (or composed, which projects as `panel`)
  * verdict over a roster the run itself reports as invalid or incomplete is
  * fail-closed `failure`, and a `fast_ship`/`documentation_only` verdict without
@@ -323,7 +326,7 @@ export interface PublishingConclusionCoverage {
  * invariants while inviting drift.
  */
 export function publishingConclusion(verdict: string, blockingFindingCount: number,
-  coverage?: PublishingConclusionCoverage): 'success' | 'failure' {
+  coverage: PublishingConclusionCoverage): 'success' | 'failure' {
   if (blockingFindingCount > 0) return 'failure';
   if (String(verdict).toUpperCase() !== 'SHIP') return 'failure';
   if (coverage) {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { buildWorkerFailureDiagnostics } from '../../src/review/workerCompletion';
+import { buildWorkerFailureDiagnostics, type WorkerCompletionAdapter } from '../../src/review/workerCompletion';
 import { runPublishingReviewWorker, type PublishingCheckClient, type PublishingReviewDeps } from '../../src/cli/publishingReview';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
@@ -52,12 +52,15 @@ function fixture() {
   };
   const source = { baseSha: BASE, headSha: HEAD, diff: DIFF,
     diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 as const };
-  const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => undefined) };
+  const checkClient = {
+  createCheck: vi.fn<PublishingCheckClient['createCheck']>(async () => 4242),
+  completeCheck: vi.fn<PublishingCheckClient['completeCheck']>(async () => undefined),
+};
   const sourceLoader = vi.fn<NonNullable<PublishingReviewDeps['sourceLoader']>>().mockResolvedValue(source);
   const panelRunner = vi.fn<NonNullable<PublishingReviewDeps['panelRunner']>>().mockResolvedValue(panel);
   const client = { complete: vi.fn().mockRejectedValue(new Error('A test must never invoke a provider')) };
   const reportReviewResult = vi.fn<WorkerReviewCompletionAdapter['reportReviewResult']>().mockResolvedValue(undefined);
-  const legacyFailure = vi.fn(async () => undefined);
+  const legacyFailure = vi.fn<WorkerCompletionAdapter['reportTerminalFailure']>(async () => undefined);
   const now = vi.fn().mockReturnValueOnce(START).mockReturnValue(START + 1_000);
   const deps: PublishingReviewDeps = { checkClient, sourceLoader, panelRunner, client, now,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const), reviewCompletion: { reportReviewResult } };
@@ -179,6 +182,49 @@ describe('authoritative prepared publishing worker', () => {
     await runPublishingReviewWorker(f.env, f.deps);
     expect(order).toEqual(['completion', 'raw-check']);
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
+  });
+
+  it('preserves failure when a configured lane never returned (silently missing)', async () => {
+    // The silently-missing shape is the newest recoverable evidence: the
+    // configured roster lists a lane that returned nothing at all -- no error,
+    // no finding, no lane record. The wiring under test is the derivation
+    // chain a hand-built-input test cannot pin: the panel's configured/returned
+    // sets must produce missingConfiguredLaneCount > 0 with zero failed and
+    // zero malformed lanes, or the unrepeatable terminal BLOCK comes back.
+    const f = fixture();
+    delete f.env.REVIEW_AUTHORITATIVE_GATE;
+    delete f.env.REVIEW_PREPARED_CONFIG_JSON;
+    delete f.deps.reviewCompletion;
+    f.deps.completion = {
+      reportTerminalFailure: f.legacyFailure,
+      reportTerminalSuccess: vi.fn(async () => undefined),
+    };
+    f.env.REVIEW_PERSONAS = 'licensing';
+    // Quorum cannot be satisfied while a configured lane is absent, and the
+    // returned set is missing exactly one configured lane with zero failures.
+    f.panel.quorum = { ...f.panel.quorum, satisfied: false };
+    f.panel.personas = f.panel.personas.slice(1);
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    // Fail closed: the raw check is a terminal failure, never green.
+    expect(f.checkClient.completeCheck).toHaveBeenCalledTimes(1);
+    const rawCall = f.checkClient.completeCheck.mock.calls[0] as unknown as [
+      { conclusion: string; title: string; summary: string },
+    ];
+    const raw = rawCall[0];
+    expect(raw.conclusion).toBe('failure');
+    expect(raw.title).toBe('Review Yeti: review did not complete');
+    expect(raw.summary).toContain('A configured reviewer lane did not return a result.');
+    // The durable terminal event classifies the silent dropout as transport.
+    expect(f.legacyFailure).toHaveBeenCalledTimes(1);
+    const eventCall = f.legacyFailure.mock.calls[0] as unknown as [
+      { failureClass: string; diagnostics: { recoverableIncompletePanel?: boolean } },
+    ];
+    const event = eventCall[0];
+    expect(event.failureClass).toBe('transport');
+    expect(event.diagnostics.recoverableIncompletePanel).toBe(true);
+    expect(f.reportReviewResult).not.toHaveBeenCalled();
   });
 
   it('fails closed when a SHIP verdict stands on coverage that denies quorum', async () => {

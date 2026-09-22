@@ -278,20 +278,30 @@ describe('OpenAI gateway is the admitted transport', () => {
 });
 
 describe('fail-closed conclusion mapping', () => {
+  // The coverage argument is required at the production call site (compile
+  // enforced), so the mapping tests exercise verdict/blocking semantics on top
+  // of a fully verified coverage projection.
+  const fullCoverage = {
+    mode: 'panel',
+    rosterValid: true,
+    quorumSatisfied: true,
+    fullPanelComplete: true,
+  };
+
   it('passes only a clean SHIP', () => {
-    expect(publishingConclusion('SHIP', 0)).toBe('success');
+    expect(publishingConclusion('SHIP', 0, fullCoverage)).toBe('success');
   });
 
   it.each([['BLOCK', 0], ['FIX_FIRST', 0], ['', 0], ['UNKNOWN_VERDICT', 0], ['SHIP', 1]] as const)(
     'fails verdict=%s blocking=%s',
     (verdict, blocking) => {
-      expect(publishingConclusion(verdict, blocking)).toBe('failure');
+      expect(publishingConclusion(verdict, blocking, fullCoverage)).toBe('failure');
     },
   );
 
   it('fails a SHIP that still carries a blocking finding', () => {
     // A verdict and its findings can disagree; the findings win.
-    expect(publishingConclusion('SHIP', 2)).toBe('failure');
+    expect(publishingConclusion('SHIP', 2, fullCoverage)).toBe('failure');
   });
 });
 
