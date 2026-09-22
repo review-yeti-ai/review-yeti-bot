@@ -7,3 +7,7 @@ export * from './cancelReview';
 export * from './watchReviewProgress';
 export * from './preflightDiffReview';
 export * from './explainFinding';
+export * from './generateFixDiff';
+export * from './disputeFinding';
+export * from './attestPrGate';
+export * from './replyReviewThread';
