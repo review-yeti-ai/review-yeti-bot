@@ -347,4 +347,33 @@ describe('KubernetesRunSecretProvisioner', () => {
     expect(mintToken).toHaveBeenCalledWith(expected);
     expect(mintReadToken).toHaveBeenCalledWith(expected);
   });
+
+  it('uses repository-selected App credentials for both least-privilege worker tokens', async () => {
+    const client = {
+      createNamespacedSecret: vi.fn(async () => undefined),
+      readNamespacedSecret: vi.fn(async () => { throw { code: 404 }; }),
+    };
+    const mintToken = vi.fn(async () => ({
+      token: 'ghs_public_publish', expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      permissions: { checks: 'write' },
+    }));
+    const mintReadToken = vi.fn(async () => ({
+      token: 'ghs_public_read', expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      permissions: { contents: 'read', pull_requests: 'read' },
+    }));
+    const credentialsForRepository = vi.fn(() => ({ appId: '7654321', privateKey: 'public-key' }));
+    const subject = new KubernetesRunSecretProvisioner({
+      client, appId: '4385771', privateKey: 'primary-key', credentialsForRepository,
+      mintToken: mintToken as never, mintReadToken: mintReadToken as never,
+    });
+
+    await subject.provision({ ...request, owner: 'review-yeti-ai', repo: 'review-yeti-bot' });
+
+    expect(credentialsForRepository).toHaveBeenCalledExactlyOnceWith('review-yeti-ai', 'review-yeti-bot');
+    const expected = {
+      appId: '7654321', privateKey: 'public-key', owner: 'review-yeti-ai', repo: 'review-yeti-bot',
+    };
+    expect(mintToken).toHaveBeenCalledExactlyOnceWith(expected);
+    expect(mintReadToken).toHaveBeenCalledExactlyOnceWith(expected);
+  });
 });
