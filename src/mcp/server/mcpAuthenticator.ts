@@ -120,7 +120,7 @@ export class McpAuthenticator {
           authType: 'oidc',
           tokenDigest,
           isAdmin: false,
-          allowedRepositories: repo ? new Set([repo]) : null,
+          allowedRepositories: repo ? new Set([repo]) : new Set(),
           claims,
           callerId: `oidc:${claims.repository}:${claims.run_id || tokenDigest}`,
         };

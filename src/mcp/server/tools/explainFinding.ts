@@ -108,29 +108,18 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
               );
               rows = res.rows;
 
-              if (context?.caller && !context.caller.isAdmin && context.caller.allowedRepositories) {
-                rows = rows.filter((r) => {
-                  const target = `${r.owner}/${r.repo}`.toLowerCase();
-                  return context.caller!.allowedRepositories!.has(target);
-                });
+              if (context?.caller && !context.caller.isAdmin) {
+                if (!context.caller.allowedRepositories || context.caller.allowedRepositories.size === 0) {
+                  rows = [];
+                } else {
+                  rows = rows.filter((r) => {
+                    const target = `${r.owner}/${r.repo}`.toLowerCase();
+                    return context.caller!.allowedRepositories!.has(target);
+                  });
+                }
               }
             } catch {
               // Table or join may not exist in mock environment
-            }
-          }
-
-          // Fallback to direct completion table query for lightweight test mocks
-          if (rows.length === 0) {
-            try {
-              const fallbackRes = await deps.queryableDatabase.query(
-                `SELECT c.payload
-                   FROM review_worker_completions c
-                  ORDER BY c.created_at DESC
-                  LIMIT 20`
-              );
-              rows = fallbackRes.rows;
-            } catch {
-              // Ignore table existence errors
             }
           }
 

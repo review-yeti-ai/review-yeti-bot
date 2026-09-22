@@ -98,7 +98,7 @@ export function createCancelReviewTool(deps: CancelReviewDependencies = {}) {
                 SET status = 'terminal',
                     lease_owner = NULL,
                     lease_expires_at = NULL,
-                    updated_at = to_timestamp($3 / 1000.0)
+                    updated_at = to_timestamp($2 / 1000.0)
               WHERE run_id = $1`,
             [runId, now]
           );

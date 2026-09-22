@@ -820,7 +820,30 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       expect(data.citations).toEqual([]);
     });
 
-    it('TC-EXPL-005: Cleanly returns not-found response when database query throws', async () => {
+    it('TC-EXPL-005: Denies cross-tenant finding retrieval for caller without repository access', async () => {
+      const foreignCaller = {
+        authType: 'oidc',
+        tokenDigest: 'abc',
+        isAdmin: false,
+        allowedRepositories: new Set(['other-org/other-repo']),
+        callerId: 'oidc:other-org/other-repo:1',
+      };
+      const tool = createExplainFindingTool({ queryableDatabase: seededMockDb });
+      const result = await tool.execute(
+        {
+          finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          question: 'What is this finding about?',
+        },
+        { caller: foreignCaller as any, sessionId: 's1' }
+      );
+
+      const data = JSON.parse((result.content[0] as any).text);
+      expect(data.satisfies_requirement).toBeNull();
+      expect(data.explanation).toContain('was not found in the review ledger');
+      expect(data.citations).toEqual([]);
+    });
+
+    it('TC-EXPL-006: Cleanly returns not-found response when database query throws', async () => {
       const failingDb = {
         query: vi.fn().mockRejectedValue(new Error('relation review_worker_completions does not exist')),
       };
