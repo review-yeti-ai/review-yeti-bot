@@ -1,0 +1,13 @@
+name: bs-probe-matrix
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [blacksmith-4vcpu-ubuntu-2404, blacksmith-2vcpu-ubuntu-2404, blacksmith-4vcpu-ubuntu-2404-arm, blacksmith-2vcpu-ubuntu-2404-arm, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 4
+    steps:
+      - run: echo "label=${{ matrix.label }} arch=$(uname -m)"
