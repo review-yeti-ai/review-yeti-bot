@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.82.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.6...v1.82.7) (2026-09-22)
+
+
+### Bug Fixes
+
+* complete oversized PR reviews with bounded GitHub file evidence ([e33d181](https://github.com/review-yeti-ai/review-yeti-bot/commit/e33d181071b288a993ba2d0866ba6833b87ba14a))
+* **review:** bound reconstructed diff CPU ([aaa94ba](https://github.com/review-yeti-ai/review-yeti-bot/commit/aaa94ba6d82ee415c406a2fb9114d4e7ca674779))
+* **review:** complete oversized PR evidence ([8352d83](https://github.com/review-yeti-ai/review-yeti-bot/commit/8352d8321e7a8f35615db78e34e533ea912c9376))
+
 ## [1.82.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.5...v1.82.6) (2026-09-22)
 
 
