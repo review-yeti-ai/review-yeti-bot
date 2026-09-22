@@ -49,7 +49,10 @@ describe('GHCR publish contract', () => {
 
   it('uses the tested resolver in the publish workflow', () => {
     const merge = workflowJob('publish-ghcr');
-    expect(merge).toContain('node scripts/resolve-release-image-tag.mjs "$subject"');
+    expect(merge).toContain('tag="$(node scripts/resolve-release-image-tag.mjs "$subject")"');
+    expect(merge).toContain('if [[ -n "$tag" ]]');
+    expect(merge).toContain('echo "tag=$tag" >> "$GITHUB_OUTPUT"');
+    expect(merge).toContain('steps.version.outputs.tag');
     expect(merge).not.toContain('^chore\\(main\\):\\ release');
   });
 
