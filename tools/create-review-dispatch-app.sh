@@ -20,8 +20,8 @@
 # What this does, end to end, on YOUR Mac under YOUR gh login (org owner):
 #   1. Starts a tiny localhost listener for the manifest-flow redirect.
 #   2. Opens a browser page that auto-submits the App manifest to GitHub
-#      (name ct-review-dispatch, App-registration union: actions/checks/
-#      contents/issues/pull_requests:write plus metadata:read, no webhook,
+#      (name ct-review-dispatch, App-registration union: actions:read plus
+#      checks/contents/issues/pull_requests:write and metadata:read, no webhook,
 #      private). Runtime tokens narrow that union by repository and permission.
 #   3. You click "Create GitHub App" on GitHub. GitHub redirects to localhost
 #      with a one-time code.
@@ -58,7 +58,7 @@ MANIFEST="$(jq -cn --arg name "$APP_NAME" --arg redirect "$REDIRECT" '{
   redirect_url: $redirect,
   public: false,
   default_permissions: {
-    actions: "write",
+    actions: "read",
     checks: "write",
     contents: "write",
     pull_requests: "write",

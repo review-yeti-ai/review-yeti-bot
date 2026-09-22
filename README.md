@@ -101,10 +101,10 @@ default-branch caller bytes before admitting work. It also requires the
 two-step SHA-pinned ingress-App shape, one coordinate-only POST, and no extra
 API writes, checkout, PAT, or ambient `github.token` fallback.
 
-The runtime target App used by the central review workflow requests
-`Actions: write` because a SHIP verdict dispatches the target `validate.yml`
-workflow. The receiver-only validation App and central tooling App remain
-separately scoped to their read-only responsibilities.
+The runtime target App used by the central review workflow requests only
+`Actions: read` for evidence inspection. A Review Yeti verdict is terminal:
+`SHIP` publishes review evidence and does not dispatch target workflows or
+trigger CI, merge, deployment, or release activity.
 
 The public external dispatch caller requires only the ingress App identity pair:
 

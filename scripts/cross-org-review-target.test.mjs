@@ -252,15 +252,16 @@ test('central workflows use a separate exact public-target App boundary', () => 
   }
 });
 
-test('public target App authorizes and fails closed on the SHIP workflow dispatch', () => {
+test('Review Yeti verdict publication cannot trigger target repository workflows', () => {
   const reusable = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
+  const exampleorgTokenStep = reusable.match(
+    /- name: Mint Review Yeti App token for exampleorg target[\s\S]*?(?=\n\s+- name: Mint Review Yeti App token for exact public target)/u,
+  )?.[0] ?? '';
   const publicTokenStep = reusable.match(
     /- name: Mint Review Yeti App token for exact public target[\s\S]*?(?=\n\s+- name: Mint Review Yeti App token for central tooling)/u,
   )?.[0] ?? '';
-  assert.match(publicTokenStep, /permission-actions:\s*write/u);
-  const handoffStep = reusable.match(
-    /- name: Trigger target repository CI validation on SHIP[\s\S]*?(?=\n\s+- name: Enforce exact-head Review Yeti verdict)/u,
-  )?.[0] ?? '';
-  assert.match(handoffStep, /gh workflow run validate\.yml/u);
-  assert.doesNotMatch(handoffStep, /\|\|\s*\{/u);
+  assert.match(exampleorgTokenStep, /permission-actions:\s*read/u);
+  assert.match(publicTokenStep, /permission-actions:\s*read/u);
+  assert.doesNotMatch(reusable, /Trigger target repository CI validation on SHIP/u);
+  assert.doesNotMatch(reusable, /gh workflow run/u);
 });

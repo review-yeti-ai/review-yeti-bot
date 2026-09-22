@@ -698,9 +698,11 @@ test('App setup documentation preserves route-specific least privilege', () => {
   assert.match(docs, /Install the \*\*Public target App\*\* only on\s+`review-yeti-ai\/review-yeti-bot`/u);
   assert.doesNotMatch(docs, /Add all \*\*Consumer Repositories\*\*/u);
   assert.doesNotMatch(docs, /## Installing the App on Repositories/u);
-  assert.match(docs, /Internal exampleorg App registration:[\s\S]*?`Actions`, `Checks`, `Contents`,\s+`Issues`, and `Pull requests` \*\*Read and write\*\*/u);
+  assert.match(docs, /Internal exampleorg App registration:[\s\S]*?`Actions` \*\*Read-only\*\*[\s\S]*?`Checks`, `Contents`,\s+`Issues`, and `Pull requests` \*\*Read and write\*\*/u);
   assert.match(docs, /Central tooling token \(not an App registration\):[\s\S]*`Actions` and `Contents` \*\*Read-only\*\*/u);
-  for (const permission of ['actions', 'checks', 'contents', 'issues', 'pull_requests']) {
+  assert.match(helper, /actions: "read"/u);
+  assert.match(targetToken, /permission-actions: read/u);
+  for (const permission of ['checks', 'contents', 'issues', 'pull_requests']) {
     assert.match(helper, new RegExp(`${permission}: "write"`, 'u'), `helper is missing ${permission}:write App grant`);
     assert.match(targetToken, new RegExp(`permission-${permission.replace('_', '-')}: write`, 'u'), `runtime target token is missing ${permission}:write`);
   }

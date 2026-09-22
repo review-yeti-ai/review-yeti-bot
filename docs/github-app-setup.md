@@ -31,16 +31,17 @@ repository and the listed subset through `actions/create-github-app-token`'s
 
 | Identity or token | Repository scope | Token permissions requested |
 | :--- | :--- | :--- |
-| Internal exampleorg target App (`CT_REVIEW_BOT_APP_*`) | Admitted `exampleorg/*` target repositories | `Actions: write`, `Checks: write`, `Contents: write`, `Issues: write`, `Pull requests: write` for same-owner review/check publication. |
+| Internal exampleorg target App (`CT_REVIEW_BOT_APP_*`) | Admitted `exampleorg/*` target repositories | `Actions: read`, `Checks: write`, `Contents: write`, `Issues: write`, `Pull requests: write` for same-owner review/check publication and evidence reads. |
 | Central tooling token (`CT_REVIEW_BOT_APP_*`) | `exampleorg/example-review-actions` only for the external route | A narrowed token requesting `Actions: read` and `Contents: read`; central validation and tooling never use the public target token. |
-| Review Yeti target App (`REVIEW_YETI_PUBLIC_TARGET_APP_*`) | The App installation may cover the reviewer organization's repositories; this route requests a token narrowed to exactly `review-yeti-ai/review-yeti-bot` | `Actions: write`, `Checks: write`, `Contents: read`, `Issues: write`, `Pull requests: write` for target reads, check publication, and post-SHIP `validate.yml` dispatch. |
+| Review Yeti target App (`REVIEW_YETI_PUBLIC_TARGET_APP_*`) | The App installation may cover the reviewer organization's repositories; this route requests a token narrowed to exactly `review-yeti-ai/review-yeti-bot` | `Actions: read`, `Checks: write`, `Contents: read`, `Issues: write`, `Pull requests: write` for target reads and review/check publication. |
 | Public ingress App (`REVIEW_YETI_DISPATCH_APP_*`) | Exactly `exampleorg/example-review-actions` | `Contents: write` only (plus mandatory `Metadata: read`); no `Actions`, `Checks`, `Issues`, or `Pull requests` permission. |
 
-For the external route, the public target App is the only boundary that has
-`Actions: write`. The ingress App submits one coordinate-only
-`repository_dispatch`; it cannot dispatch workflows, read central files, or
-publish checks. The internal exampleorg App row applies only to the
-same-owner fleet and is never installed on the public target organization.
+For the external route, the public target App has only `Actions: read`. The
+ingress App submits one coordinate-only `repository_dispatch`; it cannot
+dispatch workflows, read central files, or publish checks. A `SHIP` verdict
+does not trigger another workflow. The internal exampleorg App row applies
+only to the same-owner fleet and is never installed on the public target
+organization.
 
 > [!NOTE]
 > No Account, Organization, or User permissions are required. Keep permissions strictly at the repository level.
@@ -84,8 +85,8 @@ provision the public ingress App.
 The checked-in `tools/create-review-dispatch-app.sh` provisions the internal
 `CT_REVIEW_BOT_APP_*` identity, not this ingress identity. Keep its installation
 and secrets separate. The public target App must be provisioned independently
-with `Actions: write`; no ingress or central-tooling manifest should copy that
-permission.
+with `Actions: read`; no review identity should receive workflow-dispatch
+authority.
 
 ---
 
@@ -104,12 +105,13 @@ If you prefer using the GitHub web interface:
    * Public ingress App registration: `Contents` **Read and write** and
      `Metadata` **Read-only**;
      no `Actions`, `Checks`, `Issues`, or `Pull requests` permission.
-   * Public target App registration: `Actions`, `Checks`, `Issues`, and
-     `Pull requests` **Read and write**, `Contents` **Read-only**, and
-     `Metadata` **Read-only**.
-   * Internal exampleorg App registration: `Actions`, `Checks`, `Contents`,
-     `Issues`, and `Pull requests` **Read and write**, plus `Metadata`
-     **Read-only**. This is the App-level union used by same-owner targets.
+   * Public target App registration: `Actions` and `Contents` **Read-only**;
+     `Checks`, `Issues`, and `Pull requests` **Read and write**; and `Metadata`
+     **Read-only**.
+   * Internal exampleorg App registration: `Actions` **Read-only**;
+     `Checks`, `Contents`, `Issues`, and `Pull requests` **Read and write**;
+     plus `Metadata` **Read-only**. This is the App-level union used by
+     same-owner targets.
    * Central tooling token (not an App registration): the workflow narrows the
      internal App to the exact `example-review-actions` repository and requests only
      `Actions` and `Contents` **Read-only** for that short-lived token.
@@ -160,9 +162,9 @@ separate boundaries:
   `REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY` identify the Review Yeti App. Its
   installation may cover the reviewer organization's repositories, but central
   requests a token narrowed to the exact public
-  `review-yeti-ai/review-yeti-bot` repository for target PR reads, check
-  publication, and the post-SHIP `validate.yml` dispatch (`Actions: write`),
-  never for central tooling;
+  `review-yeti-ai/review-yeti-bot` repository for target PR reads and check
+  publication (`Actions: read`), never for central tooling or target workflow
+  dispatch;
 * `REVIEW_YETI_DISPATCH_APP_ID` /
   `REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY` identify an ingress App installed only
   on `exampleorg/example-review-actions`. The public caller can submit the
@@ -217,7 +219,7 @@ In your GitHub Actions workflows, use the official `actions/create-github-app-to
     private-key: ${{ secrets.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY }}
     owner: review-yeti-ai
     repositories: review-yeti-bot
-    permission-actions: write
+    permission-actions: read
     permission-checks: write
     permission-contents: read
     permission-issues: write
