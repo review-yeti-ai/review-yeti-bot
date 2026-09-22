@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.82.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.4...v1.82.5) (2026-09-22)
+
+
+### Bug Fixes
+
+* **mcp:** govern exact-head review triggers ([5ce2471](https://github.com/review-yeti-ai/review-yeti-bot/commit/5ce24719070563b7c91007c9097045c0c25b1956))
+* **mcp:** govern exact-head review triggers ([16f6568](https://github.com/review-yeti-ai/review-yeti-bot/commit/16f65680886ca9fd49d05f2f607ea757c8c6f376))
+
 ## [1.82.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.3...v1.82.4) (2026-09-22)
 
 
