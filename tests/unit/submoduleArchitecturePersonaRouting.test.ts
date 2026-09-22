@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { isSubmoduleEntry, isArchitecturePersona } from '../../src/panel/panelEngine';
+import {
+  isSubmoduleEntry,
+  isArchitecturePersona,
+  personaCoversFile,
+} from '../../src/panel/panelEngine';
 import { deriveApplicablePersonas } from '../../src/review/personaApplicability';
 import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domainIndex';
 
 describe('Submodule Architecture Persona Routing', () => {
   describe('isSubmoduleEntry', () => {
-    it('identifies gitlink mode 160000 entries as submodules', () => {
+    it('identifies gitlink mode 160000 entries across all field variants as submodules', () => {
       expect(isSubmoduleEntry({ path: 'ct-dashboard', mode: '160000' })).toBe(true);
       expect(isSubmoduleEntry({ path: 'cisco-cdr', newMode: '160000' })).toBe(true);
       expect(isSubmoduleEntry({ path: 'ct-meta', old_mode: '160000' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'ct-meta', oldMode: '160000' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'ct-meta', new_mode: '160000' })).toBe(true);
     });
 
     it('identifies submodule flags as submodules', () => {
@@ -38,6 +44,56 @@ describe('Submodule Architecture Persona Routing', () => {
       expect(isArchitecturePersona({ id: 'documentation', charter: 'builtin:documentation' })).toBe(false);
       expect(isArchitecturePersona({ id: 'qual-lane', charter: 'builtin:consistency' })).toBe(false);
       expect(isArchitecturePersona(null)).toBe(false);
+    });
+  });
+
+  describe('personaCoversFile', () => {
+    const archPersona = { id: 'architecture', name: 'Architecture', paths: ['arch/**', 'system/**'] };
+    const secPersona = { id: 'security', name: 'Security', paths: ['auth/**', 'crypto/**'] };
+
+    it('routes submodule gitlinks to architecture persona even when paths do not match', () => {
+      const submoduleFile = { path: 'ct-dashboard', mode: '160000' };
+      expect(personaCoversFile(archPersona, submoduleFile)).toBe(true);
+      expect(personaCoversFile(secPersona, submoduleFile)).toBe(false);
+    });
+
+    it('matches paths normally for architecture persona on standard files', () => {
+      expect(personaCoversFile(archPersona, { path: 'arch/topology.md', mode: '100644' })).toBe(true);
+      expect(personaCoversFile(archPersona, { path: 'other/random.ts', mode: '100644' })).toBe(false);
+    });
+
+    it('scopes changedFiles in runPersona such that submodule changes belong to arch lane only', () => {
+      const changedFiles = [
+        { path: 'ct-dashboard', mode: '160000' },
+        { path: 'auth/login.ts', mode: '100644' },
+      ];
+
+      const archScoped = changedFiles.filter((f) => personaCoversFile(archPersona, f));
+      const secScoped = changedFiles.filter((f) => personaCoversFile(secPersona, f));
+
+      expect(archScoped.map((f) => f.path)).toEqual(['ct-dashboard']);
+      expect(secScoped.map((f) => f.path)).toEqual(['auth/login.ts']);
+    });
+
+    it('handles null and undefined files safely', () => {
+      expect(personaCoversFile(archPersona, null)).toBe(false);
+      expect(personaCoversFile(archPersona, undefined)).toBe(false);
+    });
+  });
+
+  describe('unmatched path filtering in executePersonaPanel', () => {
+    it('excludes submodule gitlink entries from the unmatched paths assertion', () => {
+      const effectiveFiles = [
+        { path: 'ct-dashboard', mode: '160000' },
+        { path: 'uncovered/code.ts', mode: '100644' },
+      ];
+
+      const unmatched = effectiveFiles
+        .filter((f) => !isSubmoduleEntry(f))
+        .map((f) => f.path);
+
+      expect(unmatched).toEqual(['uncovered/code.ts']);
+      expect(unmatched).not.toContain('ct-dashboard');
     });
   });
 
@@ -78,4 +134,5 @@ describe('Submodule Architecture Persona Routing', () => {
     });
   });
 });
+
 

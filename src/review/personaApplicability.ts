@@ -37,6 +37,22 @@ export function isArchitecturePersona(persona: unknown): boolean {
 }
 
 /**
+ * Test whether a review persona covers a given file, either by matching one of
+ * its configured glob patterns or because the file is a git submodule entry and
+ * the persona is an architecture lane.
+ */
+export function personaCoversFile(
+  persona: { paths: readonly string[]; id?: string; charter?: string; name?: string },
+  file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean } | null | undefined,
+): boolean {
+  if (!file) return false;
+  if (isArchitecturePersona(persona) && isSubmoduleEntry(file)) {
+    return true;
+  }
+  return persona.paths.some((pattern) => pattern === '**' || matchOne(pattern, file.path));
+}
+
+/**
  * Derive the exact immutable-config persona roster for a set of reviewable
  * paths. Ordering follows the prepared policy so worker and service evidence
  * share one canonical lane order.
@@ -45,11 +61,7 @@ export function deriveApplicablePersonas(
   personas: readonly ReviewPersona[],
   files: ReadonlyArray<{ path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean }>,
 ): ReviewPersona[] {
-  return personas.filter((persona) => {
-    const coversSubmodule = isArchitecturePersona(persona) && files.some(isSubmoduleEntry);
-    return coversSubmodule || persona.paths
-      .some((pattern) => files.some((file) => matchOne(pattern, file.path)));
-  });
+  return personas.filter((persona) => files.some((file) => personaCoversFile(persona, file)));
 }
 
 export function deriveApplicablePersonaIds(
@@ -58,4 +70,5 @@ export function deriveApplicablePersonaIds(
 ): string[] {
   return deriveApplicablePersonas(personas, files).map((persona) => persona.id);
 }
+
 

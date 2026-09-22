@@ -36,6 +36,7 @@ import {
   deriveApplicablePersonas,
   isSubmoduleEntry,
   isArchitecturePersona,
+  personaCoversFile,
 } from '../review/personaApplicability';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
@@ -83,7 +84,7 @@ export type {
   PanelRequestPolicy,
 } from './types';
 export { isDocumentationOrAssetPath } from '../review/reviewableContent';
-export { isSubmoduleEntry, isArchitecturePersona } from '../review/personaApplicability';
+export { isSubmoduleEntry, isArchitecturePersona, personaCoversFile } from '../review/personaApplicability';
 
 import type {
   FindingSeverity,
@@ -2575,11 +2576,7 @@ async function runPersona(
     // already uses, so it gets the same treatment as any other diagnostic that crosses out of a
     // single request/response pair.
     let lastKnownCompletionExcerpt: string | undefined;
-    const isArch = isArchitecturePersona(persona);
-    const scopedFiles = changedFiles.filter((file) =>
-      persona.paths.some((pattern) => pathMatches(pattern, file.path)) ||
-      (isArch && isSubmoduleEntry(file)),
-    );
+    const scopedFiles = changedFiles.filter((file) => personaCoversFile(persona, file));
 
     // Scope pre-check evidence to files evaluated by this persona
     let scopedPreCheckEvidence = preCheckEvidence;
