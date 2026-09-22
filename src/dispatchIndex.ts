@@ -8,6 +8,7 @@ import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
 import {
   getBoundedRepositoryInstallationId, getBoundedRepositoryToken, validateGitHubAppApiBaseUrl,
 } from './github/boundedAppToken';
+import { GitHubInstallationClient } from './github/installationClient';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
 import { enqueueReviewCiCompletionInTransaction } from './persistence/reviewCiRepository';
@@ -103,6 +104,29 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     mcpRouter = createRemoteMcpRouter({
       db: pool,
       admissionRepository: repository,
+      triggerDeps: {
+        authoritativePublishing: authoritative?.admission,
+        resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {
+          const credentials = { appId, privateKey, owner, repo, baseUrl };
+          const [minted, installationId] = await Promise.all([
+            getBoundedRepositoryToken(credentials, 'read'),
+            getBoundedRepositoryInstallationId(credentials),
+          ]);
+          const snapshot = await new GitHubInstallationClient({
+            token: minted.token,
+            baseUrl,
+          }).getPullRequest(owner, repo, pullNumber);
+          if (!snapshot.repositoryId) {
+            throw new Error('GitHub pull request repository identity is unavailable');
+          }
+          return {
+            headSha: snapshot.headSha,
+            baseSha: snapshot.baseSha,
+            repositoryId: snapshot.repositoryId,
+            installationId,
+          };
+        },
+      },
       authenticator: mcpAuthenticator,
       sessionTtlMs: dispatchConfig.mcp.sessionTtlMs,
       maxSessions: dispatchConfig.mcp.maxSessions,
