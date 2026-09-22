@@ -1,9 +1,8 @@
 import { z } from 'zod';
 import type { GitHubActionsOidcClaims } from '../auth/githubActionsOidc';
 import {
-  CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
   CENTRAL_REVIEW_REPOSITORY,
-  CENTRAL_REVIEW_WORKFLOW_REF,
+  isCentralReviewDispatchIdentity,
 } from './reviewCheckIdentity';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -80,9 +79,7 @@ export function assertActionDispatchMatchesClaims(
   // central receiver. Admit it only when both GitHub's parent and reusable-workflow claims
   // match the two immutable workflow identities and the request binds the parent claim.
   const isCentralManualDispatch = request.caller.eventName === 'workflow_dispatch'
-    && claims.workflow_ref === CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF
-    && claims.job_workflow_ref === CENTRAL_REVIEW_WORKFLOW_REF
-    && request.caller.workflowRef === claims.workflow_ref
+    && isCentralReviewDispatchIdentity(request.caller, claims)
     && request.caller.workflowSha === claims.workflow_sha;
   const isCentral = (isCentralRepositoryDispatch || isCentralManualDispatch)
     && claims.repository === CENTRAL_REVIEW_REPOSITORY

@@ -53,6 +53,19 @@ const verified = {
   job_workflow_sha: body.caller.workflowSha,
 };
 
+const centralManualClaims = {
+  repository: 'calltelemetry/ct-review-actions',
+  repository_id: '99999',
+  repository_owner_id: '99',
+  run_id: '98765',
+  run_attempt: '2',
+  event_name: 'workflow_dispatch',
+  workflow_ref: CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF,
+  workflow_sha: 'e'.repeat(40),
+  job_workflow_ref: CENTRAL_REVIEW_WORKFLOW_REF,
+  job_workflow_sha: 'd'.repeat(40),
+};
+
 function app(overrides: Record<string, any> = {}) {
   const verifier = { verify: vi.fn(async () => verified), ...(overrides.verifier || {}) };
   const admission = { admit: vi.fn(async () => ({
@@ -433,6 +446,36 @@ describe('POST /api/dispatch/action', () => {
         ...body,
         caller: { ...body.caller, eventName: 'workflow_dispatch',
           workflowRef: centralVerified.workflow_ref, workflowSha: centralVerified.workflow_sha },
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['caller workflow ref', (claims: typeof centralManualClaims) => ({
+      workflowRef: claims.job_workflow_ref,
+      workflowSha: claims.workflow_sha,
+    })],
+    ['caller workflow SHA', (claims: typeof centralManualClaims) => ({
+      workflowRef: claims.workflow_ref,
+      workflowSha: claims.job_workflow_sha,
+    })],
+  ])('rejects manual central dispatch with a mismatched %s binding', async (
+    _reason,
+    callerIdentity,
+  ) => {
+    const fixture = app({ verifier: { verify: vi.fn(async () => centralManualClaims) } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        caller: {
+          ...body.caller,
+          eventName: 'workflow_dispatch',
+          ...callerIdentity(centralManualClaims),
+        },
       });
 
     expect(response.status).toBe(403);

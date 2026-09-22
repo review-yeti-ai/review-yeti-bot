@@ -24,6 +24,16 @@ export const CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF =
 export const CENTRAL_REVIEW_WORKFLOW_REF =
   `${CENTRAL_REVIEW_REPOSITORY}/.github/workflows/review-yeti.yml@refs/heads/v1`;
 
+/** Exact parent/reusable-workflow identity shared by central admission and recovery. */
+export function isCentralReviewDispatchIdentity(
+  caller: { workflowRef?: string },
+  claims: { workflow_ref?: string; job_workflow_ref?: string },
+): boolean {
+  return claims.workflow_ref === CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF
+    && claims.job_workflow_ref === CENTRAL_REVIEW_WORKFLOW_REF
+    && caller.workflowRef === claims.workflow_ref;
+}
+
 /** Failure titles for which the exact-head recovery action is offered/admitted. */
 export const RECOVERABLE_FAILURE_TITLES: ReadonlySet<string> = new Set([
   'Review Yeti: review did not complete',

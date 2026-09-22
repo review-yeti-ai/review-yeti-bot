@@ -5,6 +5,7 @@ import {
   RECOVERABLE_FAILURE_TITLES,
   REVIEW_REFRESH_ACTION,
   isAllowlistedWorkflowRef,
+  isCentralReviewDispatchIdentity,
   type WorkflowRefAllowlist,
 } from './reviewCheckIdentity';
 
@@ -48,9 +49,7 @@ export function isCentralRefreshAuthorized(
     && ['repository_dispatch', 'workflow_dispatch'].includes(request.caller.eventName)
     && request.refreshRequested === true
     && claims.repository === CENTRAL_REVIEW_REPOSITORY
-    && claims.workflow_ref === CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF
-    && claims.job_workflow_ref === CENTRAL_REVIEW_WORKFLOW_REF
-    && request.caller.workflowRef === CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF
+    && isCentralReviewDispatchIdentity(request.caller, claims)
     && policy !== undefined
     && isAllowlistedWorkflowRef(policy, CENTRAL_REVIEW_WORKFLOW_REF);
 }
