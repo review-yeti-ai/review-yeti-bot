@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.83.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.6...v1.83.7) (2026-09-22)
+
+
+### Bug Fixes
+
+* **review:** route public worker credentials ([b0a8622](https://github.com/review-yeti-ai/review-yeti-bot/commit/b0a86229bdbd243669046677e958d9dda0b44fd8))
+* **review:** route public worker credentials ([ff8a593](https://github.com/review-yeti-ai/review-yeti-bot/commit/ff8a593382ce4fd4eb9c3834237f8207c8cac982))
+
 ## [1.83.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.5...v1.83.6) (2026-09-22)
 
 
