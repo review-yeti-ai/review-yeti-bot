@@ -893,7 +893,7 @@ async function runTaskWorkPhase(input: {
 export function unreportedLaneFailure(
   task: ReviewTask,
   reason: 'no_budget' | 'exhausted',
-): NonNullable<PanelResult['optionalFailures']>[number] {
+): NonNullable<PanelResult['unreportedLanes']>[number] {
   if (reason === 'no_budget') {
     return {
       id: task.id,
