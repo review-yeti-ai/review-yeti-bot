@@ -32,6 +32,7 @@ import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { generatePRSummary } from '../review/summaryEngine';
 import { validateReviewFindings } from '../review/reviewCore';
 import { isDocumentationOrAssetPath } from '../review/reviewableContent';
+import { deriveApplicablePersonas } from '../review/personaApplicability';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -2506,7 +2507,8 @@ async function runPersona(
   remainingPanelTimeoutMs?: () => number,
   preCheckEvidence?: { zoekt?: ZoektPreCheckResult; [key: string]: any },
   domainLanes?: Record<string, DomainLane>,
-  budgetOverride?: { maxTurns?: number; effort?: 'low' | 'medium' | 'high' }
+  budgetOverride?: { maxTurns?: number; effort?: 'low' | 'medium' | 'high' },
+  allowDashboardOverrides = true,
 ) {
   return runInSpan(`review_yeti_persona_lane`, async (span) => {
     throwIfPanelAborted(signal);
@@ -2517,7 +2519,9 @@ async function runPersona(
 
     const isRedTeam = isRedTeamPersona(persona.id, persona.charter);
 
-    const storePersona = dashboardStore.getPersonaSetting(persona.id);
+    const storePersona = allowDashboardOverrides
+      ? dashboardStore.getPersonaSetting(persona.id)
+      : undefined;
     const customPromptOverride = (storePersona?.customPrompt && storePersona.customPrompt.trim())
       ? storePersona.customPrompt
       : ((persona as any).customPrompt && (persona as any).customPrompt.trim())
@@ -3407,6 +3411,10 @@ export async function executePersonaPanel(options: {
   /** Caller cancellation is linked to the configured overall panel deadline. */
   signal?: AbortSignal;
   workspaceRoot?: string;
+  /** Service-authoritative runs use only immutable prepared config and exact
+   * path applicability; mutable dashboard overrides and model pruning cannot
+   * alter the evidence roster after admission. */
+  deterministicRoster?: boolean;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
@@ -3448,11 +3456,13 @@ export async function executePersonaPanel(options: {
     span.setAttribute('review_yeti.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
     span.setAttribute('review_yeti.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
 
-    let applicable = config.personas.filter((persona) => {
-      const storePersona = dashboardStore.getPersonaSetting(persona.id);
-      const isEnabled = storePersona ? storePersona.enabled !== false : persona.enabled;
-      return isEnabled && persona.paths.some((pattern) => effectiveFiles.some((file) => pathMatches(pattern, file.path)));
-    });
+    const enabledPersonas = options.deterministicRoster
+      ? config.personas.filter((persona) => persona.enabled)
+      : config.personas.filter((persona) => {
+        const storePersona = dashboardStore.getPersonaSetting(persona.id);
+        return storePersona ? storePersona.enabled !== false : persona.enabled;
+      });
+    let applicable = deriveApplicablePersonas(enabledPersonas, effectiveFiles);
     span.setAttribute('review_yeti.persona_count', applicable.length);
     span.setAttribute('review_yeti.quorum_required', config.quorum);
 
@@ -3482,12 +3492,7 @@ export async function executePersonaPanel(options: {
         const shown = unmatched.slice(0, 10);
         const overflow = unmatched.length - shown.length;
         const pathList = shown.join(', ') + (overflow > 0 ? `, +${overflow} more` : '');
-        const enabledIds = config.personas
-          .filter((persona) => {
-            const storePersona = dashboardStore.getPersonaSetting(persona.id);
-            return storePersona ? storePersona.enabled !== false : persona.enabled;
-          })
-          .map((persona) => persona.id);
+        const enabledIds = enabledPersonas.map((persona) => persona.id);
         throw new PanelConfigurationError(
           `no enabled persona applies to the changed paths for ${repository} #${headSha}: `
           + `[${pathList}] matched none of the enabled personas [${enabledIds.join(', ') || 'none'}]. `
@@ -3518,7 +3523,8 @@ export async function executePersonaPanel(options: {
     const maxFileSize = resolveMaxFileSize(config);
     const isPotentiallyFastShip = !containsExecutableOrSensitiveCode(effectiveFiles, { maxFileSize });
     const hasPrunableGeneralLanes = applicable.some(isPrunableGeneralLane);
-    const shouldClassify = isPotentiallyFastShip || hasPrunableGeneralLanes;
+    const shouldClassify = !options.deterministicRoster
+      && (isPotentiallyFastShip || hasPrunableGeneralLanes);
 
     let classifierResult: ClassifierResult | null = null;
     if (shouldClassify) {
@@ -3988,6 +3994,7 @@ export async function executePersonaPanel(options: {
                 : undefined,
               domainLanes,
               budgetOverride,
+              !options.deterministicRoster,
             );
             return { persona, result, error: undefined };
           } finally {

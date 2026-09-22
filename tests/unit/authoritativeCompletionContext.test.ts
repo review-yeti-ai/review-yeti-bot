@@ -14,23 +14,23 @@ const target = { repositoryId: 123, owner: 'example', repo: 'candidate', prNumbe
 const current = { ...target, open: true, draft: false };
 const diff = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
 const privateText = 'ghs_SYNTHETIC_PRIVATE_CONTEXT_MARKER';
-function policyFile(turns = 3) {
+function policyFile(turns = 3, personas = 'security,testing') {
   const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
-    personas: 'security,testing', budget: { max_investigation_turns: turns },
+    personas, budget: { max_investigation_turns: turns },
   } });
   return { content, source: { repositoryId: 456, repository: 'example/central-policy',
     sha: 'c'.repeat(40), path: 'policy/review.json', contentDigest: sha256(content) } };
 }
-function prepared(turns = 3) {
-  return preparePublishingPolicy(policyFile(turns),
+function prepared(turns = 3, personas = 'security,testing') {
+  return preparePublishingPolicy(policyFile(turns, personas),
   { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
 }
 function resolution(policy = prepared()) {
   return { current: { ...current }, prepared: policy,
     identity: buildAuthoritativeReviewIdentity({ requested: target, current, policy: policy.policy }) };
 }
-function fixture(overrides: Partial<AuthoritativeCompletionContextOptions> = {}) {
-  const stored = prepared();
+function fixture(overrides: Partial<AuthoritativeCompletionContextOptions> = {}, stored = prepared()) {
+  const refreshed = structuredClone(stored);
   const gate: StoredReviewGate = {
     coordinates: { ...target, runId: `run_${'1'.repeat(32)}`, policyDigest: stored.policy.effectivePolicyDigest,
       attemptId: `run_${'1'.repeat(32)}-g0-e2`, executionAttempt: 2 },
@@ -41,7 +41,7 @@ function fixture(overrides: Partial<AuthoritativeCompletionContextOptions> = {})
   const currentCandidate = vi.fn(async () => ({ ...current }));
   const exactCurrentDiff = vi.fn<AuthoritativeReviewReader['exactCurrentDiff']>(async () => ({ current: { ...current }, diff, expectedFileCount: 1 }));
   const readerFactory = vi.fn<AuthoritativeCompletionContextOptions['readerFactory']>(async () => ({ currentCandidate, exactCurrentDiff }));
-  const resolve = vi.fn<AuthoritativeCompletionContextOptions['publishingResolver']['resolve']>(async () => resolution());
+  const resolve = vi.fn<AuthoritativeCompletionContextOptions['publishingResolver']['resolve']>(async () => resolution(refreshed));
   const options = { getStoredPrepared, readerFactory, publishingResolver: { resolve }, ...overrides };
   return { context: createAuthoritativeCompletionContext(options), options, gate, stored,
     getStoredPrepared, currentCandidate, exactCurrentDiff, readerFactory, resolve };
@@ -79,6 +79,59 @@ describe('service-owned authoritative completion context', () => {
       .map((fn) => fn.mock.invocationCallOrder[0]);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(f.readerFactory.mock.calls[0][1].aborted).toBe(true);
+  });
+
+  it('derives the authoritative roster from immutable persona paths and the exact current diff', async () => {
+    const stored = prepared(3, 'security,testing,documentation');
+    const f = fixture({}, stored);
+
+    const context = await f.context(f.gate);
+
+    expect(stored.expectedPersonaIds).toEqual(['sec-lane', 'qual-lane', 'documentation']);
+    expect(context.coverage.expectedPersonaIds).toEqual(['sec-lane', 'qual-lane']);
+    expect(context.coverage.quorumSatisfied).toBe(true);
+  });
+
+  it('fails closed when no enabled immutable persona covers an analyzable source path', async () => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'src/main.lua', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      expectedFileCount: 1,
+    });
+
+    redacted(await rejected(f.context(f.gate)));
+  });
+
+  it('preserves the admitted roster for the audited zero-lane documentation exemption', async () => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'docs/operator-guide.rst', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      expectedFileCount: 1,
+    });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage).toMatchObject({
+      expectedPersonaIds: f.stored.expectedPersonaIds,
+      coverageComplete: true,
+      quorumSatisfied: true,
+    });
+  });
+
+  it('fails closed when every changed file is excluded by the shared hunk filter', async () => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'package-lock.json', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      expectedFileCount: 1,
+    });
+
+    redacted(await rejected(f.context(f.gate)));
   });
 
   it('does not turn a trusted required-lane contract into successful worker evidence', async () => {

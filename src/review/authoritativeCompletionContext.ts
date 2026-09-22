@@ -7,8 +7,11 @@ import type { StoredReviewGate, TrustedGateCompletionContext } from './reviewGat
 import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
 import { parseChangedFiles } from './changedFiles';
+import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
+import { deriveApplicablePersonaIds } from './personaApplicability';
 import { canonicalJson } from './reviewCore';
+import { isDocumentationOrAssetPath } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { TrustedCompletionResolutionError, type TrustedCompletionResolutionSubstage } from './workerCompletionPersistenceError';
 
@@ -151,12 +154,25 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       const coverageComplete = unreadable.length === 0
         && Number.isSafeInteger(source.expectedFileCount) && files.length === source.expectedFileCount
         && new Set(files.map((file) => file.path)).size === files.length;
+      const reviewableFiles = filterDiffHunks(files).files.filter((file) => file.status !== 'ignored');
+      const applicablePersonaIds = deriveApplicablePersonaIds(
+        stored.config.personas.filter((persona) => persona.enabled),
+        reviewableFiles,
+      );
+      const allNonCode = reviewableFiles.length > 0
+        && reviewableFiles.every((file) => isDocumentationOrAssetPath(file.path));
+      // A zero-lane documentation-only panel is an explicit audited exemption.
+      // Its canonical derivation still needs the admitted nonempty upper-bound
+      // roster. Unmatched source is a policy/configuration failure, never SHIP.
+      if (applicablePersonaIds.length === 0 && !allNonCode) throw unavailable();
+      const expectedPersonaIds = applicablePersonaIds.length > 0
+        ? applicablePersonaIds : [...stored.expectedPersonaIds];
       checkDeadline();
       return { current: { ...final, policyDigest }, coverage: {
-        expectedPersonaIds: [...stored.expectedPersonaIds], changedFiles: files, coverageComplete,
+        expectedPersonaIds, changedFiles: files, coverageComplete,
         // This establishes a nonempty required-lane contract, not completed
         // worker quorum. Derivation separately requires ALL these exact IDs.
-        quorumSatisfied: stored.expectedPersonaIds.length > 0,
+        quorumSatisfied: expectedPersonaIds.length > 0,
       } };
     };
     try { return await Promise.race([resolve(), expired]); }

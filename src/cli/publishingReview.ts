@@ -1270,6 +1270,7 @@ export async function runPublishingReviewWorker(
           signal: panelDeadline.signal,
           repoFileProvider,
           isCurrentHead: deps.isCurrentHead,
+          ...(authoritative ? { deterministicRoster: true } : {}),
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
