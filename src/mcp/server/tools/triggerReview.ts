@@ -11,14 +11,13 @@ import {
   type TriggerReviewOutput,
 } from './schemas';
 import { sha256 } from '../../../review/reviewCore';
-import { buildReviewRunIdentity } from '../../../review/reviewAdmission';
+import { buildReviewRunIdentity, deriveReviewRunId } from '../../../review/reviewAdmission';
+import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import type { ReviewDispatchRepository } from '../../../persistence/reviewDispatchRepository';
-import type { ReviewJobProjector } from '../../../k8s/reviewJobDispatchEngine';
-import { buildReviewJobProjection } from '../../../k8s/reviewJobProjection';
 
 export const triggerReviewDefinition: ToolDefinition = {
   name: 'trigger_review',
-  description: 'Exact-head review dispatch directly to PRReviewJob CRD.',
+  description: 'Enqueue an exact-head review through governed authoritative admission.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -36,24 +35,20 @@ export const triggerReviewDefinition: ToolDefinition = {
 
 export interface TriggerReviewDependencies {
   admissionRepository?: Pick<ReviewDispatchRepository, 'admit'>;
+  authoritativePublishing?: AuthoritativeReviewAdmission;
   queryableDatabase?: {
     query(sql: string, params?: unknown[]): Promise<{ rows: any[] }>;
   };
-  projector?: ReviewJobProjector;
   resolveGitHubPullRequest?: (
     owner: string,
     repo: string,
     pullNumber: number
   ) => Promise<{ headSha: string; baseSha?: string; repositoryId?: number; installationId?: number }>;
-  workerImage?: string;
-  namespace?: string;
   now?: () => number;
 }
 
 export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
   const nowFn = deps.now || Date.now;
-  const workerImage = deps.workerImage || 'ghcr.io/review-yeti-ai/review-yeti-worker@sha256:' + 'a'.repeat(64);
-  const namespace = deps.namespace || 'ct-review-system';
 
   return {
     definition: triggerReviewDefinition,
@@ -84,6 +79,23 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         if (prSnapshot.installationId) installationId = prSnapshot.installationId;
       }
 
+      if (deps.admissionRepository && !deps.resolveGitHubPullRequest) {
+        throw new Error('trigger_review requires exact GitHub pull request resolution');
+      }
+
+      const requested = { repositoryId, owner, repo, prNumber: pull_number, headSha, baseSha };
+      const authoritative = deps.authoritativePublishing;
+      if (deps.admissionRepository && !authoritative) {
+        throw new Error('trigger_review requires authoritative publishing admission');
+      }
+      if (authoritative?.acceptNewRequests === false
+        || (authoritative && !authoritative.repositoryIds.includes(repositoryId))) {
+        throw new Error('trigger_review repository is outside authoritative admission');
+      }
+      const resolved = authoritative ? await authoritative.resolver.resolve(requested) : undefined;
+      const resolvedIdentity = resolved?.identity || buildReviewRunIdentity(requested);
+      const resolvedRunId = deriveReviewRunId(resolvedIdentity);
+
       // 2. Active Run Conflict Detection
       if (deps.queryableDatabase) {
         const activeRes = await deps.queryableDatabase.query(
@@ -97,39 +109,13 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
 
         const activeRun = activeRes.rows[0];
         if (activeRun) {
-          if (!force) {
+          if (!force || activeRun.run_id === resolvedRunId) {
             const err: any = new Error(
-              `Conflict: Review attempt ${activeRun.run_id} is currently running for this PR. Use force: true to override.`
+              `Conflict: Review attempt ${activeRun.run_id} is currently running for this review identity.`
             );
             err.code = 409;
             err.status = 409;
             throw err;
-          }
-
-          // Force override: cancel existing run
-          await deps.queryableDatabase.query(
-            `UPDATE review_runs
-                SET status = 'cancelled',
-                    error_text = 'superseded by force re-trigger',
-                    lease_owner = NULL,
-                    lease_expires_at = NULL,
-                    updated_at = NOW()
-              WHERE run_id = $1`,
-            [activeRun.run_id]
-          );
-
-          try {
-            await deps.queryableDatabase.query(
-              `UPDATE review_dispatch_outbox
-                  SET status = 'terminal',
-                      lease_owner = NULL,
-                      lease_expires_at = NULL,
-                      updated_at = NOW()
-                WHERE run_id = $1`,
-              [activeRun.run_id]
-            );
-          } catch {
-            // Table may not exist
           }
         }
       }
@@ -143,14 +129,6 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         const terminalDeadline = receivedAt + 900_000;
         const deliveryId = `mcp-trigger-${randomUUID()}`;
         const payloadDigest = sha256(`${deliveryId}:${headSha}:${receivedAt}`);
-        const identity = buildReviewRunIdentity({
-          owner,
-          repo,
-          prNumber: pull_number,
-          headSha,
-          baseSha,
-        });
-
         const admission = await deps.admissionRepository.admit({
           deliveryId,
           eventName: 'mcp.trigger_review',
@@ -160,58 +138,28 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           terminalDeadline,
           payloadDigest,
           publicationMode: 'app-gate',
-          centralActionDispatch: true,
-          identity,
+          centralActionDispatch: false,
+          debounce: false,
+          identity: resolvedIdentity,
+          ...(resolved && authoritative ? {
+            effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
+            authoritativeGate: {
+              expectedAppId: authoritative.expectedAppId,
+              prepared: resolved.prepared,
+            },
+          } : {}),
         });
 
         admittedRunId = admission.run.runId;
         attemptId = `review-attempt-${pull_number}-${admittedRunId.slice(4, 12)}`;
       }
 
-      // 4. Project PRReviewJob CRD
-      let jobCrdCreated = false;
-      if (deps.projector) {
-        try {
-          const receivedAt = nowFn();
-          let projectionRunId = admittedRunId;
-          if (!/^run_[a-f0-9]{32}$/.test(projectionRunId)) {
-            const hex = sha256(admittedRunId).slice(0, 32);
-            projectionRunId = `run_${hex}`;
-          }
-
-          const projection = buildReviewJobProjection(
-            {
-              runId: projectionRunId,
-              deliveryId: `mcp-trigger-${randomUUID()}`,
-              repositoryId,
-              repo: `${owner}/${repo}`,
-              prNumber: pull_number,
-              headSha,
-              baseSha,
-              receivedAt,
-              terminalDeadline: receivedAt + 900_000,
-              policyDigest: '0'.repeat(64),
-              configDigest: '0'.repeat(64),
-              publicationMode: 'app-gate',
-              workerImage,
-              namespace,
-            },
-            receivedAt
-          );
-
-          await deps.projector.ensure(projection);
-          jobCrdCreated = true;
-        } catch {
-          jobCrdCreated = false;
-        }
-      } else {
-        jobCrdCreated = true;
-      }
-
       return buildToolResultJson({
         dispatched: true,
         attempt_id: attemptId,
-        job_crd_created: jobCrdCreated,
+        // Projection is intentionally asynchronous and owned by the durable
+        // review-job dispatcher, never by the internet-facing MCP process.
+        job_crd_created: false,
         message: `Review job queued successfully (priority: ${priority})`,
       } satisfies TriggerReviewOutput);
     },
