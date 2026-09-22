@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.82.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.0...v1.82.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* classify review completion persistence stages ([#932](https://github.com/review-yeti-ai/review-yeti-bot/issues/932)) ([7f49128](https://github.com/review-yeti-ai/review-yeti-bot/commit/7f49128b6d7f7ac817ae0d92f9dd9b7338c27adb))
+
 ## [1.82.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.81.7...v1.82.0) (2026-09-22)
 
 
