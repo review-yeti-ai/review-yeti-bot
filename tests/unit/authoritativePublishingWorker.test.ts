@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildWorkerFailureDiagnostics, type WorkerCompletionAdapter } from '../../src/review/workerCompletion';
 import { runPublishingReviewWorker, type PublishingCheckClient, type PublishingReviewDeps } from '../../src/cli/publishingReview';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
-import { parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
+import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
+import { parseChangedFiles } from '../../src/review/changedFiles';
+import { computeArbitration } from '../../src/review/reviewCore';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { PanelResult } from '../../src/panel/types';
 import * as panelEngine from '../../src/panel/panelEngine';
@@ -287,9 +289,10 @@ describe('authoritative prepared publishing worker', () => {
   it('forwards findings through the strict typed boundary while omitting operational metadata', async () => {
     const f = fixture();
     const finding = { severity: 'P2' as const, path: 'src/a.ts', line: 1, title: 'Validate input', body: 'Validate before use.',
-      confidence: 80, fixOptions: [{ rank: 1, title: 'Guard', suggestionCode: 'validate();' }] };
+      confidence: 80, recommendation: 'Validate before calling the dependency.', isArchitectural: true,
+      fixOptions: [{ rank: 1, title: 'Guard', suggestionCode: 'validate();' }] };
     f.panel.personas[0].decision = 'FINDINGS';
-    f.panel.personas[0].findings = [{ ...finding, reporters: 2, providerTranscript: PRIVATE_DETAIL } as typeof finding];
+    f.panel.personas[0].findings = [{ ...finding, suggestion: undefined, reporters: 2, providerTranscript: PRIVATE_DETAIL } as typeof finding];
     f.panel.personas[0].toolCalls = [{ tool: 'read', args: { token: TOKEN } }];
     await runPublishingReviewWorker(f.env, f.deps);
     const expected = cleanResult();
@@ -298,6 +301,7 @@ describe('authoritative prepared publishing worker', () => {
     expected.personas[0] = { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [finding],
       telemetry: { model: transport.model, durationMs: 25, toolCalls: 1 } };
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
+    expect(f.reportReviewResult.mock.calls[0][0].result.personas[0].findings[0]).not.toHaveProperty('suggestion');
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(TOKEN);
   });
@@ -510,17 +514,23 @@ describe('authoritative prepared publishing worker', () => {
     expect(f.reportReviewResult).not.toHaveBeenCalled();
   });
 
-  it('wires the entrypoint to one raw check with visible findings and an evidence-only typed callback', async () => {
+  it.each(['recorded', '503 then recorded', 'lost acknowledgement then duplicate', 'off-diff raw finding'])('wires the entrypoint to one raw check and evidence-only callback: %s', async (delivery) => {
     const f = fixture();
     const finding = { severity: 'P2' as const, path: 'src/a.ts', line: 1,
       title: 'Preserve raw finding', body: 'This finding remains visible independently of gate eligibility.' };
     f.panel.personas[0].decision = 'FINDINGS';
     f.panel.personas[0].findings = [finding];
+    if (delivery === 'off-diff raw finding') f.panel.personas[0].findings.push({
+      severity: 'P1', path: 'src/not-in-diff.ts', line: 99,
+      title: 'Discard unanchorable raw finding', body: 'This raw finding is not part of the reviewed diff.',
+    });
     vi.spyOn(qualificationReader, 'loadSameHeadReviewSource').mockResolvedValue(f.source);
     vi.spyOn(panelEngine, 'executePersonaPanel').mockResolvedValue(f.panel);
     const createCheck = vi.spyOn(GitHubInstallationClient.prototype, 'createCheck');
     const completeCheck = vi.spyOn(GitHubInstallationClient.prototype, 'completeCheck');
     const rawEndpoint = 'https://api.github.com/repos/example/project/check-runs';
+    let callbackAttempts = 0;
+    const derivations: ReturnType<typeof deriveCanonicalWorkerReviewEvidence>[] = [];
     f.fetch.mockImplementation(async (input, init) => {
       if (String(input) === rawEndpoint && init?.method === 'POST') {
         return new Response(JSON.stringify({ id: 4242 }), { status: 200 });
@@ -529,8 +539,24 @@ describe('authoritative prepared publishing worker', () => {
         return new Response('{}', { status: 200 });
       }
       if (String(input) === ENDPOINT && init?.method === 'POST') {
+        // The service can acknowledge persistence even for invalid evidence.
+        // Inspect its actual derivation separately from delivery acknowledgement.
+        const completion = parseWorkerReviewCompletion(JSON.parse(String(init.body)));
+        const { result: _result, version: _version, ...expectedCoordinates } = parseWorkerReviewCompletion(expectedEvent(f, cleanResult()));
+        const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+          expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+          changedFiles: parseChangedFiles(DIFF).files, coverageComplete: true, quorumSatisfied: true,
+        });
+        derivations.push(derived);
+        callbackAttempts += 1;
+        if (callbackAttempts === 1 && delivery === '503 then recorded') {
+          return new Response(PRIVATE_DETAIL, { status: 503 });
+        }
+        if (callbackAttempts === 1 && delivery === 'lost acknowledgement then duplicate') {
+          throw new TypeError(PRIVATE_DETAIL);
+        }
         return new Response(JSON.stringify({ version: 'WorkerReviewCompletionAccepted.v1',
-          runId: f.env.REVIEW_RUN_ID, status: 'recorded' }), { status: 200 });
+          runId: f.env.REVIEW_RUN_ID, status: delivery === 'lost acknowledgement then duplicate' ? 'duplicate' : 'recorded' }), { status: 200 });
       }
       throw new Error('Unexpected request in the mocked worker entrypoint');
     });
@@ -538,8 +564,15 @@ describe('authoritative prepared publishing worker', () => {
     const legacy = vi.fn();
     expect(f.env).not.toHaveProperty('REVIEW_CHECK_ID');
     await runWorker(f.env, legacy);
+    for (const derived of derivations) {
+      expect(derived.valid).toBe(true);
+      expect(derived.evidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0 });
+      expect(derived.canonical?.findings).toEqual([{ ...finding, reporters: 1 }]);
+    }
     expect(legacy).not.toHaveBeenCalled();
-    expect(f.fetch).toHaveBeenCalledTimes(3);
+    const retry = delivery === '503 then recorded' || delivery === 'lost acknowledgement then duplicate';
+    expect(derivations).toHaveLength(retry ? 2 : 1);
+    expect(f.fetch).toHaveBeenCalledTimes(retry ? 4 : 3);
     const rawCalls = f.fetch.mock.calls.filter(([url]) => String(url).startsWith(rawEndpoint));
     expect(rawCalls.map(([url, init]) => [String(url), init?.method])).toEqual([
       [rawEndpoint, 'POST'], [`${rawEndpoint}/4242`, 'PATCH'],
@@ -556,13 +589,21 @@ describe('authoritative prepared publishing worker', () => {
         annotation_level: 'warning', title: `P2: ${finding.title}`, message: finding.body }],
     } });
     expect(completed.output.text).toContain(finding.body);
+    expect(completed.conclusion).toBe('success');
+    if (delivery === 'off-diff raw finding') {
+      expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');
+      expect(completed.output.text).not.toContain('Discard unanchorable raw finding');
+    }
     expect(createCheck).toHaveBeenCalledExactlyOnceWith('example', 'project', HEAD,
       `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}`);
     expect(completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       owner: 'example', repo: 'project', checkId: 4242,
     }));
     const callbacks = f.fetch.mock.calls.filter(([url]) => String(url) === ENDPOINT);
-    expect(callbacks).toHaveLength(1);
+    expect(callbacks).toHaveLength(retry ? 2 : 1);
+    expect(new Set(callbacks.map(([, init]) => init?.body)).size).toBe(1);
+    expect(panelEngine.executePersonaPanel).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(f.errorLog.mock.calls)).not.toContain(PRIVATE_DETAIL);
     const [endpoint, init] = callbacks[0];
     expect(endpoint).toBe(ENDPOINT);
     expect(init?.headers).toMatchObject({ Authorization: `Bearer ${TOKEN}` });
@@ -570,5 +611,71 @@ describe('authoritative prepared publishing worker', () => {
     expectEvidenceOnlyCallback(payload);
     expect(payload).toMatchObject({ version: 'WorkerReviewCompletion.v1', configDigest: f.prepared.policy.effectiveConfigDigest });
     expect(payload.result.personas[0].findings).toEqual([finding]);
+  });
+
+  it('keeps sanitized findings in their original lanes and re-derives the published clustered set', async () => {
+    const f = fixture();
+    const shared = { severity: 'P2' as const, path: 'src/a.ts', line: 1,
+      title: 'Clarify returned value', body: 'Document the returned value for callers.' };
+    const unique = { severity: 'P2' as const, path: 'src/a.ts', line: 1,
+      title: 'Rename misleading timestamp', body: 'The variable name should identify UTC timestamps.' };
+    f.panel.personas[0].decision = 'FINDINGS';
+    f.panel.personas[0].findings = [shared, { ...unique, path: 'src/off-diff.ts' }];
+    f.panel.personas[1].decision = 'FINDINGS';
+    f.panel.personas[1].findings = [unique, shared, { ...unique, line: 99 }];
+    const original = structuredClone(f.panel.personas);
+    await runPublishingReviewWorker(f.env, f.deps);
+    const completion = f.reportReviewResult.mock.calls[0][0];
+    expect(completion.result.personas.map((persona) => ({ id: persona.id, decision: persona.decision, findings: persona.findings })))
+      .toEqual([
+        { id: 'sec-lane', decision: 'FINDINGS', findings: [shared] },
+        { id: 'qual-lane', decision: 'FINDINGS', findings: [unique, shared] },
+      ]);
+    expect(completion.result.personas.map((persona) => persona.telemetry)).toEqual(cleanResult().personas.map((persona) => persona.telemetry));
+    expect(f.panel.personas).toEqual(original);
+    const { result: _result, version: _version, ...expectedCoordinates } = parseWorkerReviewCompletion(expectedEvent(f, cleanResult()));
+    const changedFiles = parseChangedFiles(DIFF).files;
+    const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles, coverageComplete: true, quorumSatisfied: true,
+    });
+    expect(derived.valid).toBe(true);
+    const published = computeArbitration(original, 2, { changedFiles, coverageComplete: true });
+    expect(published.findings).toHaveLength(2);
+    expect(derived.canonical?.findings).toEqual(published.findings);
+    expect(derived.evidence).toMatchObject({ verdict: 'SHIP', coverageComplete: true, quorumSatisfied: true });
+
+    // Worker normalization is not permission for an arbitrary sender to submit
+    // an off-diff finding. The service's strict validator must still reject it.
+    const forged = structuredClone(completion);
+    forged.result.personas[0].findings.push({ ...shared, path: 'src/off-diff.ts' });
+    expect(deriveCanonicalWorkerReviewEvidence(forged, {
+      expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles, coverageComplete: true, quorumSatisfied: true,
+    })).toMatchObject({ valid: false, reason: 'invalid-evidence' });
+  });
+
+  it.each(['incomplete panel', 'unreadable diff'])('discarded raw findings cannot turn an %s into approval', async (kind) => {
+    const f = fixture();
+    f.panel.personas[0].decision = 'FINDINGS';
+    f.panel.personas[0].findings = [{ severity: 'P1', path: 'src/off-diff.ts', line: 1,
+      title: 'Not anchored', body: 'Not part of the published canonical set.' }];
+    if (kind === 'incomplete panel') {
+      f.panel.personas.pop();
+      f.panel.optionalFailures = [{ id: 'qual-lane', error: 'request timed out' }];
+      f.panel.quorum.satisfied = false;
+    } else f.source.diff += 'diff --git unreadable-header\n';
+    const published = await runPublishingReviewWorker(f.env, f.deps);
+    expect(published).toMatchObject({ conclusion: 'failure', verdict: 'BLOCK' });
+    const completion = f.reportReviewResult.mock.calls[0][0];
+    expect(completion.result.personas[0]).toMatchObject({ id: 'sec-lane', decision: 'FINDINGS', findings: [] });
+    const { result: _result, version: _version, ...expectedCoordinates } = parseWorkerReviewCompletion(expectedEvent(f, cleanResult()));
+    const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: parseChangedFiles(DIFF).files,
+      coverageComplete: kind !== 'unreadable diff', quorumSatisfied: kind !== 'incomplete panel',
+    });
+    expect(derived.valid).toBe(true);
+    expect(derived.evidence).toMatchObject({ verdict: 'BLOCK', quorumSatisfied: false });
   });
 });

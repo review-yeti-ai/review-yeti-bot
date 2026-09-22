@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PostgresReviewGateRepository } from '../../src/persistence/reviewGateRepository';
 import {
   WorkerCompletionPersistenceError,
+  TrustedCompletionResolutionError,
   workerCompletionPersistenceStages,
 } from '../../src/review/workerCompletionPersistenceError';
 import type { WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
@@ -58,6 +59,16 @@ function trustedCompletion() {
 }
 
 describe('worker completion persistence diagnostics', () => {
+  it('does not retain an arbitrary substage or attach a resolver substage to another persistence stage', () => {
+    for (const error of [
+      new WorkerCompletionPersistenceError('trusted-completion-resolution', PRIVATE_DETAIL as never),
+      new WorkerCompletionPersistenceError('commit', 'exact-diff'),
+    ]) {
+      expect(error.substage).toBeUndefined();
+      expect(error.cause).toBeUndefined();
+      expect(JSON.stringify(error)).not.toContain(PRIVATE_DETAIL);
+    }
+  });
   it('publishes only the finite completion persistence stages', () => {
     expect(workerCompletionPersistenceStages).toEqual([
       'transaction-begin', 'binding-lookup', 'advisory-lock', 'state-load',
@@ -155,6 +166,8 @@ describe('worker completion persistence diagnostics', () => {
     { stage: 'advisory-lock', matches: (sql: string) => sql.startsWith('SELECT pg_advisory_xact_lock') },
     { stage: 'state-load', matches: (sql: string) => sql.startsWith('SELECT gate.*, runs.status') },
     { stage: 'trusted-completion-resolution', resolver: true },
+    ...(['stored-policy', 'token', 'current-candidate', 'policy-refresh', 'exact-diff'] as const)
+      .map((substage) => ({ stage: 'trusted-completion-resolution', resolver: true, substage })),
     { stage: 'gate-update', matches: (sql: string) => sql.startsWith('UPDATE review_gate_attempts') },
     { stage: 'completion-insert', matches: (sql: string) => sql.startsWith('INSERT INTO review_worker_completions') },
     { stage: 'outbox-update', matches: (sql: string) => sql.startsWith('UPDATE review_dispatch_outbox') },
@@ -168,7 +181,7 @@ describe('worker completion persistence diagnostics', () => {
     let injectionHits = 0;
     const client = {
       query: vi.fn(async (sql: string) => {
-        if (target.matches?.(sql)) {
+        if ('matches' in target && target.matches?.(sql)) {
           injectionHits += 1;
           throw new Error(PRIVATE_DETAIL);
         }
@@ -183,8 +196,8 @@ describe('worker completion persistence diagnostics', () => {
       release: vi.fn(),
     };
     const repository = new PostgresReviewGateRepository({ connect: vi.fn(async () => client), query: vi.fn() }, {
-      lifecycleEvents: target.lifecycleEvents ?? 'disabled',
-      ...(target.hook ? { onEligibleCompletion: async () => {
+      lifecycleEvents: 'lifecycleEvents' in target ? target.lifecycleEvents ?? 'disabled' : 'disabled',
+      ...('hook' in target && target.hook ? { onEligibleCompletion: async () => {
         injectionHits += 1;
         throw new Error(PRIVATE_DETAIL);
       } } : {}),
@@ -192,6 +205,7 @@ describe('worker completion persistence diagnostics', () => {
     const resolve = target.resolver
       ? vi.fn(async () => {
         injectionHits += 1;
+        if ('substage' in target) throw new TrustedCompletionResolutionError(target.substage);
         throw new Error(PRIVATE_DETAIL);
       })
       : vi.fn(async () => trustedCompletion());
@@ -204,6 +218,7 @@ describe('worker completion persistence diagnostics', () => {
     }
 
     expect(thrown).toBeInstanceOf(WorkerCompletionPersistenceError);
+    if ('substage' in target) expect(thrown).toMatchObject({ substage: target.substage });
     expect(thrown).toMatchObject({ name: 'WorkerCompletionPersistenceError', stage: target.stage });
     expect((thrown as Error).message).toBe(`Worker completion persistence failed at ${target.stage}`);
     expect(JSON.stringify(thrown)).not.toContain(PRIVATE_DETAIL);

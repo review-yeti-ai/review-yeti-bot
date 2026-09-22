@@ -266,6 +266,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         logger.error('Failed to persist authoritative worker completion', {
           reason: 'persistence_unavailable',
           stage: isWorkerCompletionPersistenceError(error) ? error.stage : unknownWorkerCompletionPersistenceStage,
+          ...(isWorkerCompletionPersistenceError(error) && error.substage ? { substage: error.substage } : {}),
           runId: event.runId,
         });
         return response.status(503).json({ error: 'Worker review completion could not be persisted' });
