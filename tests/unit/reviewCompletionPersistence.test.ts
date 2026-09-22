@@ -32,6 +32,27 @@ describe('worker completion persistence diagnostics', () => {
     ]);
   });
 
+  it('classifies a pool-connect rejection before a transaction without leaking private detail', async () => {
+    const client = { query: vi.fn(), release: vi.fn() };
+    const connect = vi.fn(async () => { throw new Error(PRIVATE_DETAIL); });
+    const repository = new PostgresReviewGateRepository({ connect, query: vi.fn() }, { lifecycleEvents: 'disabled' });
+
+    let thrown: unknown;
+    try {
+      await repository.recordWorkerResult(completion(), { workerTokenDigest: 'f'.repeat(64) }, vi.fn());
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WorkerCompletionPersistenceError);
+    expect(thrown).toMatchObject({ name: 'WorkerCompletionPersistenceError', stage: 'transaction-begin' });
+    expect((thrown as Error).message).toBe('Worker completion persistence failed at transaction-begin');
+    expect(JSON.stringify(thrown)).not.toContain(PRIVATE_DETAIL);
+    expect(Object.getOwnPropertyNames(thrown as object)).not.toContain('cause');
+    expect(client.query).not.toHaveBeenCalled();
+    expect(client.release).not.toHaveBeenCalled();
+  });
+
   it('classifies a binding lookup failure without retaining private database detail', async () => {
     const client = {
       query: vi.fn(async (sql: string) => {
