@@ -190,7 +190,11 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       // Verify with git apply --unidiff-zero --check
       const tempDir = mkdtempSync(join(tmpdir(), 'git-apply-test-'));
       try {
+        for (const k of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) {
+          if (process.env[k] === '') delete process.env[k];
+        }
         execSync('git init', { cwd: tempDir, stdio: 'ignore' });
+        execSync('git config user.name "Test Runner" && git config user.email "test@example.com"', { cwd: tempDir, stdio: 'ignore' });
         writeFileSync(join(tempDir, 'store.ts'), 'const cache = new Map();\ncache.set(key, val);\n');
         execSync('git add store.ts && git commit -m "init"', { cwd: tempDir, stdio: 'ignore' });
 
@@ -423,6 +427,45 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       expect(data.verdict).toBe('overruled');
       expect(data.reasoning).toBe('Custom quorum approved architectural exemption');
     });
+
+    it('storage fallback: disputes finding successfully when record is in review_run_artifacts', async () => {
+      const mockDb = {
+        query: vi.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('review_worker_completions')) {
+            return { rows: [] }; // Empty in completions
+          }
+          if (sql.includes('review_run_artifacts')) {
+            return {
+              rows: [
+                {
+                  run_id: 'run-art-1',
+                  payload: JSON.stringify(samplePayload),
+                },
+              ],
+            };
+          }
+          return { rows: [] };
+        }),
+      };
+
+      const tool = createDisputeFindingTool({ queryableDatabase: mockDb });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          finding_id: findingId,
+          counter_argument: 'Architectural ADR 0594 allows dynamic column indexing with proven bounds.',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.verdict).toBe('overruled');
+      expect(data.disputed).toBe(true);
+      expect(data.remaining_blockers).toBe(0);
+    });
   });
 
   // ===========================================================================
@@ -622,6 +665,54 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       expect(data.attested).toBe(false);
       expect(data.gate_status).toBe('BLOCKED');
       expect(data.blockers.some((b: string) => b.includes("CI check run 'ci/unit-tests' failed"))).toBe(true);
+    });
+
+    it('PASSED gate: accepts desired_state success as authoritative passing verdict', async () => {
+      const cleanPayload = {
+        result: {
+          findings: [],
+        },
+      };
+
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-gate-success-1',
+              head_sha: TEST_HEAD_SHA,
+              desired_state: 'success',
+              payload: JSON.stringify(cleanPayload),
+            },
+          ],
+        }),
+      };
+
+      const mockCheckRuns = {
+        listCheckRunsForCommit: vi.fn().mockResolvedValue([
+          { name: 'ci/tests', status: 'completed', conclusion: 'success' },
+        ]),
+      };
+
+      const tool = createAttestPrGateTool({
+        queryableDatabase: mockDb,
+        checkRunsClient: mockCheckRuns,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          head_sha: TEST_HEAD_SHA,
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.attested).toBe(true);
+      expect(data.gate_status).toBe('PASSED');
+      expect(data.blockers).toHaveLength(0);
+      expect(data.attestation_token).toMatch(/^[a-f0-9]{64}$/);
     });
   });
 

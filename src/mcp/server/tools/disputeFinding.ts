@@ -127,6 +127,41 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           // Table may not exist
         }
 
+        // Fallback to review_run_artifacts
+        if (rows.length === 0) {
+          try {
+            const sql = `
+              SELECT a.payload, r.run_id, r.head_sha
+                FROM review_runs r
+                JOIN review_run_artifacts a ON a.run_id = r.run_id
+               WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
+               ORDER BY r.created_at DESC
+               LIMIT 5
+            `;
+            const res = await deps.queryableDatabase.query(sql, [owner, repo, pr_number]);
+            rows = res.rows;
+          } catch {
+            // Ignore
+          }
+        }
+
+        // Fallback to review_runs.artifacts column
+        if (rows.length === 0) {
+          try {
+            const sql = `
+              SELECT r.artifacts AS payload, r.run_id, r.head_sha
+                FROM review_runs r
+               WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
+               ORDER BY r.created_at DESC
+               LIMIT 5
+            `;
+            const res = await deps.queryableDatabase.query(sql, [owner, repo, pr_number]);
+            rows = res.rows;
+          } catch {
+            // Ignore
+          }
+        }
+
         for (const row of rows) {
           const runId = String(row.run_id || 'run-1');
           const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
@@ -186,15 +221,28 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
       matchedFinding.counter_argument = counter_argument;
 
       if (deps.queryableDatabase && matchedRow && parsedPayload) {
-        try {
-          await deps.queryableDatabase.query(
-            `UPDATE review_worker_completions
-                SET payload = $1
-              WHERE run_id = $2 AND execution_attempt = $3`,
-            [JSON.stringify(parsedPayload), matchedRow.run_id, matchedRow.execution_attempt]
-          );
-        } catch {
-          // Fallback or ignore if table is mock
+        if (matchedRow.execution_attempt !== undefined) {
+          try {
+            await deps.queryableDatabase.query(
+              `UPDATE review_worker_completions
+                  SET payload = $1
+                WHERE run_id = $2 AND execution_attempt = $3`,
+              [JSON.stringify(parsedPayload), matchedRow.run_id, matchedRow.execution_attempt]
+            );
+          } catch {
+            // Fallback or ignore if table is mock
+          }
+        } else {
+          try {
+            await deps.queryableDatabase.query(
+              `UPDATE review_run_artifacts
+                  SET payload = $1
+                WHERE run_id = $2`,
+              [JSON.stringify(parsedPayload), matchedRow.run_id]
+            );
+          } catch {
+            // Ignore
+          }
         }
 
         try {

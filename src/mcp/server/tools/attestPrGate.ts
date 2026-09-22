@@ -173,7 +173,9 @@ export function createAttestPrGateTool(deps: AttestPrGateDependencies = {}) {
         verdict = latestRun.desired_state;
       }
 
-      if (verdict !== 'SHIP') {
+      const normalizedVerdict = String(verdict || '').trim().toUpperCase();
+      const isPassingVerdict = normalizedVerdict === 'SHIP' || normalizedVerdict === 'SUCCESS';
+      if (!isPassingVerdict) {
         blockers.push(`Authoritative review verdict is '${verdict}', required 'SHIP'`);
       }
 

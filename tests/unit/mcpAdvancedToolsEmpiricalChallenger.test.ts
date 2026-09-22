@@ -128,7 +128,11 @@ describe('Empirical Challenger Suite: generate_fix_diff & dispute_finding (Miles
     it('1.5 Git Apply Compatibility: patches apply cleanly via git apply --unidiff-zero --check', () => {
       const tempDir = mkdtempSync(join(tmpdir(), 'git-apply-empirical-'));
       try {
+        for (const k of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) {
+          if (process.env[k] === '') delete process.env[k];
+        }
         execSync('git init', { cwd: tempDir, stdio: 'ignore' });
+        execSync('git config user.name "Test Runner" && git config user.email "test@example.com"', { cwd: tempDir, stdio: 'ignore' });
 
         // Create sample target files
         const originalA = 'lineA1\nlineA2\nlineA3\nlineA4\n';
