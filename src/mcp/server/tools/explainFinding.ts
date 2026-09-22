@@ -96,30 +96,52 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
               );
               rows = res.rows;
             }
+
+            if (context?.caller && !context.caller.isAdmin) {
+              const target = `${owner}/${repo}`.toLowerCase();
+              if (!context.caller.allowedRepositories || !context.caller.allowedRepositories.has(target)) {
+                rows = [];
+              }
+            }
           } else {
             // Tenancy scoping: Joined repository retrieval with caller access filtering
-            try {
-              const res = await deps.queryableDatabase.query(
-                `SELECT c.payload, r.owner, r.repo, r.run_id
-                   FROM review_runs r
-                   JOIN review_worker_completions c ON c.run_id = r.run_id
-                  ORDER BY r.created_at DESC, c.execution_attempt DESC
-                  LIMIT 50`
-              );
-              rows = res.rows;
-
-              if (context?.caller && !context.caller.isAdmin) {
-                if (!context.caller.allowedRepositories || context.caller.allowedRepositories.size === 0) {
-                  rows = [];
-                } else {
-                  rows = rows.filter((r) => {
+            // Fail closed: require authenticated caller context for unscoped multi-repository queries
+            if (!context?.caller) {
+              rows = [];
+            } else if (context.caller.isAdmin) {
+              try {
+                const res = await deps.queryableDatabase.query(
+                  `SELECT c.payload, r.owner, r.repo, r.run_id
+                     FROM review_runs r
+                     JOIN review_worker_completions c ON c.run_id = r.run_id
+                    ORDER BY r.created_at DESC, c.execution_attempt DESC
+                    LIMIT 50`
+                );
+                rows = res.rows;
+              } catch {
+                // Table or join may not exist in mock environment
+              }
+            } else {
+              // Non-admin caller with allowed repositories
+              if (!context.caller.allowedRepositories || context.caller.allowedRepositories.size === 0) {
+                rows = [];
+              } else {
+                try {
+                  const res = await deps.queryableDatabase.query(
+                    `SELECT c.payload, r.owner, r.repo, r.run_id
+                       FROM review_runs r
+                       JOIN review_worker_completions c ON c.run_id = r.run_id
+                      ORDER BY r.created_at DESC, c.execution_attempt DESC
+                      LIMIT 50`
+                  );
+                  rows = res.rows.filter((r) => {
                     const target = `${r.owner}/${r.repo}`.toLowerCase();
                     return context.caller!.allowedRepositories!.has(target);
                   });
+                } catch {
+                  // Table or join may not exist in mock environment
                 }
               }
-            } catch {
-              // Table or join may not exist in mock environment
             }
           }
 

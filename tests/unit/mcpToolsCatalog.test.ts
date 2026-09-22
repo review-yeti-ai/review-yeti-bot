@@ -771,6 +771,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const result = await tool.execute({
         finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
         question: 'What if I replace the Map with a bounded LRU cache with max capacity 1000?',
+        owner: 'calltelemetry',
+        repo: 'cisco-cdr',
       });
 
       const data = JSON.parse((result.content[0] as any).text);
@@ -784,6 +786,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const result = await tool.execute({
         finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
         question: 'Can I just disable and remove the cache check?',
+        owner: 'calltelemetry',
+        repo: 'cisco-cdr',
       });
 
       const data = JSON.parse((result.content[0] as any).text);
@@ -796,6 +800,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const result = await tool.execute({
         finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
         question: 'Why was this finding raised and what does it mean?',
+        owner: 'calltelemetry',
+        repo: 'cisco-cdr',
       });
 
       const data = JSON.parse((result.content[0] as any).text);

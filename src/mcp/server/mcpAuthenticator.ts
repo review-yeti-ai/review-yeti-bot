@@ -44,18 +44,6 @@ export function extractBearerToken(request: Request): string | null {
     if (match?.[1]) return match[1];
   }
 
-  // Fallback for GET /api/mcp/sse query param authorization
-  if (request.method === 'GET') {
-    const tokenQuery = request.query?.token;
-    if (typeof tokenQuery === 'string' && tokenQuery.trim()) {
-      return tokenQuery.trim();
-    }
-    const accessTokenQuery = request.query?.access_token;
-    if (typeof accessTokenQuery === 'string' && accessTokenQuery.trim()) {
-      return accessTokenQuery.trim();
-    }
-  }
-
   return null;
 }
 
