@@ -410,6 +410,34 @@ describe('POST /api/dispatch/action', () => {
     }));
   });
 
+  it('rejects central admission for a valid non-central caller event', async () => {
+    const nonCentralEventClaims = {
+      ...centralManualClaims,
+      event_name: 'pull_request',
+    };
+    const fixture = app({
+      allowAppGate: true,
+      verifier: { verify: vi.fn(async () => nonCentralEventClaims) },
+      centralExternalRepositories,
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        ...centralManualTarget,
+        caller: {
+          ...body.caller,
+          eventName: 'pull_request',
+          workflowRef: nonCentralEventClaims.workflow_ref,
+          workflowSha: nonCentralEventClaims.workflow_sha,
+        },
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
   it('rejects manual central dispatch from any other parent workflow', async () => {
     const centralVerified = {
       repository: 'calltelemetry/ct-review-actions', repository_id: '99999', repository_owner_id: '99',
