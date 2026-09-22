@@ -122,6 +122,18 @@ describe('service-owned authoritative completion context', () => {
     });
   });
 
+  it('fails closed when every changed file is excluded by the shared hunk filter', async () => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'package-lock.json', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      expectedFileCount: 1,
+    });
+
+    redacted(await rejected(f.context(f.gate)));
+  });
+
   it('does not turn a trusted required-lane contract into successful worker evidence', async () => {
     const f = fixture();
     const context = await f.context(f.gate);
