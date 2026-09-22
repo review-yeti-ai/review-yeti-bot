@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.7...v1.83.0) (2026-09-22)
+
+
+### Features
+
+* **mcp:** add native resources, SSE subscriptions, and advanced review tools ([#952](https://github.com/review-yeti-ai/review-yeti-bot/issues/952)) ([7be9afb](https://github.com/review-yeti-ai/review-yeti-bot/commit/7be9afb85af977cb6ecd085fe98a7b7a011f8cbc))
+
 ## [1.82.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.6...v1.82.7) (2026-09-22)
 
 
