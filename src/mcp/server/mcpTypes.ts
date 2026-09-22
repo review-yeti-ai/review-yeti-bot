@@ -123,6 +123,10 @@ export interface ServerCapabilities {
   tools?: {
     listChanged?: boolean;
   };
+  resources?: {
+    subscribe?: boolean;
+    listChanged?: boolean;
+  };
 }
 
 /**
@@ -252,6 +256,82 @@ export type LoggingMessageNotification = JsonRpcNotification<
   }
 >;
 
+// MCP Native Resources Types (2024-11-05 spec)
+
+export interface ResourceDefinition {
+  uri: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface ResourceTemplateDefinition {
+  uriTemplate: string;
+  name: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export type ListResourcesRequest = JsonRpcRequest<
+  'resources/list',
+  {
+    cursor?: string;
+  } | undefined
+>;
+
+export interface ListResourcesResult {
+  resources: ResourceDefinition[];
+  resourceTemplates?: ResourceTemplateDefinition[];
+  nextCursor?: string;
+}
+
+export type ReadResourceRequest = JsonRpcRequest<
+  'resources/read',
+  {
+    uri: string;
+  }
+>;
+
+export interface ResourceTextContent {
+  uri: string;
+  mimeType?: string;
+  text: string;
+}
+
+export interface ResourceBlobContent {
+  uri: string;
+  mimeType?: string;
+  blob: string;
+}
+
+export type ResourceContent = ResourceTextContent | ResourceBlobContent;
+
+export interface ReadResourceResult {
+  contents: ResourceContent[];
+}
+
+export type SubscribeResourceRequest = JsonRpcRequest<
+  'resources/subscribe',
+  {
+    uri: string;
+  }
+>;
+
+export type UnsubscribeResourceRequest = JsonRpcRequest<
+  'resources/unsubscribe',
+  {
+    uri: string;
+  }
+>;
+
+export type ResourceUpdatedNotification = JsonRpcNotification<
+  'notifications/resources/updated',
+  {
+    uri: string;
+    payload?: unknown;
+  }
+>;
+
 // Type Guards and Helper Constructors
 
 export function isJsonRpcRequest(message: unknown): message is JsonRpcRequest {
@@ -280,6 +360,22 @@ export function isListToolsRequest(message: unknown): message is ListToolsReques
 
 export function isPingRequest(message: unknown): message is PingRequest {
   return isJsonRpcRequest(message) && message.method === 'ping';
+}
+
+export function isListResourcesRequest(message: unknown): message is ListResourcesRequest {
+  return isJsonRpcRequest(message) && message.method === 'resources/list';
+}
+
+export function isReadResourceRequest(message: unknown): message is ReadResourceRequest {
+  return isJsonRpcRequest(message) && message.method === 'resources/read';
+}
+
+export function isSubscribeResourceRequest(message: unknown): message is SubscribeResourceRequest {
+  return isJsonRpcRequest(message) && message.method === 'resources/subscribe';
+}
+
+export function isUnsubscribeResourceRequest(message: unknown): message is UnsubscribeResourceRequest {
+  return isJsonRpcRequest(message) && message.method === 'resources/unsubscribe';
 }
 
 export function buildJsonRpcResponse<T>(id: JsonRpcId, result: T): JsonRpcResponse<T> {

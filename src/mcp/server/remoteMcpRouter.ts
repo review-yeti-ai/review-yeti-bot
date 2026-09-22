@@ -35,7 +35,17 @@ import {
   createWatchReviewProgressTool,
   createPreflightDiffReviewTool,
   createExplainFindingTool,
+  createGenerateFixDiffTool,
+  createDisputeFindingTool,
+  createAttestPrGateTool,
+  createReplyReviewThreadTool,
 } from './tools';
+
+import {
+  listResourceCatalog,
+  readResourceContent,
+  parseResourceUri,
+} from './resources';
 
 export type { McpExecutionContext };
 
@@ -78,6 +88,7 @@ export interface McpSessionState {
   sseResponse?: Response;
   keepAliveTimer?: NodeJS.Timeout;
   onCloseCallbacks: Array<() => void>;
+  subscriptions: Set<string>;
 }
 
 export interface McpSessionManager {
@@ -110,12 +121,17 @@ export interface RemoteMcpRouterOptions {
   watchDeps?: any;
   preflightDeps?: any;
   explainDeps?: any;
+  generateFixDiffDeps?: any;
+  disputeFindingDeps?: any;
+  attestPrGateDeps?: any;
+  replyReviewThreadDeps?: any;
 }
 
 export type RemoteMcpRouter = Router & {
   destroy(): void;
   sessionManager: McpSessionManager;
   toolRegistry: McpToolRegistry;
+  notifyResourceUpdated(uri: string, payload?: any): number;
 };
 
 export function createDefaultToolRegistry(options?: {
@@ -127,6 +143,11 @@ export function createDefaultToolRegistry(options?: {
   watchDeps?: any;
   preflightDeps?: any;
   explainDeps?: any;
+  generateFixDiffDeps?: any;
+  disputeFindingDeps?: any;
+  attestPrGateDeps?: any;
+  replyReviewThreadDeps?: any;
+  notifyResourceUpdated?: (uri: string, payload?: any) => number;
 }): McpToolRegistry {
   const registry = new DefaultMcpToolRegistry();
   const db = options?.db;
@@ -143,6 +164,14 @@ export function createDefaultToolRegistry(options?: {
   registry.registerTool(createWatchReviewProgressTool(options?.watchDeps));
   registry.registerTool(createPreflightDiffReviewTool(options?.preflightDeps));
   registry.registerTool(createExplainFindingTool({ queryableDatabase: db, ...options?.explainDeps }));
+  registry.registerTool(createGenerateFixDiffTool({ queryableDatabase: db, ...options?.generateFixDiffDeps }));
+  registry.registerTool(createDisputeFindingTool({
+    queryableDatabase: db,
+    notifyResourceUpdated: options?.notifyResourceUpdated,
+    ...options?.disputeFindingDeps,
+  }));
+  registry.registerTool(createAttestPrGateTool({ queryableDatabase: db, ...options?.attestPrGateDeps }));
+  registry.registerTool(createReplyReviewThreadTool(options?.replyReviewThreadDeps));
 
   return registry;
 }
@@ -180,7 +209,10 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
       getTool: (name: string) => map.get(name),
     };
   } else {
-    toolRegistry = createDefaultToolRegistry(options);
+    toolRegistry = createDefaultToolRegistry({
+      ...options,
+      notifyResourceUpdated: options.disputeFindingDeps?.notifyResourceUpdated || ((uri, payload) => router.notifyResourceUpdated(uri, payload)),
+    });
   }
 
   // Session state map
@@ -243,6 +275,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
         lastSeenAt: now(),
         sseResponse,
         onCloseCallbacks: [],
+        subscriptions: new Set<string>(),
       };
       sessions.set(id, session);
       return session;
@@ -274,6 +307,29 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
 
   router.sessionManager = sessionManager;
   router.toolRegistry = toolRegistry;
+
+  router.notifyResourceUpdated = (uri: string, payload?: any): number => {
+    let notifiedCount = 0;
+    for (const session of sessions.values()) {
+      if (session.subscriptions && (session.subscriptions.has(uri) || session.subscriptions.has('*'))) {
+        if (session.sseResponse && !session.sseResponse.writableEnded) {
+          const notification: any = {
+            jsonrpc: '2.0',
+            method: 'notifications/resources/updated',
+            params: {
+              uri,
+            },
+          };
+          if (payload !== undefined) {
+            notification.params.payload = payload;
+          }
+          session.sseResponse.write(`event: message\ndata: ${JSON.stringify(notification)}\n\n`);
+          notifiedCount++;
+        }
+      }
+    }
+    return notifiedCount;
+  };
 
   // Authentication helper
   async function resolveCaller(req: Request): Promise<McpAuthenticatedCaller> {
@@ -383,6 +439,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {
             tools: { listChanged: true },
+            resources: { subscribe: true, listChanged: true },
           },
           serverInfo: {
             name: SERVER_NAME,
@@ -529,6 +586,156 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
         }
       }
 
+      case 'resources/list': {
+        const catalog = listResourceCatalog();
+        return {
+          statusCode: 200,
+          responseBody: buildJsonRpcResponse(id ?? null, catalog),
+        };
+      }
+
+      case 'resources/read': {
+        const { uri } = (params || {}) as { uri?: string };
+        if (!uri || typeof uri !== 'string') {
+          return {
+            statusCode: 200,
+            responseBody: buildJsonRpcError(
+              id ?? null,
+              JSONRPC_ERRORS.INVALID_PARAMS,
+              'Resource URI is required and must be a string'
+            ),
+          };
+        }
+
+        const parsed = parseResourceUri(uri);
+        if (!parsed) {
+          return {
+            statusCode: 200,
+            responseBody: buildJsonRpcError(
+              id ?? null,
+              JSONRPC_ERRORS.INVALID_PARAMS,
+              `Unsupported or invalid resource URI: ${uri}`
+            ),
+          };
+        }
+
+        const authorized = await checkAuthorization(caller, parsed.owner, parsed.repo);
+        if (!authorized) {
+          return {
+            statusCode: 403,
+            responseBody: formatRbacErrorResponse(new McpRbacError(parsed.owner, parsed.repo)),
+          };
+        }
+
+        try {
+          const content = await readResourceContent(uri, options.db);
+          return {
+            statusCode: 200,
+            responseBody: buildJsonRpcResponse(id ?? null, content),
+          };
+        } catch (err: any) {
+          return {
+            statusCode: 200,
+            responseBody: buildJsonRpcError(
+              id ?? null,
+              JSONRPC_ERRORS.INTERNAL_ERROR,
+              err instanceof Error ? err.message : 'Error reading resource'
+            ),
+          };
+        }
+      }
+
+      case 'resources/subscribe': {
+        const { uri } = (params || {}) as { uri?: string };
+        if (!uri || typeof uri !== 'string') {
+          return {
+            statusCode: 200,
+            responseBody: buildJsonRpcError(
+              id ?? null,
+              JSONRPC_ERRORS.INVALID_PARAMS,
+              'Resource URI is required and must be a string'
+            ),
+          };
+        }
+
+        const parsed = parseResourceUri(uri);
+        if (!parsed) {
+          return {
+            statusCode: 200,
+            responseBody: buildJsonRpcError(
+              id ?? null,
+              JSONRPC_ERRORS.INVALID_PARAMS,
+              `Unsupported or invalid resource URI: ${uri}`
+            ),
+          };
+        }
+
+        const authorized = await checkAuthorization(caller, parsed.owner, parsed.repo);
+        if (!authorized) {
+          return {
+            statusCode: 403,
+            responseBody: formatRbacErrorResponse(new McpRbacError(parsed.owner, parsed.repo)),
+          };
+        }
+
+        let targetSession = explicitSession;
+        let createdSessionId: string | undefined;
+        if (!targetSession) {
+          targetSession = sessionManager.createSession();
+          createdSessionId = targetSession.id;
+        }
+        targetSession.subscriptions.add(uri);
+
+        return {
+          statusCode: 200,
+          responseBody: buildJsonRpcResponse(id ?? null, {}),
+          newSessionId: createdSessionId,
+        };
+      }
+
+      case 'resources/unsubscribe': {
+        const { uri } = (params || {}) as { uri?: string };
+        if (!uri || typeof uri !== 'string') {
+          return {
+            statusCode: 200,
+            responseBody: buildJsonRpcError(
+              id ?? null,
+              JSONRPC_ERRORS.INVALID_PARAMS,
+              'Resource URI is required and must be a string'
+            ),
+          };
+        }
+
+        const parsed = parseResourceUri(uri);
+        if (!parsed) {
+          return {
+            statusCode: 200,
+            responseBody: buildJsonRpcError(
+              id ?? null,
+              JSONRPC_ERRORS.INVALID_PARAMS,
+              `Unsupported or invalid resource URI: ${uri}`
+            ),
+          };
+        }
+
+        const authorized = await checkAuthorization(caller, parsed.owner, parsed.repo);
+        if (!authorized) {
+          return {
+            statusCode: 403,
+            responseBody: formatRbacErrorResponse(new McpRbacError(parsed.owner, parsed.repo)),
+          };
+        }
+
+        if (explicitSession) {
+          explicitSession.subscriptions.delete(uri);
+        }
+
+        return {
+          statusCode: 200,
+          responseBody: buildJsonRpcResponse(id ?? null, {}),
+        };
+      }
+
       default: {
         return {
           statusCode: 200,
@@ -631,6 +838,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
       identity: caller.callerId,
       sseResponse: res,
       onCloseCallbacks: [],
+      subscriptions: new Set<string>(),
     };
     sessions.set(sessionId, session);
 
