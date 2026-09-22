@@ -18,6 +18,10 @@ import {
   requireLifecycleEventsMode,
   type ReviewLifecycleEventsOptions,
 } from './reviewEventRepository';
+import {
+  WorkerCompletionPersistenceError,
+  type WorkerCompletionPersistenceStage,
+} from '../review/workerCompletionPersistenceError';
 export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationNotStarted } from '../review/reviewGateContracts';
 
@@ -111,17 +115,23 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
   ): Promise<GateWorkerResultTransition> {
     const event = parseWorkerReviewCompletion(input);
     if (!Number.isFinite(now)) throw new Error('Invalid gate completion clock');
-    const client = await this.pool.connect();
+    let stage: WorkerCompletionPersistenceStage = 'transaction-begin';
+    let client: Client | undefined;
     try {
+      client = await this.pool.connect();
       await client.query('BEGIN');
       await client.query("SET LOCAL lock_timeout = '5s'");
+      stage = 'binding-lookup';
       const binding = (await client.query('SELECT repository_id, pr_number FROM review_runs WHERE run_id = $1', [event.runId])).rows[0];
       if (!binding || Number(binding.repository_id) !== event.repositoryId || Number(binding.pr_number) !== event.prNumber) {
+        stage = 'commit';
         await client.query('COMMIT'); return binding ? 'unauthorized' : 'ignored';
       }
+      stage = 'advisory-lock';
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
         reviewDispatchPrLockKey(event.repositoryId, event.prNumber),
       ]);
+      stage = 'state-load';
       const result = await client.query(`SELECT gate.*, runs.status AS run_status,
           runs.attempt AS current_generation, runs.effective_config_digest, runs.received_at, runs.terminal_deadline,
           runs.authoritative_gate_app_id,
@@ -133,7 +143,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         FOR UPDATE OF gate, runs, outbox`, [event.runId]);
       const row = result.rows[0];
       const finish = async (status: GateWorkerResultTransition): Promise<GateWorkerResultTransition> => {
-        await client.query('COMMIT'); return status;
+        stage = 'commit';
+        await client!.query('COMMIT'); return status;
       };
       if (!row) return await finish('ignored');
       if (typeof row.worker_token_digest !== 'string' || !/^[a-f0-9]{64}$/u.test(row.worker_token_digest)
@@ -160,6 +171,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
 
       const deadline = new Date(row.terminal_deadline).getTime();
       const deadlineValid = Number.isFinite(deadline) && row.terminal_deadline != null && now < deadline;
+      stage = 'trusted-completion-resolution';
       const trusted = deadlineValid ? await this.resolveCompletion(resolve, gate) : undefined;
       const currentDecision = trusted ? evaluateReviewGate({ candidate: coordinates, current: trusted.current }) : undefined;
       const derived = trusted && currentDecision?.status === 'pending' ? deriveCanonicalWorkerReviewEvidence(event, {
@@ -200,6 +212,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           failureClass, event.result.failureDiagnostics, event.executionAttempt,
         ));
 
+      stage = 'gate-update';
       await client.query(`UPDATE review_gate_attempts SET evidence = $2, decision = $3,
           worker_result_digest = $4, desired_state = $5, desired_version = desired_version + 1,
           current_attempt = $6, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
@@ -217,6 +230,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       // is that same bound, so this insert cannot fail on size for a payload
       // that reached the transaction.
       const completionJson = JSON.stringify(event);
+      stage = 'completion-insert';
       await client.query(`INSERT INTO review_worker_completions
           (run_id, execution_attempt, content_digest, payload, byte_length)
         VALUES ($1, $2, $3, $4::jsonb, $5)
@@ -225,9 +239,11 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       // Authenticated completion proves projection even when Kubernetes accepted
       // the Job before its dispatcher ACK. Keep 'projected' so a failed review's
       // explicit re-admission advances execution and receives a fresh Secret.
+      stage = 'outbox-update';
       await client.query(`UPDATE review_dispatch_outbox SET status = 'projected',
           lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($2/1000.0)
         WHERE run_id = $1`, [event.runId, now]);
+      stage = 'run-update';
       await client.query(`UPDATE review_runs SET status = $2, stage = 'publish',
           result_digest = $3, error_text = $4,
           failure_diagnostics = CASE WHEN $6::jsonb IS NULL THEN failure_diagnostics ELSE $6::jsonb END,
@@ -235,14 +251,19 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           updated_at = to_timestamp($5/1000.0) WHERE run_id = $1`,
       [event.runId, decision.status === 'success' ? 'succeeded' : decision.status === 'cancelled' ? 'superseded' : 'failed',
         resultDigest, decision.status === 'success' ? null : `review gate: ${decision.reason}`, now, failureDiagnostics]);
+      stage = 'lifecycle-append';
       await this.appendLifecycle(client, event.runId, 'review.lifecycle.terminal', now, {
         stage: 'terminal', terminal_class: decision.status, result_digest: resultDigest,
       });
-      if (decision.status === 'success') await this.options.onEligibleCompletion?.(client, gate, now);
+      if (decision.status === 'success') {
+        stage = 'eligible-completion-hook';
+        await this.options.onEligibleCompletion?.(client, gate, now);
+      }
       return await finish('recorded');
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined); throw error;
-    } finally { client.release(); }
+    } catch {
+      if (client) await client.query('ROLLBACK').catch(() => undefined);
+      throw new WorkerCompletionPersistenceError(stage);
+    } finally { client?.release(); }
   }
 
   /** Reserve the current durable dispatch's gate before its worker is projected.

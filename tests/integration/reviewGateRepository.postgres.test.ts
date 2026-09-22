@@ -1147,7 +1147,8 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         throw new Error('injected transaction failure');
       });
       const failing = new PostgresReviewGateRepository(pool!, { ...ENABLED_LIFECYCLE_EVENTS, onEligibleCompletion: hook });
-      await expect(failing.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).rejects.toThrow('injected transaction failure');
+      await expect(failing.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT))
+        .rejects.toMatchObject({ name: 'WorkerCompletionPersistenceError', stage: 'eligible-completion-hook' });
       expect(await snapshot(id)).toEqual(before);
       expect((await pool!.query('SELECT * FROM review_ci_requests WHERE review->>\'runId\'=$1', [id])).rows).toHaveLength(0);
       // The completion payload rolls back with everything else.
@@ -1468,7 +1469,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const repository = new PostgresReviewGateRepository(pool!, { ...ENABLED_LIFECYCLE_EVENTS, completionResolutionTimeoutMs: 250 });
       const before = await snapshot(id);
       await expect(repository.recordWorkerResult(event, WORKER_PROOF,
-        () => new Promise(() => undefined), COMPLETED_AT)).rejects.toThrow('resolution deadline exceeded');
+        () => new Promise(() => undefined), COMPLETED_AT)).rejects.toMatchObject({ stage: 'trusted-completion-resolution' });
       expect(await snapshot(id)).toEqual(before);
       // The transaction released its per-PR lock despite the unresolved reader.
       expect(await repository.reserve(id, APP_ID, COMPLETED_AT + 1)).not.toBeNull();
@@ -1486,7 +1487,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const before = await snapshot(id);
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, async () => {
         throw new Error('synthetic trusted resolver failure');
-      }, COMPLETED_AT)).rejects.toThrow('synthetic trusted resolver failure');
+      }, COMPLETED_AT)).rejects.toMatchObject({ stage: 'trusted-completion-resolution' });
       expect(await snapshot(id)).toEqual(before);
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
       expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
@@ -1501,7 +1502,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       await pool!.query("ALTER TABLE review_runs ADD CONSTRAINT test_reject_worker_success CHECK (status <> 'succeeded')");
       try {
         await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT))
-          .rejects.toMatchObject({ code: '23514', constraint: 'test_reject_worker_success' });
+          .rejects.toMatchObject({ stage: 'run-update' });
         expect(await snapshot(id)).toEqual(before);
       } finally {
         await pool!.query('ALTER TABLE review_runs DROP CONSTRAINT test_reject_worker_success');
