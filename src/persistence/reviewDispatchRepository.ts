@@ -34,6 +34,7 @@ import {
   ReviewGenerationRecoveryLedgerError,
   validateReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryEvidence,
+  type ReviewGenerationRecoveryRequest,
 } from '../review/reviewGenerationRecovery';
 
 interface QueryResult {
@@ -236,11 +237,10 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
   }
 }
 
-function validateGenerationRecovery(
+function generationRecoveryRequest(
   input: ReviewAdmissionInput,
   runId: string,
-  evidence: ReviewGenerationRecoveryEvidence[],
-): void {
+): ReviewGenerationRecoveryRequest {
   const expected = input.expectedGeneration;
   if (!input.centralActionDispatch || input.publicationMode !== 'app-gate'
     || !input.authoritativeGate || input.retryRequested !== true
@@ -248,18 +248,27 @@ function validateGenerationRecovery(
     || input.retryAfterExecutionAttempt !== expected - 1) {
     throw new ReviewGenerationConflictError(expected ?? 1, 1);
   }
+  return {
+    owner: input.identity.owner,
+    repo: input.identity.repo,
+    headSha: input.identity.headSha,
+    runId,
+    expectedGeneration: expected,
+    expectedAppId: input.authoritativeGate.expectedAppId,
+  };
+}
+
+function validateGenerationRecovery(
+  input: ReviewAdmissionInput,
+  runId: string,
+  evidence: ReviewGenerationRecoveryEvidence[],
+): void {
+  const request = generationRecoveryRequest(input, runId);
   try {
-    validateReviewGenerationRecoveryEvidence({
-      owner: input.identity.owner,
-      repo: input.identity.repo,
-      headSha: input.identity.headSha,
-      runId,
-      expectedGeneration: expected,
-      expectedAppId: input.authoritativeGate.expectedAppId,
-    }, evidence);
+    validateReviewGenerationRecoveryEvidence(request, evidence);
   } catch (error) {
     if (error instanceof ReviewGenerationRecoveryLedgerError) {
-      throw new ReviewGenerationConflictError(expected, 1);
+      throw new ReviewGenerationConflictError(request.expectedGeneration, 1);
     }
     throw error;
   }
@@ -651,10 +660,16 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     let preparedGenerationRecovery: ReviewGenerationRecoveryEvidence[] = [];
     if ((input.expectedGeneration ?? 1) > 1
       && input.retryRequested === true
-      && this.options.resolveGenerationRecovery
-      && !(await this.hasDurableIdentity(identityDigest))) {
-      preparedGenerationRecovery = await this.resolveGenerationRecovery(input);
-      validateGenerationRecovery(input, runId, preparedGenerationRecovery);
+      && this.options.resolveGenerationRecovery) {
+      generationRecoveryRequest(input, runId);
+      if (!(await this.hasDurableIdentity(identityDigest))) {
+        // This validation is repeated under the PR transaction lock below for
+        // atomic admission. The early pass prevents an unauthenticated caller
+        // from driving installation-token minting and paginated GitHub reads.
+        await this.validateAuthoritativeAdmission(input);
+        preparedGenerationRecovery = await this.resolveGenerationRecovery(input);
+        validateGenerationRecovery(input, runId, preparedGenerationRecovery);
+      }
     }
     const client = await this.pool.connect();
     try {

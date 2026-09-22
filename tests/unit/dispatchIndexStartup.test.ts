@@ -4,6 +4,7 @@ import type { AuthoritativeServiceConfig } from '../../src/auth/authoritativeSer
 import type { PostgresReviewGateRepository } from '../../src/persistence/reviewGateRepository';
 import type { StoredReviewGate } from '../../src/review/reviewGateContracts';
 import { createReviewCiLanePlan } from '../../src/review/reviewCi';
+import { deriveReviewRunId } from '../../src/review/reviewAdmission';
 
 const mocks = vi.hoisted(() => {
   const pool = { query: vi.fn() };
@@ -11,7 +12,7 @@ const mocks = vi.hoisted(() => {
   const serverClose = vi.fn();
   const listen = vi.fn(() => ({ close: serverClose }));
   const createApp = vi.fn((_options: unknown) => ({ listen }));
-  const repository = vi.fn(function () {});
+  const repository = vi.fn(function (_pool: unknown, _queryable: unknown, _options: unknown) {});
   const gateStorage = { recordWorkerResult: vi.fn(), claimPublication: vi.fn(), publishLocked: vi.fn(),
     retryPublication: vi.fn(), reapTerminalAttempts: vi.fn(), advanceProjectedAttempts: vi.fn() };
   const gateRepository = vi.fn(function (_pool: unknown, _options: unknown) { return gateStorage; });
@@ -26,11 +27,14 @@ const mocks = vi.hoisted(() => {
   const ciRoutes = { service: { tag: 'ci-service' }, verifier: { tag: 'ci-verifier' } };
   const ciRuntime = vi.fn((_options: unknown) => ({ routes: ciRoutes, runOnce: ciRunOnce }));
   const lookup = vi.fn(async () => 987);
+  const token = vi.fn(async () => ({ token: 'ghs_generation_recovery' }));
+  const installationClient = vi.fn();
+  const readGenerationRecovery = vi.fn(async () => []);
   const error = vi.fn();
   const legacyReaper = vi.fn();
   return { pool, initialize, listen, serverClose, createApp, repository, gateStorage, gateRepository, getPrepared,
-    validateAdmission, authoritative, serviceConfig, lookup, error, legacyReaper, resolver, enqueueCi, ciRunOnce,
-    ciRoutes, ciRuntime };
+    validateAdmission, authoritative, serviceConfig, lookup, token, installationClient, readGenerationRecovery,
+    error, legacyReaper, resolver, enqueueCi, ciRunOnce, ciRoutes, ciRuntime };
 });
 
 vi.mock('../../src/auth/githubActionsOidc', () => ({
@@ -53,7 +57,10 @@ vi.mock('../../src/review/abandonedRunReaper', () => ({ AbandonedRunReaper: clas
   runOnce = vi.fn();
 } }));
 vi.mock('../../src/github/installationClient', () => ({
-  GitHubInstallationClient: class {},
+  GitHubInstallationClient: class {
+    readReviewGenerationRecovery = mocks.readGenerationRecovery;
+    constructor(options: unknown) { mocks.installationClient(options); }
+  },
   REVIEW_REFRESH_ACTION: Object.freeze({ identifier: 'review-yeti/refresh' }),
 }));
 vi.mock('../../src/github/appAuth', () => ({ getGitHubAppRepositoryPublishToken: vi.fn() }));
@@ -66,6 +73,7 @@ vi.mock('../../src/utils/logger', () => ({ logger: { error: mocks.error, info: v
 vi.mock('../../src/github/boundedAppToken', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/github/boundedAppToken')>(),
   getBoundedRepositoryInstallationId: mocks.lookup,
+  getBoundedRepositoryToken: mocks.token,
 }));
 
 function authoritativeConfig(): AuthoritativeServiceConfig {
@@ -107,6 +115,8 @@ describe('Action dispatch startup transport and admission wiring', () => {
     mocks.serviceConfig.mockReturnValue(undefined);
     mocks.enqueueCi.mockReset().mockResolvedValue(undefined);
     mocks.ciRunOnce.mockReset().mockResolvedValue(undefined);
+    mocks.token.mockReset().mockResolvedValue({ token: 'ghs_generation_recovery' });
+    mocks.readGenerationRecovery.mockReset().mockResolvedValue([]);
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
     vi.spyOn(process, 'once').mockReturnValue(process);
     vi.stubGlobal('fetch', vi.fn(() => { throw new Error('unexpected network call'); }));
@@ -290,6 +300,43 @@ describe('Action dispatch startup transport and admission wiring', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(service.runOnce).toHaveBeenCalledOnce();
     expect(mocks.pool.query).not.toHaveBeenCalled();
+  });
+
+  it('wires exact immutable identity into the production generation-recovery reader', async () => {
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    await start();
+    const options = mocks.repository.mock.calls[0][2] as {
+      resolveGenerationRecovery(input: any): Promise<unknown[]>;
+    };
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      snapshotDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+    };
+    const input = {
+      identity,
+      expectedGeneration: 2,
+      authoritativeGate: { expectedAppId: 4_385_771 },
+    };
+
+    await expect(options.resolveGenerationRecovery(input)).resolves.toEqual([]);
+    expect(mocks.token).toHaveBeenCalledExactlyOnceWith({
+      appId: '4385771', privateKey: 'synthetic-startup-private-key',
+      owner: 'calltelemetry', repo: 'cisco-cdr', baseUrl: 'https://api.github.com',
+    }, 'publish');
+    expect(mocks.installationClient).toHaveBeenCalledExactlyOnceWith({
+      token: 'ghs_generation_recovery', baseUrl: 'https://api.github.com',
+    });
+    expect(mocks.readGenerationRecovery).toHaveBeenCalledExactlyOnceWith({
+      owner: 'calltelemetry', repo: 'cisco-cdr', headSha: 'a'.repeat(40),
+      runId: deriveReviewRunId(identity as any), expectedGeneration: 2, expectedAppId: 4_385_771,
+    });
+
+    await expect(options.resolveGenerationRecovery({ identity, expectedGeneration: 2 }))
+      .rejects.toThrow('generation recovery identity is unavailable');
+    await expect(options.resolveGenerationRecovery({ identity, authoritativeGate: { expectedAppId: 4_385_771 } }))
+      .rejects.toThrow('generation recovery identity is unavailable');
+    expect(mocks.token).toHaveBeenCalledOnce();
   });
 
   it.each(['SIGTERM', 'SIGINT'])('stops the opted-in authoritative timer on %s', async (signal) => {

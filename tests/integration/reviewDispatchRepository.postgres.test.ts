@@ -174,7 +174,7 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
       {
         lifecycleEvents: 'disabled',
         requireExpectedGeneration: true,
-        validateAuthoritativeAdmission: async () => undefined,
+        validateAuthoritativeAdmission: async () => { order.push('validate'); },
         resolveGenerationRecovery: async () => {
           order.push('resolve');
           return [{
@@ -189,7 +189,35 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
     );
 
     await expect(repository.admit(input)).rejects.toThrow('durable-admission-sentinel');
-    expect(order).toEqual(['probe', 'resolve', 'connect']);
+    expect(order).toEqual(['probe', 'validate', 'resolve', 'connect']);
+  });
+
+  it('does not read recovery evidence when early authoritative validation fails', async () => {
+    const resolveGenerationRecovery = vi.fn(async () => []);
+    const connect = vi.fn();
+    const repository = new PostgresReviewDispatchRepository(
+      { query: async () => ({ rows: [] }), connect } as unknown as Pool,
+      undefined,
+      {
+        lifecycleEvents: 'disabled',
+        requireExpectedGeneration: true,
+        validateAuthoritativeAdmission: async () => { throw new Error('untrusted central caller'); },
+        resolveGenerationRecovery,
+      },
+    );
+    const input = {
+      ...authoritativeAdmission('manual-untrusted-state-loss-retry'),
+      eventName: 'workflow_dispatch',
+      centralActionDispatch: true,
+      expectedGeneration: 2,
+      retryRequested: true,
+      retryAfterExecutionAttempt: 1,
+    };
+
+    await expect(repository.admit(input))
+      .rejects.toThrow('Authoritative admission validation unavailable');
+    expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
   });
 
   it.each(['pull_request', 'pull_request_target'])(
@@ -2222,6 +2250,41 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
           data: { policy_digest: input.effectivePolicyDigest,
             retry_class: 'same_identity_redelivery', stage: 'admission' } },
       ]);
+    });
+
+    it('uses an existing durable generation without consulting external recovery evidence', async () => {
+      const resolveGenerationRecovery = vi.fn(async () => { throw new Error('resolver must not run'); });
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'disabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      });
+      const firstInput = {
+        ...authoritativeAdmission('central-existing-a1'),
+        eventName: 'repository_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 1,
+      };
+      const first = await repository.admit(firstInput);
+      await bindPendingGate(gateRepository);
+      await client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [first.run.runId]);
+      await client.query("UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1", [first.run.runId]);
+      const retryInput = {
+        ...authoritativeAdmission('central-existing-a2', 2_000),
+        eventName: 'workflow_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 2,
+        retryRequested: true,
+        retryAfterExecutionAttempt: 1,
+      };
+
+      const retried = await repository.admit(retryInput);
+
+      expect(retried.run.attempt).toBe(1);
+      expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+      expect((await dispatchState(client, retried.run.runId)).outbox.execution_attempt).toBe(1);
+      expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count)
+        .toBe(0);
     });
 
     it('keeps an invalid external recovery ledger as a generation conflict with no durable writes', async () => {
