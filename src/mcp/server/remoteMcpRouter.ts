@@ -16,6 +16,7 @@ import {
   buildJsonRpcError,
   buildToolResultText,
   buildToolResultJson,
+  type McpExecutionContext,
 } from './mcpTypes';
 import {
   type McpAuthenticatedCaller,
@@ -36,12 +37,7 @@ import {
   createExplainFindingTool,
 } from './tools';
 
-export interface McpExecutionContext {
-  sessionId?: string;
-  caller?: McpAuthenticatedCaller;
-  identity?: string;
-  emitProgress?: (progress: number, total?: number, message?: string) => void;
-}
+export type { McpExecutionContext };
 
 export interface McpToolHandler {
   definition: ToolDefinition;

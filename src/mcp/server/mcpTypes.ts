@@ -5,6 +5,30 @@
  * with zero runtime dependencies.
  */
 
+import type { GitHubActionsOidcClaims } from '../../auth/githubActionsOidc';
+
+export interface McpAuthenticatedCaller {
+  /** Authentication pathway: cluster static admin token or GitHub Actions OIDC */
+  readonly authType: 'static_token' | 'oidc';
+  /** Truncated SHA-256 digest of token (first 12 chars) for audit logging without leaking secret */
+  readonly tokenDigest: string;
+  /** True if caller authenticated via the static cluster secret (unrestricted repository reach) */
+  readonly isAdmin: boolean;
+  /** Set of permitted repository coordinates in lowercase ('owner/repo'). Null indicates unrestricted admin */
+  readonly allowedRepositories: ReadonlySet<string> | null;
+  /** GitHub Actions OIDC verified claims payload if authType is 'oidc' */
+  readonly claims?: GitHubActionsOidcClaims;
+  /** Human-readable or machine caller identifier */
+  readonly callerId: string;
+}
+
+export interface McpExecutionContext {
+  sessionId?: string;
+  caller?: McpAuthenticatedCaller;
+  identity?: string;
+  emitProgress?: (progress: number, total?: number, message?: string) => void;
+}
+
 /**
  * MCP Protocol Version compatibility constants.
  */

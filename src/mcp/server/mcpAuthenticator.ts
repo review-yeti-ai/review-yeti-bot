@@ -2,23 +2,10 @@ import { type Request, type Response, type NextFunction, type RequestHandler } f
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { GitHubActionsOidcVerifier, GitHubActionsOidcClaims } from '../../auth/githubActionsOidc';
 import { logger } from '../../utils/logger';
-import { MCP_ERRORS, buildJsonRpcError } from './mcpTypes';
+import { MCP_ERRORS, buildJsonRpcError, type McpAuthenticatedCaller } from './mcpTypes';
 import { canAccessRepository } from './mcpRbac';
 
-export interface McpAuthenticatedCaller {
-  /** Authentication pathway: cluster static admin token or GitHub Actions OIDC */
-  readonly authType: 'static_token' | 'oidc';
-  /** Truncated SHA-256 digest of token (first 12 chars) for audit logging without leaking secret */
-  readonly tokenDigest: string;
-  /** True if caller authenticated via the static cluster secret (unrestricted repository reach) */
-  readonly isAdmin: boolean;
-  /** Set of permitted repository coordinates in lowercase ('owner/repo'). Null indicates unrestricted admin */
-  readonly allowedRepositories: ReadonlySet<string> | null;
-  /** GitHub Actions OIDC verified claims payload if authType is 'oidc' */
-  readonly claims?: GitHubActionsOidcClaims;
-  /** Human-readable or machine caller identifier */
-  readonly callerId: string;
-}
+export type { McpAuthenticatedCaller };
 
 declare global {
   namespace Express {

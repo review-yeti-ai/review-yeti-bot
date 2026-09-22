@@ -1,9 +1,9 @@
 import {
   type ToolDefinition,
   type ToolResult,
+  type McpExecutionContext,
   buildToolResultJson,
 } from '../mcpTypes';
-import type { McpExecutionContext } from '../remoteMcpRouter';
 import {
   WatchReviewProgressInputSchema,
   type WatchReviewProgressInput,

@@ -766,14 +766,26 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       }),
     };
 
+    const authorizedCaller = {
+      authType: 'static',
+      tokenDigest: 'abc',
+      isAdmin: false,
+      allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+      callerId: 'static:test',
+    };
+    const authorizedContext = { caller: authorizedCaller as any, sessionId: 's1' };
+
     it('TC-EXPL-001: Explains finding and approves compliant proposed fix', async () => {
       const tool = createExplainFindingTool({ queryableDatabase: seededMockDb });
-      const result = await tool.execute({
-        finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
-        question: 'What if I replace the Map with a bounded LRU cache with max capacity 1000?',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
-      });
+      const result = await tool.execute(
+        {
+          finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          question: 'What if I replace the Map with a bounded LRU cache with max capacity 1000?',
+          owner: 'calltelemetry',
+          repo: 'cisco-cdr',
+        },
+        authorizedContext
+      );
 
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.satisfies_requirement).toBe(true);
@@ -783,12 +795,15 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
     it('TC-EXPL-002: Rejects non-compliant remediation proposal', async () => {
       const tool = createExplainFindingTool({ queryableDatabase: seededMockDb });
-      const result = await tool.execute({
-        finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
-        question: 'Can I just disable and remove the cache check?',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
-      });
+      const result = await tool.execute(
+        {
+          finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          question: 'Can I just disable and remove the cache check?',
+          owner: 'calltelemetry',
+          repo: 'cisco-cdr',
+        },
+        authorizedContext
+      );
 
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.satisfies_requirement).toBe(false);
@@ -797,12 +812,15 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
     it('TC-EXPL-003: Informational inquiry returns satisfies_requirement: null', async () => {
       const tool = createExplainFindingTool({ queryableDatabase: seededMockDb });
-      const result = await tool.execute({
-        finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
-        question: 'Why was this finding raised and what does it mean?',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
-      });
+      const result = await tool.execute(
+        {
+          finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          question: 'Why was this finding raised and what does it mean?',
+          owner: 'calltelemetry',
+          repo: 'cisco-cdr',
+        },
+        authorizedContext
+      );
 
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.satisfies_requirement).toBeNull();
@@ -815,10 +833,13 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         query: vi.fn(async () => ({ rows: [] })),
       };
       const tool = createExplainFindingTool({ queryableDatabase: emptyDb });
-      const result = await tool.execute({
-        finding_id: 'fnd_completely_unknown_9999',
-        question: 'How do I fix this?',
-      });
+      const result = await tool.execute(
+        {
+          finding_id: 'fnd_completely_unknown_9999',
+          question: 'How do I fix this?',
+        },
+        authorizedContext
+      );
 
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.satisfies_requirement).toBeNull();
@@ -854,14 +875,44 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         query: vi.fn().mockRejectedValue(new Error('relation review_worker_completions does not exist')),
       };
       const tool = createExplainFindingTool({ queryableDatabase: failingDb });
-      const result = await tool.execute({
-        finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
-        question: 'How do I fix this?',
-      });
+      const result = await tool.execute(
+        {
+          finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          question: 'What is this finding about?',
+        },
+        authorizedContext
+      );
 
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.satisfies_requirement).toBeNull();
       expect(data.explanation).toContain('was not found in the review ledger');
+      expect(data.citations).toEqual([]);
+    });
+
+    it('TC-EXPL-007: Fails closed when execution context or caller is missing for scoped repository', async () => {
+      const tool = createExplainFindingTool({ queryableDatabase: seededMockDb });
+      // Call with no context at all
+      const resultNoContext = await tool.execute({
+        finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        question: 'What is this finding about?',
+        owner: 'calltelemetry',
+        repo: 'cisco-cdr',
+      });
+      const dataNoContext = JSON.parse((resultNoContext.content[0] as any).text);
+      expect(dataNoContext.explanation).toContain('was not found in the review ledger');
+
+      // Call with empty context (no caller)
+      const resultNoCaller = await tool.execute(
+        {
+          finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          question: 'What is this finding about?',
+          owner: 'calltelemetry',
+          repo: 'cisco-cdr',
+        },
+        { sessionId: 's1' } as any
+      );
+      const dataNoCaller = JSON.parse((resultNoCaller.content[0] as any).text);
+      expect(dataNoCaller.explanation).toContain('was not found in the review ledger');
     });
   });
 

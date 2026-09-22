@@ -1,9 +1,9 @@
 import {
   type ToolDefinition,
   type ToolResult,
+  type McpExecutionContext,
   buildToolResultJson,
 } from '../mcpTypes';
-import type { McpExecutionContext } from '../remoteMcpRouter';
 import { canAccessRepository } from '../mcpRbac';
 import {
   ExplainFindingInputSchema,
@@ -98,7 +98,7 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
               rows = res.rows;
             }
 
-            if (context?.caller && !canAccessRepository(context.caller, owner, repo)) {
+            if (!context?.caller || !canAccessRepository(context.caller, owner, repo)) {
               rows = [];
             }
           } else {
