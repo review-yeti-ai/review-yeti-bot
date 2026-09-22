@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.82.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.1...v1.82.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **review:** recoverable-panel roster bounds and gate publication order ([#931](https://github.com/review-yeti-ai/review-yeti-bot/issues/931)) ([6c0513a](https://github.com/review-yeti-ai/review-yeti-bot/commit/6c0513a1dcc03e704207ef142fd370fcc731b1ca))
+
 ## [1.82.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.0...v1.82.1) (2026-09-22)
 
 
