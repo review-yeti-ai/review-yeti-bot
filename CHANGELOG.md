@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.82.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.5...v1.82.6) (2026-09-22)
+
+
+### Bug Fixes
+
+* **review:** admit centrally verified docs-only gates ([#942](https://github.com/review-yeti-ai/review-yeti-bot/issues/942)) ([b36e65a](https://github.com/review-yeti-ai/review-yeti-bot/commit/b36e65af56b6f93a7d78d2496696c7eb35f0f9af))
+
 ## [1.82.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.4...v1.82.5) (2026-09-22)
 
 
