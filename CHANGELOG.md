@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.82.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.3...v1.82.4) (2026-09-22)
+
+
+### Bug Fixes
+
+* **review:** bind authoritative execution to admitted personas ([#938](https://github.com/review-yeti-ai/review-yeti-bot/issues/938)) ([f01374e](https://github.com/review-yeti-ai/review-yeti-bot/commit/f01374ef887cb3beae907abaf87f557886e9a101))
+
 ## [1.82.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.82.2...v1.82.3) (2026-09-22)
 
 
