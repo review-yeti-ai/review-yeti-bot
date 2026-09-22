@@ -13,6 +13,15 @@ import type {
   AbandonedPublishingRun,
 } from '../persistence/reviewDispatchRepository';
 import type { DelegatedFailureReason } from '../review/workerCompletion';
+import { createBoundedGitHubJsonClient } from './boundedGitHubJson';
+import {
+  evaluateReviewGenerationRecoveryLedger,
+  REVIEW_WORKER_CHECK_NAME,
+  ReviewGenerationRecoveryLedgerError,
+  validateReviewGenerationRecoveryRequest,
+  type ReviewGenerationRecoveryEvidence,
+  type ReviewGenerationRecoveryRequest,
+} from '../review/reviewGenerationRecovery';
 
 /**
  * REL-896: human-readable text for each operator-delegated failure reason
@@ -290,6 +299,63 @@ export class GitHubInstallationClient {
     if (!response.ok) throw new GitHubApiResponseError(response.status, path, text);
     const data = text ? JSON.parse(text) : {};
     return data;
+  }
+
+  /**
+   * Reconstructs only missing, failed worker generations for one immutable
+   * review identity. The complete App-owned ledger is read with bounded,
+   * stable pagination and then validated by the domain contract; this method
+   * never creates or updates a GitHub check.
+   */
+  async readReviewGenerationRecovery(
+    input: ReviewGenerationRecoveryRequest,
+  ): Promise<ReviewGenerationRecoveryEvidence[]> {
+    validateReviewGenerationRecoveryRequest(input);
+    const github = createBoundedGitHubJsonClient({
+      token: this.token,
+      baseUrl: this.baseUrl,
+      fetchImplementation: this.fetchImplementation,
+    });
+    const rows: unknown[] = [];
+    const seenIds = new Set<number>();
+    let expectedTotal: number | undefined;
+    for (let page = 1; page <= 10; page += 1) {
+      const query = new URLSearchParams({
+        check_name: REVIEW_WORKER_CHECK_NAME,
+        filter: 'all',
+        app_id: String(input.expectedAppId),
+        per_page: '100',
+        page: String(page),
+      });
+      const result = await github.request(
+        `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}`
+        + `/commits/${encodeURIComponent(input.headSha)}/check-runs?${query}`,
+      );
+      if (!Number.isSafeInteger(result?.total_count) || result.total_count < 0
+        || result.total_count >= 1_000 || !Array.isArray(result.check_runs)
+        || result.check_runs.length > 100) {
+        throw new ReviewGenerationRecoveryLedgerError();
+      }
+      const totalCount = result.total_count as number;
+      if (expectedTotal === undefined) expectedTotal = totalCount;
+      if (expectedTotal !== totalCount) {
+        throw new ReviewGenerationRecoveryLedgerError();
+      }
+      for (const row of result.check_runs) {
+        if (!Number.isSafeInteger(row?.id) || row.id <= 0 || seenIds.has(row.id)) {
+          throw new ReviewGenerationRecoveryLedgerError();
+        }
+        seenIds.add(row.id);
+        rows.push(row);
+      }
+      if (rows.length === totalCount) {
+        return evaluateReviewGenerationRecoveryLedger(input, rows);
+      }
+      if (rows.length > totalCount || result.check_runs.length < 100) {
+        throw new ReviewGenerationRecoveryLedgerError();
+      }
+    }
+    throw new ReviewGenerationRecoveryLedgerError();
   }
 
   async getPullRequest(owner: string, repo: string, prNumber: number): Promise<PullRequestSnapshot> {
