@@ -163,6 +163,37 @@ describe('authoritative prepared publishing worker', () => {
     expect(f.fetch).not.toHaveBeenCalled();
   });
 
+  it('durably records the authoritative completion before publishing the raw check conclusion', async () => {
+    // Publication-order invariant: the service's gate publisher replays the
+    // durably recorded terminal desired state onto the `Review Yeti Gate`
+    // check. If the raw check reached GitHub first, a one-shot gate reader
+    // would see raw success next to a still-pending gate -- the exact-head
+    // window where the gate raced the durable verdict.
+    const f = fixture();
+    const order: string[] = [];
+    f.reportReviewResult.mockImplementation(async () => { order.push('completion'); });
+    f.deps.checkClient = {
+      ...f.deps.checkClient,
+      completeCheck: vi.fn(async () => { order.push('raw-check'); }),
+    };
+    await runPublishingReviewWorker(f.env, f.deps);
+    expect(order).toEqual(['completion', 'raw-check']);
+    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
+  });
+
+  it('never publishes a green raw check when the completion acknowledgement fails', async () => {
+    const f = fixture();
+    f.reportReviewResult.mockRejectedValue(new Error('completion endpoint unreachable'));
+    // The worker rethrows after its fail-closed catch; the invariant under
+    // test is that the raw check never carried a success conclusion.
+    await expect(runPublishingReviewWorker(f.env, f.deps))
+      .rejects.toThrow('completion endpoint unreachable');
+    expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
+    const conclusions = f.deps.checkClient.completeCheck.mock.calls
+      .map((call: unknown[]) => (call[0] as { conclusion: string }).conclusion);
+    expect(conclusions).toEqual(['failure']);
+  });
+
   it('emits optional persona failure evidence without provider transcripts or credentials', async () => {
     const f = fixture();
     f.panel.personas = [f.panel.personas[0]];

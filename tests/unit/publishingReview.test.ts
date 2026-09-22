@@ -295,6 +295,45 @@ describe('fail-closed conclusion mapping', () => {
   });
 });
 
+describe('fail-closed conclusion coverage guard', () => {
+  const coverage = {
+    mode: 'panel',
+    rosterValid: true,
+    quorumSatisfied: true,
+    fullPanelComplete: true,
+  };
+
+  it('keeps a SHIP whose own panel coverage it can verify', () => {
+    expect(publishingConclusion('SHIP', 0, coverage)).toBe('success');
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['invalid roster', { rosterValid: false }],
+    ['incomplete panel', { fullPanelComplete: false }],
+    ['denied quorum', { quorumSatisfied: false }],
+  ])('fails a panel SHIP with %s', (_label, partial) => {
+    // A SHIP verdict next to coverage that denies the panel completed is the
+    // production shape that published an approvable check over a review that
+    // never ran to completion. The run's own coverage line wins.
+    expect(publishingConclusion('SHIP', 0, { ...coverage, ...partial })).toBe('failure');
+  });
+
+  it('fails a fast-ship SHIP without quorum but keeps an approved one', () => {
+    expect(publishingConclusion('SHIP', 0, { ...coverage, mode: 'fast_ship', quorumSatisfied: false })).toBe('failure');
+    expect(publishingConclusion('SHIP', 0, { ...coverage, mode: 'fast_ship' })).toBe('success');
+    expect(publishingConclusion('SHIP', 0, { ...coverage, mode: 'documentation_only', quorumSatisfied: false }))
+      .toBe('failure');
+  });
+
+  it('does not gate modes without a panel-style quorum contract', () => {
+    // `not_applicable` concludes neutral before the conclusion runs and a
+    // `zero_lane` SHIP cannot be constructed by arbitration; the guard must
+    // not restate those invariants under its own mode list.
+    expect(publishingConclusion('SHIP', 0, { ...coverage, mode: 'zero_lane', fullPanelComplete: false }))
+      .toBe('success');
+  });
+});
+
 describe('runPublishingReviewWorker', () => {
   it('publishes success for a clean panel', async () => {
     const d = deps();
