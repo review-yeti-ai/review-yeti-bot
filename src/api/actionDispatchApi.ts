@@ -31,6 +31,10 @@ import {
 import type { WorkerCompletionStore } from '../persistence/workerCompletionStore';
 import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, AuthoritativeReviewCompletion } from '../review/authoritativeServiceContracts';
 import { ReviewGenerationConflictError } from '../review/reviewRun';
+import {
+  isWorkerCompletionPersistenceError,
+  unknownWorkerCompletionPersistenceStage,
+} from '../review/workerCompletionPersistenceError';
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 
 function constantTimeDigestEqual(expected: unknown, actual: string): boolean {
@@ -258,8 +262,12 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         if (status === 'unauthorized') return response.status(403).json({ error: 'Worker completion is not authorized' });
         if (status === 'conflict') return response.status(409).json({ error: 'Worker completion conflicts with recorded evidence' });
         return response.status(200).json({ version: 'WorkerReviewCompletionAccepted.v1', runId: event.runId, status });
-      } catch {
-        logger.error('Failed to persist authoritative worker completion', { reason: 'persistence_unavailable', runId: event.runId });
+      } catch (error) {
+        logger.error('Failed to persist authoritative worker completion', {
+          reason: 'persistence_unavailable',
+          stage: isWorkerCompletionPersistenceError(error) ? error.stage : unknownWorkerCompletionPersistenceStage,
+          runId: event.runId,
+        });
         return response.status(503).json({ error: 'Worker review completion could not be persisted' });
       }
     }
