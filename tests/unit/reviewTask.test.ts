@@ -194,15 +194,15 @@ describe('validateTaskPlan', () => {
     }
   });
 
-  it('still fails the security floor when a rebound plan is not a security task', () => {
+  it('adds a security task when a rebound plan leaves the auth file off a security task', () => {
     const result = validateTaskPlan(
       plan([task({ id: 't1', dimension: 'contract', paths: ['not-a-real-path'] })]),
       ctx({ changedFiles: [AUTH_FILE, API_FILE] }),
     );
-    expect(result.valid).toBe(false);
-    if (!result.valid) {
-      expect(result.reason).toBe('security_floor_violation');
-      expect(result.offendingPaths).toContain(AUTH_FILE);
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      const security = result.tasks.find((item) => item.dimension === 'security');
+      expect(security?.paths).toContain(AUTH_FILE);
     }
   });
 
@@ -278,26 +278,21 @@ describe('validateTaskPlan', () => {
       expect(result.valid).toBe(true);
     });
 
-    it('rejects immediately (not as a correctable coverage gap) when no security task covers the auth file', () => {
+    it('assigns the auth file to a security task when the plan reviewed it under another dimension', () => {
       const result = validateTaskPlan(
         plan([task({ id: 'api-task', paths: [API_FILE, AUTH_FILE] })]),
         ctx({ changedFiles: [AUTH_FILE, API_FILE] }),
       );
-      expect(result.valid).toBe(false);
-      if (!result.valid) {
-        // Generic coverage would have passed here -- the auth file IS in a
-        // task's paths. The security floor must still fail the plan because
-        // no task with dimension "security" covers it.
-        expect(result.reason).toBe('security_floor_violation');
-        expect(result.offendingPaths).toContain(AUTH_FILE);
-        expect(result.uncoveredPaths).toBeUndefined();
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        const security = result.tasks.find((item) => item.dimension === 'security');
+        expect(security?.id).toBe('security-coverage');
+        expect(security?.paths).toEqual([AUTH_FILE]);
+        expect(result.tasks.find((item) => item.id === 'api-task')?.paths).toEqual([API_FILE, AUTH_FILE]);
       }
     });
 
-    it('injection case: rejects a plan that omits the auth file even though the model labelled a decoy task "security"', () => {
-      // Simulates a diff whose content tried to steer the planning model away
-      // from the real security-sensitive file: the model labels an unrelated
-      // task "security" but never lists the actual auth file anywhere.
+    it('injection case: adds the auth file onto the security task the model pointed at other files', () => {
       const result = validateTaskPlan(
         plan([
           task({ id: 'decoy-security', dimension: 'security', paths: [UTIL_FILE] }),
@@ -305,25 +300,21 @@ describe('validateTaskPlan', () => {
         ]),
         ctx({ changedFiles: [AUTH_FILE, API_FILE, UTIL_FILE] }),
       );
-      expect(result.valid).toBe(false);
-      if (!result.valid) {
-        expect(result.reason).toBe('security_floor_violation');
-        expect(result.offendingPaths).toEqual([AUTH_FILE]);
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        expect(result.tasks.find((item) => item.id === 'decoy-security')?.paths).toEqual([UTIL_FILE, AUTH_FILE]);
       }
     });
 
-    it('security floor is not satisfiable by a second corrective turn the way coverage_gap is', () => {
-      const context = ctx({ changedFiles: [AUTH_FILE, API_FILE] });
-      const noSecurityTask = plan([task({ id: 'api-task', paths: [API_FILE, AUTH_FILE] })]);
-      const first = validateTaskPlan(noSecurityTask, context);
-      expect(first.valid).toBe(false);
-      if (first.valid) throw new Error('unreachable');
-      // Rejection carries offendingPaths, not uncoveredPaths -- callers that
-      // only implement the bounded-retry loop for coverage_gap (keyed off
-      // uncoveredPaths) get nothing to retry with, by design.
-      expect(first.reason).toBe('security_floor_violation');
-      expect(first.uncoveredPaths).toBeUndefined();
-      expect(first.offendingPaths).toEqual([AUTH_FILE]);
+    it('does not ask the model to repair a missing security label', () => {
+      const result = validateTaskPlan(
+        plan([task({ id: 'api-task', paths: [API_FILE, AUTH_FILE] })]),
+        ctx({ changedFiles: [AUTH_FILE, API_FILE] }),
+      );
+      expect(result.valid).toBe(true);
+      if (!result.valid) {
+        expect(result.uncoveredPaths).toBeUndefined();
+      }
     });
 
     it('does not require a security task when no file is in the security_auth lane', () => {
