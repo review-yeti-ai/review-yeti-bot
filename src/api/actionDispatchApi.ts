@@ -165,10 +165,10 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       return rejectInvalidDispatch(response, ['expectedGeneration']);
     }
 
-    // A refresh is a privileged replacement of an exact worker generation. A
-    // repository_dispatch event name alone is not proof that the central
-    // workflow issued it: require the OIDC job_workflow_ref itself, bind the
-    // request to that claim, and apply the verifier's explicit allowlist.
+    // A refresh is a privileged replacement of an exact worker generation. An
+    // event name alone is not proof that the central workflow issued it: require
+    // the OIDC workflow identities, bind the request to those claims, and apply
+    // the verifier's explicit allowlist.
     const centralRefreshAuthorized = isCentralRefreshAuthorized(dispatch, claims, options.verifier.policy);
 
     const receivedAt = now();
