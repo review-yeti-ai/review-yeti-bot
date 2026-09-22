@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { resolveReleaseImageTag } from '../../scripts/resolve-release-image-tag.mjs';
 
 const workflow = fs.readFileSync(
   path.join(process.cwd(), '.github/workflows/ci-cd.yaml'),
   'utf8',
 );
+const releaseTagScript = path.join(process.cwd(), 'scripts/resolve-release-image-tag.mjs');
 
 function workflowJob(name: string): string {
   const match = workflow.match(
@@ -32,6 +34,17 @@ describe('GHCR publish contract', () => {
     'fix: release 1.83.7 (#972)',
   ])('does not publish a semver image tag for non-release subject %j', (subject) => {
     expect(resolveReleaseImageTag(subject)).toBe('');
+  });
+
+  it.each([
+    ['chore(main): release 1.83.7', 'v1.83.7'],
+    ['chore(main): release 1.83.7 (#972)', 'v1.83.7'],
+    ['fix: release 1.83.7 (#972)', ''],
+  ])('executes the workflow CLI contract for subject %j', (subject, expected) => {
+    const result = spawnSync(process.execPath, [releaseTagScript, subject], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe(expected);
   });
 
   it('uses the tested resolver in the publish workflow', () => {
