@@ -246,7 +246,7 @@ jobs:
             # (verified live: runner group 'blacksmith runners …' picked up in
             # ~1.5 min; x86 blacksmith labels stay queued, so amd64 keeps
             # ubuntu-latest).
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            runner: blacksmith-2vcpu-ubuntu-2404-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
