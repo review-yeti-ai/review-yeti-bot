@@ -373,6 +373,7 @@ describe('authoritative prepared publishing worker', () => {
       repoFileProvider: {
         findFiles: expect.any(Function), readFile: expect.any(Function), treeTruncated: expect.any(Function),
       },
+      deterministicRoster: true,
       requestPolicy: { responseFormat: { type: 'json_object' } },
     });
     expect(f.panelRunner.mock.calls[0][0].config.default_max_turns).toBe(1);
@@ -749,6 +750,7 @@ describe('authoritative prepared publishing worker', () => {
     await runPublishingReviewWorker(f.env, f.deps);
     expect(f.panelRunner.mock.calls[0][0].config.personas.map((p) => p.id)).toEqual(['policy-lane']);
     expect(f.panelRunner.mock.calls[0][0].config.default_max_turns).toBe(3);
+    expect(f.panelRunner.mock.calls[0][0]).not.toHaveProperty('deterministicRoster');
     expect(f.checkClient.createCheck).toHaveBeenCalledExactlyOnceWith('example', 'project', HEAD,
       `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}`);
     expect(f.checkClient.completeCheck).toHaveBeenCalledTimes(1);
