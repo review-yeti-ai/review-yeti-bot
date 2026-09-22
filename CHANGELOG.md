@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.2...v1.83.3) (2026-09-22)
+
+
+### Bug Fixes
+
+* **dispatch:** admit manual central retries durably ([#961](https://github.com/review-yeti-ai/review-yeti-bot/issues/961)) ([467293a](https://github.com/review-yeti-ai/review-yeti-bot/commit/467293af0a5c35148568379cac4fd0e0b58c90b3))
+
 ## [1.83.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.1...v1.83.2) (2026-09-22)
 
 
