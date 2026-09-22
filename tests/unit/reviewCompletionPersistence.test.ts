@@ -118,6 +118,39 @@ describe('worker completion persistence diagnostics', () => {
     expect(client.release).toHaveBeenCalledExactlyOnceWith();
   });
 
+  it('classifies an early binding-mismatch commit failure without retaining private database detail', async () => {
+    let commitInjectionHits = 0;
+    const client = {
+      query: vi.fn(async (sql: string) => {
+        if (sql === 'BEGIN' || sql === 'ROLLBACK' || sql.startsWith('SET LOCAL')) return { rows: [] };
+        if (sql.startsWith('SELECT repository_id, pr_number')) return { rows: [{ repository_id: 999, pr_number: 42 }] };
+        if (sql === 'COMMIT') {
+          commitInjectionHits += 1;
+          throw new Error(PRIVATE_DETAIL);
+        }
+        throw new Error(`unexpected query: ${sql}`);
+      }),
+      release: vi.fn(),
+    };
+    const repository = new PostgresReviewGateRepository({ connect: vi.fn(async () => client), query: vi.fn() }, { lifecycleEvents: 'disabled' });
+
+    let thrown: unknown;
+    try {
+      await repository.recordWorkerResult(completion(), { workerTokenDigest: 'f'.repeat(64) }, vi.fn(), COMPLETION_NOW);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WorkerCompletionPersistenceError);
+    expect(thrown).toMatchObject({ name: 'WorkerCompletionPersistenceError', stage: 'commit' });
+    expect((thrown as Error).message).toBe('Worker completion persistence failed at commit');
+    expect(JSON.stringify(thrown)).not.toContain(PRIVATE_DETAIL);
+    expect(Object.getOwnPropertyNames(thrown as object)).not.toContain('cause');
+    expect(commitInjectionHits).toBe(1);
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK');
+    expect(client.release).toHaveBeenCalledExactlyOnceWith();
+  });
+
   it.each([
     { stage: 'advisory-lock', matches: (sql: string) => sql.startsWith('SELECT pg_advisory_xact_lock') },
     { stage: 'state-load', matches: (sql: string) => sql.startsWith('SELECT gate.*, runs.status') },
@@ -132,23 +165,35 @@ describe('worker completion persistence diagnostics', () => {
     { stage: 'commit', matches: (sql: string) => sql === 'COMMIT' },
   ])('redacts a $stage failure and rolls back its enrolled transaction', async (target) => {
     const state = enrolledStateRow();
+    let injectionHits = 0;
     const client = {
       query: vi.fn(async (sql: string) => {
-        if (target.matches?.(sql)) throw new Error(PRIVATE_DETAIL);
+        if (target.matches?.(sql)) {
+          injectionHits += 1;
+          throw new Error(PRIVATE_DETAIL);
+        }
         if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK' || sql.startsWith('SET LOCAL')) return { rows: [] };
         if (sql.startsWith('SELECT repository_id, pr_number')) return { rows: [{ repository_id: 123, pr_number: 42 }] };
         if (sql.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] };
         if (sql.startsWith('SELECT gate.*, runs.status')) return { rows: [state] };
-        return { rows: [] };
+        if (sql.startsWith('UPDATE review_gate_attempts') || sql.startsWith('INSERT INTO review_worker_completions')
+          || sql.startsWith('UPDATE review_dispatch_outbox') || sql.startsWith('UPDATE review_runs')) return { rows: [] };
+        throw new Error(`unexpected query: ${sql}`);
       }),
       release: vi.fn(),
     };
     const repository = new PostgresReviewGateRepository({ connect: vi.fn(async () => client), query: vi.fn() }, {
       lifecycleEvents: target.lifecycleEvents ?? 'disabled',
-      ...(target.hook ? { onEligibleCompletion: async () => { throw new Error(PRIVATE_DETAIL); } } : {}),
+      ...(target.hook ? { onEligibleCompletion: async () => {
+        injectionHits += 1;
+        throw new Error(PRIVATE_DETAIL);
+      } } : {}),
     });
     const resolve = target.resolver
-      ? vi.fn(async () => { throw new Error(PRIVATE_DETAIL); })
+      ? vi.fn(async () => {
+        injectionHits += 1;
+        throw new Error(PRIVATE_DETAIL);
+      })
       : vi.fn(async () => trustedCompletion());
 
     let thrown: unknown;
@@ -163,6 +208,7 @@ describe('worker completion persistence diagnostics', () => {
     expect((thrown as Error).message).toBe(`Worker completion persistence failed at ${target.stage}`);
     expect(JSON.stringify(thrown)).not.toContain(PRIVATE_DETAIL);
     expect(Object.getOwnPropertyNames(thrown as object)).not.toContain('cause');
+    expect(injectionHits).toBe(1);
     expect(client.query).toHaveBeenCalledWith('ROLLBACK');
     expect(client.release).toHaveBeenCalledExactlyOnceWith();
   });
