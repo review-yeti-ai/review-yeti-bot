@@ -247,6 +247,8 @@ describe('Action dispatch startup transport and admission wiring', () => {
     ['7654321', undefined],
     [undefined, 'synthetic-public-target-private-key'],
     [undefined, undefined],
+    ['not-a-number', 'synthetic-public-target-private-key'],
+    ['0', 'synthetic-public-target-private-key'],
   ])('rejects external dispatch without a complete dedicated App credential pair', async (publicAppId, publicKey) => {
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
     vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', publicAppId);

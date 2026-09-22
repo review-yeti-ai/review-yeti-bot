@@ -46,7 +46,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const appId = required(environment, 'GITHUB_APP_ID');
   const privateKey = required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
   const baseUrl = validateGitHubAppApiBaseUrl(environment.GITHUB_API_BASE_URL);
-  const credentialsForRepository = (owner: string, repo: string) => {
+  // External dispatch needs only an App installation lookup. Token minting for
+  // publishing, merge groups, and MCP remains bound to the primary service App.
+  const installationCredentialsForRepository = (owner: string, repo: string) => {
     const external = dispatchConfig.centralExternalAppCredentials;
     return external && `${owner}/${repo}` === SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY
       ? { ...external, owner, repo, baseUrl }
@@ -81,8 +83,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       if (!input.authoritativeGate || input.expectedGeneration === undefined) {
         throw new Error('Authoritative generation recovery identity is unavailable');
       }
-      const minted = await getBoundedRepositoryToken(
-        credentialsForRepository(input.identity.owner, input.identity.repo), 'publish');
+      const minted = await getBoundedRepositoryToken({
+        appId, privateKey, owner: input.identity.owner, repo: input.identity.repo, baseUrl,
+      }, 'publish');
       return new GitHubInstallationClient({ token: minted.token, baseUrl }).readReviewGenerationRecovery({
         owner: input.identity.owner,
         repo: input.identity.repo,
@@ -104,8 +107,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         config: webhookConfig,
         repository: new PostgresMergeGroupGateRepository(pool),
         baseUrl,
-        tokenFor: async (owner, repo) => (await getBoundedRepositoryToken(
-          credentialsForRepository(owner, repo), 'merge-group')).token,
+        tokenFor: async (owner, repo) => (await getBoundedRepositoryToken({
+          appId, privateKey, owner, repo, baseUrl,
+        }, 'merge-group')).token,
       }),
     }),
   } : undefined;
@@ -130,7 +134,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       triggerDeps: {
         authoritativePublishing: authoritative?.admission,
         resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {
-          const credentials = credentialsForRepository(owner, repo);
+          const credentials = { appId, privateKey, owner, repo, baseUrl };
           const [minted, installationId] = await Promise.all([
             getBoundedRepositoryToken(credentials, 'read'),
             getBoundedRepositoryInstallationId(credentials),
@@ -177,7 +181,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     },
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId(
-      credentialsForRepository(owner, repo)),
+      installationCredentialsForRepository(owner, repo)),
     metricsAuthToken: environment.ACTION_DISPATCH_METRICS_TOKEN?.trim() || undefined,
     ...(githubWebhook ? { githubWebhook } : {}),
   });
