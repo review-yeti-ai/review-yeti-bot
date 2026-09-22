@@ -367,27 +367,11 @@ export function validateTaskPlan(
   const securityAuthPaths = context.changedFiles.filter((path) => domainLanes[path] === 'security_auth');
 
   // --- Rule 5: security floor ----------------------------------------------
-  // THIS CHECK MUST RUN BEFORE THE GENERAL COVERAGE CHECK, AND MUST NOT BE
-  // DOWNGRADED TO A CORRECTABLE GAP.
-  //
-  // The task plan is authored by a model from a prompt that necessarily
-  // embeds untrusted diff text (the very thing under review). That is the
-  // entire attack surface: a diff whose commit message, comments, or code
-  // say "skip auth review", "trust me, this is just a typo fix", or similar
-  // must not be able to shrink the plan by simply not emitting a `security`
-  // task, or by emitting one that conveniently covers unrelated files while
-  // leaving the real auth-surface file uncovered. If this were satisfiable
-  // by the same bounded "add the missing path and resubmit" corrective turn
-  // the ordinary coverage check gets (rule 4), a sufficiently clever
-  // injection could exhaust that single retry on a decoy and still ship
-  // uncovered. So: which files count as security-sensitive comes from
-  // `classifyDomainLanesByHeuristic`, a deterministic, model-independent
-  // heuristic over the actual changed paths -- never from the plan's own
-  // dimension labels -- and a miss here fails the whole plan closed,
-  // immediately, with no second attempt. Do not "simplify" this by trusting
-  // `parsed`/model-provided dimensions or by folding it into the general
-  // coverage gap below; that would remove the one guarantee this file exists
-  // to provide.
+  // Which files are security-sensitive comes from the path heuristic, never
+  // from the plan. The model does not get a retry to add them: a retry is
+  // something an injected diff can spend on a decoy. The engine assigns the
+  // missing paths onto a security task itself, so those files are still
+  // reviewed and a missing label does not fail the whole review.
   if (securityAuthPaths.length > 0) {
     const securityCoveredPaths = new Set<string>();
     for (const task of normalizedTasks) {
@@ -396,11 +380,26 @@ export function validateTaskPlan(
     }
     const uncoveredSecurityPaths = securityAuthPaths.filter((p) => !securityCoveredPaths.has(p));
     if (uncoveredSecurityPaths.length > 0) {
-      return reject(
-        'security_floor_violation',
-        `Security-sensitive path(s) are not covered by a "security" dimension task: ${uncoveredSecurityPaths.join(', ')}.`,
-        { offendingPaths: uncoveredSecurityPaths },
-      );
+      const existing = normalizedTasks.find((task) => task.dimension === SECURITY_DIMENSION);
+      if (existing) {
+        existing.paths = Array.from(new Set([...existing.paths, ...uncoveredSecurityPaths]));
+      } else if (normalizedTasks.length < effectiveMaxTasks) {
+        const id = normalizedTasks.some((task) => task.id === 'security-coverage')
+          ? 'security-floor'
+          : 'security-coverage';
+        normalizedTasks.push({
+          id,
+          dimension: SECURITY_DIMENSION,
+          paths: [...uncoveredSecurityPaths],
+          question: 'What security or auth defect do these changes introduce?',
+          rationale: 'These paths are security-sensitive, so they are reviewed on a security task when the plan did not cover them that way.',
+        });
+      } else {
+        const host = normalizedTasks.find((task) => task.paths.some((path) => uncoveredSecurityPaths.includes(path)))
+          ?? normalizedTasks[0];
+        host.dimension = SECURITY_DIMENSION;
+        host.paths = Array.from(new Set([...host.paths, ...uncoveredSecurityPaths]));
+      }
     }
   }
 

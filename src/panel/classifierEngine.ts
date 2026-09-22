@@ -391,6 +391,14 @@ export function classifyPathByHeuristic(filePath: string): DomainLane {
     return 'security_auth';
   }
 
+  // Prose is not an auth surface. A path token such as "session" in
+  // session-skill-retro/SKILL.md must not force the security floor. Real
+  // policy manifests stay on the token rule below because they are not
+  // markdown or images.
+  if (SAFE_DOC_OR_ASSET_EXTENSIONS.has(ext)) {
+    return 'docs_assets';
+  }
+
   // Pure docs and assets: if under docs/ or an asset/markdown extension, non-executable files belong in docs_assets
   const isDocOrAsset =
     (p.startsWith('docs/') || p.startsWith('documentation/') || p.startsWith('assets/')) &&
