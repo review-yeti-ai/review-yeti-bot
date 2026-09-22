@@ -116,7 +116,7 @@ export interface ReviewDispatchRepositoryOptions extends ReviewLifecycleEventsOp
   validateAuthoritativeAdmission?: (input: ReviewAdmissionInput) => Promise<void>;
   /** Defaults to 30 seconds; safe integer values are clamped to 250–30,000 ms. */
   admissionValidationTimeoutMs?: number;
-  /** Require central repository_dispatch app-gate callers to supply the exact generation. */
+  /** Require central app-gate callers to supply the exact generation. */
   requireExpectedGeneration?: boolean;
 }
 
@@ -184,7 +184,7 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
     throw new Error('publication mode must be disabled or app-gate');
   }
   if (typeof input.centralActionDispatch !== 'boolean'
-    || (input.centralActionDispatch && input.eventName !== 'repository_dispatch')) {
+    || (input.centralActionDispatch && !['repository_dispatch', 'workflow_dispatch'].includes(input.eventName))) {
     throw new Error('central Action dispatch classification is invalid');
   }
   if (input.retryRequested !== undefined && typeof input.retryRequested !== 'boolean') {
