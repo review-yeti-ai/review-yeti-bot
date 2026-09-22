@@ -174,6 +174,33 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
     expect(err.failureClass).toBe('contract');
   }, 60_000);
 
+  it('keeps authoritative roster selection independent of dashboard overrides and model pruning', async () => {
+    const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+    config.personas.push({
+      ...config.personas[0],
+      id: 'general-lane',
+      required: false,
+      charter: 'builtin:correctness',
+    });
+    const getPersonaSetting = vi
+      .spyOn(dashboardStore, 'getPersonaSetting')
+      .mockReturnValue({ enabled: false } as any);
+    const complete = vi.fn().mockRejectedValue(new Error('stop after roster selection'));
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/auth/jwt.ts', content: 'export const token = true;' }],
+      repository: 'test/repo',
+      headSha: 'abc1234',
+      client: { complete } as any,
+      deterministicRoster: true,
+    })).rejects.toThrow();
+
+    expect(getPersonaSetting).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalled();
+    expect(complete.mock.calls.map(([request]) => request.persona)).not.toContain('classifier');
+  });
+
   it('retries only typed transient OpenRouter failures', () => {
     expect(isRetryablePanelError(new OpenRouterResponseError('unauthorized', 401))).toBe(false);
     expect(isRetryablePanelError(new OpenRouterResponseError('rate limited', 429))).toBe(true);
