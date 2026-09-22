@@ -242,14 +242,19 @@ describe('service-owned authoritative completion context', () => {
     redacted(await rejected(f.context(f.gate)));
   });
 
-  it.each(['storage', 'factory', 'current', 'policy', 'diff'])('redacts %s failures', async (stage) => {
+  it.each([
+    ['storage', 'stored-policy'], ['factory', 'token'], ['current', 'current-candidate'],
+    ['policy', 'policy-refresh'], ['diff', 'exact-diff'],
+  ])('redacts and classifies %s failures as %s', async (stage, substage) => {
     const f = fixture(); const fail = new Error(privateText);
     if (stage === 'storage') f.getStoredPrepared.mockRejectedValue(fail);
     if (stage === 'factory') f.readerFactory.mockRejectedValue(fail);
     if (stage === 'current') f.currentCandidate.mockRejectedValue(fail);
     if (stage === 'policy') f.resolve.mockRejectedValue(fail);
     if (stage === 'diff') f.exactCurrentDiff.mockRejectedValue(fail);
-    redacted(await rejected(f.context(f.gate)));
+    const failure = await rejected(f.context(f.gate));
+    redacted(failure);
+    expect(failure).toMatchObject({ substage });
   });
 
   it.each(['storage', 'factory', 'current', 'policy', 'diff'])('bounds a non-cooperative %s promise at 10 seconds', async (stage) => {

@@ -7,6 +7,7 @@ import { parseChangedFiles } from './changedFiles';
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
 import { canonicalJson } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './workerReviewCompletion';
+import { TrustedCompletionResolutionError, type TrustedCompletionResolutionSubstage } from './workerCompletionPersistenceError';
 
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
   .refine((value) => value !== '.' && value !== '..');
@@ -64,6 +65,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
   const resolvePublishing = options.publishingResolver.resolve.bind(options.publishingResolver);
 
   return async (gate): Promise<TrustedGateCompletionContext> => {
+    let substage: TrustedCompletionResolutionSubstage = 'stored-policy';
     const abort = new AbortController();
     const deadline = performance.now() + timeoutMs;
     const checkDeadline = () => {
@@ -88,6 +90,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       const target = { ...repository, prNumber: requested.prNumber };
       const stored = checkedPrepared(await step(() => getStoredPrepared(policyDigest, abort.signal)));
       if (stored.policy.effectivePolicyDigest !== policyDigest) throw unavailable();
+      substage = 'token';
       const reader = await step(() => readerFactory({ ...repository }, abort.signal));
       const checkedCurrent = (input: CurrentReviewCandidate): CurrentReviewCandidate => {
         const current = currentSchema.parse(input);
@@ -100,16 +103,21 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         current: { ...current, policyDigest: currentPolicyDigest },
         coverage: { expectedPersonaIds: [...stored.expectedPersonaIds], changedFiles: [], coverageComplete: false, quorumSatisfied: false },
       });
+      substage = 'current-candidate';
       const first = checkedCurrent(await step(() => reader.currentCandidate({ ...target }, abort.signal)));
       if (changed(first)) return cancellation(first);
 
       let refreshed;
+      substage = 'policy-refresh';
       try { refreshed = await step(() => resolvePublishing({ ...requested })); }
       catch {
         // The admission resolver rejects a head/base/closed race. Re-read rather
         // than mistaking that race for policy truth or inventing cancellation.
+        checkDeadline();
+        substage = 'current-candidate';
         const current = checkedCurrent(await step(() => reader.currentCandidate({ ...target }, abort.signal)));
         if (changed(current)) return cancellation(current);
+        substage = 'policy-refresh';
         throw unavailable();
       }
       const current = checkedCurrent(refreshed.current);
@@ -122,6 +130,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       // not authority to reinterpret the admitted worker's configuration.
       if (canonicalJson(stored) !== canonicalJson(fresh)) throw unavailable();
 
+      substage = 'exact-diff';
       const source = await step(() => reader.exactCurrentDiff({ ...requested }, abort.signal));
       const final = checkedCurrent(source.current);
       if (changed(final)) return cancellation(final);
@@ -143,7 +152,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       } };
     };
     try { return await Promise.race([resolve(), expired]); }
-    catch { throw unavailable(); }
+    catch { throw new TrustedCompletionResolutionError(substage); }
     finally { if (timer !== undefined) clearTimeout(timer); abort.abort(); }
   };
 }

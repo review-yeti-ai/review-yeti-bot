@@ -184,7 +184,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     expect(f.fetchImplementation).not.toHaveBeenCalled();
   });
 
-  it.each([201, 202, 204, 301, 302, 307, 308, 400, 401, 403, 409, 429, 500, 503])
+  it.each([201, 202, 204, 301, 302, 307, 308, 400, 401, 403, 409, 429, 500, 502, 504])
   ('rejects HTTP %s without reading its body or retrying', async (status) => {
     const wire = streamingResponse([Buffer.from(diagnostic)], false);
     const response = new Response(status === 204 ? null : wire.response.body, { status });
@@ -248,14 +248,16 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     await expectRedacted(fixture(new Response(invalid)).adapter.reportReviewResult(event()));
   });
 
-  it.each(['throw', 'reject'])('redacts a fetch %s and makes only one attempt', async (kind) => {
+  it.each(['throw', 'reject'])('redacts a fetch %s after bounded retry exhaustion', async (kind) => {
     const fetchImplementation = vi.fn((): Promise<Response> => {
       if (kind === 'throw') throw new Error(`${token} ${diagnostic}`);
       return Promise.reject(new Error(`${token} ${diagnostic}`));
     });
     const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, fetchImplementation });
-    await expectRedacted(adapter.reportReviewResult(event()));
-    expect(fetchImplementation).toHaveBeenCalledOnce();
+    const failure = expectRedacted(adapter.reportReviewResult(event()));
+    await vi.advanceTimersByTimeAsync(750);
+    await failure;
+    expect(fetchImplementation).toHaveBeenCalledTimes(3);
   });
 
   it.each([undefined, 250, 30_000])('bounds uncooperative fetch with timeout %s (default 10 seconds)', async (timeoutMs) => {
@@ -330,8 +332,114 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     const cancel = vi.fn(async () => {});
     const releaseLock = vi.fn();
     const response = { status: 200, redirected: false, body: { getReader: () => ({ read, cancel, releaseLock }) } } as unknown as Response;
-    await expectRedacted(fixture(response).adapter.reportReviewResult(event()));
-    expect(cancel).toHaveBeenCalledOnce();
-    expect(releaseLock).toHaveBeenCalledOnce();
+    const failure = expectRedacted(fixture(response).adapter.reportReviewResult(event()));
+    await vi.advanceTimersByTimeAsync(750);
+    await failure;
+    expect(cancel).toHaveBeenCalledTimes(3);
+    expect(releaseLock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['503', 'fetch rejection', 'receipt read rejection'])('recovers %s using an identical parsed payload and a fresh aborted signal', async (kind) => {
+    const wire = streamingResponse([Buffer.from(diagnostic)], false);
+    const failedRead = vi.fn(async () => { throw new Error(`${token} ${diagnostic}`); });
+    const failedCancel = vi.fn(async () => undefined);
+    const releaseLock = vi.fn();
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockImplementationOnce(async () => {
+        if (kind === 'fetch rejection') throw new Error(`${token} ${diagnostic}`);
+        if (kind === 'receipt read rejection') return { status: 200, redirected: false,
+          body: { getReader: () => ({ read: failedRead, cancel: failedCancel, releaseLock }) } } as unknown as Response;
+        return new Response(wire.response.body, { status: 503 });
+      })
+      .mockResolvedValueOnce(new Response(JSON.stringify(receipt({ status: kind === '503' ? 'recorded' : 'duplicate' }))));
+    const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, fetchImplementation });
+    const payload = event();
+    const pending = adapter.reportReviewResult(payload);
+    const outcome = pending.then(() => 'accepted', () => 'rejected');
+    payload.result.completedAt = '2026-10-01T00:00:00.000Z';
+    payload.runId = `run_${'f'.repeat(32)}`;
+    await vi.advanceTimersByTimeAsync(249);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    expect(fetchImplementation.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    if (kind === '503') {
+      expect(wire.cancel).toHaveBeenCalledOnce();
+      expect(wire.pull).not.toHaveBeenCalled();
+    }
+    if (kind === 'receipt read rejection') {
+      expect(failedCancel).toHaveBeenCalledOnce();
+      expect(releaseLock).toHaveBeenCalledOnce();
+    }
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await outcome).toBe('accepted');
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchImplementation.mock.calls) {
+      expect(url).toBe(endpoint);
+      expect(init?.body).toBe(JSON.stringify(parseWorkerReviewCompletion(event())));
+      expect(init?.redirect).toBe('error');
+      expect(init?.signal?.aborted).toBe(true);
+    }
+    expect(fetchImplementation.mock.calls[0][1]?.signal).not.toBe(fetchImplementation.mock.calls[1][1]?.signal);
+  });
+
+  it('exhausts exactly three 503 attempts with bounded backoff and disposes every unread body', async () => {
+    const wires = Array.from({ length: 3 }, () => streamingResponse([Buffer.from(diagnostic)], false));
+    const fetchImplementation = vi.fn<typeof fetch>();
+    for (const wire of wires) fetchImplementation.mockResolvedValueOnce(new Response(wire.response.body, { status: 503 }));
+    const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, fetchImplementation });
+    const failure = expectRedacted(adapter.reportReviewResult(event()));
+    await vi.advanceTimersByTimeAsync(249);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await failure;
+    expect(fetchImplementation).toHaveBeenCalledTimes(3);
+    for (const wire of wires) {
+      expect(wire.cancel).toHaveBeenCalledOnce();
+      expect(wire.pull).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps fetches and retry delays inside one total deadline and cancels a late retry response', async () => {
+    let finish!: (response: Response) => void;
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, timeoutMs: 1_000, fetchImplementation });
+    let settled = false;
+    const failure = expectRedacted(adapter.reportReviewResult(event())).then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settled).toBe(false);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await failure;
+    expect(fetchImplementation.mock.calls[1][1]?.signal?.aborted).toBe(true);
+    const late = streamingResponse([Buffer.from(JSON.stringify(receipt()))], false);
+    finish(late.response);
+    await Promise.resolve();
+    expect(late.cancel).toHaveBeenCalledOnce();
+    expect(late.pull).not.toHaveBeenCalled();
+  });
+
+  it('does not sleep or start a retry when the delay would consume the remaining deadline', async () => {
+    const f = fixture(new Response(null, { status: 503 }), 250);
+    await expectRedacted(f.adapter.reportReviewResult(event()));
+    expect(f.fetchImplementation).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['malformed receipt', 'oversized receipt', '403', '409'])('stops on %s after a transient first attempt', async (kind) => {
+    const next = kind === '403' || kind === '409' ? new Response(diagnostic, { status: Number(kind) })
+      : new Response(kind === 'malformed receipt' ? diagnostic : 'x'.repeat(MAX_WORKER_REVIEW_RESPONSE_BYTES + 1));
+    const fetchImplementation = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(next);
+    const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, fetchImplementation });
+    const failure = expectRedacted(adapter.reportReviewResult(event()));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await failure;
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    expect(next.body?.locked).toBe(false);
   });
 });

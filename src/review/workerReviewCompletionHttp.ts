@@ -17,12 +17,19 @@ const receiptSchema = z.object({
 
 function unavailable(): Error { return new Error('Worker review completion could not be acknowledged'); }
 
+// Internal control flow only. Never retain a transport exception or response.
+class RetryableDeliveryError extends Error {}
+const retryDelaysMs = [250, 500] as const;
+
 /** Best effort only: a hostile or broken stream must not extend the deadline. */
 function cancel(body: { cancel(): Promise<unknown> } | null): void {
   try { void body?.cancel().catch(() => undefined); } catch { /* No response/transport details escape. */ }
 }
 
-/** One bounded POST to the service's /api/dispatch/completion endpoint. Receipt
+/** At most three identical POSTs within one total deadline. Only 503 (temporary
+ * service unavailability) and ambiguous fetch/read failures are retried. Other
+ * statuses, including 429/other 5xx, remain fail-closed rather than guessing a
+ * Retry-After or treating an application failure as temporary. Receipt
  * validation acknowledges delivery only: even "recorded" is not eligibility
  * evidence, and "ignored" must never be presented as successful review proof. */
 export class HttpWorkerReviewCompletionAdapter implements WorkerReviewCompletionAdapter {
@@ -63,8 +70,25 @@ export class HttpWorkerReviewCompletionAdapter implements WorkerReviewCompletion
       if (Buffer.byteLength(body, 'utf8') > MAX_COMPLETION_BYTES) throw unavailable();
     } catch { throw unavailable(); }
 
-    const controller = new AbortController();
     const deadline = performance.now() + this.timeoutMs;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.postAttempt(payload, body, deadline);
+        return;
+      } catch (error) {
+        const delay = retryDelaysMs[attempt];
+        if (!(error instanceof RetryableDeliveryError) || delay === undefined
+          || performance.now() + delay >= deadline) throw unavailable();
+        // No reset of the total budget, no server-controlled/unbounded sleep.
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  private async postAttempt(payload: WorkerReviewCompletion, body: string, deadline: number): Promise<void> {
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) throw unavailable();
+    const controller = new AbortController();
     let cleanupBody: (() => void) | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const checkDeadline = () => {
@@ -74,19 +98,23 @@ export class HttpWorkerReviewCompletionAdapter implements WorkerReviewCompletion
       timer = setTimeout(() => {
         controller.abort();
         reject(unavailable());
-      }, this.timeoutMs);
+      }, remainingMs);
     });
     const post = async (): Promise<void> => {
-      const response = await this.fetchImplementation(this.endpoint, {
-        method: 'POST',
-        headers: { Accept: 'application/json', Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
-        body, redirect: 'error', signal: controller.signal,
-      });
+      let response: Response;
+      try {
+        response = await this.fetchImplementation(this.endpoint, {
+          method: 'POST',
+          headers: { Accept: 'application/json', Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+          body, redirect: 'error', signal: controller.signal,
+        });
+      } catch { throw new RetryableDeliveryError(); }
       // A fetch ignoring abort may resolve after reportReviewResult has already
       // rejected. Dispose of its late body without reading or accepting it.
       if (controller.signal.aborted) { cancel(response.body); throw unavailable(); }
       cleanupBody = () => cancel(response.body);
       checkDeadline();
+      if (!response.redirected && response.status === 503) throw new RetryableDeliveryError();
       if (response.status !== 200 || response.redirected || !response.body) throw unavailable();
       const reader = response.body.getReader();
       cleanupBody = () => {
@@ -97,7 +125,9 @@ export class HttpWorkerReviewCompletionAdapter implements WorkerReviewCompletion
       let bytes = 0;
       while (true) {
         checkDeadline();
-        const chunk = await reader.read();
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try { chunk = await reader.read(); }
+        catch { throw new RetryableDeliveryError(); }
         checkDeadline();
         if (chunk.done) break;
         if (!(chunk.value instanceof Uint8Array)) throw unavailable();
@@ -113,7 +143,10 @@ export class HttpWorkerReviewCompletionAdapter implements WorkerReviewCompletion
     try {
       // Abort alone cannot bound uncooperative fetch/read implementations.
       await Promise.race([post(), expired]);
-    } catch { throw unavailable(); }
+    } catch (error) {
+      if (error instanceof RetryableDeliveryError) throw error;
+      throw unavailable();
+    }
     finally {
       if (timer !== undefined) clearTimeout(timer);
       controller.abort();

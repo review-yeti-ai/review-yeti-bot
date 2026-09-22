@@ -407,7 +407,7 @@ describe('authoritative prepared publishing worker', () => {
     expect(f.reportReviewResult).not.toHaveBeenCalled();
   });
 
-  it('wires the entrypoint to one raw check with visible findings and an evidence-only typed callback', async () => {
+  it.each(['recorded', '503 then recorded', 'lost acknowledgement then duplicate'])('wires the entrypoint to one raw check and evidence-only callback: %s', async (delivery) => {
     const f = fixture();
     const finding = { severity: 'P2' as const, path: 'src/a.ts', line: 1,
       title: 'Preserve raw finding', body: 'This finding remains visible independently of gate eligibility.' };
@@ -418,6 +418,7 @@ describe('authoritative prepared publishing worker', () => {
     const createCheck = vi.spyOn(GitHubInstallationClient.prototype, 'createCheck');
     const completeCheck = vi.spyOn(GitHubInstallationClient.prototype, 'completeCheck');
     const rawEndpoint = 'https://api.github.com/repos/example/project/check-runs';
+    let callbackAttempts = 0;
     f.fetch.mockImplementation(async (input, init) => {
       if (String(input) === rawEndpoint && init?.method === 'POST') {
         return new Response(JSON.stringify({ id: 4242 }), { status: 200 });
@@ -426,8 +427,15 @@ describe('authoritative prepared publishing worker', () => {
         return new Response('{}', { status: 200 });
       }
       if (String(input) === ENDPOINT && init?.method === 'POST') {
+        callbackAttempts += 1;
+        if (callbackAttempts === 1 && delivery === '503 then recorded') {
+          return new Response(PRIVATE_DETAIL, { status: 503 });
+        }
+        if (callbackAttempts === 1 && delivery === 'lost acknowledgement then duplicate') {
+          throw new TypeError(PRIVATE_DETAIL);
+        }
         return new Response(JSON.stringify({ version: 'WorkerReviewCompletionAccepted.v1',
-          runId: f.env.REVIEW_RUN_ID, status: 'recorded' }), { status: 200 });
+          runId: f.env.REVIEW_RUN_ID, status: delivery === 'lost acknowledgement then duplicate' ? 'duplicate' : 'recorded' }), { status: 200 });
       }
       throw new Error('Unexpected request in the mocked worker entrypoint');
     });
@@ -436,7 +444,7 @@ describe('authoritative prepared publishing worker', () => {
     expect(f.env).not.toHaveProperty('REVIEW_CHECK_ID');
     await runWorker(f.env, legacy);
     expect(legacy).not.toHaveBeenCalled();
-    expect(f.fetch).toHaveBeenCalledTimes(3);
+    expect(f.fetch).toHaveBeenCalledTimes(delivery === 'recorded' ? 3 : 4);
     const rawCalls = f.fetch.mock.calls.filter(([url]) => String(url).startsWith(rawEndpoint));
     expect(rawCalls.map(([url, init]) => [String(url), init?.method])).toEqual([
       [rawEndpoint, 'POST'], [`${rawEndpoint}/4242`, 'PATCH'],
@@ -459,7 +467,10 @@ describe('authoritative prepared publishing worker', () => {
       owner: 'example', repo: 'project', checkId: 4242,
     }));
     const callbacks = f.fetch.mock.calls.filter(([url]) => String(url) === ENDPOINT);
-    expect(callbacks).toHaveLength(1);
+    expect(callbacks).toHaveLength(delivery === 'recorded' ? 1 : 2);
+    expect(new Set(callbacks.map(([, init]) => init?.body)).size).toBe(1);
+    expect(panelEngine.executePersonaPanel).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(f.errorLog.mock.calls)).not.toContain(PRIVATE_DETAIL);
     const [endpoint, init] = callbacks[0];
     expect(endpoint).toBe(ENDPOINT);
     expect(init?.headers).toMatchObject({ Authorization: `Bearer ${TOKEN}` });
