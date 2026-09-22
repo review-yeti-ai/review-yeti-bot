@@ -223,8 +223,18 @@ jobs:
   # ubuntu-24.04-arm. Do not retarget to Blacksmith until this org
   # actually assigns those labels.
   publish-ghcr-arch:
-    needs: [test, legacy-runtime]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # Release commits skip test and legacy-runtime. A skipped needed job
+    # skips this job too unless the if uses always(), which is why 1.82.0
+    # never published. The release PR already ran that suite. Typecheck
+    # still has to succeed. Failure or cancellation does not publish.
+    needs: [test, legacy-runtime, typecheck]
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.typecheck.result == 'success' &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      (needs.legacy-runtime.result == 'success' || needs.legacy-runtime.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
