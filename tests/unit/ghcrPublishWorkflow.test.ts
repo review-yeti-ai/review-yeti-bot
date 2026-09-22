@@ -49,7 +49,7 @@ describe('GHCR publish contract', () => {
     expect(mergeJob).toContain("needs.publish-ghcr-arch.result == 'success'");
 
     const attestJob = workflowJob('attest-published-indexes');
-    expect(attestJob).toMatch(/needs:\s*publish-ghcr/u);
+    expect(attestJob).toMatch(/needs:\s*publish-ghcr(?!-)/u);
     expect(attestJob).toMatch(/if:[\s\S]*?\balways\(\)/u);
     expect(attestJob).toContain("needs.publish-ghcr.result == 'success'");
 
