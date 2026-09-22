@@ -31,7 +31,16 @@ describe('GHCR publish contract', () => {
     expect(workflow).toContain('test -f dist/index.js');
     expect(workflow).toContain('org.opencontainers.image.source=');
     expect(workflow).toContain('visibility=public');
-    expect(workflow).toMatch(/publish-ghcr-arch:[\s\S]*needs:\s*\[test, legacy-runtime\]/u);
+    expect(workflow).toMatch(
+      /publish-ghcr-arch:[\s\S]*needs:\s*\[test, legacy-runtime, typecheck\]/u,
+    );
+    const archJob = workflowJob('publish-ghcr-arch');
+    expect(archJob).toContain('always()');
+    expect(archJob).toContain("needs.test.result == 'success' || needs.test.result == 'skipped'");
+    expect(archJob).toContain(
+      "needs.legacy-runtime.result == 'success' || needs.legacy-runtime.result == 'skipped'",
+    );
+    expect(archJob).toContain("needs.typecheck.result == 'success'");
 
     const publishJobs = `${workflowJob('publish-ghcr-arch')}\n${workflowJob('publish-ghcr')}`;
     expect(publishJobs).not.toContain('digitalocean/action-doctl');
