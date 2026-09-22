@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.83.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.5...v1.83.6) (2026-09-22)
+
+
+### Bug Fixes
+
+* **dispatch:** limit public app to installation lookup ([c992bf0](https://github.com/review-yeti-ai/review-yeti-bot/commit/c992bf0de0b28f6d6076924ebe29dcc11a6b1415))
+* **dispatch:** route public target through dedicated app ([9d17b7b](https://github.com/review-yeti-ai/review-yeti-bot/commit/9d17b7b2aa8b9aa00e650f1601461b2e9ce509ed))
+* **dispatch:** route public target through dedicated app ([b81b82c](https://github.com/review-yeti-ai/review-yeti-bot/commit/b81b82ce8fbee2a17a61a0b064a7e8767a5a7d7f))
+
 ## [1.83.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.4...v1.83.5) (2026-09-22)
 
 
