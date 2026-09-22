@@ -123,6 +123,8 @@ describe('Action dispatch startup transport and admission wiring', () => {
     vi.stubEnv('ACTION_DISPATCH_ENABLED', 'true');
     vi.stubEnv('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION', undefined);
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', undefined);
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', undefined);
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY', undefined);
     vi.stubEnv('GITHUB_APP_ID', '4385771');
     vi.stubEnv('GITHUB_APP_PRIVATE_KEY', 'synthetic-startup-private-key');
     vi.stubEnv('HOSTNAME', 'startup-test');
@@ -217,13 +219,47 @@ describe('Action dispatch startup transport and admission wiring', () => {
 
   it('wires only the exact configured self-hosted central-dispatch target', async () => {
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', '7654321');
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY', 'synthetic-public-target-private-key');
     await start();
 
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
       centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
     }));
+    const options = mocks.createApp.mock.calls[0][0] as unknown as {
+      resolveInstallationId(owner: string, repo: string): Promise<number>;
+    };
+    await expect(options.resolveInstallationId('review-yeti-ai', 'review-yeti-bot')).resolves.toBe(987);
+    await expect(options.resolveInstallationId('calltelemetry', 'ct-meta')).resolves.toBe(987);
+    expect(mocks.lookup).toHaveBeenNthCalledWith(1, {
+      appId: '7654321', privateKey: 'synthetic-public-target-private-key',
+      owner: 'review-yeti-ai', repo: 'review-yeti-bot', baseUrl: 'https://api.github.com',
+    });
+    expect(mocks.lookup).toHaveBeenNthCalledWith(2, {
+      appId: '4385771', privateKey: 'synthetic-startup-private-key',
+      owner: 'calltelemetry', repo: 'ct-meta', baseUrl: 'https://api.github.com',
+    });
     expect(mocks.listen).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['7654321', undefined],
+    [undefined, 'synthetic-public-target-private-key'],
+    [undefined, undefined],
+  ])('rejects external dispatch without a complete dedicated App credential pair', async (publicAppId, publicKey) => {
+    vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', publicAppId);
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY', publicKey);
+    await start();
+
+    expect(mocks.initialize).not.toHaveBeenCalled();
+    expect(mocks.createApp).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(mocks.error).toHaveBeenCalledWith('Action dispatch service failed to start', {
+      error: 'Dedicated public-target GitHub App credentials are required for external dispatch',
+    });
+    expect(process.exitCode).toBe(1);
   });
 
   it.each(['', 'review-yeti-ai/other-repository', 'other-owner/review-yeti-bot'])(

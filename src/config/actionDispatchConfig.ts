@@ -20,6 +20,10 @@ export interface McpServerConfig {
 export interface ActionDispatchConfig {
   requireExpectedGeneration: boolean;
   centralExternalRepositories: ReadonlyMap<string, number>;
+  centralExternalAppCredentials?: {
+    appId: string;
+    privateKey: string;
+  };
   mcp: McpServerConfig;
 }
 
@@ -39,6 +43,8 @@ export function parsePositiveInteger(
 interface ActionDispatchEnvironment {
   ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION?: string;
   ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES?: string;
+  REVIEW_YETI_PUBLIC_TARGET_APP_ID?: string;
+  REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?: string;
   REVIEW_YETI_MCP_ENABLED?: string;
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
   REVIEW_YETI_MCP_PATH?: string;
@@ -66,6 +72,16 @@ export function actionDispatchConfigFromEnv(
     centralExternalRepositories = new Map([
       [SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY, SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID],
     ]);
+  }
+  let centralExternalAppCredentials: ActionDispatchConfig['centralExternalAppCredentials'];
+  if (centralExternalRepositories.size > 0) {
+    const publicAppId = environment.REVIEW_YETI_PUBLIC_TARGET_APP_ID?.trim();
+    const publicPrivateKey = environment.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?.trim().replace(/\\n/g, '\n');
+    if (!publicAppId || !/^[1-9][0-9]*$/u.test(publicAppId)
+      || !Number.isSafeInteger(Number(publicAppId)) || !publicPrivateKey) {
+      throw new Error('Dedicated public-target GitHub App credentials are required for external dispatch');
+    }
+    centralExternalAppCredentials = { appId: publicAppId, privateKey: publicPrivateKey };
   }
 
   const mcpEnabledVal = environment.REVIEW_YETI_MCP_ENABLED;
@@ -116,6 +132,7 @@ export function actionDispatchConfigFromEnv(
   return {
     requireExpectedGeneration,
     centralExternalRepositories,
+    ...(centralExternalAppCredentials ? { centralExternalAppCredentials } : {}),
     mcp: {
       enabled: mcpEnabled,
       path: mcpPath,
