@@ -23,9 +23,10 @@ const TOKEN = 'ghs_fake_authoritative_worker';
 const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
 const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
 
-function fixture() {
+function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow' } = {}) {
   const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
     personas: 'security,testing', budget: { max_investigation_turns: 1 },
+    ...(options.reviewEngine ? { review_engine: options.reviewEngine } : {}),
   } });
   const prepared = preparePublishingPolicy({ content, source: {
     repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
@@ -112,6 +113,29 @@ function expectEvidenceOnlyCallback(payload: WorkerReviewCompletion) {
 }
 
 describe('authoritative prepared publishing worker', () => {
+  it('keeps composed policy on the deterministic admitted persona roster', async () => {
+    const f = fixture({ reviewEngine: 'composed' });
+    const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()
+      .mockRejectedValue(new Error('authoritative execution must not use dynamic composed task ids'));
+    f.deps.composedReviewRunner = composedReviewRunner;
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(f.panelRunner).toHaveBeenCalledOnce();
+    expect(composedReviewRunner).not.toHaveBeenCalled();
+    const completion = f.reportReviewResult.mock.calls[0]?.[0];
+    expect(completion?.result.personas.map((persona) => persona.id)).toEqual(f.prepared.expectedPersonaIds);
+    const parsedCompletion = parseWorkerReviewCompletion(completion);
+    const { version: _version, result: _result, ...expectedCoordinates } = parsedCompletion;
+    expect(deriveCanonicalWorkerReviewEvidence(parsedCompletion, {
+      expectedCoordinates,
+      expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: parseChangedFiles(DIFF).files,
+      coverageComplete: true,
+      quorumSatisfied: true,
+    })).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', expectedLanes: 2, completedLanes: 2 } });
+  });
+
   it('executes the exact admitted config instead of mutable policy, persona, and turn environment', async () => {
     const f = fixture();
     Object.assign(f.env, { REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
