@@ -44,6 +44,14 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const appId = required(environment, 'GITHUB_APP_ID');
   const privateKey = required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
   const baseUrl = validateGitHubAppApiBaseUrl(environment.GITHUB_API_BASE_URL);
+  // External dispatch needs only an App installation lookup. Token minting for
+  // publishing, merge groups, and MCP remains bound to the primary service App.
+  const installationCredentialsForRepository = (owner: string, repo: string) => {
+    const external = dispatchConfig.centralExternalAppCredentials;
+    return external && dispatchConfig.centralExternalRepositories.has(`${owner}/${repo}`)
+      ? { ...external, owner, repo, baseUrl }
+      : { appId, privateKey, owner, repo, baseUrl };
+  };
   const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy);
   const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
   const ciConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
@@ -170,13 +178,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       evidence: new PostgresWorkerCompletionStore(pool),
     },
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
-    resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId({
-      appId,
-      privateKey,
-      owner,
-      repo,
-      baseUrl,
-    }),
+    resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId(
+      installationCredentialsForRepository(owner, repo)),
     metricsAuthToken: environment.ACTION_DISPATCH_METRICS_TOKEN?.trim() || undefined,
     ...(githubWebhook ? { githubWebhook } : {}),
   });
