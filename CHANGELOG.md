@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.1...v1.83.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **panel:** classify degenerate provider plans as provider_error, not contract ([#959](https://github.com/review-yeti-ai/review-yeti-bot/issues/959)) ([c680fe5](https://github.com/review-yeti-ai/review-yeti-bot/commit/c680fe5b182a767a415034c898f1db2be48c6277))
+
 ## [1.83.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.0...v1.83.1) (2026-09-22)
 
 
