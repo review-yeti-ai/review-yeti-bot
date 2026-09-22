@@ -38,6 +38,23 @@ function fixture() {
 }
 
 describe('AbandonedRunReaper exact-attempt ownership', () => {
+  it('uses the repository-selected publisher App id for fail-closed publication', async () => {
+    const f = fixture();
+    const publisherAppIdFor = vi.fn(() => 7_654_321);
+    const subject = new AbandonedRunReaper({
+      repository: f.repository,
+      checkClientFor: f.checkClientFor,
+      workerId: 'reaper-a',
+      publisherAppId: 4_385_771,
+      publisherAppIdFor,
+      now: () => 900_000,
+    });
+
+    await subject.runOnce();
+
+    expect(publisherAppIdFor).toHaveBeenCalledWith(run);
+    expect(f.client.failAbandonedCheck).toHaveBeenCalledWith(run, 7_654_321, expect.any(AbortSignal));
+  });
   it('publishes only through the locked attempt and authenticated App failure-only operation', async () => {
     const { subject, client, repository } = fixture();
     await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: 1, failed: 0 });
