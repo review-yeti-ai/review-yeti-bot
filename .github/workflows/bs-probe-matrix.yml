@@ -1,6 +1,6 @@
 name: bs-probe-matrix
 on:
-  workflow_dispatch:
+  pull_request: {}
 jobs:
   probe:
     strategy:
