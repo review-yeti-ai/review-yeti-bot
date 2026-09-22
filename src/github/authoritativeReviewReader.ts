@@ -31,8 +31,11 @@ const MAX_COMPARISON_RESPONSE_BYTES = 8_000_000;
 const MAX_RECONSTRUCTED_FILE_BYTES = 512_000;
 const MAX_RECONSTRUCTED_CONTENT_BYTES = 4_000_000;
 const MAX_PINNED_CONTENT_RESPONSE_BYTES = 800_000;
-// Bound diff search deterministically while retaining diff's synchronous wall-clock timeout.
+// Bound diff search deterministically. At the 64-file reconstruction cap, the
+// synchronous wall-clock budget is at most 640 ms; files that exceed their
+// slice fall back to the already byte-bounded full-replacement patch.
 const MAX_RECONSTRUCTION_EDIT_LENGTH = 500;
+const MAX_RECONSTRUCTION_DIFF_MS = 10;
 // Live #5136 needed 40 reconstructed files. Sixty-four preserves 60% headroom
 // while capping work at 128 pinned reads in 16 four-way batches
 // under the authoritative completion path's 10-second whole-operation deadline.
@@ -280,7 +283,7 @@ export class AuthoritativeReviewReader {
     // cannot admit them without falsely claiming reviewable line coverage.
     if (before === after) throw new Error('Review reader reconstructed diff unavailable');
     const patch = structuredPatch(oldPath, file.path, before, after, '', '', {
-      context: 3, timeout: 100, maxEditLength: MAX_RECONSTRUCTION_EDIT_LENGTH,
+      context: 3, timeout: MAX_RECONSTRUCTION_DIFF_MS, maxEditLength: MAX_RECONSTRUCTION_EDIT_LENGTH,
     });
     const formatted = patch && patch.hunks.length > 0 ? formatPatch(patch, OMIT_HEADERS) : fullReplacementPatch(before, after);
     if (!formatted.startsWith('@@ ') || Buffer.byteLength(formatted, 'utf8') > MAX_CHANGED_FILE_PATCH_BYTES) {
