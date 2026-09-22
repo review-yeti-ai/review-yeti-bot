@@ -6,6 +6,16 @@
 // checkpoints) and STORE new conclusions — reviews honor settled facts instead
 // of re-litigating them.
 //
+// RETIREMENT CONDITION (REL-888 followup): Honcho is ALREADY federated on the
+// ct-mcp gateway (https://llm-gateway.example.com/mcp exposes
+// honcho-recall_memory / honcho-store_conclusion / ...). This stdio server
+// exists only because the review worker mounts MCP servers as local stdio
+// commands and cannot consume gateway-streamed tools yet. Once the worker
+// supports gateway MCP transport, delete this script and the
+// policy/review-yeti.json mcp_servers entry `honcho-memory` — personas reach
+// Honcho through the gateway like every other federated tool, and this file
+// becomes a second, drifting implementation of the same five tools.
+//
 // Env: HONCHO_API_KEY, HONCHO_BASE_URL, HONCHO_WORKSPACE (all required).
 // Observer peer is the reviewer identity (REVIEW_RUN_ID or 'review-yeti').
 
