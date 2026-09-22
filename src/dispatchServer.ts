@@ -1,4 +1,4 @@
-import express, { type Express, type NextFunction, type Request, type Response, type RequestHandler } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response, type RequestHandler, type Router } from 'express';
 import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './api/actionDispatchApi';
 import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
 import { createRateLimiter } from './security/rateLimiter';
@@ -6,6 +6,10 @@ import { createWebhookRouter, type RequestWithRawBody } from './github/webhookSe
 import type { GitHubWebhookAdmissionEvent } from './review/githubWebhookAdmission';
 import { createReviewCiRouter, type ReviewCiRouterOptions } from './api/reviewCiApi';
 import { getPrometheusMetrics } from './telemetry/metrics';
+import type { McpServerConfig } from './config/actionDispatchConfig';
+import { McpAuthenticator } from './mcp/server/mcpAuthenticator';
+import { SlidingWindowRateLimiter } from './mcp/server/mcpRateLimiter';
+import { createRemoteMcpRouter } from './mcp/server/remoteMcpRouter';
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
@@ -16,6 +20,10 @@ export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
     secret: string;
     onEvent(event: GitHubWebhookAdmissionEvent): Promise<Record<string, unknown>>;
   };
+  mcpConfig?: McpServerConfig;
+  mcpRouter?: Router;
+  mcpAuthenticator?: McpAuthenticator;
+  mcpRateLimiter?: SlidingWindowRateLimiter;
 }
 
 export function createActionDispatchApp(options: ActionDispatchAppOptions): Express {
@@ -42,6 +50,52 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
       rateLimiter: limiter,
     }));
   }
+  // MCP Route Mounting (if enabled)
+  if (options.mcpConfig?.enabled) {
+    const mcpPath = options.mcpConfig.path || '/api/mcp';
+
+    // 1. Sliding-window rate limiter
+    if (options.mcpRateLimiter) {
+      app.use(mcpPath, options.mcpRateLimiter.middleware());
+    } else {
+      const rateLimiter = new SlidingWindowRateLimiter({
+        windowMs: options.mcpConfig.rateLimit?.windowMs ?? options.mcpConfig.rateLimitWindowMs ?? 60_000,
+        maxRequests: options.mcpConfig.rateLimit?.max ?? options.mcpConfig.rateLimitMax ?? 60,
+      });
+      app.use(mcpPath, rateLimiter.middleware());
+    }
+
+    // 2. 512KB body parser for MCP routes (accommodates preflight_diff_review)
+    app.use(mcpPath, express.json({ limit: '512kb', strict: true }));
+
+    // 3. Tiered payload bound enforcement: 64KB standard, 512KB for preflight_diff_review
+    app.use(mcpPath, (req: Request, _res: Response, next: NextFunction) => {
+      const contentLength = Number(req.header('content-length') || 0);
+      if (contentLength > 64 * 1024 || (req.body && JSON.stringify(req.body).length > 64 * 1024)) {
+        const isDiffReview = req.body?.method === 'tools/call' && req.body?.params?.name === 'preflight_diff_review';
+        if (!isDiffReview) {
+          const error: any = new Error('request entity too large');
+          error.type = 'entity.too.large';
+          error.status = 413;
+          error.statusCode = 413;
+          return next(error);
+        }
+      }
+      return next();
+    });
+
+    // 4. Remote MCP Router mounting
+    const mcpRouter = options.mcpRouter || createRemoteMcpRouter({
+      authenticator: options.mcpAuthenticator || new McpAuthenticator({
+        staticAuthToken: options.mcpConfig.authToken,
+        oidcVerifier: options.verifier,
+      }),
+      sessionTtlMs: options.mcpConfig.sessionTtlMs,
+      maxSessions: options.mcpConfig.maxSessions,
+    });
+    app.use(mcpPath, mcpRouter);
+  }
+
   // Only the typed completion endpoint accepts bounded full persona evidence.
   // Action admission retains its smaller limit and strict request schema.
   app.use('/api/dispatch/completion', express.json({ limit: MAX_COMPLETION_BYTES, strict: true }));
@@ -128,10 +182,13 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
   if (options.ci) app.use('/api/dispatch/ci', limiter, createReviewCiRouter(options.ci));
   app.use('/api/dispatch', limiter, createActionDispatchRouter(options));
   app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
-    if (error && typeof error === 'object' && 'status' in error && error.status === 413) {
+    const err = error as { type?: string; status?: number; statusCode?: number };
+    if (err?.type === 'entity.too.large' || err?.status === 413 || err?.statusCode === 413) {
       return response.status(413).json({ error: 'Request body exceeds its permitted size' });
     }
-    if (error instanceof SyntaxError) return response.status(400).json({ error: 'Invalid JSON body' });
+    if (error instanceof SyntaxError && ('body' in error || (error as any).message?.includes('JSON'))) {
+      return response.status(400).json({ error: 'Invalid JSON body' });
+    }
     return next(error);
   });
   return app;
