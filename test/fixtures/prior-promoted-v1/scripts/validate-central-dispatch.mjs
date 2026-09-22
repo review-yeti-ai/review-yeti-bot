@@ -108,7 +108,6 @@ export const MAX_REVIEW_GENERATIONS = 3;
 const PAYLOAD_KEYS = Object.freeze(['base_sha', 'head_sha', 'pr_number', 'repository', 'request_id']);
 const REFRESH_PAYLOAD_KEYS = Object.freeze([...PAYLOAD_KEYS, 'refresh_requested'].sort());
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
-const WORKFLOW_DISPATCH_PR_NUMBER_PATTERN = /^[1-9][0-9]*$/u;
 const REQUEST_ID_PATTERN = /^([A-Za-z0-9_][A-Za-z0-9._-]{0,99}):([1-9][0-9]*):([0-9a-f]{40}):([1-9][0-9]*):([1-9][0-9]*)$/u;
 const PROVIDER_SECRET_PATTERN = /(?:OLLAMA_PR_REVIEW_API_KEY|OPENROUTER(?:_PR_REVIEW_API_KEY|_REVIEW_FLEET_KEY|_API_KEY)|FIREWORKS_PR_REVIEW_API_KEY|SYNTHETIC_API_KEY|GEMINI_API_KEY)/u;
 const PUBLIC_DISPATCH_APP_ACTION_PATTERN = /^actions\/create-github-app-token@[0-9a-f]{40}$/u;
@@ -156,41 +155,6 @@ function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
   }
-}
-
-// GitHub serializes workflow_dispatch number inputs as strings in the event
-// context. Normalize that one trusted workflow boundary before the strict
-// dispatch validator runs; repository_dispatch values and types remain
-// untouched so their type contract stays fail-closed. The receiver carries a
-// workflow-owned equivalent to tolerate main/v1 skew; boundary tests cover both.
-export function normalizeCentralDispatchPayload({ eventName, payload }) {
-  if (eventName !== 'workflow_dispatch') return payload;
-
-  assertPlainObject(payload, 'workflow_dispatch inputs');
-
-  const rawPrNumber = payload.pr_number;
-  const prNumber = typeof rawPrNumber === 'number'
-    ? rawPrNumber
-    : typeof rawPrNumber === 'string' && WORKFLOW_DISPATCH_PR_NUMBER_PATTERN.test(rawPrNumber)
-      ? Number(rawPrNumber)
-      : NaN;
-
-  if (!Number.isSafeInteger(prNumber) || prNumber < 1) {
-    throw new Error('workflow_dispatch pr_number must be a positive safe integer');
-  }
-
-  const rawRefreshRequested = payload.refresh_requested;
-  const refreshRequested = rawRefreshRequested === true || rawRefreshRequested === 'true'
-    ? true
-    : rawRefreshRequested === false || rawRefreshRequested === 'false'
-      ? false
-      : null;
-
-  if (refreshRequested === null) {
-    throw new Error('workflow_dispatch refresh_requested must be a boolean');
-  }
-
-  return { ...payload, pr_number: prNumber, refresh_requested: refreshRequested };
 }
 
 export function validateDispatchPayload(payload) {
@@ -373,6 +337,13 @@ async function githubJson(url, token, fetchImpl) {
 }
 
 async function assertInstallationTokenScope({ token, owner, repositories, label, fetchImpl }) {
+  const installation = await githubJson('https://api.github.com/installation', token, fetchImpl);
+  assertPlainObject(installation, `${label} installation`);
+  assertPlainObject(installation.account, `${label} installation account`);
+  if (installation.account.login !== owner) {
+    throw new Error(`${label} installation owner must be exactly ${owner}`);
+  }
+
   const scope = await githubJson(
     'https://api.github.com/installation/repositories?per_page=100',
     token,
@@ -381,10 +352,6 @@ async function assertInstallationTokenScope({ token, owner, repositories, label,
   assertPlainObject(scope, `${label} installation repository scope`);
   if (!Number.isSafeInteger(scope.total_count) || scope.total_count < 0 || !Array.isArray(scope.repositories)) {
     throw new Error(`${label} installation repository scope is invalid`);
-  }
-  const owners = scope.repositories.map((repository) => repository?.owner?.login);
-  if (owners.some((repositoryOwner) => repositoryOwner !== owner)) {
-    throw new Error(`${label} installation owner must be exactly ${owner}`);
   }
   const actual = scope.repositories.map((repository) => repository?.full_name);
   if (actual.some((repository) => typeof repository !== 'string')

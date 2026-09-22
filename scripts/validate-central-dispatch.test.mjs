@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import * as priorValidator from '../test/fixtures/prior-promoted-v1/scripts/validate-central-dispatch.mjs';
 
 import {
   CENTRAL_REPOSITORY,
@@ -14,6 +16,7 @@ import {
   assertAdmittedRepository,
   assertRepositoryCapacity,
   globalConcurrencyCap,
+  normalizeCentralDispatchPayload,
   repositoryConcurrencyCap,
   validateCallerWorkflow,
   validateCentralDispatch,
@@ -207,6 +210,151 @@ test('accepts only the sanitized Cisco dispatch identity contract', () => {
   }
 });
 
+test('normalizes only workflow_dispatch inputs into the strict central payload contract', () => {
+  const manualInputs = {
+    ...payload,
+    pr_number: '4527',
+    refresh_requested: 'false',
+  };
+
+  const normalized = normalizeCentralDispatchPayload({
+    eventName: 'workflow_dispatch',
+    payload: manualInputs,
+  });
+
+  assert.deepEqual(normalized, { ...payload, refresh_requested: false });
+  assert.deepEqual(validateDispatchPayload(normalized), normalized);
+  assert.deepEqual(
+    normalizeCentralDispatchPayload({
+      eventName: 'workflow_dispatch',
+      payload: { ...manualInputs, refresh_requested: 'true' },
+    }),
+    { ...payload, refresh_requested: true },
+  );
+  assert.throws(
+    () => normalizeCentralDispatchPayload({
+      eventName: 'workflow_dispatch',
+      payload: { ...manualInputs, pr_number: '4527.5' },
+    }),
+    /workflow_dispatch pr_number must be a positive safe integer/u,
+  );
+});
+
+test('keeps repository_dispatch payloads strict and fail-closed', () => {
+  const dispatchedPayload = { ...payload, pr_number: '4527', refresh_requested: false };
+
+  assert.equal(
+    normalizeCentralDispatchPayload({
+      eventName: 'repository_dispatch',
+      payload: dispatchedPayload,
+    }),
+    dispatchedPayload,
+  );
+  assert.throws(() => validateDispatchPayload(dispatchedPayload), /pr_number must be a positive safe integer/u);
+  assert.throws(
+    () => validateDispatchPayload({ ...payload, refresh_requested: 'false' }),
+    /refresh_requested must be a boolean/u,
+  );
+});
+
+// Execute the production shell with an old promoted checkout, not a same-head
+// helper. This must keep working before v1 promotion and must not need tokens.
+function normalizeWithReceiver(eventName, input) {
+  const directory = mkdtempSync(`${tmpdir()}/review-yeti-normalization-`);
+  const outputPath = `${directory}/github-output`;
+  try {
+    const result = spawnSync('bash', ['-c', workflowStepRun(receiverWorkflow, 'Normalize central dispatch payload')], {
+      encoding: 'utf8',
+      cwd: fileURLToPath(new URL('../test/fixtures/prior-promoted-v1/', import.meta.url)),
+      env: {
+        PATH: process.env.PATH,
+        GITHUB_OUTPUT: outputPath,
+        EVENT_NAME: eventName,
+        RAW_CENTRAL_DISPATCH_PAYLOAD: JSON.stringify(input),
+      },
+    });
+    if (result.status !== 0) throw new Error(result.stderr || `normalization exited ${result.status}`);
+    const output = readFileSync(outputPath, 'utf8').trim();
+    assert.match(output, /^payload=/u);
+    return JSON.parse(output.slice('payload='.length));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test('new receiver works with the prior promoted validator and still binds the genuine caller', async () => {
+  for (const eventName of ['repository_dispatch', 'workflow_dispatch']) {
+    const normalized = normalizeWithReceiver(eventName, {
+      ...payload,
+      pr_number: eventName === 'workflow_dispatch' ? '4527' : 4527,
+      refresh_requested: eventName === 'workflow_dispatch' ? 'false' : false,
+    });
+    assert.deepEqual(normalized, { ...payload, refresh_requested: false });
+    const result = await priorValidator.validateCentralDispatch({
+      payload: normalized, targetToken: 'target-token', centralToken: 'central-token', fetchImpl: successFetch([]),
+    });
+    assert.equal(result.caller_run_id, callerRunId);
+    assert.equal(result.caller_run_attempt, callerRunAttempt);
+    assert.equal(result.head_sha, headSha);
+    for (const mutation of [
+      { event: 'workflow_dispatch' }, { head_sha: 'c'.repeat(40) },
+      { run_attempt: 999 }, { pull_requests: [] },
+    ]) {
+      const transport = successFetch([]);
+      await assert.rejects(priorValidator.validateCentralDispatch({
+        payload: normalized, targetToken: 'target-token', centralToken: 'central-token',
+        fetchImpl: async (url, init) => {
+          const res = await transport(url, init);
+          return url.endsWith(`/actions/runs/${callerRunId}`)
+            ? response({ ...await res.json(), ...mutation }) : res;
+        },
+      }));
+    }
+  }
+});
+
+for (const [boundary, normalize] of [
+  ['helper', (eventName, input) => normalizeCentralDispatchPayload({ eventName, payload: input })],
+  ['workflow', normalizeWithReceiver],
+]) {
+  test(`${boundary}: manual normalization accepts only typed numbers or decimal strings and exact booleans`, () => {
+    for (const pr_number of [4527, '4527']) {
+      for (const [refresh_requested, expected] of [[true, true], ['true', true], [false, false], ['false', false]]) {
+        const normalized = normalize('workflow_dispatch', { ...payload, pr_number, refresh_requested });
+        assert.deepEqual(normalized, { ...payload, refresh_requested: expected });
+        assert.deepEqual(priorValidator.validateDispatchPayload(normalized), normalized);
+      }
+    }
+  });
+  for (const invalid of [[4527], ['4527'], [['4527']], {}, true, false, null, undefined,
+    0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '9007199254740992', '', '0', '-1',
+    '1.5', '1e3', '0x10', ' 4527', '4527 ', '04527']) {
+    test(`${boundary}: rejects malformed manual pr_number ${JSON.stringify(invalid)}`, () => {
+      assert.throws(() => normalize('workflow_dispatch', {
+        ...payload, pr_number: invalid, refresh_requested: false,
+      }), /workflow_dispatch pr_number must be a positive safe integer/u);
+    });
+  }
+  for (const invalid of [[], ['true'], {}, null, undefined, 0, 1, '', 'TRUE', 'False', ' true']) {
+    test(`${boundary}: rejects malformed manual refresh_requested ${JSON.stringify(invalid)}`, () => {
+      assert.throws(() => normalize('workflow_dispatch', {
+        ...payload, refresh_requested: invalid,
+      }), /workflow_dispatch refresh_requested must be a boolean/u);
+    });
+  }
+  test(`${boundary}: automated dispatch remains uncoerced and strictly rejected by old and current validators`, () => {
+    for (const malformed of [
+      { ...payload, pr_number: '4527' }, { ...payload, refresh_requested: 'false' },
+      { ...payload, extra: 'field' }, { ...payload, request_id: 'forged' },
+    ]) {
+      const normalized = normalize('repository_dispatch', malformed);
+      assert.deepEqual(normalized, malformed);
+      assert.throws(() => priorValidator.validateDispatchPayload(normalized));
+      assert.throws(() => validateDispatchPayload(normalized));
+    }
+  });
+}
+
 test('request_id namespace must match the payload repository', () => {
   const mismatched = {
     request_id: `example-release:771:${headSha}:${callerRunId}:${callerRunAttempt}`,
@@ -348,7 +496,7 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   const reusable = readFileSync(new URL('../.github/workflows/review-yeti.yml', import.meta.url), 'utf8');
 
   assert.match(receiver, /types:\s*\[review-yeti-request\]/u);
-  assert.match(receiver, /run-name:\s*Review Yeti central \/ \$\{\{ github\.event\.client_payload\.request_id \}\}/u);
+  assert.match(receiver, /run-name:\s*Review Yeti central \/ \$\{\{ github\.event\.client_payload\.request_id \|\| inputs\.request_id \}\}/u);
   assert.match(receiver, /group:\s*central-review-yeti-\$\{\{ github\.event\.client_payload\.repository \|\| inputs\.repository \}\}-\$\{\{ github\.event\.client_payload\.pr_number \|\| inputs\.pr_number \}\}-\$\{\{ github\.event\.client_payload\.head_sha \|\| inputs\.head_sha \}\}/u);
   assert.match(receiver, /cancel-in-progress:\s*false/u);
   assert.match(receiver, /uses: exampleorg\/example-review-actions\/\.github\/workflows\/review-yeti\.yml@v1/u);
@@ -359,6 +507,20 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   // REL-540 / ADR 0511: the receiver's validate job runs as the ct-review-bot App, never the PAT.
   assert.match(receiver, /create-github-app-token@[0-9a-f]{40}/u);
   assert.match(receiver, /app-id: \$\{\{ secrets\.CT_REVIEW_BOT_APP_ID \}\}/u);
+  const normalizationBlock = workflowStepBlock(receiver, 'Normalize central dispatch payload');
+  const normalizationStep = workflowStepRun(receiver, 'Normalize central dispatch payload');
+  assert.match(normalizationStep, /normalizeCentralDispatchPayload/u);
+  assert.doesNotMatch(normalizationBlock, /working-directory:|secrets\.|steps\..*\.outputs\.token/u);
+  assert.doesNotMatch(normalizationStep, /\bimport\b|\brequire\s*\(/u);
+  assert.ok(receiver.indexOf('- name: Normalize central dispatch payload') < receiver.indexOf('- name: Checkout promoted central validator'));
+  assert.ok(receiver.indexOf('- name: Normalize central dispatch payload') < receiver.indexOf('- name: Mint Review Yeti App token'));
+  const checkout = workflowStepBlock(receiver, 'Checkout promoted central validator');
+  assert.match(checkout, /ref: v1/u);
+  assert.match(checkout, /persist-credentials: false/u);
+  assert.match(normalizationBlock, /EVENT_NAME: \$\{\{ github\.event_name \}\}/u);
+  assert.match(normalizationBlock, /RAW_CENTRAL_DISPATCH_PAYLOAD: \$\{\{ toJSON\(github\.event\.client_payload \|\| inputs\) \}\}/u);
+  assert.match(receiver, /CENTRAL_DISPATCH_PAYLOAD: \$\{\{ steps\.payload\.outputs\.payload \}\}/u);
+  assert.doesNotMatch(receiver, /^\s{10}CENTRAL_DISPATCH_PAYLOAD: \$\{\{ toJSON\(github\.event\.client_payload \|\| inputs\) \}\}$/mu);
   const validationTokenStep = receiver.match(/- name: Mint Review Yeti App token for exampleorg target validation[\s\S]*?(?=\n\s+- name: Mint Review Yeti App token for exact public target validation)/u)?.[0] ?? '';
   const scopedPermissions = [...validationTokenStep.matchAll(/^\s+permission-([a-z-]+):\s*(\w+)\s*$/gmu)]
     .map((match) => `${match[1]}:${match[2]}`).sort();

@@ -1,5 +1,5 @@
 name: Central Review Yeti Dispatch
-run-name: Review Yeti central / ${{ github.event.client_payload.request_id }}
+run-name: Review Yeti central / ${{ github.event.client_payload.request_id || inputs.request_id }}
 
 on:
   repository_dispatch:
@@ -64,6 +64,56 @@ jobs:
       caller_workflow_sha256: ${{ steps.request.outputs.caller_workflow_sha256 }}
       refresh_requested: ${{ steps.request.outputs.refresh_requested }}
     steps:
+      # GitHub serializes workflow_dispatch number inputs as strings. Convert
+      # only that manual boundary to the validator's typed contract; a
+      # repository_dispatch payload remains strict and fail-closed.
+      # Keep this small boundary workflow-owned: main can precede promotion of
+      # v1, which may not export a normalizer. No checkout code or credentials
+      # are used here; all secret-bearing validation still runs promoted v1.
+      - name: Normalize central dispatch payload
+        id: payload
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RAW_CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload || inputs) }}
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE' >> "$GITHUB_OUTPUT"
+          function normalizeCentralDispatchPayload({ eventName, payload }) {
+            if (eventName !== 'workflow_dispatch') return payload;
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+              throw new Error('workflow_dispatch inputs must be an object');
+            }
+
+            const rawPrNumber = payload.pr_number;
+            const prNumber = typeof rawPrNumber === 'number'
+              ? rawPrNumber
+              : typeof rawPrNumber === 'string' && /^[1-9][0-9]*$/u.test(rawPrNumber)
+                ? Number(rawPrNumber)
+                : NaN;
+            if (!Number.isSafeInteger(prNumber) || prNumber < 1) {
+              throw new Error('workflow_dispatch pr_number must be a positive safe integer');
+            }
+
+            const rawRefreshRequested = payload.refresh_requested;
+            const refreshRequested = rawRefreshRequested === true || rawRefreshRequested === 'true'
+              ? true
+              : rawRefreshRequested === false || rawRefreshRequested === 'false'
+                ? false
+                : null;
+            if (refreshRequested === null) {
+              throw new Error('workflow_dispatch refresh_requested must be a boolean');
+            }
+            return { ...payload, pr_number: prNumber, refresh_requested: refreshRequested };
+          }
+
+          const payload = JSON.parse(process.env.RAW_CENTRAL_DISPATCH_PAYLOAD || '');
+          const normalized = normalizeCentralDispatchPayload({
+            eventName: process.env.EVENT_NAME,
+            payload,
+          });
+          process.stdout.write(`payload=${JSON.stringify(normalized)}\n`);
+          NODE
+
       - name: Checkout promoted central validator
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -159,7 +209,7 @@ jobs:
           GH_TARGET_TOKEN: ${{ steps.target_token_public.outputs.token || steps.target_token_exampleorg.outputs.token }}
           GH_CENTRAL_TOKEN: ${{ steps.central_token.outputs.token }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
-          CENTRAL_DISPATCH_PAYLOAD: ${{ toJSON(github.event.client_payload || inputs) }}
+          CENTRAL_DISPATCH_PAYLOAD: ${{ steps.payload.outputs.payload }}
         run: node scripts/validate-central-dispatch.mjs
 
   review:
