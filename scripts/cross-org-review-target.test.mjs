@@ -70,7 +70,8 @@ function response(payload, status = 200) {
 
 function externalFetch(calls, {
   targetRepositories = [REVIEW_YETI_REPOSITORY],
-  targetOwner = 'review-yeti-ai',
+  targetOwner = REVIEW_YETI_REPOSITORY.split('/')[0],
+  centralOwner,
   workflow = callerWorkflow,
 } = {}) {
   return async (url, init) => {
@@ -91,7 +92,7 @@ function externalFetch(calls, {
           owner: {
             login: authorization === 'Bearer target-installation-token'
               ? targetOwner
-              : fullName.split('/')[0],
+              : centralOwner ?? fullName.split('/')[0],
           },
         })),
       });
@@ -215,7 +216,14 @@ test('fails closed when the exact public target token scope is wrong or tokens a
     targetToken: 'target-installation-token',
     centralToken: 'central-installation-token',
     fetchImpl: externalFetch([], { targetOwner: 'another-owner' }),
-  }), /installation owner/u);
+  }), /target installation owner/u);
+
+  await assert.rejects(validateCentralDispatch({
+    payload: externalPayload,
+    targetToken: 'target-installation-token',
+    centralToken: 'central-installation-token',
+    fetchImpl: externalFetch([], { centralOwner: 'another-owner' }),
+  }), /central installation owner/u);
 
   await assert.rejects(validateCentralDispatch({
     payload: externalPayload,
