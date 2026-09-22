@@ -6,6 +6,8 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { computeArbitration } from '../../src/review/reviewCore';
+import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
+import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { PanelResult } from '../../src/panel/types';
 import * as panelEngine from '../../src/panel/panelEngine';
@@ -113,6 +115,222 @@ function expectEvidenceOnlyCallback(payload: WorkerReviewCompletion) {
 }
 
 describe('authoritative prepared publishing worker', () => {
+  it('turns centrally verified documentation-only completion into audited gate eligibility', async () => {
+    const f = fixture();
+    const docsDiff = 'diff --git a/docs/plan.md b/docs/plan.md\n--- a/docs/plan.md\n+++ b/docs/plan.md\n@@ -1 +1 @@\n-old\n+new\n';
+    f.source.diff = docsDiff;
+    f.source.diffDigest = createHash('sha256').update(docsDiff).digest('hex');
+    f.panelRunner.mockResolvedValue(buildDocumentationOnlyPanelResult(
+      HEAD, 'bifrost', 'No analyzable source changed.',
+    ));
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    const { version: _version, result: _result, ...expectedCoordinates } = completion;
+    const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates,
+      expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: parseChangedFiles(docsDiff).files,
+      coverageComplete: true,
+      quorumSatisfied: true,
+    });
+
+    expect(derived).toMatchObject({
+      valid: true,
+      evidence: {
+        verdict: 'SHIP', coverageComplete: true, quorumSatisfied: true,
+        infrastructureFailure: false, p0Count: 0, p1Count: 0,
+        expectedLanes: 0, completedLanes: 0,
+        exemption: {
+          kind: 'no-reviewable-content',
+          auditDigest: '22506f5f03df562cf6fb5bad62b679ac9525fab0b4f32f7ecdcacf0462e3108c',
+        },
+      },
+    });
+    const candidate = {
+      repositoryId: expectedCoordinates.repositoryId,
+      prNumber: expectedCoordinates.prNumber,
+      headSha: expectedCoordinates.headSha,
+      baseSha: expectedCoordinates.baseSha,
+      policyDigest: expectedCoordinates.policyDigest,
+    };
+    expect(evaluateReviewGate({
+      candidate,
+      current: { ...candidate, open: true, draft: false },
+      evidence: derived.evidence,
+    })).toEqual({ status: 'success', eligible: true, reason: 'central-exemption' });
+  });
+
+  it.each([
+    'src/a.ts',
+    'package.json',
+    'runs/deploy.sh',
+    'docs/bootstrap.sh',
+    '.github/workflows/publish.yml',
+    '.github/CODEOWNERS',
+    '.changeset/config.json',
+  ])(
+    'never exempts a forged documentation-only marker for analyzable path %s',
+    (path) => {
+      const f = fixture();
+      const completion = parseWorkerReviewCompletion(expectedEvent(f, {
+        version: 'WorkerReviewResult.v1',
+        completedAt: COMPLETED,
+        personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }],
+        coverageComplete: true,
+        quorumSatisfied: true,
+      }));
+      const { version: _version, result: _result, ...expectedCoordinates } = completion;
+
+      expect(deriveCanonicalWorkerReviewEvidence(completion, {
+        expectedCoordinates,
+        expectedPersonaIds: f.prepared.expectedPersonaIds,
+        changedFiles: [{ path, patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+        coverageComplete: true,
+        quorumSatisfied: true,
+      })).toEqual({
+        valid: false,
+        reason: 'invalid-evidence',
+        message: 'documentation-only completion contains analyzable source paths',
+      });
+    },
+  );
+
+  it('never exempts a documentation-only marker mixed with a real reviewer lane', () => {
+    const f = fixture();
+    const completion = parseWorkerReviewCompletion(expectedEvent(f, {
+      version: 'WorkerReviewResult.v1',
+      completedAt: COMPLETED,
+      personas: [
+        { id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+        { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [{
+          severity: 'P1', path: 'docs/plan.md', line: 1,
+          title: 'Do not discard this finding', body: 'A real reviewer lane must never be erased by the exemption.',
+        }] },
+      ],
+      coverageComplete: true,
+      quorumSatisfied: true,
+    }));
+    const { version: _version, result: _result, ...expectedCoordinates } = completion;
+
+    expect(deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates,
+      expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+      coverageComplete: true,
+      quorumSatisfied: true,
+    })).toEqual({
+      valid: false,
+      reason: 'invalid-evidence',
+      message: 'unknown persona lane: documentation-only',
+    });
+  });
+
+  it.each([
+    ['central coverage', true, true, false, true],
+    ['central quorum', true, true, true, false],
+    ['worker coverage', false, true, true, true],
+    ['worker quorum', true, false, true, true],
+  ] as const)(
+    'keeps %s failure binding for documentation-only evidence',
+    (_name, workerCoverage, workerQuorum, coverageComplete, quorumSatisfied) => {
+      const f = fixture();
+      const completion = parseWorkerReviewCompletion(expectedEvent(f, {
+        version: 'WorkerReviewResult.v1',
+        completedAt: COMPLETED,
+        personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }],
+        coverageComplete: workerCoverage,
+        quorumSatisfied: workerQuorum,
+      }));
+      const { version: _version, result: _result, ...expectedCoordinates } = completion;
+      const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+        expectedCoordinates,
+        expectedPersonaIds: f.prepared.expectedPersonaIds,
+        changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+        coverageComplete,
+        quorumSatisfied,
+      });
+      const expectedCoverageComplete = coverageComplete && workerCoverage;
+      const expectedQuorumSatisfied = quorumSatisfied && workerQuorum && expectedCoverageComplete;
+
+      expect(derived).toMatchObject({
+        valid: true,
+        evidence: {
+          coverageComplete: expectedCoverageComplete,
+          quorumSatisfied: expectedQuorumSatisfied,
+        },
+      });
+      const candidate = {
+        repositoryId: expectedCoordinates.repositoryId,
+        prNumber: expectedCoordinates.prNumber,
+        headSha: expectedCoordinates.headSha,
+        baseSha: expectedCoordinates.baseSha,
+        policyDigest: expectedCoordinates.policyDigest,
+      };
+      expect(evaluateReviewGate({
+        candidate,
+        current: { ...candidate, open: true, draft: false },
+        evidence: derived.evidence,
+      })).toEqual({ status: 'failure', eligible: false, reason: 'incomplete-review' });
+    },
+  );
+
+  it.each([
+    {
+      name: 'findings',
+      lane: {
+        id: 'documentation-only', decision: 'FINDINGS' as const, status: 'COMPLETE' as const,
+        findings: [{ severity: 'P1' as const, path: 'docs/plan.md', line: 1,
+          title: 'Finding must block exemption', body: 'The marker is not clean.' }],
+      },
+    },
+    {
+      name: 'infrastructure failure',
+      lane: {
+        id: 'documentation-only', decision: 'ERROR' as const, status: 'ERROR' as const,
+        findings: [], errorClass: 'transport' as const,
+      },
+    },
+  ])('never exempts a documentation-only marker with $name', ({ lane }) => {
+    const f = fixture();
+    const completion = parseWorkerReviewCompletion(expectedEvent(f, {
+      version: 'WorkerReviewResult.v1', completedAt: COMPLETED,
+      personas: [lane], coverageComplete: true, quorumSatisfied: true,
+    }));
+    const { version: _version, result: _result, ...expectedCoordinates } = completion;
+
+    expect(deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates,
+      expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+      coverageComplete: true,
+      quorumSatisfied: true,
+    })).toMatchObject({ valid: false, reason: 'invalid-evidence' });
+  });
+
+  it('rejects a documentation-only completion whose raw verdict contradicts canonical arbitration', () => {
+    const f = fixture();
+    const completion = parseWorkerReviewCompletion(expectedEvent(f, {
+      version: 'WorkerReviewResult.v1', completedAt: COMPLETED,
+      personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }],
+      coverageComplete: true, quorumSatisfied: true, verdict: 'BLOCK',
+    }));
+    const { version: _version, result: _result, ...expectedCoordinates } = completion;
+
+    expect(deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates,
+      expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+      coverageComplete: true,
+      quorumSatisfied: true,
+    })).toMatchObject({
+      valid: false,
+      reason: 'invalid-evidence',
+      message: 'worker verdict BLOCK disagrees with canonical verdict SHIP',
+    });
+  });
+
   it('keeps composed policy on the deterministic admitted persona roster', async () => {
     const f = fixture({ reviewEngine: 'composed' });
     const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()
