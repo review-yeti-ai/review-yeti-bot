@@ -897,6 +897,9 @@ export async function validateCentralDispatch({
     caller_workflow_path: callerWorkflowPath,
     caller_workflow_sha256: callerWorkflowSha256,
     ...generation,
+    refresh_execution_attempt: request.refresh_requested === true
+      ? generation.review_generation - 1
+      : 0,
   };
 }
 

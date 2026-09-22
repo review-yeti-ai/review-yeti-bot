@@ -570,7 +570,9 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(receiver, /cancel-in-progress:\s*false/u);
   assert.match(receiver, /uses: exampleorg\/example-review-actions\/\.github\/workflows\/review-yeti\.yml@v1/u);
   assert.match(receiver, /review_generation:\s*\$\{\{ steps\.request\.outputs\.review_generation \}\}/u);
+  assert.match(receiver, /refresh_execution_attempt:\s*\$\{\{ steps\.request\.outputs\.refresh_execution_attempt \}\}/u);
   assert.match(receiver, /expected_generation:\s*\$\{\{ fromJSON\(needs\.validate\.outputs\.review_generation\) \}\}/u);
+  assert.match(receiver, /refresh_execution_attempt:\s*\$\{\{ fromJSON\(needs\.validate\.outputs\.refresh_execution_attempt\) \}\}/u);
   assert.match(receiver, /execution_backend:\s*doks/u);
   assert.match(receiver, /secrets: inherit/u);
   // REL-540 / ADR 0511: the receiver's validate job runs as the ct-review-bot App, never the PAT.
@@ -618,9 +620,9 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.doesNotMatch(reusable, /workflow_call:[\s\S]{0,1200}OLLAMA_PR_REVIEW_API_KEY/u);
   assert.match(receiver, /refresh_requested:/u);
   assert.match(reusable, /refresh_requested:/u);
-  assert.doesNotMatch(reusable, /^\s+refresh_execution_attempt:/mu);
-  assert.doesNotMatch(reusable, /^\s+refresh-requested:/mu);
-  assert.doesNotMatch(reusable, /^\s+refresh-execution-attempt:/mu);
+  assert.match(reusable, /refresh_execution_attempt:\s*[\s\S]*?default:\s*0[\s\S]*?type:\s*number/u);
+  assert.match(reusable, /refresh-requested:\s*\$\{\{ inputs\.refresh_requested \}\}/u);
+  assert.match(reusable, /refresh-execution-attempt:\s*\$\{\{ inputs\.refresh_requested && inputs\.refresh_execution_attempt \|\| '' \}\}/u);
   assert.equal((reusable.match(/^\s+max-file-diff-chars:/gmu) || []).length, 1);
 });
 

@@ -125,6 +125,7 @@ test('attempt 1 admits only when no worker generation exists', async () => {
   const calls = [];
   const result = await validate({ attempt: 1, pages: [page([])], calls });
   assert.equal(result.review_generation, 1);
+  assert.equal(result.refresh_execution_attempt, 0);
   assert.equal(result.worker_check_count, 0);
   const checkCall = calls.find((call) => call.url.includes('/check-runs?'));
   assert.ok(checkCall, 'central validation must query the exact-head raw Review Yeti checks');
@@ -138,6 +139,7 @@ test('attempt 1 admits only when no worker generation exists', async () => {
 test('explicit refresh admits a persisted retry from caller attempt 1 after a recoverable a1', async () => {
   const result = await validate({ attempt: 1, refreshRequested: true, pages: [page([workerCheck()])] });
   assert.equal(result.review_generation, 2);
+  assert.equal(result.refresh_execution_attempt, 1);
   assert.equal(result.worker_check_count, 1);
   assert.equal(result.latest_worker_check_id, 100);
   assert.equal(result.refresh_requested, true);
@@ -153,6 +155,7 @@ test('explicit refresh advances the persisted retry ledger from a2 to the bounde
     ])],
   });
   assert.equal(result.review_generation, 3);
+  assert.equal(result.refresh_execution_attempt, 2);
   assert.equal(result.worker_check_count, 2);
   assert.equal(result.latest_worker_check_id, 101);
   assert.equal(result.refresh_requested, true);
