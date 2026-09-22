@@ -33,6 +33,12 @@ import re
 import sys
 
 review = json.load(open(sys.argv[1]))['review_yeti']
+personas = [item.strip() for item in review.get('personas', '').split(',') if item.strip()]
+if personas != ['architecture', 'security', 'documentation']:
+    raise SystemExit(
+        'policy must include the documentation persona so docs-only pull requests '
+        'receive a binding Review Yeti verdict'
+    )
 configured_transports = review.get('transports', [])
 if any(type(item.get('enabled')) is not bool for item in configured_transports):
     raise SystemExit('every configured transport must declare enabled as a boolean')
