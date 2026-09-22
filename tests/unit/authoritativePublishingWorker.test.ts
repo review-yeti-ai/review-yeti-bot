@@ -181,6 +181,26 @@ describe('authoritative prepared publishing worker', () => {
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
   });
 
+  it('fails closed when a SHIP verdict stands on coverage that denies quorum', async () => {
+    // The coverage guard is only reachable through runPublishingReviewWorker:
+    // production is the sole caller, so a worker-level pin is what catches the
+    // optional-argument regression (dropping the third argument at line 1351
+    // compiles cleanly and would silently re-enable a SHIP published over a
+    // quorum its own coverage line denies).
+    const f = fixture();
+    f.panel.quorum = { ...f.panel.quorum, satisfied: false };
+    const rawCheck = vi.fn<PublishingCheckClient['completeCheck']>(async () => undefined);
+    f.deps.checkClient = {
+      ...f.deps.checkClient,
+      completeCheck: rawCheck,
+    };
+    await runPublishingReviewWorker(f.env, f.deps);
+    const conclusions = rawCheck.mock.calls
+      .map((call: unknown[]) => ((call[0] as { conclusion: string }).conclusion));
+    expect(conclusions).toEqual(['failure']);
+    expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
+  });
+
   it('never publishes a green raw check when the completion acknowledgement fails', async () => {
     const f = fixture();
     const order2: string[] = [];
