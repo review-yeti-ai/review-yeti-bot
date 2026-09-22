@@ -65,14 +65,13 @@ describe('GHCR publish contract', () => {
     const merge = workflowJob('publish-ghcr');
 
     expect(arch).toContain('runner: ubuntu-latest');
-    expect(arch).toContain('runner: ubuntu-24.04-arm');
+    expect(arch).toContain('runner: blacksmith-2vcpu-ubuntu-2404-arm');
     expect(arch).toContain('runs-on: ${{ matrix.runner }}');
     expect(arch).toContain('arch: amd64');
     expect(arch).toContain('arch: arm64');
     expect(arch).toContain('platforms: linux/${{ matrix.arch }}');
     expect(arch).not.toContain('linux/amd64,linux/arm64');
     expect(arch).not.toContain('setup-qemu');
-    expect(arch).not.toContain('blacksmith-');
     expect(arch).toContain('${{ github.sha }}-${{ matrix.arch }}');
     expect(arch).not.toContain('--platform linux/amd64');
 
