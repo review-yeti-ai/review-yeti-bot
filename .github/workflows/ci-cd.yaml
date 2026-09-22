@@ -270,7 +270,7 @@ jobs:
       # cache-key. Layer state lives on sticky disks; no cache blobs are exported.
       - name: Set up Blacksmith builder (node-family images)
         if: matrix.arch == 'arm64'
-        uses: useblacksmith/setup-docker-builder@v2
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2
         with:
           cache-key: review-yeti-node-images-arm64
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -418,7 +418,7 @@ jobs:
 
       - name: Set up Blacksmith builder (operator image)
         if: matrix.arch == 'arm64'
-        uses: useblacksmith/setup-docker-builder@v2
+        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2
         with:
           cache-key: review-yeti-operator-arm64
       - id: operator

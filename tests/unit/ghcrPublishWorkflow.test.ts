@@ -72,7 +72,10 @@ describe('GHCR publish contract', () => {
     expect(arch).toContain('platforms: linux/${{ matrix.arch }}');
     expect(arch).not.toContain('linux/amd64,linux/arm64');
     expect(arch).not.toContain('setup-qemu');
-    expect(arch).toContain('uses: useblacksmith/setup-docker-builder@v2');
+    expect(arch).toContain(
+      'uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2',
+    );
+    expect(arch).not.toContain('useblacksmith/setup-docker-builder@v2');
     expect(arch).toContain('cache-key: review-yeti-node-images-arm64');
     expect(arch).toContain('${{ github.sha }}-${{ matrix.arch }}');
     expect(arch).not.toContain('--platform linux/amd64');
