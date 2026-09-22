@@ -63,6 +63,78 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  // Regression guards for the 2026-09-21 plan-rejection outage. Both of these
+  // failures were unrecoverable: `malformed_ids` burns the single corrective
+  // turn, and `security_floor_violation` has no corrective turn at all, so a
+  // plan directive that induces either one fails every review it touches.
+  it('names security-sensitive paths in the plan directive and never quotes a non-conforming id', async () => {
+    let planDirective = '';
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        planDirective = text;
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'security-auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Is auth bypassable?', rationale: 'auth surface' },
+          ],
+        }));
+      }
+      return fakeResponse(JSON.stringify({ nonce, task: 'security-auth', status: 'COMPLETE', findings: [] }));
+    });
+
+    await executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'b'.repeat(40),
+      client: { complete },
+    });
+
+    // The engine classifies security-sensitive paths deterministically, so the
+    // model must be told which ones they are rather than left to infer it --
+    // guessing wrong is rejected outright with no retry.
+    expect(planDirective).toContain('SECURITY FLOOR');
+    expect(planDirective).toContain('src/auth/guard.ts');
+
+    // Positive id examples only. Quoting the rejected form primed models to
+    // emit exactly it (observed: `T1`..`T7` -> malformed_ids).
+    expect(planDirective).not.toContain('"T1"');
+    expect(planDirective).toContain('[a-z][a-z0-9_-]*');
+  });
+
+  it('states that no security task is required when no changed path is security-sensitive', async () => {
+    let planDirective = '';
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        planDirective = text;
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'perf-hot-path', dimension: 'performance', paths: ['src/util/sum.ts'], question: 'Hot loop?', rationale: 'arithmetic' },
+          ],
+        }));
+      }
+      return fakeResponse(JSON.stringify({ nonce, task: 'perf-hot-path', status: 'COMPLETE', findings: [] }));
+    });
+
+    await executeComposedReview({
+      config: config(),
+      changedFiles: [{ path: 'src/util/sum.ts', patch: '@@ -1 +1,2 @@\n+export const sum = (a: number, b: number) => a + b;' }],
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'c'.repeat(40),
+      client: { complete },
+    });
+
+    // Silence here would leave the model to invent a security task or wonder
+    // whether the floor applies; say so explicitly.
+    expect(planDirective).toContain('No changed path is classified security-sensitive');
+    expect(planDirective).not.toContain('SECURITY FLOOR --');
+  });
+
   it('approves a diff with nothing analyzable, before any provider call, exactly like the fan-out engine', async () => {
     const complete = vi.fn();
     const result = await executeComposedReview({
