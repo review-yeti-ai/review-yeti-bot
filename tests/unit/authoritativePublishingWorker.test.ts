@@ -6,6 +6,8 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { computeArbitration } from '../../src/review/reviewCore';
+import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
+import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { PanelResult } from '../../src/panel/types';
 import * as panelEngine from '../../src/panel/panelEngine';
@@ -113,6 +115,77 @@ function expectEvidenceOnlyCallback(payload: WorkerReviewCompletion) {
 }
 
 describe('authoritative prepared publishing worker', () => {
+  it('turns centrally verified documentation-only completion into audited gate eligibility', async () => {
+    const f = fixture();
+    const docsDiff = 'diff --git a/docs/plan.md b/docs/plan.md\n--- a/docs/plan.md\n+++ b/docs/plan.md\n@@ -1 +1 @@\n-old\n+new\n';
+    f.source.diff = docsDiff;
+    f.source.diffDigest = createHash('sha256').update(docsDiff).digest('hex');
+    f.panelRunner.mockResolvedValue(buildDocumentationOnlyPanelResult(
+      HEAD, 'bifrost', 'No analyzable source changed.',
+    ));
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    const { version: _version, result: _result, ...expectedCoordinates } = completion;
+    const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates,
+      expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: parseChangedFiles(docsDiff).files,
+      coverageComplete: true,
+      quorumSatisfied: true,
+    });
+
+    expect(derived).toMatchObject({
+      valid: true,
+      evidence: {
+        verdict: 'SHIP', coverageComplete: true, quorumSatisfied: true,
+        infrastructureFailure: false, p0Count: 0, p1Count: 0,
+        expectedLanes: 0, completedLanes: 0,
+        exemption: { kind: 'no-reviewable-content', auditDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      },
+    });
+    const candidate = {
+      repositoryId: expectedCoordinates.repositoryId,
+      prNumber: expectedCoordinates.prNumber,
+      headSha: expectedCoordinates.headSha,
+      baseSha: expectedCoordinates.baseSha,
+      policyDigest: expectedCoordinates.policyDigest,
+    };
+    expect(evaluateReviewGate({
+      candidate,
+      current: { ...candidate, open: true, draft: false },
+      evidence: derived.evidence,
+    })).toEqual({ status: 'success', eligible: true, reason: 'central-exemption' });
+  });
+
+  it.each(['src/a.ts', 'package.json', 'runs/deploy.sh'])(
+    'never exempts a forged documentation-only marker for analyzable path %s',
+    (path) => {
+      const f = fixture();
+      const completion = parseWorkerReviewCompletion(expectedEvent(f, {
+        version: 'WorkerReviewResult.v1',
+        completedAt: COMPLETED,
+        personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }],
+        coverageComplete: true,
+        quorumSatisfied: true,
+      }));
+      const { version: _version, result: _result, ...expectedCoordinates } = completion;
+
+      expect(deriveCanonicalWorkerReviewEvidence(completion, {
+        expectedCoordinates,
+        expectedPersonaIds: f.prepared.expectedPersonaIds,
+        changedFiles: [{ path, patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+        coverageComplete: true,
+        quorumSatisfied: true,
+      })).toEqual({
+        valid: false,
+        reason: 'invalid-evidence',
+        message: 'documentation-only completion contains analyzable source paths',
+      });
+    },
+  );
+
   it('keeps composed policy on the deterministic admitted persona roster', async () => {
     const f = fixture({ reviewEngine: 'composed' });
     const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()
