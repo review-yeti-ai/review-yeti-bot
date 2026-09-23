@@ -628,28 +628,6 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     }
   }
 
-  private async hasDurableIdentity(identityDigest: string): Promise<boolean> {
-    const query = (this.pool as unknown as Partial<Queryable>).query;
-    if (typeof query === 'function') {
-      const result = await query.call(
-        this.pool,
-        'SELECT 1 FROM review_runs WHERE identity_digest = $1 LIMIT 1',
-        [identityDigest],
-      );
-      return result.rows.length > 0;
-    }
-    const client = await this.pool.connect();
-    try {
-      const result = await client.query(
-        'SELECT 1 FROM review_runs WHERE identity_digest = $1 LIMIT 1',
-        [identityDigest],
-      );
-      return result.rows.length > 0;
-    } finally {
-      client.release();
-    }
-  }
-
   async admit(input: ReviewAdmissionInput): Promise<ReviewAdmission> {
     validateAdmission(input, this.options.requireExpectedGeneration === true);
     if (input.authoritativeGate && !this.options.validateAuthoritativeAdmission) {
@@ -662,14 +640,13 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       && input.retryRequested === true
       && this.options.resolveGenerationRecovery) {
       generationRecoveryRequest(input, runId);
-      if (!(await this.hasDurableIdentity(identityDigest))) {
-        // This validation is repeated under the PR transaction lock below for
-        // atomic admission. The early pass prevents an unauthenticated caller
-        // from driving installation-token minting and paginated GitHub reads.
-        await this.validateAuthoritativeAdmission(input);
-        preparedGenerationRecovery = await this.resolveGenerationRecovery(input);
-        validateGenerationRecovery(input, runId, preparedGenerationRecovery);
-      }
+      // A durable run row alone does not prove that the outbox/projection state
+      // needed to advance it survived. Read the bounded App-owned worker-check
+      // ledger for every explicit later-generation retry. The authoritative
+      // validation is repeated under the PR lock before any write.
+      await this.validateAuthoritativeAdmission(input);
+      preparedGenerationRecovery = await this.resolveGenerationRecovery(input);
+      validateGenerationRecovery(input, runId, preparedGenerationRecovery);
     }
     const client = await this.pool.connect();
     try {
@@ -689,12 +666,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           'SELECT attempt FROM review_runs WHERE identity_digest = $1 FOR UPDATE',
           [identityDigest],
         );
-        if (existingIdentity.rows.length === 0) {
-          if (preparedGenerationRecovery.length > 0) {
-            generationRecovery = preparedGenerationRecovery;
-          } else if (this.options.resolveGenerationRecovery) {
-            throw new ReviewGenerationConflictError(input.expectedGeneration ?? 1, 1);
-          }
+        if (preparedGenerationRecovery.length > 0) {
+          generationRecovery = preparedGenerationRecovery;
+        } else if (existingIdentity.rows.length === 0 && this.options.resolveGenerationRecovery) {
+          throw new ReviewGenerationConflictError(input.expectedGeneration ?? 1, 1);
         }
       }
       const delivery = await client.query(
@@ -793,7 +768,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                          OR (retry_outbox.status = 'terminal'
                            AND (retry_outbox.worker_token_digest IS NOT NULL
                              OR retry_outbox.projection_name IS NOT NULL)))
-                  )) AS should_retry
+                  ))
+                  -- A terminal exact-head worker check can repair a partially
+                  -- persisted run whose projection/outbox evidence was lost.
+                  -- $24 is not caller input: it is the length of the validated,
+                  -- contiguous App-owned recovery ledger.
+                  OR ($24::integer > 0
+                    AND runs.status IN ('queued', 'running', 'publishing', 'failed', 'terminal')
+                    AND runs.attempt < $24::integer) AS should_retry
              FROM review_runs AS runs
             WHERE runs.run_id = $1
          )
@@ -821,7 +803,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                status = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
                    THEN 'queued' ELSE review_runs.status END,
                attempt = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
-                   THEN review_runs.attempt + 1 ELSE review_runs.attempt END,
+                   THEN GREATEST(review_runs.attempt + 1, $24::integer) ELSE review_runs.attempt END,
                error_text = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
                    THEN NULL ELSE review_runs.error_text END,
                lease_owner = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
@@ -964,7 +946,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          -- acknowledgement. An exact reaper-failure marker proves the App check
          -- already consumed that otherwise pre-worker attempt. Guarding on the
          -- run's status keeps a superseded run's terminal outbox row untouched.
-               execution_attempt = CASE WHEN review_dispatch_outbox.status = 'projected'
+               execution_attempt = CASE WHEN $6::integer > review_dispatch_outbox.execution_attempt
+                 THEN $6::integer
+                 WHEN review_dispatch_outbox.status = 'projected'
                  OR review_dispatch_outbox.worker_token_digest IS NOT NULL
                  OR review_dispatch_outbox.projection_name IS NOT NULL
                  OR ($4::boolean AND review_dispatch_outbox.status = 'terminal')
@@ -973,7 +957,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal')
                  THEN NULL ELSE review_dispatch_outbox.worker_token_digest END,
                updated_at = EXCLUDED.updated_at
-         WHERE review_dispatch_outbox.status IN ('projected', 'terminal')
+         WHERE (review_dispatch_outbox.status IN ('projected', 'terminal')
+             OR $6::integer > review_dispatch_outbox.execution_attempt)
            AND EXISTS (
              SELECT 1 FROM review_runs r
               WHERE r.run_id = review_dispatch_outbox.run_id
