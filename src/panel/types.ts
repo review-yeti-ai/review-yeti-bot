@@ -112,6 +112,11 @@ export interface PanelResult {
    * of casting, keeping the panel→CLI boundary compiler-checked.
    */
   documentationOnly?: true;
+  /**
+   * REL-972: which no-reviewable-content exemption produced a `documentationOnly` result.
+   * Absent means documentation/asset/data only (the original exemption).
+   */
+  noReviewableContentKind?: 'documentation' | 'lockfile-only';
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];

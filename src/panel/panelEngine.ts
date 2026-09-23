@@ -37,6 +37,7 @@ import {
   personaCoversFile,
   scopeFilesForPersona,
   resolveReviewApplicability,
+  DOCUMENTATION_ONLY_RATIONALE,
 } from '../review/personaApplicability';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
@@ -3433,15 +3434,23 @@ export function personaCoverageError(
   headSha: string,
   unmatched: readonly string[],
   enabledPersonas: ReadonlyArray<{ id: string }>,
+  unverifiedLockfiles: ReadonlyArray<{ path: string; reason: string }> = [],
 ): PanelConfigurationError {
   const shown = unmatched.slice(0, 10);
   const overflow = unmatched.length - shown.length;
   const pathList = shown.join(', ') + (overflow > 0 ? `, +${overflow} more` : '');
   const enabledIds = enabledPersonas.map((persona) => persona.id);
+  // REL-972: a lockfile no lane reads could not be verified to stay on the
+  // default registries, so the diff is not exempt either. Say why.
+  const lockfileNote = unverifiedLockfiles.length > 0
+    ? ` Lockfile change not verifiable as a default-registry update: ${unverifiedLockfiles.slice(0, 10)
+      .map((file) => `${file.path} (${file.reason})`).join(', ')}; it needs a human review.`
+    : '';
   return new PanelConfigurationError(
     `no enabled persona applies to the changed paths for ${repository} #${headSha}: `
     + `[${pathList}] matched none of the enabled personas [${enabledIds.join(', ') || 'none'}]. `
-    + `Extend that persona's paths to cover these files, or enable a persona that does.`,
+    + `Extend that persona's paths to cover these files, or enable a persona that does.`
+    + lockfileNote,
     { failureClass: 'contract' },
   );
 }
@@ -3531,7 +3540,9 @@ export async function executePersonaPanel(options: {
         // nobody is reviewing that file, which is a persona coverage gap to
         // fix, not something to wave through. The fix is to extend the
         // persona's paths -- so the message now says which paths to extend.
-        throw personaCoverageError(repository, headSha, applicability.unmatchedPaths, enabledPersonas);
+        throw personaCoverageError(
+          repository, headSha, applicability.unmatchedPaths, enabledPersonas, applicability.unverifiedLockfiles,
+        );
       }
 
       // Reaching here means every changed path is documentation, an asset or
@@ -3542,12 +3553,19 @@ export async function executePersonaPanel(options: {
       // pull requests permanently unmergeable: publishing refuses a zero-lane
       // run as review evidence, correctly, and no amount of retrying produces
       // a lane when no lane applies.
+      //
+      // REL-972: the same holds for a diff made only of dependency lockfiles
+      // whose changes stay on the default registries. The shared decision names
+      // which exemption applied and the excluded files, and that rationale is
+      // what the check publishes.
       const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
       return {
         ...buildDocumentationOnlyPanelResult(
           headSha,
           arbiterId,
-          'No analyzable source changed: every path is documentation, an asset, a run artifact or data.',
+          applicability.noReviewableContentRationale ?? DOCUMENTATION_ONLY_RATIONALE,
+          undefined,
+          applicability.noReviewableContentKind ?? 'documentation',
         ),
         panelWallClockMs: Date.now() - panelStartedAt,
       };

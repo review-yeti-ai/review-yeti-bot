@@ -2083,6 +2083,34 @@ describe('hosted lane — repository visibility resolution', () => {
     expect(summaryOf(client)).toContain('mode=fast_ship');
   });
 
+  // REL-972: the no-reviewable-content exemption is labelled for what it is.
+  it.each([
+    ['lockfile-only', 'Review Yeti: SHIP (lockfile-only)', 'Excluded: yarn.lock.'],
+    ['documentation', 'Review Yeti: SHIP (documentation-only)', 'Excluded: yarn.lock.'],
+    [undefined, 'Review Yeti: SHIP (documentation-only)', 'Excluded: yarn.lock.'],
+  ] as const)('publishes the %s exemption as %s with its rationale', async (kind, title, rationale) => {
+    const client = checkClient();
+    const d = deps({
+      checkClient: client,
+      panelRunner: vi.fn(async () => ({
+        isFastShip: true,
+        documentationOnly: true,
+        ...(kind ? { noReviewableContentKind: kind } : {}),
+        classifierRationale: `No reviewable content: every changed file is a dependency lockfile. ${rationale}`,
+        tokensSaved: 0,
+        personas: [{ id: 'documentation-only', findings: [] }],
+        quorum: { required: 1, distinctProviders: [], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('success');
+    const published = (client.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    expect(published.title).toBe(title);
+    expect(String(published.summary)).toContain(`### ${title}`);
+    expect(String(published.summary)).toContain(rationale);
+  });
+
   it('does not present rejected fast-ship coverage as a SHIP check', async () => {
     const client = checkClient();
     const d = deps({

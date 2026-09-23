@@ -1,3 +1,5 @@
+import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
+
 /**
  * Prose documentation formats and static image/diagram assets.
  *
@@ -31,4 +33,26 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
     ) ||
     DOCUMENTATION_OR_ASSET_EXTENSION.test(normalized)
   );
+}
+
+/**
+ * A changed file the service accepts inside a no-reviewable-content completion:
+ * documentation, an asset, a run artifact or data, or (REL-972) a dependency
+ * lockfile whose added lines verifiably stay on the default public registries.
+ *
+ * This is a per-file admission check over the raw changed files, applied after
+ * the shared `resolveReviewApplicability` decision has already reported the
+ * exemption. It is not the same rule: that decision judges the post-filter
+ * files, so it can also exempt a diff whose other files the filter dropped
+ * (generated output, `path_filters` exclusions), which this check then refuses.
+ * That pre-existing gap fails closed and is outside REL-972.
+ */
+export function isNoReviewableContentFile(
+  file: { path: string; patch?: unknown; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean },
+): boolean {
+  if (isDocumentationOrAssetPath(file.path)) return true;
+  // A gitlink is a dependency change even at a lockfile-looking path, and a
+  // symlink's patch is its target, not lockfile content.
+  if (file.isSubmodule === true || file.submoduleCandidate === true || !isRegularFileMode(file.mode)) return false;
+  return verifyLockfileOnlyChange(file.path, file.patch).ok;
 }

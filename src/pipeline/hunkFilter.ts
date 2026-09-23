@@ -52,6 +52,19 @@ const GENERATED_PATTERNS = [
   /^\.next\//,
 ];
 
+/**
+ * The lockfile/generated classification the hunk filter excludes from review
+ * context, independent of any repository `path_filters`. Shared with the
+ * no-reviewable-content decision (REL-972) so both read one list.
+ */
+export function classifyLockfileOrGeneratedPath(filePath: string): 'lockfile' | 'generated' | null {
+  const lowerPath = filePath.toLowerCase();
+  const filename = lowerPath.split('/').pop() || lowerPath;
+  if (IGNORED_LOCKFILES.includes(filename)) return 'lockfile';
+  if (GENERATED_PATTERNS.some((pat) => pat.test(lowerPath))) return 'generated';
+  return null;
+}
+
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
@@ -92,8 +105,7 @@ export function filterDiffHunks(
     const origTokens = estimateTokens(rawText);
     originalTokenEstimate += origTokens;
 
-    const lowerPath = file.path.toLowerCase();
-    const filename = lowerPath.split('/').pop() || lowerPath;
+    const excludedKind = classifyLockfileOrGeneratedPath(file.path);
 
     // 0. Path Filters
     if (options?.path_filters && options.path_filters.length > 0) {
@@ -110,7 +122,7 @@ export function filterDiffHunks(
     }
 
     // 1. Lockfile Filter
-    if (IGNORED_LOCKFILES.includes(filename)) {
+    if (excludedKind === 'lockfile') {
       ignoredFilesCount++;
       return {
         path: file.path,
@@ -122,7 +134,7 @@ export function filterDiffHunks(
     }
 
     // 2. Generated File Filter
-    if (GENERATED_PATTERNS.some((pat) => pat.test(lowerPath))) {
+    if (excludedKind !== null) {
       ignoredFilesCount++;
       return {
         path: file.path,

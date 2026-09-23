@@ -38,7 +38,7 @@ import {
   ReviewModelClient,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
-import { resolveReviewApplicability } from '../review/personaApplicability';
+import { DOCUMENTATION_ONLY_RATIONALE, resolveReviewApplicability } from '../review/personaApplicability';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import {
   buildDiffSection,
@@ -388,7 +388,13 @@ function sumAggregateUsage(turnUsages: LaneTurnUsage[]): LaneAggregateUsage {
 // engine and the service share) reports no reviewable content. Runs before any provider call.
 // ---------------------------------------------------------------------------
 
-function buildZeroLaneResult(headSha: string, config: CtReviewConfigV3, panelWallClockMs: number): PanelResult {
+function buildZeroLaneResult(
+  headSha: string,
+  config: CtReviewConfigV3,
+  rationale: string,
+  kind: 'documentation' | 'lockfile-only',
+  panelWallClockMs: number,
+): PanelResult {
   // Same outcome as executePersonaPanel's: a diff with nothing analyzable in it
   // is an approval, not missing evidence. Publishing refuses a zero-lane result
   // as non-evidence, so returning one here made every documentation- or
@@ -400,11 +406,7 @@ function buildZeroLaneResult(headSha: string, config: CtReviewConfigV3, panelWal
   // the shared builder so the two cannot disagree again.
   const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
   return {
-    ...buildDocumentationOnlyPanelResult(
-      headSha,
-      arbiterId,
-      'No analyzable source changed: every path is documentation, an asset, a run artifact or data.',
-    ),
+    ...buildDocumentationOnlyPanelResult(headSha, arbiterId, rationale, undefined, kind),
     panelWallClockMs,
   };
 }
@@ -1008,9 +1010,17 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const effectiveFiles = applicability.effectiveFiles;
     if (applicability.applicable.length === 0) {
       if (!applicability.noReviewableContent) {
-        throw personaCoverageError(repository, headSha, applicability.unmatchedPaths, enabledPersonas);
+        throw personaCoverageError(
+          repository, headSha, applicability.unmatchedPaths, enabledPersonas, applicability.unverifiedLockfiles,
+        );
       }
-      return buildZeroLaneResult(headSha, config, Date.now() - panelStartedAt);
+      return buildZeroLaneResult(
+        headSha,
+        config,
+        applicability.noReviewableContentRationale ?? DOCUMENTATION_ONLY_RATIONALE,
+        applicability.noReviewableContentKind ?? 'documentation',
+        Date.now() - panelStartedAt,
+      );
     }
 
     const isCurrent = options.isCurrentHead ? options.isCurrentHead() : true;
