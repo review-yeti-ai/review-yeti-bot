@@ -297,7 +297,11 @@ describe('service-owned authoritative completion context', () => {
   const NPM_BUMP = '@@ -1,4 +1,4 @@\n     "node_modules/lodash": {\n'
     + '-      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",\n'
     + '+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",\n';
-  const lockPatch = (path: string) => (path.endsWith('package-lock.json') ? NPM_BUMP : '@@ -1 +1 @@\n-old\n+new');
+  const YARN_BUMP = '@@ -1,3 +1,3 @@\n "lodash@^4.17.20":\n'
+    + '-  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.20.tgz#a"\n'
+    + '+  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz#b"\n';
+  const lockPatch = (path: string) => (path.endsWith('package-lock.json') ? NPM_BUMP
+    : path.endsWith('yarn.lock') ? YARN_BUMP : '@@ -1 +1 @@\n-old\n+new');
 
   it.each([
     ['package-lock.json'],
@@ -310,7 +314,7 @@ describe('service-owned authoritative completion context', () => {
     ['docs/upgrade.md', 'yarn.lock'],
   ])('accepts a lockfile/generated-only diff %s as the no-reviewable-content exemption', async (...paths: string[]) => {
     const f = fixture();
-    const changedFiles = paths.map((path) => ({ path, patch: lockPatch(path) }));
+    const changedFiles = paths.map((path) => ({ path, patch: path.endsWith('.md') ? '@@ -1 +1 @@\n-old\n+new' : lockPatch(path) }));
     f.exactCurrentDiff.mockResolvedValue({
       current: { ...current }, diff: '', changedFiles, expectedFileCount: changedFiles.length,
     });
@@ -358,6 +362,23 @@ describe('service-owned authoritative completion context', () => {
     expect(derive(NPM_BUMP).valid).toBe(true);
     expect(derive(NPM_BUMP.replace('https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz', 'https://evil.example/l.tgz')).valid)
       .toBe(false);
+  });
+
+  it.each([
+    ['mode 160000', { mode: '160000' }],
+    ['isSubmodule', { isSubmodule: true }],
+    ['submoduleCandidate', { submoduleCandidate: true }],
+  ])('refuses a documentation-only completion over a gitlink (%s) at a lockfile path', (_label, metadata) => {
+    // The patch alone verifies; only the gitlink metadata marks it.
+    const f = fixture();
+    const { attemptId: _, ...coordinates } = f.gate.coordinates;
+    const expectedCoordinates = { ...coordinates, configDigest: f.stored.policy.effectiveConfigDigest };
+    const derived = deriveCanonicalWorkerReviewEvidence({ version: 'WorkerReviewCompletion.v1', ...expectedCoordinates,
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-09T18:00:00Z', coverageComplete: true,
+        quorumSatisfied: true, personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }] } },
+    { expectedPersonaIds: ['sec-lane'], coverageComplete: true, quorumSatisfied: true, expectedCoordinates,
+      changedFiles: [{ path: 'vendor/package-lock.json', patch: NPM_BUMP, ...metadata }] });
+    expect(derived.valid).toBe(false);
   });
 
   it('requires a real lane, not the exemption, for a manifest change beside its lockfile', async () => {

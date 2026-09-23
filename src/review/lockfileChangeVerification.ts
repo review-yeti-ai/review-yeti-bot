@@ -22,9 +22,17 @@ import { isSubmodulePatch } from './submodulePatch';
  *   established from structure the patch shows;
  * - yarn.lock (berry): every added `resolution` is `<entry package>@npm:<version>`
  *   or Yarn's built-in compatibility patch of that same npm package;
- * - every other lockfile format: the only URLs an added line may carry are the
- *   default registry index URLs themselves (those formats record per-package
- *   artifact URLs only for non-default sources).
+ * - Cargo.lock / poetry.lock / mix.lock: the only URLs an added line may carry
+ *   are the default registry index URLs themselves (those formats record
+ *   per-package artifact URLs only for non-default sources);
+ * - no change may add a new package entry: every added entry header must
+ *   replace an identical removed one, so a bump can move an existing package
+ *   to a new registry version but cannot introduce a package;
+ * - the change must add something (a pure deletion is not a version bump),
+ *   and no added line may carry an escape sequence, since the lockfile's parser
+ *   would decode what these text checks would miss;
+ * - any other lockfile format (pnpm, go.sum, Gemfile.lock, composer, Pipfile)
+ *   is not verified.
  *
  * Anything else is not verified, and the diff keeps the fail-closed coverage
  * outcome it always had, which requires a human look.
@@ -157,26 +165,75 @@ function verifyIndexOnlyLine(body: string, added: boolean): LockfileVerification
   return OK;
 }
 
+/** Object-valued fields inside an npm lockfile entry; any other `"key": {` is an entry. */
+const NPM_OBJECT_FIELDS = new Set([
+  'dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'peerDependenciesMeta',
+  'requires', 'engines', 'funding', 'bin',
+]);
+
+type LockfileFormat = 'npm' | 'yarn' | 'toml' | 'mix';
+
+const FORMATS: Record<string, LockfileFormat> = {
+  'package-lock.json': 'npm',
+  'yarn.lock': 'yarn',
+  'cargo.lock': 'toml',
+  'poetry.lock': 'toml',
+  'mix.lock': 'mix',
+};
+
+/** The line, if it opens a package entry in this format (compared verbatim). */
+function entryHeader(body: string, format: LockfileFormat): string | null {
+  if (format === 'npm') {
+    const header = NPM_ENTRY_HEADER.exec(body);
+    return header && !NPM_OBJECT_FIELDS.has(header[1]) ? body.trim() : null;
+  }
+  if (format === 'yarn') return body.length > 0 && !/^\s/u.test(body) && !body.startsWith('#') ? body.trim() : null;
+  if (format === 'toml') return /^name\s*=/u.test(body) ? body.trim() : null;
+  const mix = /^\s*("[^"]+")\s*:/u.exec(body);
+  return mix ? mix[1] : null;
+}
+
 export function verifyLockfileOnlyChange(path: string, patch: unknown): LockfileVerification {
   if (classifyLockfileOrGeneratedPath(path) !== 'lockfile') return refuse('not a lockfile');
   if (typeof patch !== 'string' || patch.length === 0) return refuse('no patch to verify');
   if (isSubmodulePatch(patch)) return refuse('is a submodule gitlink');
-  const filename = path.toLowerCase().split('/').pop() || '';
+  const format = FORMATS[path.toLowerCase().split('/').pop() || ''];
+  if (!format) return refuse('lockfile format not verifiable');
   const verifyLine: (body: string, added: boolean, state: EntryState) => LockfileVerification =
-    filename === 'package-lock.json' ? verifyNpmLine
-      : filename === 'yarn.lock' ? verifyYarnLine
-        : verifyIndexOnlyLine;
+    format === 'npm' ? verifyNpmLine : format === 'yarn' ? verifyYarnLine : verifyIndexOnlyLine;
+
+  const lines = patch.split('\n');
+  // Entry headers the change removes; each may be re-added once (a rewritten
+  // entry), but no added header may introduce a package the lockfile lacked.
+  const removedHeaders = new Map<string, number>();
+  for (const line of lines) {
+    if (!line.startsWith('-') || line.startsWith('---')) continue;
+    const header = entryHeader(line.slice(1), format);
+    if (header !== null) removedHeaders.set(header, (removedHeaders.get(header) ?? 0) + 1);
+  }
 
   // One forward pass over the post-image (context and added lines), tracking the
   // entry each line belongs to. Linear in patch size.
   const state: EntryState = { entry: null };
-  for (const line of patch.split('\n')) {
+  let addedCount = 0;
+  for (const line of lines) {
     if (line.startsWith('@@')) { state.entry = null; continue; }
     if (line.startsWith('-') || line.startsWith('\\') || line.startsWith('+++')) continue;
     const added = line.startsWith('+');
-    if (added && NON_REGISTRY_PROTOCOL.test(line)) return refuse('adds a non-registry dependency source');
+    if (added) {
+      addedCount += 1;
+      if (line.includes('\\')) return refuse('adds an escape sequence');
+      if (NON_REGISTRY_PROTOCOL.test(line)) return refuse('adds a non-registry dependency source');
+      const header = entryHeader(line.slice(1), format);
+      if (header !== null) {
+        const remaining = removedHeaders.get(header) ?? 0;
+        if (remaining === 0) return refuse('adds a new package entry');
+        removedHeaders.set(header, remaining - 1);
+      }
+    }
     const verdict = verifyLine(line.slice(1), added, state);
     if (!verdict.ok) return verdict;
   }
+  if (addedCount === 0) return refuse('only removes lockfile content');
   return OK;
 }
