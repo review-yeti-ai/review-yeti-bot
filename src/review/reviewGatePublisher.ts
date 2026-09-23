@@ -92,11 +92,17 @@ export class ReviewGatePublisher {
  * indistinguishable from a provider outage or a genuinely incomplete panel:
  * every failure looked the same, so an operator could not tell "this run is
  * stale, re-dispatch it" from "this panel actually failed to review". REL-1019
- * was filed off exactly that ambiguity. Returns metadata only for a failure; a
- * success keeps its own summary, and a progress state has no decision yet.
+ * was filed off exactly that ambiguity.
+ *
+ * Applies to every terminal non-approval conclusion: `failure` and `timed_out`
+ * both mean "this head was not approved", and the timeout variant carries a
+ * decision reason of its own ('review-deadline-exceeded') that is just as
+ * actionable. A success keeps its own summary, a cancellation is not a review
+ * outcome, and a progress state has no decision yet.
  */
 function gateFailureMetadata(gate: StoredReviewGate): { title?: string; summary?: string } {
-  if (gate.desiredState !== 'failure' || gate.decisionReason === undefined) return {};
+  const isNonApprovalTerminal = gate.desiredState === 'failure' || gate.desiredState === 'timed_out';
+  if (!isNonApprovalTerminal || gate.decisionReason === undefined) return {};
   const reason = gate.decisionReason;
   const skew = reason === 'incomplete-review'
     && gate.expectedLanes !== undefined && gate.completedLanes !== undefined;

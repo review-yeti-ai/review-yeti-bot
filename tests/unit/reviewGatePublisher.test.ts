@@ -228,6 +228,38 @@ describe('durable service gate publisher', () => {
     });
   });
 
+  it('names the reason for a timed_out conclusion, which is also not an approval', async () => {
+    // The Postgres integration suite caught this: the reaper publishes
+    // `timed_out` with reason 'review-deadline-exceeded', but the metadata
+    // helper originally keyed only on `failure`, so an expired review
+    // published no cause at all.
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound',
+      desiredState: 'timed_out', decisionReason: 'review-deadline-exceeded',
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update).toMatchObject({
+      conclusion: 'timed_out',
+      title: 'Review Yeti Gate: Failed',
+      summary: 'Review Yeti Gate failed: review-deadline-exceeded. This is not an approval.',
+    });
+  });
+
+  it('does not name a reason for a cancellation, which is not a review outcome', async () => {
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound',
+      desiredState: 'cancelled', decisionReason: 'candidate-superseded',
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update).toMatchObject({ conclusion: 'cancelled' });
+    expect(update.title).toBeUndefined();
+    expect(update.summary).toBeUndefined();
+  });
+
   it('falls back to the reason-only summary when lane evidence is partial or absent', async () => {
     // The skew sentence requires BOTH counts. A row with only one (evidence
     // absent, or a count failing the safe-integer guard) must not interpolate
