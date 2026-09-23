@@ -283,6 +283,49 @@ malformed response are separate evidence: without retained response details,
 do not claim to know precisely what the model returned. Do not retain raw
 provider prompts or responses to improve this diagnosis.
 
+## Worker forensics and log locator
+
+The worker Pod is short-lived; the `PRReviewJob` is the forensic handle.
+
+- **`status.workerTermination`.** Before the operator lets a worker Job's TTL
+  collect its Pod, it copies the Pod's exit into the review: `podName`,
+  `nodeName`, `exitCode`, `signal`, `reason` (for example `OOMKilled`),
+  `podReason` (for example `Evicted`), `startedAt`, `finishedAt`, and
+  `message`. `message` is the last non-empty line of the container's
+  termination message. The worker container uses
+  `terminationMessagePolicy: FallbackToLogsOnError`, so a failed exit carries
+  its log tail. The operator redacts credential-shaped tokens and caps the line
+  at 512 bytes. The record is written once and never replaced.
+
+  ```bash
+  kubectl -n ct-review-system get prj <name> -o jsonpath='{.status.workerTermination}'
+  ```
+
+- **Forensic hold.** A worker Job is built with
+  `ttlSecondsAfterFinished = max(REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED,
+  REVIEW_YETI_WORKER_FORENSIC_HOLD_SECONDS)` (hold default `300`). After the
+  termination record is durable, the operator lowers the TTL to the outcome's
+  configured value: `REVIEW_YETI_WORKER_TTL_AFTER_FINISHED` on success,
+  `REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED` on failure. This makes a
+  failed TTL of `0` safe. The hold only applies if the operator is down or
+  stalled.
+- **Node spread.** Worker Pods carry a soft `topologySpreadConstraints` on
+  `kubernetes.io/hostname` (`maxSkew: 1`, `ScheduleAnyway`). Every worker lane
+  is counted together, so concurrent reviews spread across nodes without ever
+  blocking scheduling.
+- **CPU limit opt-out.** Set `REVIEW_YETI_WORKER_CPU_LIMIT` to an empty string
+  (or `none`) to run workers with no CPU limit. The memory limit is always
+  kept. An unset variable keeps the historical default of `1`, and an
+  unparseable value falls back to `1` rather than lifting the limit.
+- **Log locator.** The worker's check output ends with a VictoriaLogs LogsQL
+  query for that exact worker Pod. The operator projects the Pod's name and
+  namespace into `REVIEW_WORKER_POD_NAME` and `REVIEW_WORKER_POD_NAMESPACE`
+  through the downward API.
+
+  ```text
+  kubernetes.pod_namespace:"ct-review-system" AND kubernetes.pod_name:"<worker pod>" | sort by (_time)
+  ```
+
 ## 📋 Operational Verification & Qualification Order
 
 To verify your cluster deployment before rolling out to production repositories:

@@ -172,3 +172,43 @@ func TestV1Alpha2CRDExposesBoundedTimingReceipt(t *testing.T) {
 		}
 	}
 }
+
+// REL-1038: status.workerTermination must survive structural pruning (a field
+// missing from the schema is silently dropped by the API server) and stay
+// bounded so a worker's last log line cannot grow the object without limit.
+func TestV1Alpha2CRDExposesBoundedWorkerTermination(t *testing.T) {
+	status := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
+	termination, ok := status.Properties["workerTermination"]
+	if !ok {
+		t.Fatal("status.workerTermination is missing; the API server would prune the forensic record")
+	}
+	want := []string{"containerName", "exitCode", "finishedAt", "message", "nodeName", "observedAt", "podName", "podReason", "reason", "signal", "startedAt"}
+	got := make([]string, 0, len(termination.Properties))
+	for field := range termination.Properties {
+		got = append(got, field)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("workerTermination fields mismatch\n got: %v\nwant: %v", got, want)
+	}
+	if termination.XPreserveUnknownFields != nil && *termination.XPreserveUnknownFields {
+		t.Fatal("workerTermination must not preserve unknown fields")
+	}
+	bounds := map[string]int64{"message": 1024, "reason": 128, "podReason": 128, "podName": 253, "nodeName": 253, "containerName": 63}
+	for field, limit := range bounds {
+		schema := termination.Properties[field]
+		if schema.Type != "string" || schema.MaxLength == nil || *schema.MaxLength != limit {
+			t.Errorf("workerTermination.%s = type %q maxLength %v, want string bounded at %d", field, schema.Type, schema.MaxLength, limit)
+		}
+	}
+	for _, field := range []string{"exitCode", "signal"} {
+		if schema := termination.Properties[field]; schema.Type != "integer" || schema.Format != "int32" {
+			t.Errorf("workerTermination.%s = %#v, want int32", field, schema)
+		}
+	}
+	for _, field := range []string{"startedAt", "finishedAt", "observedAt"} {
+		if schema := termination.Properties[field]; schema.Type != "string" || schema.Format != "date-time" {
+			t.Errorf("workerTermination.%s = %#v, want date-time", field, schema)
+		}
+	}
+}

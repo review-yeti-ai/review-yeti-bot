@@ -252,6 +252,52 @@ func isKnownDispatchStage(stage DispatchTimingStage) bool {
 	return stage == DispatchStageReceived || stage == DispatchStageJobCreated || stage == DispatchStagePodScheduled || stage == DispatchStageImageObserved || stage == DispatchStageProcessStarted || stage == DispatchStageCompleted
 }
 
+// WorkerTerminationStatus is the bounded forensic record of how the worker Pod
+// ended, copied from the Pod before the operator lets its worker Job's
+// ttlSecondsAfterFinished collect it. It lets the PRReviewJob, not the
+// short-lived Pod, answer "why did this worker die" (exit code, OOMKilled,
+// DeadlineExceeded, Evicted, last error line), so a failed worker no longer has
+// to be retained for inspection. It is written once and never replaced.
+//
+// Message is the last non-empty line of the container's termination message
+// (the worker's own /dev/termination-log, or, because the worker container uses
+// FallbackToLogsOnError, the tail of its log on failure). The operator redacts
+// credential-shaped tokens and truncates it; it is a pointer into the full log
+// in the log store, never a transcript.
+type WorkerTerminationStatus struct {
+	// +kubebuilder:validation:MaxLength=253
+	PodName string `json:"podName"`
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	NodeName string `json:"nodeName,omitempty"`
+	// +kubebuilder:validation:MaxLength=63
+	// +optional
+	ContainerName string `json:"containerName,omitempty"`
+	// ExitCode is absent when the Pod ended before its container ever ran
+	// (for example an eviction or a deadline hit while the image was pulling).
+	// +optional
+	ExitCode *int32 `json:"exitCode,omitempty"`
+	// +optional
+	Signal *int32 `json:"signal,omitempty"`
+	// Reason is the container termination reason (Completed, Error, OOMKilled,
+	// ContainerCannotRun, ...).
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	Reason string `json:"reason,omitempty"`
+	// +kubebuilder:validation:MaxLength=1024
+	// +optional
+	Message string `json:"message,omitempty"`
+	// PodReason is the Pod-level reason (Evicted, DeadlineExceeded, ...).
+	// +kubebuilder:validation:MaxLength=128
+	// +optional
+	PodReason string `json:"podReason,omitempty"`
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
+	ObservedAt metav1.Time  `json:"observedAt"`
+}
+
 // PRReviewJobStatus contains execution references and a bounded timing receipt;
 // PostgreSQL remains lifecycle authority.
 type PRReviewJobStatus struct {
@@ -265,8 +311,12 @@ type PRReviewJobStatus struct {
 	CancelRequestedAt  *metav1.Time          `json:"cancelRequestedAt,omitempty"`
 	CancelObservedAt   *metav1.Time          `json:"cancelObservedAt,omitempty"`
 	Timing             *DispatchTimingStatus `json:"timing,omitempty"`
-	Message            string                `json:"message,omitempty"`
-	Conditions         []metav1.Condition    `json:"conditions,omitempty"`
+	// WorkerTermination is the forensic record of the worker Pod's exit,
+	// captured before the worker Job's TTL is allowed to collect the Pod.
+	// +optional
+	WorkerTermination *WorkerTerminationStatus `json:"workerTermination,omitempty"`
+	Message           string                   `json:"message,omitempty"`
+	Conditions        []metav1.Condition       `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

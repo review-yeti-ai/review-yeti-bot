@@ -607,7 +607,21 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
 	}
 	r.recordDispatchTiming(review, completed.Time)
+	// Copy the worker Pod's exit record into the parent before anything below
+	// can shorten the Job's TTL. The failure paths persist it in their own
+	// terminal status write; the success path persists it here, ahead of
+	// patchWorkerSuccessTTL, because a success TTL of 0 lets the TTL
+	// controller collect the Pod the moment that patch lands.
+	terminationRecorded, err := r.observeWorkerTermination(ctx, review, worker, now)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	if worker.Status.Succeeded > 0 {
+		if terminationRecorded {
+			if err := r.Status().Update(ctx, review); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if err := r.patchWorkerSuccessTTL(ctx, worker); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -740,7 +754,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 			// must not also retain the finalizer: nothing else in this operator
 			// will ever release it for a review that stays terminal, and the
 			// TTL controller's own delete would otherwise hang on it forever.
+			// The patch also lowers the build-time forensic hold to the failed
+			// TTL, once the Pod's exit record is durable in this review.
 			base := worker.DeepCopy()
+			if err := r.prepareFinishedWorkerRelease(ctx, review, worker); err != nil {
+				return ctrl.Result{}, err
+			}
 			controllerutil.RemoveFinalizer(worker, terminalOutcomeFinalizer)
 			if err := r.Patch(ctx, worker, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, err
@@ -1339,6 +1358,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) releaseTerminalWorkerObservation(
 	}
 	if !metav1.IsControlledBy(&worker, review) {
 		return nil
+	}
+	// Last chance to record the Pod's exit before the TTL may collect it, and
+	// the point where the build-time forensic hold is lowered to the outcome's
+	// configured TTL (both written with the finalizer release below).
+	if err := r.prepareFinishedWorkerRelease(ctx, review, &worker); err != nil {
+		return err
 	}
 	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
 	// Same race as releaseOrphanedWorkerObservation: the Job's own shortened
