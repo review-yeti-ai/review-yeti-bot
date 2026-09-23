@@ -228,6 +228,44 @@ describe('durable service gate publisher', () => {
     });
   });
 
+  it('falls back to the reason-only summary when lane evidence is partial or absent', async () => {
+    // The skew sentence requires BOTH counts. A row with only one (evidence
+    // absent, or a count failing the safe-integer guard) must not interpolate
+    // "undefined" into the published text.
+    for (const overrides of [
+      { decisionReason: 'incomplete-review', expectedLanes: 3 },
+      { decisionReason: 'incomplete-review', completedLanes: 2 },
+      { decisionReason: 'incomplete-review' },
+    ]) {
+      const f = fixture({
+        mayCreate: false, checkId: 1234, creationState: 'bound',
+        desiredState: 'failure', ...overrides,
+      });
+      await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+      const update = publishedUpdate(f.client);
+      expect(update.title).toBe('Review Yeti Gate: Failed');
+      expect(String(update.summary)).not.toMatch(/incomplete panel|undefined|NaN/);
+      expect(String(update.summary)).toContain('incomplete-review');
+    }
+  });
+
+  it('withholds failure metadata from a success even when a reason was recorded', async () => {
+    // Pins the desiredState disjunct: without it, a success row carrying a
+    // reason would publish "Review Yeti Gate: Failed" on a passing gate.
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound',
+      desiredState: 'success', decisionReason: 'clean-review',
+      expectedLanes: 3, completedLanes: 3,
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update).toMatchObject({ conclusion: 'success' });
+    expect(update.title).toBeUndefined();
+    expect(update.summary).toBeUndefined();
+  });
+
   it('does not attach failure metadata to a success, and stays silent without a decision', async () => {
     // A success must keep its own summary.
     const ok = fixture({ mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'success' });
