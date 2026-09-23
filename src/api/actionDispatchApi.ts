@@ -32,6 +32,7 @@ import type { WorkerCompletionStore } from '../persistence/workerCompletionStore
 import type { WorkerCompletionVerifier, AuthoritativeReviewAdmission, AuthoritativeReviewCompletion } from '../review/authoritativeServiceContracts';
 import { ReviewGenerationConflictError } from '../review/reviewRun';
 import {
+  isDeterministicCompletionFailure,
   isWorkerCompletionPersistenceError,
   unknownWorkerCompletionPersistenceStage,
 } from '../review/workerCompletionPersistenceError';
@@ -263,12 +264,29 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         if (status === 'conflict') return response.status(409).json({ error: 'Worker completion conflicts with recorded evidence' });
         return response.status(200).json({ version: 'WorkerReviewCompletionAccepted.v1', runId: event.runId, status });
       } catch (error) {
+        const persistenceError = isWorkerCompletionPersistenceError(error) ? error : undefined;
+        const reason = persistenceError?.reason;
+        // REL-1056: a DETERMINISTIC contract failure must not be reported as a
+        // transient one. It previously returned 503 `persistence_unavailable`,
+        // which tells the worker to retry a condition that can never succeed —
+        // so a finished review was retried until its Job failed and the review
+        // was thrown away. Retrying cannot change any of these outcomes, so they
+        // are reported as a contract failure (422) with a bounded reason class.
+        // Only genuinely transient failures keep the retryable 503.
+        const deterministic = isDeterministicCompletionFailure(reason);
         logger.error('Failed to persist authoritative worker completion', {
-          reason: 'persistence_unavailable',
-          stage: isWorkerCompletionPersistenceError(error) ? error.stage : unknownWorkerCompletionPersistenceStage,
-          ...(isWorkerCompletionPersistenceError(error) && error.substage ? { substage: error.substage } : {}),
+          reason: deterministic ? 'completion_contract_rejected' : 'persistence_unavailable',
+          stage: persistenceError?.stage ?? unknownWorkerCompletionPersistenceStage,
+          ...(persistenceError?.substage ? { substage: persistenceError.substage } : {}),
+          ...(reason ? { completionReason: reason } : {}),
           runId: event.runId,
         });
+        if (deterministic) {
+          return response.status(422).json({
+            error: 'Worker review completion conflicts with the trusted review contract',
+            reason,
+          });
+        }
         return response.status(503).json({ error: 'Worker review completion could not be persisted' });
       }
     }

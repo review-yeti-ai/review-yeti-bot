@@ -11,7 +11,13 @@ import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from '.
 import { resolveReviewApplicability } from './personaApplicability';
 import { canonicalJson } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
-import { TrustedCompletionResolutionError, type TrustedCompletionResolutionSubstage } from './workerCompletionPersistenceError';
+import {
+  TrustedCompletionResolutionError,
+  isDeterministicCompletionFailure,
+  trustedCompletionResolutionReasons,
+  type TrustedCompletionResolutionReason,
+  type TrustedCompletionResolutionSubstage,
+} from './workerCompletionPersistenceError';
 
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
   .refine((value) => value !== '.' && value !== '..');
@@ -39,6 +45,34 @@ export interface AuthoritativeCompletionContextOptions {
 }
 
 function unavailable(): Error { return new Error('Authoritative completion context unavailable'); }
+
+/**
+ * A classified failure. REL-1056: the reason is a fixed service-owned token, so
+ * it is safe to log and to return to the worker, and it lets a deterministic
+ * contract mismatch be reported as a contract failure rather than a retryable
+ * 503. No upstream message, token, or payload crosses this boundary.
+ */
+/**
+ * A classified failure. The reason is carried as a STRUCTURED field, never
+ * encoded into the message and parsed back out: `split(': ')` is index-fragile,
+ * and a message shape change would silently degrade a deterministic failure to
+ * 'unknown' — a retryable class — restoring the REL-1056 bug by another route.
+ */
+class ClassifiedCompletionError extends Error {
+  constructor(readonly reason: TrustedCompletionResolutionReason) {
+    super('Authoritative completion context unavailable');
+    this.name = 'ClassifiedCompletionError';
+  }
+}
+
+function classified(reason: TrustedCompletionResolutionReason): Error {
+  return new ClassifiedCompletionError(reason);
+}
+
+/** Read the class off a classified failure, defaulting to the transient class. */
+function reasonOf(error: unknown): TrustedCompletionResolutionReason {
+  return error instanceof ClassifiedCompletionError ? error.reason : 'unknown';
+}
 
 function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublishingPolicy {
   if (!input || input.version !== 'PreparedPublishingPolicy.v1'
@@ -141,17 +175,31 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       const source = await step(() => reader.exactCurrentDiff({ ...requested }, abort.signal));
       const final = checkedCurrent(source.current);
       if (changed(final)) return cancellation(final);
-      if (typeof source.diff !== 'string' || Buffer.byteLength(source.diff, 'utf8') > MAX_AUTHORITATIVE_DIFF_BYTES) throw unavailable();
-      if (source.changedFiles !== undefined && (source.diff !== '' || !Array.isArray(source.changedFiles))) throw unavailable();
+      if (typeof source.diff !== 'string' || Buffer.byteLength(source.diff, 'utf8') > MAX_AUTHORITATIVE_DIFF_BYTES) throw classified('bounds');
+      if (source.changedFiles !== undefined && (source.diff !== '' || !Array.isArray(source.changedFiles))) throw classified('identity-mismatch');
       const { files, unreadable } = source.changedFiles === undefined
         ? parseChangedFiles(source.diff) : { files: source.changedFiles, unreadable: [] };
       // Empty/unparseable same-head evidence is unavailable, not an exemption.
       // Empty changedFiles is reserved for cancellation, before derivation.
-      if (files.length === 0 || files.length > MAX_CHANGED_FILES || files.some((file) => !file
-        || typeof file.path !== 'string' || file.path.length === 0 || file.path.length > MAX_PATH_CHARACTERS
-        || typeof file.patch !== 'string' || file.patch.length === 0 || Buffer.byteLength(file.patch, 'utf8') > MAX_CHANGED_FILE_PATCH_BYTES)
+      // REL-1056: an entry with NO patch is a deterministic property of the diff
+      // (empty added file, large generated file, binary), not a transient read
+      // failure. It is reported as its own class so an operator can see which PRs
+      // are blocked by which cause, and so it is not retried forever as a 503.
+      // Whether such an entry should be accepted as "reviewable-without-hunks" is
+      // a coverage-semantics decision deliberately left to the owner: a file
+      // nobody can read is a file nobody reviewed, and counting it as covered
+      // risks a false SHIP.
+      //
+      // ORDER: the specific causes are classified BEFORE the broader bounds
+      // verdict, so a diagnosis names what actually blocks the PR rather than
+      // whichever check happens to run first.
+      if (files.some((file) => typeof file.patch !== 'string' || file.patch.length === 0)) throw classified('no-patch-file');
+      if (files.length === 0 || files.length > MAX_CHANGED_FILES) throw classified('bounds');
+      if (files.some((file) => !file
+        || typeof file.path !== 'string' || file.path.length === 0 || file.path.length > MAX_PATH_CHARACTERS)
+        || files.some((file) => Buffer.byteLength(file.patch, 'utf8') > MAX_CHANGED_FILE_PATCH_BYTES)
         || files.reduce((bytes, file) => bytes + Buffer.byteLength(file.patch, 'utf8'), 0)
-          > (source.changedFiles === undefined ? MAX_AUTHORITATIVE_DIFF_BYTES : MAX_AUTHORITATIVE_CHANGED_FILES_BYTES)) throw unavailable();
+          > (source.changedFiles === undefined ? MAX_AUTHORITATIVE_DIFF_BYTES : MAX_AUTHORITATIVE_CHANGED_FILES_BYTES)) throw classified('bounds');
       const coverageComplete = unreadable.length === 0
         && Number.isSafeInteger(source.expectedFileCount) && files.length === source.expectedFileCount
         && new Set(files.map((file) => file.path)).size === files.length;
@@ -169,7 +217,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       // A zero-lane documentation-only panel is an explicit audited exemption.
       // Its canonical derivation still needs the admitted nonempty upper-bound
       // roster. Unmatched source is a policy/configuration failure, never SHIP.
-      if (applicablePersonaIds.length === 0 && !applicability.noReviewableContent) throw unavailable();
+      if (applicablePersonaIds.length === 0 && !applicability.noReviewableContent) throw classified('coverage-no-persona');
       const expectedPersonaIds = applicablePersonaIds.length > 0
         ? applicablePersonaIds : [...stored.expectedPersonaIds];
       checkDeadline();
@@ -181,7 +229,9 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       } };
     };
     try { return await Promise.race([resolve(), expired]); }
-    catch { throw new TrustedCompletionResolutionError(substage); }
+    catch (error) {
+      throw new TrustedCompletionResolutionError(substage, reasonOf(error));
+    }
     finally { if (timer !== undefined) clearTimeout(timer); abort.abort(); }
   };
 }
