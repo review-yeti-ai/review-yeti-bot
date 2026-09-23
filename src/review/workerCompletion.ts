@@ -284,6 +284,19 @@ export function validateWorkerCompletionEndpoint(endpoint: string): string {
 }
 
 /**
+ * A non-2xx completion callback response. The message is unchanged from the
+ * untyped error it replaces; `httpStatus` lets a caller branch on the status
+ * (REL-1057: a 409 from a head that has since moved is a supersession) without
+ * parsing the message.
+ */
+export class WorkerCompletionHttpError extends Error {
+  constructor(readonly httpStatus: number) {
+    super(`worker completion callback failed with HTTP ${httpStatus}`);
+    this.name = 'WorkerCompletionHttpError';
+  }
+}
+
+/**
  * Sends only the typed terminal-failure event. The provider error itself never
  * crosses the worker boundary: upstream responses can contain prompts, keys, or
  * other sensitive material. New workers add a bounded redacted diagnostic tail
@@ -341,7 +354,7 @@ export class HttpWorkerCompletionAdapter implements WorkerCompletionAdapter {
         redirect: 'error',
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`worker completion callback failed with HTTP ${response.status}`);
+      if (!response.ok) throw new WorkerCompletionHttpError(response.status);
     } finally {
       clearTimeout(timer);
     }
