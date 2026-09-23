@@ -271,4 +271,33 @@ describe('REL-1058: one applicability decision for worker and service', () => {
     expect(filtered.arbiter.verdict).toBe('SHIP');
     expect((filtered as { documentationOnly?: boolean }).documentationOnly).toBe(true);
   });
+
+  it('routes an orphan to every required persona', () => {
+    const personas = enabled('security,testing,performance')
+      .map((persona) => (persona.id === 'qual-lane' ? { ...persona, required: true } : persona));
+    const [link] = parseChangedFiles(GITLINK_DIFF).files;
+
+    const result = resolveReviewApplicability(personas, [link]);
+
+    expect(result.applicable.map((persona) => persona.id)).toEqual(['sec-lane', 'qual-lane']);
+    for (const persona of result.applicable) {
+      expect(scopeFilesForPersona(persona, result.effectiveFiles).map((file) => file.path)).toEqual(['ct-dashboard']);
+    }
+  });
+
+  it.each([
+    ['a gitlink-only pointer bump', GITLINK_DIFF],
+    ['an .mdx-only page', 'diff --git a/docs/a.mdx b/docs/a.mdx\n--- a/docs/a.mdx\n+++ b/docs/a.mdx\n@@ -1 +1 @@\n-a\n+b\n'],
+  ])('the composed engine reviews %s instead of exempting or failing it', async (_label, diff) => {
+    await expect(executeComposedReview({
+      config: roster('architecture,security'),
+      changedFiles: parseChangedFiles(diff).files,
+      repository: 'calltelemetry/ai-workspace',
+      headSha: 'e'.repeat(40),
+      client: unreachableClient,
+      // Past the zero-lane decision, a stale head aborts before any provider call:
+      // reaching it proves the composed reviewer would run on this diff.
+      isCurrentHead: () => false,
+    })).rejects.toThrow(/stale run aborted/);
+  });
 });
