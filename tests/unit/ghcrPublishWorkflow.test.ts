@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { resolveReleaseImageTag } from '../../scripts/resolve-release-image-tag.mjs';
 
 const workflow = fs.readFileSync(
   path.join(process.cwd(), '.github/workflows/ci-cd.yaml'),
   'utf8',
 );
+const releaseTagScript = path.join(process.cwd(), 'scripts/resolve-release-image-tag.mjs');
 
 function workflowJob(name: string): string {
   const match = workflow.match(
@@ -16,6 +19,43 @@ function workflowJob(name: string): string {
 }
 
 describe('GHCR publish contract', () => {
+  it.each([
+    ['chore(main): release 1.83.7', 'v1.83.7'],
+    ['chore(main): release 1.83.7 (#972)', 'v1.83.7'],
+    ['chore(main): release 1.83.7 (#1)', 'v1.83.7'],
+  ])('resolves the release image tag from GitHub merge subject %j', (subject, expected) => {
+    expect(resolveReleaseImageTag(subject)).toBe(expected);
+  });
+
+  it.each([
+    'chore(main): release 1.83',
+    'chore(main): release 1.83.7 trailing',
+    'chore(main): release 1.83.7 (#0)',
+    'fix: release 1.83.7 (#972)',
+  ])('does not publish a semver image tag for non-release subject %j', (subject) => {
+    expect(resolveReleaseImageTag(subject)).toBe('');
+  });
+
+  it.each([
+    ['chore(main): release 1.83.7', 'v1.83.7'],
+    ['chore(main): release 1.83.7 (#972)', 'v1.83.7'],
+    ['fix: release 1.83.7 (#972)', ''],
+  ])('executes the workflow CLI contract for subject %j', (subject, expected) => {
+    const result = spawnSync(process.execPath, [releaseTagScript, subject], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toBe(expected);
+  });
+
+  it('uses the tested resolver in the publish workflow', () => {
+    const merge = workflowJob('publish-ghcr');
+    expect(merge).toContain('tag="$(node scripts/resolve-release-image-tag.mjs "$subject")"');
+    expect(merge).toContain('if [[ -n "$tag" ]]');
+    expect(merge).toContain('echo "tag=$tag" >> "$GITHUB_OUTPUT"');
+    expect(merge).toContain('steps.version.outputs.tag');
+    expect(merge).not.toContain('^chore\\(main\\):\\ release');
+  });
+
   it('publishes digest-pinned images to ghcr.io/review-yeti-ai without Docker Hub or DOKS', () => {
     expect(workflow).toContain('publish-ghcr:');
     expect(workflow).toContain('GHCR_REGISTRY: ghcr.io/review-yeti-ai');
