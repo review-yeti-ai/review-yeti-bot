@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.0...v1.84.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **review:** identify submodule gitlinks from diff patch headers [no-linear] ([#978](https://github.com/review-yeti-ai/review-yeti-bot/issues/978)) ([39b2ea9](https://github.com/review-yeti-ai/review-yeti-bot/commit/39b2ea9aa08d8778659b69f503d03db6db3c93bf))
+
 ## [1.84.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.9...v1.84.0) (2026-09-23)
 
 
