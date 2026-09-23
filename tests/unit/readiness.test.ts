@@ -113,6 +113,30 @@ describe('review bot readiness', () => {
     expect(response.status).toBe(503);
   });
 
+  it('is ready with the legacy WEBHOOK_SECRET alone (documented rollout fallback)', async () => {
+    // Without this, deleting the legacy arm keeps every test green while a
+    // deployment setting only WEBHOOK_SECRET flips to 503 -- the exact scenario
+    // the fallback exists for (REL-1069 review).
+    stubBifrostEnv({ GITHUB_WEBHOOK_SECRET: '' });
+    vi.stubEnv('WEBHOOK_SECRET', 'legacy-webhook-secret');
+    const response = await request(createApp()).get('/ready');
+    expect(response.status).toBe(200);
+  });
+
+  it('preserves the openRouterReady field the previous tests asserted', async () => {
+    // The rewrite dropped these assertions; they are API surface, so keep them.
+    stubBifrostEnv();
+    const ready = await request(createApp()).get('/ready');
+    expect(ready.body).toMatchObject({ openRouterReady: true });
+
+    stubBifrostEnv({ OPENAI_API_KEY: '' });
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+    vi.stubEnv('OPENROUTER_REVIEW_FLEET_KEY', '');
+    vi.stubEnv('BIFROST_VIRTUAL_KEY', '');
+    const notReady = await request(createApp()).get('/ready');
+    expect(notReady.body).toMatchObject({ openRouterReady: false });
+  });
+
   it('accepts a legacy OpenRouter key so an older deployment still boots', async () => {
     // Rollout safety: nothing is provisioned under the legacy names any more,
     // but a not-yet-migrated host must not be marked unhealthy by this change.
