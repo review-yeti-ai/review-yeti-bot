@@ -382,7 +382,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
   // SUITE 3: Database Persistence & Artifact Encoding
   // =========================================================================
   describe('SUITE 3: PostgresReviewDispatchRepository & PostgresStore indexing', () => {
-    it('EMP-M2-DB-01: PostgresReviewDispatchRepository.admit stores review_engine in artifacts JSON parameter ($24)', async () => {
+    it('EMP-M2-DB-01: PostgresReviewDispatchRepository.admit stores review_engine in artifacts JSON parameter ($25)', async () => {
       let reviewRunsParams: any[] | null = null;
 
       const fakeClient = {
@@ -405,7 +405,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
                   attempt: 1,
                   lease_holder: null,
                   lease_expires_at: null,
-                  artifacts: params && params[23] ? JSON.parse(params[23]) : {},
+                  artifacts: params && params[24] ? JSON.parse(params[24]) : {},
                 },
               ],
             };
@@ -448,8 +448,8 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
       } as any);
 
       expect(reviewRunsParams).not.toBeNull();
-      expect(reviewRunsParams!.length).toBe(24);
-      const artifactsParamComposed = JSON.parse(reviewRunsParams![23]);
+      expect(reviewRunsParams!.length).toBe(25);
+      const artifactsParamComposed = JSON.parse(reviewRunsParams![24]);
       expect(artifactsParamComposed).toEqual({ review_engine: 'composed' });
 
       // Case B: omitted reviewEngine defaults to panel
@@ -468,7 +468,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
       } as any);
 
       expect(reviewRunsParams).not.toBeNull();
-      const artifactsParamDefault = JSON.parse(reviewRunsParams![23]);
+      const artifactsParamDefault = JSON.parse(reviewRunsParams![24]);
       expect(artifactsParamDefault).toEqual({ review_engine: 'panel' });
     });
 
@@ -609,13 +609,13 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
       return { env, deps, panelRunner, composedReviewRunner, reportReviewResult };
     }
 
-    it('EMP-M2-WRK-01: invokes composedReviewRunner when review_engine is composed in authoritative mode', async () => {
+    it('EMP-M2-WRK-01: falls back to panelRunner when review_engine is composed in authoritative mode to protect roster contract', async () => {
       const fix = createWorkerFixture('composed');
 
       await runPublishingReviewWorker(fix.env, fix.deps);
 
-      expect(fix.composedReviewRunner).toHaveBeenCalledOnce();
-      expect(fix.panelRunner).not.toHaveBeenCalled();
+      expect(fix.panelRunner).toHaveBeenCalledOnce();
+      expect(fix.composedReviewRunner).not.toHaveBeenCalled();
       expect(fix.reportReviewResult).toHaveBeenCalledOnce();
     });
 
