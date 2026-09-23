@@ -2307,6 +2307,54 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       ]);
     });
 
+    it('does not retry when the durable attempt has reached the recovery ledger length', async () => {
+      const runId = deriveReviewRunId(authoritativeAdmission().identity);
+      const resolveGenerationRecovery = vi.fn(async () => [{
+        generation: 1,
+        checkId: 10_001,
+        externalId: `${runId}:a1`,
+        conclusion: 'failure' as const,
+        title: 'Review Yeti: review did not complete',
+      }, {
+        generation: 2,
+        checkId: 10_002,
+        externalId: `${runId}:a2`,
+        conclusion: 'failure' as const,
+        title: 'Review Yeti: review did not complete',
+      }]);
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'enabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      }, true);
+      const first = await repository.admit({
+        ...authoritativeAdmission('central-exhausted-a1'),
+        eventName: 'repository_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 1,
+      });
+      await bindPendingGate(gateRepository);
+      await client.query("UPDATE review_runs SET status = 'failed', attempt = 2, error_text = 'review gate: review-deadline-exceeded' WHERE run_id = $1", [first.run.runId]);
+      await client.query("UPDATE review_dispatch_outbox SET status = 'pending', worker_token_digest = NULL, projection_name = NULL WHERE run_id = $1", [first.run.runId]);
+      const before = await dispatchState(client, first.run.runId);
+
+      const admitted = await repository.admit({
+        ...authoritativeAdmission('central-exhausted-a3', 2_000),
+        eventName: 'workflow_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 3,
+        retryRequested: true,
+        retryAfterExecutionAttempt: 2,
+      });
+
+      expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+      expect(admitted.run.status).toBe('failed');
+      expect(admitted.run.attempt).toBe(2);
+      expect((await dispatchState(client, first.run.runId)).outbox).toEqual(before.outbox);
+      expect((await client.query('SELECT status, attempt FROM review_runs WHERE run_id = $1', [first.run.runId])).rows)
+        .toEqual([{ status: 'failed', attempt: 2 }]);
+    });
+
     it('confirms an existing durable generation against external recovery evidence', async () => {
       const recovery = [{
         generation: 1,
