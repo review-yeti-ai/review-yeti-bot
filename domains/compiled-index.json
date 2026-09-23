@@ -221,6 +221,7 @@
           "locales/**"
         ],
         "infra": [
+          ".gitmodules*",
           "Dockerfile*"
         ],
         "license": [
@@ -619,5 +620,5 @@
     "testing"
   ],
   "schemaVersion": "domain-index-v1",
-  "indexDigest": "sha256:dbe565b81979150adc274aa2bbe8cb41509bc8defc52546fe3b3977b05915061"
+  "indexDigest": "sha256:3cc8029f3d297755995960ec0e83992aee363dd6924a45b8431a7ac2b6b1b364"
 }
