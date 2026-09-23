@@ -551,6 +551,7 @@ export class GitHubInstallationClient {
     repo: string,
     eventType: string,
     clientPayload: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<void> {
     await this.request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/dispatches`, {
       method: 'POST',
@@ -558,6 +559,7 @@ export class GitHubInstallationClient {
         event_type: eventType,
         client_payload: clientPayload,
       }),
+      ...(signal ? { signal } : {}),
     });
   }
 
@@ -569,12 +571,15 @@ export class GitHubInstallationClient {
     owner: string,
     repo: string,
     payload: ReviewCIRequestPayload,
+    signal?: AbortSignal,
   ): Promise<void> {
     const validation = validateReviewCIRequestPayload(payload);
     if (!validation.valid) {
       throw new Error(`Invalid review-yeti-ci-request payload: ${validation.error}`);
     }
-    await this.emitRepositoryDispatch(owner, repo, EVENT_TYPE_CI_REQUEST, validation.value as unknown as Record<string, unknown>);
+    await this.emitRepositoryDispatch(
+      owner, repo, EVENT_TYPE_CI_REQUEST, validation.value as unknown as Record<string, unknown>, signal,
+    );
   }
 
   /** Failure-only recovery. The caller authenticates publisherAppId with the

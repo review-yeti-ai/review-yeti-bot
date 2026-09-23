@@ -1,4 +1,7 @@
-import type { ReviewCompletionRepository } from '../persistence/reviewCompletionRepository';
+import {
+  ReviewCompletionDispatchInDoubtError,
+  type ReviewCompletionRepository,
+} from '../persistence/reviewCompletionRepository';
 import {
   ReviewCIRequestPayload,
   SCHEMA_VERSION_CI_REQUEST,
@@ -7,7 +10,7 @@ import {
 import { logger } from '../utils/logger';
 
 export interface CIRequestClient {
-  emitCIRequest(owner: string, repo: string, payload: ReviewCIRequestPayload): Promise<void>;
+  emitCIRequest(owner: string, repo: string, payload: ReviewCIRequestPayload, signal?: AbortSignal): Promise<void>;
 }
 
 export type CIRequestClientFactory = (owner: string, repo: string) => Promise<CIRequestClient>;
@@ -15,7 +18,7 @@ export type CIRequestClientFactory = (owner: string, repo: string) => Promise<CI
 export interface ReviewCompletionDeliveryEngineOptions {
   repository: Pick<
     ReviewCompletionRepository,
-    'claimNext' | 'markDispatched' | 'releaseForRetry' | 'markError'
+    'claimNext' | 'markDispatched' | 'dispatchFenced' | 'releaseForRetry' | 'markError'
   > & {
     markTerminal?: (completionId: string, workerId: string, now: number) => Promise<boolean>;
     markCompleted?: (completionId: string, workerId: string, now: number) => Promise<boolean>;
@@ -27,6 +30,8 @@ export interface ReviewCompletionDeliveryEngineOptions {
   baseRetryDelayMs?: number;
   maxRetryDelayMs?: number;
   maxAttempts?: number;
+  /** REL-1053: upper bound on the fenced send, and so on the row lock it holds. */
+  sendTimeoutMs?: number;
 }
 
 export type ReviewCompletionDeliveryOutcome =
@@ -51,6 +56,7 @@ export class ReviewCompletionDeliveryEngine {
   private readonly baseRetryDelayMs: number;
   private readonly maxRetryDelayMs: number;
   private readonly maxAttempts: number;
+  private readonly sendTimeoutMs: number | undefined;
 
   constructor(private readonly options: ReviewCompletionDeliveryEngineOptions) {
     this.now = options.now || Date.now;
@@ -58,6 +64,7 @@ export class ReviewCompletionDeliveryEngine {
     this.baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
     this.maxRetryDelayMs = options.maxRetryDelayMs ?? 60_000;
     this.maxAttempts = options.maxAttempts ?? 5;
+    this.sendTimeoutMs = options.sendTimeoutMs;
 
     if (!options.workerId.trim()) throw new Error('completion delivery worker id is required');
     if (!Number.isSafeInteger(this.leaseMs) || this.leaseMs <= 0) throw new Error('completion lease must be positive');
@@ -123,18 +130,31 @@ export class ReviewCompletionDeliveryEngine {
     }
 
     try {
+      // Mint the token before taking the row lock: it is network I/O the lock
+      // does not need to cover.
       const client = await this.options.clientFactory(owner, repoName);
-      await client.emitCIRequest(owner, repoName, validation.value);
-
-      const dispatched = await this.options.repository.markDispatched(
+      // REL-1053: send and record under one row lock fenced on this claim's
+      // lease owner and attempt, so a second dispatcher replica cannot reclaim
+      // and resend while this send is in flight (see dispatchFenced).
+      const dispatched = await this.options.repository.dispatchFenced(
         claim.completionId,
         this.options.workerId,
+        claim.attempt,
         now,
+        (signal) => client.emitCIRequest(owner, repoName, validation.value, signal),
+        this.sendTimeoutMs === undefined ? {} : { maxHoldMs: this.sendTimeoutMs },
       );
-      return dispatched
+      return dispatched === 'dispatched'
         ? { status: 'dispatched', completionId: claim.completionId, validationRequestId: claim.validationRequestId }
         : { status: 'lease-lost', completionId: claim.completionId };
     } catch (err: unknown) {
+      if (err instanceof ReviewCompletionDispatchInDoubtError) {
+        logger.warn('CI request may have been sent without being recorded; it will be retried', {
+          completionId: claim.completionId,
+          repository: claim.repository,
+          validationRequestId: claim.validationRequestId,
+        });
+      }
       const message = err instanceof Error ? err.message : String(err);
       const statusCode = extractStatusCode(err);
 

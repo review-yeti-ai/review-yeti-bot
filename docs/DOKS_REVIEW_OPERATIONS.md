@@ -33,8 +33,8 @@ serving production traffic.
 
 ### Dispatcher health and reaper metrics
 
-The review-job dispatcher serves `GET /health` and Prometheus `GET /metrics`
-from the same process that owns dispatch, completion delivery, and abandoned
+The review-job dispatcher serves `GET /health`, `GET /ready` and Prometheus
+`GET /metrics` from the same process that owns dispatch, completion delivery, and abandoned
 run reaping. The listener binds to `0.0.0.0:9090` by default; operators may set
 `REVIEW_JOB_METRICS_HOST` and `REVIEW_JOB_METRICS_PORT` only when a deployment
 needs a different internal address. Invalid ports fail startup before the
@@ -49,11 +49,44 @@ the target health and the owning process's reaper counters after rollout;
 scraping another Review Yeti process can show the same metric names at zero
 without proving that reaper activity is observable.
 
-The production dispatcher is a singleton `Recreate` Deployment, so a static
-`ClusterIP` target is attributable to the one process that owns these counters.
-If the dispatcher is ever scaled above one, replace static targeting with pod or
-endpoints discovery (or a headless Service with per-pod targets) so counter
-ownership and reset semantics remain attributable.
+`/health` is process liveness only. `/ready` is per pod (REL-1053). It returns
+503 until that pod's own dispatch loop completes its first cycle. It also
+returns 503 when no cycle has completed for 120 seconds and after SIGTERM. The
+body names the pod's `workerId` (`review-job-dispatcher:<pod name>`), which is
+the same identity the pod writes as `lease_owner`. A cycle that fails and backs
+off still counts as progress, so a database outage does not take every replica
+out of the Service.
+
+#### Running more than one replica
+
+The dispatcher is safe to run with two or more replicas (REL-1053):
+
+- Dispatch, abandoned-run reaping and completion claims all use
+  `FOR UPDATE SKIP LOCKED` with leases fenced on owner and attempt. The reaper
+  publishes while it holds the run's row lock, so it needs no leader.
+- The CI-request `repository_dispatch` is sent while holding the completion
+  row's lock, fenced on lease owner and claim attempt, and is marked
+  `dispatched` in the same transaction. Another replica cannot reclaim the row
+  and resend it during a slow send, whatever its clock says. The send is
+  bounded at 15 seconds, below the 30-second lease. One case stays in doubt: a
+  crash or dropped connection after GitHub accepted the request but before the
+  commit. That case is logged and retried, so it is at least once, and
+  `validation_request_id` is the receiver's deduplication key.
+- Cancellation propagation is an idempotent merge patch, so two replicas
+  patching the same PRReviewJob is harmless.
+- The OTLP push labels metrics with `service.instance.id` = the pod's
+  `workerId`, so replicas do not overwrite each other's cumulative counters.
+
+Before raising `replicas` above one, make these changes in ct-infrastructure:
+
+- Replace the static `ClusterIP` scrape target with pod or endpoints discovery
+  (or a headless Service with per-pod targets). Otherwise each scrape reaches a
+  random pod and the counters look like they reset.
+- Point the readiness probe at `/ready`.
+- Change `Recreate` to `RollingUpdate` (`maxUnavailable: 0`), and add pod
+  anti-affinity and a PodDisruptionBudget.
+- Only scale once every running pod has this release. A pod from before the
+  release sends without the row lock and could still race a slow send.
 
 Do not fabricate reaper anomalies on this production deployment to make either
 counter non-zero. The deterministic non-production acceptance procedure is

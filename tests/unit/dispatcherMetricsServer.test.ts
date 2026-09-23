@@ -3,10 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   closeDispatcherMetricsServer,
   createDispatcherMetricsServer,
+  DispatcherLoopHealth,
   dispatcherMetricsConfigFromEnv,
   listenDispatcherMetricsServer,
 } from '../../src/dispatcherMetricsServer';
-import { getMetrics, initTelemetry } from '../../src/telemetry';
+import { getMetrics, initTelemetry, metricsResourceFor } from '../../src/telemetry';
 
 function metricValue(text: string, name: string): number {
   const line = text.split('\n').find((entry) => entry.startsWith(`${name} `));
@@ -47,6 +48,75 @@ describe('review job dispatcher metrics server', () => {
     await request(server).get('/metrics').expect('Content-Type', /version=0\.0\.4/).expect(200, 'metric 1\n');
     await request(server).get('/private').expect(404, 'Not Found\n');
     await request(server).post('/metrics').expect('Allow', 'GET').expect(405, 'Method Not Allowed\n');
+  });
+
+  describe('REL-1053 per-pod readiness', () => {
+    const workerId = 'review-job-dispatcher:ct-review-job-dispatcher-7d9f-abcde';
+
+    it('is not ready until this pod completes a dispatch cycle', async () => {
+      const server = createDispatcherMetricsServer({ loopHealth: new DispatcherLoopHealth(workerId) });
+      await request(server).get('/ready').expect(503, {
+        service: 'review-yeti-job-dispatcher', ready: false, reason: 'starting', workerId,
+      });
+      // Liveness is unaffected: a pod that has not cycled yet must not be restarted.
+      await request(server).get('/health').expect(200);
+    });
+
+    it('is ready after a cycle and reports stalled once the loop stops progressing', async () => {
+      let now = 1_000_000;
+      const health = new DispatcherLoopHealth(workerId, { staleAfterMs: 60_000, now: () => now });
+      const server = createDispatcherMetricsServer({ loopHealth: health });
+      health.markCycle();
+      now += 60_000;
+      await request(server).get('/ready').expect(200, {
+        service: 'review-yeti-job-dispatcher', ready: true, reason: 'ok', workerId, lastCycleAgeMs: 60_000,
+      });
+      now += 1;
+      await request(server).get('/ready').expect(503, {
+        service: 'review-yeti-job-dispatcher', ready: false, reason: 'stalled', workerId, lastCycleAgeMs: 60_001,
+      });
+      health.markCycle();
+      await request(server).get('/ready').expect(200);
+    });
+
+    it('drops out of readiness as soon as shutdown starts', async () => {
+      const health = new DispatcherLoopHealth(workerId);
+      const server = createDispatcherMetricsServer({ loopHealth: health });
+      health.markCycle();
+      await request(server).get('/ready').expect(200);
+      health.markStopping();
+      health.markCycle();
+      await request(server).get('/ready').expect(503, {
+        service: 'review-yeti-job-dispatcher', ready: false, reason: 'stopping', workerId,
+      });
+    });
+
+    it('fails readiness closed when no loop is wired', async () => {
+      await request(createDispatcherMetricsServer()).get('/ready').expect(503);
+    });
+
+    it('rejects an empty identity or an unbounded staleness window', () => {
+      expect(() => new DispatcherLoopHealth(' ')).toThrow('requires the pod worker id');
+      expect(() => new DispatcherLoopHealth(workerId, { staleAfterMs: 999 })).toThrow('at least 1000 ms');
+    });
+  });
+
+  describe('REL-1053 pushed-metrics identity', () => {
+    it('labels a long-lived replica with its own service instance id', () => {
+      const podA = metricsResourceFor({ serviceName: 'ct-review-job-dispatcher',
+        serviceInstanceId: 'review-job-dispatcher:pod-a' }).attributes;
+      const podB = metricsResourceFor({ serviceName: 'ct-review-job-dispatcher',
+        serviceInstanceId: 'review-job-dispatcher:pod-b' }).attributes;
+      expect(podA['service.name']).toBe('ct-review-job-dispatcher');
+      expect(podA['service.instance.id']).toBe('review-job-dispatcher:pod-a');
+      expect(podB['service.instance.id']).toBe('review-job-dispatcher:pod-b');
+    });
+
+    it('leaves processes without an identity (ephemeral workers) on the default resource', () => {
+      expect(metricsResourceFor(undefined).attributes['service.instance.id']).toBeUndefined();
+      expect(() => metricsResourceFor({ serviceName: 'x', serviceInstanceId: ' ' }))
+        .toThrow('requires a service name and instance id');
+    });
   });
 
   it('exports increments from the dispatcher process that owns reaper counters', async () => {
