@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.2...v1.84.3) (2026-09-23)
+
+
+### Bug Fixes
+
+* **dispatch:** make the review job dispatcher safe to run with 2+ replicas (REL-1053) ([#984](https://github.com/review-yeti-ai/review-yeti-bot/issues/984)) ([1944593](https://github.com/review-yeti-ai/review-yeti-bot/commit/1944593a0c46ca01614e98a96ba8506f1adbd977))
+
 ## [1.84.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.1...v1.84.2) (2026-09-23)
 
 
