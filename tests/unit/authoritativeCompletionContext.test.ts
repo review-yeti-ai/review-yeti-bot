@@ -294,18 +294,23 @@ describe('service-owned authoritative completion context', () => {
 
   // REL-972: a Dependabot lockfile bump is the audited no-reviewable-content
   // exemption on the trusted side too, end to end through gate evaluation.
+  const NPM_BUMP = '@@ -1,4 +1,4 @@\n     "node_modules/lodash": {\n'
+    + '-      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",\n'
+    + '+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",\n';
+  const lockPatch = (path: string) => (path.endsWith('package-lock.json') ? NPM_BUMP : '@@ -1 +1 @@\n-old\n+new');
+
   it.each([
     ['package-lock.json'],
     ['yarn.lock'],
     ['mix.lock'],
-    ['web/package-lock.json', 'assets/app.min.js'],
+    ['web/package-lock.json', 'api/mix.lock'],
     // Worker and service previously disagreed here: the worker exempted it (the
     // lockfile is filtered, the rest is prose) and the service refused the
     // documentation-only completion because yarn.lock is not documentation.
     ['docs/upgrade.md', 'yarn.lock'],
   ])('accepts a lockfile/generated-only diff %s as the no-reviewable-content exemption', async (...paths: string[]) => {
     const f = fixture();
-    const changedFiles = paths.map((path) => ({ path, patch: '@@ -1 +1 @@\n-old\n+new' }));
+    const changedFiles = paths.map((path) => ({ path, patch: lockPatch(path) }));
     f.exactCurrentDiff.mockResolvedValue({
       current: { ...current }, diff: '', changedFiles, expectedFileCount: changedFiles.length,
     });
@@ -327,9 +332,37 @@ describe('service-owned authoritative completion context', () => {
       .toMatchObject({ status: 'success', reason: 'central-exemption' });
   });
 
+  it.each([
+    ['a lockfile bump redirected off the registry', [{ path: 'package-lock.json',
+      patch: NPM_BUMP.replace('https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz', 'https://evil.example/l.tgz') }]],
+    ['a generated artifact only', [{ path: 'assets/app.min.js', patch: '@@ -1 +1 @@\n-old\n+new' }]],
+  ])('fails %s closed as a coverage gap', async (_label, changedFiles) => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: 1 });
+
+    const error = await rejected(f.context(f.gate));
+    expect((error as TrustedCompletionResolutionError).reason).toBe('coverage-no-persona');
+  });
+
+  it('refuses a documentation-only completion over an unverifiable lockfile', () => {
+    // Defense in depth behind the shared decision: the completion check itself
+    // re-verifies each admitted lockfile change.
+    const f = fixture();
+    const { attemptId: _, ...coordinates } = f.gate.coordinates;
+    const expectedCoordinates = { ...coordinates, configDigest: f.stored.policy.effectiveConfigDigest };
+    const derive = (patch: string) => deriveCanonicalWorkerReviewEvidence({ version: 'WorkerReviewCompletion.v1', ...expectedCoordinates,
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-09T18:00:00Z', coverageComplete: true,
+        quorumSatisfied: true, personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }] } },
+    { expectedPersonaIds: ['sec-lane'], coverageComplete: true, quorumSatisfied: true, expectedCoordinates,
+      changedFiles: [{ path: 'package-lock.json', patch }] });
+    expect(derive(NPM_BUMP).valid).toBe(true);
+    expect(derive(NPM_BUMP.replace('https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz', 'https://evil.example/l.tgz')).valid)
+      .toBe(false);
+  });
+
   it('requires a real lane, not the exemption, for a manifest change beside its lockfile', async () => {
     const f = fixture();
-    const changedFiles = ['package.json', 'package-lock.json'].map((path) => ({ path, patch: '@@ -1 +1 @@\n-old\n+new' }));
+    const changedFiles = ['package.json', 'package-lock.json'].map((path) => ({ path, patch: lockPatch(path) }));
     f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: 2 });
 
     const context = await f.context(f.gate);

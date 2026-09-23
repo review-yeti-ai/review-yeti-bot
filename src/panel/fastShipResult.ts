@@ -99,7 +99,7 @@ export function buildDocumentationOnlyPanelResult(
   providerId: ProviderId,
   rationale: string,
   requiredQuorum: number = 1,
-  noReviewableContentKind: 'documentation' | 'lockfile-or-generated' = 'documentation',
+  noReviewableContentKind: 'documentation' | 'lockfile-only' = 'documentation',
 ): FastShipPanelResult {
   const lane: PersonaLaneResult = {
     id: 'documentation-only',

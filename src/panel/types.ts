@@ -116,7 +116,7 @@ export interface PanelResult {
    * REL-972: which no-reviewable-content exemption produced a `documentationOnly` result.
    * Absent means documentation/asset/data only (the original exemption).
    */
-  noReviewableContentKind?: 'documentation' | 'lockfile-or-generated';
+  noReviewableContentKind?: 'documentation' | 'lockfile-only';
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];

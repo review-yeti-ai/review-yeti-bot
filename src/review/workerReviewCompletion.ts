@@ -4,7 +4,7 @@ import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane
 import { canonicalJson, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
-import { isNoReviewableContentPath } from './reviewableContent';
+import { isNoReviewableContentFile } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
@@ -508,11 +508,11 @@ export function deriveCanonicalWorkerReviewEvidence(
   }
   const changedFiles = validateChangedFiles(contract.changedFiles);
   if (isDocumentationOnlyCompletion(completion.result)) {
-    // REL-972: the exemption also covers a lockfile/generated-only diff. The
-    // trusted completion context has already required the shared
+    // REL-972: the exemption also covers registry-verified lockfile changes.
+    // The trusted completion context has already required the shared
     // resolveReviewApplicability decision to report no reviewable content;
-    // this re-checks the admitted paths against the same classifications.
-    if (!changedFiles.every((file) => isNoReviewableContentPath(file.path))) {
+    // this re-checks the admitted files against the same classifications.
+    if (!changedFiles.every((file) => isNoReviewableContentFile(file))) {
       return invalidEvidence('documentation-only completion contains analyzable source paths');
     }
     const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;

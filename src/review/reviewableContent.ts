@@ -1,4 +1,4 @@
-import { classifyLockfileOrGeneratedPath } from '../pipeline/hunkFilter';
+import { verifyLockfileOnlyChange } from './lockfileChangeVerification';
 
 /**
  * Prose documentation formats and static image/diagram assets.
@@ -36,27 +36,17 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
 }
 
 /**
- * REL-972: a dependency lockfile or a generated artifact identified by its file
- * name (`*.min.js`, `*.map`, `*.pb.go`, ...), per the shared hunk filter's own
- * classification. A diff made only of these has nothing a lane could review:
- * the filter excludes them from every lane's context.
- *
- * Deliberately NOT included: dependency manifests (`package.json`, `mix.exs`,
- * `go.mod`, ...), which are reviewed, and files that are only *located* under a
- * build output directory (`dist/`, `build/`, ...), where a hand-written script
- * is indistinguishable from compiler output by path alone.
+ * A changed file the no-reviewable-content exemption may contain: documentation,
+ * an asset, a run artifact or data, or (REL-972) a dependency lockfile whose
+ * added lines verifiably stay on the default public registries. The service's
+ * completion check uses this; the shared worker decision
+ * (`resolveReviewApplicability`) applies the same rule.
  */
-export function isLockfileOrGeneratedArtifactPath(filePath: string): boolean {
-  const kind = classifyLockfileOrGeneratedPath(filePath);
-  return kind === 'lockfile' || kind === 'generated-artifact';
-}
-
-/**
- * A path the no-reviewable-content exemption may contain: documentation, an
- * asset, a run artifact or data, or (REL-972) a lockfile or generated artifact.
- * The service's completion check uses this; the shared worker decision
- * (`resolveReviewApplicability`) is stricter about how these may combine.
- */
-export function isNoReviewableContentPath(filePath: string): boolean {
-  return isDocumentationOrAssetPath(filePath) || isLockfileOrGeneratedArtifactPath(filePath);
+export function isNoReviewableContentFile(
+  file: { path: string; patch?: unknown; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean },
+): boolean {
+  if (isDocumentationOrAssetPath(file.path)) return true;
+  // A gitlink is a dependency change even at a lockfile-looking path.
+  if (file.isSubmodule === true || file.submoduleCandidate === true || file.mode === '160000') return false;
+  return verifyLockfileOnlyChange(file.path, file.patch).ok;
 }

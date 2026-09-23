@@ -1483,10 +1483,11 @@ export async function runPublishingReviewWorker(
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
     const documentationOnly = fastShipApproved && Boolean(panelResult.documentationOnly);
-    // REL-972: a lockfile/generated-only diff takes the same audited exemption;
-    // label it for what it is rather than calling a yarn.lock bump documentation.
-    const exemptionLabel = panelResult.noReviewableContentKind === 'lockfile-or-generated'
-      ? 'lockfile/generated-only'
+    // REL-972: a registry-verified lockfile-only diff takes the same audited
+    // exemption; label it for what it is rather than calling a yarn.lock bump
+    // documentation.
+    const exemptionLabel = panelResult.noReviewableContentKind === 'lockfile-only'
+      ? 'lockfile-only'
       : 'documentation-only';
     const title = notApplicable
       ? 'Review Yeti: NO_REVIEW (not applicable)'

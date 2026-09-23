@@ -39,21 +39,13 @@ const IGNORED_LOCKFILES = [
   'composer.lock',
 ];
 
-/** Generated or compiled files recognizable by their own file name. */
-const GENERATED_FILE_PATTERNS = [
+const GENERATED_PATTERNS = [
   /\.min\.js$/,
   /\.min\.css$/,
   /\.map$/,
   /\.pb\.go$/,
   /\.generated\.[t|j]s$/,
   /_pb\.[t|j]s$/,
-];
-
-/**
- * Build output directories. Only the location marks these as generated, so a
- * hand-written script placed there looks identical to compiler output.
- */
-const GENERATED_OUTPUT_DIR_PATTERNS = [
   /^dist\//,
   /^build\//,
   /^target\//,
@@ -61,22 +53,15 @@ const GENERATED_OUTPUT_DIR_PATTERNS = [
 ];
 
 /**
- * - `lockfile`: a dependency lockfile (the manifest that drives it is not one).
- * - `generated-artifact`: generated or compiled output identified by file name.
- * - `generated-output-dir`: any file under a build output directory.
- */
-export type ExcludedFileKind = 'lockfile' | 'generated-artifact' | 'generated-output-dir';
-
-/**
  * The lockfile/generated classification the hunk filter excludes from review
- * context, independent of any repository `path_filters`.
+ * context, independent of any repository `path_filters`. Shared with the
+ * no-reviewable-content decision (REL-972) so both read one list.
  */
-export function classifyLockfileOrGeneratedPath(filePath: string): ExcludedFileKind | null {
+export function classifyLockfileOrGeneratedPath(filePath: string): 'lockfile' | 'generated' | null {
   const lowerPath = filePath.toLowerCase();
   const filename = lowerPath.split('/').pop() || lowerPath;
   if (IGNORED_LOCKFILES.includes(filename)) return 'lockfile';
-  if (GENERATED_FILE_PATTERNS.some((pat) => pat.test(lowerPath))) return 'generated-artifact';
-  if (GENERATED_OUTPUT_DIR_PATTERNS.some((pat) => pat.test(lowerPath))) return 'generated-output-dir';
+  if (GENERATED_PATTERNS.some((pat) => pat.test(lowerPath))) return 'generated';
   return null;
 }
 

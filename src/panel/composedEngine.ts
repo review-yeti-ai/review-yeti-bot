@@ -392,7 +392,7 @@ function buildZeroLaneResult(
   headSha: string,
   config: CtReviewConfigV3,
   rationale: string,
-  kind: 'documentation' | 'lockfile-or-generated',
+  kind: 'documentation' | 'lockfile-only',
   panelWallClockMs: number,
 ): PanelResult {
   // Same outcome as executePersonaPanel's: a diff with nothing analyzable in it
@@ -1010,7 +1010,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const effectiveFiles = applicability.effectiveFiles;
     if (applicability.applicable.length === 0) {
       if (!applicability.noReviewableContent) {
-        throw personaCoverageError(repository, headSha, applicability.unmatchedPaths, enabledPersonas);
+        throw personaCoverageError(
+          repository, headSha, applicability.unmatchedPaths, enabledPersonas, applicability.unverifiedLockfiles,
+        );
       }
       return buildZeroLaneResult(
         headSha,
