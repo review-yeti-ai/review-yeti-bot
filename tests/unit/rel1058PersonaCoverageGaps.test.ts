@@ -41,7 +41,6 @@ describe('REL-1058: documentation extensions', () => {
   it.each([
     MDX_PATH,
     'docs/guide/intro.MDX',
-    'content/reference.mdoc',
     'manual/install.asciidoc',
     'assets/diagram.webp',
     'assets/hero.avif',
@@ -223,5 +222,27 @@ describe('REL-1058: one applicability decision for worker and service', () => {
       pathFilters: ['', 7, 'inventory/**'] as unknown as string[],
     });
     expect(mixed.effectiveFiles).toEqual([]);
+  });
+
+  it('the panel engine narrows by the same repository path_filters', async () => {
+    const changedFiles = [
+      { path: 'vendor/generated/client.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+      { path: 'docs/readme.mdx', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+    ];
+    const base = roster('architecture,security');
+    const run = (config: typeof base) => executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/vitepress',
+      headSha: 'd'.repeat(40),
+      client: unreachableClient,
+      deterministicRoster: true,
+    });
+
+    await expect(run(base)).rejects.toThrow(/no enabled persona applies.*vendor\/generated\/client\.lua/);
+
+    const filtered = await run({ ...base, path_filters: ['vendor/**'] });
+    expect(filtered.arbiter.verdict).toBe('SHIP');
+    expect((filtered as { documentationOnly?: boolean }).documentationOnly).toBe(true);
   });
 });
