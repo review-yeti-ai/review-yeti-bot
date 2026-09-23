@@ -36,6 +36,18 @@ function fixture(overrides: Partial<GatePublicationClaim> = {}) {
   return { repository, client, clientFor, notStarted, publisher };
 }
 
+/** The update the publisher handed the client, typed from the mock's own
+ * signature. Indexing `mock.calls[0][0]` directly trips
+ * noUncheckedIndexedAccess and empty-tuple inference, so this narrows once and
+ * fails loudly if the publisher never called updateExisting. */
+function publishedUpdate(client: {
+  updateExisting: { mock: { calls: unknown[][] } };
+}): Record<string, unknown> {
+  const call = client.updateExisting.mock.calls[0];
+  if (!call) throw new Error('publisher did not call updateExisting');
+  return (call[0] as { update: Record<string, unknown> }).update;
+}
+
 describe('durable service gate publisher', () => {
   it('depends only on the domain storage port, not a Postgres class or client', () => {
     for (const file of ['reviewGatePublisher.ts', 'reviewGateContracts.ts']) {
@@ -176,6 +188,60 @@ describe('durable service gate publisher', () => {
       },
     });
     expect(JSON.stringify(body)).not.toContain('ghs_test-token');
+  });
+
+
+  // REL-1019 criterion 3: the failure summary must name the concrete cause.
+  // The generic "policy eligibility gate failed" made a lane skew (a stale run)
+  // indistinguishable from a provider outage or a genuinely failed panel, which
+  // is exactly the ambiguity REL-1019 was filed against.
+  it('names a lane skew in the failure summary instead of a generic message', async () => {
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'failure',
+      decisionReason: 'incomplete-review', expectedLanes: 3, completedLanes: 2,
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update).toMatchObject({
+      conclusion: 'failure',
+      title: 'Review Yeti Gate: Failed (incomplete panel)',
+    });
+    // The counts are named so an operator can act without reading the DB.
+    expect(update.summary).toContain('expected 3');
+    expect(update.summary).toContain('2 completed');
+    expect(update.summary).toMatch(/not a findings verdict/i);
+  });
+
+  it('names the decision reason for a non-skew failure', async () => {
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'failure',
+      decisionReason: 'infrastructure-failure',
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update).toMatchObject({
+      conclusion: 'failure',
+      title: 'Review Yeti Gate: Failed',
+      summary: 'Review Yeti Gate failed: infrastructure-failure. This is not an approval.',
+    });
+  });
+
+  it('does not attach failure metadata to a success, and stays silent without a decision', async () => {
+    // A success must keep its own summary.
+    const ok = fixture({ mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'success' });
+    await expect(ok.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+    const okUpdate = publishedUpdate(ok.client);
+    expect(okUpdate.summary).toBeUndefined();
+    expect(okUpdate.title).toBeUndefined();
+
+    // No recorded decision (an older row) must not invent a reason.
+    const legacy = fixture({ mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'failure' });
+    await expect(legacy.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+    const legacyUpdate = publishedUpdate(legacy.client);
+    expect(legacyUpdate.summary).toBeUndefined();
+    expect(legacyUpdate.title).toBeUndefined();
   });
 
   it('records a bound-check transport failure without creating or reconciling another check', async () => {
