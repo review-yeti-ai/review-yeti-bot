@@ -99,6 +99,12 @@ describe('REL-972: lockfile change verification', () => {
       '+  resolution: "lodash@npm:4.17.21"',
       '   checksum: abc',
     ].join('\n')],
+    ['yarn.lock (berry builtin compat patch)', [
+      '@@ -1,3 +1,3 @@',
+      ' "typescript@patch:typescript@npm%3A^5.3.0#~builtin<compat/typescript>":',
+      '+  version: 5.3.3',
+      '+  resolution: "typescript@patch:typescript@npm%3A5.3.3#~builtin<compat/typescript>::version=5.3.3&hash=e012d7"',
+    ].join('\n')],
   ])('verifies a default-registry bump of %s', (label, body) => {
     const path = label.split(' ')[0];
     expect(verifyLockfileOnlyChange(path, body)).toEqual({ ok: true });
@@ -138,7 +144,7 @@ describe('REL-972: lockfile change verification', () => {
       'is a submodule gitlink'],
     ['a yarn berry resolution pointed off the registry', 'yarn.lock',
       '@@ -1,3 +1,3 @@\n "x@^1.0.0":\n+  resolution: "x@https://evil.example/x.tgz"\n',
-      'adds a URL outside the default public registries'],
+      'resolves an entry outside the npm registry'],
     ['a decoy npm entry key re-parenting a redirected resolved', 'package-lock.json', [
       '@@ -1,4 +1,8 @@',
       '     "node_modules/victim": {',
@@ -166,6 +172,29 @@ describe('REL-972: lockfile change verification', () => {
     ['a resolved with no entry in the hunk', 'package-lock.json',
       '@@ -1 +1 @@\n+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",',
       'resolves an entry to a different package'],
+    ['an npm resolved pointed at another default registry', 'package-lock.json',
+      '@@ -1,2 +1,2 @@\n     "node_modules/victim": {\n+      "resolved": "https://files.pythonhosted.org/packages/evil.tgz",',
+      'adds a URL outside the default public registries'],
+    ['a yarn resolved with no URL', 'yarn.lock', '@@ -1,2 +1,2 @@\n "x@^1.0.0":\n+  resolved "packages/x"',
+      'resolves an entry outside a registry'],
+    ['a yarn berry resolution naming a different package', 'yarn.lock',
+      '@@ -1,2 +1,2 @@\n "victim@npm:^1.0.0":\n+  resolution: "evil-pkg@npm:1.0.0"',
+      'resolves an entry to a different package'],
+    ['a yarn berry resolution through an alias', 'yarn.lock',
+      '@@ -1,2 +1,2 @@\n "victim@npm:^1.0.0":\n+  resolution: "victim@npm:evil-pkg@1.0.0"',
+      'resolves an entry outside the npm registry'],
+    ['a yarn berry patch of another package', 'yarn.lock',
+      '@@ -1,2 +1,2 @@\n "victim@npm:^1.0.0":\n+  resolution: "victim@patch:evil@npm%3A1.0.0#~builtin<compat/evil>"',
+      'resolves an entry outside the npm registry'],
+    ['a yarn berry workspace resolution', 'yarn.lock',
+      '@@ -1,2 +1,2 @@\n "victim@workspace:.":\n+  resolution: "victim@workspace:."',
+      'resolves an entry outside the npm registry'],
+    ['a pnpm tarball resolution', 'pnpm-lock.yaml',
+      '@@ -1,2 +1,2 @@\n   /victim@1.0.0:\n+    resolution: {tarball: https://registry.npmjs.org/evil/-/evil-1.0.0.tgz}',
+      'adds a URL outside the default public registries'],
+    ['a per-file artifact URL in poetry.lock', 'poetry.lock',
+      '@@ -1 +1 @@\n+url = "https://files.pythonhosted.org/packages/evil.whl"',
+      'adds a URL outside the default public registries'],
     ['a non-lockfile', 'assets/app.min.js', '@@ -1 +1 @@\n+x', 'not a lockfile'],
   ])('refuses %s', (_label, path, body, reason) => {
     expect(verifyLockfileOnlyChange(path, body)).toEqual({ ok: false, reason });
