@@ -3481,6 +3481,8 @@ export async function executePersonaPanel(options: {
           patch: f.patch,
           content: f.content,
           mode: orig?.mode,
+          isSubmodule: orig?.isSubmodule,
+          submoduleCandidate: orig?.submoduleCandidate,
           size: orig?.size,
           byteSize: orig?.byteSize,
           originalPatchLength: f.originalPatchLength,
