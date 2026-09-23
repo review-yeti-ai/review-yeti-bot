@@ -20,13 +20,62 @@ export function invalidPublishingReviewContract(): Error {
 }
 
 /**
- * OpenAI-compatible gateway is the admitted transport for the publishing lane.
- * Both the base URL and the key are required from the environment:
- * OPENAI_BASE_URL and OPENAI_API_KEY. Defaulting either one is refused fail-closed.
+ * The OpenAI-compatible gateway is the admitted transport for every review lane.
+ *
+ * OPENAI_API_KEY + OPENAI_BASE_URL is the STANDARD. The key is a Bifrost virtual
+ * key (`sk-b...`) and the base URL is the gateway, so a lane never talks to a
+ * model vendor directly.
+ *
+ * The OPENROUTER_* names are LEGACY. They predate the Bifrost migration and are
+ * accepted only as a fallback so an older deployment keeps booting during
+ * rollout; nothing should be provisioned under them any more, and the review
+ * lane is not OpenRouter-backed. New gates must read this resolver rather than
+ * naming a vendor, because a hardcoded vendor name is what made the full-app
+ * readiness probe report 503 on a correctly-configured Bifrost deployment
+ * (REL-1069) while every other review workload was healthy.
+ */
+const LEGACY_OPENROUTER_KEY_NAMES = [
+  'OPENROUTER_REVIEW_FLEET_KEY',
+  'OPENROUTER_PR_REVIEW_API_KEY',
+  'OPENROUTER_API_KEY',
+] as const;
+
+/** Resolve the admitted gateway key, preferring the standard OpenAI name. */
+export function resolveGatewayApiKey(env: NodeJS.ProcessEnv): string {
+  const standard = value(env, 'OPENAI_API_KEY') || value(env, 'REVIEW_YETI_BIFROST_API_KEY')
+    || value(env, 'BIFROST_VIRTUAL_KEY');
+  if (standard) return standard;
+  for (const name of LEGACY_OPENROUTER_KEY_NAMES) {
+    const legacy = value(env, name);
+    if (legacy) return legacy;
+  }
+  return '';
+}
+
+/** Resolve the admitted gateway base URL, preferring the standard OpenAI name. */
+export function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv): string {
+  return value(env, 'OPENAI_BASE_URL') || value(env, 'REVIEW_YETI_GATEWAY_BASE_URL')
+    || value(env, 'BIFROST_BASE_URL') || value(env, 'OPENROUTER_BASE_URL');
+}
+
+/** Resolve the canonical webhook secret name.
+ *
+ * `GITHUB_WEBHOOK_SECRET` is what the app, the wizard and every synced
+ * environment already use (see githubWebhookConfig and initWizard);
+ * `WEBHOOK_SECRET` was a second spelling that no deployment sets, so a
+ * readiness gate requiring it failed on a correct environment.
+ */
+export function resolveWebhookSecret(env: NodeJS.ProcessEnv): string {
+  return value(env, 'GITHUB_WEBHOOK_SECRET') || value(env, 'WEBHOOK_SECRET');
+}
+
+/**
+ * Both the base URL and the key are required: defaulting either one is refused
+ * fail-closed, so a misconfigured lane cannot silently ship diffs to a vendor.
  */
 export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
-  const baseUrl = value(env, 'OPENAI_BASE_URL');
-  const apiKey = value(env, 'OPENAI_API_KEY');
+  const baseUrl = resolveGatewayBaseUrl(env);
+  const apiKey = resolveGatewayApiKey(env);
   const model = value(env, 'REVIEW_MODEL');
   if (!baseUrl || !apiKey || !model) throw invalidPublishingReviewContract();
   let parsed: URL;

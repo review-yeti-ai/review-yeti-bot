@@ -11,6 +11,7 @@ import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
 import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
+import { resolveGatewayApiKey, resolveGatewayBaseUrl } from '../review/openaiTransport';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
@@ -401,10 +402,8 @@ function qualificationModel(
 
 function qualificationClient(env: NodeJS.ProcessEnv): OpenRouterClient {
   return new OpenRouterClient({
-    baseUrl: env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: env.OPENROUTER_REVIEW_FLEET_KEY
-      || env.OPENROUTER_PR_REVIEW_API_KEY
-      || requiredWorkerEnv(env, 'OPENROUTER_API_KEY'),
+    baseUrl: resolveGatewayBaseUrl(env),
+    apiKey: resolveGatewayApiKey(env) || requiredWorkerEnv(env, 'OPENAI_API_KEY'),
   });
 }
 
@@ -1572,8 +1571,8 @@ export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
   // Initialize 10-persona Panel Engine
   const config = createDefaultV3Config();
   const client = new OpenRouterClient({
-    baseUrl: env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || requiredWorkerEnv(env, 'OPENROUTER_API_KEY'),
+    baseUrl: resolveGatewayBaseUrl(env),
+    apiKey: resolveGatewayApiKey(env) || requiredWorkerEnv(env, 'OPENAI_API_KEY'),
   });
 
   // Parse files from diff

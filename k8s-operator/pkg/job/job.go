@@ -277,18 +277,27 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			corev1.EnvVar{Name: EngineRevisionEnv, Value: engineRevision},
 			corev1.EnvVar{Name: QualificationModelEnv, Value: spec.QualificationModel},
 			corev1.EnvVar{Name: QualificationTimeoutEnv, Value: strconv.FormatInt(qualificationTimeoutMillis, 10)},
+			// REL-1069: these were the only OPENROUTER_* vars left in the
+			// qualification path, and no per-run secret carries either key --
+			// the key was NON-optional, so a qualification profile would have
+			// failed at pod admission with a missing-secret error. The transport
+			// is the admitted OpenAI-compatible gateway, so use the standard
+			// names and keep them OPTIONAL: a qualification worker that lacks a
+			// gateway key must fail on its own contract check (which names the
+			// missing variable) rather than on an opaque secret resolution.
 			corev1.EnvVar{
-				Name: "OPENROUTER_API_KEY",
+				Name: "OPENAI_API_KEY",
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
-					Key:                  "OPENROUTER_API_KEY",
+					Key:                  "OPENAI_API_KEY",
+					Optional:             &[]bool{true}[0],
 				}},
 			},
 			corev1.EnvVar{
-				Name: "OPENROUTER_BASE_URL",
+				Name: "OPENAI_BASE_URL",
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
-					Key:                  "OPENROUTER_BASE_URL",
+					Key:                  "OPENAI_BASE_URL",
 					Optional:             &[]bool{true}[0],
 				}},
 			},
