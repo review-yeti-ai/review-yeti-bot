@@ -30,6 +30,10 @@ func TestLastErrorLineRedactsCredentialsAndBoundsTheLine(t *testing.T) {
 		"key assignment": `config {"api_key": "hunter2hunter2"}`,
 		"jwt":            "token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlc2lnbmF0dXJl",
 		"private key":    "-----BEGIN RSA PRIVATE KEY-----",
+		"basic auth":     "upstream 401 Authorization: Basic dXNlcjpwYXNzd29yZA==",
+		"digest auth":    "authorization=Digest username0123456789abcdef",
+		"aws key id":     "s3 denied for AKIAIOSFODNN7EXAMPLE",
+		"google key":     "maps key AIzaSyA1234567890abcdefghijklmnopqrstuv",
 	}
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -37,7 +41,7 @@ func TestLastErrorLineRedactsCredentialsAndBoundsTheLine(t *testing.T) {
 			if !strings.Contains(got, "[REDACTED]") {
 				t.Fatalf("lastErrorLine(%q) = %q, want the credential redacted", input, got)
 			}
-			for _, secret := range []string{"ghp_abc", "github_pat_11", "sk-or-v1", "hunter2", "eyJhbGci", "BEGIN RSA"} {
+			for _, secret := range []string{"ghp_abc", "github_pat_11", "sk-or-v1", "hunter2", "eyJhbGci", "BEGIN RSA", "dXNlcjpwYXNzd29yZA", "username0123", "AKIAIOSFODNN7", "AIzaSyA123"} {
 				if strings.Contains(got, secret) {
 					t.Fatalf("lastErrorLine(%q) = %q still contains %q", input, got, secret)
 				}

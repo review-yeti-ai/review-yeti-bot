@@ -50,7 +50,12 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`),
 	regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}`),
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`),
-	regexp.MustCompile(`(?i)\b(api[_-]?key|token|secret|password|authorization)(["']?\s*[:=]\s*["']?)[^\s"',}]{6,}`),
+	regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`),
+	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}`),
+	// A keyword, a separator, an optional HTTP auth scheme, then the value:
+	// "Authorization: Basic <base64>" must lose the credential, not stop at
+	// the short scheme word.
+	regexp.MustCompile(`(?i)\b(api[_-]?key|access[_-]?key|token|secret|password|passwd|authorization|cookie)(["']?\s*[:=]\s*["']?(?:(?:basic|bearer|digest|negotiate|token)\s+)?)[^\s"',}]{6,}`),
 	regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`),
 }
 
@@ -217,25 +222,60 @@ func truncateRunes(value string, limit int) string {
 // record one more chance to land (the Pod cache can trail the Job's terminal
 // event) and persists it, and only then lowers the in-memory Job's TTL from
 // the build-time forensic hold to the outcome's configured TTL. The caller
-// writes the Job. A Job that has not finished is left untouched.
+// writes the Job.
+//
+// It returns ready=false, and changes nothing on the Job, while a worker Pod
+// still exists but its exit is not yet readable and the forensic hold has not
+// elapsed since the Job finished: releasing then would let a failed TTL of 0
+// collect the Pod before it was ever recorded. The caller keeps the finalizer
+// and requeues. Once no Pod is left, or the hold has elapsed, release proceeds
+// without a record rather than wedging the Job. A Job that has not finished is
+// left untouched and is ready.
 func (r *PRReviewJobV1Alpha2Reconciler) prepareFinishedWorkerRelease(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 	worker *batchv1.Job,
-) error {
+) (bool, error) {
 	if !workerJobFinished(worker) && worker.Status.Succeeded == 0 {
-		return nil
+		return true, nil
 	}
-	recorded, err := r.observeWorkerTermination(ctx, review, worker, r.clock())
+	now := r.clock()
+	recorded, err := r.observeWorkerTermination(ctx, review, worker, now)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if recorded {
 		if err := r.Status().Update(ctx, review); err != nil {
-			return err
+			return false, err
+		}
+	}
+	if review.Status.WorkerTermination == nil {
+		podPresent, err := r.workerJobHasPod(ctx, worker)
+		if err != nil {
+			return false, err
+		}
+		holdEndsAt := terminalWorkerTime(worker, now).Add(time.Duration(job.WorkerForensicHoldSeconds()) * time.Second)
+		if podPresent && now.Before(holdEndsAt) {
+			return false, nil
 		}
 	}
 	ttl := job.WorkerFinishedTTLSeconds(worker.Status.Succeeded > 0)
 	worker.Spec.TTLSecondsAfterFinished = &ttl
-	return nil
+	return true, nil
+}
+
+// workerJobHasPod reports whether any Pod the worker Job controls still exists.
+func (r *PRReviewJobV1Alpha2Reconciler) workerJobHasPod(ctx context.Context, worker *batchv1.Job) (bool, error) {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(worker.Namespace), client.MatchingLabels{
+		"batch.kubernetes.io/job-name": worker.Name,
+	}); err != nil {
+		return false, err
+	}
+	for index := range pods.Items {
+		if podBelongsToWorkerJob(&pods.Items[index], worker) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

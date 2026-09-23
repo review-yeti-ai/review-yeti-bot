@@ -283,3 +283,116 @@ func TestWorkerTerminationIsWrittenOnceAndNeverReplaced(t *testing.T) {
 		t.Fatalf("record changed from %+v to %+v", first, second)
 	}
 }
+
+func hasTerminalOutcomeFinalizer(worker *batchv1.Job) bool {
+	for _, finalizer := range worker.Finalizers {
+		if finalizer == "review-yeti.ai/terminal-outcome" {
+			return true
+		}
+	}
+	return false
+}
+
+// The Pod cache can trail the Job's terminal event: the Job says Failed while
+// the cached Pod still shows a running container. Release must then keep the
+// finalizer and the forensic-hold TTL until the exit is readable, instead of
+// dropping the TTL to 0 and letting kube collect an unrecorded Pod.
+func TestWorkerReleaseWaitsForAReadablePodExitBeforeLoweringTheHold(t *testing.T) {
+	t.Setenv(job.WorkerFailedTTLAfterFinishedEnv, "0")
+	f := newTerminationFixture(t)
+	worker := f.worker(t)
+	assignFakeWorkerUID(t, f.kube, worker)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: worker.Name + "-lag", Namespace: f.review.Namespace,
+			Labels: map[string]string{"batch.kubernetes.io/job-name": worker.Name},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  job.WorkerContainerName,
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(f.now.Add(5 * time.Second))}},
+			}},
+		},
+	}
+	bindTestPodToWorker(pod, worker)
+	if err := f.kube.Create(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	worker.Status.Failed = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(f.now)}}
+	if err := f.kube.Status().Update(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{"observe failure", "terminal release attempt"} {
+		if _, err := f.reconciler.Reconcile(context.Background(), f.req); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+	}
+	if storedReview(t, f.kube, f.req).Status.WorkerTermination != nil {
+		t.Fatal("no record expected while the Pod exit is unreadable")
+	}
+	held := f.worker(t)
+	if !hasTerminalOutcomeFinalizer(held) || held.Spec.TTLSecondsAfterFinished == nil || *held.Spec.TTLSecondsAfterFinished != job.DefaultWorkerForensicHoldSeconds {
+		t.Fatalf("worker released with TTL %s finalizer=%v before its Pod exit was recorded",
+			ttlString(held.Spec.TTLSecondsAfterFinished), hasTerminalOutcomeFinalizer(held))
+	}
+
+	// The cache catches up: the exit is recorded, then the hold is lowered.
+	pod.Status.Phase = corev1.PodFailed
+	pod.Status.ContainerStatuses[0].State = corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+		ExitCode: 1, Reason: "Error", Message: "Error: review worker contract is invalid",
+		FinishedAt: metav1.NewTime(f.now),
+	}}
+	if err := f.kube.Status().Update(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.reconciler.Reconcile(context.Background(), f.req); err != nil {
+		t.Fatal(err)
+	}
+	record := storedReview(t, f.kube, f.req).Status.WorkerTermination
+	if record == nil || record.ExitCode == nil || *record.ExitCode != 1 || record.Message != "Error: review worker contract is invalid" {
+		t.Fatalf("workerTermination = %+v, want the late-visible exit", record)
+	}
+	released := f.worker(t)
+	if hasTerminalOutcomeFinalizer(released) || released.Spec.TTLSecondsAfterFinished == nil || *released.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("worker after record: TTL %s finalizer=%v, want released at the failed TTL 0",
+			ttlString(released.Spec.TTLSecondsAfterFinished), hasTerminalOutcomeFinalizer(released))
+	}
+}
+
+// Release never wedges: once the forensic hold has elapsed since the Job
+// finished, an unreadable Pod no longer blocks it.
+func TestWorkerReleaseProceedsWithoutARecordOnceTheHoldElapses(t *testing.T) {
+	t.Setenv(job.WorkerFailedTTLAfterFinishedEnv, "0")
+	f := newTerminationFixture(t)
+	worker := f.worker(t)
+	assignFakeWorkerUID(t, f.kube, worker)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: worker.Name + "-stuck", Namespace: f.review.Namespace,
+			Labels: map[string]string{"batch.kubernetes.io/job-name": worker.Name}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	bindTestPodToWorker(pod, worker)
+	if err := f.kube.Create(context.Background(), pod); err != nil {
+		t.Fatal(err)
+	}
+	worker.Status.Failed = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(f.now)}}
+	if err := f.kube.Status().Update(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.reconciler.Reconcile(context.Background(), f.req); err != nil {
+		t.Fatal(err)
+	}
+	f.reconciler.Now = func() time.Time {
+		return f.now.Add(time.Duration(job.DefaultWorkerForensicHoldSeconds+1) * time.Second)
+	}
+	if _, err := f.reconciler.Reconcile(context.Background(), f.req); err != nil {
+		t.Fatal(err)
+	}
+	released := f.worker(t)
+	if hasTerminalOutcomeFinalizer(released) || released.Spec.TTLSecondsAfterFinished == nil || *released.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("worker past the hold: TTL %s finalizer=%v, want released", ttlString(released.Spec.TTLSecondsAfterFinished), hasTerminalOutcomeFinalizer(released))
+	}
+}

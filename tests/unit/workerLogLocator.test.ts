@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import {
@@ -61,6 +63,18 @@ const shipPanel = vi.fn(async () => ({
   quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
   arbiter: { verdict: 'SHIP' },
 }));
+
+describe('worker pod identity env contract', () => {
+  // The operator (Go) projects these names; the worker (TypeScript) reads them.
+  // A rename on one side would silently drop the locator, so pin both.
+  it('matches the names the operator projects through the downward API', () => {
+    const jobSource = fs.readFileSync(path.resolve(__dirname, '../../k8s-operator/pkg/job/job.go'), 'utf8');
+    expect(jobSource).toMatch(new RegExp(`WorkerPodNameEnv\\s*=\\s*"${WORKER_POD_NAME_ENV}"`, 'u'));
+    expect(jobSource).toMatch(new RegExp(`WorkerPodNamespaceEnv\\s*=\\s*"${WORKER_POD_NAMESPACE_ENV}"`, 'u'));
+    expect(jobSource).toMatch(/Name: WorkerPodNameEnv, ValueFrom: .*FieldPath: "metadata\.name"/u);
+    expect(jobSource).toMatch(/Name: WorkerPodNamespaceEnv, ValueFrom: .*FieldPath: "metadata\.namespace"/u);
+  });
+});
 
 describe('workerLogsQuery', () => {
   it('builds the exact LogsQL locator for the downward-API pod identity', () => {

@@ -307,8 +307,10 @@ The worker Pod is short-lived; the `PRReviewJob` is the forensic handle.
   termination record is durable, the operator lowers the TTL to the outcome's
   configured value: `REVIEW_YETI_WORKER_TTL_AFTER_FINISHED` on success,
   `REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED` on failure. This makes a
-  failed TTL of `0` safe. The hold only applies if the operator is down or
-  stalled.
+  failed TTL of `0` safe. If a worker Pod still exists but its exit is not yet
+  readable (the Pod cache trailing the Job), the operator keeps the Job's
+  finalizer and the hold. It waits until the exit is recorded, the Pod is
+  gone, or the hold has elapsed since the Job finished.
 - **Node spread.** Worker Pods carry a soft `topologySpreadConstraints` on
   `kubernetes.io/hostname` (`maxSkew: 1`, `ScheduleAnyway`). Every worker lane
   is counted together, so concurrent reviews spread across nodes without ever

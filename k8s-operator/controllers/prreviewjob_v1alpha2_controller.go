@@ -756,13 +756,19 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 			// TTL controller's own delete would otherwise hang on it forever.
 			// The patch also lowers the build-time forensic hold to the failed
 			// TTL, once the Pod's exit record is durable in this review.
+			// Not ready means the Pod's exit is not readable yet; the finalizer
+			// then stays for the terminal path (releaseTerminalWorkerObservation)
+			// to release, and delegation below is not delayed by it.
 			base := worker.DeepCopy()
-			if err := r.prepareFinishedWorkerRelease(ctx, review, worker); err != nil {
+			ready, err := r.prepareFinishedWorkerRelease(ctx, review, worker)
+			if err != nil {
 				return ctrl.Result{}, err
 			}
-			controllerutil.RemoveFinalizer(worker, terminalOutcomeFinalizer)
-			if err := r.Patch(ctx, worker, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, err
+			if ready {
+				controllerutil.RemoveFinalizer(worker, terminalOutcomeFinalizer)
+				if err := r.Patch(ctx, worker, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
 			}
 		}
 	}
@@ -1099,8 +1105,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 ) (ctrl.Result, error) {
-	if err := r.releaseTerminalWorkerObservation(ctx, review); err != nil {
+	released, err := r.releaseTerminalWorkerObservation(ctx, review)
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if !released {
+		// The worker Pod's exit is not readable yet; keep the Job (and its
+		// forensic-hold TTL) until it is recorded or the hold elapses.
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 	}
 	activePod, err := r.hasActiveReviewWorkerPod(ctx, review)
 	if err != nil {
@@ -1344,33 +1356,34 @@ func terminalObservedAt(review *reviewv1alpha2.PRReviewJob) time.Time {
 func (r *PRReviewJobV1Alpha2Reconciler) releaseTerminalWorkerObservation(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
-) error {
+) (bool, error) {
 	var worker batchv1.Job
 	err := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
 	if apierrors.IsNotFound(err) {
-		return nil
+		return true, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !controllerutil.ContainsFinalizer(&worker, terminalOutcomeFinalizer) {
-		return nil
+		return true, nil
 	}
 	if !metav1.IsControlledBy(&worker, review) {
-		return nil
+		return true, nil
 	}
 	// Last chance to record the Pod's exit before the TTL may collect it, and
 	// the point where the build-time forensic hold is lowered to the outcome's
 	// configured TTL (both written with the finalizer release below).
-	if err := r.prepareFinishedWorkerRelease(ctx, review, &worker); err != nil {
-		return err
+	ready, err := r.prepareFinishedWorkerRelease(ctx, review, &worker)
+	if err != nil || !ready {
+		return false, err
 	}
 	controllerutil.RemoveFinalizer(&worker, terminalOutcomeFinalizer)
 	// Same race as releaseOrphanedWorkerObservation: the Job's own shortened
 	// success TTL (patchWorkerSuccessTTL) can let Kubernetes delete it between
 	// the read above and this write. The Job being gone means there is
 	// nothing left to release, so NotFound here is success, not a failure.
-	return client.IgnoreNotFound(r.Update(ctx, &worker))
+	return true, client.IgnoreNotFound(r.Update(ctx, &worker))
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) hasActiveReviewWorkerPod(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (bool, error) {
