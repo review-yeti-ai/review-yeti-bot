@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.4...v1.84.5) (2026-09-23)
+
+
+### Bug Fixes
+
+* **REL-1056:** classify trusted-completion failures, stop retrying contract rejections ([#989](https://github.com/review-yeti-ai/review-yeti-bot/issues/989)) ([f1408d5](https://github.com/review-yeti-ai/review-yeti-bot/commit/f1408d5f340040681e39c7343b656d7e5cad7fe0))
+
 ## [1.84.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.3...v1.84.4) (2026-09-23)
 
 
