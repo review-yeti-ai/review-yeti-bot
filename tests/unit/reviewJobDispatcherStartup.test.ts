@@ -119,10 +119,10 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     expect(mocks.closeMetricsServer).toHaveBeenCalledExactlyOnceWith(mocks.metricsServer);
     expect(mocks.engine).toHaveBeenCalledOnce();
     expect(mocks.dispatchRepository).toHaveBeenCalledExactlyOnceWith(
-      mocks.pool, undefined, { lifecycleEvents: 'enabled' },
+      mocks.pool, undefined, { lifecycleEvents: 'disabled' },
     );
     expect(mocks.completionRepository).toHaveBeenCalledExactlyOnceWith(
-      mocks.pool, { lifecycleEvents: 'enabled' },
+      mocks.pool, { lifecycleEvents: 'disabled' },
     );
     expect(mocks.close).toHaveBeenCalledOnce();
     const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
