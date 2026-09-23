@@ -272,12 +272,25 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(3);
   });
 
-  it.each([undefined, 250, 30_000])('bounds uncooperative fetch with timeout %s (default 10 seconds)', async (timeoutMs) => {
+  it('accepts a valid completion receipt after the old ten-second transport deadline', async () => {
+    const fetchImplementation = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Promise<Response>((resolve) => setTimeout(() => resolve(new Response(JSON.stringify(receipt()))), 22_000)));
+    const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, fetchImplementation });
+    const pending = adapter.reportReviewResult(event()).then(
+      () => ({ acknowledged: true }),
+      (error: Error) => ({ error }),
+    );
+    await vi.advanceTimersByTimeAsync(22_000);
+    expect(await pending).toEqual({ acknowledged: true });
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, 250, 30_000])('bounds uncooperative fetch with timeout %s (default 30 seconds)', async (timeoutMs) => {
     const fetchImplementation = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}));
     const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, timeoutMs, fetchImplementation });
     let settled = false;
     const failure = expectRedacted(adapter.reportReviewResult(event())).then(() => { settled = true; });
-    await vi.advanceTimersByTimeAsync((timeoutMs ?? 10_000) - 1);
+    await vi.advanceTimersByTimeAsync((timeoutMs ?? 30_000) - 1);
     expect(settled).toBe(false);
     expect(fetchImplementation.mock.calls[0][1]?.signal?.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);

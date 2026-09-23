@@ -63,7 +63,10 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
   (gate: StoredReviewGate) => Promise<TrustedGateCompletionContext> {
   let timeoutMs: number;
   try {
-    timeoutMs = z.number().int().min(250).max(10_000).parse(options.timeoutMs ?? 10_000);
+    // Large exact-head diffs can require bounded pinned-file reconstruction
+    // after the policy and candidate reads. Keep one cumulative deadline, with
+    // room below the worker's 30-second completion transport budget.
+    timeoutMs = z.number().int().min(250).max(20_000).parse(options.timeoutMs ?? 20_000);
     if (typeof options.getStoredPrepared !== 'function' || typeof options.readerFactory !== 'function'
       || typeof options.publishingResolver?.resolve !== 'function') throw unavailable();
   } catch { throw new Error('Authoritative completion context configuration invalid'); }
