@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.8...v1.83.9) (2026-09-23)
+
+
+### Bug Fixes
+
+* **release:** recognize merged release commits ([#972](https://github.com/review-yeti-ai/review-yeti-bot/issues/972)) ([a4dc8bf](https://github.com/review-yeti-ai/review-yeti-bot/commit/a4dc8bf635479c17e7fe16d1f68d0179641b2404))
+
 ## [1.83.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.7...v1.83.8) (2026-09-23)
 
 
