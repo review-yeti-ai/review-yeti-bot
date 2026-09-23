@@ -179,9 +179,15 @@ export function requireGatewaySettings(env: NodeJS.ProcessEnv): { baseUrl: strin
  */
 export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
   // The PAIR: this is the path that actually TRANSMITS the credential, so the
-  // leak guard matters most here. `requireGatewaySettings` never falls back to
-  // the raw env, so a refused pairing fails closed.
-  const { baseUrl, apiKey } = requireGatewaySettings(env);
+  // leak guard matters most here. Resolved inline (not via
+  // `requireGatewaySettings`) because THIS contract reports every failure as its
+  // own `invalidPublishingReviewContract()` -- callers match on that message, so
+  // a generic "required environment variable" error would break the contract.
+  // The refusal is still honored: both values are discarded, which trips the
+  // check below.
+  const resolution = resolveGatewaySettings(env);
+  const baseUrl = resolution.status === 'ok' ? resolution.baseUrl : '';
+  const apiKey = resolution.status === 'ok' ? resolution.apiKey : '';
   const model = value(env, 'REVIEW_MODEL');
   if (!baseUrl || !apiKey || !model) throw invalidPublishingReviewContract();
   let parsed: URL;
