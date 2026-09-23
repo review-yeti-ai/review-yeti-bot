@@ -55,6 +55,36 @@ function isPostgresLockNotAvailable(error: unknown): boolean {
     && (error as { code?: unknown }).code === '55P03';
 }
 
+/**
+ * Resolve whether the review lifecycle outbox should be written.
+ *
+ * The outbox is the *source* half of the event plane: rows are appended here
+ * and drained by `reviewEventPublisherIndex.js`, which publishes them to
+ * JetStream and acknowledges each one. That publisher is not deployed and
+ * `ct-review-nats` is suspended (see ADR 0673), so every row appended today is
+ * never read, never published, and never acknowledged — it accumulates.
+ *
+ * The enable flag already existed for exactly this purpose
+ * (`CT_REVIEW_EVENTS_ENABLED`, read by `natsConfigFromEnv`), and the
+ * construction sites bypassed it by hardcoding `lifecycleEvents: 'enabled'`.
+ * That combination is what produced unowned growth: measured live, 35,981 rows
+ * all in state `pending`, none published, none acknowledged.
+ *
+ * Default is DISABLED, matching the transport it feeds. An operator who brings
+ * the publisher up sets `CT_REVIEW_EVENTS_ENABLED=true` and writes resume.
+ * Anything other than `true`/`false` is refused rather than guessed, so a typo
+ * cannot silently start or stop the plane.
+ */
+export function lifecycleEventsEnabledFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  const raw = env.CT_REVIEW_EVENTS_ENABLED;
+  if (raw === undefined || raw.trim() === '') return false;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  throw new Error('CT_REVIEW_EVENTS_ENABLED must be true or false');
+}
+
 export function requireLifecycleEventsMode(
   options: ReviewLifecycleEventsOptions | undefined,
   component: string,

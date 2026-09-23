@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   appendLifecycleEvent,
   appendLifecycleEventForRun,
+  lifecycleEventsEnabledFromEnv,
   type ReviewLifecycleEventInput,
 } from '../../src/persistence/reviewEventRepository';
 
@@ -118,5 +119,53 @@ describe('Postgres review lifecycle event persistence', () => {
       eventKind: 'review.lifecycle.queued',
     })).rejects.toThrow(/metadata/i);
     expect(client.query.mock.calls.some(([sql]) => /review_event_sequence_counters/iu.test(String(sql)))).toBe(false);
+  });
+});
+
+describe('lifecycle outbox write gate', () => {
+  // The outbox is the source half of the event plane. Its consumer
+  // (reviewEventPublisherIndex.js) is not deployed and ct-review-nats is
+  // suspended, so appended rows are never read, published, or acknowledged —
+  // measured live at 35,981 rows, all state='pending'. The enable flag existed
+  // for this purpose and the construction sites bypassed it by hardcoding
+  // 'enabled', which is what produced unowned growth.
+  it('defaults to disabled when the flag is absent', () => {
+    expect(lifecycleEventsEnabledFromEnv({})).toBe(false);
+  });
+
+  it('defaults to disabled when the flag is blank', () => {
+    expect(lifecycleEventsEnabledFromEnv({ CT_REVIEW_EVENTS_ENABLED: '   ' })).toBe(false);
+  });
+
+  it('enables only on the exact string "true"', () => {
+    expect(lifecycleEventsEnabledFromEnv({ CT_REVIEW_EVENTS_ENABLED: 'true' })).toBe(true);
+    expect(lifecycleEventsEnabledFromEnv({ CT_REVIEW_EVENTS_ENABLED: 'false' })).toBe(false);
+  });
+
+  it('refuses a malformed value instead of guessing', () => {
+    // A typo must not silently start or stop the plane. Anything other than
+    // true/false is an error, matching natsConfig's own parser.
+    for (const bad of ['TRUE', '1', 'yes', 'on']) {
+      expect(() => lifecycleEventsEnabledFromEnv({ CT_REVIEW_EVENTS_ENABLED: bad })).toThrow(
+        /must be true or false/,
+      );
+    }
+  });
+
+  it('is wired at every production write site', () => {
+    // Guards the actual defect: a hardcoded 'enabled' at any of these sites
+    // re-opens unbounded growth regardless of the flag. app.ts is excluded
+    // because nothing runs it in production.
+    const fs = require('node:fs');
+    const path = require('node:path');
+    for (const file of [
+      'src/dispatchIndex.ts',
+      'src/reviewCiRuntime.ts',
+      'src/reviewJobDispatcherIndex.ts',
+    ]) {
+      const text = fs.readFileSync(path.join(__dirname, '..', '..', file), 'utf8');
+      expect(text).not.toContain("lifecycleEvents: 'enabled'");
+      expect(text).toContain('lifecycleEventsEnabledFromEnv()');
+    }
   });
 });

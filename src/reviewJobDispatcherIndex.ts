@@ -22,6 +22,7 @@ import { AbandonedRunReaper } from './review/abandonedRunReaper';
 import { DelegatedFailureReader } from './k8s/delegatedFailureReader';
 import { initTelemetry } from './telemetry';
 import { centralExternalTargetConfigFromEnv } from './config/actionDispatchConfig';
+import { lifecycleEventsEnabledFromEnv } from './persistence/reviewEventRepository';
 import {
   closeDispatcherMetricsServer,
   createDispatcherMetricsServer,
@@ -97,7 +98,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     logger.warn('No GitHub App credentials: publishing (app-gate) reviews will be refused');
   }
 
-  const repository = new PostgresReviewDispatchRepository(store.getPool(), undefined, { lifecycleEvents: 'enabled' });
+  const repository = new PostgresReviewDispatchRepository(store.getPool(), undefined, { lifecycleEvents: lifecycleEventsEnabledFromEnv() ? 'enabled' : 'disabled' });
   const engine = new ReviewJobDispatchEngine({
     repository,
     projector: new KubernetesReviewJobProjector(customObjects),
@@ -118,7 +119,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     },
   });
 
-  const completionRepository = new PostgresReviewCompletionRepository(store.getPool(), { lifecycleEvents: 'enabled' });
+  const completionRepository = new PostgresReviewCompletionRepository(store.getPool(), { lifecycleEvents: lifecycleEventsEnabledFromEnv() ? 'enabled' : 'disabled' });
   const completionEngine = appId && privateKey
     ? new ReviewCompletionDeliveryEngine({
         repository: completionRepository,

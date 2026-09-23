@@ -11,6 +11,7 @@ import { ReviewCiCheckPublisher, type ReviewCiCheckGateFreshness } from './revie
 import type { AuthoritativePublishingResolver } from './review/authoritativePublishingResolver';
 import { ReviewCiService, type ReviewCiCurrent } from './review/reviewCiService';
 import { findReviewCiEnrollment, type ReviewCiServiceConfig, type StoredReviewCiRequest } from './review/reviewCi';
+import { lifecycleEventsEnabledFromEnv } from './persistence/reviewEventRepository';
 
 export interface ReviewCiRuntimeRoutes {
   verifier: Pick<ReviewCiOidcVerifier, 'verify'>;
@@ -90,7 +91,7 @@ export function createReviewCiRuntime(options: {
   };
   const current = async (request: StoredReviewCiRequest): Promise<ReviewCiCurrent> => readCurrent(request);
   const checks = new PostgresReviewCiCheckRepository(pool);
-  const repository = new PostgresReviewCiRepository(pool, { lifecycleEvents: 'enabled', admissionTimeoutMs: 15_000,
+  const repository = new PostgresReviewCiRepository(pool, { lifecycleEvents: lifecycleEventsEnabledFromEnv() ? 'enabled' : 'disabled', admissionTimeoutMs: 15_000,
     onTransition: async (client, request, transition, now) => { await checks.transitionInTransaction(client, request, transition, now); },
     assertPendingPublished: (client, request, now) => checks.assertPendingPublishedInTransaction(client, request, now),
   });
