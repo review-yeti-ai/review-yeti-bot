@@ -2349,6 +2349,42 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         .toBe(1);
     });
 
+    it('fails closed when the external recovery ledger is empty despite an existing durable run', async () => {
+      const resolveGenerationRecovery = vi.fn(async () => []);
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'disabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      });
+      const first = await repository.admit({
+        ...authoritativeAdmission('central-empty-ledger-a1'),
+        eventName: 'repository_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 1,
+      });
+      await bindPendingGate(gateRepository);
+      await client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [first.run.runId]);
+      await client.query("UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1", [first.run.runId]);
+      const before = await dispatchState(client, first.run.runId);
+      const retryInput = {
+        ...authoritativeAdmission('central-empty-ledger-a2', 2_000),
+        eventName: 'workflow_dispatch',
+        centralActionDispatch: true,
+        expectedGeneration: 2,
+        retryRequested: true,
+        retryAfterExecutionAttempt: 1,
+      };
+
+      await expect(repository.admit(retryInput))
+        .rejects.toThrow(/expected generation 2.*next durable generation is 1/i);
+      expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+      expect(await dispatchState(client, first.run.runId)).toEqual(before);
+      expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries WHERE delivery_id = $1', [retryInput.deliveryId])).rows[0].count)
+        .toBe(0);
+      expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count)
+        .toBe(0);
+    });
+
     it.each([
       ['mismatched retry metadata', { retryRequested: true, retryAfterExecutionAttempt: 7 }],
       ['a non-retry central admission', { retryRequested: false }],
