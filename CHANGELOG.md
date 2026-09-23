@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.83.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.7...v1.83.8) (2026-09-23)
+
+
+### Bug Fixes
+
+* **pipeline:** route git submodule changes to architecture persona [no-linear] ([#965](https://github.com/review-yeti-ai/review-yeti-bot/issues/965)) ([c322e2a](https://github.com/review-yeti-ai/review-yeti-bot/commit/c322e2acbd2b7acd213fde6fbb34cb8c0afeb0ff))
+
 ## [1.83.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.6...v1.83.7) (2026-09-22)
 
 
