@@ -45,7 +45,10 @@ const NPM_BUMP = [
   '-      "version": "7.0.0",',
   '+      "version": "7.1.0",',
   '+      "resolved": "https://registry.npmjs.org/@babel/core/-/core-7.1.0.tgz",',
-  '+      "funding": { "type": "opencollective", "url": "https://opencollective.com/babel" },',
+  '+      "funding": {',
+  '+        "type": "opencollective",',
+  '+        "url": "https://opencollective.com/babel"',
+  '+      }',
 ].join('\n');
 const YARN_BUMP = [
   '@@ -1,6 +1,6 @@',
@@ -83,7 +86,21 @@ describe('REL-972: lockfile change verification', () => {
     ['web/yarn.lock', YARN_BUMP],
     ['mix.lock', MIX_BUMP],
     ['Cargo.lock', CARGO_BUMP],
-  ])('verifies a default-registry bump of %s', (path, body) => {
+    ['Cargo.lock (a source switched back to crates.io)',
+      '@@ -1,3 +1,3 @@\n name = "serde"\n-source = "git+https://github.com/serde-rs/serde"\n+source = "registry+https://github.com/rust-lang/crates.io-index"'],
+    ['Gemfile.lock', '@@ -1,3 +1,3 @@\n GEM\n+  remote: https://rubygems.org/\n   specs:'],
+    ['poetry.lock', '@@ -1,2 +1,2 @@\n+url = "https://pypi.org/simple"'],
+    ['yarn.lock (berry)', [
+      '@@ -1,5 +1,5 @@',
+      ' "lodash@npm:^4.17.20":',
+      '-  version: 4.17.20',
+      '-  resolution: "lodash@npm:4.17.20"',
+      '+  version: 4.17.21',
+      '+  resolution: "lodash@npm:4.17.21"',
+      '   checksum: abc',
+    ].join('\n')],
+  ])('verifies a default-registry bump of %s', (label, body) => {
+    const path = label.split(' ')[0];
     expect(verifyLockfileOnlyChange(path, body)).toEqual({ ok: true });
   });
 
@@ -119,6 +136,36 @@ describe('REL-972: lockfile change verification', () => {
     ['a submodule gitlink at a lockfile path', 'vendor/yarn.lock',
       'index 6c3f36d89d..f84610fbbf 160000\n@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n',
       'is a submodule gitlink'],
+    ['a yarn berry resolution pointed off the registry', 'yarn.lock',
+      '@@ -1,3 +1,3 @@\n "x@^1.0.0":\n+  resolution: "x@https://evil.example/x.tgz"\n',
+      'adds a URL outside the default public registries'],
+    ['a decoy npm entry key re-parenting a redirected resolved', 'package-lock.json', [
+      '@@ -1,4 +1,8 @@',
+      '     "node_modules/victim": {',
+      '       "version": "1.0.0",',
+      '+      "node_modules/evil-pkg": {',
+      '+        "x": 1',
+      '+      },',
+      '+      "resolved": "https://registry.npmjs.org/evil-pkg/-/evil-pkg-1.0.0.tgz",',
+    ].join('\n'), 'resolves an entry to a different package'],
+    ['a decoy npm entry key directly above a redirected resolved', 'package-lock.json', [
+      '@@ -1,3 +1,4 @@',
+      '     "node_modules/victim": {',
+      '+      "node_modules/evil-pkg": { "x": 1 },',
+      '+      "resolved": "https://registry.npmjs.org/evil-pkg/-/evil-pkg-1.0.0.tgz",',
+    ].join('\n'), 'resolves an entry to a different package'],
+    ['a resolved hidden in a one-line npm entry', 'package-lock.json',
+      '@@ -1 +1 @@\n+    "node_modules/victim": { "resolved": "https://evil.example/v.tgz" },',
+      'adds an unrecognized source field'],
+    ['a URL in a non-source npm field', 'package-lock.json',
+      '@@ -1,2 +1,2 @@\n     "node_modules/victim": {\n+      "version": "https://evil.example/v.tgz",',
+      'adds a URL outside a source field'],
+    ['a cross-name yarn header', 'yarn.lock',
+      '@@ -1,3 +1,3 @@\n+"evil-pkg@^1.0.0", "victim@^1.0.0":\n+  resolved "https://registry.yarnpkg.com/evil-pkg/-/evil-pkg-1.0.0.tgz#a"\n',
+      'resolves an entry to a different package'],
+    ['a resolved with no entry in the hunk', 'package-lock.json',
+      '@@ -1 +1 @@\n+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",',
+      'resolves an entry to a different package'],
     ['a non-lockfile', 'assets/app.min.js', '@@ -1 +1 @@\n+x', 'not a lockfile'],
   ])('refuses %s', (_label, path, body, reason) => {
     expect(verifyLockfileOnlyChange(path, body)).toEqual({ ok: false, reason });

@@ -36,11 +36,16 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
 }
 
 /**
- * A changed file the no-reviewable-content exemption may contain: documentation,
- * an asset, a run artifact or data, or (REL-972) a dependency lockfile whose
- * added lines verifiably stay on the default public registries. The service's
- * completion check uses this; the shared worker decision
- * (`resolveReviewApplicability`) applies the same rule.
+ * A changed file the service accepts inside a no-reviewable-content completion:
+ * documentation, an asset, a run artifact or data, or (REL-972) a dependency
+ * lockfile whose added lines verifiably stay on the default public registries.
+ *
+ * This is a per-file admission check over the raw changed files, applied after
+ * the shared `resolveReviewApplicability` decision has already reported the
+ * exemption. It is not the same rule: that decision judges the post-filter
+ * files, so it can also exempt a diff whose other files the filter dropped
+ * (generated output, `path_filters` exclusions), which this check then refuses.
+ * That pre-existing gap fails closed and is outside REL-972.
  */
 export function isNoReviewableContentFile(
   file: { path: string; patch?: unknown; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean },
