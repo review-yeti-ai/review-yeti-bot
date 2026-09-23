@@ -1,7 +1,7 @@
 import type { CtReviewConfigV3 } from '../config/schema';
 import { matchOne } from '../pipeline/domainIndex';
-import { filterDiffHunks, type HunkFilterResult } from '../pipeline/hunkFilter';
-import { isDocumentationOrAssetPath } from './reviewableContent';
+import { classifyLockfileOrGeneratedPath, filterDiffHunks, type HunkFilterResult } from '../pipeline/hunkFilter';
+import { isDocumentationOrAssetPath, isLockfileOrGeneratedArtifactPath } from './reviewableContent';
 import { isSubmodulePatch } from './submodulePatch';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
@@ -221,18 +221,66 @@ export function buildEffectiveReviewFiles(
   return { files, hunkResult };
 }
 
+export type NoReviewableContentKind = 'documentation' | 'lockfile-or-generated';
+
 export interface ReviewApplicability<P> {
   effectiveFiles: EffectiveReviewFile[];
   hunkResult: HunkFilterResult;
   /** Applicable personas in roster order, carrying any gitlink routing capability. */
   applicable: P[];
   /**
-   * Zero lanes apply and every reviewable path is documentation, an asset, a
-   * run artifact or data: the audited no-reviewable-content exemption.
+   * Zero lanes apply and there is nothing to analyze: the audited
+   * no-reviewable-content exemption. Either every reviewable path is
+   * documentation, an asset, a run artifact or data, or (REL-972) every changed
+   * file is a lockfile or generated artifact the shared filter excludes.
    */
   noReviewableContent: boolean;
+  /** Which exemption applied; null unless `noReviewableContent`. */
+  noReviewableContentKind: NoReviewableContentKind | null;
+  /** One-line published rationale for the exemption; null unless `noReviewableContent`. */
+  noReviewableContentRationale: string | null;
   /** Analyzable paths no enabled persona covers (empty unless zero lanes apply). */
   unmatchedPaths: string[];
+}
+
+export const DOCUMENTATION_ONLY_RATIONALE =
+  'No analyzable source changed: every path is documentation, an asset, a run artifact or data.';
+
+const MAX_LISTED_EXCLUDED_FILES = 8;
+
+/**
+ * REL-972: a diff whose every changed file is a dependency lockfile or a
+ * generated artifact (a Dependabot `yarn.lock` / `package-lock.json` /
+ * `mix.lock` bump). The shared filter excludes all of them, so no lane has
+ * anything to read and the run used to fail closed as a coverage gap on every
+ * attempt.
+ *
+ * Exact and conservative: every changed file must individually qualify, so any
+ * manifest (`package.json`), any source file, any `path_filters`-only exclusion,
+ * any file only located under a build output directory, and any gitlink or
+ * `.mdx`/`.mdoc` page keeps the normal review-or-fail-closed decision.
+ */
+function isLockfileOrGeneratedOnlyDiff(
+  changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
+  effectiveFiles: readonly EffectiveReviewFile[],
+): boolean {
+  return changedFiles.length > 0
+    && effectiveFiles.length === 0
+    && changedFiles.every((file) => typeof file?.path === 'string'
+      && !isFallbackRoutedFile(file)
+      && isLockfileOrGeneratedArtifactPath(file.path));
+}
+
+function lockfileOrGeneratedRationale(changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>): string {
+  const listed = changedFiles.slice(0, MAX_LISTED_EXCLUDED_FILES).map((file) => {
+    const why = classifyLockfileOrGeneratedPath(file.path) === 'lockfile' ? 'dependency lockfile' : 'generated artifact';
+    return `${file.path} (${why})`;
+  });
+  const overflow = changedFiles.length - listed.length;
+  return 'No reviewable content: every changed file is a dependency lockfile or generated artifact, '
+    + 'which the review filter excludes from every lane. '
+    + `Excluded: ${listed.join(', ')}${overflow > 0 ? `, +${overflow} more` : ''}. `
+    + 'A manifest or source change in the same diff would be reviewed.';
 }
 
 /**
@@ -249,6 +297,7 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
   const { files: effectiveFiles, hunkResult } = buildEffectiveReviewFiles(changedFiles, options);
   const roster = routeOrphanedReviewFiles(enabledPersonas, effectiveFiles);
   const applicable = deriveApplicablePersonas(roster, effectiveFiles) as P[];
+  const reviewed = { noReviewableContent: false, noReviewableContentKind: null, noReviewableContentRationale: null } as const;
   if (applicable.length > 0) {
     // Routing may only add a lane for the routed files themselves. When no
     // configured persona applied before routing, any other uncovered analyzable
@@ -257,17 +306,38 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
     const routedOnly = deriveApplicablePersonas(enabledPersonas, effectiveFiles).length === 0;
     const uncovered = routedOnly ? computeUnmatchedPaths(effectiveFiles, roster) : [];
     if (uncovered.length > 0) {
-      return { effectiveFiles, hunkResult, applicable: [], noReviewableContent: false, unmatchedPaths: uncovered };
+      return { effectiveFiles, hunkResult, applicable: [], ...reviewed, unmatchedPaths: uncovered };
     }
-    return { effectiveFiles, hunkResult, applicable, noReviewableContent: false, unmatchedPaths: [] };
+    return { effectiveFiles, hunkResult, applicable, ...reviewed, unmatchedPaths: [] };
   }
-  const noReviewableContent = effectiveFiles.length > 0
-    && effectiveFiles.every((file) => isDocumentationOrAssetPath(file.path));
+  if (effectiveFiles.length > 0 && effectiveFiles.every((file) => isDocumentationOrAssetPath(file.path))) {
+    return {
+      effectiveFiles,
+      hunkResult,
+      applicable,
+      noReviewableContent: true,
+      noReviewableContentKind: 'documentation',
+      noReviewableContentRationale: DOCUMENTATION_ONLY_RATIONALE,
+      unmatchedPaths: [],
+    };
+  }
+  if (isLockfileOrGeneratedOnlyDiff(changedFiles, effectiveFiles)) {
+    return {
+      effectiveFiles,
+      hunkResult,
+      applicable,
+      noReviewableContent: true,
+      noReviewableContentKind: 'lockfile-or-generated',
+      noReviewableContentRationale: lockfileOrGeneratedRationale(changedFiles),
+      unmatchedPaths: [],
+    };
+  }
   return {
     effectiveFiles,
     hunkResult,
     applicable,
-    noReviewableContent,
-    unmatchedPaths: noReviewableContent ? [] : computeUnmatchedPaths(effectiveFiles, roster),
+    ...reviewed,
+    unmatchedPaths: computeUnmatchedPaths(effectiveFiles, roster),
   };
 }
+

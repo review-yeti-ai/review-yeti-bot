@@ -1483,10 +1483,15 @@ export async function runPublishingReviewWorker(
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
     const documentationOnly = fastShipApproved && Boolean(panelResult.documentationOnly);
+    // REL-972: a lockfile/generated-only diff takes the same audited exemption;
+    // label it for what it is rather than calling a yarn.lock bump documentation.
+    const exemptionLabel = panelResult.noReviewableContentKind === 'lockfile-or-generated'
+      ? 'lockfile/generated-only'
+      : 'documentation-only';
     const title = notApplicable
       ? 'Review Yeti: NO_REVIEW (not applicable)'
       : documentationOnly
-        ? 'Review Yeti: SHIP (documentation-only)'
+        ? `Review Yeti: SHIP (${exemptionLabel})`
         : fastShipApproved
           ? 'Review Yeti: SHIP (fast-ship)'
           : `Review Yeti: ${verdict}`;
@@ -1497,7 +1502,7 @@ export async function runPublishingReviewWorker(
 
     const summaryParts = documentationOnly
       ? [
-          `### Review Yeti: SHIP (documentation-only)`,
+          `### Review Yeti: SHIP (${exemptionLabel})`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (no analyzable source changed).`,
           `- **Rationale**: \`${safeClassifierRationale}\``,
           renderCoverageSummary(coverage),

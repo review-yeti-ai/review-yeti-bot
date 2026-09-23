@@ -37,6 +37,7 @@ import {
   personaCoversFile,
   scopeFilesForPersona,
   resolveReviewApplicability,
+  DOCUMENTATION_ONLY_RATIONALE,
 } from '../review/personaApplicability';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
@@ -3542,12 +3543,18 @@ export async function executePersonaPanel(options: {
       // pull requests permanently unmergeable: publishing refuses a zero-lane
       // run as review evidence, correctly, and no amount of retrying produces
       // a lane when no lane applies.
+      //
+      // REL-972: the same holds for a diff made only of lockfiles or generated
+      // artifacts. The shared decision names which exemption applied and the
+      // excluded files, and that rationale is what the check publishes.
       const arbiterId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
       return {
         ...buildDocumentationOnlyPanelResult(
           headSha,
           arbiterId,
-          'No analyzable source changed: every path is documentation, an asset, a run artifact or data.',
+          applicability.noReviewableContentRationale ?? DOCUMENTATION_ONLY_RATIONALE,
+          undefined,
+          applicability.noReviewableContentKind ?? 'documentation',
         ),
         panelWallClockMs: Date.now() - panelStartedAt,
       };

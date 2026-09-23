@@ -39,18 +39,46 @@ const IGNORED_LOCKFILES = [
   'composer.lock',
 ];
 
-const GENERATED_PATTERNS = [
+/** Generated or compiled files recognizable by their own file name. */
+const GENERATED_FILE_PATTERNS = [
   /\.min\.js$/,
   /\.min\.css$/,
   /\.map$/,
   /\.pb\.go$/,
   /\.generated\.[t|j]s$/,
   /_pb\.[t|j]s$/,
+];
+
+/**
+ * Build output directories. Only the location marks these as generated, so a
+ * hand-written script placed there looks identical to compiler output.
+ */
+const GENERATED_OUTPUT_DIR_PATTERNS = [
   /^dist\//,
   /^build\//,
   /^target\//,
   /^\.next\//,
 ];
+
+/**
+ * - `lockfile`: a dependency lockfile (the manifest that drives it is not one).
+ * - `generated-artifact`: generated or compiled output identified by file name.
+ * - `generated-output-dir`: any file under a build output directory.
+ */
+export type ExcludedFileKind = 'lockfile' | 'generated-artifact' | 'generated-output-dir';
+
+/**
+ * The lockfile/generated classification the hunk filter excludes from review
+ * context, independent of any repository `path_filters`.
+ */
+export function classifyLockfileOrGeneratedPath(filePath: string): ExcludedFileKind | null {
+  const lowerPath = filePath.toLowerCase();
+  const filename = lowerPath.split('/').pop() || lowerPath;
+  if (IGNORED_LOCKFILES.includes(filename)) return 'lockfile';
+  if (GENERATED_FILE_PATTERNS.some((pat) => pat.test(lowerPath))) return 'generated-artifact';
+  if (GENERATED_OUTPUT_DIR_PATTERNS.some((pat) => pat.test(lowerPath))) return 'generated-output-dir';
+  return null;
+}
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -92,8 +120,7 @@ export function filterDiffHunks(
     const origTokens = estimateTokens(rawText);
     originalTokenEstimate += origTokens;
 
-    const lowerPath = file.path.toLowerCase();
-    const filename = lowerPath.split('/').pop() || lowerPath;
+    const excludedKind = classifyLockfileOrGeneratedPath(file.path);
 
     // 0. Path Filters
     if (options?.path_filters && options.path_filters.length > 0) {
@@ -110,7 +137,7 @@ export function filterDiffHunks(
     }
 
     // 1. Lockfile Filter
-    if (IGNORED_LOCKFILES.includes(filename)) {
+    if (excludedKind === 'lockfile') {
       ignoredFilesCount++;
       return {
         path: file.path,
@@ -122,7 +149,7 @@ export function filterDiffHunks(
     }
 
     // 2. Generated File Filter
-    if (GENERATED_PATTERNS.some((pat) => pat.test(lowerPath))) {
+    if (excludedKind !== null) {
       ignoredFilesCount++;
       return {
         path: file.path,
