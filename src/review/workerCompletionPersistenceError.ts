@@ -26,9 +26,44 @@ export const trustedCompletionResolutionSubstages = [
 ] as const;
 export type TrustedCompletionResolutionSubstage = typeof trustedCompletionResolutionSubstages[number];
 
-/** Carries only a fixed service-owned location, never an upstream cause. */
+/**
+ * Finite, service-owned reason classes for a trusted-completion failure.
+ *
+ * REL-1056: every failure in the exact-diff block previously collapsed into one
+ * message, so a deterministic contract mismatch (a diff with no applicable
+ * persona, or a file GitHub returns without a patch) was indistinguishable from
+ * a transient read failure — it was logged as `persistence_unavailable` and
+ * returned HTTP 503, telling the worker to retry forever against a condition
+ * that can never succeed. These classes are safe to log and return: each is a
+ * fixed token chosen by this service, never upstream text, a token, or payload.
+ *
+ * `deterministic` marks the classes where retrying cannot possibly help.
+ */
+export const trustedCompletionResolutionReasons = [
+  'deadline',
+  'identity-mismatch',
+  'policy-mismatch',
+  'bounds',
+  'no-patch-file',
+  'coverage-no-persona',
+  'reader-unavailable',
+  'unknown',
+] as const;
+export type TrustedCompletionResolutionReason = typeof trustedCompletionResolutionReasons[number];
+
+/** Retrying cannot change the outcome for these classes. */
+const deterministicReasons: ReadonlySet<TrustedCompletionResolutionReason> = new Set([
+  'identity-mismatch', 'policy-mismatch', 'bounds', 'no-patch-file', 'coverage-no-persona',
+]);
+
+export function isDeterministicCompletionFailure(reason: TrustedCompletionResolutionReason | undefined): boolean {
+  return reason !== undefined && deterministicReasons.has(reason);
+}
+
+/** Carries only a fixed service-owned location and reason, never an upstream cause. */
 export class TrustedCompletionResolutionError extends Error {
-  constructor(readonly substage: TrustedCompletionResolutionSubstage) {
+  constructor(readonly substage: TrustedCompletionResolutionSubstage,
+              readonly reason: TrustedCompletionResolutionReason = 'unknown') {
     super('Authoritative completion context unavailable');
     this.name = 'TrustedCompletionResolutionError';
   }
@@ -42,13 +77,18 @@ export class TrustedCompletionResolutionError extends Error {
 export class WorkerCompletionPersistenceError extends Error {
   readonly stage: WorkerCompletionPersistenceStage;
   readonly substage?: TrustedCompletionResolutionSubstage;
+  /** REL-1056: finite service-owned class, safe to log and to return. */
+  readonly reason?: TrustedCompletionResolutionReason;
 
-  constructor(stage: WorkerCompletionPersistenceStage, substage?: TrustedCompletionResolutionSubstage) {
+  constructor(stage: WorkerCompletionPersistenceStage, substage?: TrustedCompletionResolutionSubstage,
+              reason?: TrustedCompletionResolutionReason) {
     super(`Worker completion persistence failed at ${stage}`);
     this.name = 'WorkerCompletionPersistenceError';
     this.stage = stage;
     if (stage === 'trusted-completion-resolution' && substage !== undefined
       && trustedCompletionResolutionSubstages.includes(substage)) this.substage = substage;
+    if (stage === 'trusted-completion-resolution' && reason !== undefined
+      && trustedCompletionResolutionReasons.includes(reason)) this.reason = reason;
   }
 }
 

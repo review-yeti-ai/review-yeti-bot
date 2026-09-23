@@ -8,6 +8,8 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { sha256 } from '../../src/review/reviewCore';
 import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
+import { TrustedCompletionResolutionError, isDeterministicCompletionFailure }
+  from '../../src/review/workerCompletionPersistenceError';
 
 const target = { repositoryId: 123, owner: 'example', repo: 'candidate', prNumber: 42,
   headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
@@ -55,6 +57,82 @@ function redacted(error: Error) {
   expect(error.cause).toBeUndefined();
   expect(`${error.stack}\n${JSON.stringify(error)}`).not.toContain(privateText);
 }
+
+describe('REL-1056 trusted-completion failure classification', () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }));
+  afterEach(() => vi.useRealTimers());
+
+  /** A rejection must carry a finite service-owned class, never upstream text. */
+  async function reasonOfRejection(pending: Promise<unknown>): Promise<string> {
+    try { await pending; } catch (error) {
+      expect(error).toBeInstanceOf(TrustedCompletionResolutionError);
+      const typed = error as TrustedCompletionResolutionError;
+      // The class is a fixed token from the taxonomy, not a free-form message.
+      expect(typed.reason).toMatch(/^[a-z][a-z0-9-]*$/u);
+      // Nothing upstream may ride along in the public surface.
+      expect(typed.message).toBe('Authoritative completion context unavailable');
+      expect(typed.cause).toBeUndefined();
+      return typed.reason;
+    }
+    throw new Error('Expected rejection');
+  }
+
+  it('classifies a diff with no applicable persona as deterministic coverage', async () => {
+    // A path NO enabled persona claims, and which is not documentation or an
+    // asset, so the trusted side cannot derive a required lane. This is the class
+    // that used to surface as a retryable 503 for workflow/scripts-only diffs.
+    const unmatched = 'diff --git a/odd/thing.unknownext b/odd/thing.unknownext\n--- a/odd/thing.unknownext\n+++ b/odd/thing.unknownext\n@@ -1 +1 @@\n-a\n+b\n';
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({ current, expectedFileCount: 1, diff: '',
+      changedFiles: [{ path: 'odd/thing.unknownext', patch: unmatched }] });
+    const reason = await reasonOfRejection(f.context(f.gate));
+    expect(reason).toBe('coverage-no-persona');
+    // This is the class that used to be reported as a retryable 503.
+    expect(isDeterministicCompletionFailure(reason as never)).toBe(true);
+  });
+
+  it('classifies a patch-less file entry as deterministic, not transient', async () => {
+    // GitHub returns no patch for an empty added file or a large generated file.
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({ current, expectedFileCount: 1, diff: '',
+      changedFiles: [{ path: 'src/generated.json', patch: '' }] });
+    const reason = await reasonOfRejection(f.context(f.gate));
+    expect(reason).toBe('no-patch-file');
+    expect(isDeterministicCompletionFailure(reason as never)).toBe(true);
+  });
+
+  it('classifies an over-bound file set as deterministic bounds', async () => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({ current, expectedFileCount: 1, diff: '',
+      changedFiles: [{ path: 'src/a.ts', patch: 'x'.repeat(1_100_001) }] });
+    const reason = await reasonOfRejection(f.context(f.gate));
+    expect(reason).toBe('bounds');
+    expect(isDeterministicCompletionFailure(reason as never)).toBe(true);
+  });
+
+  it('never marks an unclassified failure as deterministic', async () => {
+    // A reader blow-up is transient: it must stay retryable, so the class must
+    // not be one of the deterministic set.
+    const f = fixture();
+    f.exactCurrentDiff.mockRejectedValue(new Error('transient upstream'));
+    const reason = await reasonOfRejection(f.context(f.gate));
+    expect(isDeterministicCompletionFailure(reason as never)).toBe(false);
+  });
+
+  it('loses nothing of the redaction contract', async () => {
+    // The classification must not become a leak channel: the private marker is
+    // still absent, and no upstream cause is attached.
+    const unmatched = 'diff --git a/odd/thing.unknownext b/odd/thing.unknownext\n--- a/odd/thing.unknownext\n+++ b/odd/thing.unknownext\n@@ -1 +1 @@\n-a\n+b\n';
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({ current, expectedFileCount: 1, diff: '',
+      changedFiles: [{ path: `odd/${privateText}.unknownext`, patch: unmatched }] });
+    const error = await (async () => {
+      try { await f.context(f.gate); } catch (e) { return e as Error; }
+      throw new Error('Expected rejection');
+    })();
+    redacted(error);
+  });
+});
 
 describe('service-owned authoritative completion context', () => {
   beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }));
