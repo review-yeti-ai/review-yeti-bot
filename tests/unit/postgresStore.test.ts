@@ -343,4 +343,27 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
       })
     );
   });
+
+  it('executes review_runs_review_engine_idx creation during schema initialization', async () => {
+    process.env.DATABASE_URL = 'postgresql://fixture:synthetic-password@127.0.0.1:5432/fixture';
+    const store = new PostgresStore();
+    const executedStatements: string[] = [];
+    const query = vi.fn(async (statement: string) => {
+      executedStatements.push(statement);
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const pool = store.getPool();
+    vi.spyOn(pool, 'connect').mockResolvedValue({ query, release } as never);
+
+    try {
+      await store.initialize();
+      const hasReviewEngineIndex = executedStatements.some(
+        (s) => s.includes('review_runs_review_engine_idx') && s.includes("artifacts->>'review_engine'")
+      );
+      expect(hasReviewEngineIndex).toBe(true);
+    } finally {
+      await store.close();
+    }
+  });
 });

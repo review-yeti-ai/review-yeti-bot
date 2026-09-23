@@ -9,6 +9,7 @@ export interface ReviewAdmissionInput {
   baseSha: string;
   changedFiles?: Array<{ path: string; patch?: string; status?: string; mode?: string; oldSha?: string; newSha?: string }>;
   configDigest?: string;
+  reviewEngine?: 'composed' | 'panel';
 }
 
 /** Derives the durable run identifier from the complete admission identity. */

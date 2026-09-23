@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   type ToolDefinition,
   type ToolResult,
@@ -9,6 +10,8 @@ import {
   type PreflightDiffReviewOutput,
   type PreflightFinding,
 } from './schemas';
+import { compareClaims } from '../../../review/claimSimilarity';
+import type { ReviewModelClient } from '../../../gateway/openRouterClient';
 
 export const preflightDiffReviewDefinition: ToolDefinition = {
   name: 'preflight_diff_review',
@@ -150,10 +153,225 @@ export function parseUnifiedDiff(diff: string): ParsedDiffFile[] {
   return files;
 }
 
+export const DEFAULT_PREFLIGHT_MODEL = 'deepseek/deepseek-v4-flash-0731';
+export const MAX_DIFF_CHARS_FOR_MODEL = 32_000;
+
+export const ADVISORY_TITLE_RE =
+  /\b(naming|code style|formatting|documentation|typo|unused import|readability|dry|maintainability)\b/i;
+
+export const UNVERIFIED_PREMISE_PHRASES = [
+  'could not confirm',
+  'unable to verify',
+  'assuming that',
+  'if this is',
+  'if this still',
+  'without seeing the rest',
+  'not visible in this diff',
+  'cannot verify',
+];
+
+export function calibratePreflightSeverity(
+  rawSeverity: string,
+  title: string,
+  rationale: string
+): 'P0' | 'P1' | 'P2' {
+  const norm = String(rawSeverity || '').toLowerCase().trim();
+  let sev: 'P0' | 'P1' | 'P2' = 'P1';
+
+  if (norm === 'p0' || norm === 'blocking' || norm === 'block' || norm === 'critical') {
+    sev = 'P0';
+  } else if (norm === 'p1' || norm === 'warning' || norm === 'warn' || norm === 'high') {
+    sev = 'P1';
+  } else if (norm === 'p2' || norm === 'info' || norm === 'advisory' || norm === 'low') {
+    sev = 'P2';
+  }
+
+  // Advisory title demotion
+  if (sev === 'P1' && ADVISORY_TITLE_RE.test(title)) {
+    sev = 'P2';
+  }
+
+  // Unverified premise demotion
+  const combined = `${title} ${rationale}`.toLowerCase();
+  if ((sev === 'P0' || sev === 'P1') && UNVERIFIED_PREMISE_PHRASES.some((phrase) => combined.includes(phrase))) {
+    sev = 'P2';
+  }
+
+  return sev;
+}
+
+export function buildPreflightPersonaPrompt(repo: string, targetBranch: string, diff: string): string {
+  const truncatedDiff =
+    diff.length > MAX_DIFF_CHARS_FOR_MODEL
+      ? `${diff.slice(0, MAX_DIFF_CHARS_FOR_MODEL)}\n\n[... Diff truncated at 32KB for model evaluation SLA ...]`
+      : diff;
+
+  return `You are Review Yeti's preflight diff review panel composed of 5 specialized personas:
+1. Security Persona: Injection vulnerabilities (SQLi, CMDi, XSS), secrets/tokens, auth bypasses, untrusted inputs.
+2. Architecture Persona: Layering/boundary violations, unbounded collections (memory leaks), concurrency issues, lifecycle resource leaks.
+3. Correctness Persona: Logic errors, off-by-one, null/undefined dereferences, unhandled error conditions.
+4. Contract Persona: Breaking API signature changes, schema drift, invalid protocol messages.
+5. Testing Persona: High-risk code or state mutations missing test assertions.
+
+Evaluate this uncommitted local git diff for repository "${repo}" targeting branch "${targetBranch}".
+
+Diff:
+\`\`\`diff
+${truncatedDiff}
+\`\`\`
+
+Severity Guidelines:
+- "P0" (blocking): Definite exploitable security vulnerabilities, runtime crashes, severe data corruption, or merge blockers.
+- "P1" (warning): Substantive correctness bugs, unbounded memory/resource leaks, breaking contract changes, missing critical tests.
+- "P2" (info): Advisory improvements, naming, documentation, minor style.
+
+Instructions:
+- Only report genuine, high-confidence issues. If the diff is clean and safe, return an empty array: [].
+- Assign a confidence score between 0.0 and 1.0. Any speculative finding with confidence < 0.70 must be omitted.
+- Respond ONLY with a valid JSON array matching this structure:
+[
+  {
+    "severity": "P0" | "P1" | "P2",
+    "category": "Security" | "Architecture" | "Correctness" | "Contract" | "Testing",
+    "title": "Concise summary of the defect",
+    "file_path": "path/to/file.ts",
+    "line": 42,
+    "rationale": "Clear explanation of the defect and why it is a problem",
+    "suggested_fix": "Concrete guidance or code snippet to resolve the issue",
+    "confidence": 0.85
+  }
+]`;
+}
+
+export function parseModelPersonaFindings(rawText: string, repo: string): PreflightFinding[] {
+  if (!rawText || typeof rawText !== 'string') return [];
+  const trimmed = rawText.trim();
+  let parsedJson: any = null;
+
+  try {
+    parsedJson = JSON.parse(trimmed);
+  } catch {
+    const arrayMatch = trimmed.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try {
+        parsedJson = JSON.parse(arrayMatch[0]);
+      } catch {
+        // Fall through
+      }
+    }
+    if (!parsedJson) {
+      const objMatch = trimmed.match(/\{[\s\S]*\}/);
+      if (objMatch) {
+        try {
+          const obj = JSON.parse(objMatch[0]);
+          if (Array.isArray(obj.findings)) {
+            parsedJson = obj.findings;
+          }
+        } catch {
+          // Fall through
+        }
+      }
+    }
+  }
+
+  if (!Array.isArray(parsedJson)) return [];
+
+  const findings: PreflightFinding[] = [];
+  for (const item of parsedJson) {
+    if (!item || typeof item !== 'object') continue;
+    const rawConf = typeof item.confidence === 'number' ? item.confidence : 0.8;
+    if (rawConf < 0.70) {
+      continue;
+    }
+
+    const title = String(item.title || 'Preflight finding').trim();
+    const rationale = String(item.rationale || item.body || item.description || '').trim();
+    const severity = calibratePreflightSeverity(String(item.severity || 'P1'), title, rationale);
+    const category = String(item.category || 'Architecture').trim();
+    const filePath = String(item.file_path || item.path || item.file || 'unknown').trim();
+    const line = typeof item.line === 'number' ? item.line : (typeof item.line_start === 'number' ? item.line_start : undefined);
+    const suggestedFix = typeof item.suggested_fix === 'string' ? item.suggested_fix : (typeof item.suggestion === 'string' ? item.suggestion : undefined);
+
+    const findingId = item.finding_id || `pref-model-${createHash('sha256').update(`${filePath}:${line}:${title}`).digest('hex').slice(0, 12)}`;
+
+    findings.push({
+      finding_id: findingId,
+      severity,
+      category,
+      title,
+      file_path: filePath,
+      line,
+      rationale,
+      suggested_fix: suggestedFix,
+      confidence: rawConf,
+    });
+  }
+
+  return findings;
+}
+
+const SEV_ORDER: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
+
+export function deduplicateFindings(
+  existingFindings: PreflightFinding[],
+  modelFindings: PreflightFinding[]
+): PreflightFinding[] {
+  const result = [...existingFindings];
+
+  for (const modelF of modelFindings) {
+    let merged = false;
+
+    for (let i = 0; i < result.length; i++) {
+      const existing = result[i];
+      const comparison = compareClaims(
+        {
+          path: existing.file_path,
+          line: existing.line,
+          title: existing.title,
+          body: existing.rationale,
+        },
+        {
+          path: modelF.file_path,
+          line: modelF.line,
+          title: modelF.title,
+          body: modelF.rationale,
+        }
+      );
+
+      if (comparison.duplicate) {
+        merged = true;
+        const existingRank = SEV_ORDER[existing.severity] ?? 1;
+        const modelRank = SEV_ORDER[modelF.severity] ?? 1;
+        if (modelRank < existingRank) {
+          existing.severity = modelF.severity;
+        }
+        if (modelF.rationale && modelF.rationale.length > existing.rationale.length) {
+          existing.rationale = `${existing.rationale}\n\nModel Analysis: ${modelF.rationale}`;
+        }
+        if (!existing.suggested_fix && modelF.suggested_fix) {
+          existing.suggested_fix = modelF.suggested_fix;
+        }
+        if (modelF.confidence !== undefined) {
+          existing.confidence = Math.max(existing.confidence ?? 0.8, modelF.confidence);
+        }
+        break;
+      }
+    }
+
+    if (!merged) {
+      result.push(modelF);
+    }
+  }
+
+  return result;
+}
+
 export interface PreflightDiffReviewDependencies {
-  modelClient?: {
+  modelClient?: ReviewModelClient | {
+    complete?(request: any): Promise<{ content: string }>;
     evaluateDiff?(prompt: string, signal?: AbortSignal): Promise<{ findings: PreflightFinding[] }>;
   };
+  model?: string;
   now?: () => number;
 }
 
@@ -273,22 +491,48 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
         }
       }
 
-      // If model client is provided and within SLA budget (<12s)
-      if (deps.modelClient?.evaluateDiff && findings.length === 0) {
+      // 4. Model Persona Evaluation (DeepSeek & Backward Compatible)
+      if (deps.modelClient) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 12_000);
+        const activeModel = parsed.data.model || deps.model || DEFAULT_PREFLIGHT_MODEL;
+
         try {
-          const evalResult = await deps.modelClient.evaluateDiff(
-            `Review diff for repo ${repo} against ${target_branch}:\n${diff}`,
-            controller.signal
-          );
-          clearTimeout(timeoutId);
-          if (evalResult?.findings) {
-            findings.push(...evalResult.findings);
+          if (typeof (deps.modelClient as any).complete === 'function') {
+            const prompt = buildPreflightPersonaPrompt(repo, target_branch, diff);
+            const response = await (deps.modelClient as any).complete({
+              model: activeModel,
+              messages: [{ role: 'user', content: prompt }],
+              temperature: 0.1,
+              maxTokens: 2048,
+              timeoutMs: 12_000,
+              signal: controller.signal,
+            });
+            const modelFindings = parseModelPersonaFindings(response.content, repo);
+            const deduped = deduplicateFindings(findings, modelFindings);
+            findings.length = 0;
+            findings.push(...deduped);
+          } else if (typeof (deps.modelClient as any).evaluateDiff === 'function') {
+            const evalResult = await (deps.modelClient as any).evaluateDiff(
+              `Review diff for repo ${repo} against ${target_branch}:\n${diff}`,
+              controller.signal
+            );
+            if (evalResult?.findings && Array.isArray(evalResult.findings)) {
+              const processed = evalResult.findings
+                .filter((f: PreflightFinding) => f.confidence === undefined || f.confidence >= 0.70)
+                .map((f: PreflightFinding) => ({
+                  ...f,
+                  severity: calibratePreflightSeverity(f.severity, f.title, f.rationale),
+                }));
+              const deduped = deduplicateFindings(findings, processed);
+              findings.length = 0;
+              findings.push(...deduped);
+            }
           }
         } catch {
-          clearTimeout(timeoutId);
           // Model timeout or error: gracefully fallback to static heuristic inspection
+        } finally {
+          clearTimeout(timeoutId);
         }
       }
 
