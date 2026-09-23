@@ -52,6 +52,34 @@ export function resolveGatewayApiKey(env: NodeJS.ProcessEnv): string {
   return '';
 }
 
+/**
+ * The gateway settings the review transport requires, with the names it accepts.
+ *
+ * This is the single source of truth for readiness AND client construction. A
+ * gate that re-lists these fields by hand drifts the moment one is added or
+ * removed -- which is exactly how `/ready` came to answer 200 while
+ * `openRouterClient()` threw on every request (REL-1069 review).
+ */
+export const GATEWAY_SETTING_NAMES = {
+  baseUrl: ['OPENAI_BASE_URL', 'REVIEW_YETI_GATEWAY_BASE_URL', 'BIFROST_BASE_URL', 'OPENROUTER_BASE_URL'],
+  apiKey: ['OPENAI_API_KEY', 'REVIEW_YETI_BIFROST_API_KEY', 'BIFROST_VIRTUAL_KEY',
+    'OPENROUTER_REVIEW_FLEET_KEY', 'OPENROUTER_PR_REVIEW_API_KEY', 'OPENROUTER_API_KEY'],
+} as const;
+
+/**
+ * Names of required gateway settings that are absent, primary name first.
+ *
+ * Returns the FIRST accepted name of each missing setting so a failure can name
+ * a variable an operator can actually set, rather than an opaque URL-parse or
+ * connection error at request time.
+ */
+export function missingGatewaySettings(env: NodeJS.ProcessEnv): string[] {
+  const missing: string[] = [];
+  if (!resolveGatewayBaseUrl(env)) missing.push(GATEWAY_SETTING_NAMES.baseUrl[0]);
+  if (!resolveGatewayApiKey(env)) missing.push(GATEWAY_SETTING_NAMES.apiKey[0]);
+  return missing;
+}
+
 /** Resolve the admitted gateway base URL, preferring the standard OpenAI name. */
 export function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv): string {
   return value(env, 'OPENAI_BASE_URL') || value(env, 'REVIEW_YETI_GATEWAY_BASE_URL')

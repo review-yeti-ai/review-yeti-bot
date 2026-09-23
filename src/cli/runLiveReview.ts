@@ -402,7 +402,10 @@ function qualificationModel(
 
 function qualificationClient(env: NodeJS.ProcessEnv): OpenRouterClient {
   return new OpenRouterClient({
-    baseUrl: resolveGatewayBaseUrl(env),
+    // The key path already fails closed; the URL must too, or an empty value
+    // reaches the client as an opaque URL-parse error instead of naming the
+    // variable the operator has to set (REL-1069 review).
+    baseUrl: resolveGatewayBaseUrl(env) || requiredWorkerEnv(env, 'OPENAI_BASE_URL'),
     apiKey: resolveGatewayApiKey(env) || requiredWorkerEnv(env, 'OPENAI_API_KEY'),
   });
 }
@@ -1571,7 +1574,7 @@ export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
   // Initialize 10-persona Panel Engine
   const config = createDefaultV3Config();
   const client = new OpenRouterClient({
-    baseUrl: resolveGatewayBaseUrl(env),
+    baseUrl: resolveGatewayBaseUrl(env) || requiredWorkerEnv(env, 'OPENAI_BASE_URL'),
     apiKey: resolveGatewayApiKey(env) || requiredWorkerEnv(env, 'OPENAI_API_KEY'),
   });
 

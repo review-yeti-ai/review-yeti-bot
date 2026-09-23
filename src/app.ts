@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient, resolveCachedTokens } from './gateway/openRouterClient';
-import { resolveGatewayApiKey, resolveGatewayBaseUrl, resolveWebhookSecret } from './review/openaiTransport';
+import { missingGatewaySettings, resolveGatewayApiKey, resolveGatewayBaseUrl, resolveWebhookSecret } from './review/openaiTransport';
 import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
@@ -824,12 +824,19 @@ export function createApp(): Express {
     // made the full app report not-ready on a correctly-configured Bifrost
     // deployment: no environment sets `WEBHOOK_SECRET` (the app, the wizard and
     // every synced env use `GITHUB_WEBHOOK_SECRET`), and the review lane has no
-    // OpenRouter credential because it is Bifrost-backed. Read the shared
-    // resolvers so this gate cannot drift from the transport again.
+    // OpenRouter credential because it is Bifrost-backed.
+    //
+    // Read the SHARED contract rather than re-listing fields. An earlier
+    // revision of this gate listed only the key, while `openRouterClient()`
+    // requires the base URL too -- so the probe answered 200 on a pod where
+    // every request threw, a fail-open signal worse than the bug being fixed.
+    // `missingGatewaySettings` is derived from the resolvers the transport
+    // itself uses, so adding or renaming a required setting moves both together.
+    const missingGateway = missingGatewaySettings(process.env);
     const configurationReady = Boolean(process.env.GITHUB_APP_ID?.trim())
       && Boolean(process.env.GITHUB_APP_PRIVATE_KEY?.trim())
       && Boolean(resolveWebhookSecret(process.env))
-      && Boolean(resolveGatewayApiKey(process.env));
+      && missingGateway.length === 0;
     return res.status(configurationReady ? 200 : 503).json({
       status: configurationReady ? 'ready' : 'not_ready',
       configurationReady,

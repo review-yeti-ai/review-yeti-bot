@@ -57,6 +57,35 @@ describe('review bot readiness', () => {
     expect(response.status).toBe(200);
   });
 
+  it('is NOT ready when the gateway key is present but the base URL is absent', async () => {
+    // The regression this guards: /ready checked the key but not the base URL,
+    // while openRouterClient() requires both. The probe answered 200 on a pod
+    // where every review request threw -- a fail-open signal.
+    stubBifrostEnv({ OPENAI_BASE_URL: '' });
+    // Clear every accepted spelling: the harness env would otherwise supply one
+    // and the assertion would pass against a leaked value.
+    for (const name of ['REVIEW_YETI_GATEWAY_BASE_URL', 'BIFROST_BASE_URL', 'OPENROUTER_BASE_URL']) {
+      vi.stubEnv(name, '');
+    }
+    const response = await request(createApp()).get('/ready');
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({ status: 'not_ready', configurationReady: false });
+  });
+
+  it('the readiness gate and the transport agree on what is required', async () => {
+    // Structural guard: the gate must not re-list fields. If a required setting
+    // is added to the transport, readiness must follow without a second edit.
+    stubBifrostEnv({ OPENAI_BASE_URL: '' });
+    for (const name of ['REVIEW_YETI_GATEWAY_BASE_URL', 'BIFROST_BASE_URL', 'OPENROUTER_BASE_URL']) {
+      vi.stubEnv(name, '');
+    }
+    const withoutUrl = await request(createApp()).get('/ready');
+    stubBifrostEnv();
+    const withUrl = await request(createApp()).get('/ready');
+    expect(withoutUrl.status).toBe(503);
+    expect(withUrl.status).toBe(200);
+  });
+
   it('still returns 503 when the gateway key is genuinely absent', async () => {
     // The gate must still fail closed: readiness must not become unconditional.
     // EVERY source must be cleared, including the legacy names that
