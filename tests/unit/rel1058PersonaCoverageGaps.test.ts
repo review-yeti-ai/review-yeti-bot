@@ -81,6 +81,20 @@ describe('REL-1058: .mdx policy', () => {
     expect(result.applicable[0]).not.toHaveProperty('routedPaths');
   });
 
+  it('routes case-insensitively and keeps non-owner lanes on a mixed diff', () => {
+    const [link] = parseChangedFiles(GITLINK_DIFF).files;
+    const upper = { path: 'docs/guide/intro.MDX', patch: mdx.patch };
+
+    const result = resolveReviewApplicability(enabled('architecture,security'), [link, upper]);
+
+    expect(result.applicable.map((persona) => persona.id)).toEqual(['arch-lane', 'sec-lane']);
+    const scoped = Object.fromEntries(result.applicable.map((persona) => [
+      persona.id, scopeFilesForPersona(persona, result.effectiveFiles).map((file) => file.path),
+    ]));
+    expect(scoped).toEqual({ 'arch-lane': ['ct-dashboard'], 'sec-lane': ['docs/guide/intro.MDX'] });
+    expect(result.unmatchedPaths).toEqual([]);
+  });
+
   it('reaches a real lane for a docs-only .mdx panel run instead of failing or auto-approving', async () => {
     let caught: unknown;
     try {
