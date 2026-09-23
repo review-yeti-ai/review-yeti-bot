@@ -845,8 +845,20 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       expect(await f.publisher.runOnce()).toMatchObject({ status: terminal === 'cancellation' ? 'idle' : 'published' });
       expect(f.client.createPending).toHaveBeenCalledTimes(terminal === 'cancellation' ? 0 : 1);
       if (terminal !== 'cancellation') {
+        // The reaper records a concrete decision reason ('infrastructure-failure'
+        // for a failed run, 'review-deadline-exceeded' for an expired deadline), so
+        // the published update now carries the cause as well as the conclusion.
+        // Asserting the reason here is what pins the reaper -> fromRow -> summary
+        // path end to end through real SQL, which the publisher unit tests cannot.
+        const expectedReason = terminal === 'timeout'
+          ? 'review-deadline-exceeded' : 'infrastructure-failure';
         expect(f.client.updateExisting).toHaveBeenCalledWith({ coordinates: f.gate.coordinates,
-          checkId: 20_001, update: { conclusion: desired } });
+          checkId: 20_001,
+          update: {
+            conclusion: desired,
+            title: 'Review Yeti Gate: Failed',
+            summary: `Review Yeti Gate failed: ${expectedReason}. This is not an approval.`,
+          } });
       }
       expect(await f.repository.reapTerminalAttempts(f.clock())).toBe(0);
     });

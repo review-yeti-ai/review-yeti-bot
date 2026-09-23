@@ -38,6 +38,14 @@ export function gateAttemptId(runId: string, generation: number, executionAttemp
 }
 
 function fromRow(row: any): StoredReviewGate {
+  const json = (value: unknown): any => (typeof value === 'string' ? JSON.parse(value) : value);
+  // `decision` and `evidence` are persisted for every terminal attempt. Reading
+  // them back here is what lets the published failure summary name the concrete
+  // cause instead of a generic message; absent for a progress state.
+  const decision = row.decision == null ? undefined : json(row.decision);
+  const evidence = row.evidence == null ? undefined : json(row.evidence);
+  const laneCount = (value: unknown): number | undefined =>
+    Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined;
   return {
     coordinates: typeof row.coordinates === 'string' ? JSON.parse(row.coordinates) : row.coordinates,
     reviewGeneration: Number(row.review_generation), expectedAppId: Number(row.expected_app_id),
@@ -45,6 +53,9 @@ function fromRow(row: any): StoredReviewGate {
     creationState: row.creation_state, desiredState: row.desired_state,
     desiredVersion: Number(row.desired_version), publishedVersion: Number(row.published_version),
     current: row.current_attempt === true,
+    ...(typeof decision?.reason === 'string' ? { decisionReason: decision.reason } : {}),
+    ...(laneCount(evidence?.expectedLanes) !== undefined ? { expectedLanes: laneCount(evidence?.expectedLanes) } : {}),
+    ...(laneCount(evidence?.completedLanes) !== undefined ? { completedLanes: laneCount(evidence?.completedLanes) } : {}),
   };
 }
 

@@ -67,7 +67,7 @@ export class ReviewGatePublisher {
           checkId: check.id,
           update: isGateProgressState(gate.desiredState)
             ? { status: gate.desiredState }
-            : { conclusion: gate.desiredState },
+            : { conclusion: gate.desiredState, ...gateFailureMetadata(gate) },
         });
       }, this.now);
       if (status === 'stale-claim') {
@@ -84,4 +84,38 @@ export class ReviewGatePublisher {
       return { status: 'retry', attemptId };
     }
   }
+}
+
+/** Name the concrete terminal failure cause in the published check.
+ *
+ * The generic "policy eligibility gate failed" summary made a lane skew
+ * indistinguishable from a provider outage or a genuinely incomplete panel:
+ * every failure looked the same, so an operator could not tell "this run is
+ * stale, re-dispatch it" from "this panel actually failed to review". REL-1019
+ * was filed off exactly that ambiguity.
+ *
+ * Applies to every terminal non-approval conclusion: `failure` and `timed_out`
+ * both mean "this head was not approved", and the timeout variant carries a
+ * decision reason of its own ('review-deadline-exceeded') that is just as
+ * actionable. A success keeps its own summary, a cancellation is not a review
+ * outcome, and a progress state has no decision yet.
+ */
+function gateFailureMetadata(gate: StoredReviewGate): { title?: string; summary?: string } {
+  const isNonApprovalTerminal = gate.desiredState === 'failure' || gate.desiredState === 'timed_out';
+  if (!isNonApprovalTerminal || gate.decisionReason === undefined) return {};
+  const reason = gate.decisionReason;
+  const skew = reason === 'incomplete-review'
+    && gate.expectedLanes !== undefined && gate.completedLanes !== undefined;
+  if (skew) {
+    return {
+      title: 'Review Yeti Gate: Failed (incomplete panel)',
+      summary: `Review Yeti Gate failed: the panel expected ${gate.expectedLanes} review lane(s) `
+        + `but ${gate.completedLanes} completed. This is an incomplete review, not a findings verdict; `
+        + 're-dispatch the review for this head.',
+    };
+  }
+  return {
+    title: 'Review Yeti Gate: Failed',
+    summary: `Review Yeti Gate failed: ${reason}. This is not an approval.`,
+  };
 }
