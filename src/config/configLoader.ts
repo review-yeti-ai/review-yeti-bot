@@ -73,7 +73,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
     },
     personas: [
       { id: 'sec-lane', enabled: true, required: true, charter: 'builtin:security', paths: ['**'], providers: ['opencode', 'claude'] },
-      { id: 'arch-lane', enabled: true, required: false, charter: 'builtin:architecture', paths: ['src/**', 'lib/**', 'app/**', 'cmd/**', 'pkg/**', 'k8s/**', '.github/**', 'helm/**', 'Dockerfile*', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.go', '**/*.rs', '**/*.py'], providers: ['opencode', 'claude'] },
+      { id: 'arch-lane', enabled: true, required: false, charter: 'builtin:architecture', paths: ['src/**', 'lib/**', 'app/**', 'cmd/**', 'pkg/**', 'k8s/**', '.github/**', 'helm/**', 'Dockerfile*', '.gitmodules*', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.go', '**/*.rs', '**/*.py'], providers: ['opencode', 'claude'] },
       { id: 'qual-lane', enabled: true, required: false, charter: 'builtin:consistency', paths: ['src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.go', '**/*.rs', '**/*.py'], providers: ['opencode', 'claude'] },
       { id: 'devops-lane', enabled: true, required: false, charter: 'builtin:devops', paths: ['Dockerfile*', 'k8s/**', '.github/**', 'helm/**', '**/*.yaml', '**/*.yml', 'scripts/**', 'Tiltfile*', 'Procfile*', 'Makefile*'], providers: ['opencode', 'claude'] },
       { id: 'correctness-lane', enabled: true, required: false, charter: 'builtin:correctness', paths: ['src/**', 'lib/**', 'app/**', 'test/**', 'tests/**', '**/*.ex', '**/*.exs', '**/*.ts', '**/*.tsx', '**/*.js', '**/*.go', '**/*.rs', '**/*.py', 'scripts/**'], providers: ['opencode', 'claude'] },
