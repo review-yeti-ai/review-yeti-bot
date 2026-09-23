@@ -38,15 +38,15 @@ import {
   ReviewModelClient,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
-import { filterDiffHunks } from '../pipeline/hunkFilter';
+import { resolveReviewApplicability } from '../review/personaApplicability';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import {
   buildDiffSection,
   buildPanelResponseFormat,
   createPanelDeadlineSignal,
-  isDocumentationOrAssetPath,
   mergeZoektToolConfig,
   PanelConfigurationError,
+  personaCoverageError,
   PanelFindingsValidationError,
   raceWithPanelAbort,
   repositoryVisibilityPromptLines,
@@ -384,8 +384,8 @@ function sumAggregateUsage(turnUsages: LaneTurnUsage[]): LaneAggregateUsage {
 }
 
 // ---------------------------------------------------------------------------
-// Zero-lane short circuit -- byte-identical decision rule to executePersonaPanel's: no changed
-// file is code. Runs before any provider call, exactly like the fan-out path.
+// Zero-lane short circuit -- taken only when resolveReviewApplicability (the decision the panel
+// engine and the service share) reports no reviewable content. Runs before any provider call.
 // ---------------------------------------------------------------------------
 
 function buildZeroLaneResult(headSha: string, config: CtReviewConfigV3, panelWallClockMs: number): PanelResult {
@@ -995,29 +995,21 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     span.setAttribute('review_yeti.head_sha', headSha);
     span.setAttribute('review_yeti.engine', 'composed');
 
-    const hunkResult = filterDiffHunks(changedFiles);
-    const origMap = new Map(changedFiles.map((cf) => [cf.path, cf as any]));
-    const effectiveFiles = hunkResult.files
-      .filter((f) => f.status !== 'ignored')
-      .map((f) => {
-        const orig = origMap.get(f.path);
-        return {
-          path: f.path,
-          patch: f.patch,
-          content: f.content,
-          mode: orig?.mode,
-          isSubmodule: orig?.isSubmodule,
-          submoduleCandidate: orig?.submoduleCandidate,
-          size: orig?.size,
-          byteSize: orig?.byteSize,
-          originalPatchLength: f.originalPatchLength,
-        };
-      });
-
-    // Zero-lane non-evidence: byte-identical decision rule to executePersonaPanel's. Short-circuit
-    // before any provider call, exactly as the fan-out path does.
-    const allNonCode = effectiveFiles.length > 0 && effectiveFiles.every((f) => isDocumentationOrAssetPath(f.path));
-    if (effectiveFiles.length === 0 || allNonCode) {
+    // The ONE applicability decision the panel engine and the service's trusted
+    // completion context also make (REL-1056 / REL-1058): same file projection,
+    // same repository path_filters, same gitlink/.mdx routing. The composed
+    // engine runs one reviewer rather than persona lanes, but whether a diff is
+    // reviewed, exempted, or a coverage failure is decided identically, so a
+    // composed completion is never one the service cannot acknowledge.
+    const enabledPersonas = config.personas.filter((persona) => persona.enabled);
+    const applicability = resolveReviewApplicability(enabledPersonas, changedFiles as any, {
+      pathFilters: config.path_filters,
+    });
+    const effectiveFiles = applicability.effectiveFiles;
+    if (applicability.applicable.length === 0) {
+      if (!applicability.noReviewableContent) {
+        throw personaCoverageError(repository, headSha, applicability.unmatchedPaths, enabledPersonas);
+      }
       return buildZeroLaneResult(headSha, config, Date.now() - panelStartedAt);
     }
 

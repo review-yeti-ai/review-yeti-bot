@@ -7,11 +7,9 @@ import type { StoredReviewGate, TrustedGateCompletionContext } from './reviewGat
 import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
 import { parseChangedFiles } from './changedFiles';
-import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
-import { deriveApplicablePersonaIds } from './personaApplicability';
+import { resolveReviewApplicability } from './personaApplicability';
 import { canonicalJson } from './reviewCore';
-import { isDocumentationOrAssetPath } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import {
   TrustedCompletionResolutionError,
@@ -205,17 +203,21 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       const coverageComplete = unreadable.length === 0
         && Number.isSafeInteger(source.expectedFileCount) && files.length === source.expectedFileCount
         && new Set(files.map((file) => file.path)).size === files.length;
-      const reviewableFiles = filterDiffHunks(files).files.filter((file) => file.status !== 'ignored');
-      const applicablePersonaIds = deriveApplicablePersonaIds(
+      // The worker's own applicability decision (resolveReviewApplicability):
+      // same enabled roster, same repository path_filters, same gitlink
+      // metadata and routing. Deriving it separately here -- without the repo
+      // options, and after dropping each file's gitlink mode -- is how the two
+      // sides came to disagree about which lanes a diff requires (REL-1056).
+      const applicability = resolveReviewApplicability(
         stored.config.personas.filter((persona) => persona.enabled),
-        reviewableFiles,
+        files,
+        { pathFilters: stored.config.path_filters },
       );
-      const allNonCode = reviewableFiles.length > 0
-        && reviewableFiles.every((file) => isDocumentationOrAssetPath(file.path));
+      const applicablePersonaIds = applicability.applicable.map((persona) => persona.id);
       // A zero-lane documentation-only panel is an explicit audited exemption.
       // Its canonical derivation still needs the admitted nonempty upper-bound
       // roster. Unmatched source is a policy/configuration failure, never SHIP.
-      if (applicablePersonaIds.length === 0 && !allNonCode) throw classified('coverage-no-persona');
+      if (applicablePersonaIds.length === 0 && !applicability.noReviewableContent) throw classified('coverage-no-persona');
       const expectedPersonaIds = applicablePersonaIds.length > 0
         ? applicablePersonaIds : [...stored.expectedPersonaIds];
       checkDeadline();

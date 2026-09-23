@@ -10,6 +10,14 @@ import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerRevi
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import { TrustedCompletionResolutionError, isDeterministicCompletionFailure }
   from '../../src/review/workerCompletionPersistenceError';
+import * as personaApplicability from '../../src/review/personaApplicability';
+
+// Pass-through wrapper so a test can observe the options the service hands to
+// the shared applicability decision (REL-1058). Behaviour is the real one.
+vi.mock('../../src/review/personaApplicability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/review/personaApplicability')>();
+  return { ...actual, resolveReviewApplicability: vi.fn(actual.resolveReviewApplicability) };
+});
 
 const target = { repositoryId: 123, owner: 'example', repo: 'candidate', prNumber: 42,
   headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
@@ -198,6 +206,78 @@ describe('service-owned authoritative completion context', () => {
       coverageComplete: true,
       quorumSatisfied: true,
     });
+  });
+
+  // REL-1058: the service must reach the worker's applicability decision, not
+  // a separately derived one, or a failed or passing worker result for the
+  // same head cannot be acknowledged (REL-1056).
+  it('routes a docs-only .mdx change to the required lane instead of exempting or failing it', async () => {
+    const f = fixture({}, prepared(3, 'architecture,security'));
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'docusaurus/docs/deployment/appliance-firewall-requirements.mdx', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      expectedFileCount: 1,
+    });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage).toMatchObject({ expectedPersonaIds: ['sec-lane'], coverageComplete: true });
+  });
+
+  it('requires the architecture lane for a submodule pointer bump', async () => {
+    const f = fixture({}, prepared(3, 'architecture,security,documentation'));
+    const gitlinkDiff = 'diff --git a/ct-dashboard b/ct-dashboard\nindex 6c3f36d89d..f84610fbbf 160000\n'
+      + '--- a/ct-dashboard\n+++ b/ct-dashboard\n@@ -1 +1 @@\n'
+      + '-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n'
+      + '+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: gitlinkDiff, expectedFileCount: 1 });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage.expectedPersonaIds).toEqual(['arch-lane']);
+  });
+
+  it('routes a pointer bump to the required lane when the roster has no architecture persona', async () => {
+    const f = fixture({}, prepared(3, 'security,documentation'));
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb' }],
+      expectedFileCount: 1,
+    });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage.expectedPersonaIds).toEqual(['sec-lane']);
+  });
+
+  it('keeps gitlink mode metadata the worker sees instead of dropping it in the hunk filter', async () => {
+    const f = fixture({}, prepared(3, 'architecture,security'));
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-6c3f36d\n+f84610f', mode: '160000', isSubmodule: true }],
+      expectedFileCount: 1,
+    });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage.expectedPersonaIds).toEqual(['arch-lane']);
+  });
+
+  it('derives applicability through the shared decision with the admitted config roster and path_filters', async () => {
+    const spy = vi.mocked(personaApplicability.resolveReviewApplicability);
+    spy.mockClear();
+    const f = fixture();
+
+    await f.context(f.gate);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [personas, files, options] = spy.mock.calls[0];
+    expect(personas.map((persona) => persona.id)).toEqual(['sec-lane', 'qual-lane']);
+    expect(files.map((file) => file.path)).toEqual(['src/a.ts']);
+    expect(options).toEqual({ pathFilters: f.stored.config.path_filters });
   });
 
   it('fails closed when every changed file is excluded by the shared hunk filter', async () => {

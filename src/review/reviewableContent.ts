@@ -1,4 +1,19 @@
 /**
+ * Prose documentation formats and static image/diagram assets.
+ *
+ * REL-1058: `.asciidoc` is the long form of `.adoc`; `.webp` and `.avif` are
+ * image assets.
+ *
+ * Deliberately NOT listed: `.mdx` and `.mdoc` (they compile to executable
+ * component modules; an uncovered `.mdx` is routed to a lane instead, see
+ * `isFallbackRoutedFile`), `.mdc` (Cursor rule files are agent operating
+ * policy, not prose documentation), and anything that can execute or configure
+ * a build.
+ */
+const DOCUMENTATION_OR_ASSET_EXTENSION =
+  /\.(md|markdown|txt|rst|adoc|asciidoc|png|jpg|jpeg|gif|svg|ico|webp|avif|pdf|drawio)$/i;
+
+/**
  * Returns true only for paths the review policy treats as non-analyzable content.
  *
  * Keep this classification service-safe: executable content under evidence and
@@ -14,6 +29,6 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
         /\/(evidence|artifacts)\//.test(normalized)) &&
       /\.(json|jsonl|ndjson|csv|tsv|log|xml|yaml|yml)$/i.test(normalized)
     ) ||
-    /\.(md|markdown|txt|rst|adoc|png|jpg|jpeg|gif|svg|ico|pdf|drawio)$/i.test(normalized)
+    DOCUMENTATION_OR_ASSET_EXTENSION.test(normalized)
   );
 }

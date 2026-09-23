@@ -138,8 +138,12 @@ describe('executeComposedReview', () => {
 
   it('approves a diff with nothing analyzable, before any provider call, exactly like the fan-out engine', async () => {
     const complete = vi.fn();
+    // REL-1058: the exemption is the shared applicability decision's, so -- as
+    // on the fan-out engine and the service -- it applies only when no enabled
+    // persona covers the documentation. A catch-all persona reviews it instead.
+    const narrow = parseAndValidateConfig(mockYaml.replace('paths: ["**/*"]', 'paths: ["src/**"]')) as any;
     const result = await executeComposedReview({
-      config: config(),
+      config: narrow,
       changedFiles: [{ path: 'docs/readme.md', patch: '@@ -1 +1 @@\n-old\n+new' }],
       repository: 'calltelemetry/ct-meta',
       headSha: 'a'.repeat(40),
