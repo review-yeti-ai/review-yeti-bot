@@ -38,7 +38,7 @@ import {
   ReviewModelClient,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
-import { filterDiffHunks } from '../pipeline/hunkFilter';
+import { buildEffectiveReviewFiles } from '../review/personaApplicability';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import {
   buildDiffSection,
@@ -995,24 +995,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     span.setAttribute('review_yeti.head_sha', headSha);
     span.setAttribute('review_yeti.engine', 'composed');
 
-    const hunkResult = filterDiffHunks(changedFiles);
-    const origMap = new Map(changedFiles.map((cf) => [cf.path, cf as any]));
-    const effectiveFiles = hunkResult.files
-      .filter((f) => f.status !== 'ignored')
-      .map((f) => {
-        const orig = origMap.get(f.path);
-        return {
-          path: f.path,
-          patch: f.patch,
-          content: f.content,
-          mode: orig?.mode,
-          isSubmodule: orig?.isSubmodule,
-          submoduleCandidate: orig?.submoduleCandidate,
-          size: orig?.size,
-          byteSize: orig?.byteSize,
-          originalPatchLength: f.originalPatchLength,
-        };
-      });
+    // Same reviewable-file projection (repository path_filters included) as the
+    // panel engine and the service's trusted completion context.
+    const { files: effectiveFiles } = buildEffectiveReviewFiles(changedFiles as any, {
+      pathFilters: config.path_filters,
+    });
 
     // Zero-lane non-evidence: byte-identical decision rule to executePersonaPanel's. Short-circuit
     // before any provider call, exactly as the fan-out path does.

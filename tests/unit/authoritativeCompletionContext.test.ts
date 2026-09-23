@@ -122,6 +122,64 @@ describe('service-owned authoritative completion context', () => {
     });
   });
 
+  // REL-1058: the service must reach the worker's applicability decision, not
+  // a separately derived one, or a failed or passing worker result for the
+  // same head cannot be acknowledged (REL-1056).
+  it('applies the audited documentation exemption to a docs-only .mdx change', async () => {
+    const f = fixture({}, prepared(3, 'architecture,security'));
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'docusaurus/docs/deployment/appliance-firewall-requirements.mdx', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      expectedFileCount: 1,
+    });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage).toMatchObject({ expectedPersonaIds: ['arch-lane', 'sec-lane'], coverageComplete: true });
+  });
+
+  it('requires the architecture lane for a submodule pointer bump', async () => {
+    const f = fixture({}, prepared(3, 'architecture,security,documentation'));
+    const gitlinkDiff = 'diff --git a/ct-dashboard b/ct-dashboard\nindex 6c3f36d89d..f84610fbbf 160000\n'
+      + '--- a/ct-dashboard\n+++ b/ct-dashboard\n@@ -1 +1 @@\n'
+      + '-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n'
+      + '+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: gitlinkDiff, expectedFileCount: 1 });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage.expectedPersonaIds).toEqual(['arch-lane']);
+  });
+
+  it('routes a pointer bump to the required lane when the roster has no architecture persona', async () => {
+    const f = fixture({}, prepared(3, 'security,documentation'));
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb' }],
+      expectedFileCount: 1,
+    });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage.expectedPersonaIds).toEqual(['sec-lane']);
+  });
+
+  it('keeps gitlink mode metadata the worker sees instead of dropping it in the hunk filter', async () => {
+    const f = fixture({}, prepared(3, 'architecture,security'));
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current },
+      diff: '',
+      changedFiles: [{ path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-6c3f36d\n+f84610f', mode: '160000', isSubmodule: true }],
+      expectedFileCount: 1,
+    });
+
+    const context = await f.context(f.gate);
+
+    expect(context.coverage.expectedPersonaIds).toEqual(['arch-lane']);
+  });
+
   it('fails closed when every changed file is excluded by the shared hunk filter', async () => {
     const f = fixture();
     f.exactCurrentDiff.mockResolvedValue({

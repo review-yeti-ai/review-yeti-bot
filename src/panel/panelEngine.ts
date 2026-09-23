@@ -23,7 +23,6 @@ import type { WorkerFailureClass } from '../types/workerFailure';
 // `../gateway/omniRouteClient` and `../gateway/openRouterClient` were fixed for (REL-892 finding 1).
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import { runInSpan, getMetrics } from '../telemetry';
-import { filterDiffHunks } from '../pipeline/hunkFilter';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../personas/redTeamPersona';
@@ -33,12 +32,11 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { validateReviewFindings } from '../review/reviewCore';
 import { isDocumentationOrAssetPath } from '../review/reviewableContent';
 import {
-  deriveApplicablePersonas,
   isSubmoduleEntry,
   isArchitecturePersona,
   personaCoversFile,
   scopeFilesForPersona,
-  computeUnmatchedPaths,
+  resolveReviewApplicability,
 } from '../review/personaApplicability';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
@@ -3470,45 +3468,33 @@ export async function executePersonaPanel(options: {
       span.setAttribute('review_yeti.head_sha', headSha);
       span.setAttribute('review_yeti.repository_visibility', repositoryVisibility);
 
-    const hunkResult = filterDiffHunks(changedFiles);
-    const origMap = new Map(changedFiles.map((cf) => [cf.path, cf as any]));
-    const effectiveFiles = hunkResult.files
-      .filter((f) => f.status !== 'ignored')
-      .map((f) => {
-        const orig = origMap.get(f.path);
-        return {
-          path: f.path,
-          patch: f.patch,
-          content: f.content,
-          mode: orig?.mode,
-          isSubmodule: orig?.isSubmodule,
-          submoduleCandidate: orig?.submoduleCandidate,
-          size: orig?.size,
-          byteSize: orig?.byteSize,
-          originalPatchLength: f.originalPatchLength,
-        };
-      });
-
-    const budget = evaluateEffortAndBudget(effectiveFiles, config);
-    span.setAttribute('review_yeti.token_budget.effort_tier', budget.effortTier);
-    span.setAttribute('review_yeti.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
-    span.setAttribute('review_yeti.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
-
     const enabledPersonas = options.deterministicRoster
       ? config.personas.filter((persona) => persona.enabled)
       : config.personas.filter((persona) => {
         const storePersona = dashboardStore.getPersonaSetting(persona.id);
         return storePersona ? storePersona.enabled !== false : persona.enabled;
       });
-    let applicable = deriveApplicablePersonas(enabledPersonas, effectiveFiles);
+    // The same applicability decision -- same file projection, same repository
+    // path_filters, same gitlink policy -- the service's trusted completion
+    // context derives, so the lanes this worker runs and the lanes the service
+    // requires cannot disagree (REL-1056 / REL-1058).
+    const applicability = resolveReviewApplicability(enabledPersonas, changedFiles as any, {
+      pathFilters: config.path_filters,
+    });
+    const hunkResult = applicability.hunkResult;
+    const effectiveFiles = applicability.effectiveFiles;
+
+    const budget = evaluateEffortAndBudget(effectiveFiles, config);
+    span.setAttribute('review_yeti.token_budget.effort_tier', budget.effortTier);
+    span.setAttribute('review_yeti.token_budget.tokens_saved', hunkResult.stats.tokensSaved);
+    span.setAttribute('review_yeti.token_budget.reduction_percentage', hunkResult.stats.reductionPercentage);
+
+    let applicable = applicability.applicable;
     span.setAttribute('review_yeti.persona_count', applicable.length);
     span.setAttribute('review_yeti.quorum_required', config.quorum);
 
     if (applicable.length === 0) {
-      const allNonCode = effectiveFiles.length > 0 && effectiveFiles.every((f: any) =>
-        isDocumentationOrAssetPath(f.path || f.filePath || '')
-      );
-      if (!allNonCode) {
+      if (!applicability.noReviewableContent) {
         // Name the paths nobody covers, and classify this as a contract
         // problem rather than a worker fault.
         //
@@ -3523,7 +3509,7 @@ export async function executePersonaPanel(options: {
         // nobody is reviewing that file, which is a persona coverage gap to
         // fix, not something to wave through. The fix is to extend the
         // persona's paths -- so the message now says which paths to extend.
-        const unmatched = computeUnmatchedPaths(effectiveFiles, enabledPersonas);
+        const unmatched = applicability.unmatchedPaths;
         const shown = unmatched.slice(0, 10);
         const overflow = unmatched.length - shown.length;
         const pathList = shown.join(', ') + (overflow > 0 ? `, +${overflow} more` : '');

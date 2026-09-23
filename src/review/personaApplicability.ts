@@ -1,5 +1,6 @@
 import type { CtReviewConfigV3 } from '../config/schema';
 import { matchOne } from '../pipeline/domainIndex';
+import { filterDiffHunks, type HunkFilterResult } from '../pipeline/hunkFilter';
 import { isDocumentationOrAssetPath } from './reviewableContent';
 import { isSubmodulePatch } from './submodulePatch';
 
@@ -67,6 +68,35 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
 }
 
 /**
+ * Gitlink (submodule pointer) policy, REL-1058.
+ *
+ * A gitlink changes no file content in this repository -- only the pinned
+ * commit of another one. It is still a real dependency change, so it is routed
+ * to a lane rather than exempted: an architecture persona reviews the pinned
+ * old -> new commit transition carried in the gitlink patch.
+ *
+ * A roster with no architecture persona would otherwise leave a pointer bump
+ * covered by nobody and fail every run deterministically as "unmatched
+ * source". Instead the bump is routed, deterministically, to the roster's
+ * required personas (security by default -- a pointer bump is a supply-chain
+ * change), or to the first enabled persona when none is required. A roster
+ * that already has an architecture persona is returned unchanged.
+ *
+ * The routing is expressed through the existing `coversSubmodules` capability,
+ * so applicability, per-lane file scoping and unmatched-path reporting all
+ * follow it without further special cases. Worker and service both reach it
+ * through `resolveReviewApplicability`, so they cannot disagree.
+ */
+export function withGitlinkCoverage<P extends { id: string; required?: boolean; charter?: string; coversSubmodules?: boolean }>(
+  personas: readonly P[],
+): P[] {
+  if (personas.length === 0 || personas.some(isArchitecturePersona)) return [...personas];
+  const required = personas.filter((persona) => persona.required === true);
+  const owners = new Set((required.length > 0 ? required : [personas[0]]).map((persona) => persona.id));
+  return personas.map((persona) => (owners.has(persona.id) ? { ...persona, coversSubmodules: true } : persona));
+}
+
+/**
  * Derive the exact immutable-config persona roster for a set of reviewable
  * paths. Ordering follows the prepared policy so worker and service evidence
  * share one canonical lane order.
@@ -109,5 +139,109 @@ export function computeUnmatchedPaths(
     .filter((p) => !isDocumentationOrAssetPath(p));
 }
 
+export interface ReviewApplicabilityInputFile {
+  path: string;
+  patch?: string;
+  content?: string;
+  mode?: string;
+  isSubmodule?: boolean;
+  submoduleCandidate?: boolean;
+  size?: number;
+  byteSize?: number;
+}
 
+export interface EffectiveReviewFile {
+  path: string;
+  patch?: string;
+  content?: string;
+  mode?: string;
+  isSubmodule?: boolean;
+  submoduleCandidate?: boolean;
+  size?: number;
+  byteSize?: number;
+  originalPatchLength: number;
+}
 
+/**
+ * The single reviewable-file projection shared by every engine and by the
+ * service's completion path: the repository's `path_filters` plus the shared
+ * lockfile/generated-file hunk filter, with the gitlink metadata (mode,
+ * submodule flags) carried through. Dropping that metadata on one side and not
+ * the other is exactly how the worker and the service came to disagree about
+ * which personas apply (REL-1056 / REL-1058).
+ */
+export function buildEffectiveReviewFiles(
+  changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
+  options: { pathFilters?: readonly string[] } = {},
+): { files: EffectiveReviewFile[]; hunkResult: HunkFilterResult } {
+  // Only a validated string list narrows the review. Anything else (absent, or
+  // an unvalidated config shape) filters nothing -- it can never widen what is
+  // excluded from review.
+  const pathFilters = Array.isArray(options.pathFilters)
+    ? options.pathFilters.filter((pattern): pattern is string => typeof pattern === 'string' && pattern.length > 0)
+    : [];
+  const hunkResult = filterDiffHunks(
+    changedFiles.map((file) => ({ path: file.path, patch: file.patch, content: file.content })),
+    { path_filters: pathFilters },
+  );
+  const origMap = new Map(changedFiles.map((file) => [file.path, file]));
+  const files = hunkResult.files
+    .filter((file) => file.status !== 'ignored')
+    .map((file) => {
+      const orig = origMap.get(file.path);
+      return {
+        path: file.path,
+        patch: file.patch,
+        content: file.content,
+        mode: orig?.mode,
+        isSubmodule: orig?.isSubmodule,
+        submoduleCandidate: orig?.submoduleCandidate,
+        size: orig?.size,
+        byteSize: orig?.byteSize,
+        originalPatchLength: file.originalPatchLength,
+      };
+    });
+  return { files, hunkResult };
+}
+
+export interface ReviewApplicability<P> {
+  effectiveFiles: EffectiveReviewFile[];
+  hunkResult: HunkFilterResult;
+  /** Applicable personas in roster order, carrying any gitlink routing capability. */
+  applicable: P[];
+  /**
+   * Zero lanes apply and every reviewable path is documentation, an asset, a
+   * run artifact or data: the audited no-reviewable-content exemption.
+   */
+  noReviewableContent: boolean;
+  /** Analyzable paths no enabled persona covers (empty unless zero lanes apply). */
+  unmatchedPaths: string[];
+}
+
+/**
+ * The one persona-applicability decision. The worker panel and the service's
+ * trusted completion context both call this with the same enabled roster and
+ * the same repository options, so the lanes a worker runs and the lanes the
+ * service requires are derived by the same code from the same inputs.
+ */
+export function resolveReviewApplicability<P extends ReviewPersona>(
+  enabledPersonas: readonly P[],
+  changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
+  options: { pathFilters?: readonly string[] } = {},
+): ReviewApplicability<P> {
+  const { files: effectiveFiles, hunkResult } = buildEffectiveReviewFiles(changedFiles, options);
+  const roster = withGitlinkCoverage(enabledPersonas);
+  const applicable = deriveApplicablePersonas(roster, effectiveFiles) as P[];
+  if (applicable.length > 0) {
+    return { effectiveFiles, hunkResult, applicable, noReviewableContent: false, unmatchedPaths: [] };
+  }
+  const noReviewableContent = effectiveFiles.length > 0
+    && effectiveFiles.every((file) => isDocumentationOrAssetPath(file.path));
+  return {
+    effectiveFiles,
+    hunkResult,
+    applicable,
+    noReviewableContent,
+    unmatchedPaths: noReviewableContent ? [] : computeUnmatchedPaths(effectiveFiles, roster),
+  };
+}
