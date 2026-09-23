@@ -1956,6 +1956,70 @@ describe('parseChangedFiles', () => {
     expect(files).toEqual([]);
     expect(unreadable).toEqual(['diff --git nonsense']);
   });
+
+  it('reads a submodule gitlink diff with mode 160000 and marks isSubmodule: true', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/ct-dashboard b/ct-dashboard\n' +
+      'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
+      '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('ct-dashboard');
+    expect(files[0].mode).toBe('160000');
+    expect(files[0].isSubmodule).toBe(true);
+  });
+
+  it('reads a newly added submodule diff with new file mode 160000', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/new-sub b/new-sub\n' +
+      'new file mode 160000\nindex 0000000..f84610f\n--- /dev/null\n+++ b/new-sub\n' +
+      '@@ -0,0 +1 @@\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('new-sub');
+    expect(files[0].mode).toBe('160000');
+    expect(files[0].isSubmodule).toBe(true);
+  });
+
+  it('reads a deleted submodule diff with deleted file mode 160000', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/old-sub b/old-sub\n' +
+      'deleted file mode 160000\nindex f84610f..0000000\n--- a/old-sub\n+++ /dev/null\n' +
+      '@@ -1 +0,0 @@\n-Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('old-sub');
+    expect(files[0].mode).toBe('160000');
+    expect(files[0].isSubmodule).toBe(true);
+  });
+
+  it('reads an ordinary new file with new file mode 100644 and marks isSubmodule: false', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/src/new.ts b/src/new.ts\n' +
+      'new file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/new.ts\n' +
+      '@@ -0,0 +1 @@\n+export const x = 1;\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('src/new.ts');
+    expect(files[0].mode).toBe('100644');
+    expect(files[0].isSubmodule).toBeUndefined();
+  });
+
+  it('reads mode change with old mode and new mode lines', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/run.sh b/run.sh\n' +
+      'old mode 100644\nnew mode 100755\n--- a/run.sh\n+++ b/run.sh\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('run.sh');
+    expect(files[0].mode).toBe('100644');
+    expect(files[0].isSubmodule).toBeUndefined();
+  });
 });
 
 describe('hosted lane — repository visibility resolution', () => {

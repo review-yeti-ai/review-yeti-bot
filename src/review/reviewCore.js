@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { compareClaims } = require('./claimSimilarity');
+const { isSubmodulePatch } = require('./submodulePatch');
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 
 function canonicalize(value) {
@@ -61,7 +62,14 @@ function changedLineNumbers(patch) {
 }
 
 function isGitlinkFile(file) {
-  return Boolean(file && (file.isSubmodule === true || String(file.mode || '') === '160000'));
+  return Boolean(
+    file && (
+      file.isSubmodule === true ||
+      file.submoduleCandidate === true ||
+      String(file.mode || '') === '160000' ||
+      isSubmodulePatch(file.patch)
+    )
+  );
 }
 
 /** Preserve exact replacement text; unsafe metadata must never become a partial patch. */

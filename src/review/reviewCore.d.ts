@@ -34,6 +34,7 @@ export interface ReviewChangedFile {
    */
   mode?: string;
   isSubmodule?: boolean;
+  submoduleCandidate?: boolean;
 }
 
 export interface ReviewLane {
