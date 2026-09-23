@@ -8,6 +8,14 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { sha256 } from '../../src/review/reviewCore';
 import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
+import * as personaApplicability from '../../src/review/personaApplicability';
+
+// Pass-through wrapper so a test can observe the options the service hands to
+// the shared applicability decision (REL-1058). Behaviour is the real one.
+vi.mock('../../src/review/personaApplicability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/review/personaApplicability')>();
+  return { ...actual, resolveReviewApplicability: vi.fn(actual.resolveReviewApplicability) };
+});
 
 const target = { repositoryId: 123, owner: 'example', repo: 'candidate', prNumber: 42,
   headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
@@ -178,6 +186,20 @@ describe('service-owned authoritative completion context', () => {
     const context = await f.context(f.gate);
 
     expect(context.coverage.expectedPersonaIds).toEqual(['arch-lane']);
+  });
+
+  it('derives applicability through the shared decision with the admitted config roster and path_filters', async () => {
+    const spy = vi.mocked(personaApplicability.resolveReviewApplicability);
+    spy.mockClear();
+    const f = fixture();
+
+    await f.context(f.gate);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [personas, files, options] = spy.mock.calls[0];
+    expect(personas.map((persona) => persona.id)).toEqual(['sec-lane', 'qual-lane']);
+    expect(files.map((file) => file.path)).toEqual(['src/a.ts']);
+    expect(options).toEqual({ pathFilters: f.stored.config.path_filters });
   });
 
   it('fails closed when every changed file is excluded by the shared hunk filter', async () => {

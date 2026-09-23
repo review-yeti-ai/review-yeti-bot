@@ -210,4 +210,18 @@ describe('REL-1058: one applicability decision for worker and service', () => {
     expect(result.noReviewableContent).toBe(false);
     expect(result.unmatchedPaths).toEqual(['ct-dashboard']);
   });
+
+  it('ignores malformed path_filters entries rather than widening what is excluded', () => {
+    const files = [{ path: 'inventory/lab.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' }];
+    for (const pathFilters of [[''], [42, null, {}], 'inventory/**', { rules: [] }] as unknown[]) {
+      const result = resolveReviewApplicability(enabled('architecture,security'), files, { pathFilters: pathFilters as string[] });
+      expect(result.effectiveFiles.map((file) => file.path)).toEqual(['inventory/lab.lua']);
+      expect(result.unmatchedPaths).toEqual(['inventory/lab.lua']);
+    }
+    // Valid entries alongside malformed ones still apply.
+    const mixed = resolveReviewApplicability(enabled('architecture,security'), files, {
+      pathFilters: ['', 7, 'inventory/**'] as unknown as string[],
+    });
+    expect(mixed.effectiveFiles).toEqual([]);
+  });
 });
