@@ -47,10 +47,12 @@ export function isArchitecturePersona(persona: unknown): boolean {
  * the persona is an architecture lane.
  */
 export function personaCoversFile(
-  persona: { paths: readonly string[]; id?: string; charter?: string; coversSubmodules?: boolean },
+  persona: { paths: readonly string[]; id?: string; charter?: string; coversSubmodules?: boolean; routedPaths?: readonly string[] },
   file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string } | null | undefined,
 ): boolean {
   if (!file) return false;
+  // Exact per-diff routing assigned by routeOrphanedReviewFiles.
+  if (persona.routedPaths?.includes(file.path)) return true;
   if (isArchitecturePersona(persona) && isSubmoduleEntry(file)) {
     return true;
   }
@@ -68,32 +70,47 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
 }
 
 /**
- * Gitlink (submodule pointer) policy, REL-1058.
+ * Files that must be reviewed by some lane even when no persona's paths cover
+ * them, instead of failing the run as unmatched source (REL-1058):
  *
- * A gitlink changes no file content in this repository -- only the pinned
- * commit of another one. It is still a real dependency change, so it is routed
- * to a lane rather than exempted: an architecture persona reviews the pinned
- * old -> new commit transition carried in the gitlink patch.
- *
- * A roster with no architecture persona would otherwise leave a pointer bump
- * covered by nobody and fail every run deterministically as "unmatched
- * source". Instead the bump is routed, deterministically, to the roster's
- * required personas (security by default -- a pointer bump is a supply-chain
- * change), or to the first enabled persona when none is required. A roster
- * that already has an architecture persona is returned unchanged.
- *
- * The routing is expressed through the existing `coversSubmodules` capability,
- * so applicability, per-lane file scoping and unmatched-path reporting all
- * follow it without further special cases. Worker and service both reach it
- * through `resolveReviewApplicability`, so they cannot disagree.
+ * - Submodule gitlinks. A pointer bump changes no file content here, only the
+ *   pinned commit of another repository, but it is still a dependency change.
+ *   The architecture persona covers gitlinks natively (it reviews the pinned
+ *   old -> new commit carried in the gitlink patch).
+ * - `.mdx` pages. MDX is documentation, but it compiles to a component module
+ *   (imports, exports, JSX expressions run in the docs build), so it is never
+ *   exempted as inert prose. A documentation persona covers it natively.
  */
-export function withGitlinkCoverage<P extends { id: string; required?: boolean; charter?: string; coversSubmodules?: boolean }>(
+export function isFallbackRoutedFile(file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }): boolean {
+  return isSubmoduleEntry(file) || /\.mdx$/iu.test(file.path);
+}
+
+/**
+ * Deterministic owner for fallback-routed files no enabled persona covers: the
+ * roster's required personas (security by default -- a pointer bump is a
+ * supply-chain change, MDX is executable), or the first enabled persona when
+ * none is required. Personas are returned unchanged when nothing is orphaned,
+ * so a roster that already covers these files is never widened.
+ *
+ * Routing is expressed as exact per-diff `routedPaths`, so applicability,
+ * per-lane file scoping and unmatched-path reporting all follow it. Worker and
+ * service both reach it through `resolveReviewApplicability`, so they cannot
+ * disagree.
+ */
+export function routeOrphanedReviewFiles<P extends { id: string; required?: boolean; paths: readonly string[]; charter?: string; coversSubmodules?: boolean; routedPaths?: readonly string[] }>(
   personas: readonly P[],
+  files: ReadonlyArray<{ path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }>,
 ): P[] {
-  if (personas.length === 0 || personas.some(isArchitecturePersona)) return [...personas];
+  if (personas.length === 0) return [...personas];
+  const orphans = files
+    .filter((file) => isFallbackRoutedFile(file) && !personas.some((persona) => personaCoversFile(persona, file)))
+    .map((file) => file.path);
+  if (orphans.length === 0) return [...personas];
   const required = personas.filter((persona) => persona.required === true);
   const owners = new Set((required.length > 0 ? required : [personas[0]]).map((persona) => persona.id));
-  return personas.map((persona) => (owners.has(persona.id) ? { ...persona, coversSubmodules: true } : persona));
+  return personas.map((persona) => (owners.has(persona.id)
+    ? { ...persona, routedPaths: [...(persona.routedPaths ?? []), ...orphans] }
+    : persona));
 }
 
 /**
@@ -230,7 +247,7 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
   options: { pathFilters?: readonly string[] } = {},
 ): ReviewApplicability<P> {
   const { files: effectiveFiles, hunkResult } = buildEffectiveReviewFiles(changedFiles, options);
-  const roster = withGitlinkCoverage(enabledPersonas);
+  const roster = routeOrphanedReviewFiles(enabledPersonas, effectiveFiles);
   const applicable = deriveApplicablePersonas(roster, effectiveFiles) as P[];
   if (applicable.length > 0) {
     return { effectiveFiles, hunkResult, applicable, noReviewableContent: false, unmatchedPaths: [] };

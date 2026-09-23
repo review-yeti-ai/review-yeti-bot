@@ -133,7 +133,7 @@ describe('service-owned authoritative completion context', () => {
   // REL-1058: the service must reach the worker's applicability decision, not
   // a separately derived one, or a failed or passing worker result for the
   // same head cannot be acknowledged (REL-1056).
-  it('applies the audited documentation exemption to a docs-only .mdx change', async () => {
+  it('routes a docs-only .mdx change to the required lane instead of exempting or failing it', async () => {
     const f = fixture({}, prepared(3, 'architecture,security'));
     f.exactCurrentDiff.mockResolvedValue({
       current: { ...current },
@@ -144,7 +144,7 @@ describe('service-owned authoritative completion context', () => {
 
     const context = await f.context(f.gate);
 
-    expect(context.coverage).toMatchObject({ expectedPersonaIds: ['arch-lane', 'sec-lane'], coverageComplete: true });
+    expect(context.coverage).toMatchObject({ expectedPersonaIds: ['sec-lane'], coverageComplete: true });
   });
 
   it('requires the architecture lane for a submodule pointer bump', async () => {

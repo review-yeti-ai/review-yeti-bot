@@ -7,7 +7,7 @@ import { parseChangedFiles } from '../../src/review/changedFiles';
 import {
   resolveReviewApplicability,
   scopeFilesForPersona,
-  withGitlinkCoverage,
+  routeOrphanedReviewFiles,
 } from '../../src/review/personaApplicability';
 import { isDocumentationOrAssetPath } from '../../src/review/reviewableContent';
 
@@ -16,7 +16,7 @@ import { isDocumentationOrAssetPath } from '../../src/review/reviewableContent';
  * deterministically with "no enabled persona applies to the changed paths".
  *
  *  (a) calltelemetry/vitepress#238 -- a docs-only `.mdx` change against the
- *      roster [arch-lane, sec-lane]; `.mdx` was not classified as documentation.
+ *      roster [arch-lane, sec-lane]; no persona covered `.mdx`.
  *  (b) calltelemetry/ai-workspace#3097/#3103 -- a change whose only path is the
  *      `ct-dashboard` submodule gitlink.
  */
@@ -39,8 +39,6 @@ const unreachableClient = new Proxy({}, {
 
 describe('REL-1058: documentation extensions', () => {
   it.each([
-    MDX_PATH,
-    'docs/guide/intro.MDX',
     'manual/install.asciidoc',
     'assets/diagram.webp',
     'assets/hero.avif',
@@ -49,6 +47,9 @@ describe('REL-1058: documentation extensions', () => {
   });
 
   it.each([
+    MDX_PATH, // compiles to a component module: routed to a lane, never exempt
+    'docs/guide/intro.MDX',
+    'content/reference.mdoc',
     '.cursor/rules/review.mdc', // agent operating policy, not prose
     'src/components/Callout.jsx',
     'docusaurus/docusaurus.config.ts',
@@ -56,38 +57,48 @@ describe('REL-1058: documentation extensions', () => {
   ])('keeps %s analyzable', (path) => {
     expect(isDocumentationOrAssetPath(path)).toBe(false);
   });
+});
 
-  it('approves a docs-only .mdx change deterministically against the vitepress#238 roster', async () => {
-    const config = roster('architecture,security');
-    expect(config.personas.map((persona) => persona.id)).toEqual(['arch-lane', 'sec-lane']);
+describe('REL-1058: .mdx policy', () => {
+  const mdx = { path: MDX_PATH, patch: '@@ -1 +1 @@\n-Old firewall table\n+New firewall table\n' };
 
-    const result = await executePersonaPanel({
-      config,
-      changedFiles: [{ path: MDX_PATH, patch: '@@ -1 +1 @@\n-Old firewall table\n+New firewall table\n' }],
-      repository: 'calltelemetry/vitepress',
-      headSha: '0cd93c2f56e26926c4708e8d9b06a5baf0493799',
-      client: unreachableClient,
-      deterministicRoster: true,
-    });
+  it('routes an uncovered .mdx page to the required lane (vitepress#238 roster)', () => {
+    const personas = enabled('architecture,security');
+    expect(personas.map((persona) => persona.id)).toEqual(['arch-lane', 'sec-lane']);
 
-    expect(result.arbiter.verdict).toBe('SHIP');
-    expect((result as { documentationOnly?: boolean }).documentationOnly).toBe(true);
-    expect(result.applicablePersonaIds).toEqual([]);
+    const result = resolveReviewApplicability(personas, [mdx]);
+
+    expect(result.applicable.map((persona) => persona.id)).toEqual(['sec-lane']);
+    expect(result.noReviewableContent).toBe(false);
+    expect(result.unmatchedPaths).toEqual([]);
+    expect(scopeFilesForPersona(result.applicable[0], result.effectiveFiles).map((file) => file.path))
+      .toEqual([MDX_PATH]);
   });
 
-  it('still fails closed for an analyzable path next to the .mdx', async () => {
-    await expect(executePersonaPanel({
-      config: roster('architecture,security'),
-      changedFiles: [
-        { path: MDX_PATH, patch: '@@ -1 +1 @@\n-a\n+b\n' },
-        { path: 'inventory/lab.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' },
-      ],
-      repository: 'calltelemetry/vitepress',
-      headSha: 'a'.repeat(40),
-      client: unreachableClient,
-      deterministicRoster: true,
-    })).rejects.toThrow(/no enabled persona applies.*inventory\/lab\.lua/);
+  it('leaves .mdx with the documentation persona when the roster has one', () => {
+    const result = resolveReviewApplicability(enabled('architecture,security,documentation'), [mdx]);
+    expect(result.applicable.map((persona) => persona.id)).toEqual(['documentation']);
+    expect(result.applicable[0]).not.toHaveProperty('routedPaths');
   });
+
+  it('reaches a real lane for a docs-only .mdx panel run instead of failing or auto-approving', async () => {
+    let caught: unknown;
+    try {
+      await executePersonaPanel({
+        config: roster('architecture,security'),
+        changedFiles: [mdx],
+        repository: 'calltelemetry/vitepress',
+        headSha: '0cd93c2f56e26926c4708e8d9b06a5baf0493799',
+        client: unreachableClient,
+        deterministicRoster: true,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toMatch(/no enabled persona applies/);
+    expect((caught as Error).message).toMatch(/persona sec-lane failed closed: .*must not be consulted/);
+  }, 60_000);
 });
 
 describe('REL-1058: submodule gitlink policy', () => {
@@ -119,7 +130,8 @@ describe('REL-1058: submodule gitlink policy', () => {
 
   it('does not reroute ordinary files or widen a roster that has an architecture persona', () => {
     const withArch = enabled('architecture,security');
-    expect(withGitlinkCoverage(withArch)).toEqual(withArch);
+    const [link] = parseChangedFiles(GITLINK_DIFF).files;
+    expect(routeOrphanedReviewFiles(withArch, [link])).toEqual(withArch);
 
     const result = resolveReviewApplicability(enabled('security,documentation'), [
       { path: 'inventory/lab.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' },
@@ -164,21 +176,21 @@ describe('REL-1058: one applicability decision for worker and service', () => {
   it('applies the repository path_filters', () => {
     const files = [
       { path: 'vendor/generated/client.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' },
-      { path: 'docs/readme.mdx', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+      { path: 'docs/readme.md', patch: '@@ -1 +1 @@\n-a\n+b\n' },
     ];
     const unfiltered = resolveReviewApplicability(enabled('architecture,security'), files);
     expect(unfiltered.noReviewableContent).toBe(false);
     expect(unfiltered.unmatchedPaths).toEqual(['vendor/generated/client.lua']);
 
     const filtered = resolveReviewApplicability(enabled('architecture,security'), files, { pathFilters: ['vendor/**'] });
-    expect(filtered.effectiveFiles.map((file) => file.path)).toEqual(['docs/readme.mdx']);
+    expect(filtered.effectiveFiles.map((file) => file.path)).toEqual(['docs/readme.md']);
     expect(filtered.noReviewableContent).toBe(true);
   });
 
   it('the composed engine narrows by the same repository path_filters', async () => {
     const changedFiles = [
       { path: 'vendor/generated/client.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' },
-      { path: 'docs/readme.mdx', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+      { path: 'docs/readme.md', patch: '@@ -1 +1 @@\n-a\n+b\n' },
     ];
     const base = roster('architecture,security');
     const run = (config: typeof base) => executeComposedReview({
@@ -203,7 +215,7 @@ describe('REL-1058: one applicability decision for worker and service', () => {
 
   it('handles an empty enabled roster without routing or crashing', () => {
     const [gitlink] = parseChangedFiles(GITLINK_DIFF).files;
-    expect(withGitlinkCoverage([])).toEqual([]);
+    expect(routeOrphanedReviewFiles([], [gitlink])).toEqual([]);
     const result = resolveReviewApplicability([], [gitlink]);
     expect(result.applicable).toEqual([]);
     expect(result.noReviewableContent).toBe(false);
@@ -227,7 +239,7 @@ describe('REL-1058: one applicability decision for worker and service', () => {
   it('the panel engine narrows by the same repository path_filters', async () => {
     const changedFiles = [
       { path: 'vendor/generated/client.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' },
-      { path: 'docs/readme.mdx', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+      { path: 'docs/readme.md', patch: '@@ -1 +1 @@\n-a\n+b\n' },
     ];
     const base = roster('architecture,security');
     const run = (config: typeof base) => executePersonaPanel({

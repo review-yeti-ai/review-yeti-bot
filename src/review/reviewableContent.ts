@@ -1,18 +1,17 @@
 /**
  * Prose documentation formats and static image/diagram assets.
  *
- * REL-1058: `.mdx` (Docusaurus/VitePress/Nextra pages) is Markdown
- * documentation, exempt only when no enabled persona covers it -- a
- * documentation persona's globs include it; `.asciidoc` is the long form of
- * `.adoc`; `.webp` and `.avif` are image assets. Missing them made a docs-only pull request
- * look like unmatched source and fail every review deterministically.
+ * REL-1058: `.asciidoc` is the long form of `.adoc`; `.webp` and `.avif` are
+ * image assets.
  *
- * Deliberately NOT listed: `.mdc` (Cursor rule files are agent operating
- * policy, not prose documentation) and anything that can execute or configure
+ * Deliberately NOT listed: `.mdx` and `.mdoc` (they compile to executable
+ * component modules; an uncovered `.mdx` is routed to a lane instead, see
+ * `isFallbackRoutedFile`), `.mdc` (Cursor rule files are agent operating
+ * policy, not prose documentation), and anything that can execute or configure
  * a build.
  */
 const DOCUMENTATION_OR_ASSET_EXTENSION =
-  /\.(md|markdown|mdx|txt|rst|adoc|asciidoc|png|jpg|jpeg|gif|svg|ico|webp|avif|pdf|drawio)$/i;
+  /\.(md|markdown|txt|rst|adoc|asciidoc|png|jpg|jpeg|gif|svg|ico|webp|avif|pdf|drawio)$/i;
 
 /**
  * Returns true only for paths the review policy treats as non-analyzable content.
