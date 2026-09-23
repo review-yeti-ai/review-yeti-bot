@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
+import { executeComposedReview } from '../../src/panel/composedEngine';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { parseChangedFiles } from '../../src/review/changedFiles';
@@ -173,5 +174,40 @@ describe('REL-1058: one applicability decision for worker and service', () => {
     const filtered = resolveReviewApplicability(enabled('architecture,security'), files, { pathFilters: ['vendor/**'] });
     expect(filtered.effectiveFiles.map((file) => file.path)).toEqual(['docs/readme.mdx']);
     expect(filtered.noReviewableContent).toBe(true);
+  });
+
+  it('the composed engine narrows by the same repository path_filters', async () => {
+    const changedFiles = [
+      { path: 'vendor/generated/client.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+      { path: 'docs/readme.mdx', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+    ];
+    const base = roster('architecture,security');
+    const run = (config: typeof base) => executeComposedReview({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/vitepress',
+      headSha: 'c'.repeat(40),
+      client: unreachableClient,
+      // Past the zero-lane decision, a stale head aborts before any provider call.
+      isCurrentHead: () => false,
+    });
+
+    // Unfiltered, the .lua path is analyzable, so the run proceeds past the
+    // zero-lane decision.
+    await expect(run(base)).rejects.toThrow(/stale run aborted/);
+
+    // Filtered out, only documentation remains: the deterministic exemption.
+    const filtered = await run({ ...base, path_filters: ['vendor/**'] });
+    expect(filtered.arbiter.verdict).toBe('SHIP');
+    expect((filtered as { documentationOnly?: boolean }).documentationOnly).toBe(true);
+  });
+
+  it('handles an empty enabled roster without routing or crashing', () => {
+    const [gitlink] = parseChangedFiles(GITLINK_DIFF).files;
+    expect(withGitlinkCoverage([])).toEqual([]);
+    const result = resolveReviewApplicability([], [gitlink]);
+    expect(result.applicable).toEqual([]);
+    expect(result.noReviewableContent).toBe(false);
+    expect(result.unmatchedPaths).toEqual(['ct-dashboard']);
   });
 });
