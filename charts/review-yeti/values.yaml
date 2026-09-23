@@ -229,6 +229,8 @@ worker:
       cpu: 250m
       memory: 512Mi
     limits:
+      # Set to "" (or "none") to run workers with no CPU limit; the memory
+      # limit is always kept.
       cpu: 1000m
       memory: 1Gi
 

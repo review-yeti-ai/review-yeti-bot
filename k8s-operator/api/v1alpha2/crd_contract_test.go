@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -170,5 +171,98 @@ func TestV1Alpha2CRDExposesBoundedTimingReceipt(t *testing.T) {
 		if schema.Type != "string" || schema.Format != "date-time" {
 			t.Fatalf("timing.%s schema = %#v, want date-time string", field, schema)
 		}
+	}
+}
+
+// REL-1038: status.workerTermination must survive structural pruning (a field
+// missing from the schema is silently dropped by the API server) and stay
+// bounded so a worker's last log line cannot grow the object without limit.
+func TestV1Alpha2CRDExposesBoundedWorkerTermination(t *testing.T) {
+	status := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
+	termination, ok := status.Properties["workerTermination"]
+	if !ok {
+		t.Fatal("status.workerTermination is missing; the API server would prune the forensic record")
+	}
+	want := []string{"containerName", "exitCode", "finishedAt", "message", "nodeName", "observedAt", "podName", "podReason", "reason", "signal", "startedAt"}
+	got := make([]string, 0, len(termination.Properties))
+	for field := range termination.Properties {
+		got = append(got, field)
+	}
+	sort.Strings(got)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("workerTermination fields mismatch\n got: %v\nwant: %v", got, want)
+	}
+	if termination.XPreserveUnknownFields != nil && *termination.XPreserveUnknownFields {
+		t.Fatal("workerTermination must not preserve unknown fields")
+	}
+	bounds := map[string]int64{"message": 1024, "reason": 128, "podReason": 128, "podName": 253, "nodeName": 253, "containerName": 63}
+	for field, limit := range bounds {
+		schema := termination.Properties[field]
+		if schema.Type != "string" || schema.MaxLength == nil || *schema.MaxLength != limit {
+			t.Errorf("workerTermination.%s = type %q maxLength %v, want string bounded at %d", field, schema.Type, schema.MaxLength, limit)
+		}
+	}
+	for _, field := range []string{"exitCode", "signal"} {
+		if schema := termination.Properties[field]; schema.Type != "integer" || schema.Format != "int32" {
+			t.Errorf("workerTermination.%s = %#v, want int32", field, schema)
+		}
+	}
+	for _, field := range []string{"startedAt", "finishedAt", "observedAt"} {
+		if schema := termination.Properties[field]; schema.Type != "string" || schema.Format != "date-time" {
+			t.Errorf("workerTermination.%s = %#v, want date-time", field, schema)
+		}
+	}
+}
+
+// The Helm chart ships a hand-maintained copy of the CRD. A status field the
+// chart copy lacks is pruned on Helm-installed clusters, so workerTermination
+// must match the generated schema field for field (descriptions aside).
+func TestHelmChartCRDMatchesGeneratedWorkerTermination(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "charts", "review-yeti", "templates", "crd.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read chart CRD: %v", err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if !strings.Contains(line, "{{") {
+			kept = append(kept, line)
+		}
+	}
+	var chart apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal([]byte(strings.Join(kept, "\n")), &chart); err != nil {
+		t.Fatalf("parse chart CRD: %v", err)
+	}
+	var chartStatus *apiextensionsv1.JSONSchemaProps
+	for index := range chart.Spec.Versions {
+		if chart.Spec.Versions[index].Name == "v1alpha2" {
+			status := chart.Spec.Versions[index].Schema.OpenAPIV3Schema.Properties["status"]
+			chartStatus = &status
+		}
+	}
+	if chartStatus == nil {
+		t.Fatal("chart CRD has no v1alpha2 version")
+	}
+	generated := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"].Properties["workerTermination"]
+	fromChart, ok := chartStatus.Properties["workerTermination"]
+	if !ok {
+		t.Fatal("chart CRD lacks status.workerTermination (it must sit directly under status.properties)")
+	}
+	strip := func(schema apiextensionsv1.JSONSchemaProps) apiextensionsv1.JSONSchemaProps {
+		schema.Description = ""
+		required := append([]string(nil), schema.Required...)
+		sort.Strings(required)
+		schema.Required = required
+		properties := map[string]apiextensionsv1.JSONSchemaProps{}
+		for name, property := range schema.Properties {
+			property.Description = ""
+			properties[name] = property
+		}
+		schema.Properties = properties
+		return schema
+	}
+	if got, want := strip(fromChart), strip(generated); !reflect.DeepEqual(got, want) {
+		t.Fatalf("chart workerTermination schema drifted from config/crd/bases\nchart: %#v\n  gen: %#v", got, want)
 	}
 }

@@ -305,6 +305,56 @@ spec:
                     format: date-time
                     type: string
                 type: object
+              workerTermination:
+                description: |-
+                  WorkerTermination is the forensic record of the worker Pod's exit,
+                  captured before the worker Job's TTL is allowed to collect the Pod.
+                properties:
+                  containerName:
+                    maxLength: 63
+                    type: string
+                  exitCode:
+                    description: |-
+                      ExitCode is absent when the Pod ended before its container ever ran
+                      (for example an eviction or a deadline hit while the image was pulling).
+                    format: int32
+                    type: integer
+                  finishedAt:
+                    format: date-time
+                    type: string
+                  message:
+                    maxLength: 1024
+                    type: string
+                  nodeName:
+                    maxLength: 253
+                    type: string
+                  observedAt:
+                    format: date-time
+                    type: string
+                  podName:
+                    maxLength: 253
+                    type: string
+                  podReason:
+                    description: PodReason is the Pod-level reason (Evicted, DeadlineExceeded,
+                      ...).
+                    maxLength: 128
+                    type: string
+                  reason:
+                    description: |-
+                      Reason is the container termination reason (Completed, Error, OOMKilled,
+                      ContainerCannotRun, ...).
+                    maxLength: 128
+                    type: string
+                  signal:
+                    format: int32
+                    type: integer
+                  startedAt:
+                    format: date-time
+                    type: string
+                required:
+                - observedAt
+                - podName
+                type: object
             type: object
         required:
         - spec

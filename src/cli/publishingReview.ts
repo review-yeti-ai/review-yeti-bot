@@ -67,6 +67,7 @@ import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/t
 
 import { parseChangedFiles } from '../review/changedFiles';
 import { matchOne } from '../pipeline/domainIndex';
+import { renderWorkerLogLocator } from './workerLogLocator';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -838,6 +839,8 @@ export async function runPublishingReviewWorker(
   });
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
+  // REL-1038: where this worker's full log lives once its Pod is collected.
+  const workerLogLocator = renderWorkerLogLocator(env);
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
   // `reviewEngine`/`panelRunner` are resolved below, once `workerConfig` exists -- see
   // `resolveReviewEngine`'s doc comment for why this must read the resolved base-policy config
@@ -965,6 +968,7 @@ export async function runPublishingReviewWorker(
                       : []),
                   ]
                 : []),
+              ...(workerLogLocator ? [workerLogLocator] : []),
             ].join('\n\n'),
           });
         }
@@ -1662,7 +1666,7 @@ export async function runPublishingReviewWorker(
       checkId,
       conclusion,
       title,
-      summary: summaryParts.join('\n\n'),
+      summary: [...summaryParts, ...(workerLogLocator ? [workerLogLocator] : [])].join('\n\n'),
       text: renderFindingsMarkdown(findings, blocking.length),
       // Redundant today and deliberately kept: `sanitizeFinding` already drops
       // any finding whose path is not in `changedFiles`, so this filter removes
