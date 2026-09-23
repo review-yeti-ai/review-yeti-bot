@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.5...v1.84.6) (2026-09-23)
+
+
+### Bug Fixes
+
+* **review:** route .mdx and gitlink-only diffs to a lane instead of failing (REL-1058) ([#987](https://github.com/review-yeti-ai/review-yeti-bot/issues/987)) ([32183c5](https://github.com/review-yeti-ai/review-yeti-bot/commit/32183c5c5b3fdd249ce20b25483ad33bc3a2e7c5))
+
 ## [1.84.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.4...v1.84.5) (2026-09-23)
 
 
