@@ -86,17 +86,6 @@ export function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv): string {
     || value(env, 'BIFROST_BASE_URL') || value(env, 'OPENROUTER_BASE_URL');
 }
 
-/** Resolve the canonical webhook secret name.
- *
- * `GITHUB_WEBHOOK_SECRET` is what the app, the wizard and every synced
- * environment already use (see githubWebhookConfig and initWizard);
- * `WEBHOOK_SECRET` was a second spelling that no deployment sets, so a
- * readiness gate requiring it failed on a correct environment.
- */
-export function resolveWebhookSecret(env: NodeJS.ProcessEnv): string {
-  return value(env, 'GITHUB_WEBHOOK_SECRET') || value(env, 'WEBHOOK_SECRET');
-}
-
 /**
  * Both the base URL and the key are required: defaulting either one is refused
  * fail-closed, so a misconfigured lane cannot silently ship diffs to a vendor.
