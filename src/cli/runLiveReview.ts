@@ -27,6 +27,8 @@ import {
   runPublishingReviewWorker,
 } from './publishingReview';
 import { WorkerStatusPoller } from './workerStatusPoller';
+import { recordSupersededWorkerExit } from './workerSupersededExit';
+import { isReviewSuperseded } from '../review/reviewSupersession';
 import { GitHubInstallationClient } from '../github/installationClient';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
 import { flushMetrics } from '../telemetry/metrics';
@@ -1778,12 +1780,21 @@ export async function runWorker(
       // until the explicit URL is configured. A nonempty value still constructs the
       // strict adapter, so malformed configuration fails closed rather than opting
       // out silently.
-      const receipt = await runPublishingReviewWorker(workerEnv, {
-        checkClient,
-        signal: rootAbortController.signal,
-        isCurrentHead: poller ? () => poller.isCurrentHead() : undefined,
-        ...publishingWorkerAdapters(workerEnv, token),
-      });
+      let receipt: Awaited<ReturnType<typeof runPublishingReviewWorker>>;
+      try {
+        receipt = await runPublishingReviewWorker(workerEnv, {
+          checkClient,
+          signal: rootAbortController.signal,
+          isCurrentHead: poller ? () => poller.isCurrentHead() : undefined,
+          ...publishingWorkerAdapters(workerEnv, token),
+        });
+      } catch (error) {
+        // REL-1057: a newer head superseded this run. That is a terminal
+        // outcome, not a failure: end cleanly and tell the operator why.
+        if (!isReviewSuperseded(error)) throw error;
+        recordSupersededWorkerExit(error, workerEnv);
+        return;
+      }
       logger.info('Publishing review worker completed', {
         runId: receipt.runId,
         repo: receipt.repo,
