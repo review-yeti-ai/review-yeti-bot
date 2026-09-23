@@ -1,6 +1,7 @@
 import type { CtReviewConfigV3 } from '../config/schema';
 import { matchOne } from '../pipeline/domainIndex';
 import { isDocumentationOrAssetPath } from './reviewableContent';
+import { isSubmodulePatch } from './submodulePatch';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
 
@@ -24,7 +25,7 @@ export function isSubmoduleEntry(file: unknown): boolean {
     f.newMode === '160000' ||
     f.old_mode === '160000' ||
     f.new_mode === '160000' ||
-    (typeof f.patch === 'string' && (/\b160000\b/u.test(f.patch) || /^[+-]?\s*Subproject commit\b/mu.test(f.patch)))
+    isSubmodulePatch(f.patch)
   );
 }
 

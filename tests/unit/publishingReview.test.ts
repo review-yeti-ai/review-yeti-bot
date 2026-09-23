@@ -1969,6 +1969,57 @@ describe('parseChangedFiles', () => {
     expect(files[0].mode).toBe('160000');
     expect(files[0].isSubmodule).toBe(true);
   });
+
+  it('reads a newly added submodule diff with new file mode 160000', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/new-sub b/new-sub\n' +
+      'new file mode 160000\nindex 0000000..f84610f\n--- /dev/null\n+++ b/new-sub\n' +
+      '@@ -0,0 +1 @@\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('new-sub');
+    expect(files[0].mode).toBe('160000');
+    expect(files[0].isSubmodule).toBe(true);
+  });
+
+  it('reads a deleted submodule diff with deleted file mode 160000', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/old-sub b/old-sub\n' +
+      'deleted file mode 160000\nindex f84610f..0000000\n--- a/old-sub\n+++ /dev/null\n' +
+      '@@ -1 +0,0 @@\n-Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('old-sub');
+    expect(files[0].mode).toBe('160000');
+    expect(files[0].isSubmodule).toBe(true);
+  });
+
+  it('reads an ordinary new file with new file mode 100644 and marks isSubmodule: false', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/src/new.ts b/src/new.ts\n' +
+      'new file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/src/new.ts\n' +
+      '@@ -0,0 +1 @@\n+export const x = 1;\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('src/new.ts');
+    expect(files[0].mode).toBe('100644');
+    expect(files[0].isSubmodule).toBeUndefined();
+  });
+
+  it('reads mode change with old mode and new mode lines', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/run.sh b/run.sh\n' +
+      'old mode 100644\nnew mode 100755\n--- a/run.sh\n+++ b/run.sh\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('run.sh');
+    expect(files[0].mode).toBe('100644');
+    expect(files[0].isSubmodule).toBeUndefined();
+  });
 });
 
 describe('hosted lane — repository visibility resolution', () => {

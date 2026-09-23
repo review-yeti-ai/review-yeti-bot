@@ -7,7 +7,7 @@ import {
   computeUnmatchedPaths,
 } from '../../src/panel/panelEngine';
 import { deriveApplicablePersonas } from '../../src/review/personaApplicability';
-import { parseChangedFiles } from '../../src/review/changedFiles';
+import { parseChangedFiles, isSubmodulePatch } from '../../src/review/changedFiles';
 import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domainIndex';
 
 describe('Submodule Architecture Persona Routing', () => {
@@ -30,15 +30,24 @@ describe('Submodule Architecture Persona Routing', () => {
         'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
         '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
       expect(isSubmoduleEntry({ path: 'ct-dashboard', patch: gitPatch })).toBe(true);
-      expect(isSubmoduleEntry({ path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-Subproject commit abc\n+Subproject commit def\n' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-Subproject commit abc1234\n+Subproject commit def5678\n' })).toBe(true);
+      expect(isSubmodulePatch(gitPatch)).toBe(true);
     });
 
-    it('rejects ordinary files', () => {
+    it('rejects ordinary files and precision boundary cases', () => {
       expect(isSubmoduleEntry({ path: 'src/index.ts', mode: '100644' })).toBe(false);
       expect(isSubmoduleEntry({ path: 'README.md' })).toBe(false);
       expect(isSubmoduleEntry({ path: 'src/index.ts', patch: '@@ -1 +1 @@\n-console.log(1)\n+console.log(2)\n' })).toBe(false);
       expect(isSubmoduleEntry(null)).toBe(false);
       expect(isSubmoduleEntry(undefined)).toBe(false);
+
+      // Boundary precision: token 160000 inside code content must NOT match
+      expect(isSubmoduleEntry({ path: 'src/constants.ts', patch: '@@ -1 +1 @@\n+const PORT = 160000;\n' })).toBe(false);
+      expect(isSubmodulePatch('@@ -1 +1 @@\n+const PORT = 160000;\n')).toBe(false);
+
+      // Boundary precision: Subproject commit text inside documentation must NOT match
+      expect(isSubmoduleEntry({ path: 'docs/submodules.md', patch: '@@ -1 +1 @@\n+Subproject commit pointers are stored in the index\n' })).toBe(false);
+      expect(isSubmodulePatch('@@ -1 +1 @@\n+Subproject commit pointers are stored in the index\n')).toBe(false);
     });
   });
 

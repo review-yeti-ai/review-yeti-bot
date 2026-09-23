@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { compareClaims } = require('./claimSimilarity');
+const { isSubmodulePatch } = require('./submodulePatch');
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 
 function canonicalize(value) {
@@ -66,7 +67,7 @@ function isGitlinkFile(file) {
       file.isSubmodule === true ||
       file.submoduleCandidate === true ||
       String(file.mode || '') === '160000' ||
-      (typeof file.patch === 'string' && (/\b160000\b/u.test(file.patch) || /^[+-]?\s*Subproject commit\b/m.test(file.patch)))
+      isSubmodulePatch(file.patch)
     )
   );
 }

@@ -72,6 +72,9 @@ function pathFromChunk(chunk: string): string {
   return '';
 }
 
+import { isSubmodulePatch } from './submodulePatch';
+export { isSubmodulePatch } from './submodulePatch';
+
 export interface ChangedFile {
   path: string;
   patch: string;
@@ -99,7 +102,7 @@ export function parseChangedFiles(diff: string): { files: ChangedFile[]; unreada
     if (!chunk.startsWith('diff --git ')) continue;
     const path = pathFromChunk(chunk);
     const mode = extractMode(chunk);
-    const isSubmodule = mode === '160000' || /^[+-]?\s*Subproject commit\b/mu.test(chunk);
+    const isSubmodule = mode === '160000' || isSubmodulePatch(chunk);
     if (path && path !== '/dev/null') {
       files.push({
         path,
