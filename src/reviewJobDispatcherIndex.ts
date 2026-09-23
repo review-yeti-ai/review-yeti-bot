@@ -25,13 +25,17 @@ import { centralExternalTargetConfigFromEnv } from './config/actionDispatchConfi
 import {
   closeDispatcherMetricsServer,
   createDispatcherMetricsServer,
+  DispatcherLoopHealth,
   dispatcherMetricsConfigFromEnv,
   listenDispatcherMetricsServer,
 } from './dispatcherMetricsServer';
 
 async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
-  initTelemetry('ct-review-job-dispatcher');
   const config = reviewJobDispatcherConfigFromEnv(environment);
+  // REL-1053: config.workerId is `review-job-dispatcher:<pod name>`, unique per
+  // replica and the same identity this pod writes as a lease owner, so its
+  // pushed metrics never collide with another replica's.
+  initTelemetry('ct-review-job-dispatcher', { serviceInstanceId: config.workerId });
   const metricsConfig = dispatcherMetricsConfigFromEnv(environment);
   // Exactly the credentials used to provision worker publish tokens. Admission
   // has no publishing ownership, even when it runs under another installed App.
@@ -157,14 +161,16 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       return new GitHubInstallationClient({ token: minted.token });
     },
   }) : undefined;
+  const loopHealth = new DispatcherLoopHealth(config.workerId);
   const stop = (signal: 'SIGTERM' | 'SIGINT') => {
     logger.info('Stopping Review Yeti review job dispatcher', { signal });
+    loopHealth.markStopping();
     controller.abort();
   };
   process.once('SIGTERM', () => stop('SIGTERM'));
   process.once('SIGINT', () => stop('SIGINT'));
 
-  const metricsServer = createDispatcherMetricsServer();
+  const metricsServer = createDispatcherMetricsServer({ loopHealth });
   try {
     await listenDispatcherMetricsServer(metricsServer, metricsConfig);
     logger.info('Review Yeti review job dispatcher started', {
@@ -207,12 +213,16 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       activeDelayMs: config.activeDelayMs,
       errorDelayMs: config.errorDelayMs,
       onOutcome: (outcome) => {
+        loopHealth.markCycle();
         if (outcome.status !== 'idle') logger.info('Review job dispatch cycle completed', outcome);
       },
-      onCycleError: (outcome) => logger.warn(
-        'Review job dispatch cycle failed; applying bounded retry delay',
-        outcome.errorCode ? { errorCode: outcome.errorCode } : undefined,
-      ),
+      onCycleError: (outcome) => {
+        loopHealth.markCycle();
+        logger.warn(
+          'Review job dispatch cycle failed; applying bounded retry delay',
+          outcome.errorCode ? { errorCode: outcome.errorCode } : undefined,
+        );
+      },
     });
   } finally {
     try {

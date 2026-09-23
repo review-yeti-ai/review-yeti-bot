@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ReviewCompletionDeliveryEngine } from '../../src/k8s/reviewCompletionDeliveryEngine';
 import { ReviewCompletionClaim } from '../../src/persistence/reviewCompletionRepository';
+import { withFencedDispatch } from '../support/completionRepositoryDouble';
 
 describe('ReviewCompletionDeliveryEngine', () => {
   const baseClaim: ReviewCompletionClaim = {
@@ -36,7 +37,7 @@ describe('ReviewCompletionDeliveryEngine', () => {
     };
 
     const engine = new ReviewCompletionDeliveryEngine({
-      repository: repo,
+      repository: withFencedDispatch(repo),
       clientFactory: async () => ({
         emitCIRequest: async () => {
           emitted = true;
@@ -62,7 +63,7 @@ describe('ReviewCompletionDeliveryEngine', () => {
     };
 
     const engine = new ReviewCompletionDeliveryEngine({
-      repository: repo,
+      repository: withFencedDispatch(repo),
       clientFactory: async () => ({
         emitCIRequest: async () => {
           emitted = true;
@@ -92,7 +93,7 @@ describe('ReviewCompletionDeliveryEngine', () => {
     };
 
     const engine = new ReviewCompletionDeliveryEngine({
-      repository: repo,
+      repository: withFencedDispatch(repo),
       clientFactory: async () => ({
         emitCIRequest: async () => {
           emitted = true;
@@ -123,7 +124,7 @@ describe('ReviewCompletionDeliveryEngine', () => {
     };
 
     const engine = new ReviewCompletionDeliveryEngine({
-      repository: repo,
+      repository: withFencedDispatch(repo),
       clientFactory: async () => ({
         emitCIRequest: async () => {
           emitted = true;
@@ -150,7 +151,7 @@ describe('ReviewCompletionDeliveryEngine', () => {
     };
 
     const engine = new ReviewCompletionDeliveryEngine({
-      repository: repo,
+      repository: withFencedDispatch(repo),
       clientFactory: async () => ({
         emitCIRequest: async () => {
           emitted = true;
@@ -179,7 +180,7 @@ describe('ReviewCompletionDeliveryEngine', () => {
     };
 
     const engine = new ReviewCompletionDeliveryEngine({
-      repository: repo,
+      repository: withFencedDispatch(repo),
       clientFactory: async () => ({
         emitCIRequest: async () => {
           emitted = true;

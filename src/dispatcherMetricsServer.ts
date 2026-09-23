@@ -9,6 +9,64 @@ export interface DispatcherMetricsConfig {
 export interface DispatcherMetricsServerOptions {
   collectMetrics?: () => Promise<string>;
   collectionTimeoutMs?: number;
+  /** REL-1053: this pod's own dispatch-loop progress, served on `/ready`. */
+  loopHealth?: DispatcherLoopHealth;
+}
+
+const DEFAULT_READY_STALE_AFTER_MS = 120_000;
+
+export interface DispatcherReadiness {
+  ready: boolean;
+  reason: 'ok' | 'starting' | 'stalled' | 'stopping';
+  workerId: string;
+  lastCycleAgeMs?: number;
+}
+
+/**
+ * REL-1053: per-pod readiness for the review job dispatcher.
+ *
+ * `/health` answers "is this process serving HTTP" and stays the liveness
+ * signal. With several replicas, each pod also needs to report whether its
+ * own dispatch loop is making progress, so a pod whose loop has wedged (or
+ * has not finished its first cycle, or is shutting down) leaves the Service
+ * and fails a RollingUpdate. A stalled pod is not killed for this: it holds
+ * no claim beyond its lease, so the other replicas keep draining the queue.
+ *
+ * Any completed cycle counts as progress, including one that failed and is
+ * backing off. A database outage makes every replica fail cycles equally,
+ * and reporting that as "not ready" would only hide the pods' metrics.
+ */
+export class DispatcherLoopHealth {
+  private lastCycleAt: number | undefined;
+  private stopping = false;
+  private readonly staleAfterMs: number;
+  private readonly now: () => number;
+
+  constructor(readonly workerId: string, options: { staleAfterMs?: number; now?: () => number } = {}) {
+    if (!workerId.trim()) throw new Error('dispatcher loop health requires the pod worker id');
+    this.staleAfterMs = options.staleAfterMs ?? DEFAULT_READY_STALE_AFTER_MS;
+    if (!Number.isSafeInteger(this.staleAfterMs) || this.staleAfterMs < 1_000) {
+      throw new Error('dispatcher readiness staleness bound must be at least 1000 ms');
+    }
+    this.now = options.now ?? Date.now;
+  }
+
+  markCycle(): void {
+    this.lastCycleAt = this.now();
+  }
+
+  markStopping(): void {
+    this.stopping = true;
+  }
+
+  snapshot(): DispatcherReadiness {
+    if (this.stopping) return { ready: false, reason: 'stopping', workerId: this.workerId };
+    if (this.lastCycleAt === undefined) return { ready: false, reason: 'starting', workerId: this.workerId };
+    const lastCycleAgeMs = Math.max(0, this.now() - this.lastCycleAt);
+    return lastCycleAgeMs > this.staleAfterMs
+      ? { ready: false, reason: 'stalled', workerId: this.workerId, lastCycleAgeMs }
+      : { ready: true, reason: 'ok', workerId: this.workerId, lastCycleAgeMs };
+  }
 }
 
 const DEFAULT_COLLECTION_TIMEOUT_MS = 2_000;
@@ -80,6 +138,14 @@ export function createDispatcherMetricsServer(options: DispatcherMetricsServerOp
     if (request.url === '/health') {
       response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       response.end(JSON.stringify({ status: 'ok', service: 'review-yeti-job-dispatcher' }));
+      return;
+    }
+    if (request.url === '/ready') {
+      // No loop wired means readiness cannot be judged; fail closed.
+      const readiness = options.loopHealth?.snapshot()
+        ?? { ready: false, reason: 'starting', workerId: 'unknown' };
+      response.writeHead(readiness.ready ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ service: 'review-yeti-job-dispatcher', ...readiness }));
       return;
     }
     if (request.url !== '/metrics') {
