@@ -217,14 +217,31 @@ describe('REL-1058: one applicability decision for worker and service', () => {
       isCurrentHead: () => false,
     });
 
-    // Unfiltered, the .lua path is analyzable, so the run proceeds past the
-    // zero-lane decision.
-    await expect(run(base)).rejects.toThrow(/stale run aborted/);
+    // Unfiltered, the uncovered .lua path is the same coverage failure the
+    // panel engine and the service report -- one decision, one outcome.
+    await expect(run(base)).rejects.toThrow(/no enabled persona applies.*vendor\/generated\/client\.lua/);
 
     // Filtered out, only documentation remains: the deterministic exemption.
     const filtered = await run({ ...base, path_filters: ['vendor/**'] });
     expect(filtered.arbiter.verdict).toBe('SHIP');
     expect((filtered as { documentationOnly?: boolean }).documentationOnly).toBe(true);
+  });
+
+  it('the composed engine proceeds exactly when the shared decision applies a lane', async () => {
+    const config = roster('architecture,security');
+    const covered = [{ path: 'src/auth/login.ts', patch: '@@ -1 +1 @@\n-a\n+b\n' }];
+    expect(resolveReviewApplicability(config.personas, covered).applicable.length).toBeGreaterThan(0);
+    await expect(executeComposedReview({
+      config, changedFiles: covered, repository: 'r/r', headSha: 'f'.repeat(40),
+      client: unreachableClient, isCurrentHead: () => false,
+    })).rejects.toThrow(/stale run aborted/);
+
+    // Lockfile-only: nothing reviewable survives the shared filter. The service
+    // fails this closed, so the composed engine no longer exempts it.
+    await expect(executeComposedReview({
+      config, changedFiles: [{ path: 'package-lock.json', patch: '@@ -1 +1 @@\n-a\n+b\n' }],
+      repository: 'r/r', headSha: 'f'.repeat(40), client: unreachableClient,
+    })).rejects.toThrow(/no enabled persona applies/);
   });
 
   it('handles an empty enabled roster without routing or crashing', () => {

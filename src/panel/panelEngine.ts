@@ -3424,6 +3424,28 @@ export function mergeZoektToolConfig(preChecks?: any, evidence?: any): any {
   return preChecks ?? evidence ?? undefined;
 }
 
+/**
+ * The deterministic "no enabled persona applies" contract failure, shared by
+ * every engine that consults resolveReviewApplicability.
+ */
+export function personaCoverageError(
+  repository: string,
+  headSha: string,
+  unmatched: readonly string[],
+  enabledPersonas: ReadonlyArray<{ id: string }>,
+): PanelConfigurationError {
+  const shown = unmatched.slice(0, 10);
+  const overflow = unmatched.length - shown.length;
+  const pathList = shown.join(', ') + (overflow > 0 ? `, +${overflow} more` : '');
+  const enabledIds = enabledPersonas.map((persona) => persona.id);
+  return new PanelConfigurationError(
+    `no enabled persona applies to the changed paths for ${repository} #${headSha}: `
+    + `[${pathList}] matched none of the enabled personas [${enabledIds.join(', ') || 'none'}]. `
+    + `Extend that persona's paths to cover these files, or enable a persona that does.`,
+    { failureClass: 'contract' },
+  );
+}
+
 const activeRuns = new Map<string, string>();
 
 export async function executePersonaPanel(options: {
@@ -3509,17 +3531,7 @@ export async function executePersonaPanel(options: {
         // nobody is reviewing that file, which is a persona coverage gap to
         // fix, not something to wave through. The fix is to extend the
         // persona's paths -- so the message now says which paths to extend.
-        const unmatched = applicability.unmatchedPaths;
-        const shown = unmatched.slice(0, 10);
-        const overflow = unmatched.length - shown.length;
-        const pathList = shown.join(', ') + (overflow > 0 ? `, +${overflow} more` : '');
-        const enabledIds = enabledPersonas.map((persona) => persona.id);
-        throw new PanelConfigurationError(
-          `no enabled persona applies to the changed paths for ${repository} #${headSha}: `
-          + `[${pathList}] matched none of the enabled personas [${enabledIds.join(', ') || 'none'}]. `
-          + `Extend that persona's paths to cover these files, or enable a persona that does.`,
-          { failureClass: 'contract' },
-        );
+        throw personaCoverageError(repository, headSha, applicability.unmatchedPaths, enabledPersonas);
       }
 
       // Reaching here means every changed path is documentation, an asset or
