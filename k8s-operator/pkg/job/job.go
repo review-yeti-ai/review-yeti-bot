@@ -80,6 +80,30 @@ const (
 	DefaultWorkerFailedTTLAfterFinished = int32(3600)
 	WorkerTTLAfterFinishedEnv           = "REVIEW_YETI_WORKER_TTL_AFTER_FINISHED"
 	WorkerFailedTTLAfterFinishedEnv     = "REVIEW_YETI_WORKER_FAILED_TTL_AFTER_FINISHED"
+	// DefaultWorkerForensicHoldSeconds is the floor on the TTL a worker Job is
+	// built with. The operator copies the worker Pod's termination record into
+	// PRReviewJob status.workerTermination and only then lowers the Job's TTL
+	// to the outcome's configured value, so a failed TTL of 0 no longer lets
+	// the TTL controller collect the Pod before the operator has read it. The
+	// hold only matters if the operator is down or stalled for this long; it
+	// is never the retention an observed Job actually gets.
+	DefaultWorkerForensicHoldSeconds = int32(300)
+	WorkerForensicHoldEnv            = "REVIEW_YETI_WORKER_FORENSIC_HOLD_SECONDS"
+	// WorkerCPULimitEnv set to an empty string (or "none") removes the worker
+	// container's CPU limit so a review can burst onto idle node CPU without
+	// CFS throttling; the memory limit always stays. Leaving the variable
+	// unset keeps the historical WorkerCPULimit default.
+	WorkerCPULimitEnv = "REVIEW_YETI_WORKER_CPU_LIMIT"
+	// WorkerPodNameEnv and WorkerPodNamespaceEnv are downward-API projections of
+	// the worker Pod's own identity. The worker prints them as a log-store
+	// locator in its check output; they carry no credential.
+	WorkerPodNameEnv      = "REVIEW_WORKER_POD_NAME"
+	WorkerPodNamespaceEnv = "REVIEW_WORKER_POD_NAMESPACE"
+	// WorkerContainerName is the single worker container's name. The
+	// controller reads that container's termination state by this name.
+	WorkerContainerName = "reviewer-worker"
+	// HostnameTopologyKey spreads worker Pods across nodes.
+	HostnameTopologyKey = "kubernetes.io/hostname"
 	// DefaultTerminalRetentionSeconds is how long a terminal PRReviewJob (see
 	// isTerminalPhase in the controller) is kept before the operator deletes
 	// it, letting Kubernetes garbage collection cascade to the worker Job it
@@ -205,7 +229,11 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	// (see reconcileExistingJob). If that patch is ever missed -- crash,
 	// conflict, operator restart -- the Job is still collected after this
 	// longer TTL instead of leaking forever.
-	ttl := WorkerFailedTTLSeconds()
+	//
+	// The build TTL is additionally floored at WorkerForensicHoldSeconds: the
+	// controller lowers it to the outcome's configured TTL only after the Pod's
+	// termination record is durable in the parent status.
+	ttl := WorkerBuildTTLSeconds()
 	active := activeDeadlineSeconds
 	automountToken := false
 	allowPrivilegeEscalation := false
@@ -233,6 +261,8 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: PublicationModeEnv, Value: spec.PublicationMode},
 		{Name: ReceiptPathEnv, Value: ReceiptPath},
 		{Name: "CT_REVIEW_DATA_DIR", Value: "/tmp/.ct-memory"},
+		{Name: WorkerPodNameEnv, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+		{Name: WorkerPodNamespaceEnv, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
 	}
 	if spec.QualificationProfile == FullPanelQualificationProfile || spec.QualificationProfile == SameHeadQualificationProfile {
 		qualificationTimeoutMillis := max(int64(1_000),
@@ -355,7 +385,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
 	}
 	container := corev1.Container{
-		Name:            "reviewer-worker",
+		Name:            WorkerContainerName,
 		Image:           spec.WorkerImage,
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		Resources: corev1.ResourceRequirements{
@@ -363,11 +393,13 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				corev1.ResourceCPU:    quantityFromEnv("REVIEW_YETI_WORKER_CPU_REQUEST", WorkerCPURequest),
 				corev1.ResourceMemory: quantityFromEnv("REVIEW_YETI_WORKER_MEMORY_REQUEST", WorkerMemoryRequest),
 			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceCPU:    quantityFromEnv("REVIEW_YETI_WORKER_CPU_LIMIT", WorkerCPULimit),
-				corev1.ResourceMemory: quantityFromEnv("REVIEW_YETI_WORKER_MEMORY_LIMIT", WorkerMemoryLimit),
-			},
+			Limits: workerLimits(),
 		},
+		// On a failed exit with no explicit termination message, the kubelet
+		// copies the tail of the container log into the termination state. The
+		// controller keeps the last line of it in status.workerTermination, so
+		// the parent record names the error even after the Pod is collected.
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: &allowPrivilegeEscalation,
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{corev1.Capability("ALL")}},
@@ -452,6 +484,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 						SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{container},
+					// Soft spread: never blocks scheduling, but stops concurrent
+					// workers from packing onto one node while another is idle.
+					TopologySpreadConstraints: workerTopologySpread(),
 					Volumes: []corev1.Volume{
 						{Name: "workspace", VolumeSource: workspaceVolume},
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
@@ -761,11 +796,82 @@ func WorkerSuccessTTLSeconds() int32 {
 	return int32FromEnv(WorkerTTLAfterFinishedEnv, JobTTLSeconds)
 }
 
-// WorkerFailedTTLSeconds is the TTL a worker Job is built with, so a failed
-// worker's Pod and logs survive for this long even if the controller never
-// observes and patches the outcome.
+// WorkerFailedTTLSeconds is the TTL a failed worker Job keeps once the
+// controller has recorded its termination. It is also the TTL a worker Job is
+// built with (floored by WorkerForensicHoldSeconds), so a failed worker's Pod
+// and logs survive for this long even if the controller never observes and
+// patches the outcome.
 func WorkerFailedTTLSeconds() int32 {
 	return int32FromEnv(WorkerFailedTTLAfterFinishedEnv, DefaultWorkerFailedTTLAfterFinished)
+}
+
+// WorkerForensicHoldSeconds is the minimum TTL a worker Job is built with, so
+// the controller can read the worker Pod's termination state before the TTL
+// controller collects the Pod.
+func WorkerForensicHoldSeconds() int32 {
+	return int32FromEnv(WorkerForensicHoldEnv, DefaultWorkerForensicHoldSeconds)
+}
+
+// WorkerBuildTTLSeconds is the ttlSecondsAfterFinished a worker Job is created
+// with: the failed-outcome TTL, never lower than the forensic hold.
+func WorkerBuildTTLSeconds() int32 {
+	return max(WorkerFailedTTLSeconds(), WorkerForensicHoldSeconds())
+}
+
+// WorkerFinishedTTLSeconds is the TTL a finished worker Job is lowered to once
+// its termination record is durable in the parent status.
+func WorkerFinishedTTLSeconds(succeeded bool) int32 {
+	if succeeded {
+		return WorkerSuccessTTLSeconds()
+	}
+	return WorkerFailedTTLSeconds()
+}
+
+// workerLimits keeps the memory limit unconditionally and the CPU limit
+// unless REVIEW_YETI_WORKER_CPU_LIMIT is explicitly set to "" or "none".
+func workerLimits() corev1.ResourceList {
+	limits := corev1.ResourceList{
+		corev1.ResourceMemory: quantityFromEnv("REVIEW_YETI_WORKER_MEMORY_LIMIT", WorkerMemoryLimit),
+	}
+	if cpu, limited := WorkerCPULimitQuantity(); limited {
+		limits[corev1.ResourceCPU] = cpu
+	}
+	return limits
+}
+
+// WorkerCPULimitQuantity reports the worker CPU limit and whether one applies.
+// Unset keeps the WorkerCPULimit default; an explicit "" or "none" means no
+// CPU limit; an unparseable value falls back to the default rather than
+// silently lifting the limit.
+func WorkerCPULimitQuantity() (resource.Quantity, bool) {
+	raw, set := os.LookupEnv(WorkerCPULimitEnv)
+	if !set {
+		return resource.MustParse(WorkerCPULimit), true
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || strings.EqualFold(trimmed, "none") {
+		return resource.Quantity{}, false
+	}
+	quantity, err := resource.ParseQuantity(trimmed)
+	if err != nil {
+		return resource.MustParse(WorkerCPULimit), true
+	}
+	return quantity, true
+}
+
+// workerTopologySpread spreads every worker lane together across nodes. It is
+// ScheduleAnyway, so a single schedulable node still runs every worker.
+func workerTopologySpread() []corev1.TopologySpreadConstraint {
+	return []corev1.TopologySpreadConstraint{{
+		MaxSkew:           1,
+		TopologyKey:       HostnameTopologyKey,
+		WhenUnsatisfiable: corev1.ScheduleAnyway,
+		LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+			Key:      "review-yeti.ai/component",
+			Operator: metav1.LabelSelectorOpIn,
+			Values:   []string{ReceiptOnlyWorkerComponent, PublishingWorkerComponent},
+		}}},
+	}}
 }
 
 // TerminalRetentionSeconds is the delay after a PRReviewJob becomes terminal

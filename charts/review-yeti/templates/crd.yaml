@@ -180,6 +180,45 @@ spec:
                     receivedAt:
                       type: string
                       format: date-time
+                workerTermination:
+                  type: object
+                  required:
+                    - observedAt
+                    - podName
+                  properties:
+                    containerName:
+                      type: string
+                      maxLength: 63
+                    exitCode:
+                      type: integer
+                      format: int32
+                    finishedAt:
+                      type: string
+                      format: date-time
+                    message:
+                      type: string
+                      maxLength: 1024
+                    nodeName:
+                      type: string
+                      maxLength: 253
+                    observedAt:
+                      type: string
+                      format: date-time
+                    podName:
+                      type: string
+                      maxLength: 253
+                    podReason:
+                      type: string
+                      maxLength: 128
+                    reason:
+                      type: string
+                      maxLength: 128
+                    signal:
+                      type: integer
+                      format: int32
+                    startedAt:
+                      type: string
+                      format: date-time
                 conditions:
                   type: array
                   items:
