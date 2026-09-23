@@ -2,7 +2,7 @@ import type { CtReviewConfigV3 } from '../config/schema';
 import { matchOne } from '../pipeline/domainIndex';
 import { classifyLockfileOrGeneratedPath, filterDiffHunks, type HunkFilterResult } from '../pipeline/hunkFilter';
 import { isDocumentationOrAssetPath } from './reviewableContent';
-import { verifyLockfileOnlyChange } from './lockfileChangeVerification';
+import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 import { isSubmodulePatch } from './submodulePatch';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
@@ -272,6 +272,7 @@ function unverifiedLockfileChanges(
     .filter((file) => isLockfilePath(file?.path))
     .flatMap((file) => {
       if (isFallbackRoutedFile(file)) return [{ path: file.path, reason: 'is a submodule gitlink' }];
+      if (!isRegularFileMode(file.mode)) return [{ path: file.path, reason: 'is not a regular file' }];
       const verified = verifyLockfileOnlyChange(file.path, file.patch);
       return verified.ok ? [] : [{ path: file.path, reason: verified.reason }];
     });

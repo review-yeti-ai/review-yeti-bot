@@ -65,6 +65,33 @@ const YARN_RESOLUTION_FIELD = /^\s+"?resolution"?:\s+"?([^"\s]*)"?\s*$/u;
 const YARN_NPM_VERSION = /^npm:[\w.+-]+$/u;
 const YARN_BUILTIN_PATCH = /^patch:(.+?)@npm%3A[\w.+-]+#(?:~|optional!)builtin<compat\/[a-z0-9-]+>(?:::[\w.=&-]*)?$/u;
 
+/** Git mode headers naming anything but a regular file (symlink 120000, gitlink 160000, ...). */
+const NON_REGULAR_MODE = /^(?:index [0-9a-f]+\.\.[0-9a-f]+|(?:new|deleted) file mode|old mode|new mode) (?!100644\b|100755\b)\d+/imu;
+
+/** A changed file's git mode, when known, is a regular file's. */
+export function isRegularFileMode(mode: unknown): boolean {
+  return mode === undefined || mode === null || mode === '' || mode === '100644' || mode === '100755';
+}
+
+/**
+ * Line shapes each format's serializer writes. An added line of any other
+ * shape (a symlink target, hand-written text) is not a lockfile edit this
+ * check understands.
+ */
+const LINE_SHAPES: Record<string, readonly RegExp[]> = {
+  npm: [
+    /^\s*$/u,
+    /^\s*"[^"]+"\s*:\s*\{\s*$/u,
+    /^\s*"[^"]+"\s*:\s*(?:"(?:[^"\\]|\\.)*"|true|false|null|-?\d[\d.eE+-]*|\{\}|\[\])\s*,?\s*$/u,
+    /^\s*"[^"]+"\s*:\s*\[\s*$/u,
+    /^\s*"(?:[^"\\]|\\.)*"\s*,?\s*$/u,
+    /^\s*[{}\]],?\s*$/u,
+  ],
+  yarn: [/^\s*$/u, /^#/u, /^\S.*:$/u, /^\s+\S/u],
+  mix: [/^\s*$/u, /^%\{\s*$/u, /^\}\s*$/u, /^\s*"[^"]+"\s*:\s*\{:[a-z_]+,.*\},?\s*$/u],
+  toml: [/^\s*$/u, /^#/u, /^\[\[?[\w.-]+\]\]?\s*$/u, /^[\w.-]+\s*=\s*\S.*$/u, /^\s+\S.*$/u, /^\],?\s*$/u],
+};
+
 const refuse = (reason: string): LockfileVerification => ({ ok: false, reason });
 const OK: LockfileVerification = { ok: true };
 
@@ -197,6 +224,7 @@ export function verifyLockfileOnlyChange(path: string, patch: unknown): Lockfile
   if (classifyLockfileOrGeneratedPath(path) !== 'lockfile') return refuse('not a lockfile');
   if (typeof patch !== 'string' || patch.length === 0) return refuse('no patch to verify');
   if (isSubmodulePatch(patch)) return refuse('is a submodule gitlink');
+  if (NON_REGULAR_MODE.test(patch)) return refuse('is not a regular file');
   const format = FORMATS[path.toLowerCase().split('/').pop() || ''];
   if (!format) return refuse('lockfile format not verifiable');
   const verifyLine: (body: string, added: boolean, state: EntryState) => LockfileVerification =
@@ -223,6 +251,7 @@ export function verifyLockfileOnlyChange(path: string, patch: unknown): Lockfile
     if (added) {
       addedCount += 1;
       if (line.includes('\\')) return refuse('adds an escape sequence');
+      if (!LINE_SHAPES[format].some((shape) => shape.test(line.slice(1)))) return refuse('adds a line that is not lockfile content');
       if (NON_REGISTRY_PROTOCOL.test(line)) return refuse('adds a non-registry dependency source');
       const header = entryHeader(line.slice(1), format);
       if (header !== null) {

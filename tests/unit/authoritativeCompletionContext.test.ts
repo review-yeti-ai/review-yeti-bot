@@ -300,8 +300,10 @@ describe('service-owned authoritative completion context', () => {
   const YARN_BUMP = '@@ -1,3 +1,3 @@\n "lodash@^4.17.20":\n'
     + '-  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.20.tgz#a"\n'
     + '+  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz#b"\n';
+  const MIX_BUMP = '@@ -1 +1 @@\n-  "jason": {:hex, :jason, "1.4.3", "aa", [:mix], [], "hexpm", "bb"},\n'
+    + '+  "jason": {:hex, :jason, "1.4.4", "cc", [:mix], [], "hexpm", "dd"},\n';
   const lockPatch = (path: string) => (path.endsWith('package-lock.json') ? NPM_BUMP
-    : path.endsWith('yarn.lock') ? YARN_BUMP : '@@ -1 +1 @@\n-old\n+new');
+    : path.endsWith('yarn.lock') ? YARN_BUMP : path.endsWith('mix.lock') ? MIX_BUMP : '@@ -1 +1 @@\n-old\n+new');
 
   it.each([
     ['package-lock.json'],
@@ -368,7 +370,8 @@ describe('service-owned authoritative completion context', () => {
     ['mode 160000', { mode: '160000' }],
     ['isSubmodule', { isSubmodule: true }],
     ['submoduleCandidate', { submoduleCandidate: true }],
-  ])('refuses a documentation-only completion over a gitlink (%s) at a lockfile path', (_label, metadata) => {
+    ['symlink mode 120000', { mode: '120000' }],
+  ])('refuses a documentation-only completion over a non-regular file (%s) at a lockfile path', (_label, metadata) => {
     // The patch alone verifies; only the gitlink metadata marks it.
     const f = fixture();
     const { attemptId: _, ...coordinates } = f.gate.coordinates;

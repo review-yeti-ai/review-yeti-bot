@@ -1,4 +1,4 @@
-import { verifyLockfileOnlyChange } from './lockfileChangeVerification';
+import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 
 /**
  * Prose documentation formats and static image/diagram assets.
@@ -51,7 +51,8 @@ export function isNoReviewableContentFile(
   file: { path: string; patch?: unknown; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean },
 ): boolean {
   if (isDocumentationOrAssetPath(file.path)) return true;
-  // A gitlink is a dependency change even at a lockfile-looking path.
-  if (file.isSubmodule === true || file.submoduleCandidate === true || file.mode === '160000') return false;
+  // A gitlink is a dependency change even at a lockfile-looking path, and a
+  // symlink's patch is its target, not lockfile content.
+  if (file.isSubmodule === true || file.submoduleCandidate === true || !isRegularFileMode(file.mode)) return false;
   return verifyLockfileOnlyChange(file.path, file.patch).ok;
 }

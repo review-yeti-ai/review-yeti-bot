@@ -158,10 +158,21 @@ describe('REL-972: lockfile change verification', () => {
       '     "node_modules/victim": {',
       '+      "node_modules/evil-pkg": { "x": 1 },',
       '+      "resolved": "https://registry.npmjs.org/evil-pkg/-/evil-pkg-1.0.0.tgz",',
-    ].join('\n'), 'resolves an entry to a different package'],
+    ].join('\n'), 'adds a line that is not lockfile content'],
     ['a resolved hidden in a one-line npm entry', 'package-lock.json',
       '@@ -1 +1 @@\n+    "node_modules/victim": { "resolved": "https://evil.example/v.tgz" },',
-      'adds an unrecognized source field'],
+      'adds a line that is not lockfile content'],
+    ['a symlink retarget (target text only, no mode header)', 'package-lock.json',
+      '@@ -1 +1 @@\n-../shared/package-lock.json\n+../../attacker/package-lock.json',
+      'adds a line that is not lockfile content'],
+    ['a mix.lock symlink retarget', 'mix.lock', '@@ -1 +1 @@\n-../a/mix.lock\n+../b/mix.lock',
+      'adds a line that is not lockfile content'],
+    ['a lockfile turned into a symlink', 'yarn.lock',
+      'diff --git a/yarn.lock b/yarn.lock\nold mode 100644\nnew mode 120000\n@@ -1 +1 @@\n-# yarn lockfile v1\n+  ../other.lock',
+      'is not a regular file'],
+    ['a symlink retarget with its index mode', 'Cargo.lock',
+      'diff --git a/Cargo.lock b/Cargo.lock\nindex 1a2b3c4..5d6e7f8 120000\n@@ -1 +1 @@\n-a = b\n+c = d',
+      'is not a regular file'],
     ['a URL in a non-source npm field', 'package-lock.json',
       '@@ -1,2 +1,2 @@\n     "node_modules/victim": {\n+      "version": "https://evil.example/v.tgz",',
       'adds a URL outside a source field'],
@@ -331,6 +342,13 @@ describe('REL-972: shared decision for lockfile-only diffs', () => {
     expect(result.noReviewableContentKind).toBeNull();
   });
 
+  it('does not exempt a lockfile path whose git mode is a symlink', () => {
+    const result = resolveReviewApplicability(enabled(), [{ path: 'package-lock.json', patch: NPM_BUMP, mode: '120000' }]);
+
+    expect(result.noReviewableContent).toBe(false);
+    expect(result.unverifiedLockfiles).toEqual([{ path: 'package-lock.json', reason: 'is not a regular file' }]);
+  });
+
   it('does not exempt a submodule gitlink whose path looks like a lockfile', () => {
     const diff = 'diff --git a/vendor/yarn.lock b/vendor/yarn.lock\n'
       + 'index 6c3f36d89d..f84610fbbf 160000\n--- a/vendor/yarn.lock\n+++ b/vendor/yarn.lock\n'
@@ -357,7 +375,11 @@ describe('REL-972: every engine takes the same outcome', () => {
   it('the panel engine (mode=panel, production) publishes an audited pass without a model call', async () => {
     const result = await executePersonaPanel({
       config: roster(),
-      changedFiles: [lock('yarn.lock', YARN_BUMP)],
+      // The worker parses the raw unified diff, so each patch carries its git headers.
+      changedFiles: parseChangedFiles(
+        'diff --git a/yarn.lock b/yarn.lock\nindex 1a2b3c4..5d6e7f8 100644\n--- a/yarn.lock\n+++ b/yarn.lock\n'
+        + `${YARN_BUMP}\n`,
+      ).files,
       repository: 'calltelemetry/ct-quasar',
       headSha: 'a'.repeat(40),
       client: unreachableClient,
