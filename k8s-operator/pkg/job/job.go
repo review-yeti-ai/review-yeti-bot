@@ -99,6 +99,16 @@ const (
 	// locator in its check output; they carry no credential.
 	WorkerPodNameEnv      = "REVIEW_WORKER_POD_NAME"
 	WorkerPodNamespaceEnv = "REVIEW_WORKER_POD_NAMESPACE"
+	// QualificationGatewayKeyEnv / QualificationGatewayURLEnv are the admitted
+	// gateway settings on the QUALIFICATION path (REL-1069).
+	//
+	// Exported because the builder and the reconciler's validator must agree on
+	// them: a mismatch makes the controller reject and DELETE the Job it just
+	// created, and that coupling is what the review flagged as unpinned. Naming
+	// them once makes a rename a compile-visible change instead of a silent
+	// literal drift across two files.
+	QualificationGatewayKeyEnv = "OPENAI_API_KEY"
+	QualificationGatewayURLEnv = "OPENAI_BASE_URL"
 	// WorkerContainerName is the single worker container's name. The
 	// controller reads that container's termination state by this name.
 	WorkerContainerName = "reviewer-worker"
@@ -286,18 +296,18 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			// gateway key must fail on its own contract check (which names the
 			// missing variable) rather than on an opaque secret resolution.
 			corev1.EnvVar{
-				Name: "OPENAI_API_KEY",
+				Name: QualificationGatewayKeyEnv,
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
-					Key:                  "OPENAI_API_KEY",
+					Key:                  QualificationGatewayKeyEnv,
 					Optional:             &[]bool{true}[0],
 				}},
 			},
 			corev1.EnvVar{
-				Name: "OPENAI_BASE_URL",
+				Name: QualificationGatewayURLEnv,
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
-					Key:                  "OPENAI_BASE_URL",
+					Key:                  QualificationGatewayURLEnv,
 					Optional:             &[]bool{true}[0],
 				}},
 			},

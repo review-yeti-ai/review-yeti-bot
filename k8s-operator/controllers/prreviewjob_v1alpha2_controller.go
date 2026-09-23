@@ -1554,12 +1554,12 @@ func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.En
 			// together -- a mismatch makes the reconciler reject (and DELETE) the
 			// Job it just created. The ref is optional because no per-run secret
 			// carries a gateway key.
-			if variable.Name != "OPENAI_API_KEY" {
+			if variable.Name != job.QualificationGatewayKeyEnv {
 				continue
 			}
 			secretRefs++
 			if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
-				variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != "OPENAI_API_KEY" {
+				variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != job.QualificationGatewayKeyEnv {
 				return false
 			}
 		}
@@ -1574,10 +1574,10 @@ func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.En
 		for _, variable := range env {
 			switch variable.Name {
 			// REL-1069: standard gateway name; must match what the builder emits.
-			case "OPENAI_API_KEY":
+			case job.QualificationGatewayKeyEnv:
 				gatewayRefs++
 				if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
-					variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != "OPENAI_API_KEY" {
+					variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != job.QualificationGatewayKeyEnv {
 					return false
 				}
 			case "GH_TOKEN":
