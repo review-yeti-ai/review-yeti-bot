@@ -280,16 +280,135 @@ describe('service-owned authoritative completion context', () => {
     expect(options).toEqual({ pathFilters: f.stored.config.path_filters });
   });
 
-  it('fails closed when every changed file is excluded by the shared hunk filter', async () => {
+  it('fails closed when every changed file is only located under a build output directory', async () => {
     const f = fixture();
     f.exactCurrentDiff.mockResolvedValue({
       current: { ...current },
       diff: '',
-      changedFiles: [{ path: 'package-lock.json', patch: '@@ -1 +1 @@\n-old\n+new' }],
+      changedFiles: [{ path: 'dist/bundle.js', patch: '@@ -1 +1 @@\n-old\n+new' }],
       expectedFileCount: 1,
     });
 
     redacted(await rejected(f.context(f.gate)));
+  });
+
+  // REL-972: a Dependabot lockfile bump is the audited no-reviewable-content
+  // exemption on the trusted side too, end to end through gate evaluation.
+  const NPM_BUMP = '@@ -1,4 +1,4 @@\n     "node_modules/lodash": {\n'
+    + '-      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",\n'
+    + '+      "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",\n';
+  const YARN_BUMP = '@@ -1,3 +1,3 @@\n "lodash@^4.17.20":\n'
+    + '-  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.20.tgz#a"\n'
+    + '+  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz#b"\n';
+  const MIX_BUMP = '@@ -1 +1 @@\n-  "jason": {:hex, :jason, "1.4.3", "aa", [:mix], [], "hexpm", "bb"},\n'
+    + '+  "jason": {:hex, :jason, "1.4.4", "cc", [:mix], [], "hexpm", "dd"},\n';
+  const lockPatch = (path: string) => (path.endsWith('package-lock.json') ? NPM_BUMP
+    : path.endsWith('yarn.lock') ? YARN_BUMP : path.endsWith('mix.lock') ? MIX_BUMP : '@@ -1 +1 @@\n-old\n+new');
+
+  it.each([
+    ['package-lock.json'],
+    ['yarn.lock'],
+    ['mix.lock'],
+    ['web/package-lock.json', 'api/mix.lock'],
+    // Worker and service previously disagreed here: the worker exempted it (the
+    // lockfile is filtered, the rest is prose) and the service refused the
+    // documentation-only completion because yarn.lock is not documentation.
+    ['docs/upgrade.md', 'yarn.lock'],
+  ])('accepts a lockfile/generated-only diff %s as the no-reviewable-content exemption', async (...paths: string[]) => {
+    const f = fixture();
+    const changedFiles = paths.map((path) => ({ path, patch: path.endsWith('.md') ? '@@ -1 +1 @@\n-old\n+new' : lockPatch(path) }));
+    f.exactCurrentDiff.mockResolvedValue({
+      current: { ...current }, diff: '', changedFiles, expectedFileCount: changedFiles.length,
+    });
+
+    const context = await f.context(f.gate);
+    expect(context.coverage).toMatchObject({
+      expectedPersonaIds: f.stored.expectedPersonaIds, coverageComplete: true, quorumSatisfied: true,
+    });
+
+    const { attemptId: _, ...coordinates } = f.gate.coordinates;
+    const expectedCoordinates = { ...coordinates, configDigest: f.stored.policy.effectiveConfigDigest };
+    const derived = deriveCanonicalWorkerReviewEvidence({ version: 'WorkerReviewCompletion.v1', ...expectedCoordinates,
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-09T18:00:00Z', coverageComplete: true,
+        quorumSatisfied: true, personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }] } },
+    { ...context.coverage, expectedCoordinates });
+    expect(derived.valid).toBe(true);
+    expect(derived.evidence?.exemption?.kind).toBe('no-reviewable-content');
+    expect(evaluateReviewGate({ candidate: f.gate.coordinates, current: context.current, evidence: derived.evidence }))
+      .toMatchObject({ status: 'success', reason: 'central-exemption' });
+  });
+
+  it.each([
+    ['a lockfile bump redirected off the registry', [{ path: 'package-lock.json',
+      patch: NPM_BUMP.replace('https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz', 'https://evil.example/l.tgz') }]],
+    ['a generated artifact only', [{ path: 'assets/app.min.js', patch: '@@ -1 +1 @@\n-old\n+new' }]],
+  ])('fails %s closed as a coverage gap', async (_label, changedFiles) => {
+    const f = fixture();
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: 1 });
+
+    const error = await rejected(f.context(f.gate));
+    expect((error as TrustedCompletionResolutionError).reason).toBe('coverage-no-persona');
+  });
+
+  it('refuses a documentation-only completion over an unverifiable lockfile', () => {
+    // Defense in depth behind the shared decision: the completion check itself
+    // re-verifies each admitted lockfile change.
+    const f = fixture();
+    const { attemptId: _, ...coordinates } = f.gate.coordinates;
+    const expectedCoordinates = { ...coordinates, configDigest: f.stored.policy.effectiveConfigDigest };
+    const derive = (patch: string) => deriveCanonicalWorkerReviewEvidence({ version: 'WorkerReviewCompletion.v1', ...expectedCoordinates,
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-09T18:00:00Z', coverageComplete: true,
+        quorumSatisfied: true, personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }] } },
+    { expectedPersonaIds: ['sec-lane'], coverageComplete: true, quorumSatisfied: true, expectedCoordinates,
+      changedFiles: [{ path: 'package-lock.json', patch }] });
+    expect(derive(NPM_BUMP).valid).toBe(true);
+    expect(derive(NPM_BUMP.replace('https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz', 'https://evil.example/l.tgz')).valid)
+      .toBe(false);
+  });
+
+  it.each([
+    ['mode 160000', { mode: '160000' }],
+    ['isSubmodule', { isSubmodule: true }],
+    ['submoduleCandidate', { submoduleCandidate: true }],
+    ['symlink mode 120000', { mode: '120000' }],
+  ])('refuses a documentation-only completion over a non-regular file (%s) at a lockfile path', (_label, metadata) => {
+    // The patch alone verifies; only the gitlink metadata marks it.
+    const f = fixture();
+    const { attemptId: _, ...coordinates } = f.gate.coordinates;
+    const expectedCoordinates = { ...coordinates, configDigest: f.stored.policy.effectiveConfigDigest };
+    const derived = deriveCanonicalWorkerReviewEvidence({ version: 'WorkerReviewCompletion.v1', ...expectedCoordinates,
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-09T18:00:00Z', coverageComplete: true,
+        quorumSatisfied: true, personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }] } },
+    { expectedPersonaIds: ['sec-lane'], coverageComplete: true, quorumSatisfied: true, expectedCoordinates,
+      changedFiles: [{ path: 'vendor/package-lock.json', patch: NPM_BUMP, ...metadata }] });
+    expect(derived.valid).toBe(false);
+  });
+
+  it('requires a real lane, not the exemption, for a manifest change beside its lockfile', async () => {
+    const f = fixture();
+    const changedFiles = ['package.json', 'package-lock.json'].map((path) => ({ path, patch: lockPatch(path) }));
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: 2 });
+
+    const context = await f.context(f.gate);
+    expect(context.coverage.expectedPersonaIds).toEqual(['sec-lane']);
+
+    // A worker claiming the zero-lane exemption for this diff is refused.
+    const { attemptId: _, ...coordinates } = f.gate.coordinates;
+    const expectedCoordinates = { ...coordinates, configDigest: f.stored.policy.effectiveConfigDigest };
+    const derived = deriveCanonicalWorkerReviewEvidence({ version: 'WorkerReviewCompletion.v1', ...expectedCoordinates,
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-09T18:00:00Z', coverageComplete: true,
+        quorumSatisfied: true, personas: [{ id: 'documentation-only', decision: 'APPROVE', status: 'COMPLETE', findings: [] }] } },
+    { ...context.coverage, expectedCoordinates });
+    expect(derived.valid).toBe(false);
+  });
+
+  it('still fails uncovered source beside a lockfile closed as a coverage gap', async () => {
+    const f = fixture();
+    const changedFiles = ['src/main.lua', 'yarn.lock'].map((path) => ({ path, patch: '@@ -1 +1 @@\n-old\n+new' }));
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: 2 });
+
+    const error = await rejected(f.context(f.gate));
+    expect((error as TrustedCompletionResolutionError).reason).toBe('coverage-no-persona');
   });
 
   it('does not turn a trusted required-lane contract into successful worker evidence', async () => {

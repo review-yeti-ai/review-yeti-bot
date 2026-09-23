@@ -1,7 +1,8 @@
 import type { CtReviewConfigV3 } from '../config/schema';
 import { matchOne } from '../pipeline/domainIndex';
-import { filterDiffHunks, type HunkFilterResult } from '../pipeline/hunkFilter';
+import { classifyLockfileOrGeneratedPath, filterDiffHunks, type HunkFilterResult } from '../pipeline/hunkFilter';
 import { isDocumentationOrAssetPath } from './reviewableContent';
+import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 import { isSubmodulePatch } from './submodulePatch';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
@@ -221,18 +222,69 @@ export function buildEffectiveReviewFiles(
   return { files, hunkResult };
 }
 
+export type NoReviewableContentKind = 'documentation' | 'lockfile-only';
+
 export interface ReviewApplicability<P> {
   effectiveFiles: EffectiveReviewFile[];
   hunkResult: HunkFilterResult;
   /** Applicable personas in roster order, carrying any gitlink routing capability. */
   applicable: P[];
   /**
-   * Zero lanes apply and every reviewable path is documentation, an asset, a
-   * run artifact or data: the audited no-reviewable-content exemption.
+   * Zero lanes apply and there is nothing to analyze: the audited
+   * no-reviewable-content exemption. Either every reviewable path is
+   * documentation, an asset, a run artifact or data, or (REL-972) every changed
+   * file is a dependency lockfile; either way every lockfile in the diff must
+   * pass the registry content check.
    */
   noReviewableContent: boolean;
+  /** Which exemption applied; null unless `noReviewableContent`. */
+  noReviewableContentKind: NoReviewableContentKind | null;
+  /** One-line published rationale for the exemption; null unless `noReviewableContent`. */
+  noReviewableContentRationale: string | null;
   /** Analyzable paths no enabled persona covers (empty unless zero lanes apply). */
   unmatchedPaths: string[];
+  /**
+   * Lockfiles that kept an otherwise exempt diff from the exemption because
+   * their change could not be verified (also listed in `unmatchedPaths`).
+   */
+  unverifiedLockfiles: ReadonlyArray<{ path: string; reason: string }>;
+}
+
+export const DOCUMENTATION_ONLY_RATIONALE =
+  'No analyzable source changed: every path is documentation, an asset, a run artifact or data.';
+
+const MAX_LISTED_EXCLUDED_FILES = 8;
+
+function isLockfilePath(path: unknown): boolean {
+  return typeof path === 'string' && classifyLockfileOrGeneratedPath(path) === 'lockfile';
+}
+
+/**
+ * REL-972: lockfiles in the diff whose change cannot be verified to stay on
+ * the default public registries (see lockfileChangeVerification). The shared
+ * filter hides every lockfile from every lane, so an exemption may only stand
+ * on lockfile changes the content check vouches for.
+ */
+function unverifiedLockfileChanges(
+  changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
+): Array<{ path: string; reason: string }> {
+  return changedFiles
+    .filter((file) => isLockfilePath(file?.path))
+    .flatMap((file) => {
+      if (isFallbackRoutedFile(file)) return [{ path: file.path, reason: 'is a submodule gitlink' }];
+      if (!isRegularFileMode(file.mode)) return [{ path: file.path, reason: 'is not a regular file' }];
+      const verified = verifyLockfileOnlyChange(file.path, file.patch);
+      return verified.ok ? [] : [{ path: file.path, reason: verified.reason }];
+    });
+}
+
+function lockfileOnlyRationale(changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>): string {
+  const listed = changedFiles.slice(0, MAX_LISTED_EXCLUDED_FILES).map((file) => file.path);
+  const overflow = changedFiles.length - listed.length;
+  return 'No reviewable content: every changed file is a dependency lockfile, which the review filter '
+    + 'excludes from every lane, and every added source resolves to a default public registry. '
+    + `Excluded: ${listed.join(', ')}${overflow > 0 ? `, +${overflow} more` : ''}. `
+    + 'A manifest or source change in the same diff would be reviewed.';
 }
 
 /**
@@ -249,6 +301,12 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
   const { files: effectiveFiles, hunkResult } = buildEffectiveReviewFiles(changedFiles, options);
   const roster = routeOrphanedReviewFiles(enabledPersonas, effectiveFiles);
   const applicable = deriveApplicablePersonas(roster, effectiveFiles) as P[];
+  const reviewed = {
+    noReviewableContent: false,
+    noReviewableContentKind: null,
+    noReviewableContentRationale: null,
+    unverifiedLockfiles: [],
+  } as const;
   if (applicable.length > 0) {
     // Routing may only add a lane for the routed files themselves. When no
     // configured persona applied before routing, any other uncovered analyzable
@@ -257,17 +315,46 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
     const routedOnly = deriveApplicablePersonas(enabledPersonas, effectiveFiles).length === 0;
     const uncovered = routedOnly ? computeUnmatchedPaths(effectiveFiles, roster) : [];
     if (uncovered.length > 0) {
-      return { effectiveFiles, hunkResult, applicable: [], noReviewableContent: false, unmatchedPaths: uncovered };
+      return { effectiveFiles, hunkResult, applicable: [], ...reviewed, unmatchedPaths: uncovered };
     }
-    return { effectiveFiles, hunkResult, applicable, noReviewableContent: false, unmatchedPaths: [] };
+    return { effectiveFiles, hunkResult, applicable, ...reviewed, unmatchedPaths: [] };
   }
-  const noReviewableContent = effectiveFiles.length > 0
+  const documentationOnly = effectiveFiles.length > 0
     && effectiveFiles.every((file) => isDocumentationOrAssetPath(file.path));
+  // REL-972: a Dependabot-style lockfile bump. Every changed file must be a
+  // lockfile, so a manifest (package.json), any source, a path_filters-only
+  // exclusion or a generated file keeps the review-or-fail-closed decision.
+  const lockfileOnly = changedFiles.length > 0
+    && effectiveFiles.length === 0
+    && changedFiles.every((file) => isLockfilePath(file?.path));
+  if (documentationOnly || lockfileOnly) {
+    const unverifiedLockfiles = unverifiedLockfileChanges(changedFiles);
+    if (unverifiedLockfiles.length > 0) {
+      return {
+        effectiveFiles,
+        hunkResult,
+        applicable,
+        ...reviewed,
+        unverifiedLockfiles,
+        unmatchedPaths: unverifiedLockfiles.map((file) => file.path),
+      };
+    }
+    return {
+      effectiveFiles,
+      hunkResult,
+      applicable,
+      ...reviewed,
+      noReviewableContent: true,
+      noReviewableContentKind: documentationOnly ? 'documentation' : 'lockfile-only',
+      noReviewableContentRationale: documentationOnly ? DOCUMENTATION_ONLY_RATIONALE : lockfileOnlyRationale(changedFiles),
+      unmatchedPaths: [],
+    };
+  }
   return {
     effectiveFiles,
     hunkResult,
     applicable,
-    noReviewableContent,
-    unmatchedPaths: noReviewableContent ? [] : computeUnmatchedPaths(effectiveFiles, roster),
+    ...reviewed,
+    unmatchedPaths: computeUnmatchedPaths(effectiveFiles, roster),
   };
 }

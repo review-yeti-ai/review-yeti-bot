@@ -254,10 +254,11 @@ describe('REL-1058: one applicability decision for worker and service', () => {
       client: unreachableClient, isCurrentHead: () => false,
     })).rejects.toThrow(/stale run aborted/);
 
-    // Lockfile-only: nothing reviewable survives the shared filter. The service
-    // fails this closed, so the composed engine no longer exempts it.
+    // Build-output-only: nothing survives the shared filter and the path alone
+    // does not prove the file is generated, so every side fails it closed.
+    // (A lockfile-only diff is the audited exemption instead -- REL-972.)
     await expect(executeComposedReview({
-      config, changedFiles: [{ path: 'package-lock.json', patch: '@@ -1 +1 @@\n-a\n+b\n' }],
+      config, changedFiles: [{ path: 'dist/bundle.js', patch: '@@ -1 +1 @@\n-a\n+b\n' }],
       repository: 'r/r', headSha: 'f'.repeat(40), client: unreachableClient,
     })).rejects.toThrow(/no enabled persona applies/);
   });
