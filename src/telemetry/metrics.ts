@@ -9,6 +9,8 @@ import {
   InstrumentType,
 } from '@opentelemetry/sdk-metrics';
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { Resource } from '@opentelemetry/resources';
+import { ATTR_SERVICE_INSTANCE_ID, ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
 import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../types/jevContract';
 
 let metricsInstance: MetricCounters | null = null;
@@ -116,7 +118,37 @@ export interface MetricCounters {
   zoektIndexBuildDuration: Histogram;
 }
 
-export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounters {
+/**
+ * REL-1053: identifies one long-lived replica in pushed metrics.
+ *
+ * The OTLP push path carries no scrape target, so the collector's Prometheus
+ * exporter derives `job` and `instance` from `service.name` and
+ * `service.instance.id`. Without them, two dispatcher replicas push cumulative
+ * counters under the same series and overwrite each other. Only a long-lived
+ * process should pass this: an ephemeral worker would mint one series per pod.
+ */
+export interface MetricsProcessIdentity {
+  serviceName: string;
+  serviceInstanceId: string;
+}
+
+export function metricsResourceFor(identity: MetricsProcessIdentity | undefined): Resource {
+  if (!identity) return Resource.default();
+  const serviceName = identity.serviceName.trim();
+  const serviceInstanceId = identity.serviceInstanceId.trim();
+  if (!serviceName || !serviceInstanceId) {
+    throw new Error('metrics process identity requires a service name and instance id');
+  }
+  return Resource.default().merge(new Resource({
+    [ATTR_SERVICE_NAME]: serviceName,
+    [ATTR_SERVICE_INSTANCE_ID]: serviceInstanceId,
+  }));
+}
+
+export function initMetrics(
+  env: NodeJS.ProcessEnv = process.env,
+  identity?: MetricsProcessIdentity,
+): MetricCounters {
   if (metricsInstance) {
     return metricsInstance;
   }
@@ -183,6 +215,7 @@ export function initMetrics(env: NodeJS.ProcessEnv = process.env): MetricCounter
       }),
     ],
     readers,
+    resource: metricsResourceFor(identity),
   });
 
   const meter = meterProvider.getMeter('review-yeti-bot');

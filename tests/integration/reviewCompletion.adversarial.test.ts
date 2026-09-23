@@ -18,6 +18,7 @@ import {
   ReviewLifecycleBatchLockUnavailableError,
   appendLifecycleEventForRun,
 } from '../../src/persistence/reviewEventRepository';
+import { withFencedDispatch } from '../support/completionRepositoryDouble';
 
 const TEST_SCHEMA = 'test_challenger_m2';
 const DATABASE_URL = process.env.REVIEW_YETI_TEST_DATABASE_URL || 'postgres://localhost/postgres';
@@ -1621,7 +1622,7 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
         };
 
         const engine = new ReviewCompletionDeliveryEngine({
-          repository: repoMock,
+          repository: withFencedDispatch(repoMock),
           clientFactory: async () => ({
             emitCIRequest: async () => {
               const err = new Error('HTTP 503 Service Unavailable');
@@ -1681,7 +1682,7 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
       };
 
       const engine = new ReviewCompletionDeliveryEngine({
-        repository: repoMock,
+        repository: withFencedDispatch(repoMock),
         clientFactory: async () => ({
           emitCIRequest: async () => {
             const err = new Error('HTTP 502 Bad Gateway');
@@ -1734,7 +1735,7 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
       };
 
       const engine = new ReviewCompletionDeliveryEngine({
-        repository: repoMock,
+        repository: withFencedDispatch(repoMock),
         clientFactory: async () => ({
           emitCIRequest: async () => {
             const err = new Error('HTTP 500 Internal Server Error');
@@ -1786,7 +1787,7 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
         };
 
         const engine = new ReviewCompletionDeliveryEngine({
-          repository: repoMock,
+          repository: withFencedDispatch(repoMock),
           clientFactory: async () => ({
             emitCIRequest: async () => {
               const err = new Error(`HTTP ${status} Forbidden`);
@@ -1838,7 +1839,7 @@ describe('Milestone 2 Empirical Challenger Stress Tests', () => {
       };
 
       const engine = new ReviewCompletionDeliveryEngine({
-        repository: repoMock,
+        repository: withFencedDispatch(repoMock),
         clientFactory: async () => ({
           emitCIRequest: async () => {
             const err = new Error('HTTP 404 Not Found');

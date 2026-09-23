@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   loop: vi.fn(), error: vi.fn(), loadFromCluster: vi.fn(),
   initTelemetry: vi.fn(), metricsConfig: vi.fn(() => ({ host: '0.0.0.0', port: 9090 })),
   metricsServer: {}, createMetricsServer: vi.fn(), listenMetricsServer: vi.fn(), closeMetricsServer: vi.fn(),
+  loopHealth: vi.fn(), markCycle: vi.fn(), markStopping: vi.fn(),
 }));
 vi.mock('@kubernetes/client-node', () => ({
   KubeConfig: class { loadFromCluster = mocks.loadFromCluster; makeApiClient = () => ({}); },
@@ -43,6 +44,11 @@ vi.mock('../../src/dispatcherMetricsServer', () => ({
   createDispatcherMetricsServer: mocks.createMetricsServer,
   listenDispatcherMetricsServer: mocks.listenMetricsServer,
   closeDispatcherMetricsServer: mocks.closeMetricsServer,
+  DispatcherLoopHealth: vi.fn(function (this: Record<string, unknown>, workerId: string) {
+    mocks.loopHealth(workerId);
+    this.markCycle = mocks.markCycle;
+    this.markStopping = mocks.markStopping;
+  }),
 }));
 
 function fixture() {
@@ -93,9 +99,15 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     await import('../../src/reviewJobDispatcherIndex');
     await vi.dynamicImportSettled();
     expect(mocks.error).not.toHaveBeenCalled();
-    expect(mocks.initTelemetry).toHaveBeenCalledExactlyOnceWith('ct-review-job-dispatcher');
+    // REL-1053: the pod-unique worker id labels pushed metrics and readiness.
+    expect(mocks.initTelemetry).toHaveBeenCalledExactlyOnceWith(
+      'ct-review-job-dispatcher', { serviceInstanceId: 'dispatcher-test' },
+    );
     expect(mocks.metricsConfig).toHaveBeenCalledOnce();
-    expect(mocks.createMetricsServer).toHaveBeenCalledOnce();
+    expect(mocks.loopHealth).toHaveBeenCalledExactlyOnceWith('dispatcher-test');
+    expect(mocks.createMetricsServer).toHaveBeenCalledExactlyOnceWith({
+      loopHealth: expect.objectContaining({ markCycle: mocks.markCycle }),
+    });
     expect(mocks.listenMetricsServer).toHaveBeenCalledExactlyOnceWith(
       mocks.metricsServer, { host: '0.0.0.0', port: 9090 },
     );
@@ -150,6 +162,23 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     f.row.config = { ...f.row.config, reviewers: { ...f.row.config.reviewers, providers: [] } };
     mocks.pool.query.mockResolvedValue({ rows: [f.row] });
     await expect(lookup(f.claim)).rejects.toThrow('Prepared review policy is invalid or unavailable');
+  });
+
+  it('REL-1053: marks per-pod readiness from every loop cycle and on shutdown', async () => {
+    await callback();
+    const loopOptions = mocks.loop.mock.calls[0][1] as {
+      onOutcome: (outcome: { status: string }) => void;
+      onCycleError: (outcome: { status: 'cycle-error' }) => void;
+    };
+    expect(mocks.markCycle).not.toHaveBeenCalled();
+    loopOptions.onOutcome({ status: 'idle' });
+    loopOptions.onCycleError({ status: 'cycle-error' });
+    expect(mocks.markCycle).toHaveBeenCalledTimes(2);
+
+    const sigterm = vi.mocked(process.once).mock.calls.find(([event]) => event === 'SIGTERM');
+    expect(sigterm).toBeDefined();
+    (sigterm![1] as () => void)();
+    expect(mocks.markStopping).toHaveBeenCalledOnce();
   });
 
   it('closes storage when the metrics listener cannot bind', async () => {
