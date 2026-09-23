@@ -99,6 +99,8 @@ export function assertAdmittedRepository(repository) {
 export const REQUIRED_REVIEW_CONTEXT = 'Review Yeti';
 export const REQUIRED_REVIEW_APP_ID = 4385771;
 export const REQUIRED_REVIEW_APP_SLUG = 'ct-review-bot';
+const PUBLIC_REVIEW_APP_ID = 4552718;
+const PUBLIC_REVIEW_APP_SLUG = 'review-yeti';
 export const CHECK_RUN_PAGE_SIZE = 100;
 export const CHECK_RUN_ENDPOINT_CAP = 1000;
 export const CAPACITY_RUN_PAGE_SIZE = 100;
@@ -416,7 +418,14 @@ function assertNullableString(value, label) {
   }
 }
 
-function validateExactHeadReviewCheck(row, expectedHeadSha) {
+function reviewPublisherFor(repository) {
+  resolveAdmittedTarget(repository);
+  return repository === REVIEW_YETI_REPOSITORY
+    ? { id: PUBLIC_REVIEW_APP_ID, slug: PUBLIC_REVIEW_APP_SLUG }
+    : { id: REQUIRED_REVIEW_APP_ID, slug: REQUIRED_REVIEW_APP_SLUG };
+}
+
+function validateExactHeadReviewCheck(row, expectedHeadSha, publisher) {
   assertPlainObject(row, 'check-run row');
   if (!Number.isSafeInteger(row.id) || row.id < 1) {
     throw new Error('check-run row id must be a positive safe integer');
@@ -428,7 +437,7 @@ function validateExactHeadReviewCheck(row, expectedHeadSha) {
     throw new Error(`check-run ${row.id} is not bound to the exact requested head`);
   }
   assertPlainObject(row.app, `check-run ${row.id} app`);
-  if (row.app.id !== REQUIRED_REVIEW_APP_ID || row.app.slug !== REQUIRED_REVIEW_APP_SLUG) {
+  if (row.app.id !== publisher.id || row.app.slug !== publisher.slug) {
     throw new Error(`check-run ${row.id} is not owned by the required Review Yeti App`);
   }
   if (!CHECK_RUN_STATUSES.has(row.status)) {
@@ -471,6 +480,7 @@ function validateExactHeadReviewCheck(row, expectedHeadSha) {
 }
 
 export async function listExactHeadReviewChecks({ repository, headSha, token, fetchImpl = globalThis.fetch }) {
+  const publisher = reviewPublisherFor(repository);
   const apiBase = `https://api.github.com/repos/${repository}`;
   const rows = [];
   const identities = [];
@@ -481,7 +491,7 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
     const query = new URLSearchParams({
       check_name: REQUIRED_REVIEW_CONTEXT,
       filter: 'all',
-      app_id: String(REQUIRED_REVIEW_APP_ID),
+      app_id: String(publisher.id),
       per_page: String(CHECK_RUN_PAGE_SIZE),
       page: String(pageNumber),
     });
@@ -506,7 +516,7 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
     }
 
     for (const row of page.check_runs) {
-      const identity = validateExactHeadReviewCheck(row, headSha);
+      const identity = validateExactHeadReviewCheck(row, headSha, publisher);
       if (seenIds.has(row.id)) {
         throw new Error(`Review Yeti check inventory contains duplicate check-run id ${row.id}`);
       }

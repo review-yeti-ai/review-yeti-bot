@@ -73,6 +73,8 @@ function externalFetch(calls, {
   targetOwner = REVIEW_YETI_REPOSITORY.split('/')[0],
   centralOwner,
   workflow = callerWorkflow,
+  callerAttempt = 1,
+  checkRuns = [],
 } = {}) {
   return async (url, init) => {
     calls.push({ url, init });
@@ -115,7 +117,7 @@ function externalFetch(calls, {
         path: REVIEW_YETI_CALLER_WORKFLOW_PATH,
         head_sha: headSha,
         head_branch: 'fix/central-caller',
-        run_attempt: 1,
+        run_attempt: callerAttempt,
         pull_requests: [{ number: 314 }],
       });
     }
@@ -123,7 +125,9 @@ function externalFetch(calls, {
       return response({ total_count: 0, workflow_runs: [] });
     }
     if (url.includes(`/commits/${headSha}/check-runs?`)) {
-      return response({ total_count: 0, check_runs: [] });
+      const requestedAppId = Number(new URL(url).searchParams.get('app_id'));
+      const matchingChecks = checkRuns.filter((row) => row.app.id === requestedAppId);
+      return response({ total_count: matchingChecks.length, check_runs: matchingChecks });
     }
     if (url.includes(`/contents/${REVIEW_YETI_CALLER_WORKFLOW_PATH}?ref=main`)) {
       return response({ encoding: 'base64', content: Buffer.from(workflow).toString('base64') });
@@ -191,6 +195,51 @@ test('uses distinct exact-installation tokens for public target and private cent
       : 'Bearer target-installation-token';
     assert.equal(call.init.headers.authorization, expectedToken, call.url);
   }
+});
+
+test('public retry reads the dedicated App worker ledger to admit generation 2', async () => {
+  const calls = [];
+  const worker = {
+    id: 106985152260,
+    name: 'Review Yeti',
+    head_sha: headSha,
+    status: 'completed',
+    conclusion: 'failure',
+    external_id: `run_${'3'.repeat(32)}:a1`,
+    app: { id: 4552718, slug: 'review-yeti' },
+    output: { title: 'Review Yeti: review did not complete', summary: 'review panel was cancelled', text: null },
+  };
+  const result = await validateCentralDispatch({
+    payload: { ...externalPayload, request_id: `review-yeti-bot:314:${headSha}:${callerRunId}:2` },
+    targetToken: 'target-installation-token',
+    centralToken: 'central-installation-token',
+    fetchImpl: externalFetch(calls, { callerAttempt: 2, checkRuns: [worker] }),
+  });
+
+  assert.equal(result.review_generation, 2);
+  assert.equal(result.worker_check_count, 1);
+  assert.equal(result.latest_worker_check_id, worker.id);
+  const checkCall = calls.find((call) => call.url.includes(`/commits/${headSha}/check-runs?`));
+  assert.equal(new URL(checkCall.url).searchParams.get('app_id'), '4552718');
+});
+
+test('public retry rejects a check with the dedicated App ID but the wrong slug', async () => {
+  const worker = {
+    id: 106985152260,
+    name: 'Review Yeti',
+    head_sha: headSha,
+    status: 'completed',
+    conclusion: 'failure',
+    external_id: `run_${'3'.repeat(32)}:a1`,
+    app: { id: 4552718, slug: 'ct-review-bot' },
+    output: { title: 'Review Yeti: review did not complete', summary: 'review panel was cancelled', text: null },
+  };
+  await assert.rejects(validateCentralDispatch({
+    payload: { ...externalPayload, request_id: `review-yeti-bot:314:${headSha}:${callerRunId}:2` },
+    targetToken: 'target-installation-token',
+    centralToken: 'central-installation-token',
+    fetchImpl: externalFetch([], { callerAttempt: 2, checkRuns: [worker] }),
+  }), /not owned by the required Review Yeti App/u);
 });
 
 test('central validation applies the strict public caller contract', async () => {
