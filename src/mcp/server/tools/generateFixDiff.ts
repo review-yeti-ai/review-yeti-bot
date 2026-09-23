@@ -7,6 +7,10 @@
 
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
+import { execSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
 import {
   type ToolDefinition,
   type ToolResult,
@@ -14,6 +18,7 @@ import {
   buildToolResultJson,
 } from '../mcpTypes';
 import { canAccessRepository, McpRbacError } from '../mcpRbac';
+import type { ReviewModelClient } from '../../../gateway/openRouterClient';
 
 export const GenerateFixDiffInputSchema = z.object({
   owner: z.string().trim().min(1, 'owner must not be empty').max(255),
@@ -59,6 +64,60 @@ export interface GenerateFixDiffDependencies {
     startLine: number,
     endLine: number
   ) => Promise<string>;
+  modelClient?: ReviewModelClient | {
+    complete(options: {
+      model?: string;
+      messages: Array<{ role: string; content: string }>;
+      temperature?: number;
+      maxTokens?: number;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    }): Promise<{ content: string }>;
+  };
+  model?: string;
+  timeoutMs?: number;
+  validatePatch?: boolean;
+}
+
+export function validatePatchWithGitApply(
+  patch: string,
+  filePath: string,
+  originalLines: string
+): { valid: boolean; error?: string } {
+  if (!originalLines) return { valid: true };
+  const normPath = filePath.startsWith('/') ? filePath.slice(1) : filePath;
+  const tempDir = mkdtempSync(join(tmpdir(), 'git-apply-val-'));
+  try {
+    for (const k of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) {
+      if (process.env[k] === '') delete process.env[k];
+    }
+    execSync('git init', { cwd: tempDir, stdio: 'ignore' });
+    execSync('git config user.name "Review Yeti" && git config user.email "bot@calltelemetry.com"', { cwd: tempDir, stdio: 'ignore' });
+    const fullTarget = join(tempDir, normPath);
+    mkdirSync(dirname(fullTarget), { recursive: true });
+    const normOrig = originalLines.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    writeFileSync(fullTarget, normOrig.endsWith('\n') ? normOrig : `${normOrig}\n`);
+    execSync(`git add "${normPath}" && git commit -m "init"`, { cwd: tempDir, stdio: 'ignore' });
+
+    const patchFile = join(tempDir, 'fix.patch');
+    writeFileSync(patchFile, patch);
+
+    try {
+      execSync('git apply --unidiff-zero --check fix.patch', { cwd: tempDir, stdio: 'pipe' });
+      return { valid: true };
+    } catch {
+      execSync('git apply --check fix.patch', { cwd: tempDir, stdio: 'pipe' });
+      return { valid: true };
+    }
+  } catch (err: any) {
+    return { valid: false, error: err.message };
+  } finally {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // Safe ignore
+    }
+  }
 }
 
 export function synthesizeUnifiedDiff(
@@ -68,11 +127,14 @@ export function synthesizeUnifiedDiff(
   replacementLines: string
 ): string {
   const normPath = filePath.startsWith('/') ? filePath.slice(1) : filePath;
-  const origNorm = originalLines.replace(/\r\n/g, '\n');
-  const repNorm = replacementLines.replace(/\r\n/g, '\n');
+  const origNorm = originalLines.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const repNorm = replacementLines.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-  const origList = origNorm.length > 0 ? origNorm.split('\n') : [];
-  const repList = repNorm.length > 0 ? repNorm.split('\n') : [];
+  const origTrimmed = origNorm.endsWith('\n') ? origNorm.slice(0, -1) : origNorm;
+  const repTrimmed = repNorm.endsWith('\n') ? repNorm.slice(0, -1) : repNorm;
+
+  const origList = origTrimmed.length > 0 ? origTrimmed.split('\n') : [];
+  const repList = repTrimmed.length > 0 ? repTrimmed.split('\n') : [];
 
   const origCount = origList.length;
   const repCount = repList.length;
@@ -82,11 +144,11 @@ export function synthesizeUnifiedDiff(
   const addLines = repList.map((l) => `+${l}`).join('\n');
 
   let body = '';
-  if (delLines && addLines) {
+  if (origCount > 0 && repCount > 0) {
     body = `${delLines}\n${addLines}\n`;
-  } else if (delLines) {
+  } else if (origCount > 0) {
     body = `${delLines}\n`;
-  } else if (addLines) {
+  } else if (repCount > 0) {
     body = `${addLines}\n`;
   }
 
@@ -215,18 +277,18 @@ export function createGenerateFixDiffTool(deps: GenerateFixDiffDependencies = {}
         }
       }
 
-      let replacementLines = '';
+      let staticReplacement: string | undefined = undefined;
       if (typeof matchedFinding.replacementCode === 'string') {
-        replacementLines = matchedFinding.replacementCode;
+        staticReplacement = matchedFinding.replacementCode;
       } else if (typeof matchedFinding.fixOptions?.[0]?.suggestionCode === 'string') {
-        replacementLines = matchedFinding.fixOptions[0].suggestionCode;
+        staticReplacement = matchedFinding.fixOptions[0].suggestionCode;
       } else if (typeof matchedFinding.suggestion === 'string') {
-        replacementLines = matchedFinding.suggestion;
+        staticReplacement = matchedFinding.suggestion;
       } else if (typeof matchedFinding.suggested_fix === 'string') {
-        replacementLines = matchedFinding.suggested_fix;
+        staticReplacement = matchedFinding.suggested_fix;
       }
 
-      const explanation = String(
+      const staticExplanation = String(
         matchedFinding.fixOptions?.[0]?.explanation ||
         matchedFinding.body ||
         matchedFinding.rationale ||
@@ -234,7 +296,83 @@ export function createGenerateFixDiffTool(deps: GenerateFixDiffDependencies = {}
         'Automated fix suggested by Review Yeti'
       );
 
-      const patch = synthesizeUnifiedDiff(filePath, lineStart, originalLines, replacementLines);
+      let replacementLines = staticReplacement ?? '';
+      let explanation = staticExplanation;
+      let patch = synthesizeUnifiedDiff(filePath, lineStart, originalLines, replacementLines);
+
+      if (deps.modelClient) {
+        const timeoutMs = deps.timeoutMs || 10_000;
+        const activeModel = deps.model || 'deepseek/deepseek-v4-flash-0731';
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+        const prompt = `You are Review Yeti's automated code fix generator powered by DeepSeek.
+Your task is to synthesize a high-quality, minimal, syntax-valid code fix for the specified finding.
+
+Context:
+- Repository: ${owner}/${repo} (PR #${pr_number})
+- File: ${filePath}
+- Target Line Range: ${lineStart}-${lineEnd}
+- Finding Title: ${matchedFinding.title || 'Finding'}
+- Severity: ${matchedFinding.severity || 'P1'}
+- Category: ${matchedFinding.category || 'General'}
+- Rationale: ${matchedFinding.rationale || matchedFinding.body || 'No rationale provided'}
+- Violated ADRs: ${(matchedFinding.violated_adrs || []).join(', ') || 'None'}
+- Prior Suggestion: ${staticReplacement || 'None'}
+
+Original Code snippet (lines ${lineStart}-${lineEnd}):
+\`\`\`
+${originalLines}
+\`\`\`
+
+Instructions:
+1. Synthesize the minimal replacement lines of code to fix the issue cleanly, safely, and idiomatically.
+2. Preserve exact indentation, whitespace style, and language idioms for ${filePath}.
+3. Do NOT include markdown blocks or surrounding commentary in the replacement_lines field itself.
+4. Respond ONLY with a valid JSON object matching this schema:
+{
+  "replacement_lines": "<exact replacement code string>",
+  "explanation": "<concise explanation of why this fix resolves the defect>"
+}`;
+
+        try {
+          const response = await deps.modelClient.complete({
+            model: activeModel,
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.1,
+            maxTokens: 1024,
+            timeoutMs,
+            signal: controller.signal,
+          });
+
+          const content = (response.content || '').trim();
+          const jsonMatch = content.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (typeof parsed.replacement_lines === 'string') {
+              const modelRepLines = parsed.replacement_lines;
+              const modelExplanation = typeof parsed.explanation === 'string' ? parsed.explanation : staticExplanation;
+              const candidatePatch = synthesizeUnifiedDiff(filePath, lineStart, originalLines, modelRepLines);
+
+              let isValid = true;
+              if (deps.validatePatch !== false) {
+                const valResult = validatePatchWithGitApply(candidatePatch, filePath, originalLines);
+                isValid = valResult.valid;
+              }
+
+              if (isValid) {
+                replacementLines = modelRepLines;
+                explanation = modelExplanation;
+                patch = candidatePatch;
+              }
+            }
+          }
+        } catch {
+          // Graceful fallback to static replacement lines on timeout, exception, or rejection
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      }
 
       const result: GenerateFixDiffOutput = {
         patch,

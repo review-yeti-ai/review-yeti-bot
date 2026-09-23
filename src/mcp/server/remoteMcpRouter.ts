@@ -39,7 +39,12 @@ import {
   createDisputeFindingTool,
   createAttestPrGateTool,
   createReplyReviewThreadTool,
+  type PreflightDiffReviewDependencies,
+  type ExplainFindingDependencies,
+  type GenerateFixDiffDependencies,
+  type DisputeFindingDependencies,
 } from './tools';
+import type { ReviewModelClient } from '../../gateway/openRouterClient';
 
 import {
   listResourceCatalog,
@@ -116,13 +121,14 @@ export interface RemoteMcpRouterOptions {
   keepAliveMs?: number; // default: 15,000 (15s)
   now?: () => number; // default: Date.now
   uuidGenerator?: () => string; // default: randomUUID
+  modelClient?: ReviewModelClient;
   triggerDeps?: any;
   cancelDeps?: any;
   watchDeps?: any;
-  preflightDeps?: any;
-  explainDeps?: any;
-  generateFixDiffDeps?: any;
-  disputeFindingDeps?: any;
+  preflightDeps?: PreflightDiffReviewDependencies;
+  explainDeps?: ExplainFindingDependencies;
+  generateFixDiffDeps?: GenerateFixDiffDependencies;
+  disputeFindingDeps?: DisputeFindingDependencies;
   attestPrGateDeps?: any;
   replyReviewThreadDeps?: any;
 }
@@ -138,19 +144,21 @@ export function createDefaultToolRegistry(options?: {
   db?: any;
   admissionRepository?: any;
   matrixBuilder?: any;
+  modelClient?: ReviewModelClient;
   triggerDeps?: any;
   cancelDeps?: any;
   watchDeps?: any;
-  preflightDeps?: any;
-  explainDeps?: any;
-  generateFixDiffDeps?: any;
-  disputeFindingDeps?: any;
+  preflightDeps?: PreflightDiffReviewDependencies;
+  explainDeps?: ExplainFindingDependencies;
+  generateFixDiffDeps?: GenerateFixDiffDependencies;
+  disputeFindingDeps?: DisputeFindingDependencies;
   attestPrGateDeps?: any;
   replyReviewThreadDeps?: any;
   notifyResourceUpdated?: (uri: string, payload?: any) => number;
 }): McpToolRegistry {
   const registry = new DefaultMcpToolRegistry();
   const db = options?.db;
+  const modelClient = options?.modelClient;
 
   registry.registerTool(createGetReviewStatusTool(db));
   registry.registerTool(createGetReviewFindingsTool(db));
@@ -162,12 +170,24 @@ export function createDefaultToolRegistry(options?: {
   }));
   registry.registerTool(createCancelReviewTool({ queryableDatabase: db, ...options?.cancelDeps }));
   registry.registerTool(createWatchReviewProgressTool(options?.watchDeps));
-  registry.registerTool(createPreflightDiffReviewTool(options?.preflightDeps));
-  registry.registerTool(createExplainFindingTool({ queryableDatabase: db, ...options?.explainDeps }));
-  registry.registerTool(createGenerateFixDiffTool({ queryableDatabase: db, ...options?.generateFixDiffDeps }));
+  registry.registerTool(createPreflightDiffReviewTool({
+    ...(modelClient ? { modelClient } : {}),
+    ...options?.preflightDeps,
+  }));
+  registry.registerTool(createExplainFindingTool({
+    queryableDatabase: db,
+    ...(modelClient ? { modelClient } : {}),
+    ...options?.explainDeps,
+  }));
+  registry.registerTool(createGenerateFixDiffTool({
+    queryableDatabase: db,
+    ...(modelClient ? { modelClient } : {}),
+    ...options?.generateFixDiffDeps,
+  }));
   registry.registerTool(createDisputeFindingTool({
     queryableDatabase: db,
     notifyResourceUpdated: options?.notifyResourceUpdated,
+    ...(modelClient ? { modelClient } : {}),
     ...options?.disputeFindingDeps,
   }));
   registry.registerTool(createAttestPrGateTool({ queryableDatabase: db, ...options?.attestPrGateDeps }));

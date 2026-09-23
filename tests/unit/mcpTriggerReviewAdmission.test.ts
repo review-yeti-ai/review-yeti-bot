@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createTriggerReviewTool } from '../../src/mcp/server/tools/triggerReview';
 import { deriveReviewRunId } from '../../src/review/reviewAdmission';
+import { AuthoritativePublishingResolver } from '../../src/review/authoritativePublishingResolver';
 
 const HEAD_SHA = 'a'.repeat(40);
 const BASE_SHA = 'b'.repeat(40);
@@ -209,5 +211,291 @@ describe('trigger_review governed admission', () => {
     })).rejects.toThrow(/authoritative admission no longer matches current policy/);
     expect(query).toHaveBeenCalledOnce();
     expect(admit).toHaveBeenCalledOnce();
+  });
+
+  it('admits review request with explicit review_engine: composed', async () => {
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 5135,
+      headSha: HEAD_SHA, baseSha: BASE_SHA,
+    };
+    const prepared = {
+      policy: {
+        effectivePolicyDigest: POLICY_DIGEST,
+        effectiveConfigDigest: 'd'.repeat(64),
+      },
+      config: { review_engine: 'composed' },
+    };
+    const admit = vi.fn(async (input: any) => {
+      expect(input).toMatchObject({
+        eventName: 'mcp.trigger_review',
+        identity,
+        reviewEngine: 'composed',
+      });
+      expect(input.authoritativeGate?.prepared.config.review_engine).toBe('composed');
+      return { run: { runId: `run_${'e'.repeat(32)}` } };
+    });
+    const resolve = vi.fn(async () => ({ identity, prepared }));
+
+    const tool = createTriggerReviewTool({
+      queryableDatabase: { query: vi.fn(async () => ({ rows: [] })) },
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: vi.fn(async () => ({
+        headSha: HEAD_SHA,
+        baseSha: BASE_SHA,
+        repositoryId: 190468701,
+        installationId: 2222,
+      })),
+      authoritativePublishing: {
+        expectedAppId: 4385771,
+        repositoryIds: [190468701],
+        resolver: { resolve },
+      },
+      now: () => 1_790_060_000_000,
+    } as any);
+
+    const result = await tool.execute({
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      pull_number: 5135,
+      head_sha: HEAD_SHA,
+      review_engine: 'composed',
+    });
+
+    expect(admit).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledWith({
+      repositoryId: 190468701,
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      prNumber: 5135,
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+    });
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data).toMatchObject({
+      dispatched: true,
+      job_crd_created: false,
+    });
+    expect(data.message).toContain('engine: composed');
+  });
+
+  it('admits review request with explicit review_engine: panel', async () => {
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 5135,
+      headSha: HEAD_SHA, baseSha: BASE_SHA,
+    };
+    const prepared = {
+      policy: {
+        effectivePolicyDigest: POLICY_DIGEST,
+        effectiveConfigDigest: 'd'.repeat(64),
+      },
+      config: { review_engine: 'panel' },
+    };
+    const admit = vi.fn(async (input: any) => {
+      expect(input).toMatchObject({
+        eventName: 'mcp.trigger_review',
+        identity,
+        reviewEngine: 'panel',
+      });
+      expect(input.authoritativeGate?.prepared.config.review_engine).toBe('panel');
+      return { run: { runId: `run_${'e'.repeat(32)}` } };
+    });
+    const resolve = vi.fn(async () => ({ identity, prepared }));
+
+    const tool = createTriggerReviewTool({
+      queryableDatabase: { query: vi.fn(async () => ({ rows: [] })) },
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: vi.fn(async () => ({
+        headSha: HEAD_SHA,
+        baseSha: BASE_SHA,
+        repositoryId: 190468701,
+        installationId: 2222,
+      })),
+      authoritativePublishing: {
+        expectedAppId: 4385771,
+        repositoryIds: [190468701],
+        resolver: { resolve },
+      },
+      now: () => 1_790_060_000_000,
+    } as any);
+
+    const result = await tool.execute({
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      pull_number: 5135,
+      head_sha: HEAD_SHA,
+      review_engine: 'panel',
+    });
+
+    expect(admit).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledWith({
+      repositoryId: 190468701,
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      prNumber: 5135,
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+    });
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data).toMatchObject({
+      dispatched: true,
+      job_crd_created: false,
+    });
+    expect(data.message).toContain('engine: panel');
+  });
+
+  it('preserves backward compatibility when review_engine is omitted', async () => {
+    const identity = {
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 5135,
+      headSha: HEAD_SHA, baseSha: BASE_SHA,
+    };
+    const prepared = {
+      policy: {
+        effectivePolicyDigest: POLICY_DIGEST,
+        effectiveConfigDigest: 'd'.repeat(64),
+      },
+      config: {},
+    };
+    const admit = vi.fn(async (input: any) => {
+      expect(input).toMatchObject({
+        eventName: 'mcp.trigger_review',
+        identity,
+      });
+      expect(input.reviewEngine).toBeUndefined();
+      return { run: { runId: `run_${'e'.repeat(32)}` } };
+    });
+    const resolve = vi.fn(async () => ({ identity, prepared }));
+
+    const tool = createTriggerReviewTool({
+      queryableDatabase: { query: vi.fn(async () => ({ rows: [] })) },
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: vi.fn(async () => ({
+        headSha: HEAD_SHA,
+        baseSha: BASE_SHA,
+        repositoryId: 190468701,
+        installationId: 2222,
+      })),
+      authoritativePublishing: {
+        expectedAppId: 4385771,
+        repositoryIds: [190468701],
+        resolver: { resolve },
+      },
+      now: () => 1_790_060_000_000,
+    } as any);
+
+    const result = await tool.execute({
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      pull_number: 5135,
+      head_sha: HEAD_SHA,
+    });
+
+    expect(admit).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve).toHaveBeenCalledWith({
+      repositoryId: 190468701,
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      prNumber: 5135,
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+    });
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data).toMatchObject({
+      dispatched: true,
+      job_crd_created: false,
+    });
+    expect(data.message).not.toContain('engine:');
+  });
+
+  it('admits review request when wired with real AuthoritativePublishingResolver and review_engine', async () => {
+    const policyContent = JSON.stringify({
+      schema: 'calltelemetry.review-policy.v1',
+      review_yeti: {
+        personas: 'security,architecture',
+        budget: { max_investigation_turns: 5 },
+      },
+    });
+    const policyFile = {
+      source: {
+        repositoryId: 190468701,
+        repository: 'calltelemetry/cisco-cdr',
+        sha: HEAD_SHA,
+        path: '.calltelemetry/review-policy.json',
+        contentDigest: createHash('sha256').update(policyContent).digest('hex'),
+      },
+      content: policyContent,
+    };
+
+    const resolver = new AuthoritativePublishingResolver({
+      policyRepository: { repositoryId: 190468701, owner: 'calltelemetry', repo: 'cisco-cdr' },
+      policyRef: 'refs/heads/main',
+      policyPath: '.calltelemetry/review-policy.json',
+      transport: { baseUrl: 'https://bifrost.internal.calltelemetry.com', model: 'deepseek/deepseek-v4-flash-0731' },
+      candidateReaderFactory: async () => ({
+        currentCandidate: async () => ({
+          open: true,
+          draft: false,
+          repositoryId: 190468701,
+          owner: 'calltelemetry',
+          repo: 'cisco-cdr',
+          prNumber: 5135,
+          headSha: HEAD_SHA,
+          baseSha: BASE_SHA,
+        }),
+      }),
+      policyReaderFactory: async () => ({
+        resolvePolicyRevision: async () => HEAD_SHA,
+        immutablePolicyFile: async () => policyFile,
+      }),
+    });
+
+    const admit = vi.fn(async () => ({ run: { runId: `run_${'e'.repeat(32)}` } }));
+
+    const tool = createTriggerReviewTool({
+      queryableDatabase: { query: vi.fn(async () => ({ rows: [] })) },
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: vi.fn(async () => ({
+        headSha: HEAD_SHA,
+        baseSha: BASE_SHA,
+        repositoryId: 190468701,
+        installationId: 2222,
+      })),
+      authoritativePublishing: {
+        expectedAppId: 4385771,
+        repositoryIds: [190468701],
+        resolver,
+      } as any,
+      now: () => 1_790_060_000_000,
+    });
+
+    const result = await tool.execute({
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      pull_number: 5135,
+      head_sha: HEAD_SHA,
+      review_engine: 'composed',
+    });
+
+    expect(admit).toHaveBeenCalledOnce();
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data.dispatched).toBe(true);
+    expect(data.message).toContain('engine: composed');
+  });
+
+  it('rejects review request with invalid review_engine', async () => {
+    const tool = createTriggerReviewTool({
+      admissionRepository: { admit: vi.fn() } as any,
+      resolveGitHubPullRequest: vi.fn() as any,
+    });
+
+    await expect(tool.execute({
+      owner: 'calltelemetry',
+      repo: 'cisco-cdr',
+      pull_number: 5135,
+      head_sha: HEAD_SHA,
+      review_engine: 'invalid_engine' as any,
+    })).rejects.toThrow(/Invalid arguments/);
   });
 });

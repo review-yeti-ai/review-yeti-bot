@@ -179,6 +179,7 @@ export class PostgresStore {
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS effective_config_digest VARCHAR(64);
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS index_epoch BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS artifacts JSONB NOT NULL DEFAULT '{}'::jsonb;
+        CREATE INDEX IF NOT EXISTS review_runs_review_engine_idx ON review_runs ((artifacts->>'review_engine'));
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb;
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS publication_fence VARCHAR(64);
         ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS repository_id BIGINT;

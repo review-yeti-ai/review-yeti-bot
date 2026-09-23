@@ -14,6 +14,7 @@ import {
   buildToolResultJson,
 } from '../mcpTypes';
 import { canAccessRepository, McpRbacError } from '../mcpRbac';
+import type { ReviewModelClient } from '../../../gateway/openRouterClient';
 
 export const DisputeFindingInputSchema = z.object({
   owner: z.string().trim().min(1, 'owner must not be empty').max(255),
@@ -30,6 +31,7 @@ export interface DisputeFindingOutput {
   disputed: boolean;
   verdict: 'upheld' | 'overruled';
   reasoning: string;
+  confidence: number;
   remaining_blockers: number;
 }
 
@@ -56,17 +58,30 @@ export interface DisputeFindingDependencies {
   };
   adjudicateDispute?: (
     finding: any,
-    counterArgument: string
-  ) => Promise<{ verdict: 'upheld' | 'overruled'; reasoning: string }> | { verdict: 'upheld' | 'overruled'; reasoning: string };
+    counterArgument: string,
+    context?: { owner?: string; repo?: string; pr_number?: number }
+  ) => Promise<{ verdict: 'upheld' | 'overruled'; reasoning: string; confidence?: number }> |
+     { verdict: 'upheld' | 'overruled'; reasoning: string; confidence?: number };
+  modelClient?: ReviewModelClient | {
+    complete(options: {
+      model?: string;
+      messages: Array<{ role: string; content: string }>;
+      temperature?: number;
+      maxTokens?: number;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    }): Promise<{ content: string }>;
+  };
+  model?: string;
+  timeoutMs?: number;
   notifyResourceUpdated?: (uri: string, payload?: any) => number;
 }
 
 export function defaultAdjudicateFinding(
   finding: any,
   counterArgument: string
-): { verdict: 'upheld' | 'overruled'; reasoning: string } {
+): { verdict: 'upheld' | 'overruled'; reasoning: string; confidence: number } {
   const trimmed = counterArgument.trim();
-  const lower = trimmed.toLowerCase();
 
   // Dismissive or low-effort rebuttals are upheld
   if (
@@ -77,6 +92,7 @@ export function defaultAdjudicateFinding(
     return {
       verdict: 'upheld',
       reasoning: `Counter-argument lacks technical evidence or verifiable mitigation rationale for finding '${finding?.title || finding?.finding_id || 'unidentified'}'. Blocker finding remains upheld.`,
+      confidence: 0.9,
     };
   }
 
@@ -84,7 +100,94 @@ export function defaultAdjudicateFinding(
   return {
     verdict: 'overruled',
     reasoning: `Quorum adjudication accepted counter-argument: Technical mitigation and verified context accepted for finding '${finding?.title || finding?.finding_id || 'unidentified'}'. Finding overruled and resolved.`,
+    confidence: 0.85,
   };
+}
+
+export async function evaluateDisputeWithModel(
+  modelClient: NonNullable<DisputeFindingDependencies['modelClient']>,
+  finding: any,
+  counterArgument: string,
+  options: {
+    model?: string;
+    timeoutMs?: number;
+    owner?: string;
+    repo?: string;
+    pr_number?: number;
+  } = {}
+): Promise<{ verdict: 'upheld' | 'overruled'; reasoning: string; confidence: number }> {
+  const modelName = options.model || 'deepseek/deepseek-v4-flash-0731';
+  const timeoutMs = options.timeoutMs || 10_000;
+  const violatedAdrs = Array.isArray(finding.violated_adrs)
+    ? finding.violated_adrs
+    : Array.isArray(finding.adrs)
+    ? finding.adrs
+    : [];
+
+  const prompt = `You are Review Yeti's Blocker Quorum Adjudicator powered by DeepSeek.
+Your task is to impartially adjudicate a developer dispute regarding a review finding against repository charters, ADRs, and evidence.
+
+Finding Details:
+- Title: ${finding.title || 'Finding'}
+- Severity: ${finding.severity || 'P1'}
+- Category: ${finding.category || 'Architecture'}
+- File: ${finding.path || finding.file_path || 'unknown'}:${finding.line_start || finding.line || 1}
+- Violated ADRs: ${violatedAdrs.length > 0 ? violatedAdrs.join(', ') : 'None specified'}
+- Rationale: ${finding.rationale || finding.body || 'No rationale provided'}
+- Code Snippet:
+${finding.originalCode || finding.codeSnippet || 'N/A'}
+
+Repository Directives & Charters:
+Active Charters: Architecture (ADR compliance), Security (Authentication, Injection, Tenant Isolation), Correctness (Concurrency, Error handling), Performance (Resource bounds).
+
+Developer Counter-Argument:
+"${counterArgument}"
+
+Adjudication Rules:
+1. OVERRULE the finding if the developer provides legitimate technical justification, demonstrates a valid mitigation, cites appropriate architectural exceptions, proves the issue is handled by an existing guard or framework invariant, or shows the finding is a false positive.
+2. UPHELD the finding if the counter-argument is dismissive, low-effort, ignores safety invariants, fails to provide verifiable technical justification, or violates critical ADRs/security policies.
+3. Assign a confidence score between 0.0 and 1.0 based on the clarity and strength of the technical evidence.
+
+Respond ONLY with a valid JSON object in this format:
+{
+  "verdict": "upheld" | "overruled",
+  "reasoning": "<detailed technical justification for the verdict>",
+  "confidence": <number between 0.0 and 1.0>
+}`;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await modelClient.complete({
+      model: modelName,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      maxTokens: 1024,
+      timeoutMs,
+      signal: controller.signal,
+    });
+
+    const content = (response.content || '').trim();
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const verdict: 'upheld' | 'overruled' = parsed.verdict === 'overruled' ? 'overruled' : 'upheld';
+      const reasoning =
+        String(parsed.reasoning || '').trim() ||
+        (verdict === 'overruled' ? 'Quorum accepted counter-argument.' : 'Quorum rejected counter-argument.');
+      const confidence =
+        typeof parsed.confidence === 'number' && parsed.confidence >= 0 && parsed.confidence <= 1
+          ? parsed.confidence
+          : (verdict === 'overruled' ? 0.9 : 0.85);
+      return { verdict, reasoning, confidence };
+    }
+  } catch {
+    // Graceful fallback to heuristic
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  return defaultAdjudicateFinding(finding, counterArgument);
 }
 
 export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) {
@@ -208,17 +311,37 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
       }
 
       // Adjudication
-      const adjudication = deps.adjudicateDispute
-        ? await deps.adjudicateDispute(matchedFinding, counter_argument)
-        : defaultAdjudicateFinding(matchedFinding, counter_argument);
+      let adjudication: { verdict: 'upheld' | 'overruled'; reasoning: string; confidence: number };
+      if (deps.adjudicateDispute) {
+        const customRes = await deps.adjudicateDispute(matchedFinding, counter_argument, { owner, repo, pr_number });
+        adjudication = {
+          verdict: customRes.verdict,
+          reasoning: customRes.reasoning,
+          confidence:
+            typeof customRes.confidence === 'number'
+              ? customRes.confidence
+              : (customRes.verdict === 'overruled' ? 0.85 : 0.9),
+        };
+      } else if (deps.modelClient) {
+        adjudication = await evaluateDisputeWithModel(deps.modelClient, matchedFinding, counter_argument, {
+          model: deps.model,
+          timeoutMs: deps.timeoutMs,
+          owner,
+          repo,
+          pr_number,
+        });
+      } else {
+        adjudication = defaultAdjudicateFinding(matchedFinding, counter_argument);
+      }
 
-      const { verdict, reasoning } = adjudication;
+      const { verdict, reasoning, confidence } = adjudication;
 
       // Update finding state in payload and database
       matchedFinding.status = verdict === 'overruled' ? 'OVERRULED' : 'DISPUTED';
       matchedFinding.resolved = verdict === 'overruled';
       matchedFinding.dispute_reasoning = reasoning;
       matchedFinding.counter_argument = counter_argument;
+      matchedFinding.dispute_confidence = confidence;
 
       if (deps.queryableDatabase && matchedRow && parsedPayload) {
         if (matchedRow.execution_attempt !== undefined) {
@@ -279,6 +402,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         disputed: true,
         verdict,
         reasoning,
+        confidence,
         remaining_blockers: remainingBlockers,
       };
 

@@ -66,10 +66,27 @@ export async function runReadOnlyTool(
   const targetPath = toolCall.args?.path || toolCall.args?.filePath || '';
   const searchQ = toolCall.args?.query || toolCall.args?.pattern || '';
 
-  // Whitelist check: Code Reading, Context Searching, Dashboard MCPs, Zoekt
+  // Whitelist check: Code Reading, Context Searching, Dashboard MCPs, Zoekt, Fleet MCPs
   const isCodeReading = ['view_file', 'read_file', 'get_diff'].includes(tName);
   const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code', 'code_search_zoekt', 'zoekt_search'].includes(tName);
-  const readOnlyMcpNames = new Set(['fetch_docs', 'context7_search', 'mcp_context7_query', 'linear_get_issue']);
+  const readOnlyMcpNames = new Set([
+    // External documentation & tracking
+    'fetch_docs',
+    'context7_search',
+    'mcp_context7_query',
+    'linear_get_issue',
+    // ct-impact (cross-repository AST mesh & blast radius)
+    'ct_impact',
+    'ct_mesh_query',
+    'ct_mesh_stats',
+    // ct-knowledge (governed ADRs & runbooks - strictly read-only)
+    'knowledge_search',
+    'knowledge_get',
+    // blocker-quorum (advisories & readiness)
+    'advise_blocker',
+    'health',
+    'blocker_quorum_health',
+  ]);
   const isMcp = readOnlyMcpNames.has(tName);
 
   const isAllowed = isCodeReading || isSearching || isMcp;
@@ -78,9 +95,66 @@ export async function runReadOnlyTool(
   let toolScope = 'changed-patches-only';
   let isExhaustive = false;
 
+  if (['ct_impact', 'ct_mesh_query', 'ct_mesh_stats'].includes(tName)) {
+    toolScope = 'cross-repository-ast-mesh';
+    isExhaustive = true;
+  } else if (['knowledge_search', 'knowledge_get'].includes(tName)) {
+    toolScope = 'governed-knowledge-adr';
+    isExhaustive = true;
+  } else if (['advise_blocker', 'health', 'blocker_quorum_health'].includes(tName)) {
+    toolScope = 'policy-blocker-quorum';
+    isExhaustive = true;
+  }
+
   if (!isAllowed) {
+    toolScope = 'changed-patches-only';
+    isExhaustive = false;
     toolOutput = `Tool '${tName}' execution rejected: Permission denied. Reviewer personas are restricted strictly to read-only code, search, and MCP tools.`;
   } else {
+    // Validate required arguments for fleet MCP tools
+    if (tName === 'ct_impact') {
+      const target = toolCall.args?.target ?? toolCall.args?.target_file ?? toolCall.args?.query;
+      if (typeof target !== 'string' || !target.trim()) {
+        return {
+          toolOutput: `Tool '${tName}' execution rejected: Missing required argument 'target'.`,
+          toolScope,
+          isExhaustive: false,
+        };
+      }
+    } else if (tName === 'ct_mesh_query') {
+      if (typeof toolCall.args?.query !== 'string' || !toolCall.args.query.trim()) {
+        return {
+          toolOutput: `Tool '${tName}' execution rejected: Missing required argument 'query'.`,
+          toolScope,
+          isExhaustive: false,
+        };
+      }
+    } else if (tName === 'knowledge_search') {
+      if (typeof toolCall.args?.query !== 'string' || !toolCall.args.query.trim()) {
+        return {
+          toolOutput: `Tool '${tName}' execution rejected: Missing required argument 'query'.`,
+          toolScope,
+          isExhaustive: false,
+        };
+      }
+    } else if (tName === 'knowledge_get') {
+      if (typeof toolCall.args?.id !== 'string' || !toolCall.args.id.trim()) {
+        return {
+          toolOutput: `Tool '${tName}' execution rejected: Missing required argument 'id'.`,
+          toolScope,
+          isExhaustive: false,
+        };
+      }
+    } else if (tName === 'advise_blocker') {
+      if (!toolCall.args?.blocker_packet || typeof toolCall.args.blocker_packet !== 'object') {
+        return {
+          toolOutput: `Tool '${tName}' execution rejected: Missing required argument 'blocker_packet'.`,
+          toolScope,
+          isExhaustive: false,
+        };
+      }
+    }
+
     toolOutput = `Tool '${tName}' execution result:\n`;
     if (isCodeReading) {
       const rawStart = toolCall.args?.startLine ?? toolCall.args?.start_line;
@@ -218,13 +292,43 @@ export async function runReadOnlyTool(
         toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: false | STATUS: unavailable]\nZoekt search unavailable: ${err?.message || String(err)}`;
       }
     } else {
-      // Only documentation/search MCPs are permitted. Review execution must never mutate
-      // Linear, Productlane, GitHub, or an arbitrary custom MCP server.
+      // Only documentation/search/fleet MCPs are permitted. Review execution must never mutate
+      // candidate memory, Linear, Productlane, GitHub, or an arbitrary custom MCP server.
+      const MCP_TOOL_TIMEOUT_MS = 15_000;
       try {
-        const mcpResult = await raceWithPanelAbort(mcpFleetManager.executeTool(tName, toolCall.args || {}), options?.signal);
-        toolOutput += mcpResult.success ? JSON.stringify(mcpResult.output, null, 2) : `MCP Error: ${mcpResult.error || 'Execution failed'}`;
+        let timer: NodeJS.Timeout | undefined;
+        const timeoutPromise = new Promise<{ success: false; output: null; error: string }>((resolve) => {
+          timer = setTimeout(() => {
+            resolve({
+              success: false,
+              output: null,
+              error: `Tool execution timed out after ${MCP_TOOL_TIMEOUT_MS}ms.`,
+            });
+          }, MCP_TOOL_TIMEOUT_MS);
+        });
+
+        const execPromise = mcpFleetManager.executeTool(tName, toolCall.args || {})
+          .finally(() => {
+            if (timer) clearTimeout(timer);
+          });
+
+        const mcpResult = await raceWithPanelAbort(
+          Promise.race([execPromise, timeoutPromise]),
+          options?.signal,
+        );
+
+        if (mcpResult.success) {
+          toolOutput += typeof mcpResult.output === 'string'
+            ? mcpResult.output
+            : JSON.stringify(mcpResult.output, null, 2);
+        } else {
+          toolOutput += `MCP Error: ${mcpResult.error || 'Execution failed'}`;
+          isExhaustive = false;
+        }
       } catch (err: any) {
-        toolOutput += `Tool '${tName}' executed cleanly via Pi harness.`;
+        throwIfPanelAborted(options?.signal);
+        toolOutput += `MCP Error: ${err?.message || String(err)}`;
+        isExhaustive = false;
       }
     }
   }

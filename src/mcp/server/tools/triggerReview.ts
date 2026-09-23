@@ -12,6 +12,12 @@ import {
 } from './schemas';
 import { sha256 } from '../../../review/reviewCore';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../../review/reviewAdmission';
+import {
+  buildAuthoritativeReviewIdentity,
+  fingerprintEffectiveReviewConfig,
+  fingerprintTrustedReviewPolicy,
+} from '../../../review/authoritativeReviewIdentity';
+import type { AuthoritativePublishingResolver } from '../../../review/authoritativePublishingResolver';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import type { ReviewDispatchRepository } from '../../../persistence/reviewDispatchRepository';
 
@@ -27,6 +33,11 @@ export const triggerReviewDefinition: ToolDefinition = {
       head_sha: { type: 'string', description: '40-character hexadecimal commit SHA.' },
       force: { type: 'boolean', default: false, description: 'Override existing in-flight review.' },
       priority: { type: 'string', enum: ['normal', 'expedited'], default: 'normal', description: 'Scheduling priority.' },
+      review_engine: {
+        type: 'string',
+        enum: ['composed', 'panel'],
+        description: 'Review engine execution mode ("composed" or "panel").',
+      },
     },
     required: ['owner', 'repo', 'pull_number', 'head_sha'],
     additionalProperties: false,
@@ -35,7 +46,10 @@ export const triggerReviewDefinition: ToolDefinition = {
 
 export interface TriggerReviewDependencies {
   admissionRepository?: Pick<ReviewDispatchRepository, 'admit'>;
-  authoritativePublishing?: AuthoritativeReviewAdmission;
+  authoritativePublishing?: AuthoritativeReviewAdmission | {
+    admission?: AuthoritativeReviewAdmission | ((candidate: any) => Promise<unknown>);
+    resolver?: Pick<AuthoritativePublishingResolver, 'resolve'>;
+  };
   queryableDatabase?: {
     query(sql: string, params?: unknown[]): Promise<{ rows: any[] }>;
   };
@@ -58,7 +72,15 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
       if (!parsed.success) {
         throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
       }
-      const { owner, repo, pull_number, head_sha, force = false, priority = 'normal' } = parsed.data;
+      const {
+        owner,
+        repo,
+        pull_number,
+        head_sha,
+        force = false,
+        priority = 'normal',
+        review_engine,
+      } = parsed.data;
 
       const headSha = head_sha.toLowerCase();
 
@@ -84,15 +106,65 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
       }
 
       const requested = { repositoryId, owner, repo, prNumber: pull_number, headSha, baseSha };
-      const authoritative = deps.authoritativePublishing;
+      const authoritative = (deps.authoritativePublishing as any)?.admission ?? deps.authoritativePublishing;
       if (deps.admissionRepository && !authoritative) {
         throw new Error('trigger_review requires authoritative publishing admission');
       }
       if (authoritative?.acceptNewRequests === false
-        || (authoritative && !authoritative.repositoryIds.includes(repositoryId))) {
+        || (authoritative && !authoritative.repositoryIds?.includes(repositoryId))) {
         throw new Error('trigger_review repository is outside authoritative admission');
       }
-      const resolved = authoritative ? await authoritative.resolver.resolve(requested) : undefined;
+      const resolver = authoritative?.resolver ?? (deps.authoritativePublishing as any)?.resolver;
+      const resolveCandidate = {
+        ...requested,
+        ...(review_engine ? { review_engine } : {}),
+      };
+      if (typeof (deps.authoritativePublishing as any)?.admission === 'function') {
+        await (deps.authoritativePublishing as any).admission(resolveCandidate);
+      }
+      const resolved = resolver ? await resolver.resolve(requested) : undefined;
+
+      if (resolved && review_engine) {
+        if (!resolved.prepared.config) {
+          resolved.prepared.config = {} as any;
+        }
+        resolved.prepared.config.review_engine = review_engine;
+        if (resolved.prepared.policy && resolved.prepared.transport && resolved.prepared.policy.sources) {
+          const effectiveConfigDigest = fingerprintEffectiveReviewConfig({
+            config: resolved.prepared.config,
+            transport: resolved.prepared.transport,
+          });
+          resolved.prepared.policy = fingerprintTrustedReviewPolicy({
+            effectiveConfig: { config: resolved.prepared.config, transport: resolved.prepared.transport },
+            effectivePolicy: {
+              central: {
+                schema: 'calltelemetry.review-policy.v1',
+                review_yeti: {
+                  personas: (resolved.prepared.expectedPersonaIds || []).join(','),
+                  budget: { max_investigation_turns: resolved.prepared.config?.default_max_turns || 15 },
+                  review_engine,
+                },
+              },
+              execution: { provider: 'bifrost', ...resolved.prepared.transport },
+            },
+            sources: resolved.prepared.policy.sources,
+          });
+          const candidate = {
+            repositoryId,
+            owner,
+            repo,
+            prNumber: pull_number,
+            headSha,
+            baseSha,
+          };
+          resolved.identity = buildAuthoritativeReviewIdentity({
+            requested: candidate,
+            current: resolved.current || { ...candidate, open: true, draft: false },
+            policy: resolved.prepared.policy,
+          });
+        }
+      }
+
       const resolvedIdentity = resolved?.identity || buildReviewRunIdentity(requested);
       const resolvedRunId = deriveReviewRunId(resolvedIdentity);
 
@@ -141,6 +213,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           centralActionDispatch: false,
           debounce: false,
           identity: resolvedIdentity,
+          ...(review_engine ? { reviewEngine: review_engine } : {}),
           ...(resolved && authoritative ? {
             effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
             authoritativeGate: {
@@ -160,7 +233,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         // Projection is intentionally asynchronous and owned by the durable
         // review-job dispatcher, never by the internet-facing MCP process.
         job_crd_created: false,
-        message: `Review job queued successfully (priority: ${priority})`,
+        message: `Review job queued successfully (priority: ${priority}${review_engine ? `, engine: ${review_engine}` : ''})`,
       } satisfies TriggerReviewOutput);
     },
   };

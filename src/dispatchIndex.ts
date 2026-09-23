@@ -5,6 +5,7 @@ import { McpAuthenticator } from './mcp/server/mcpAuthenticator';
 import { SlidingWindowRateLimiter } from './mcp/server/mcpRateLimiter';
 import { createRemoteMcpRouter, type RemoteMcpRouter } from './mcp/server/remoteMcpRouter';
 import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
+import { OpenRouterClient } from './gateway/openRouterClient';
 import {
   getBoundedRepositoryInstallationId, getBoundedRepositoryToken, validateGitHubAppApiBaseUrl,
 } from './github/boundedAppToken';
@@ -126,9 +127,39 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       windowMs: dispatchConfig.mcp.rateLimitWindowMs,
       maxRequests: dispatchConfig.mcp.rateLimitMax,
     });
+
+    const modelApiKey =
+      environment.OPENROUTER_API_KEY ||
+      environment.REVIEW_YETI_BIFROST_API_KEY ||
+      environment.BIFROST_VIRTUAL_KEY ||
+      environment.OPENROUTER_PR_REVIEW_API_KEY;
+    const modelBaseUrl =
+      environment.OPENROUTER_BASE_URL ||
+      environment.BIFROST_BASE_URL;
+
+    let modelClient: OpenRouterClient | undefined;
+    if (modelApiKey) {
+      try {
+        modelClient = new OpenRouterClient({
+          apiKey: modelApiKey,
+          baseUrl: modelBaseUrl,
+        });
+        logger.info('Inbound model client initialized for remote MCP router', {
+          baseUrl: modelBaseUrl || 'https://openrouter.ai/api/v1',
+        });
+      } catch (err) {
+        logger.warn('Failed to initialize OpenRouterClient for remote MCP, defaulting to heuristic fallback', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    } else {
+      logger.info('No model API key configured; remote MCP tools will operate in heuristic mode');
+    }
+
     mcpRouter = createRemoteMcpRouter({
       db: pool,
       admissionRepository: repository,
+      modelClient,
       triggerDeps: {
         authoritativePublishing: authoritative?.admission,
         resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {

@@ -331,16 +331,16 @@ describe('authoritative prepared publishing worker', () => {
     });
   });
 
-  it('keeps composed policy on the deterministic admitted persona roster', async () => {
+  it('executes composed review runner when review_engine is composed in authoritative mode', async () => {
     const f = fixture({ reviewEngine: 'composed' });
     const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()
-      .mockRejectedValue(new Error('authoritative execution must not use dynamic composed task ids'));
+      .mockResolvedValue(f.panel);
     f.deps.composedReviewRunner = composedReviewRunner;
 
     await runPublishingReviewWorker(f.env, f.deps);
 
-    expect(f.panelRunner).toHaveBeenCalledOnce();
-    expect(composedReviewRunner).not.toHaveBeenCalled();
+    expect(composedReviewRunner).toHaveBeenCalledOnce();
+    expect(f.panelRunner).not.toHaveBeenCalled();
     const completion = f.reportReviewResult.mock.calls[0]?.[0];
     expect(completion?.result.personas.map((persona) => persona.id)).toEqual(f.prepared.expectedPersonaIds);
     const parsedCompletion = parseWorkerReviewCompletion(completion);
