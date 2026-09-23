@@ -282,6 +282,39 @@ describe('durable service gate publisher', () => {
     }
   });
 
+  it('names an incomplete panel when completedLanes is zero', async () => {
+    // Zero completed lanes is the flagship REL-1019 case — nobody reviewed this
+    // head. A truthiness refactor of the guard (`expectedLanes && completedLanes`)
+    // would silently drop it, so the zero must be asserted explicitly.
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'failure',
+      decisionReason: 'incomplete-review', expectedLanes: 5, completedLanes: 0,
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update.title).toBe('Review Yeti Gate: Failed (incomplete panel)');
+    expect(String(update.summary)).toContain('expected 5');
+    expect(String(update.summary)).toContain('0 completed');
+  });
+
+  it('does not claim an incomplete panel for a non-skew reason that carries counts', async () => {
+    // The mapping layer decouples counts from the reason (fromRow maps them
+    // independently), so a failure can carry both counts and a reason like
+    // 'blocking-findings'. Counts alone must not trigger the skew summary.
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'failure',
+      decisionReason: 'blocking-findings', expectedLanes: 5, completedLanes: 5,
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update.title).toBe('Review Yeti Gate: Failed');
+    expect(String(update.summary)).toBe(
+      'Review Yeti Gate failed: blocking-findings. This is not an approval.',
+    );
+  });
+
   it('withholds failure metadata from a success even when a reason was recorded', async () => {
     // Pins the desiredState disjunct: without it, a success row carrying a
     // reason would publish "Review Yeti Gate: Failed" on a passing gate.
