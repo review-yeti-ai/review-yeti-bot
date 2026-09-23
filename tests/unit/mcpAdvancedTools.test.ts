@@ -13,9 +13,12 @@ import {
 import {
   createGenerateFixDiffTool,
   synthesizeUnifiedDiff,
+  validatePatchWithGitApply,
   createDisputeFindingTool,
   createAttestPrGateTool,
   createReplyReviewThreadTool,
+  createExplainFindingTool,
+  createPreflightDiffReviewTool,
 } from '../../src/mcp/server/tools';
 import type { McpAuthenticatedCaller, McpAuthenticator } from '../../src/mcp/server/mcpAuthenticator';
 import { McpAuthError } from '../../src/mcp/server/mcpAuthenticator';
@@ -260,6 +263,150 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
         )
       ).rejects.toThrow(/Forbidden/);
     });
+
+    it('model-backed unified diff synthesis with AST line anchor accuracy', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-42',
+              head_sha: TEST_HEAD_SHA,
+              payload: JSON.stringify(samplePayload),
+            },
+          ],
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            replacement_lines: 'const cache = new QuickLRU({ maxSize: 500 });\ncache.set(key, val);',
+            explanation: 'Synthesized bounded LRU cache fix via DeepSeek',
+          }),
+        }),
+      };
+
+      const tool = createGenerateFixDiffTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          finding_id: findingId,
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.file_path).toBe('src/cache/store.ts');
+      expect(data.replacement_lines).toBe('const cache = new QuickLRU({ maxSize: 500 });\ncache.set(key, val);');
+      expect(data.explanation).toBe('Synthesized bounded LRU cache fix via DeepSeek');
+      expect(data.patch).toContain('@@ -10,2 +10,2 @@');
+      expect(data.patch).toContain('+const cache = new QuickLRU({ maxSize: 500 });');
+
+      const validation = await validatePatchWithGitApply(data.patch, 'src/cache/store.ts', 'const cache = new Map();\ncache.set(key, val);');
+      expect(validation.valid).toBe(true);
+      expect(mockModelClient.complete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'deepseek/deepseek-v4-flash-0731',
+          temperature: 0.1,
+        })
+      );
+    });
+
+    it('model error fallback: reverts to static replacement code when model fails', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-42',
+              head_sha: TEST_HEAD_SHA,
+              payload: JSON.stringify(samplePayload),
+            },
+          ],
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockRejectedValue(new Error('DeepSeek API connection reset')),
+      };
+
+      const tool = createGenerateFixDiffTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          finding_id: findingId,
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.file_path).toBe('src/cache/store.ts');
+      expect(data.replacement_lines).toBe('const cache = new QuickLRU({ maxSize: 1000 });\ncache.set(key, val);');
+      expect(data.explanation).toContain('Replace unbounded map');
+      expect(data.patch).toContain('@@ -10,2 +10,2 @@');
+    });
+
+    it('model non-JSON response fallback: reverts to static replacement code', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-42',
+              head_sha: TEST_HEAD_SHA,
+              payload: JSON.stringify(samplePayload),
+            },
+          ],
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: 'Here is how you fix it: just use a cache',
+        }),
+      };
+
+      const tool = createGenerateFixDiffTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          finding_id: findingId,
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.replacement_lines).toBe('const cache = new QuickLRU({ maxSize: 1000 });\ncache.set(key, val);');
+      expect(data.patch).toContain('@@ -10,2 +10,2 @@');
+    });
+
+    it('synthesizes unified diff with accurate AST line anchor startLine', () => {
+      const patch = synthesizeUnifiedDiff(
+        'src/services/auth.ts',
+        75,
+        'const key = "weak";',
+        'const key = crypto.randomBytes(32).toString("hex");'
+      );
+      expect(patch).toContain('--- a/src/services/auth.ts\n+++ b/src/services/auth.ts\n@@ -75,1 +75,1 @@');
+      expect(patch).toContain('-const key = "weak";');
+      expect(patch).toContain('+const key = crypto.randomBytes(32).toString("hex");');
+    });
   });
 
   // ===========================================================================
@@ -465,6 +612,206 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       expect(data.verdict).toBe('overruled');
       expect(data.disputed).toBe(true);
       expect(data.remaining_blockers).toBe(0);
+    });
+
+    it('model-backed adjudication: OVERRULED verdict with confidence and DB ledger update', async () => {
+      const mockDb = {
+        query: vi.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('SELECT')) {
+            return {
+              rows: [
+                {
+                  run_id: 'run-99',
+                  execution_attempt: 1,
+                  payload: JSON.stringify(samplePayload),
+                },
+              ],
+            };
+          }
+          return { rows: [] };
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            verdict: 'overruled',
+            reasoning: 'Model evaluated counter-argument against ADR 0242 and confirmed valid integer sanitization.',
+            confidence: 0.94,
+          }),
+        }),
+      };
+
+      const notifySpy = vi.fn();
+      const tool = createDisputeFindingTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+        notifyResourceUpdated: notifySpy,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          finding_id: findingId,
+          counter_argument: 'Parameter is strongly typed and checked by schema validator before query builder.',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.finding_id).toBe(findingId);
+      expect(data.disputed).toBe(true);
+      expect(data.verdict).toBe('overruled');
+      expect(data.confidence).toBe(0.94);
+      expect(data.reasoning).toContain('Model evaluated counter-argument');
+      expect(data.remaining_blockers).toBe(0);
+
+      expect(mockDb.query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE review_worker_completions'),
+        expect.any(Array)
+      );
+      expect(notifySpy).toHaveBeenCalledWith(`review-yeti://findings/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}`);
+    });
+
+    it('model-backed adjudication: UPHELD verdict with confidence keeps blocker', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-99',
+              execution_attempt: 1,
+              payload: JSON.stringify(samplePayload),
+            },
+          ],
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            verdict: 'upheld',
+            reasoning: 'Counter-argument does not demonstrate parameterization or boundary checking.',
+            confidence: 0.88,
+          }),
+        }),
+      };
+
+      const notifySpy = vi.fn();
+      const tool = createDisputeFindingTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+        notifyResourceUpdated: notifySpy,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          finding_id: findingId,
+          counter_argument: 'I do not think this is an issue, query runs fine in dev.',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.finding_id).toBe(findingId);
+      expect(data.disputed).toBe(true);
+      expect(data.verdict).toBe('upheld');
+      expect(data.confidence).toBe(0.88);
+      expect(data.reasoning).toContain('Counter-argument does not demonstrate parameterization');
+      expect(data.remaining_blockers).toBe(1);
+
+      expect(mockDb.query).toHaveBeenCalledWith(
+        expect.stringContaining('UPDATE review_worker_completions'),
+        expect.arrayContaining([expect.stringContaining('"resolved":false')])
+      );
+      expect(notifySpy).not.toHaveBeenCalled();
+    });
+
+    it('model error fallback: reverts to heuristic adjudication on model failure', async () => {
+      const mockDb = {
+        query: vi.fn().mockImplementation(async (sql: string) => {
+          if (sql.includes('SELECT')) {
+            return {
+              rows: [
+                {
+                  run_id: 'run-99',
+                  execution_attempt: 1,
+                  payload: JSON.stringify(samplePayload),
+                },
+              ],
+            };
+          }
+          return { rows: [] };
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockRejectedValue(new Error('DeepSeek API connection reset')),
+      };
+
+      const tool = createDisputeFindingTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          finding_id: findingId,
+          counter_argument:
+            'The parameter is pre-sanitized through sqlStringEscape and strictly validated as an integer ID in route schema.',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.verdict).toBe('overruled');
+      expect(data.confidence).toBe(0.85);
+      expect(data.reasoning).toContain('Quorum adjudication accepted counter-argument');
+      expect(data.remaining_blockers).toBe(0);
+    });
+
+    it('output schema matches DisputeFindingOutput contract', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-99',
+              execution_attempt: 1,
+              payload: JSON.stringify(samplePayload),
+            },
+          ],
+        }),
+      };
+
+      const tool = createDisputeFindingTool({ queryableDatabase: mockDb });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pr_number: TEST_PR,
+          finding_id: findingId,
+          counter_argument: 'invalid rebuttal',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data).toHaveProperty('finding_id');
+      expect(data).toHaveProperty('disputed');
+      expect(data).toHaveProperty('verdict');
+      expect(data).toHaveProperty('reasoning');
+      expect(data).toHaveProperty('confidence');
+      expect(data).toHaveProperty('remaining_blockers');
+      expect(typeof data.confidence).toBe('number');
+      expect(typeof data.remaining_blockers).toBe('number');
     });
   });
 
@@ -1005,4 +1352,446 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       expect(content.thread_id).toBe(777);
     });
   });
+
+  // ===========================================================================
+  // 7. Tool: explain_finding
+  // ===========================================================================
+  describe('7. Tool: explain_finding', () => {
+    const explainFindingId = 'finding-arch-701';
+    const explainPayload = {
+      result: {
+        personas: [
+          {
+            id: 'memory-leak-analyst',
+            findings: [
+              {
+                finding_id: explainFindingId,
+                title: 'Unbounded in-memory session cache',
+                severity: 'P1',
+                category: 'Architecture',
+                path: 'src/session/cache.ts',
+                line_start: 15,
+                line_end: 20,
+                rationale: 'Map retains all caller session entries indefinitely leading to memory leak.',
+                suggested_fix: 'Use QuickLRU with bounded max size.',
+                violated_adrs: ['ADR-0045'],
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    it('model-backed explanation: evaluates compliant developer proposal and cites ADRs', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-701',
+              owner: TEST_OWNER,
+              repo: TEST_REPO,
+              payload: JSON.stringify(explainPayload),
+            },
+          ],
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            explanation: 'Architectural analysis: Unbounded Map growth exhausts Node.js heap under sustained traffic.',
+            satisfies_requirement: true,
+            citations: ['ADR-0045'],
+          }),
+        }),
+      };
+
+      const tool = createExplainFindingTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pull_number: TEST_PR,
+          finding_id: explainFindingId,
+          question: 'What if I replace the Map with a bounded QuickLRU cache of maxSize 1000?',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.explanation).toContain('Architectural analysis: Unbounded Map growth');
+      expect(data.satisfies_requirement).toBe(true);
+      expect(data.citations).toContain('ADR-0045');
+      expect(mockModelClient.complete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'deepseek/deepseek-v4-flash-0731',
+          temperature: 0.1,
+        })
+      );
+    });
+
+    it('model-backed explanation: rejects non-compliant proposal that suppresses check', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-701',
+              owner: TEST_OWNER,
+              repo: TEST_REPO,
+              payload: JSON.stringify(explainPayload),
+            },
+          ],
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            explanation: 'Bypassing or clearing the map periodically violates the strict bounds guarantee in ADR-0045.',
+            satisfies_requirement: false,
+            citations: ['ADR-0045'],
+          }),
+        }),
+      };
+
+      const tool = createExplainFindingTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pull_number: TEST_PR,
+          finding_id: explainFindingId,
+          question: 'Can I just disable or ignore this finding?',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.satisfies_requirement).toBe(false);
+      expect(data.explanation).toContain('violates the strict bounds guarantee');
+    });
+
+    it('informational inquiry: returns null for proposal_satisfies_rules', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-701',
+              owner: TEST_OWNER,
+              repo: TEST_REPO,
+              payload: JSON.stringify(explainPayload),
+            },
+          ],
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify({
+            explanation: 'This finding flags memory growth due to indefinite map storage.',
+            satisfies_requirement: null,
+            citations: ['ADR-0045'],
+          }),
+        }),
+      };
+
+      const tool = createExplainFindingTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pull_number: TEST_PR,
+          finding_id: explainFindingId,
+          question: 'What does this finding mean?',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.satisfies_requirement).toBeNull();
+      expect(data.explanation).toContain('flags memory growth');
+    });
+
+    it('model error fallback: gracefully reverts to evaluateWithHeuristics', async () => {
+      const mockDb = {
+        query: vi.fn().mockResolvedValue({
+          rows: [
+            {
+              run_id: 'run-701',
+              owner: TEST_OWNER,
+              repo: TEST_REPO,
+              payload: JSON.stringify(explainPayload),
+            },
+          ],
+        }),
+      };
+
+      const mockModelClient = {
+        complete: vi.fn().mockRejectedValue(new Error('DeepSeek API 503 Service Unavailable')),
+      };
+
+      const tool = createExplainFindingTool({
+        queryableDatabase: mockDb,
+        modelClient: mockModelClient,
+      });
+
+      const res: any = await tool.execute(
+        {
+          owner: TEST_OWNER,
+          repo: TEST_REPO,
+          pull_number: TEST_PR,
+          finding_id: explainFindingId,
+          question: 'What does this finding mean and why did it occur?',
+        },
+        { caller: createMockCaller() }
+      );
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.satisfies_requirement).toBeNull();
+      expect(data.explanation).toContain('Unbounded in-memory session cache');
+      expect(data.citations).toContain('ADR-0045');
+    });
+  });
+
+  // ===========================================================================
+  // 8. Tool: preflight_diff_review
+  // ===========================================================================
+  describe('8. Tool: preflight_diff_review', () => {
+    const diffWithSecretAndCode = `diff --git a/src/config/keys.ts b/src/config/keys.ts
+--- a/src/config/keys.ts
++++ b/src/config/keys.ts
+@@ -1,2 +1,3 @@
++export const API_KEY = "sk-abcdef1234567890abcdef1234567890";
++export function connect() { return true; }
+`;
+
+    it('gate removal: static secret findings and model-backed findings coexist in results', async () => {
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify([
+            {
+              title: 'Unauthenticated connection export',
+              severity: 'warning',
+              category: 'Security',
+              file_path: 'src/config/keys.ts',
+              line: 3,
+              rationale: 'connect() export lacks credentials authentication',
+              confidence: 0.91,
+            },
+          ]),
+        }),
+      };
+
+      const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient });
+
+      const res: any = await tool.execute({
+        repo: 'calltelemetry/cisco-cdr',
+        diff: diffWithSecretAndCode,
+      });
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.findings).toHaveLength(2);
+      const titles = data.findings.map((f: any) => f.title);
+      expect(titles).toContain('Hardcoded secret token or credential detected in diff');
+      expect(titles).toContain('Unauthenticated connection export');
+      expect(data.eligible_to_ship).toBe(false);
+      expect(mockModelClient.complete).toHaveBeenCalled();
+    });
+
+    it('compareClaims deduplication: merges model findings that match static findings', async () => {
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify([
+            {
+              title: 'Hardcoded secret token or credential detected in diff',
+              severity: 'blocking',
+              category: 'Security',
+              file_path: 'src/config/keys.ts',
+              line: 1,
+              rationale: 'Extended model analysis: Plaintext API secret token committed in source file violates security policy and ADR-0012.',
+              confidence: 0.98,
+            },
+          ]),
+        }),
+      };
+
+      const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient });
+
+      const res: any = await tool.execute({
+        repo: 'calltelemetry/cisco-cdr',
+        diff: diffWithSecretAndCode,
+      });
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.findings).toHaveLength(1);
+      expect(data.findings[0].severity).toBe('P0');
+      expect(data.findings[0].rationale).toContain('Model Analysis:');
+    });
+
+    it('severity calibration and advisory demotion: maps blocking/warning/info and demotes advisory titles', async () => {
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify([
+            {
+              title: 'Critical concurrency race condition',
+              severity: 'blocking',
+              category: 'Architecture',
+              file_path: 'src/worker.ts',
+              line: 10,
+              rationale: 'Unsynchronized shared state',
+              confidence: 0.95,
+            },
+            {
+              title: 'Missing timeout on outbound request',
+              severity: 'warning',
+              category: 'Performance',
+              file_path: 'src/worker.ts',
+              line: 25,
+              rationale: 'Request can hang indefinitely',
+              confidence: 0.88,
+            },
+            {
+              title: 'Code style: naming conventions in helper functions',
+              severity: 'warning',
+              category: 'Style',
+              file_path: 'src/worker.ts',
+              line: 30,
+              rationale: 'Follow camelCase naming standards for internal helpers',
+              confidence: 0.85,
+            },
+            {
+              title: 'Informational log format suggestion',
+              severity: 'info',
+              category: 'Observability',
+              file_path: 'src/worker.ts',
+              line: 40,
+              rationale: 'Structured logging is preferred',
+              confidence: 0.8,
+            },
+            {
+              title: 'Potential race condition on shared worker queue',
+              severity: 'blocking',
+              category: 'Architecture',
+              file_path: 'src/worker.ts',
+              line: 35,
+              rationale: 'Cannot verify if queue is thread-safe without seeing the rest of the file',
+              confidence: 0.85,
+            },
+          ]),
+        }),
+      };
+
+      const cleanDiff = `diff --git a/src/worker.ts b/src/worker.ts
+--- a/src/worker.ts
++++ b/src/worker.ts
+@@ -1,1 +1,40 @@
++export function processJobs() {}
+`;
+
+      const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient });
+      const res: any = await tool.execute({
+        repo: 'calltelemetry/cisco-cdr',
+        diff: cleanDiff,
+      });
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.findings).toHaveLength(5);
+      expect(data.findings[0].severity).toBe('P0');
+      expect(data.findings[1].severity).toBe('P1');
+      expect(data.findings[2].severity).toBe('P2');
+      expect(data.findings[3].severity).toBe('P2');
+      expect(data.findings[4].severity).toBe('P2');
+    });
+
+    it('confidence filtering: drops findings with confidence below 0.70', async () => {
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify([
+            {
+              title: 'High confidence architectural flaw',
+              severity: 'P1',
+              category: 'Architecture',
+              file_path: 'src/app.ts',
+              line: 5,
+              rationale: 'Circular dependency detected',
+              confidence: 0.85,
+            },
+            {
+              title: 'Low confidence speculative issue',
+              severity: 'P1',
+              category: 'Architecture',
+              file_path: 'src/app.ts',
+              line: 12,
+              rationale: 'Might be an issue maybe',
+              confidence: 0.55,
+            },
+          ]),
+        }),
+      };
+
+      const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient });
+      const res: any = await tool.execute({
+        repo: 'calltelemetry/cisco-cdr',
+        diff: `diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,1 +1,15 @@\n+export const x = 1;`,
+      });
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.findings).toHaveLength(1);
+      expect(data.findings[0].title).toBe('High confidence architectural flaw');
+    });
+
+    it('SLA timeout fallback: gracefully falls back to static findings on timeout or error', async () => {
+      const mockModelClient = {
+        complete: vi.fn().mockRejectedValue(new Error('12000ms SLA timeout exceeded')),
+      };
+
+      const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient });
+      const res: any = await tool.execute({
+        repo: 'calltelemetry/cisco-cdr',
+        diff: diffWithSecretAndCode,
+      });
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.findings).toHaveLength(1);
+      expect(data.findings[0].title).toBe('Hardcoded secret token or credential detected in diff');
+      expect(data.eligible_to_ship).toBe(false);
+    });
+
+    it('fast-ship bypass: skips LLM call when diff only modifies safe docs or assets', async () => {
+      const mockModelClient = {
+        complete: vi.fn(),
+      };
+
+      const docDiff = `diff --git a/docs/guide.md b/docs/guide.md
+--- a/docs/guide.md
++++ b/docs/guide.md
+@@ -1,1 +1,2 @@
++# Updated documentation
+`;
+
+      const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient });
+      const res: any = await tool.execute({
+        repo: 'calltelemetry/cisco-cdr',
+        diff: docDiff,
+      });
+
+      const data = JSON.parse(res.content[0].text);
+      expect(data.eligible_to_ship).toBe(true);
+      expect(data.findings).toEqual([]);
+      expect(mockModelClient.complete).not.toHaveBeenCalled();
+    });
+  });
 });
+

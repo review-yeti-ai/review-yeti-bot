@@ -725,4 +725,172 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
       });
     });
   });
+
+  describe('ModelClient Dependency Injection & Tool Propagation', () => {
+    function createRouterTestApp(routerInstance: RemoteMcpRouter) {
+      const testApp = express();
+      testApp.use(express.json({ limit: '512kb' }));
+      testApp.use('/api/mcp', routerInstance);
+      return testApp;
+    }
+
+    function createSimpleAdminAuthenticator(): McpAuthenticator {
+      return {
+        authenticate: vi.fn(async () => ({
+          authType: 'static_token',
+          tokenDigest: 'mock-digest',
+          isAdmin: true,
+          allowedRepositories: null,
+          callerId: 'test-admin',
+        })),
+        authenticateToken: vi.fn(async () => ({
+          authType: 'static_token',
+          tokenDigest: 'mock-digest',
+          isAdmin: true,
+          allowedRepositories: null,
+          callerId: 'test-admin',
+        })),
+        checkRepositoryAccess: vi.fn(() => true),
+        middleware: vi.fn(),
+      } as unknown as McpAuthenticator;
+    }
+
+    it('propagates top-level modelClient to preflight_diff_review tool', async () => {
+      const mockModelClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify([
+            {
+              title: 'Model-detected vulnerability',
+              severity: 'P0',
+              category: 'Security',
+              file_path: 'src/auth.ts',
+              line: 15,
+              rationale: 'Insecure token generation',
+              confidence: 0.95,
+            },
+          ]),
+        }),
+      };
+
+      const customRouter = createRemoteMcpRouter({
+        authenticator: createSimpleAdminAuthenticator(),
+        modelClient: mockModelClient as any,
+      });
+      const customApp = createRouterTestApp(customRouter);
+
+      const res = await request(customApp)
+        .post('/api/mcp')
+        .set('Authorization', 'Bearer valid-token')
+        .send({
+          jsonrpc: '2.0',
+          id: 70,
+          method: 'tools/call',
+          params: {
+            name: 'preflight_diff_review',
+            arguments: {
+              diff: 'diff --git a/src/auth.ts b/src/auth.ts\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -1,1 +1,2 @@\n+const token = "weak";',
+              repo: 'calltelemetry/cisco-cdr',
+            },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.error).toBeUndefined();
+      expect(mockModelClient.complete).toHaveBeenCalled();
+      const result = JSON.parse(res.body.result.content[0].text);
+      expect(result.eligible_to_ship).toBe(false);
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0].title).toBe('Model-detected vulnerability');
+
+      customRouter.destroy();
+    });
+
+    it('respects per-tool dependency override precedence over top-level modelClient', async () => {
+      const topModelClient = {
+        complete: vi.fn().mockResolvedValue({ content: '[]' }),
+      };
+      const customPreflightClient = {
+        complete: vi.fn().mockResolvedValue({
+          content: JSON.stringify([
+            {
+              title: 'Custom preflight override finding',
+              severity: 'P1',
+              category: 'Architecture',
+              file_path: 'src/router.ts',
+              line: 42,
+              rationale: 'Found by custom override client',
+              confidence: 0.9,
+            },
+          ]),
+        }),
+      };
+
+      const customRouter = createRemoteMcpRouter({
+        authenticator: createSimpleAdminAuthenticator(),
+        modelClient: topModelClient as any,
+        preflightDeps: {
+          modelClient: customPreflightClient as any,
+        },
+      });
+      const customApp = createRouterTestApp(customRouter);
+
+      const res = await request(customApp)
+        .post('/api/mcp')
+        .set('Authorization', 'Bearer valid-token')
+        .send({
+          jsonrpc: '2.0',
+          id: 71,
+          method: 'tools/call',
+          params: {
+            name: 'preflight_diff_review',
+            arguments: {
+              diff: 'diff --git a/src/router.ts b/src/router.ts\n--- a/src/router.ts\n+++ b/src/router.ts\n@@ -1,1 +1,2 @@\n+const r = 1;',
+              repo: 'calltelemetry/cisco-cdr',
+            },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.error).toBeUndefined();
+      expect(customPreflightClient.complete).toHaveBeenCalled();
+      expect(topModelClient.complete).not.toHaveBeenCalled();
+      const result = JSON.parse(res.body.result.content[0].text);
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0].title).toBe('Custom preflight override finding');
+
+      customRouter.destroy();
+    });
+
+    it('falls back to heuristic execution when modelClient is omitted', async () => {
+      const customRouter = createRemoteMcpRouter({
+        authenticator: createSimpleAdminAuthenticator(),
+      });
+      const customApp = createRouterTestApp(customRouter);
+
+      const res = await request(customApp)
+        .post('/api/mcp')
+        .set('Authorization', 'Bearer valid-token')
+        .send({
+          jsonrpc: '2.0',
+          id: 72,
+          method: 'tools/call',
+          params: {
+            name: 'preflight_diff_review',
+            arguments: {
+              diff: 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n+# Clean Documentation Update',
+              repo: 'calltelemetry/cisco-cdr',
+            },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.error).toBeUndefined();
+      const result = JSON.parse(res.body.result.content[0].text);
+      expect(result.eligible_to_ship).toBe(true);
+      expect(result.findings).toEqual([]);
+
+      customRouter.destroy();
+    });
+  });
 });
+

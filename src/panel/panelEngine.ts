@@ -2067,8 +2067,19 @@ async function invoke(
 
   const started = Date.now();
 
+  const ALLOWED_FLEET_MCP_TOOLS = new Set([
+    'fetch_docs',
+    'context7_search',
+    'ct_impact',
+    'ct_mesh_query',
+    'ct_mesh_stats',
+    'knowledge_search',
+    'knowledge_get',
+    'advise_blocker',
+    'health',
+  ]);
   const availableMcpTools = piWorkflowRegistry.getAvailableMcpTools()
-    .filter((tool) => tool.name === 'fetch_docs' || tool.name === 'context7_search');
+    .filter((tool) => ALLOWED_FLEET_MCP_TOOLS.has(tool.name));
   const mcpToolListStr = availableMcpTools.map((t) => `${t.name} (${t.description})`).join(', ');
 
   const nativeAdjudicationSystemPrompt = [
@@ -2107,6 +2118,18 @@ async function invoke(
     `  1. Code Reading: view_file, read_file, get_diff (patch-scoped to changed files in this PR)`,
     `  2. AST Context & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt`,
     `  3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}`,
+    `  4. Fleet Architecture, Knowledge & Policy (CallTelemetry ct-mcp):`,
+    `     * ct_impact: Assess cross-repo blast radius across Phoenix routes, Quasar UI, JTAPI, and microservices`,
+    `     * ct_mesh_query: Query AST nodes, HTTP routes, NATS topics, and microservice dependencies across 10 repos`,
+    `     * ct_mesh_stats: Real-time aggregate statistics of the cross-repo AST mesh`,
+    `     * knowledge_search: Query governed Architecture Decision Records (ADRs) and runbooks`,
+    `     * knowledge_get: Fetch specific ADR text by record ID`,
+    `     * advise_blocker: Query active blocker advisories and policy quorum status`,
+    `     * health: Check health and preflight readiness of policy services`,
+    `- FLEET TOOL USAGE PROTOCOL:`,
+    `  * When evaluating architectural impact, route or schema changes, invoke ct_impact or ct_mesh_query.`,
+    `  * When verifying compliance with system rules or architecture standards, invoke knowledge_search.`,
+    `  * When investigating potential deployment or policy blockers, invoke advise_blocker.`,
     `- You are granted up to ${maxTurns} execution turns. After each turn you have ${Math.round(TURN_IDLE_MS / 60000)} minutes to request the next turn or emit findings; the session then ends. Do not wait out a hard stop while you are still working.`,
     `- Reasoning Effort Level: ${effectiveEffort.toUpperCase()}.`,
     ...(['medium', 'high', 'xhigh', 'max'].includes(effectiveEffort)

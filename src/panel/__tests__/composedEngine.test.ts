@@ -5,6 +5,7 @@ import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
 import type { OpenRouterResponse } from '../../gateway/openRouterClient';
 import { OpenRouterResponseError } from '../../gateway/openRouterClient';
+import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 
 const mockYaml = `
 version: 3
@@ -566,4 +567,77 @@ describe('executeComposedReview', () => {
     expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1']);
   });
 
+  it('advertises fleet MCP tools in the composed engine system prompt', async () => {
+    let capturedSystemPrompt = '';
+    const complete = vi.fn(async (payload: any) => {
+      capturedSystemPrompt = payload.messages[0]?.content || '';
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
+      }
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+    });
+
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 2, max_turns_per_task: 1 };
+
+    await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(capturedSystemPrompt).toContain('Fleet MCP (ct-mcp): ct_impact, ct_mesh_query, ct_mesh_stats, knowledge_search, knowledge_get, advise_blocker, health');
+  });
+
+  it('executes a fleet MCP tool request during composed review and injects scoped tool result', async () => {
+    const execSpy = vi.spyOn(mcpFleetManager, 'executeTool').mockResolvedValue({
+      success: true,
+      output: { blast_radius: 'LOW', affected_files: ['src/auth/guard.ts'] },
+      durationMs: 12,
+    });
+
+    let toolResultSeen = false;
+    let turn = 0;
+    const complete = vi.fn(async (payload: any) => {
+      turn++;
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+
+      if (turn === 1) {
+        // Model asks to run ct_impact during plan phase
+        return fakeResponse(JSON.stringify({ tool: 'ct_impact', args: { target: 'routes' } }));
+      }
+      if (turn === 2) {
+        expect(text).toContain('[PI_TOOL_RESULT]');
+        expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: true]');
+        toolResultSeen = true;
+        return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
+      }
+      // Work turns
+      const taskId = threeTasks().find((task) => text.includes(task.id))?.id || 'task-1';
+      return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+    });
+
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 5, max_turns_per_task: 1 };
+
+    try {
+      const result = await executeComposedReview({
+        config: cfg,
+        changedFiles: CODE_FILES,
+        repository: 'calltelemetry/ct-meta',
+        headSha: 'a'.repeat(40),
+        client: { complete },
+      });
+
+      expect(toolResultSeen).toBe(true);
+      expect(result.personas.length).toBeGreaterThan(0);
+    } finally {
+      execSpy.mockRestore();
+    }
+  });
 });

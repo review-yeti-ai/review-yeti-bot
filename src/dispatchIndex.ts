@@ -5,6 +5,7 @@ import { McpAuthenticator } from './mcp/server/mcpAuthenticator';
 import { SlidingWindowRateLimiter } from './mcp/server/mcpRateLimiter';
 import { createRemoteMcpRouter, type RemoteMcpRouter } from './mcp/server/remoteMcpRouter';
 import { createWorkerCompletionVerifier } from './api/actionDispatchApi';
+import { OpenRouterClient } from './gateway/openRouterClient';
 import {
   getBoundedRepositoryInstallationId, getBoundedRepositoryToken, validateGitHubAppApiBaseUrl,
 } from './github/boundedAppToken';
@@ -33,6 +34,9 @@ function required(environment: NodeJS.ProcessEnv, name: string): string {
   if (!value) throw new Error(`${name} is required for the Action dispatch service`);
   return value;
 }
+
+import { resolveModelClientFromEnv } from './dispatchModelClient';
+export { resolveModelClientFromEnv };
 
 async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
   if (environment.ACTION_DISPATCH_ENABLED !== 'true') {
@@ -126,9 +130,13 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       windowMs: dispatchConfig.mcp.rateLimitWindowMs,
       maxRequests: dispatchConfig.mcp.rateLimitMax,
     });
+
+    const modelClient = resolveModelClientFromEnv(environment);
+
     mcpRouter = createRemoteMcpRouter({
       db: pool,
       admissionRepository: repository,
+      modelClient,
       triggerDeps: {
         authoritativePublishing: authoritative?.admission,
         resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {

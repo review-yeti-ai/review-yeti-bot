@@ -805,7 +805,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             burst_started_at, created_at, updated_at)
          VALUES
            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $9, $11, $12,
-            'queued', 'admission', $24, '{}'::jsonb, $13, $14, $15,
+            'queued', 'admission', $24, $25::jsonb, $13, $14, $15,
             to_timestamp($16 / 1000.0), to_timestamp($17 / 1000.0), $18, $19,
             to_timestamp($23 / 1000.0), to_timestamp($16 / 1000.0), to_timestamp($16 / 1000.0))
          ON CONFLICT (identity_digest) DO UPDATE
@@ -884,6 +884,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           ABANDONED_PUBLISHING_ERROR_TEXT.failureReconciled,
           burstStartedAt,
           generationRecovery.length,
+          JSON.stringify({
+            review_engine: input.reviewEngine || input.authoritativeGate?.prepared.config.review_engine || 'panel',
+          }),
         ],
       );
       const runRow = inserted.rows[0];

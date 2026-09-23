@@ -231,6 +231,32 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       ).toBe(true);
     });
 
+    it('TC-VAL-006B (trigger_review): Validates review_engine parameter schema', () => {
+      expect(
+        TriggerReviewInputSchema.safeParse({
+          owner: 'ct', repo: 'bot', pull_number: 1, head_sha: 'a'.repeat(40),
+          review_engine: 'composed',
+        }).success
+      ).toBe(true);
+      expect(
+        TriggerReviewInputSchema.safeParse({
+          owner: 'ct', repo: 'bot', pull_number: 1, head_sha: 'a'.repeat(40),
+          review_engine: 'panel',
+        }).success
+      ).toBe(true);
+      expect(
+        TriggerReviewInputSchema.safeParse({
+          owner: 'ct', repo: 'bot', pull_number: 1, head_sha: 'a'.repeat(40),
+        }).success
+      ).toBe(true);
+      expect(
+        TriggerReviewInputSchema.safeParse({
+          owner: 'ct', repo: 'bot', pull_number: 1, head_sha: 'a'.repeat(40),
+          review_engine: 'invalid_engine',
+        }).success
+      ).toBe(false);
+    });
+
     it('TC-VAL-007 (cancel_review): Rejects empty or omitted reason', () => {
       expect(CancelReviewInputSchema.safeParse({ owner: 'ct', repo: 'bot', pull_number: 1 }).success).toBe(false);
       expect(
@@ -682,6 +708,50 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         expect.stringContaining('UPDATE review_runs'), expect.anything(),
       );
     });
+
+    it('TC-TRIG-004: Dispatches exact-head review with explicit review_engine selection', async () => {
+      mockDb.query.mockResolvedValueOnce({ rows: [] }); // No active run
+
+      const mockAdmit = vi.fn(async () => ({
+        run: { runId: 'run_' + 'b'.repeat(32) },
+      }));
+      const tool = createTriggerReviewTool({
+        queryableDatabase: mockDb,
+        admissionRepository: { admit: mockAdmit as any },
+        resolveGitHubPullRequest: async () => ({
+          headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+          repositoryId: 1001, installationId: 2001,
+        }),
+        authoritativePublishing: {
+          expectedAppId: 4385771, repositoryIds: [1001],
+          resolver: { resolve: async (requested: any) => ({
+            identity: requested,
+            prepared: { policy: {
+              effectivePolicyDigest: 'c'.repeat(64),
+              effectiveConfigDigest: 'd'.repeat(64),
+            } },
+          }) },
+        } as any,
+      });
+
+      const result = await tool.execute({
+        owner: 'calltelemetry',
+        repo: 'cisco-cdr',
+        pull_number: 60,
+        head_sha: 'a'.repeat(40),
+        review_engine: 'composed',
+      });
+
+      const data = JSON.parse((result.content[0] as any).text);
+      expect(data.dispatched).toBe(true);
+      expect(data.attempt_id).toContain('review-attempt-60-');
+      expect(data.message).toContain('engine: composed');
+      expect(mockAdmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewEngine: 'composed',
+        }),
+      );
+    });
   });
 
   // =========================================================================
@@ -929,6 +999,52 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       );
       const dataNoCaller = JSON.parse((resultNoCaller.content[0] as any).text);
       expect(dataNoCaller.explanation).toContain('was not found in the review ledger');
+    });
+
+    it('TC-EXPL-008: Explains finding when completion payload has top-level findings array', async () => {
+      const topLevelDb = {
+        query: vi.fn(async () => ({
+          rows: [
+            {
+              payload: JSON.stringify({
+                findings: [
+                  {
+                    finding_id: 'fnd_toplevel_123',
+                    title: 'Top-level finding memory leak',
+                    severity: 'P1',
+                    category: 'Architecture',
+                    file_path: 'src/core/cache.ts',
+                    line_start: 10,
+                    line_end: 20,
+                    violated_adrs: ['ADR 0564'],
+                    rationale: 'Cache is unbounded',
+                    suggested_fix: 'Use bounded LRU cache',
+                  },
+                ],
+              }),
+              owner: 'calltelemetry',
+              repo: 'cisco-cdr',
+              run_id: 'run_top_level',
+            },
+          ],
+        })),
+      };
+
+      const tool = createExplainFindingTool({ queryableDatabase: topLevelDb });
+      const result = await tool.execute(
+        {
+          finding_id: 'fnd_toplevel_123',
+          question: 'What if I implement a bounded LRU cache with limit 500?',
+          owner: 'calltelemetry',
+          repo: 'cisco-cdr',
+        },
+        authorizedContext
+      );
+
+      const data = JSON.parse((result.content[0] as any).text);
+      expect(data.satisfies_requirement).toBe(true);
+      expect(data.citations).toContain('ADR 0564');
+      expect(data.explanation).toContain('satisfies the architectural and safety requirements');
     });
   });
 

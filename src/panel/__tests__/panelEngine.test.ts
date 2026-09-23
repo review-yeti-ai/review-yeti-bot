@@ -17,6 +17,7 @@ import { OmniRouteClient } from '../../gateway/omniRouteClient';
 import { parseAndValidateConfig } from '../../config/configLoader';
 import { dashboardStore } from '../../persistence/dashboardStore';
 import { CtReviewConfigV3 } from '../../config/schema';
+import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 
 const mockYaml = `
 version: 3
@@ -481,6 +482,99 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       expect(capturedToolResult).toContain('line 2: important logic\nline 3: edge case');
       expect(capturedToolResult).not.toContain('line 1: header');
       expect(capturedToolResult).not.toContain('line 4: footer');
+    });
+
+    it('advertises fleet MCP tools and executes fleet tool during persona exploration turn', async () => {
+      let capturedSystemPrompt = '';
+      let capturedToolResult = '';
+      const execSpy = vi.spyOn(mcpFleetManager, 'executeTool').mockResolvedValue({
+        success: true,
+        output: { blast_radius: 'MEDIUM', impacted_routes: ['/api/v1/auth'] },
+        durationMs: 15,
+      });
+
+      const mockClient = {
+        complete: vi.fn().mockImplementation(async (payload: any) => {
+          if (!capturedSystemPrompt) {
+            capturedSystemPrompt = payload.messages[0]?.content || '';
+          }
+          const userMsg = payload.messages[payload.messages.length - 1];
+          const text = typeof userMsg?.content === 'string'
+            ? userMsg.content
+            : Array.isArray(userMsg?.content)
+              ? userMsg.content.map((b: any) => b.text || '').join('\n')
+              : '';
+
+          const allText = payload.messages
+            .map((m: any) =>
+              typeof m?.content === 'string'
+                ? m.content
+                : Array.isArray(m?.content)
+                  ? m.content.map((b: any) => b.text || '').join('\n')
+                  : ''
+            )
+            .join('\n');
+
+          const nonceMatch = allText.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/);
+          const nonce = nonceMatch ? nonceMatch[1] : 'nonce-123';
+
+          if (allText.includes('SHIP|FIX_FIRST|BLOCK')) {
+            return {
+              id: 'resp_arbiter',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'All good' })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          if (allText.includes('RECONCILED')) {
+            return {
+              id: 'resp_mod',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          if (text.includes('[PI_TOOL_RESULT]')) {
+            if (!capturedToolResult) capturedToolResult = text;
+            return {
+              id: 'resp_finish',
+              model: 'test-model',
+              content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ role: 'persona', decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`,
+              usage: { prompt: 10, completion: 10, total: 20 },
+            };
+          }
+
+          // Turn 1: invoke ct_impact
+          return {
+            id: 'resp_tool',
+            model: 'test-model',
+            content: '```json\n{"tool": "ct_impact", "args": {"target": "routes"}}\n```',
+            usage: { prompt: 10, completion: 10, total: 20 },
+          };
+        }),
+      };
+
+      const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+      try {
+        const result = await executePersonaPanel({
+          config,
+          changedFiles: [{ path: 'src/auth/multi.ts', patch: '+ const a = 1;' }],
+          repository: 'test/repo',
+          headSha: 'abc1234',
+          client: mockClient as any,
+        });
+
+        expect(capturedSystemPrompt).toContain('Fleet Architecture, Knowledge & Policy (CallTelemetry ct-mcp):');
+        expect(capturedSystemPrompt).toContain('ct_impact: Assess cross-repo blast radius');
+        expect(capturedSystemPrompt).toContain('knowledge_search: Query governed Architecture Decision Records');
+        expect(capturedToolResult).toContain('blast_radius');
+        expect(capturedToolResult).toContain('impacted_routes');
+        expect(result.arbiter.verdict).toBe('SHIP');
+      } finally {
+        execSpy.mockRestore();
+      }
     });
   });
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mcpFleetManager, McpFleetManager } from '../../src/mcp/mcpFleetManager';
 
 describe('McpFleetManager Unit Tests', () => {
@@ -151,6 +151,265 @@ describe('McpFleetManager Unit Tests', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('not found in registered MCP fleet');
+  });
+
+  describe('Bifrost Gateway HTTP Federation & JSON-RPC 2.0 Transport', () => {
+    it('registers bifrost-gateway server by default and resolves ct-mcp alias', () => {
+      const servers = mcpFleetManager.getServers();
+      const bifrost = servers.find((s) => s.id === 'bifrost-gateway');
+      expect(bifrost).toBeDefined();
+      expect(bifrost?.transport).toBe('http');
+      expect(bifrost?.status).toBe('online');
+      expect(bifrost?.url).toContain('/mcp');
+
+      // Test alias resolution
+      const viaAlias = mcpFleetManager.getServer('ct-mcp');
+      expect(viaAlias).toBeDefined();
+      expect(viaAlias?.id).toBe('bifrost-gateway');
+
+      // Verify canonical fleet tools are pre-registered
+      const registeredTools = mcpFleetManager.getRegisteredTools();
+      expect(registeredTools).toContain('ct_impact');
+      expect(registeredTools).toContain('ct_mesh_query');
+      expect(registeredTools).toContain('ct_mesh_stats');
+      expect(registeredTools).toContain('knowledge_search');
+      expect(registeredTools).toContain('knowledge_get');
+      expect(registeredTools).toContain('advise_blocker');
+      expect(registeredTools).toContain('health');
+    });
+
+    it('discovers tools from HTTP server via JSON-RPC tools/list with auth headers', async () => {
+      const mockToolsList = {
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          tools: [
+            {
+              name: 'ct_impact_dynamic',
+              description: 'Dynamic impact analysis',
+              inputSchema: { target: 'string' },
+            },
+          ],
+        },
+      };
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+        expect(String(url)).toMatch(/\/mcp$/);
+        const headers = (init?.headers || {}) as Record<string, string>;
+        expect(headers['Content-Type']).toBe('application/json');
+        const body = JSON.parse(String(init?.body || '{}'));
+        expect(body.method).toBe('tools/list');
+
+        return new Response(JSON.stringify(mockToolsList), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      try {
+        const discovered = await mcpFleetManager.discoverTools('bifrost-gateway');
+        expect(discovered).toContain('ct_impact_dynamic');
+        expect(mcpFleetManager.hasTool('ct_impact_dynamic')).toBe(true);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('executes HTTP JSON-RPC tools/call and unwraps JSON text content', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+        expect(String(url)).toMatch(/\/mcp$/);
+        const body = JSON.parse(String(init?.body || '{}'));
+        expect(body.method).toBe('tools/call');
+        expect(body.params.name).toBe('ct_impact');
+        expect(body.params.arguments).toEqual({ target: 'routes' });
+
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: body.id,
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({ blast_radius: 'HIGH', affected_repos: ['cisco-cdr', 'ct-quasar'] }),
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool('ct_impact', { target: 'routes' });
+        expect(result.success).toBe(true);
+        expect(result.output).toEqual({ blast_radius: 'HIGH', affected_repos: ['cisco-cdr', 'ct-quasar'] });
+        expect(result.durationMs).toBeGreaterThanOrEqual(0);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('executes HTTP JSON-RPC tools/call and handles plain text content', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              content: [{ type: 'text', text: 'Governed ADR text for ADR-0329' }],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool('knowledge_get', { id: 'ADR-0329' });
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('Governed ADR text for ADR-0329');
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('handles tool execution reporting isError: true gracefully', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: JSON.stringify({ error: 'Permission denied: mutating tool' }) }],
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool('advise_blocker', { blocker_packet: {} });
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Permission denied');
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('handles JSON-RPC protocol error from gateway', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            error: { code: -32601, message: 'Method not found' },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool('ct_mesh_query', { query: 'test' });
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Method not found');
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('handles HTTP 401/403 authentication failure gracefully', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        return new Response('Unauthorized', { status: 401, statusText: 'Unauthorized' });
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool('health', {});
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Authentication failed');
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('handles HTTP 502 gateway error gracefully', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        return new Response('Bad Gateway', { status: 502, statusText: 'Bad Gateway' });
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool('ct_mesh_stats', {});
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('502');
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('handles HTTP request timeout gracefully', async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+        const signal = init?.signal;
+        return new Promise((_resolve, reject) => {
+          if (signal) {
+            signal.addEventListener('abort', () => {
+              const err = new Error('HTTP request timed out after 50ms');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          }
+        });
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool('ct_impact', { target: 'timeout' }, { timeoutMs: 50 });
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('timed out');
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('terminates HTTP tool request immediately when AbortSignal is aborted', async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const result = await mcpFleetManager.executeTool(
+        'ct_impact',
+        { target: 'routes' },
+        { signal: controller.signal }
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Operation aborted');
+    });
+
+    it('returns error when stdio process exits without emitting JSON-RPC response', async () => {
+      const serverId = `test_stdio_no_resp_${Date.now()}`;
+      await mcpFleetManager.registerServer({
+        id: serverId,
+        name: 'Empty Stdio Server',
+        transport: 'stdio',
+        command: 'node',
+        args: ['-e', 'process.exit(0)'],
+        enabled: true,
+        status: 'online',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      (mcpFleetManager as any).toolRegistry.set('test_empty_stdio_tool', {
+        serverId,
+        name: 'test_empty_stdio_tool',
+        description: 'Test empty stdio',
+        inputSchema: {},
+      });
+
+      const result = await mcpFleetManager.executeTool('test_empty_stdio_tool', {});
+      expect(result.success).toBe(false);
+      expect(result.output).toBeNull();
+      expect(result.error).toBe('Stdio process exited without emitting JSON-RPC response');
+
+      await mcpFleetManager.unregisterServer(serverId);
+    });
   });
 });
 
