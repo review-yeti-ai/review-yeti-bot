@@ -11,7 +11,7 @@ import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
 import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
-import { resolveGatewayApiKey, resolveGatewayBaseUrl } from '../review/openaiTransport';
+import { resolveGatewaySettings } from '../review/openaiTransport';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
@@ -401,12 +401,14 @@ function qualificationModel(
 }
 
 function qualificationClient(env: NodeJS.ProcessEnv): OpenRouterClient {
+  const gateway = resolveGatewaySettings(env);
   return new OpenRouterClient({
     // The key path already fails closed; the URL must too, or an empty value
     // reaches the client as an opaque URL-parse error instead of naming the
     // variable the operator has to set (REL-1069 review).
-    baseUrl: resolveGatewayBaseUrl(env) || requiredWorkerEnv(env, 'OPENAI_BASE_URL'),
-    apiKey: resolveGatewayApiKey(env) || requiredWorkerEnv(env, 'OPENAI_API_KEY'),
+    // Paired so a standard key is never sent to the legacy vendor URL.
+    baseUrl: gateway.baseUrl || requiredWorkerEnv(env, 'OPENAI_BASE_URL'),
+    apiKey: gateway.apiKey || requiredWorkerEnv(env, 'OPENAI_API_KEY'),
   });
 }
 
@@ -1572,10 +1574,11 @@ export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
   const diff = execFileSync('gh', ['pr', 'diff', String(prNumber), '--repo', repo], GH_EXEC_OPTIONS);
 
   // Initialize 10-persona Panel Engine
+  const gateway = resolveGatewaySettings(env);
   const config = createDefaultV3Config();
   const client = new OpenRouterClient({
-    baseUrl: resolveGatewayBaseUrl(env) || requiredWorkerEnv(env, 'OPENAI_BASE_URL'),
-    apiKey: resolveGatewayApiKey(env) || requiredWorkerEnv(env, 'OPENAI_API_KEY'),
+    baseUrl: gateway.baseUrl || requiredWorkerEnv(env, 'OPENAI_BASE_URL'),
+    apiKey: gateway.apiKey || requiredWorkerEnv(env, 'OPENAI_API_KEY'),
   });
 
   // Parse files from diff

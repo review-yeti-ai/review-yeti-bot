@@ -74,16 +74,67 @@ export const GATEWAY_SETTING_NAMES = {
  * connection error at request time.
  */
 export function missingGatewaySettings(env: NodeJS.ProcessEnv): string[] {
+  // Uses the PAIRED resolver: a mixed-generation environment reports both
+  // settings missing, so readiness refuses instead of admitting a lane that
+  // would ship the credential to the legacy vendor.
+  const { baseUrl, apiKey } = resolveGatewaySettings(env);
   const missing: string[] = [];
-  if (!resolveGatewayBaseUrl(env)) missing.push(GATEWAY_SETTING_NAMES.baseUrl[0]);
-  if (!resolveGatewayApiKey(env)) missing.push(GATEWAY_SETTING_NAMES.apiKey[0]);
+  if (!baseUrl) missing.push(GATEWAY_SETTING_NAMES.baseUrl[0]);
+  if (!apiKey) missing.push(GATEWAY_SETTING_NAMES.apiKey[0]);
   return missing;
 }
 
-/** Resolve the admitted gateway base URL, preferring the standard OpenAI name. */
+/** Resolve the admitted gateway base URL, preferring the standard OpenAI name.
+ *
+ * Resolved as a PAIR with the key by `resolveGatewaySettings`; calling this
+ * alone can pair a standard Bifrost key with a legacy vendor URL, which would
+ * send the CT credential to a third party.
+ */
 export function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv): string {
   return value(env, 'OPENAI_BASE_URL') || value(env, 'REVIEW_YETI_GATEWAY_BASE_URL')
     || value(env, 'BIFROST_BASE_URL') || value(env, 'OPENROUTER_BASE_URL');
+}
+
+/** The env name that actually wins for a setting, or undefined. */
+function winningName(env: NodeJS.ProcessEnv, names: readonly string[]): string | undefined {
+  return names.find((n) => value(env, n));
+}
+
+/** True when the winning base URL points at the OpenRouter vendor host. */
+function isVendorHost(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the gateway key and base URL TOGETHER, so they cannot come from
+ * different generations of configuration.
+ *
+ * A standard Bifrost key (`OPENAI_API_KEY`) paired with the legacy
+ * `OPENROUTER_BASE_URL` would ship the CT credential to a third-party vendor.
+ * That mixed pairing is refused rather than merely documented: if the key and
+ * the URL resolve from different generations, the value is discarded, so the
+ * lane fails closed and names what is missing instead of leaking.
+ */
+export function resolveGatewaySettings(env: NodeJS.ProcessEnv): { baseUrl: string; apiKey: string } {
+  const baseUrl = resolveGatewayBaseUrl(env);
+  const apiKey = resolveGatewayApiKey(env);
+  if (!baseUrl || !apiKey) return { baseUrl, apiKey };
+  // Refuse ONLY the credential-leak case: a key that did NOT come from an
+  // OpenRouter variable, aimed at the OpenRouter vendor host. Sending a CT
+  // (Bifrost) credential to a third-party vendor is the harm; a legacy key
+  // pointed at our own gateway is not, and refusing it would break a rollout.
+  // Deliberately NOT a generation-equality rule: that would reject benign
+  // combinations and the mixed-but-safe case of a legacy key on a Bifrost URL.
+  const keyName = winningName(env, GATEWAY_SETTING_NAMES.apiKey);
+  if (isVendorHost(baseUrl) && (keyName === undefined || !keyName.startsWith('OPENROUTER_'))) {
+    return { baseUrl: '', apiKey: '' };
+  }
+  return { baseUrl, apiKey };
 }
 
 /**
