@@ -49,7 +49,7 @@ export class HttpWorkerReviewCompletionAdapter implements WorkerReviewCompletion
       const endpoint = validateWorkerCompletionEndpoint(options.endpoint);
       // Reject even an empty query delimiter; the bearer belongs only in headers.
       if (endpoint.includes('?')) throw unavailable();
-      const timeoutMs = options.timeoutMs ?? 10_000;
+      const timeoutMs = options.timeoutMs ?? 30_000;
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > 30_000) throw unavailable();
       const fetchImplementation = options.fetchImplementation ?? globalThis.fetch;
       if (typeof fetchImplementation !== 'function') throw unavailable();

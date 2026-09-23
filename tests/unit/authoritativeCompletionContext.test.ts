@@ -387,7 +387,7 @@ describe('service-owned authoritative completion context', () => {
   it.each([
     ['storage', 'stored-policy'], ['factory', 'token'], ['current', 'current-candidate'],
     ['policy', 'policy-refresh'], ['diff', 'exact-diff'],
-  ] as const)('bounds a non-cooperative %s promise at 10 seconds as %s', async (stage, substage) => {
+  ] as const)('bounds a non-cooperative %s promise at 20 seconds as %s', async (stage, substage) => {
     const f = fixture(); const hang = () => new Promise<never>(() => undefined);
     if (stage === 'storage') f.getStoredPrepared.mockImplementation(hang);
     if (stage === 'factory') f.readerFactory.mockImplementation(hang);
@@ -396,7 +396,7 @@ describe('service-owned authoritative completion context', () => {
     if (stage === 'diff') f.exactCurrentDiff.mockImplementation(hang);
     let settled = false;
     const pending = rejected(f.context(f.gate)).then((error) => { settled = true; return error; });
-    await vi.advanceTimersByTimeAsync(9_999); expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(19_999); expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1); const failure = await pending; redacted(failure);
     expect(failure).toMatchObject({ substage });
     expect(f.getStoredPrepared.mock.calls[0][1].aborted).toBe(true);
@@ -433,7 +433,32 @@ describe('service-owned authoritative completion context', () => {
     expect(f.currentCandidate).not.toHaveBeenCalled();
   });
 
-  it.each([249, 10_001, 1.5, NaN, Infinity])('rejects invalid operation deadline %s', (timeoutMs) => {
+  it('allows bounded policy refresh and exact-diff reconstruction beyond the old ten-second budget', async () => {
+    const f = fixture();
+    f.resolve.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      return resolution();
+    });
+    f.exactCurrentDiff.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 7_000));
+      return { current: { ...current }, diff, expectedFileCount: 1 };
+    });
+    let settled = false;
+    const pending = f.context(f.gate).then(
+      (value) => { settled = true; return { value }; },
+      (error: Error) => { settled = true; return { error }; },
+    );
+    await vi.advanceTimersByTimeAsync(12_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(result).not.toHaveProperty('error');
+    if ('error' in result) throw result.error;
+    expect(result.value.coverage.coverageComplete).toBe(true);
+    expect(f.exactCurrentDiff).toHaveBeenCalledOnce();
+  });
+
+  it.each([249, 20_001, 1.5, NaN, Infinity])('rejects invalid operation deadline %s', (timeoutMs) => {
     expect(() => fixture({ timeoutMs })).toThrow('Authoritative completion context configuration invalid');
   });
 });
