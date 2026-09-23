@@ -252,6 +252,11 @@ describe('REL-972: lockfile change verification', () => {
       '@@ -1 +1 @@\n-  "jason": {:hex, :jason, "1.4.3", "aa", [:mix], [], "hexpm", "bb"},\n'
       + '+  "jason": {:hex, :jason, "1.4.4", "cc", [:mix], [{:decimal, "~> 2.0", [hex: :decimal, repo: "myrepo", optional: true]}], "hexpm", "dd"},',
       'resolves an entry outside the default Hex repository'],
+    ['a non-string npm resolved field', 'package-lock.json',
+      '@@ -1,2 +1,2 @@\n     "node_modules/lodash": {\n+      "resolved": {},', 'adds an unrecognized source field'],
+    ['a colon-form yarn v1 resolved field', 'yarn.lock',
+      '@@ -1,2 +1,2 @@\n "x@^1.0.0":\n+  resolved: "https://registry.yarnpkg.com/x/-/x-1.0.0.tgz"',
+      'adds an unrecognized source field'],
     ['a non-lockfile', 'assets/app.min.js', '@@ -1 +1 @@\n+x', 'not a lockfile'],
   ])('refuses %s', (_label, path, body, reason) => {
     expect(verifyLockfileOnlyChange(path, body)).toEqual({ ok: false, reason });
