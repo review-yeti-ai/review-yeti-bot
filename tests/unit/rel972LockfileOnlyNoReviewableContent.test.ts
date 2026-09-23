@@ -85,6 +85,8 @@ describe('REL-972: lockfile change verification', () => {
     ['package-lock.json', NPM_BUMP],
     ['web/yarn.lock', YARN_BUMP],
     ['mix.lock', MIX_BUMP],
+    ['mix.lock (with hexpm dependencies)', '@@ -1 +1 @@\n-  "plug": {:hex, :plug, "1.15.0", "aa", [:mix], [], "hexpm", "bb"},\n'
+      + '+  "plug": {:hex, :plug, "1.16.0", "cc", [:mix], [{:mime, "~> 1.0 or ~> 2.0", [hex: :mime, repo: "hexpm", optional: false]}], "hexpm", "dd"},'],
     ['Cargo.lock', CARGO_BUMP],
     ['Cargo.lock (a source switched back to crates.io)',
       '@@ -1,3 +1,3 @@\n name = "serde"\n-source = "git+https://github.com/serde-rs/serde"\n+source = "registry+https://github.com/rust-lang/crates.io-index"'],
@@ -133,7 +135,7 @@ describe('REL-972: lockfile change verification', () => {
       'resolves an entry outside a registry'],
     ['a mix git dependency', 'mix.lock',
       '@@ -1 +1 @@\n-  "x": {:hex, :x, "1.0.0", "aa", [:mix], [], "hexpm", "bb"},\n+  "x": {:git, "https://github.com/evil/x.git", "abc", []},',
-      'adds a URL outside the default public registries'],
+      'adds a line that is not lockfile content'],
     ['a cargo git source', 'Cargo.lock',
       '@@ -1 +1 @@\n+source = "git+https://github.com/evil/x#abc"',
       'adds a non-registry dependency source'],
@@ -237,6 +239,19 @@ describe('REL-972: lockfile change verification', () => {
     ['a per-file artifact URL in poetry.lock', 'poetry.lock',
       '@@ -1 +1 @@\n+url = "https://files.pythonhosted.org/packages/evil.whl"',
       'adds a URL outside the default public registries'],
+    ['a mix entry moved to a private Hex repo', 'mix.lock',
+      '@@ -1 +1 @@\n-  "jason": {:hex, :jason, "1.4.3", "aa", [:mix], [], "hexpm", "bb"},\n+  "jason": {:hex, :jason, "1.4.4", "cc", [:mix], [], "myrepo", "dd"},',
+      'resolves an entry outside the default Hex repository'],
+    ['a mix entry turned into a path source', 'mix.lock',
+      '@@ -1 +1 @@\n-  "jason": {:hex, :jason, "1.4.3", "aa", [:mix], [], "hexpm", "bb"},\n+  "jason": {:path, "../evil"},',
+      'adds a line that is not lockfile content'],
+    ['a mix entry keyed to a different package', 'mix.lock',
+      '@@ -1 +1 @@\n-  "jason": {:hex, :jason, "1.4.3", "aa", [:mix], [], "hexpm", "bb"},\n+  "jason": {:hex, :evil, "1.0.0", "cc", [:mix], [], "hexpm", "dd"},',
+      'resolves an entry outside the default Hex repository'],
+    ['a mix dependency pinned to another repo', 'mix.lock',
+      '@@ -1 +1 @@\n-  "jason": {:hex, :jason, "1.4.3", "aa", [:mix], [], "hexpm", "bb"},\n'
+      + '+  "jason": {:hex, :jason, "1.4.4", "cc", [:mix], [{:decimal, "~> 2.0", [hex: :decimal, repo: "myrepo", optional: true]}], "hexpm", "dd"},',
+      'resolves an entry outside the default Hex repository'],
     ['a non-lockfile', 'assets/app.min.js', '@@ -1 +1 @@\n+x', 'not a lockfile'],
   ])('refuses %s', (_label, path, body, reason) => {
     expect(verifyLockfileOnlyChange(path, body)).toEqual({ ok: false, reason });

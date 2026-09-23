@@ -22,6 +22,8 @@ import { isSubmodulePatch } from './submodulePatch';
  *   established from structure the patch shows;
  * - yarn.lock (berry): every added `resolution` is `<entry package>@npm:<version>`
  *   or Yarn's built-in compatibility patch of that same npm package;
+ * - mix.lock: every added entry is a Hex package from the default `hexpm`
+ *   repository under its own name, with no dependency naming another repo;
  * - Cargo.lock / poetry.lock / mix.lock: the only URLs an added line may carry
  *   are the default registry index URLs themselves (those formats record
  *   per-package artifact URLs only for non-default sources);
@@ -88,7 +90,7 @@ const LINE_SHAPES: Record<string, readonly RegExp[]> = {
     /^\s*[{}\]],?\s*$/u,
   ],
   yarn: [/^\s*$/u, /^#/u, /^\S.*:$/u, /^\s+\S/u],
-  mix: [/^\s*$/u, /^%\{\s*$/u, /^\}\s*$/u, /^\s*"[^"]+"\s*:\s*\{:[a-z_]+,.*\},?\s*$/u],
+  mix: [/^\s*$/u, /^%\{\s*$/u, /^\}\s*$/u, /^\s*"[^"]+"\s*:\s*\{:hex,.*\},?\s*$/u],
   toml: [/^\s*$/u, /^#/u, /^\[\[?[\w.-]+\]\]?\s*$/u, /^[\w.-]+\s*=\s*\S.*$/u, /^\s+\S.*$/u, /^\],?\s*$/u],
 };
 
@@ -192,6 +194,23 @@ function verifyIndexOnlyLine(body: string, added: boolean): LockfileVerification
   return OK;
 }
 
+/**
+ * mix.lock: an added entry must be a Hex package from the default `hexpm`
+ * repository, keyed by its own package name, and none of its dependencies may
+ * name another repository. mix.lock records a private repo or a path source
+ * without any URL, so the URL check alone cannot see them.
+ */
+const MIX_HEX_ENTRY = /^\s*"([\w]+)":\s*\{:hex,\s*:([\w]+),\s*"[^"]+",\s*"[0-9a-f]+",\s*\[[^\]]*\],\s*\[(.*)\],\s*"hexpm",\s*"[0-9a-f]+"\},?\s*$/u;
+
+function verifyMixLine(body: string, added: boolean): LockfileVerification {
+  if (!added || !/^\s*"/u.test(body)) return verifyIndexOnlyLine(body, added);
+  const entry = MIX_HEX_ENTRY.exec(body);
+  if (!entry || entry[1] !== entry[2]) return refuse('resolves an entry outside the default Hex repository');
+  const repos = [...entry[3].matchAll(/repo:\s*"([^"]*)"/gu)].map((match) => match[1]);
+  if (repos.some((repo) => repo !== 'hexpm')) return refuse('resolves an entry outside the default Hex repository');
+  return verifyIndexOnlyLine(body, added);
+}
+
 /** Object-valued fields inside an npm lockfile entry; any other `"key": {` is an entry. */
 const NPM_OBJECT_FIELDS = new Set([
   'dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'peerDependenciesMeta',
@@ -228,7 +247,10 @@ export function verifyLockfileOnlyChange(path: string, patch: unknown): Lockfile
   const format = FORMATS[path.toLowerCase().split('/').pop() || ''];
   if (!format) return refuse('lockfile format not verifiable');
   const verifyLine: (body: string, added: boolean, state: EntryState) => LockfileVerification =
-    format === 'npm' ? verifyNpmLine : format === 'yarn' ? verifyYarnLine : verifyIndexOnlyLine;
+    format === 'npm' ? verifyNpmLine
+      : format === 'yarn' ? verifyYarnLine
+        : format === 'mix' ? verifyMixLine
+          : verifyIndexOnlyLine;
 
   const lines = patch.split('\n');
   // Entry headers the change removes; each may be re-added once (a rewritten
