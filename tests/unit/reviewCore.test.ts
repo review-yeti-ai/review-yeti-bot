@@ -65,6 +65,91 @@ describe('review core diff parsing', () => {
     expect(finding).toMatchObject({ path: 'vendor/lib', line: 1, severity: 'P1' });
   });
 
+  it('recognizes gitlink entries via submoduleCandidate flag', () => {
+    const finding = sanitizeFinding(
+      {
+        severity: 'P1',
+        path: 'vendor/candidate',
+        line: 1,
+        title: 'Candidate gitlink changed',
+        body: 'Review candidate gitlink target.',
+      },
+      [{
+        path: 'vendor/candidate',
+        submoduleCandidate: true,
+        patch: '@@ -1 +1 @@\n-Subproject commit 1111111111111111111111111111111111111111\n+Subproject commit 2222222222222222222222222222222222222222\n',
+      }],
+    );
+    expect(finding).toMatchObject({ path: 'vendor/candidate', line: 1, severity: 'P1' });
+  });
+
+  it('recognizes gitlink entries via patch header mode 160000 without mode property', () => {
+    const finding = sanitizeFinding(
+      {
+        severity: 'P1',
+        path: 'vendor/inferred-header',
+        line: 1,
+        title: 'Inferred header gitlink',
+        body: 'Review inferred target.',
+      },
+      [{
+        path: 'vendor/inferred-header',
+        patch: 'index 1111111..2222222 160000\n--- a/vendor/inferred-header\n+++ b/vendor/inferred-header\n',
+      }],
+    );
+    expect(finding).toMatchObject({ path: 'vendor/inferred-header', line: 1, severity: 'P1' });
+  });
+
+  it('recognizes gitlink entries via Subproject commit SHA line in patch without mode property', () => {
+    const finding = sanitizeFinding(
+      {
+        severity: 'P1',
+        path: 'vendor/inferred-commit',
+        line: 1,
+        title: 'Inferred commit gitlink',
+        body: 'Review commit target.',
+      },
+      [{
+        path: 'vendor/inferred-commit',
+        patch: '@@ -1 +1 @@\n-Subproject commit 1111111111111111111111111111111111111111\n+Subproject commit 2222222222222222222222222222222222222222\n',
+      }],
+    );
+    expect(finding).toMatchObject({ path: 'vendor/inferred-commit', line: 1, severity: 'P1' });
+  });
+
+  it('does NOT treat ordinary code files containing token 160000 or commit prose as gitlinks', () => {
+    // Normal files must enforce line anchor matching and must not bypass hunk line checks
+    const ordinary = sanitizeFinding(
+      {
+        severity: 'P1',
+        path: 'src/constants.ts',
+        line: 99, // Line 99 does not match patch hunk (line 10)
+        title: 'Constant out of bounds',
+        body: 'Check bounds.',
+      },
+      [{
+        path: 'src/constants.ts',
+        patch: '@@ -1,1 +10,1 @@\n+const PORT = 160000;\n',
+      }],
+    );
+    expect(ordinary).toBeNull();
+
+    const prose = sanitizeFinding(
+      {
+        severity: 'P1',
+        path: 'docs/submodules.md',
+        line: 99,
+        title: 'Documentation nit',
+        body: 'Fix wording.',
+      },
+      [{
+        path: 'docs/submodules.md',
+        patch: '@@ -1,1 +10,1 @@\n+Subproject commit pointers are stored in the index\n',
+      }],
+    );
+    expect(prose).toBeNull();
+  });
+
   it('keeps added lines whose content begins with plus signs', () => {
     const patch = '@@ -1,1 +10,1 @@\n+++count;\n';
     expect(changedLineNumbers(patch)).toEqual(new Set([10]));
