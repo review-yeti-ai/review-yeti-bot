@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.1...v1.84.2) (2026-09-23)
+
+
+### Bug Fixes
+
+* **review:** budget large exact-diff completion reads ([#982](https://github.com/review-yeti-ai/review-yeti-bot/issues/982)) ([b2c5666](https://github.com/review-yeti-ai/review-yeti-bot/commit/b2c5666b153099479ea1f3cc0387255e93b92036))
+
 ## [1.84.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.0...v1.84.1) (2026-09-23)
 
 
