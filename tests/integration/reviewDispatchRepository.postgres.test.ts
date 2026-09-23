@@ -2252,7 +2252,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       ]);
     });
 
-    it('reconciles a partially persisted durable generation from the exact worker check ledger', async () => {
+    it.each([0, 1])('reconciles a partially persisted durable generation from the exact worker check ledger at persisted attempt %i', async (persistedAttempt) => {
       const recovery = [{
         generation: 1,
         checkId: 10_001,
@@ -2283,6 +2283,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       await client.query("UPDATE review_runs SET status = 'failed', error_text = 'review gate: review-deadline-exceeded' WHERE run_id = $1", [first.run.runId]);
       // Model partial service-state loss: the run/gate survived, but the
       // projection evidence needed by the ordinary retry allocator did not.
+      // Attempt 0 distinguishes the recovery-ledger floor from a plain +1.
+      await client.query('UPDATE review_runs SET attempt = $2 WHERE run_id = $1', [first.run.runId, persistedAttempt]);
       await client.query("UPDATE review_dispatch_outbox SET status = 'pending', worker_token_digest = NULL, projection_name = NULL WHERE run_id = $1", [first.run.runId]);
       const retryInput = {
         ...authoritativeAdmission('central-partial-a3', 2_000),
