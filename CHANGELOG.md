@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.3...v1.84.4) (2026-09-23)
+
+
+### Bug Fixes
+
+* **worker:** end a stale-head review as superseded instead of failed (REL-1057) ([#986](https://github.com/review-yeti-ai/review-yeti-bot/issues/986)) ([0140028](https://github.com/review-yeti-ai/review-yeti-bot/commit/01400281b88ab8c47ac3cff52f2a1cf85c6b5d03))
+
 ## [1.84.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.2...v1.84.3) (2026-09-23)
 
 
