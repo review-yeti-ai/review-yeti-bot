@@ -130,6 +130,7 @@ export const STATIC_FALLBACK_ECOSYSTEM_PATHS: Record<string, string[]> = {
     '**/*.java',
     '**/docs/adr/**',
     '**/architecture/**',
+    '.gitmodules*',
   ],
   database: [
     '**/*.sql',
