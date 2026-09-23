@@ -100,6 +100,26 @@ spec:
             - name: metrics
               containerPort: 9090
               protocol: TCP
+          # REL-1053: readiness is per pod. /ready fails until this pod's own
+          # dispatch loop completes a cycle, when it stalls, and once it starts
+          # shutting down. /health stays a process-level liveness check, so a
+          # database outage (which stalls no loop) never restarts every replica.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 2
+            failureThreshold: 3
           envFrom:
             - configMapRef:
                 name: ct-review-job-dispatcher

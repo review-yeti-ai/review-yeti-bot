@@ -85,6 +85,14 @@ export interface ReviewCompletionRepository {
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewCompletionClaim | null>;
   heartbeat(completionId: string, workerId: string, now: number, leaseMs: number): Promise<boolean>;
   markDispatched(completionId: string, workerId: string, now: number): Promise<boolean>;
+  dispatchFenced(
+    completionId: string,
+    workerId: string,
+    claimAttempt: number,
+    now: number,
+    send: (signal: AbortSignal) => Promise<void>,
+    options?: { maxHoldMs?: number },
+  ): Promise<ReviewCompletionFencedDispatchResult>;
   markCompleted(completionId: string, workerId: string, now: number): Promise<boolean>;
   markTerminal(completionId: string, workerId: string, now: number): Promise<boolean>;
   releaseForRetry(completionId: string, workerId: string, now: number, delayMs: number, errorText?: string): Promise<boolean>;
@@ -104,7 +112,8 @@ interface Queryable {
 }
 
 interface TransactionClient extends Queryable {
-  release(): void;
+  /** node-postgres destroys the connection instead of pooling it when given an error. */
+  release(error?: Error | boolean): void;
 }
 
 interface ConnectionPool {
@@ -113,6 +122,26 @@ interface ConnectionPool {
 }
 
 export type ReviewCompletionRepositoryOptions = ReviewLifecycleEventsOptions;
+
+/** REL-1053: `dispatchFenced` result. `lease-lost` means nothing was sent. */
+export type ReviewCompletionFencedDispatchResult = 'dispatched' | 'lease-lost';
+
+/** Default bound on how long `dispatchFenced` holds the row lock around a send.
+ * Below the 30 s completion lease so a normal send never outlives its claim. */
+export const DEFAULT_FENCED_DISPATCH_MAX_HOLD_MS = 15_000;
+
+/**
+ * REL-1053: the CI request may have reached GitHub, but the `dispatched`
+ * transition did not commit. The row stays claimed and is retried, so the
+ * receiver can see a duplicate carrying the same `validation_request_id`.
+ */
+export class ReviewCompletionDispatchInDoubtError extends Error {
+  constructor(readonly completionId: string, readonly underlying: unknown) {
+    super(`CI request for ${completionId} may have been sent but was not recorded: ${
+      underlying instanceof Error ? underlying.message : String(underlying)}`);
+    this.name = 'ReviewCompletionDispatchInDoubtError';
+  }
+}
 
 const REVIEW_LIFECYCLE_BATCH_TRANSACTION_ATTEMPTS = 5;
 
@@ -421,6 +450,125 @@ export class PostgresReviewCompletionRepository implements ReviewCompletionRepos
       return result;
     });
     return result.rows.length > 0;
+  }
+
+  /**
+   * REL-1053: sends the CI request at most once per live claim, even with
+   * several dispatcher replicas running.
+   *
+   * `markDispatched` alone fences the write that follows a send, not the send.
+   * With two replicas, replica A's lease can expire during a slow token mint or
+   * send (or look expired to replica B because of clock skew). B then reclaims
+   * the row and sends again, and A's later `markDispatched` fails only after
+   * both `repository_dispatch` events have already reached GitHub.
+   *
+   * This method takes the row lock for the exact lease owner and claim attempt,
+   * calls `send` while holding it, and moves the row to `dispatched` in the
+   * same transaction. `claimNext` uses `FOR UPDATE SKIP LOCKED`, so another
+   * replica cannot reclaim the row while a send is in flight, whatever its
+   * lease clock says. A claimant that has already been superseded finds no row
+   * and never sends.
+   *
+   * The lock is bounded. `send` receives a signal that aborts after
+   * `maxHoldMs`, and `idle_in_transaction_session_timeout` makes Postgres drop
+   * the session (and the lock) if this process stops before it commits.
+   *
+   * One case remains in doubt: the send succeeded but the commit did not (a
+   * crash, a dropped connection, or a timeout abort after GitHub accepted the
+   * request). The row then stays claimed and is resent after its lease
+   * expires. Delivery is at least once in that case, and the payload's
+   * `validation_request_id` is the receiver's deduplication key. Such failures
+   * throw `ReviewCompletionDispatchInDoubtError`.
+   */
+  async dispatchFenced(
+    completionId: string,
+    workerId: string,
+    claimAttempt: number,
+    now: number,
+    send: (signal: AbortSignal) => Promise<void>,
+    options: { maxHoldMs?: number } = {},
+  ): Promise<ReviewCompletionFencedDispatchResult> {
+    const maxHoldMs = options.maxHoldMs ?? DEFAULT_FENCED_DISPATCH_MAX_HOLD_MS;
+    if (!Number.isSafeInteger(maxHoldMs) || maxHoldMs < 250 || maxHoldMs > 120_000) {
+      throw new Error('Fenced completion dispatch hold must be 250-120000 ms');
+    }
+    if (!Number.isSafeInteger(claimAttempt) || claimAttempt < 1) {
+      throw new Error('Fenced completion dispatch requires the claim attempt');
+    }
+    const pool = this.pool as ConnectionPool | Queryable;
+    if (!('connect' in pool) || typeof pool.connect !== 'function') {
+      throw new Error('Fenced completion dispatch requires a connection pool');
+    }
+    const client = await pool.connect();
+    let sent = false;
+    let destroyClient: Error | undefined;
+    try {
+      await client.query('BEGIN');
+      await client.query("SET LOCAL lock_timeout = '5s'");
+      await client.query(`SET LOCAL idle_in_transaction_session_timeout = '${maxHoldMs + 5_000}ms'`);
+      const fenced = await client.query(
+        `SELECT completion_id
+           FROM review_completion_outbox
+          WHERE completion_id = $1
+            AND lease_owner = $2
+            AND attempt = $3
+            AND status = 'claimed'
+          FOR UPDATE`,
+        [completionId, workerId, claimAttempt],
+      );
+      if (fenced.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return 'lease-lost';
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(new Error(`CI request send exceeded ${maxHoldMs} ms`)),
+        maxHoldMs,
+      );
+      try {
+        await send(controller.signal);
+        sent = true;
+      } catch (sendError) {
+        // An abort after the request left this process may still have reached
+        // GitHub, so a timed-out send is in doubt, not a clean failure.
+        if (controller.signal.aborted) sent = true;
+        throw sendError;
+      } finally {
+        clearTimeout(timer);
+      }
+
+      const result = await client.query(
+        `UPDATE review_completion_outbox
+            SET status = 'dispatched',
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = to_timestamp($4 / 1000.0)
+          WHERE completion_id = $1
+            AND lease_owner = $2
+            AND attempt = $3
+            AND status = 'claimed'
+         RETURNING completion_id, run_id`,
+        [completionId, workerId, claimAttempt, now],
+      );
+      if (result.rows.length !== 1) {
+        throw new Error('Fenced completion row changed while its lock was held');
+      }
+      if (result.rows[0].run_id) {
+        await this.appendLifecycle(client, String(result.rows[0].run_id), 'review.lifecycle.dispatched', now,
+          { stage: 'completion' });
+      }
+      await client.query('COMMIT');
+      return 'dispatched';
+    } catch (error) {
+      await client.query('ROLLBACK').catch((rollbackError: unknown) => {
+        destroyClient = rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+      });
+      if (sent) throw new ReviewCompletionDispatchInDoubtError(completionId, error);
+      throw error;
+    } finally {
+      client.release(destroyClient);
+    }
   }
 
   async markCompleted(completionId: string, workerId: string, now: number): Promise<boolean> {
