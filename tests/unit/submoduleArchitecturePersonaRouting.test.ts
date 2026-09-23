@@ -7,6 +7,7 @@ import {
   computeUnmatchedPaths,
 } from '../../src/panel/panelEngine';
 import { deriveApplicablePersonas } from '../../src/review/personaApplicability';
+import { parseChangedFiles } from '../../src/review/changedFiles';
 import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domainIndex';
 
 describe('Submodule Architecture Persona Routing', () => {
@@ -24,9 +25,18 @@ describe('Submodule Architecture Persona Routing', () => {
       expect(isSubmoduleEntry({ path: 'cisco-cdr', submoduleCandidate: true })).toBe(true);
     });
 
+    it('identifies submodules from diff patch content with Subproject commit or mode 160000', () => {
+      const gitPatch = 'diff --git a/ct-dashboard b/ct-dashboard\n' +
+        'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
+        '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
+      expect(isSubmoduleEntry({ path: 'ct-dashboard', patch: gitPatch })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-Subproject commit abc\n+Subproject commit def\n' })).toBe(true);
+    });
+
     it('rejects ordinary files', () => {
       expect(isSubmoduleEntry({ path: 'src/index.ts', mode: '100644' })).toBe(false);
       expect(isSubmoduleEntry({ path: 'README.md' })).toBe(false);
+      expect(isSubmoduleEntry({ path: 'src/index.ts', patch: '@@ -1 +1 @@\n-console.log(1)\n+console.log(2)\n' })).toBe(false);
       expect(isSubmoduleEntry(null)).toBe(false);
       expect(isSubmoduleEntry(undefined)).toBe(false);
     });
@@ -159,6 +169,44 @@ describe('Submodule Architecture Persona Routing', () => {
       const files = [{ path: 'ct-dashboard', mode: '160000' }];
       const result = deriveApplicablePersonas(personas, files);
       expect(result.map((p: any) => p.id)).toEqual(['architecture']);
+    });
+
+    it('applies architecture persona when changed files contain a submodule patch without mode field', () => {
+      const personas = [
+        { id: 'sec-lane', name: 'Security', enabled: true, paths: ['auth/**'] },
+        { id: 'arch-lane', name: 'Architecture', enabled: true, paths: ['arch/**'] },
+        { id: 'documentation', name: 'Docs', enabled: true, paths: ['docs/**'] },
+      ] as any;
+
+      const gitPatch = 'diff --git a/ct-dashboard b/ct-dashboard\n' +
+        'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
+        '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
+      const files = [{ path: 'ct-dashboard', patch: gitPatch }];
+      const result = deriveApplicablePersonas(personas, files);
+      expect(result.map((p: any) => p.id)).toEqual(['arch-lane']);
+
+      const unmatched = computeUnmatchedPaths(files, [personas[1]]);
+      expect(unmatched).not.toContain('ct-dashboard');
+      expect(unmatched).toHaveLength(0);
+    });
+
+    it('integrates parseChangedFiles so submodule diffs automatically activate arch lane', () => {
+      const diff = 'diff --git a/ct-dashboard b/ct-dashboard\n' +
+        'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
+        '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
+      const { files, unreadable } = parseChangedFiles(diff);
+      expect(unreadable).toHaveLength(0);
+      expect(files).toHaveLength(1);
+      expect(files[0].path).toBe('ct-dashboard');
+      expect(files[0].mode).toBe('160000');
+      expect(files[0].isSubmodule).toBe(true);
+
+      const personas = [
+        { id: 'sec-lane', name: 'Security', enabled: true, paths: ['auth/**'] },
+        { id: 'arch-lane', name: 'Architecture', enabled: true, paths: ['arch/**'] },
+      ] as any;
+      const applicable = deriveApplicablePersonas(personas, files);
+      expect(applicable.map((p: any) => p.id)).toEqual(['arch-lane']);
     });
 
     it('does not apply non-architecture personas for standalone submodule changes', () => {

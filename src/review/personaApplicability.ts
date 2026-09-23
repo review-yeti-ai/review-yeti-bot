@@ -14,6 +14,7 @@ export function isSubmoduleEntry(file: unknown): boolean {
     newMode?: string;
     old_mode?: string;
     new_mode?: string;
+    patch?: string;
   };
   return Boolean(
     f.isSubmodule === true ||
@@ -22,7 +23,8 @@ export function isSubmoduleEntry(file: unknown): boolean {
     f.oldMode === '160000' ||
     f.newMode === '160000' ||
     f.old_mode === '160000' ||
-    f.new_mode === '160000'
+    f.new_mode === '160000' ||
+    (typeof f.patch === 'string' && (/\b160000\b/u.test(f.patch) || /^[+-]?\s*Subproject commit\b/mu.test(f.patch)))
   );
 }
 
@@ -44,7 +46,7 @@ export function isArchitecturePersona(persona: unknown): boolean {
  */
 export function personaCoversFile(
   persona: { paths: readonly string[]; id?: string; charter?: string; coversSubmodules?: boolean },
-  file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean } | null | undefined,
+  file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string } | null | undefined,
 ): boolean {
   if (!file) return false;
   if (isArchitecturePersona(persona) && isSubmoduleEntry(file)) {
@@ -56,7 +58,7 @@ export function personaCoversFile(
 /**
  * Filter a set of changed files to only those covered by the given persona.
  */
-export function scopeFilesForPersona<T extends { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean }>(
+export function scopeFilesForPersona<T extends { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }>(
   persona: Parameters<typeof personaCoversFile>[0],
   files: readonly T[],
 ): T[] {
@@ -70,14 +72,14 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
  */
 export function deriveApplicablePersonas(
   personas: readonly ReviewPersona[],
-  files: ReadonlyArray<{ path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean }>,
+  files: ReadonlyArray<{ path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }>,
 ): ReviewPersona[] {
   return personas.filter((persona) => files.some((file) => personaCoversFile(persona, file)));
 }
 
 export function deriveApplicablePersonaIds(
   personas: readonly ReviewPersona[],
-  files: ReadonlyArray<{ path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean }>,
+  files: ReadonlyArray<{ path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }>,
 ): string[] {
   return deriveApplicablePersonas(personas, files).map((persona) => persona.id);
 }
@@ -87,7 +89,7 @@ export function deriveApplicablePersonaIds(
  * A file is considered unmatched only when no applicable persona covers it via personaCoversFile.
  */
 export function computeUnmatchedPaths(
-  files: ReadonlyArray<{ path?: string; filePath?: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean }>,
+  files: ReadonlyArray<{ path?: string; filePath?: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }>,
   applicablePersonas: ReadonlyArray<Parameters<typeof personaCoversFile>[0]>,
 ): string[] {
   return files
@@ -97,6 +99,7 @@ export function computeUnmatchedPaths(
         mode: f.mode,
         isSubmodule: f.isSubmodule,
         submoduleCandidate: f.submoduleCandidate,
+        patch: f.patch,
       };
       return !applicablePersonas.some((persona) => personaCoversFile(persona, fileObj));
     })

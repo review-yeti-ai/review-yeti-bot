@@ -61,7 +61,14 @@ function changedLineNumbers(patch) {
 }
 
 function isGitlinkFile(file) {
-  return Boolean(file && (file.isSubmodule === true || String(file.mode || '') === '160000'));
+  return Boolean(
+    file && (
+      file.isSubmodule === true ||
+      file.submoduleCandidate === true ||
+      String(file.mode || '') === '160000' ||
+      (typeof file.patch === 'string' && (/\b160000\b/u.test(file.patch) || /^[+-]?\s*Subproject commit\b/m.test(file.patch)))
+    )
+  );
 }
 
 /** Preserve exact replacement text; unsafe metadata must never become a partial patch. */

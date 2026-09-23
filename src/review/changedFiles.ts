@@ -75,6 +75,16 @@ function pathFromChunk(chunk: string): string {
 export interface ChangedFile {
   path: string;
   patch: string;
+  mode?: string;
+  isSubmodule?: boolean;
+}
+
+function extractMode(chunk: string): string | undefined {
+  const match = /^index [0-9a-fA-F]+\.\.[0-9a-fA-F]+ (\d+)/mu.exec(chunk)
+    ?? /^(?:new|deleted) file mode (\d+)/mu.exec(chunk)
+    ?? /^old mode (\d+)/mu.exec(chunk)
+    ?? /^new mode (\d+)/mu.exec(chunk);
+  return match ? match[1] : undefined;
 }
 
 /**
@@ -88,8 +98,18 @@ export function parseChangedFiles(diff: string): { files: ChangedFile[]; unreada
   for (const chunk of String(diff).split(/^(?=diff --git )/mu)) {
     if (!chunk.startsWith('diff --git ')) continue;
     const path = pathFromChunk(chunk);
-    if (path && path !== '/dev/null') files.push({ path, patch: chunk });
-    else unreadable.push((chunk.split('\n', 1)[0] || '').slice(0, 200));
+    const mode = extractMode(chunk);
+    const isSubmodule = mode === '160000' || /^[+-]?\s*Subproject commit\b/mu.test(chunk);
+    if (path && path !== '/dev/null') {
+      files.push({
+        path,
+        patch: chunk,
+        ...(mode ? { mode } : {}),
+        ...(isSubmodule ? { isSubmodule: true } : {}),
+      });
+    } else {
+      unreadable.push((chunk.split('\n', 1)[0] || '').slice(0, 200));
+    }
   }
   return { files, unreadable };
 }

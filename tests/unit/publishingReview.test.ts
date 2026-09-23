@@ -1956,6 +1956,19 @@ describe('parseChangedFiles', () => {
     expect(files).toEqual([]);
     expect(unreadable).toEqual(['diff --git nonsense']);
   });
+
+  it('reads a submodule gitlink diff with mode 160000 and marks isSubmodule: true', () => {
+    const { files, unreadable } = parseChangedFiles(
+      'diff --git a/ct-dashboard b/ct-dashboard\n' +
+      'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
+      '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n',
+    );
+    expect(unreadable).toEqual([]);
+    expect(files).toHaveLength(1);
+    expect(files[0].path).toBe('ct-dashboard');
+    expect(files[0].mode).toBe('160000');
+    expect(files[0].isSubmodule).toBe(true);
+  });
 });
 
 describe('hosted lane — repository visibility resolution', () => {
