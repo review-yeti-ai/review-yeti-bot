@@ -23,6 +23,14 @@ export interface StoredReviewGate {
   desiredVersion: number;
   publishedVersion: number;
   current: boolean;
+  /** Terminal policy reason for this attempt, when one was recorded. Lets the
+   * published failure summary name the concrete cause (for example a lane skew)
+   * instead of the generic "policy eligibility gate failed". Optional because a
+   * progress state has no decision yet. */
+  decisionReason?: string;
+  /** Lane counts from the recorded evidence, used only to explain a skew. */
+  expectedLanes?: number;
+  completedLanes?: number;
 }
 export interface GatePublicationClaim extends StoredReviewGate {
   leaseOwner: string;
