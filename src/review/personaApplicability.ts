@@ -77,12 +77,12 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
  *   pinned commit of another repository, but it is still a dependency change.
  *   The architecture persona covers gitlinks natively (it reviews the pinned
  *   old -> new commit carried in the gitlink patch).
- * - `.mdx` pages. MDX is documentation, but it compiles to a component module
- *   (imports, exports, JSX expressions run in the docs build), so it is never
- *   exempted as inert prose. A documentation persona covers it natively.
+ * - `.mdx` / `.mdoc` pages. They are documentation, but compile to component
+ *   modules (imports, exports, expressions run in the docs build), so they are
+ *   never exempted as inert prose. A documentation persona covers them.
  */
 export function isFallbackRoutedFile(file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }): boolean {
-  return isSubmoduleEntry(file) || /\.mdx$/iu.test(file.path);
+  return isSubmoduleEntry(file) || /\.(mdx|mdoc)$/iu.test(file.path);
 }
 
 /**
@@ -250,6 +250,15 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
   const roster = routeOrphanedReviewFiles(enabledPersonas, effectiveFiles);
   const applicable = deriveApplicablePersonas(roster, effectiveFiles) as P[];
   if (applicable.length > 0) {
+    // Routing may only add a lane for the routed files themselves. When no
+    // configured persona applied before routing, any other uncovered analyzable
+    // path is still the coverage failure it always was -- routing an .mdx or a
+    // gitlink must not turn that failure into a silently under-scoped review.
+    const routedOnly = deriveApplicablePersonas(enabledPersonas, effectiveFiles).length === 0;
+    const uncovered = routedOnly ? computeUnmatchedPaths(effectiveFiles, roster) : [];
+    if (uncovered.length > 0) {
+      return { effectiveFiles, hunkResult, applicable: [], noReviewableContent: false, unmatchedPaths: uncovered };
+    }
     return { effectiveFiles, hunkResult, applicable, noReviewableContent: false, unmatchedPaths: [] };
   }
   const noReviewableContent = effectiveFiles.length > 0

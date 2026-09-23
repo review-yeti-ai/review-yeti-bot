@@ -49,7 +49,7 @@ describe('REL-1058: documentation extensions', () => {
   it.each([
     MDX_PATH, // compiles to a component module: routed to a lane, never exempt
     'docs/guide/intro.MDX',
-    'content/reference.mdoc',
+    'content/reference.mdoc', // likewise
     '.cursor/rules/review.mdc', // agent operating policy, not prose
     'src/components/Callout.jsx',
     'docusaurus/docusaurus.config.ts',
@@ -73,6 +73,24 @@ describe('REL-1058: .mdx policy', () => {
     expect(result.unmatchedPaths).toEqual([]);
     expect(scopeFilesForPersona(result.applicable[0], result.effectiveFiles).map((file) => file.path))
       .toEqual([MDX_PATH]);
+  });
+
+  it('routes an uncovered .mdoc page the same way', () => {
+    const result = resolveReviewApplicability(enabled('architecture,security'), [
+      { path: 'content/reference.mdoc', patch: mdx.patch },
+    ]);
+    expect(result.applicable.map((persona) => persona.id)).toEqual(['sec-lane']);
+  });
+
+  it('does not let a routed .mdx or gitlink mask uncovered source in an otherwise unreviewed diff', () => {
+    const [link] = parseChangedFiles(GITLINK_DIFF).files;
+    const lua = { path: 'vendor/generated/client.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' };
+    for (const orphan of [mdx, link]) {
+      const result = resolveReviewApplicability(enabled('security'), [orphan, lua]);
+      expect(result.applicable).toEqual([]);
+      expect(result.noReviewableContent).toBe(false);
+      expect(result.unmatchedPaths).toEqual(['vendor/generated/client.lua']);
+    }
   });
 
   it('leaves .mdx with the documentation persona when the roster has one', () => {
