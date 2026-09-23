@@ -290,7 +290,8 @@ describe('completion transport status (REL-1057)', () => {
 describe('worker/operator superseded marker contract', () => {
   it('matches the operator constant', () => {
     const go = readFileSync(join(__dirname, '../../k8s-operator/controllers/worker_superseded.go'), 'utf8');
-    expect(go).toContain(`workerSupersededMarker = "${WORKER_SUPERSEDED_TERMINATION_MARKER}"`);
+    // Whitespace-tolerant: gofmt may realign `=` across a const block.
+    expect(/\bworkerSupersededMarker\s*=\s*"([^"]*)"/u.exec(go)?.[1]).toBe(WORKER_SUPERSEDED_TERMINATION_MARKER);
   });
 
   it('leads the termination message with the marker on a single line', () => {
