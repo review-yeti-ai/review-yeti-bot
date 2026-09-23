@@ -41,4 +41,34 @@ describe('publishing transport refuses a leaked credential pairing', () => {
     } as unknown as NodeJS.ProcessEnv;
     expect(openaiTransport(env)).toMatchObject({ baseUrl: 'https://openrouter.ai/api/v1' });
   });
+
+  // The trailing dot is a valid FQDN root and reaches the same endpoint, so the
+  // un-normalised form was a silent bypass of the leak guard.
+  it('refuses the trailing-dot vendor host', () => {
+    const env = {
+      ...base,
+      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
+      OPENROUTER_BASE_URL: 'https://openrouter.ai./api/v1',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(() => openaiTransport(env)).toThrow();
+  });
+
+  it('refuses a vendor SUBDOMAIN too', () => {
+    const env = {
+      ...base,
+      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
+      OPENROUTER_BASE_URL: 'https://api.openrouter.ai/v1',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(() => openaiTransport(env)).toThrow();
+  });
+
+  it('does not over-refuse a lookalike host', () => {
+    // `notopenrouter.ai` must NOT match, or the guard breaks a legitimate lane.
+    const env = {
+      ...base,
+      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
+      OPENROUTER_BASE_URL: 'https://notopenrouter.ai/v1',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(() => openaiTransport(env)).not.toThrow();
+  });
 });

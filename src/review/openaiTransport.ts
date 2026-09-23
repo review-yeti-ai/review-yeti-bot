@@ -105,7 +105,11 @@ function winningName(env: NodeJS.ProcessEnv, names: readonly string[]): string |
 /** True when the winning base URL points at the OpenRouter vendor host. */
 function isVendorHost(baseUrl: string): boolean {
   try {
-    const host = new URL(baseUrl).hostname.toLowerCase();
+    // A trailing dot is a valid FQDN root and the same endpoint to every
+    // resolver, so `openrouter.ai.` must be refused exactly like
+    // `openrouter.ai` (REL-1069 review: the un-normalised form was a silent
+    // bypass of the credential-leak guard).
+    const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '');
     return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
   } catch {
     return false;
