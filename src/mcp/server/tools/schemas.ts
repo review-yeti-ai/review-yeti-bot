@@ -155,6 +155,9 @@ export interface ModelMatrixOutput {
 export const ReviewPrioritySchema = z.enum(['normal', 'expedited']);
 export type ReviewPriority = z.infer<typeof ReviewPrioritySchema>;
 
+export const ReviewEngineParamSchema = z.enum(['composed', 'panel']);
+export type ReviewEngineParam = z.infer<typeof ReviewEngineParamSchema>;
+
 export const TriggerReviewInputSchema = z.object({
   owner: z.string().trim().min(1, 'owner must not be empty').max(255),
   repo: z.string().trim().min(1, 'repo must not be empty').max(255),
@@ -162,6 +165,7 @@ export const TriggerReviewInputSchema = z.object({
   head_sha: z.string().trim().regex(COMMIT_SHA_40_REGEX, 'head_sha must be a 40-character hexadecimal commit SHA'),
   force: z.boolean().default(false).optional(),
   priority: ReviewPrioritySchema.default('normal').optional(),
+  review_engine: ReviewEngineParamSchema.optional(),
 }).strict();
 
 export type TriggerReviewInput = z.infer<typeof TriggerReviewInputSchema>;
@@ -273,6 +277,7 @@ export interface PreflightFinding {
   line?: number;
   rationale: string;
   suggested_fix?: string;
+  confidence?: number;
 }
 
 export interface PreflightDiffReviewOutput {
@@ -300,3 +305,19 @@ export interface ExplainFindingOutput {
   satisfies_requirement: boolean | null;
   citations: string[];
 }
+
+// =============================================================================
+// 9. Re-exports for dispute_finding and generate_fix_diff schemas
+// =============================================================================
+
+export {
+  DisputeFindingInputSchema,
+  type DisputeFindingInput,
+  type DisputeFindingOutput,
+} from './disputeFinding';
+
+export {
+  GenerateFixDiffInputSchema,
+  type GenerateFixDiffInput,
+  type GenerateFixDiffOutput,
+} from './generateFixDiff';
