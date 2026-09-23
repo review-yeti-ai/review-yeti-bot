@@ -343,6 +343,14 @@ export function initMetrics(
   return metricsInstance;
 }
 
+/** REL-1053: the resource this process's metrics are exported under, as the
+ * OTLP push sees it. Exposed so the identity wiring can be verified end to end. */
+export async function getMetricsResourceAttributes(): Promise<Record<string, unknown>> {
+  if (!metricReader) initMetrics();
+  const { resourceMetrics } = await metricReader!.collect();
+  return { ...resourceMetrics.resource.attributes };
+}
+
 export function getMetrics(): MetricCounters {
   if (!metricsInstance) {
     return initMetrics();

@@ -6,6 +6,7 @@ import {
   flushMetrics,
   resolveOtlpMetricsEndpoint,
   metricsResourceFor,
+  getMetricsResourceAttributes,
   type MetricsProcessIdentity,
 } from './metrics';
 import { getRecentSpans, clearSpans, formatSpan } from './spans';
@@ -33,6 +34,7 @@ export {
   flushMetrics,
   resolveOtlpMetricsEndpoint,
   metricsResourceFor,
+  getMetricsResourceAttributes,
   getRecentSpans,
   clearSpans,
   formatSpan,
