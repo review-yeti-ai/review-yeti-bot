@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.9...v1.84.0) (2026-09-23)
+
+
+### Features
+
+* **mcp:** bidirectional MCP wiring, DeepSeek review harness, and engine selection ([#976](https://github.com/review-yeti-ai/review-yeti-bot/issues/976)) ([2aad7c7](https://github.com/review-yeti-ai/review-yeti-bot/commit/2aad7c70723d032101dcbc840a2f752a6b562c52))
+
 ## [1.83.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.83.8...v1.83.9) (2026-09-23)
 
 
