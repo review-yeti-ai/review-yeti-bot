@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.6...v1.84.7) (2026-09-23)
+
+
+### Bug Fixes
+
+* **review:** exempt registry-verified lockfile-only diffs as no reviewable content (REL-972) ([#993](https://github.com/review-yeti-ai/review-yeti-bot/issues/993)) ([f5468b7](https://github.com/review-yeti-ai/review-yeti-bot/commit/f5468b7b0e1ae9c87aa7c94b683abcbc111c9502))
+
 ## [1.84.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.5...v1.84.6) (2026-09-23)
 
 
