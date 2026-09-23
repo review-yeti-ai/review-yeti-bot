@@ -115,19 +115,6 @@ export class HttpWorkerReviewCompletionAdapter implements WorkerReviewCompletion
       cleanupBody = () => cancel(response.body);
       checkDeadline();
       if (!response.redirected && response.status === 503) throw new RetryableDeliveryError();
-      // REL-1056: a 4xx is a DETERMINISTIC contract rejection and must stay
-      // terminal (never retried), but it is worth surfacing the bounded reason
-      // class so the operator can tell "this diff cannot be reviewed" from
-      // "the service was briefly unavailable" without log forensics. Only the
-      // service-owned token crosses this boundary; no upstream text is read.
-      if (!response.redirected && response.status >= 400 && response.status < 500) {
-        let reason = '';
-        try {
-          const parsed = JSON.parse(await response.text()) as { reason?: unknown };
-          if (typeof parsed.reason === 'string' && /^[a-z][a-z0-9-]{0,63}$/u.test(parsed.reason)) reason = parsed.reason;
-        } catch { /* A malformed body must not change the terminal outcome. */ }
-        throw new Error(`Worker review completion was rejected by the service${reason ? `: ${reason}` : ''}`);
-      }
       if (response.status !== 200 || response.redirected || !response.body) throw unavailable();
       const reader = response.body.getReader();
       cleanupBody = () => {
