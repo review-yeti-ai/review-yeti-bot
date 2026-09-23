@@ -54,15 +54,26 @@ function unavailable(): Error { return new Error('Authoritative completion conte
  * contract mismatch be reported as a contract failure rather than a retryable
  * 503. No upstream message, token, or payload crosses this boundary.
  */
-function classified(reason: TrustedCompletionResolutionReason): Error {
-  return new Error(`Authoritative completion context unavailable: ${reason}`);
+/**
+ * A classified failure. The reason is carried as a STRUCTURED field, never
+ * encoded into the message and parsed back out: `split(': ')` is index-fragile,
+ * and a message shape change would silently degrade a deterministic failure to
+ * 'unknown' — a retryable class — restoring the REL-1056 bug by another route.
+ */
+class ClassifiedCompletionError extends Error {
+  constructor(readonly reason: TrustedCompletionResolutionReason) {
+    super('Authoritative completion context unavailable');
+    this.name = 'ClassifiedCompletionError';
+  }
 }
 
-/** Read the class back off a classified failure. */
+function classified(reason: TrustedCompletionResolutionReason): Error {
+  return new ClassifiedCompletionError(reason);
+}
+
+/** Read the class off a classified failure, defaulting to the transient class. */
 function reasonOf(error: unknown): TrustedCompletionResolutionReason {
-  const message = error instanceof Error ? error.message : '';
-  const found = message.split(': ')[1] as TrustedCompletionResolutionReason | undefined;
-  return found && trustedCompletionResolutionReasons.includes(found) ? found : 'unknown';
+  return error instanceof ClassifiedCompletionError ? error.reason : 'unknown';
 }
 
 function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublishingPolicy {
