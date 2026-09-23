@@ -1,22 +1,5 @@
 import type { GitHubActionsOidcPolicy } from './githubActionsOidc';
 
-/**
- * The canonical env spellings for the GitHub App webhook secret.
- *
- * Owned HERE because this module is where webhook verification lives: the app,
- * the wizard and every synced environment use `GITHUB_WEBHOOK_SECRET`. The
- * legacy `WEBHOOK_SECRET` is accepted only as a rollout fallback.
- *
- * Readiness consumes this through the resolver rather than re-listing names, so
- * the probe and webhook verification cannot disagree about what configures the
- * webhook (REL-1069 review).
- */
-export function resolveWebhookSecret(environment: NodeJS.ProcessEnv): string {
-  return String(environment.GITHUB_WEBHOOK_SECRET || '').trim()
-    || String(environment.WEBHOOK_SECRET || '').trim();
-}
-
-
 export interface GitHubWebhookConfig {
   secret: string;
   admissionEnabled: boolean;

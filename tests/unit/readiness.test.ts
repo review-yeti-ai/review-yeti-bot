@@ -100,11 +100,16 @@ describe('review bot readiness', () => {
     expect(response.body).toMatchObject({ status: 'not_ready', configurationReady: false });
   });
 
-  it('still returns 503 when the webhook secret is genuinely absent', async () => {
+  it('is ready when the webhook secret comes from the dashboard store', async () => {
+    // The canonical resolver (src/github/webhookServer.ts) reads env AND the
+    // dashboard store, so clearing env alone does not make it absent -- and
+    // readiness must ACCEPT a store-provided secret, because that is a real
+    // configuration source the verification path also honours. Asserting 503
+    // here would have pinned readiness to a narrower rule than verification,
+    // which is the drift this work exists to remove.
     stubBifrostEnv({ GITHUB_WEBHOOK_SECRET: '', WEBHOOK_SECRET: '' });
-    vi.stubEnv('WEBHOOK_SECRET', '');
     const response = await request(createApp()).get('/ready');
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(200);
   });
 
   it('still returns 503 when the App id is absent', async () => {

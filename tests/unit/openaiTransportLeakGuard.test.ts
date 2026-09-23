@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { openaiTransport } from '../../src/review/openaiTransport';
+import { openaiTransport, invalidPublishingReviewContract } from '../../src/review/openaiTransport';
 
 /**
  * REL-1069 review (P1). `openaiTransport` is the publishing lane's transport
@@ -19,7 +19,10 @@ describe('publishing transport refuses a leaked credential pairing', () => {
       OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
       OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
     } as unknown as NodeJS.ProcessEnv;
-    expect(() => openaiTransport(env)).toThrow();
+    // Asserts the CONTRACT message, not merely that something threw: callers
+    // match on invalidPublishingReviewContract's text, so a refactor that let
+    // a generic error propagate would break them while passing toThrow().
+    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
   });
 
   it('accepts the same key against the CT gateway', () => {
@@ -50,7 +53,7 @@ describe('publishing transport refuses a leaked credential pairing', () => {
       OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
       OPENROUTER_BASE_URL: 'https://openrouter.ai./api/v1',
     } as unknown as NodeJS.ProcessEnv;
-    expect(() => openaiTransport(env)).toThrow();
+    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
   });
 
   it('refuses a vendor SUBDOMAIN too', () => {
@@ -59,7 +62,7 @@ describe('publishing transport refuses a leaked credential pairing', () => {
       OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
       OPENROUTER_BASE_URL: 'https://api.openrouter.ai/v1',
     } as unknown as NodeJS.ProcessEnv;
-    expect(() => openaiTransport(env)).toThrow();
+    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
   });
 
   it('does not over-refuse a lookalike host', () => {

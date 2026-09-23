@@ -6,7 +6,7 @@ import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } fr
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient, resolveCachedTokens } from './gateway/openRouterClient';
 import { missingGatewaySettings, requireGatewaySettings } from './review/openaiTransport';
-import { resolveWebhookSecret } from './auth/githubWebhookConfig';
+import { resolveWebhookSecret } from './github/webhookServer';
 import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
@@ -835,7 +835,7 @@ export function createApp(): Express {
     const missingGateway = missingGatewaySettings(process.env);
     const configurationReady = Boolean(process.env.GITHUB_APP_ID?.trim())
       && Boolean(process.env.GITHUB_APP_PRIVATE_KEY?.trim())
-      && Boolean(resolveWebhookSecret(process.env))
+      && Boolean(resolveWebhookSecret())
       && missingGateway.length === 0;
     return res.status(configurationReady ? 200 : 503).json({
       status: configurationReady ? 'ready' : 'not_ready',

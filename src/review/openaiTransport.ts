@@ -34,20 +34,16 @@ export function invalidPublishingReviewContract(): Error {
  * readiness probe report 503 on a correctly-configured Bifrost deployment
  * (REL-1069) while every other review workload was healthy.
  */
-const LEGACY_OPENROUTER_KEY_NAMES = [
-  'OPENROUTER_REVIEW_FLEET_KEY',
-  'OPENROUTER_PR_REVIEW_API_KEY',
-  'OPENROUTER_API_KEY',
-] as const;
-
-/** Resolve the admitted gateway key, preferring the standard OpenAI name. */
+/** Resolve the admitted gateway key, in GATEWAY_SETTING_NAMES order. */
 export function resolveGatewayApiKey(env: NodeJS.ProcessEnv): string {
-  const standard = value(env, 'OPENAI_API_KEY') || value(env, 'REVIEW_YETI_BIFROST_API_KEY')
-    || value(env, 'BIFROST_VIRTUAL_KEY');
-  if (standard) return standard;
-  for (const name of LEGACY_OPENROUTER_KEY_NAMES) {
-    const legacy = value(env, name);
-    if (legacy) return legacy;
+  return firstValue(env, GATEWAY_SETTING_NAMES.apiKey);
+}
+
+/** The first of `names` present in `env`, trimmed. */
+function firstValue(env: NodeJS.ProcessEnv, names: readonly string[]): string {
+  for (const name of names) {
+    const found = value(env, name);
+    if (found) return found;
   }
   return '';
 }
@@ -93,8 +89,7 @@ export function missingGatewaySettings(env: NodeJS.ProcessEnv): string[] {
  * send the CT credential to a third party.
  */
 export function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv): string {
-  return value(env, 'OPENAI_BASE_URL') || value(env, 'REVIEW_YETI_GATEWAY_BASE_URL')
-    || value(env, 'BIFROST_BASE_URL') || value(env, 'OPENROUTER_BASE_URL');
+  return firstValue(env, GATEWAY_SETTING_NAMES.baseUrl);
 }
 
 /** The env name that actually wins for a setting, or undefined. */
