@@ -115,3 +115,21 @@ func TestWorkerTerminationReadsLastTerminationStateOfAFailedPod(t *testing.T) {
 		t.Fatalf("running Pod produced record %+v, want none", record)
 	}
 }
+
+// A signal is recorded only when the runtime reported one; signal 0 means
+// "none" and must stay absent rather than read as a real signal.
+func TestWorkerTerminationRecordsOnlyARealSignal(t *testing.T) {
+	worker := selectionWorker()
+	finished := time.Date(2026, 9, 23, 13, 1, 0, 0, time.UTC)
+	killed := terminatedAt(137, "Error", finished)
+	killed.State.Terminated.Signal = 9
+	pod := selectionPod(worker, "review-worker-killed", corev1.PodFailed, killed)
+	record := podTermination(&pod, finished)
+	if record == nil || record.Signal == nil || *record.Signal != 9 {
+		t.Fatalf("record = %+v, want signal 9", record)
+	}
+	exited := selectionPod(worker, "review-worker-exited", corev1.PodFailed, terminatedAt(1, "Error", finished))
+	if record := podTermination(&exited, finished); record == nil || record.Signal != nil {
+		t.Fatalf("record = %+v, want no signal for a plain exit", record)
+	}
+}

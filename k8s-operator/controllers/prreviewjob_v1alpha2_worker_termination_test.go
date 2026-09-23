@@ -474,3 +474,29 @@ func TestWorkerReleasePersistsALateRecordBeforeLoweringTheHold(t *testing.T) {
 			ttlString(released.Spec.TTLSecondsAfterFinished), hasTerminalOutcomeFinalizer(released))
 	}
 }
+
+// A succeeded worker is released at the success TTL, not the failed one: the
+// terminal release must not undo patchWorkerSuccessTTL by writing the longer
+// failed retention back onto the Job.
+func TestSucceededWorkerIsReleasedAtTheSuccessTTL(t *testing.T) {
+	t.Setenv(job.WorkerTTLAfterFinishedEnv, "0")
+	t.Setenv(job.WorkerFailedTTLAfterFinishedEnv, "3600")
+	f := newTerminationFixture(t)
+	f.finishWorker(t, true, corev1.ContainerStateTerminated{
+		ExitCode: 0, Reason: "Completed",
+		StartedAt: metav1.NewTime(f.now.Add(5 * time.Second)), FinishedAt: metav1.NewTime(f.now.Add(40 * time.Second)),
+	}, "")
+	for _, step := range []string{"observe success", "terminal release"} {
+		if _, err := f.reconciler.Reconcile(context.Background(), f.req); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+	}
+	if phase := storedReview(t, f.kube, f.req).Status.Phase; phase != reviewv1alpha2.PhaseSucceeded {
+		t.Fatalf("phase = %s, want Succeeded", phase)
+	}
+	released := f.worker(t)
+	if hasTerminalOutcomeFinalizer(released) || released.Spec.TTLSecondsAfterFinished == nil || *released.Spec.TTLSecondsAfterFinished != 0 {
+		t.Fatalf("succeeded worker after release: TTL %s finalizer=%v, want released at the success TTL 0",
+			ttlString(released.Spec.TTLSecondsAfterFinished), hasTerminalOutcomeFinalizer(released))
+	}
+}
