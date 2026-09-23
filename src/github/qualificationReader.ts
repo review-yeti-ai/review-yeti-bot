@@ -53,6 +53,31 @@ export class GitHubQualificationReadError extends Error {
   }
 }
 
+/**
+ * REL-1057: the pull request GitHub projects no longer matches the admitted
+ * run's base/head identity. It stays a `GitHubQualificationReadError` (same
+ * message, so existing classifiers are unchanged) and additionally carries the
+ * identity GitHub reported, so a caller can tell "a newer head superseded this
+ * run" (`headMoved`) from a base-only move, which is not a supersession.
+ */
+export class GitHubPullRequestIdentityMovedError extends GitHubQualificationReadError {
+  constructor(
+    message: string,
+    githubReads: number,
+    readonly expectedHeadSha: string,
+    readonly currentHeadSha: string,
+    readonly currentBaseSha: string,
+  ) {
+    super(message, githubReads);
+    this.name = 'GitHubPullRequestIdentityMovedError';
+  }
+
+  /** True when the admitted head is no longer the pull request head. */
+  get headMoved(): boolean {
+    return this.currentHeadSha !== this.expectedHeadSha;
+  }
+}
+
 function validateInput(input: SameHeadQualificationInput): { owner: string; repo: string } {
   if (!input.token.startsWith('ghs_')) {
     throw new Error('GitHub qualification token is not an installation token');
@@ -172,7 +197,8 @@ export async function loadSameHeadReviewSource(
 
   const initial = pullRequestIdentity((await safeRequest(request, parameters, 1)).data, 1);
   if (initial.baseSha !== input.expectedBaseSha || initial.headSha !== input.expectedHeadSha) {
-    throw new GitHubQualificationReadError('GitHub projected pull request identity mismatch', 1);
+    throw new GitHubPullRequestIdentityMovedError('GitHub projected pull request identity mismatch', 1,
+      input.expectedHeadSha, initial.headSha, initial.baseSha);
   }
 
   const { diff, githubReads } = await readQualificationDiff(request, parameters, 1);
@@ -183,7 +209,8 @@ export async function loadSameHeadReviewSource(
 
   const final = pullRequestIdentity((await safeRequest(request, parameters, githubReads + 1)).data, githubReads + 1);
   if (final.baseSha !== input.expectedBaseSha || final.headSha !== input.expectedHeadSha) {
-    throw new GitHubQualificationReadError('GitHub pull request moved during qualification read', githubReads + 1);
+    throw new GitHubPullRequestIdentityMovedError('GitHub pull request moved during qualification read', githubReads + 1,
+      input.expectedHeadSha, final.headSha, final.baseSha);
   }
 
   return {
@@ -193,4 +220,29 @@ export async function loadSameHeadReviewSource(
     diffDigest: createHash('sha256').update(diff, 'utf8').digest('hex'),
     githubReads: githubReads + 1,
   };
+}
+
+export interface PullRequestIdentityInput {
+  token: string;
+  repo: string;
+  prNumber: number;
+}
+
+/**
+ * REL-1057: one read of the pull request's current base/head, under the run's
+ * repository-scoped read token. Used to decide whether a late completion
+ * rejection (HTTP 409) came from a head that has since moved.
+ */
+export async function readPullRequestIdentity(
+  input: PullRequestIdentityInput,
+  requestFn?: GitHubQualificationRequest,
+): Promise<{ baseSha: string; headSha: string }> {
+  const { owner, repo } = validateInput({
+    ...input,
+    expectedBaseSha: '0'.repeat(40),
+    expectedHeadSha: '0'.repeat(40),
+  });
+  const octokit = requestFn ? undefined : new Octokit({ auth: input.token });
+  const request = requestFn ?? (octokit!.request.bind(octokit) as unknown as GitHubQualificationRequest);
+  return pullRequestIdentity((await safeRequest(request, { owner, repo, pull_number: input.prNumber }, 1)).data, 1);
 }
