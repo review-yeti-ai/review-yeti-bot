@@ -77,11 +77,13 @@ export function missingGatewaySettings(env: NodeJS.ProcessEnv): string[] {
   // Uses the PAIRED resolver: a mixed-generation environment reports both
   // settings missing, so readiness refuses instead of admitting a lane that
   // would ship the credential to the legacy vendor.
-  const { baseUrl, apiKey } = resolveGatewaySettings(env);
-  const missing: string[] = [];
-  if (!baseUrl) missing.push(GATEWAY_SETTING_NAMES.baseUrl[0]);
-  if (!apiKey) missing.push(GATEWAY_SETTING_NAMES.apiKey[0]);
-  return missing;
+  const resolution = resolveGatewaySettings(env);
+  if (resolution.status === 'ok') return [];
+  if (resolution.status === 'missing') return resolution.missing;
+  // A refused pair reports as missing so a probe cannot advertise a lane whose
+  // credential would be leaked. Callers needing the distinction use
+  // resolveGatewaySettings directly.
+  return [GATEWAY_SETTING_NAMES.baseUrl[0], GATEWAY_SETTING_NAMES.apiKey[0]];
 }
 
 /** Resolve the admitted gateway base URL, preferring the standard OpenAI name.
@@ -120,21 +122,55 @@ function isVendorHost(baseUrl: string): boolean {
  * the URL resolve from different generations, the value is discarded, so the
  * lane fails closed and names what is missing instead of leaking.
  */
-export function resolveGatewaySettings(env: NodeJS.ProcessEnv): { baseUrl: string; apiKey: string } {
+export type GatewayResolution =
+  | { status: 'ok'; baseUrl: string; apiKey: string }
+  | { status: 'missing'; missing: string[] }
+  /** REFUSED: a non-vendor credential aimed at the vendor host.
+   *
+   * Distinct from `missing` because a caller that fell back to the raw
+   * environment would re-admit the very values this refused -- the review found
+   * exactly that hole in `|| requiredWorkerEnv(...)`. Fail closed; never re-read.
+   */
+  | { status: 'refused'; reason: string };
+
+export function resolveGatewaySettings(env: NodeJS.ProcessEnv): GatewayResolution {
   const baseUrl = resolveGatewayBaseUrl(env);
   const apiKey = resolveGatewayApiKey(env);
-  if (!baseUrl || !apiKey) return { baseUrl, apiKey };
+  if (!baseUrl || !apiKey) return { status: 'missing', missing: missingNames(env) };
   // Refuse ONLY the credential-leak case: a key that did NOT come from an
   // OpenRouter variable, aimed at the OpenRouter vendor host. Sending a CT
   // (Bifrost) credential to a third-party vendor is the harm; a legacy key
   // pointed at our own gateway is not, and refusing it would break a rollout.
-  // Deliberately NOT a generation-equality rule: that would reject benign
+  // Deliberately NOT a generation-equality rule: that rejects benign
   // combinations and the mixed-but-safe case of a legacy key on a Bifrost URL.
   const keyName = winningName(env, GATEWAY_SETTING_NAMES.apiKey);
   if (isVendorHost(baseUrl) && (keyName === undefined || !keyName.startsWith('OPENROUTER_'))) {
-    return { baseUrl: '', apiKey: '' };
+    return {
+      status: 'refused',
+      reason: 'gateway base URL points at the OpenRouter vendor host but the credential is not an OpenRouter key',
+    };
   }
-  return { baseUrl, apiKey };
+  return { status: 'ok', baseUrl, apiKey };
+}
+
+/** Name-only check, used before the pairing rule can apply. */
+function missingNames(env: NodeJS.ProcessEnv): string[] {
+  const missing: string[] = [];
+  if (!resolveGatewayBaseUrl(env)) missing.push(GATEWAY_SETTING_NAMES.baseUrl[0]);
+  if (!resolveGatewayApiKey(env)) missing.push(GATEWAY_SETTING_NAMES.apiKey[0]);
+  return missing;
+}
+
+/** Resolve or THROW, naming what to fix.
+ *
+ * Never re-reads the raw environment, so a refused pairing cannot be reinstated
+ * by a fallback -- the regression this replaces.
+ */
+export function requireGatewaySettings(env: NodeJS.ProcessEnv): { baseUrl: string; apiKey: string } {
+  const resolution = resolveGatewaySettings(env);
+  if (resolution.status === 'ok') return { baseUrl: resolution.baseUrl, apiKey: resolution.apiKey };
+  if (resolution.status === 'refused') throw new Error(`gateway configuration refused: ${resolution.reason}`);
+  throw new Error(`required environment variable ${resolution.missing.join('/')} is missing`);
 }
 
 /**
@@ -142,8 +178,10 @@ export function resolveGatewaySettings(env: NodeJS.ProcessEnv): { baseUrl: strin
  * fail-closed, so a misconfigured lane cannot silently ship diffs to a vendor.
  */
 export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
-  const baseUrl = resolveGatewayBaseUrl(env);
-  const apiKey = resolveGatewayApiKey(env);
+  // The PAIR: this is the path that actually TRANSMITS the credential, so the
+  // leak guard matters most here. `requireGatewaySettings` never falls back to
+  // the raw env, so a refused pairing fails closed.
+  const { baseUrl, apiKey } = requireGatewaySettings(env);
   const model = value(env, 'REVIEW_MODEL');
   if (!baseUrl || !apiKey || !model) throw invalidPublishingReviewContract();
   let parsed: URL;

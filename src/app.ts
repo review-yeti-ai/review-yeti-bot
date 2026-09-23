@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient, resolveCachedTokens } from './gateway/openRouterClient';
-import { missingGatewaySettings, resolveGatewaySettings } from './review/openaiTransport';
+import { missingGatewaySettings, requireGatewaySettings } from './review/openaiTransport';
 import { resolveWebhookSecret } from './auth/githubWebhookConfig';
 import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
@@ -109,10 +109,9 @@ function openRouterClient(): OpenRouterClient {
   // and the vendor default URL is gone: an unconfigured base URL must fail
   // closed rather than silently pointing at a vendor.
   // The PAIR, so a standard key is never paired with the legacy vendor URL.
-  const { baseUrl, apiKey } = resolveGatewaySettings(process.env);
-  if (!baseUrl || !apiKey) {
-    throw new Error('required environment variable OPENAI_BASE_URL/OPENAI_API_KEY is missing');
-  }
+  // `requireGatewaySettings` throws, naming what to fix, and never re-reads the
+  // raw env -- so a refused pairing cannot be reinstated by a fallback.
+  const { baseUrl, apiKey } = requireGatewaySettings(process.env);
   return new OpenRouterClient({ baseUrl, apiKey });
 }
 

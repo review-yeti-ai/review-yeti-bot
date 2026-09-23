@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { missingGatewaySettings, resolveGatewayBaseUrl, resolveGatewayApiKey, resolveGatewaySettings } from '../../src/review/openaiTransport';
+import { missingGatewaySettings, requireGatewaySettings, resolveGatewayBaseUrl, resolveGatewayApiKey, resolveGatewaySettings } from '../../src/review/openaiTransport';
 
 describe('gateway setting contract', () => {
   it('reports the base URL missing when every spelling is absent', () => {
@@ -60,14 +60,14 @@ describe('gateway setting contract', () => {
   });
 
   describe('mixed-generation provenance is refused', () => {
-    // Security-relevant: a standard Bifrost key paired with the legacy
+    // Security-relevant: a standard Bifrost key paired with the
     // OPENROUTER_BASE_URL would ship the CT credential to a third-party vendor.
-    it('refuses a standard key with a legacy vendor base URL', () => {
+    it('refuses a standard key aimed at the vendor host', () => {
       const env = {
-        OPENAI_API_KEY: 'sk-bf-bifrost-key',
-        OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+        OPENAI_API_KEY: 'sk-bf-bifrost-key', OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
       } as unknown as NodeJS.ProcessEnv;
-      expect(resolveGatewaySettings(env)).toEqual({ baseUrl: '', apiKey: '' });
+      expect(resolveGatewaySettings(env).status).toBe('refused');
+      // Readiness must not advertise the lane either.
       expect(missingGatewaySettings(env)).toEqual(['OPENAI_BASE_URL', 'OPENAI_API_KEY']);
     });
 
@@ -76,45 +76,44 @@ describe('gateway setting contract', () => {
       // vendor. Refusing this would break a mid-rollout deployment for no
       // security benefit -- the harm is the destination, not the name.
       const env = {
-        OPENROUTER_API_KEY: 'legacy-key',
-        OPENAI_BASE_URL: 'https://gateway.internal/v1',
+        OPENROUTER_API_KEY: 'legacy-key', OPENAI_BASE_URL: 'https://gateway.internal/v1',
       } as unknown as NodeJS.ProcessEnv;
       expect(resolveGatewaySettings(env)).toEqual({
-        baseUrl: 'https://gateway.internal/v1', apiKey: 'legacy-key',
+        status: 'ok', baseUrl: 'https://gateway.internal/v1', apiKey: 'legacy-key',
       });
     });
 
-    it('refuses a standard key aimed at the vendor host', () => {
+    it('reports a genuinely absent setting as missing, not refused', () => {
+      const env = { OPENAI_API_KEY: 'sk-bf-x' } as unknown as NodeJS.ProcessEnv;
+      const r = resolveGatewaySettings(env);
+      expect(r.status).toBe('missing');
+      if (r.status === 'missing') expect(r.missing).toEqual(['OPENAI_BASE_URL']);
+    });
+  });
+
+  describe('requireGatewaySettings never reinstates a refused pairing', () => {
+    // The P1 the panel found: `|| requiredWorkerEnv(env, ...)` re-read the raw
+    // env and re-admitted exactly the pair the resolver had refused.
+    it('THROWS on a refused pairing instead of returning the raw values', () => {
       const env = {
         OPENAI_API_KEY: 'sk-bf-bifrost-key', OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
       } as unknown as NodeJS.ProcessEnv;
-      expect(resolveGatewaySettings(env)).toEqual({ baseUrl: '', apiKey: '' });
+      expect(() => requireGatewaySettings(env)).toThrow(/refused/i);
+      // The credential must not appear in the error or the result.
+      expect(() => requireGatewaySettings(env)).not.toThrow(/sk-bf-bifrost-key/);
     });
 
-    it('allows the legacy key WITH the legacy vendor URL (self-consistent)', () => {
-      const env = {
-        OPENROUTER_API_KEY: 'legacy', OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
-      } as unknown as NodeJS.ProcessEnv;
-      expect(resolveGatewaySettings(env)).toEqual({
-        baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'legacy',
-      });
+    it('throws naming the variable when a setting is simply absent', () => {
+      expect(() => requireGatewaySettings({} as unknown as NodeJS.ProcessEnv))
+        .toThrow(/OPENAI_BASE_URL/);
     });
 
-    it('allows a fully-standard pair', () => {
+    it('returns the pair when configuration is sound', () => {
       const env = {
         OPENAI_API_KEY: 'sk-bf-x', OPENAI_BASE_URL: 'https://gateway.internal/v1',
       } as unknown as NodeJS.ProcessEnv;
-      expect(resolveGatewaySettings(env)).toEqual({
+      expect(requireGatewaySettings(env)).toEqual({
         baseUrl: 'https://gateway.internal/v1', apiKey: 'sk-bf-x',
-      });
-    });
-
-    it('allows a fully-legacy pair so an older deployment still boots', () => {
-      const env = {
-        OPENROUTER_API_KEY: 'legacy', OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
-      } as unknown as NodeJS.ProcessEnv;
-      expect(resolveGatewaySettings(env)).toEqual({
-        baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'legacy',
       });
     });
   });
