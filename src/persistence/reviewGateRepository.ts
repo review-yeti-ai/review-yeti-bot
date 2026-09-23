@@ -275,7 +275,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     } catch (error) {
       if (client) await client.query('ROLLBACK').catch(() => undefined);
       throw new WorkerCompletionPersistenceError(stage,
-        error instanceof TrustedCompletionResolutionError ? error.substage : undefined);
+        error instanceof TrustedCompletionResolutionError ? error.substage : undefined,
+        error instanceof TrustedCompletionResolutionError ? error.reason : undefined);
     } finally { client?.release(); }
   }
 
