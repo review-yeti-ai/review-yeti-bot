@@ -625,6 +625,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 		if err := r.patchWorkerSuccessTTL(ctx, worker); err != nil {
 			return ctrl.Result{}, err
 		}
+		if workerEndedSuperseded(review) {
+			return ctrl.Result{}, r.recordSuperseded(ctx, review)
+		}
 		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", workerMessage(review, "completed"))
 	}
 	if review.Spec.PublicationMode == job.PublicationModeAppGate {

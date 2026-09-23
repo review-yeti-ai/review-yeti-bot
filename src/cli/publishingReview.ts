@@ -47,12 +47,15 @@ import {
   createOpenAIPublishingConfig,
   type OpenAITransportConfig,
 } from '../review/openaiTransport';
-import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
+import {
+  GitHubPullRequestIdentityMovedError, GitHubQualificationReadError, loadSameHeadReviewSource, readPullRequestIdentity,
+} from '../github/qualificationReader';
+import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
 import { computeArbitration, sanitizeFinding } from '../review/reviewCore';
 import { isRecoverableIncompletePanel, isRecoverablePanelRetryEligible, RECOVERABLE_PANEL_AUTO_RETRY_CAP } from '../review/publicationFailurePolicy';
 import {
   buildWorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
-  validateWorkerCompletionEndpoint,
+  validateWorkerCompletionEndpoint, WorkerCompletionHttpError,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { logger } from '../utils/logger';
@@ -692,6 +695,12 @@ export interface PublishingReviewDeps {
   completion?: WorkerCompletionAdapter;
   reviewCompletion?: WorkerReviewCompletionAdapter;
   sourceLoader?: typeof loadSameHeadReviewSource;
+  /**
+   * REL-1057: reads the pull request's current head when a legacy completion
+   * callback is rejected with HTTP 409, to tell a superseded head from a real
+   * conflict. Injectable for tests; defaults to one GitHub read with `GH_TOKEN`.
+   */
+  pullRequestIdentityReader?: typeof readPullRequestIdentity;
   /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
   visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
   panelRunner?: typeof executePersonaPanel;
@@ -921,6 +930,7 @@ export async function runPublishingReviewWorker(
     if (failedCheckId !== undefined) {
       try {
         const isSuperseded = Boolean(
+          isReviewSuperseded(error) ||
           (deps.isCurrentHead && !deps.isCurrentHead()) ||
           (error instanceof Error && (
             error.message.includes('stale run aborted') ||
@@ -980,7 +990,11 @@ export async function runPublishingReviewWorker(
         });
       }
     }
-    if (deps.completion) {
+    // REL-1057: a superseded run is not a failure. The service retires it
+    // itself when the newer head is admitted (or its deadline reaper does, if
+    // no newer head ever arrives), so a legacy failure callback here would
+    // only record a false failure against a head nobody will merge.
+    if (deps.completion && !isReviewSuperseded(error)) {
       const event: WorkerTerminalFailure = {
         version: 'WorkerTerminalFailure.v1',
         runId: identity.runId,
@@ -1076,13 +1090,24 @@ export async function runPublishingReviewWorker(
     // that used to sit here is deliberately gone -- it silenced both the unknown
     // `owner` property and the shape mismatch, which is the only reason this
     // shipped.
-    const source = await sourceLoader({
-      repo: identity.repo,
-      prNumber: identity.prNumber,
-      expectedBaseSha: identity.baseSha,
-      expectedHeadSha: identity.headSha,
-      token: value(env, 'GH_TOKEN'),
-    });
+    let source: Awaited<ReturnType<typeof loadSameHeadReviewSource>>;
+    try {
+      source = await sourceLoader({
+        repo: identity.repo,
+        prNumber: identity.prNumber,
+        expectedBaseSha: identity.baseSha,
+        expectedHeadSha: identity.headSha,
+        token: value(env, 'GH_TOKEN'),
+      });
+    } catch (error) {
+      // REL-1057: a push between admission and this read means a newer head
+      // supersedes this run. Only a moved head qualifies: a base-only move
+      // keeps the same head under review and stays a failure.
+      if (error instanceof GitHubPullRequestIdentityMovedError && error.headMoved) {
+        throw new ReviewSupersededError('pre_review', identity.headSha, error.currentHeadSha);
+      }
+      throw error;
+    }
 
     const { files: changedFiles, unreadable } = parseChangedFiles(String(source.diff));
     // An empty changed-file set must not be read as "nothing to review, ship".
@@ -1743,7 +1768,23 @@ export async function runPublishingReviewWorker(
       // Set before awaiting: an HTTP timeout cannot prove the service failed to
       // commit, so the catch path must not emit a different terminal body.
       legacySuccessCompletionAttempted = true;
-      await deps.completion.reportTerminalSuccess(event);
+      try {
+        await deps.completion.reportTerminalSuccess(event);
+      } catch (error) {
+        // REL-1057: the service answers 409 when this run is no longer the
+        // live one, most commonly because a newer head was admitted mid-review.
+        // Confirm the head actually moved before calling it superseded; any
+        // other 409, or a failed read, keeps the original error.
+        if (error instanceof WorkerCompletionHttpError && error.httpStatus === 409) {
+          const currentHeadSha = await (deps.pullRequestIdentityReader || readPullRequestIdentity)({
+            token: value(env, 'GH_TOKEN'), repo: identity.repo, prNumber: identity.prNumber,
+          }).then((current) => current.headSha, () => undefined);
+          if (currentHeadSha !== undefined && currentHeadSha !== identity.headSha) {
+            throw new ReviewSupersededError('completion', identity.headSha, currentHeadSha);
+          }
+        }
+        throw error;
+      }
     }
     return {
       version: 'ReviewYetiPublishingReview.v1',
@@ -1792,7 +1833,13 @@ export async function runPublishingReviewWorker(
       await removeScratchTree(zoektScratchRoot.scratchDir);
     }
   } catch (error) {
-    await reportTerminalFailure(error, checkId);
-    throw error;
+    // REL-1057: the run-status poller is the service's own verdict that this
+    // run is no longer current; whatever the panel threw on the way out, the
+    // outcome is a supersession, not a failure.
+    const outcome = !isReviewSuperseded(error) && deps.isCurrentHead && !deps.isCurrentHead()
+      ? new ReviewSupersededError('during_review', identity.headSha)
+      : error;
+    await reportTerminalFailure(outcome, checkId);
+    throw outcome;
   }
 }
