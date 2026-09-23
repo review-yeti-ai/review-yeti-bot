@@ -7,10 +7,13 @@
 
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { execSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+
+const execFileAsync = promisify(execFile);
 import {
   type ToolDefinition,
   type ToolResult,
@@ -79,41 +82,50 @@ export interface GenerateFixDiffDependencies {
   validatePatch?: boolean;
 }
 
-export function validatePatchWithGitApply(
+export async function validatePatchWithGitApply(
   patch: string,
   filePath: string,
   originalLines: string
-): { valid: boolean; error?: string } {
+): Promise<{ valid: boolean; error?: string }> {
   if (!originalLines) return { valid: true };
   const normPath = filePath.startsWith('/') ? filePath.slice(1) : filePath;
-  const tempDir = mkdtempSync(join(tmpdir(), 'git-apply-val-'));
+  if (!normPath || normPath.includes('..') || normPath.includes('\0')) {
+    return { valid: false, error: 'Path traversal disallowed' };
+  }
+  const tempDir = await mkdtemp(join(tmpdir(), 'git-apply-val-'));
   try {
-    for (const k of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL']) {
-      if (process.env[k] === '') delete process.env[k];
-    }
-    execSync('git init', { cwd: tempDir, stdio: 'ignore' });
-    execSync('git config user.name "Review Yeti" && git config user.email "bot@calltelemetry.com"', { cwd: tempDir, stdio: 'ignore' });
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Review Yeti',
+      GIT_AUTHOR_EMAIL: 'bot@calltelemetry.com',
+      GIT_COMMITTER_NAME: 'Review Yeti',
+      GIT_COMMITTER_EMAIL: 'bot@calltelemetry.com',
+    };
+    await execFileAsync('git', ['init'], { cwd: tempDir });
+    await execFileAsync('git', ['config', 'user.name', 'Review Yeti'], { cwd: tempDir });
+    await execFileAsync('git', ['config', 'user.email', 'bot@calltelemetry.com'], { cwd: tempDir });
     const fullTarget = join(tempDir, normPath);
-    mkdirSync(dirname(fullTarget), { recursive: true });
+    await mkdir(dirname(fullTarget), { recursive: true });
     const normOrig = originalLines.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    writeFileSync(fullTarget, normOrig.endsWith('\n') ? normOrig : `${normOrig}\n`);
-    execSync(`git add "${normPath}" && git commit -m "init"`, { cwd: tempDir, stdio: 'ignore' });
+    await writeFile(fullTarget, normOrig.endsWith('\n') ? normOrig : `${normOrig}\n`, 'utf8');
+    await execFileAsync('git', ['add', '.'], { cwd: tempDir });
+    await execFileAsync('git', ['commit', '-m', 'init'], { cwd: tempDir, env: gitEnv });
 
     const patchFile = join(tempDir, 'fix.patch');
-    writeFileSync(patchFile, patch);
+    await writeFile(patchFile, patch, 'utf8');
 
     try {
-      execSync('git apply --unidiff-zero --check fix.patch', { cwd: tempDir, stdio: 'pipe' });
+      await execFileAsync('git', ['apply', '--unidiff-zero', '--check', 'fix.patch'], { cwd: tempDir });
       return { valid: true };
     } catch {
-      execSync('git apply --check fix.patch', { cwd: tempDir, stdio: 'pipe' });
+      await execFileAsync('git', ['apply', '--check', 'fix.patch'], { cwd: tempDir });
       return { valid: true };
     }
   } catch (err: any) {
     return { valid: false, error: err.message };
   } finally {
     try {
-      rmSync(tempDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true });
     } catch {
       // Safe ignore
     }
@@ -356,7 +368,7 @@ Instructions:
 
               let isValid = true;
               if (deps.validatePatch !== false) {
-                const valResult = validatePatchWithGitApply(candidatePatch, filePath, originalLines);
+                const valResult = await validatePatchWithGitApply(candidatePatch, filePath, originalLines);
                 isValid = valResult.valid;
               }
 

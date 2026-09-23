@@ -1036,12 +1036,18 @@ export async function runPublishingReviewWorker(
         { baseUrl: transport.baseUrl, model: transport.model }).config
       : resolveWorkerConfig(env, transport);
     if (authoritative) preparedPersonaIds = workerConfig.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
-    // Base-policy and admission driven (see `resolveReviewEngine`'s doc comment): a PR cannot switch
-    // its own review engine by setting an env var, only by what `workerConfig.review_engine` resolved to.
-    // When `composed` is explicitly selected in config or admission, execute directly via composed engine
-    // without forcing fallback to 'panel'.
+    // Base-policy driven (see `resolveReviewEngine`'s doc comment): a PR cannot switch its own
+    // review engine by setting an env var, only by what `workerConfig.review_engine` resolved to.
+    //
+    // The authoritative gate admits a fixed persona roster and later re-derives eligibility from
+    // those exact ids. The composed engine invents task ids from the diff at execution time, so its
+    // otherwise-clean output cannot satisfy that immutable roster contract. Keep authoritative
+    // execution on the admitted persona panel until composed plans have their own service-owned,
+    // deterministic admission contract. Shadow mode already gates on the panel and remains safe.
     const configuredReviewEngine = resolveReviewEngine(workerConfig);
-    const reviewEngine = configuredReviewEngine;
+    const reviewEngine = authoritative && configuredReviewEngine === 'composed'
+      ? 'panel'
+      : configuredReviewEngine;
     const panelRunner = reviewEngine === 'composed'
       ? (deps.composedReviewRunner || executeComposedReview)
       : (deps.panelRunner || executePersonaPanel);

@@ -562,7 +562,7 @@ index 1111111..2222222 100644
   // Suite 5: Fix Diff Generation White-Box Git Synthesis & Verification
   // ===========================================================================
   describe('Suite 5: Fix Diff Generation White-Box Git Synthesis & Verification', () => {
-    it('TC-T5-FIX-01: validatePatchWithGitApply invokes real git binary validating syntax with git apply --check', () => {
+    it('TC-T5-FIX-01: validatePatchWithGitApply invokes real git binary validating syntax with git apply --check', async () => {
       const orig = 'function add(a, b) {\n  return a + b;\n}\n';
       const patch = `--- a/src/math.ts
 +++ b/src/math.ts
@@ -572,7 +572,7 @@ index 1111111..2222222 100644
 +  return Number(a) + Number(b);
  }
 `;
-      const result = validatePatchWithGitApply(patch, 'src/math.ts', orig);
+      const result = await validatePatchWithGitApply(patch, 'src/math.ts', orig);
       expect(result.valid).toBe(true);
       expect(result.error).toBeUndefined();
     });
@@ -585,9 +585,13 @@ index 1111111..2222222 100644
 -corrupt
 +broken
 `;
-      const valResult = validatePatchWithGitApply(malformedPatch, 'src/math.ts', 'function add() {}\n');
+      const valResult = await validatePatchWithGitApply(malformedPatch, 'src/math.ts', 'function add() {}\n');
       expect(valResult.valid).toBe(false);
       expect(valResult.error).toBeDefined();
+
+      const traversalResult = await validatePatchWithGitApply('--- a/../etc/passwd\n+++ b/../etc/passwd\n', '../etc/passwd', 'root:x:0:0:root\n');
+      expect(traversalResult.valid).toBe(false);
+      expect(traversalResult.error).toContain('Path traversal disallowed');
 
       // 2. Integration test: model returning malformed non-JSON safely falls back to static replacement
       const tool = createGenerateFixDiffTool({

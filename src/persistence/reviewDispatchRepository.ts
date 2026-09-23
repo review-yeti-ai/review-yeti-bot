@@ -885,7 +885,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           burstStartedAt,
           generationRecovery.length,
           JSON.stringify({
-            review_engine: (input as any).reviewEngine || input.authoritativeGate?.prepared.config.review_engine || 'panel',
+            review_engine: input.reviewEngine || input.authoritativeGate?.prepared.config.review_engine || 'panel',
           }),
         ],
       );

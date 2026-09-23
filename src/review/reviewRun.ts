@@ -104,6 +104,8 @@ export interface ReviewAdmissionInput {
   debounce?: boolean;
   /** Service-resolved only; never decoded from an Action/worker request. */
   authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
+  /** Explicit review engine selection from trigger or policy configuration. */
+  reviewEngine?: 'composed' | 'panel';
 }
 
 export interface ReviewAdmission {

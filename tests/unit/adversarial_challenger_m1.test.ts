@@ -277,7 +277,7 @@ index 3333333..4444444 100644
   // =========================================================================
   describe('generate_fix_diff stress testing', () => {
 
-    it('EMP-FIX-01: synthesizeUnifiedDiff handles multi-line replacement with valid unidiff-zero git apply', () => {
+    it('EMP-FIX-01: synthesizeUnifiedDiff handles multi-line replacement with valid unidiff-zero git apply', async () => {
       const filePath = 'src/billing/calculator.ts';
       const startLine = 20;
       const originalLines = 'const rate = 0.05;\nconst tax = 0.10;\nreturn amount * (rate + tax);';
@@ -288,11 +288,11 @@ index 3333333..4444444 100644
       expect(patch).toContain('-const rate = 0.05;\n-const tax = 0.10;\n-return amount * (rate + tax);');
       expect(patch).toContain('+const rate = computeDynamicRate(account);\n+return amount * rate;');
 
-      const val = validatePatchWithGitApply(patch, filePath, originalLines);
+      const val = await validatePatchWithGitApply(patch, filePath, originalLines);
       expect(val.valid).toBe(true);
     });
 
-    it('EMP-FIX-02: synthesizeUnifiedDiff handles pure addition (0 original lines)', () => {
+    it('EMP-FIX-02: synthesizeUnifiedDiff handles pure addition (0 original lines)', async () => {
       const filePath = 'src/auth/guard.ts';
       const startLine = 15;
       const originalLines = '';
@@ -304,11 +304,11 @@ index 3333333..4444444 100644
       expect(bodyLines.some(l => l.startsWith('-'))).toBe(false);
       expect(patch).toContain('+if (!user.isAuthenticated()) {\n+  throw new UnauthorizedError();\n+}');
 
-      const val = validatePatchWithGitApply(patch, filePath, originalLines);
+      const val = await validatePatchWithGitApply(patch, filePath, originalLines);
       expect(val.valid).toBe(true);
     });
 
-    it('EMP-FIX-03: synthesizeUnifiedDiff handles pure deletion (0 replacement lines)', () => {
+    it('EMP-FIX-03: synthesizeUnifiedDiff handles pure deletion (0 replacement lines)', async () => {
       const filePath = 'src/utils/debug.ts';
       const startLine = 5;
       const originalLines = 'console.log("DEBUG_RAW_PAYLOAD:", payload);';
@@ -320,7 +320,7 @@ index 3333333..4444444 100644
       const bodyLines = patch.split('\n').slice(3);
       expect(bodyLines.some(l => l.startsWith('+'))).toBe(false);
 
-      const val = validatePatchWithGitApply(patch, filePath, originalLines);
+      const val = await validatePatchWithGitApply(patch, filePath, originalLines);
       expect(val.valid).toBe(true);
     });
 

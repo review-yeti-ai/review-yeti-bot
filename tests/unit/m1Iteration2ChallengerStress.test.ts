@@ -20,7 +20,7 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
   // =========================================================================
   describe('synthesizeUnifiedDiff edge cases & git apply validation', () => {
 
-    it('CHAL-DIFF-01: Multi-line original with interior blank lines and trailing newline', () => {
+    it('CHAL-DIFF-01: Multi-line original with interior blank lines and trailing newline', async () => {
       const filePath = 'src/parser/lexer.ts';
       const startLine = 10;
       const originalLines = 'const a = 1;\n\nconst b = 2;\n';
@@ -31,11 +31,11 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
       expect(patch).toContain('-const a = 1;\n-\n-const b = 2;');
       expect(patch).toContain('+const a = 10;\n+\n+const b = 20;');
 
-      const val = validatePatchWithGitApply(patch, filePath, originalLines);
+      const val = await validatePatchWithGitApply(patch, filePath, originalLines);
       expect(val.valid).toBe(true);
     });
 
-    it('CHAL-DIFF-02: Multi-line pure deletion of 5 lines to 0 lines with git apply validation', () => {
+    it('CHAL-DIFF-02: Multi-line pure deletion of 5 lines to 0 lines with git apply validation', async () => {
       const filePath = 'src/legacy/unused.ts';
       const startLine = 50;
       const originalLines = 'line 1\nline 2\nline 3\nline 4\nline 5\n';
@@ -47,11 +47,11 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
       expect(body).not.toContain('+');
       expect(patch).toContain('-line 1\n-line 2\n-line 3\n-line 4\n-line 5');
 
-      const val = validatePatchWithGitApply(patch, filePath, originalLines);
+      const val = await validatePatchWithGitApply(patch, filePath, originalLines);
       expect(val.valid).toBe(true);
     });
 
-    it('CHAL-DIFF-03: CRLF line endings in originalLines and replacementLines normalize cleanly without carriage returns in diff', () => {
+    it('CHAL-DIFF-03: CRLF line endings in originalLines and replacementLines normalize cleanly without carriage returns in diff', async () => {
       const filePath = 'src/windows/crlf.ts';
       const startLine = 1;
       const originalLines = 'const win = true;\r\nconst msg = "hello";\r\n';
@@ -62,7 +62,7 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
       expect(patch).toContain(`--- a/${filePath}\n+++ b/${filePath}\n@@ -1,2 +1,1 @@\n`);
       expect(patch).toContain('-const win = true;\n-const msg = "hello";\n+const win = false;\n');
 
-      const val = validatePatchWithGitApply(patch, filePath, originalLines);
+      const val = await validatePatchWithGitApply(patch, filePath, originalLines);
       expect(val.valid).toBe(true);
     });
 
@@ -73,13 +73,13 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
       expect(patch).not.toContain('--- a//');
     });
 
-    it('CHAL-DIFF-05: Single line replacement with no trailing newline in input', () => {
+    it('CHAL-DIFF-05: Single line replacement with no trailing newline in input', async () => {
       const filePath = 'src/single.ts';
       const originalLines = 'foo()';
       const replacementLines = 'bar()';
       const patch = synthesizeUnifiedDiff(filePath, 1, originalLines, replacementLines);
       expect(patch).toContain('@@ -1,1 +1,1 @@\n-foo()\n+bar()\n');
-      const val = validatePatchWithGitApply(patch, filePath, originalLines);
+      const val = await validatePatchWithGitApply(patch, filePath, originalLines);
       expect(val.valid).toBe(true);
     });
   });

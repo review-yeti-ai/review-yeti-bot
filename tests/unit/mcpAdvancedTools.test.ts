@@ -308,7 +308,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       expect(data.patch).toContain('@@ -10,2 +10,2 @@');
       expect(data.patch).toContain('+const cache = new QuickLRU({ maxSize: 500 });');
 
-      const validation = validatePatchWithGitApply(data.patch, 'src/cache/store.ts', 'const cache = new Map();\ncache.set(key, val);');
+      const validation = await validatePatchWithGitApply(data.patch, 'src/cache/store.ts', 'const cache = new Map();\ncache.set(key, val);');
       expect(validation.valid).toBe(true);
       expect(mockModelClient.complete).toHaveBeenCalledWith(
         expect.objectContaining({
