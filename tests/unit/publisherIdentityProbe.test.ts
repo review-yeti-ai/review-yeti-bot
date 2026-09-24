@@ -151,6 +151,23 @@ describe('publishing identity probes (REL-1107)', () => {
       expect(resolved).toMatchObject({ login: null, verified: false });
     });
 
+    it('parses one status format for both the classifier and the describer', () => {
+      // They previously used DIFFERENT regexes and disagreed at birth: a bare-code 5xx was
+      // retried by the classifier and then reported as `user=exit 1` by the describer, hiding the
+      // status an operator needs (REL-1107 review).
+      const { parseProbeHttpStatus } = pipeline;
+      expect(parseProbeHttpStatus('gh: Bad credentials (HTTP 401)')).toBe('401');
+      expect(parseProbeHttpStatus('gh: 502 Bad Gateway')).toBe('502');
+      expect(parseProbeHttpStatus('HTTP/1.1 503 Service Unavailable')).toBe('503');
+      expect(parseProbeHttpStatus('gh: command not found')).toBe(null);
+      expect(parseProbeHttpStatus('')).toBe(null);
+
+      // The convergence itself: a bare-code 5xx must be BOTH retried and named.
+      expect(pipeline.isTransientIdentityProbeFailure(1, 'gh: 502 Bad Gateway')).toBe(true);
+      expect(pipeline.describePublisherIdentityFailure([{ name: 'user', status: 1, stderr: 'gh: 502 Bad Gateway' }]))
+        .toContain('user=HTTP 502');
+    });
+
     it('names the probes and their status codes', () => {
       const runner: CommandRunner = () => fail('gh: Bad credentials (HTTP 401)');
       const { reason } = pipeline.resolveAuthenticatedPublisher(runner);
@@ -210,13 +227,15 @@ describe('publishing identity probes (REL-1107)', () => {
       expect(thrown?.message).not.toBe('could not determine the publishing GitHub identity');
     });
 
-    it('the PUBLISH call site refuses with the reason when identity is unresolvable', () => {
+    it('the STICKY refusal call site carries the reason when identity is unresolvable', () => {
       // Drives the real call site, not just the helper. The review was right that covering
       // requirePublisherIdentity proves nothing about whether it is CALLED: restoring the old
       // readAuthenticatedPublisherLogin + bare throw left every helper test green.
       //
-      // `postOrOutputComment` is exported and takes a commandRunner seam, so this exercises the
-      // actual refusal without spawning gh.
+      // `postStickySummaryComment` is exported and takes a commandRunner seam, so this exercises
+      // the actual refusal without spawning gh. (An earlier comment named `postOrOutputComment`;
+      // the refusal this test cares about lives in the sticky function, which resolves the
+      // identity itself and never reaches the other one.)
       const prContext = {
         prNumber: 42, repo: 'review-yeti-ai/review-yeti-bot',
         headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
@@ -235,6 +254,28 @@ describe('publishing identity probes (REL-1107)', () => {
       expect(String(result.error)).toContain('could not determine the publishing GitHub identity');
       expect(String(result.error)).toContain('identity probes failed');
       expect(String(result.error)).toContain('user=HTTP 401');
+    });
+
+    it('postOrOutputComment refusal carries the reason too', () => {
+      // A SEPARATE call site from the sticky one above, and the review was right that it was
+      // untested: it resolves the identity independently, so covering the sticky function says
+      // nothing about it.
+      const prContext = {
+        prNumber: 42, repo: 'review-yeti-ai/review-yeti-bot',
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      };
+      const runner: CommandRunner = (_cmd, args) => {
+        if (args.includes('headRefOid,baseRefOid')) {
+          return ok(JSON.stringify({ headRefOid: prContext.headSha, baseRefOid: prContext.baseSha }));
+        }
+        return fail('gh: Server Error (HTTP 502)');
+      };
+      const result = pipeline.postOrOutputComment('# review', prContext, {}, { commandRunner: runner });
+      expect(result.success).toBe(false);
+      // The outer handler wraps the thrown diagnostic; the REASON must survive the wrap.
+      expect(String(result.error)).toContain('could not determine the publishing GitHub identity');
+      expect(String(result.error)).toContain('identity probes failed');
+      expect(String(result.error)).toContain('user=HTTP 502');
     });
 
     it('the refusal text carries the reason when known, and omits it otherwise', () => {

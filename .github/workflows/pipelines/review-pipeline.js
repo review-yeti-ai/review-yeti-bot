@@ -7149,13 +7149,31 @@ function cleanPublisherLoginScalar(stdout) {
  * A 4xx other than 429 is NOT retried: that is a real answer about the credential or its
  * permissions, and retrying would only delay the diagnostic.
  */
+/**
+ * The HTTP status a probe's stderr reports, or null.
+ *
+ * ONE parser, shared by the transient classifier and the failure describer. They previously
+ * re-derived the status with different regexes and disagreed at birth: the classifier accepted
+ * bare codes (`gh: 502 Bad Gateway`) while the describer only understood the `HTTP <code>` form,
+ * so a bare-code 5xx was retried and then reported as `user=exit 1` -- hiding the status an
+ * operator needs (REL-1107 review).
+ */
+function parseProbeHttpStatus(stderr) {
+  const text = String(stderr || '');
+  const explicit = /\bHTTP (\d{3})\b/u.exec(text);
+  if (explicit) return explicit[1];
+  const bare = /(?:^|[^\d])(\d{3})(?:[^\d]|$)/u.exec(text);
+  return bare ? bare[1] : null;
+}
+
 function isTransientIdentityProbeFailure(status, stderr) {
   if (status === 0) return false;
   const text = String(stderr || '');
-  if (/\bHTTP 5\d\d\b|\b50[234]\b/u.test(text)) return true;
+  const code = parseProbeHttpStatus(text);
+  if (code && (code.startsWith('5') || code === '429')) return true;
   // Secondary rate limit: 403 carrying retry-after, or exhausted primary quota.
   if (/\b429\b/u.test(text)) return true;
-  if (/\b403\b/u.test(text) && /retry-after|x-ratelimit-remaining:\s*0/iu.test(text)) return true;
+  if (code === '403' && /retry-after|x-ratelimit-remaining:\s*0/iu.test(text)) return true;
   return false;
 }
 
@@ -7186,7 +7204,7 @@ function probePublisherIdentity(commandRunner, args) {
  */
 function describePublisherIdentityFailure(probes) {
   const parts = probes.map(({ name, status, stderr }) => {
-    const code = /\bHTTP (\d{3})\b/u.exec(String(stderr || ''))?.[1];
+    const code = parseProbeHttpStatus(stderr);
     const detail = code ? `HTTP ${code}` : `exit ${status}`;
     return `${name}=${detail}`;
   });
@@ -8162,6 +8180,7 @@ module.exports = {
   // REL-1107: exported so the identity-probe retry and its diagnostics are testable.
   resolveAuthenticatedPublisher,
   isTransientIdentityProbeFailure,
+  parseProbeHttpStatus,
   describePublisherIdentityFailure,
   publisherIdentityError,
   requirePublisherIdentity,
