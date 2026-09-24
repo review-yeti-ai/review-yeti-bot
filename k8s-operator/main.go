@@ -158,6 +158,9 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1083: the map-reduce trigger in characters, empty unless the
 		// deployment sets it (the worker defaults to the W5 hard cap).
 		MapReduceMinChars: strings.TrimSpace(os.Getenv("REVIEW_YETI_MAP_REDUCE_MIN_CHARS")),
+		// REL-1104: worker metrics push target (VictoriaMetrics OTLP). An
+		// invalid value is dropped at projection time, never refusing a Job.
+		WorkerMetricsEndpoint: strings.TrimSpace(os.Getenv(job.WorkerMetricsEndpointEnv)),
 	}
 }
 

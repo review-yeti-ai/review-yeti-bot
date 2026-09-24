@@ -223,3 +223,15 @@ func TestPublishingConfigFromEnvReadsMapReduceMinChars(t *testing.T) {
 		t.Fatalf("map-reduce min chars not read: %+v", config)
 	}
 }
+
+// REL-1104: the worker metrics push endpoint has no default -- unset forwards nothing.
+func TestPublishingConfigFromEnvReadsWorkerMetricsEndpoint(t *testing.T) {
+	t.Setenv("REVIEW_YETI_WORKER_METRICS_ENDPOINT", "")
+	if config := publishingConfigFromEnv(); config.WorkerMetricsEndpoint != "" {
+		t.Fatalf("unset worker metrics endpoint must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_WORKER_METRICS_ENDPOINT", " http://vm:8428/opentelemetry/v1/metrics ")
+	if config := publishingConfigFromEnv(); config.WorkerMetricsEndpoint != "http://vm:8428/opentelemetry/v1/metrics" {
+		t.Fatalf("worker metrics endpoint not read: %+v", config)
+	}
+}
