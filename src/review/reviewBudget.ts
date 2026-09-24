@@ -420,7 +420,10 @@ export function applyLaneBudgetPack<T extends { path: string; patch?: string }>(
   const toolFiles: T[] = [];
   for (const file of scopedFiles) {
     const entry = pack.entries.get(file.path);
-    if (!entry) {
+    // A file without a patch string sent at full depth is passed through as
+    // is, so the pack never invents an empty patch where there was none.
+    const untouched = entry && typeof file.patch !== 'string' && entry.depth === 'full';
+    if (!entry || untouched) {
       promptFiles.push(file);
       toolFiles.push(file);
       continue;

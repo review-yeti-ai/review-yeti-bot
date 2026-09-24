@@ -327,6 +327,14 @@ describe('packLaneBudget', () => {
     expect(toolFiles[1]).toBe(scoped[1]);
   });
 
+  it('passes a file without a patch string through unchanged when it is sent at full depth', () => {
+    const pack = packLaneBudget('lane', [{ path: 'src/content.ts', effectivePatch: 'whole content', wholePatch: null }]);
+    const scoped = [{ path: 'src/content.ts', content: 'whole content' } as { path: string; patch?: string; content?: string }];
+    const { promptFiles, toolFiles } = applyLaneBudgetPack(scoped, pack);
+    expect(promptFiles[0]).toBe(scoped[0]);
+    expect(toolFiles[0]).toBe(scoped[0]);
+  });
+
   it('keeps today\'s (bounded) patch for the tools of a file that was not sent whole', () => {
     const pack = packLaneBudget('lane', [candidate('src/a.ts', 40_000, 'a'), cutCandidate('src/b.ts', 40_000, 'b')]);
     const b = pack.entries.get('src/b.ts')!;
