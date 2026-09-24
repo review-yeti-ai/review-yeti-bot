@@ -269,6 +269,32 @@ describe('REL-1113 Action pipeline: in-budget lane re-attempts', () => {
     expect(shared.isNonRetryableClientStatus(502)).toBe(false);
   });
 
+  it('a deadline cut keeps a re-attempt that completed and restores only the lane the cut interrupted', async () => {
+    const lanes = [
+      lane('security'),
+      lane('performance', { decision: 'ERROR', error: TERMINATED }),
+      lane('testing', { decision: 'ERROR', error: STREAM_DEADLINE }),
+    ];
+    const rerun = vi.fn((index: number, signal: AbortSignal) => (index === 1
+      ? Promise.resolve(lane('performance'))
+      : new Promise((resolve) => {
+        signal.addEventListener('abort', () => resolve(lane('testing', { decision: 'ERROR', error: 'review_cancelled' })), { once: true });
+      })));
+    const { results, stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, {
+      coverageComplete: true,
+      deadlineMs: Date.now() + shared.TRANSPORT_RETRY_TERMINAL_MARGIN_MS + 50,
+      laneTimeoutMs: 1,
+      sleep: async () => {},
+      random: () => 0,
+      log: quiet,
+    });
+    expect(stopReason).toBe('budget');
+    expect(results[1]).toMatchObject({ personaId: 'performance', decision: 'APPROVE' });
+    expect(results[2]).toMatchObject({ personaId: 'testing', decision: 'ERROR', error: STREAM_DEADLINE });
+    expect(pipeline.resolveInfrastructureIncomplete(results, { coverageComplete: true })?.lanes)
+      .toEqual([{ id: 'testing', failureClass: 'timeout' }]);
+  });
+
   it('never re-attempts a 4xx other than 429 (the same request fails the same way)', async () => {
     const rerun = vi.fn();
     const lanes = [lane('security'), lane('testing', { decision: 'ERROR', error: 'HTTP 400: bad request', responseStatus: 400 })];
