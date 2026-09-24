@@ -56,7 +56,6 @@ import {
   applyLaneBudgetPack,
   attachReviewBudgetDisclosure,
   clipToolOutputToRequestCap,
-  resolveBudgetedReviewApplicability,
   type ReviewBudgetInput,
   type ReviewBudgetPlan,
 } from '../review/reviewBudget';
@@ -65,6 +64,12 @@ import {
   type VerdictCacheDisclosure,
   type VerdictCacheScope,
 } from '../review/verdictCache';
+import {
+  attachMapReduceDisclosure,
+  resolveMapReduceReviewApplicability,
+  type MapReduceInput,
+  type MapReducePlan,
+} from '../review/mapReduceReview';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import {
   buildDiffSection,
@@ -134,6 +139,11 @@ export interface ComposedReviewOptions {
   reviewBudget?: ReviewBudgetInput;
   /** REL-1085: per-file verdict cache scope (`REVIEW_YETI_VERDICT_CACHE`); absent serves nothing from cache. */
   verdictCache?: VerdictCacheScope;
+  /**
+   * REL-1083: map-reduce review (`REVIEW_YETI_MAP_REDUCE`). The composed engine plans one context,
+   * so it does not chunk; it makes the same shared decision and discloses a context over budget.
+   */
+  mapReduce?: MapReduceInput;
 }
 
 // ---------------------------------------------------------------------------
@@ -1045,6 +1055,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   let depthDisclosure: ReviewDepthDisclosure | null = null;
   // REL-1082: the one budget pack for this single context, from the same decision.
   let reviewBudgetPlan: ReviewBudgetPlan | null = null;
+  // REL-1083: the same map-reduce decision; this engine only discloses it.
+  let mapReducePlan: MapReducePlan | null = null;
   return runInSpan<PanelResult>('review_yeti_composed_panel', async (span) => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -1065,14 +1077,17 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     // REL-1084: the incremental scope, like shrinking, only replaces patch text afterwards.
     // REL-1082: so does the review budget: one pack over the whole diff for this one context.
     // REL-1085: the verdict cache runs before the budget and, like the others, only replaces patch text.
-    const applicability = resolveBudgetedReviewApplicability(enabledPersonas, changedFiles as any, {
+    // REL-1083: map-reduce makes the same decision; whole-diff scope never chunks.
+    const applicability = resolveMapReduceReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
       incremental: options.incremental,
       verdictCache: options.verdictCache,
       reviewBudget: options.reviewBudget,
       budgetScope: 'whole-diff',
+      mapReduce: options.mapReduce,
     });
+    mapReducePlan = applicability.mapReduce;
     diffShrinkDisclosure = applicability.diffShrink;
     incrementalDisclosure = applicability.incremental;
     verdictCacheDisclosure = applicability.verdictCache;
@@ -1330,5 +1345,6 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     .then((result) => attachVerdictCacheDisclosure(result, verdictCacheDisclosure))
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
+    .then((result) => attachMapReduceDisclosure(result, mapReducePlan, new Map()))
     .finally(deadline.cleanup);
 }

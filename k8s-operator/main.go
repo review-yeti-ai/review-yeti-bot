@@ -152,6 +152,9 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1085: per-file verdict cache, off unless the deployment sets it
 		// (a comma-separated owner/repo allowlist for pilots).
 		VerdictCache: strings.TrimSpace(os.Getenv("REVIEW_YETI_VERDICT_CACHE")),
+		// REL-1083: map-reduce review for huge diffs, off unless the
+		// deployment sets it (a comma-separated owner/repo allowlist for pilots).
+		MapReduce: strings.TrimSpace(os.Getenv("REVIEW_YETI_MAP_REDUCE")),
 	}
 }
 
