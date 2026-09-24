@@ -56,16 +56,41 @@ beforeEach(() => {
   vi.stubEnv('HOSTNAME', 'offline-dispatcher');
   vi.stubEnv('GITHUB_APP_ID', '4385771');
   vi.stubEnv('GITHUB_APP_PRIVATE_KEY', 'offline-key');
+  // This suite asserts the TRANSACTIONAL completion path (pool.connect() +
+  // BEGIN/COMMIT). That path is selected only when the lifecycle outbox is
+  // enabled, so the mode is pinned here rather than inherited from whatever the
+  // entrypoint happened to hardcode.
+  vi.stubEnv('CT_REVIEW_EVENTS_ENABLED', 'true');
 });
 
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); process.exitCode = 0; });
 
+/**
+ * The completion repository takes one of two paths depending on whether the
+ * lifecycle outbox is being written:
+ *
+ *   disabled (default) -> `pool.query` directly, no transaction
+ *   enabled            -> `pool.connect()` + BEGIN/COMMIT around the claim
+ *
+ * This helper used to assume the enabled path implicitly, because the
+ * dispatcher hardcoded `lifecycleEvents: 'enabled'`. The dispatcher now resolves
+ * that from `CT_REVIEW_EVENTS_ENABLED` (default disabled, matching the
+ * suspended transport it feeds), so the expectation must name the mode it means
+ * rather than inherit one.
+ *
+ * "Idle" = the disabled path: one direct probe query, no pooled connection.
+ */
 function expectIdleCompletionPool(): void {
   expect(state.poolQuery).toHaveBeenCalledExactlyOnceWith(
     expect.stringContaining('FROM review_completion_outbox AS outbox'),
     [expect.any(Number)],
   );
   expect(state.poolConnect).not.toHaveBeenCalled();
+}
+
+/** "Enabled" = the transactional path: a pooled client is acquired. */
+function expectTransactionalCompletionPool(): void {
+  expect(state.poolConnect).toHaveBeenCalled();
 }
 
 describe('dispatcher publishing ownership composition', () => {
