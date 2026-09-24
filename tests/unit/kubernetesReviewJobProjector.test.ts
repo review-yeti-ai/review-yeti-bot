@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  CANCEL_REASON_MAX_LENGTH,
   KubernetesReviewJobProjector,
   kubernetesStatusCode,
 } from '../../src/k8s/kubernetesReviewJobProjector';
+import { ReviewJobDispatchEngine } from '../../src/k8s/reviewJobDispatchEngine';
 import type { PRReviewJobProjection } from '../../src/k8s/reviewJobProjection';
 
 const projection: PRReviewJobProjection = {
@@ -275,6 +277,7 @@ describe('KubernetesReviewJobProjector.patchCancellation wire format (REL-1073)'
   async function withApiServer(
     status: number,
     run: (client: import('@kubernetes/client-node').CustomObjectsApi) => Promise<void>,
+    stored: unknown = { spec: { cancelRequested: true } },
   ): Promise<Array<{ method?: string; url?: string; contentType?: string; body: string }>> {
     const http = await import('node:http');
     const k8s = await import('@kubernetes/client-node');
@@ -285,7 +288,7 @@ describe('KubernetesReviewJobProjector.patchCancellation wire format (REL-1073)'
       req.on('end', () => {
         seen.push({ method: req.method, url: req.url, contentType: req.headers['content-type'], body });
         res.writeHead(status, { 'content-type': 'application/json' });
-        res.end(status < 300 ? '{}' : JSON.stringify({ kind: 'Status', code: status }));
+        res.end(status < 300 ? JSON.stringify(stored) : JSON.stringify({ kind: 'Status', code: status }));
       });
     });
     await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -306,10 +309,12 @@ describe('KubernetesReviewJobProjector.patchCancellation wire format (REL-1073)'
   }
 
   it('sends the cancel as a JSON merge patch through the real generated client', async () => {
+    let result: unknown;
     const seen = await withApiServer(200, async (client) => {
-      await new KubernetesReviewJobProjector(client).patchCancellation(
+      result = await new KubernetesReviewJobProjector(client).patchCancellation(
         projection.metadata.name, 'ct-review-system', 'superseded_by_new_head');
     });
+    expect(result).toEqual({ status: 'patched', cancelRequested: true });
     // The generated client defaults to application/json-patch+json, which the
     // API server rejects for an object body: the cancel would never land.
     expect(seen).toEqual([{
@@ -318,6 +323,89 @@ describe('KubernetesReviewJobProjector.patchCancellation wire format (REL-1073)'
       contentType: 'application/merge-patch+json',
       body: JSON.stringify({ spec: { cancelRequested: true, cancelReason: 'superseded_by_new_head' } }),
     }]);
+  });
+
+  // REL-1073: a CRD without spec.cancelRequested prunes the field and still
+  // answers 200. The projector must report what was stored, not "success".
+  it('reports a pruned cancelRequested from the object the API server returns', async () => {
+    let result: unknown;
+    await withApiServer(200, async (client) => {
+      result = await new KubernetesReviewJobProjector(client).patchCancellation(
+        projection.metadata.name, 'ct-review-system', 'superseded_by_new_head');
+    }, { spec: { runId: projection.spec.runId } });
+    expect(result).toEqual({ status: 'patched', cancelRequested: undefined });
+  });
+
+  it('end to end: a pruned 200 is a field-pruned sweep failure and is never marked propagated', async () => {
+    const markCancelPropagated = vi.fn(async () => true);
+    let outcome: unknown;
+    await withApiServer(200, async (client) => {
+      const engine = new ReviewJobDispatchEngine({
+        repository: {
+          claimNext: vi.fn(async () => null),
+          markProjected: vi.fn(async () => true),
+          bindWorkerTokenDigest: vi.fn(async () => true),
+          releaseForRetry: vi.fn(async () => true),
+          markTerminal: vi.fn(async () => true),
+          findPendingCancellations: vi.fn(async () => [
+            { runId: projection.spec.runId, executionAttempt: 1, projectionName: projection.metadata.name },
+          ]),
+          markCancelPropagated,
+        },
+        projector: new KubernetesReviewJobProjector(client),
+        workerId: 'worker-1',
+        workerImage: projection.spec.workerImage,
+        namespace: 'ct-review-system',
+      });
+      outcome = await engine.sweepPendingCancellations(10);
+    }, { spec: { runId: projection.spec.runId } });
+    expect(outcome).toEqual({
+      propagated: 0,
+      failed: 1,
+      failures: [{ runId: projection.spec.runId, projectionName: projection.metadata.name, reason: 'field-pruned' }],
+    });
+    expect(markCancelPropagated).not.toHaveBeenCalled();
+  });
+
+  function rejectingClient(stored: unknown, getStatus?: number) {
+    return {
+      getNamespacedCustomObject: vi.fn(async () => {
+        if (getStatus) throw Object.assign(new Error('get failed'), { statusCode: getStatus });
+        return stored;
+      }),
+      createNamespacedCustomObject: vi.fn(),
+      patchNamespacedCustomObject: vi.fn(async () => {
+        throw Object.assign(new Error('spec is immutable except for a one-way cancelRequested transition'), { statusCode: 422 });
+      }),
+    };
+  }
+
+  it('converges when the CRD refuses a second cancel of an already-cancelled CR', async () => {
+    const client = rejectingClient({ spec: { cancelRequested: true, cancelReason: 'user_cancelled' } });
+    await expect(new KubernetesReviewJobProjector(client).patchCancellation(
+      projection.metadata.name, 'ct-review-system', 'superseded_by_new_head',
+    )).resolves.toEqual({ status: 'already-cancelled' });
+    expect(client.getNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({
+      name: projection.metadata.name, namespace: 'ct-review-system', plural: 'prreviewjobs',
+    }));
+  });
+
+  it.each([
+    ['the stored CR is not cancelled', rejectingClient({ spec: {} })],
+    ['the re-read fails', rejectingClient(undefined, 500)],
+  ])('keeps a 422 as a patch failure when %s', async (_label, client) => {
+    const caught = await new KubernetesReviewJobProjector(client)
+      .patchCancellation(projection.metadata.name, 'ct-review-system', 'superseded_by_new_head')
+      .then(() => undefined, (error: unknown) => error);
+    expect(kubernetesStatusCode(caught)).toBe(422);
+  });
+
+  it('clamps an over-long cancelReason to the CRD bound', async () => {
+    const seen = await withApiServer(200, async (client) => {
+      await new KubernetesReviewJobProjector(client).patchCancellation(
+        projection.metadata.name, 'ct-review-system', 'x'.repeat(CANCEL_REASON_MAX_LENGTH + 50));
+    });
+    expect(JSON.parse(seen[0].body).spec.cancelReason).toBe('x'.repeat(CANCEL_REASON_MAX_LENGTH));
   });
 
   it('surfaces a forbidden patch with its structured status and no upstream text', async () => {

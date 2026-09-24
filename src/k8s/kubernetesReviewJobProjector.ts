@@ -1,11 +1,13 @@
 import { isDeepStrictEqual } from 'node:util';
 import { PatchStrategy, setHeaderOptions } from '@kubernetes/client-node';
-import type { ReviewJobProjector } from './reviewJobProjector';
+import type { CancellationPatchResult, ReviewJobProjector } from './reviewJobProjector';
 import { deriveRunSecretExecutionAttempt, type PRReviewJobProjection } from './reviewJobProjection';
 
 const GROUP = 'review-yeti.ai';
 const VERSION = 'v1alpha2';
 const PLURAL = 'prreviewjobs';
+/** Mirrors spec.cancelReason maxLength in the v1alpha2 CRD. */
+export const CANCEL_REASON_MAX_LENGTH = 256;
 const projectionConflictMessage = 'existing PRReviewJob conflicts with the durable projection';
 const projectionTerminalMessage = 'existing PRReviewJob is terminal; fresh admission is required';
 
@@ -179,18 +181,21 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
     }
   }
 
-  async patchCancellation(name: string, namespace: string, cancelReason?: string): Promise<void> {
+  async patchCancellation(name: string, namespace: string, cancelReason?: string): Promise<CancellationPatchResult> {
     if (!this.client.patchNamespacedCustomObject) {
       throw new Error('Kubernetes client does not support patchNamespacedCustomObject');
     }
     const patchBody: Record<string, unknown> = {
       spec: {
         cancelRequested: true,
-        ...(cancelReason ? { cancelReason } : {}),
+        // The CRD bounds cancelReason at 256 characters; an over-long reason
+        // would turn every retry into a 422.
+        ...(cancelReason ? { cancelReason: Array.from(cancelReason).slice(0, CANCEL_REASON_MAX_LENGTH).join('') } : {}),
       },
     };
+    let patched: unknown;
     try {
-      await this.client.patchNamespacedCustomObject(
+      patched = await this.client.patchNamespacedCustomObject(
         {
           group: GROUP,
           version: VERSION,
@@ -206,10 +211,28 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
         setHeaderOptions('Content-Type', PatchStrategy.MergePatch),
       );
     } catch (error) {
-      if (kubernetesStatusCode(error) === 404) {
-        return;
+      const statusCode = kubernetesStatusCode(error);
+      if (statusCode === 404) {
+        return { status: 'not-found' };
+      }
+      // The CRD allows only one absent/false -> true flip and pins cancelReason
+      // to that flip. A CR already cancelled (e.g. with a different reason)
+      // rejects this patch with 422 forever; re-read it so an existing cancel
+      // converges instead of retrying on every sweep.
+      if (statusCode === 422 && await this.storedCancelRequested(name, namespace) === true) {
+        return { status: 'already-cancelled' };
       }
       throw apiFailure('patch', error);
+    }
+    return { status: 'patched', cancelRequested: record(record(patched)?.spec)?.cancelRequested };
+  }
+
+  private async storedCancelRequested(name: string, namespace: string): Promise<unknown> {
+    try {
+      const stored = await this.client.getNamespacedCustomObject({ group: GROUP, version: VERSION, namespace, plural: PLURAL, name });
+      return record(record(stored)?.spec)?.cancelRequested;
+    } catch {
+      return undefined;
     }
   }
 }
