@@ -222,7 +222,10 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         ? applicablePersonaIds : [...stored.expectedPersonaIds];
       checkDeadline();
       return { current: { ...final, policyDigest }, coverage: {
-        expectedPersonaIds, changedFiles: files, coverageComplete,
+        expectedPersonaIds, changedFiles: files,
+        // REL-1092: the same decision the worker's coverage reads. An analyzable
+        // file whose changed text no lane could see is never counted as reviewed.
+        coverageComplete: coverageComplete && applicability.omittedSourcePaths.length === 0,
         // This establishes a nonempty required-lane contract, not completed
         // worker quorum. Derivation separately requires ALL these exact IDs.
         quorumSatisfied: expectedPersonaIds.length > 0,

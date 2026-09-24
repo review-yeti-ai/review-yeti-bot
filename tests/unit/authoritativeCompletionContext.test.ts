@@ -400,6 +400,22 @@ describe('service-owned authoritative completion context', () => {
     });
   });
 
+  // REL-1092: the trusted side reads coverage from the same shared decision as the
+  // worker. A source file whose changed text no lane could see is never counted as
+  // reviewed; a binary beside it is disclosed only.
+  it('marks coverage incomplete for an omitted source patch, but not for a binary file', async () => {
+    const omitted = '--- a/src/huge.ts\n+++ b/src/huge.ts\n\\ Review Yeti: patch unavailable (omitted by GitHub; 30000 changed lines)\n';
+    const binary = 'Binary files a/docs/logo.png and b/docs/logo.png differ\n';
+    const run = async (changedFiles: Array<{ path: string; patch: string }>) => {
+      const f = fixture();
+      f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: changedFiles.length });
+      return (await f.context(f.gate)).coverage.coverageComplete;
+    };
+    const covered = { path: 'src/a.ts', patch: '@@ -1 +1 @@\n-old\n+new' };
+    expect(await run([covered, { path: 'docs/logo.png', patch: binary }])).toBe(true);
+    expect(await run([covered, { path: 'src/huge.ts', patch: omitted }])).toBe(false);
+  });
+
   it('refuses a documentation-only completion over an unverifiable lockfile', () => {
     // Defense in depth behind the shared decision: the completion check itself
     // re-verifies each admitted lockfile change.

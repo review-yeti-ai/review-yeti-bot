@@ -4,6 +4,7 @@ import { classifyLockfileOrGeneratedPath, filterDiffHunks, type HunkFilterResult
 import { isDataOrConfigPath, isDocumentationOrAssetPath, isNoReviewableContentFile } from './reviewableContent';
 import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 import { isSubmodulePatch } from './submodulePatch';
+import { omittedSourcePathsOf, unavailablePatchFilesOf, type UnavailablePatchFile } from './patchAvailability';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
 
@@ -324,6 +325,33 @@ export interface ReviewApplicability<P> {
    * declared paths.
    */
   routedFiles: RoutedReviewFile[];
+  /**
+   * REL-1092: reviewed files whose patch was cut at `MAX_FILE_PATCH_CHARS`
+   * before any lane saw it. Lanes read only the first `keptChars` characters.
+   * Disclosed in the check summary.
+   */
+  truncatedFiles: TruncatedReviewFile[];
+  /**
+   * REL-1092: reviewed files whose patch no lane can read (binary, or omitted
+   * by GitHub on the worker's pull-files fallback). Disclosed in the check
+   * summary as not reviewed.
+   */
+  unavailablePatches: UnavailablePatchFile[];
+  /**
+   * REL-1092: analyzable files among `unavailablePatches` whose changed text
+   * was omitted. Never counted as reviewed: non-empty means the review's
+   * coverage is incomplete, on the worker and the trusted completion side.
+   */
+  omittedSourcePaths: string[];
+}
+
+/** A reviewed file whose patch was truncated before any lane saw it. */
+export interface TruncatedReviewFile {
+  path: string;
+  /** Patch length before the cut, in characters. */
+  originalChars: number;
+  /** Patch characters the lanes received. */
+  keptChars: number;
 }
 
 export const DOCUMENTATION_ONLY_RATIONALE =
@@ -363,17 +391,38 @@ function lockfileOnlyRationale(changedFiles: ReadonlyArray<ReviewApplicabilityIn
     + 'A manifest or source change in the same diff would be reviewed.';
 }
 
+type ReviewDepthDisclosureKeys = 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths';
+
 /**
  * The one persona-applicability decision. The worker panel and the service's
  * trusted completion context both call this with the same enabled roster and
  * the same repository options, so the lanes a worker runs and the lanes the
  * service requires are derived by the same code from the same inputs.
+ *
+ * REL-1092: it also reports, over the same effective files, every file a lane
+ * saw only in part (truncated patch) or not at all (unavailable patch), so the
+ * disclosure and the coverage consequence come from this one decision too.
  */
 export function resolveReviewApplicability<P extends ReviewPersona>(
   enabledPersonas: readonly P[],
   changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
   options: { pathFilters?: readonly string[] } = {},
 ): ReviewApplicability<P> {
+  const decision = decideReviewApplicability(enabledPersonas, changedFiles, options);
+  const effectivePaths = new Set(decision.effectiveFiles.map((file) => file.path));
+  const truncatedFiles = decision.hunkResult.files.flatMap((file) => (
+    file.truncation && effectivePaths.has(file.path)
+      ? [{ path: file.path, originalChars: file.truncation.originalChars, keptChars: file.truncation.keptChars }]
+      : []));
+  const unavailablePatches = unavailablePatchFilesOf(decision.effectiveFiles);
+  return { ...decision, truncatedFiles, unavailablePatches, omittedSourcePaths: omittedSourcePathsOf(unavailablePatches) };
+}
+
+function decideReviewApplicability<P extends ReviewPersona>(
+  enabledPersonas: readonly P[],
+  changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
+  options: { pathFilters?: readonly string[] },
+): Omit<ReviewApplicability<P>, ReviewDepthDisclosureKeys> {
   const { files: effectiveFiles, hunkResult } = buildEffectiveReviewFiles(changedFiles, options);
   const roster = routeOrphanedReviewFiles(enabledPersonas, effectiveFiles);
   const applicable = deriveApplicablePersonas(roster, effectiveFiles) as P[];
@@ -478,5 +527,35 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
     excludedPaths,
     unmatchedPaths: [...unmatched, ...excludedPaths.filter((path) => !unmatched.includes(path))],
     routedFiles: [],
+  };
+}
+
+/** REL-1092: what the shared decision says the lanes saw only in part, or not at all. */
+export type ReviewDepthDisclosure = Pick<ReviewApplicability<unknown>, ReviewDepthDisclosureKeys>;
+
+/** The depth disclosure of one decision, or null when every file was sent whole. */
+export function reviewDepthDisclosureOf(
+  decision: Pick<ReviewApplicability<unknown>, ReviewDepthDisclosureKeys>,
+): ReviewDepthDisclosure | null {
+  const { truncatedFiles, unavailablePatches, omittedSourcePaths } = decision;
+  if (truncatedFiles.length === 0 && unavailablePatches.length === 0 && omittedSourcePaths.length === 0) return null;
+  return { truncatedFiles, unavailablePatches, omittedSourcePaths };
+}
+
+/**
+ * Attach an engine's depth disclosure to whichever result it returns, so the
+ * check summary and the worker's coverage read exactly what the decision
+ * reported (no second computation). Only non-empty lists are attached.
+ */
+export function attachReviewDepthDisclosure<T extends object>(
+  result: T,
+  disclosure: ReviewDepthDisclosure | null,
+): T & Partial<ReviewDepthDisclosure> {
+  if (!disclosure) return result;
+  return {
+    ...result,
+    ...(disclosure.truncatedFiles.length > 0 ? { truncatedFiles: disclosure.truncatedFiles } : {}),
+    ...(disclosure.unavailablePatches.length > 0 ? { unavailablePatches: disclosure.unavailablePatches } : {}),
+    ...(disclosure.omittedSourcePaths.length > 0 ? { omittedSourcePaths: disclosure.omittedSourcePaths } : {}),
   };
 }

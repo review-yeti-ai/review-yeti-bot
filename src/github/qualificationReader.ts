@@ -4,6 +4,7 @@ import {
   GitDiffSourceError, mergeBaseFromComparison, verifyGitDerivedDiff,
   type GitDiffFailureReason, type GitDiffSource,
 } from './gitDiffSource';
+import { patchUnavailableNote } from '../review/patchAvailability';
 
 const PR_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}';
 const FILES_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files';
@@ -141,22 +142,77 @@ async function safeRequest(
   }
 }
 
+const GIT_PATH_ESCAPES: Record<string, string> = { '"': '\\"', '\\': '\\\\', '\n': '\\n', '\t': '\\t', '\r': '\\r' };
+
+/**
+ * Git's C-style path quoting: a path with a quote, backslash or control
+ * character is written in double quotes with escapes (other control bytes as
+ * octal); any other path is written as is. Round-trips through
+ * `parseChangedFiles`.
+ */
+export function quoteGitPath(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (!/["\\\u0000-\u001f\u007f]/u.test(value)) return value;
+  // eslint-disable-next-line no-control-regex
+  return `"${value.replace(/["\\\u0000-\u001f\u007f]/gu, (char) => GIT_PATH_ESCAPES[char]
+    ?? `\\${char.charCodeAt(0).toString(8).padStart(3, '0')}`)}"`;
+}
+
 type PullFileEntry = {
   filename?: unknown;
   previous_filename?: unknown;
   status?: unknown;
   patch?: unknown;
+  additions?: unknown;
+  deletions?: unknown;
+  changes?: unknown;
 };
 
-function renderFilePatch(file: PullFileEntry): string {
+function lineCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * One pull-files entry as a unified-diff chunk.
+ *
+ * REL-1092: GitHub returns no `patch` for binary files and for patches it
+ * considers too large. Such a file used to render as '' and vanish from the
+ * review diff: no lane saw it, no summary named it, and the worker derived its
+ * lanes from fewer paths than the trusted completion side. It now renders as a
+ * header-only chunk carrying a `patchUnavailableNote`, so it keeps its place in
+ * the changed-file list (same paths as the trusted side, so the same lanes) and
+ * the shared decision can disclose it and, for omitted source, refuse to count
+ * it as reviewed. A pure rename with no changed lines renders as git's own
+ * rename header.
+ */
+export function renderFilePatch(file: PullFileEntry): string {
   const filename = typeof file.filename === 'string' ? file.filename : '';
-  const patch = typeof file.patch === 'string' ? file.patch : '';
-  if (!filename || !patch) return '';
+  if (!filename) return '';
   const previous =
     file.status === 'renamed' && typeof file.previous_filename === 'string'
       ? file.previous_filename
       : filename;
-  return `diff --git a/${previous} b/${filename}\n${patch}\n`;
+  // Paths are chosen by the pull request author. Quote them the way git does, so
+  // a newline in a filename cannot forge a hunk header or a patch-unavailable
+  // note in this chunk; `parseChangedFiles` unquotes them back to the exact path.
+  const a = quoteGitPath(`a/${previous}`);
+  const b = quoteGitPath(`b/${filename}`);
+  const header = `diff --git ${a} ${b}\n`;
+  // `---`/`+++` carry one path per line, so a path with a space stays readable
+  // (the `diff --git` line alone is ambiguous for it).
+  const sides = `--- ${file.status === 'added' ? '/dev/null' : a}\n+++ ${file.status === 'removed' ? '/dev/null' : b}\n`;
+  const patch = typeof file.patch === 'string' ? file.patch : '';
+  if (patch) return `${header}${sides}${patch}\n`;
+  const changes = lineCount(file.changes)
+    ?? (lineCount(file.additions) !== undefined && lineCount(file.deletions) !== undefined
+      ? lineCount(file.additions)! + lineCount(file.deletions)! : undefined);
+  if (file.status === 'renamed' && changes === 0) {
+    return `${header}similarity index 100%\nrename from ${quoteGitPath(previous)}\nrename to ${quoteGitPath(filename)}\n`;
+  }
+  // No changed lines: binary (or an empty file). Unknown or nonzero: GitHub
+  // omitted a text patch -- never assume the safer-looking binary case.
+  const note = changes === 0 ? patchUnavailableNote('binary') : patchUnavailableNote('omitted', changes);
+  return `${header}${sides}${note}\n`;
 }
 
 /**
