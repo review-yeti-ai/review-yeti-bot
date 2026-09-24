@@ -1549,12 +1549,17 @@ func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.En
 		}
 		secretRefs := 0
 		for _, variable := range env {
-			if variable.Name != "OPENROUTER_API_KEY" {
+			// REL-1069: the builder emits the standard OPENAI_API_KEY name. This
+			// validator compares the env the builder produces, so the two must move
+			// together -- a mismatch makes the reconciler reject (and DELETE) the
+			// Job it just created. The ref is optional because no per-run secret
+			// carries a gateway key.
+			if variable.Name != job.QualificationGatewayKeyEnv {
 				continue
 			}
 			secretRefs++
 			if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
-				variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != "OPENROUTER_API_KEY" {
+				variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != job.QualificationGatewayKeyEnv {
 				return false
 			}
 		}
@@ -1564,14 +1569,15 @@ func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.En
 		if receiptOnly != "" || fullPanel != "" || sameHead != "true" || model != review.Spec.QualificationModel {
 			return false
 		}
-		openRouterRefs := 0
+		gatewayRefs := 0
 		githubRefs := 0
 		for _, variable := range env {
 			switch variable.Name {
-			case "OPENROUTER_API_KEY":
-				openRouterRefs++
+			// REL-1069: standard gateway name; must match what the builder emits.
+			case job.QualificationGatewayKeyEnv:
+				gatewayRefs++
 				if variable.ValueFrom == nil || variable.ValueFrom.SecretKeyRef == nil ||
-					variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != "OPENROUTER_API_KEY" {
+					variable.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || variable.ValueFrom.SecretKeyRef.Key != job.QualificationGatewayKeyEnv {
 					return false
 				}
 			case "GH_TOKEN":
@@ -1584,7 +1590,7 @@ func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.En
 				return false
 			}
 		}
-		return openRouterRefs == 1 && githubRefs == 1
+		return gatewayRefs == 1 && githubRefs == 1
 	}
 	if review.Spec.PublicationMode == job.PublicationModeAppGate {
 		// The publishing lane is not receipt-only and carries no qualification

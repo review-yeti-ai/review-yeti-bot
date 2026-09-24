@@ -58,6 +58,24 @@ export function resolveWebhookSecret(overrideSecret?: string): string {
 }
 
 /**
+ * Non-throwing counterpart to `resolveWebhookSecret`, for PROBES.
+ *
+ * Readiness must report "not configured" as 503, never throw: `/ready` is an
+ * async Express handler and Express 4 does not catch rejected promises, so a
+ * throw there hangs the probe and mints an unhandled rejection -- which on
+ * modern Node can terminate a process that builds the app without a listener
+ * (REL-1069 review). Verification keeps the throwing form, because there the
+ * alternative to refusing is accepting unsigned events.
+ */
+export function hasWebhookSecret(): boolean {
+  try {
+    return resolveWebhookSecret().trim() !== '';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Creates an Express Router configured for GitHub Webhook handling.
  */
 export function createWebhookRouter(options: WebhookServerOptions = {}): Router {

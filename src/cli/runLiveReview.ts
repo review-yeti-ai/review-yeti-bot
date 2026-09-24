@@ -11,6 +11,7 @@ import { getGitHubAppInstallationToken } from '../github/appAuth';
 import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../github/qualificationReader';
 import type { SameHeadReviewSource } from '../github/qualificationReader';
 import { OpenRouterClient, OpenRouterResponseError, OpenRouterTimeoutError } from '../gateway/openRouterClient';
+import { requireGatewaySettings } from '../review/openaiTransport';
 import type { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { createDefaultV3Config } from '../config/configLoader';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
@@ -400,12 +401,10 @@ function qualificationModel(
 }
 
 function qualificationClient(env: NodeJS.ProcessEnv): OpenRouterClient {
-  return new OpenRouterClient({
-    baseUrl: env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: env.OPENROUTER_REVIEW_FLEET_KEY
-      || env.OPENROUTER_PR_REVIEW_API_KEY
-      || requiredWorkerEnv(env, 'OPENROUTER_API_KEY'),
-  });
+  // Paired AND throwing: the previous `|| requiredWorkerEnv(env, ...)` fallback
+  // re-read the raw env and reinstated exactly the pairing the resolver had
+  // refused, so a leaked credential could still be constructed here.
+  return new OpenRouterClient(requireGatewaySettings(env));
 }
 
 /**
@@ -1571,10 +1570,7 @@ export async function runLiveReviewMain(env: NodeJS.ProcessEnv = process.env) {
 
   // Initialize 10-persona Panel Engine
   const config = createDefaultV3Config();
-  const client = new OpenRouterClient({
-    baseUrl: env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || requiredWorkerEnv(env, 'OPENROUTER_API_KEY'),
-  });
+  const client = new OpenRouterClient(requireGatewaySettings(env));
 
   // Parse files from diff
   const fileHeaderMatches = Array.from(
