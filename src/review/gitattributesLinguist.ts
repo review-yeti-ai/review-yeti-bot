@@ -168,7 +168,9 @@ export function compileGitattributesPattern(rawPattern: string): GitattributesMa
   if (pattern.startsWith('/')) pattern = pattern.slice(1);
   if (pattern.length === 0) return null;
   const segments: Array<ReadonlyArray<GlobToken> | null> = [];
-  for (const segment of pattern.split('/')) {
+  // No slash: one file-name glob. A bare `**` there is just a star.
+  if (basenameOnly) segments.push(tokenize(pattern));
+  else for (const segment of pattern.split('/')) {
     if (segment === '**') {
       // Adjacent `**` segments mean the same as one.
       if (segments.length === 0 || segments[segments.length - 1] !== null) segments.push(null);
@@ -182,7 +184,8 @@ export function compileGitattributesPattern(rawPattern: string): GitattributesMa
     test(path: string): boolean {
       const parts = path.split('/');
       if (parts.length > MAX_PATH_SEGMENTS) return false;
-      if (basenameOnly) return matchSegment(segments[0] as ReadonlyArray<GlobToken>, parts[parts.length - 1]);
+      const first = segments[0];
+      if (basenameOnly) return first !== null && first !== undefined && matchSegment(first, parts[parts.length - 1]);
       return matchSegments(segments, parts);
     },
   };
@@ -233,7 +236,10 @@ export function linguistExclusionFor(attributes: LinguistAttributes, filePath: s
   let generated: boolean | null | undefined;
   let vendored: boolean | null | undefined;
   for (const rule of attributes.rules) {
-    if (!rule.matcher.test(filePath)) continue;
+    let matched: boolean;
+    // Fail open: a rule that cannot be evaluated excludes nothing.
+    try { matched = rule.matcher.test(filePath); } catch { matched = false; }
+    if (!matched) continue;
     if (rule.generated !== undefined) generated = rule.generated;
     if (rule.vendored !== undefined) vendored = rule.vendored;
   }

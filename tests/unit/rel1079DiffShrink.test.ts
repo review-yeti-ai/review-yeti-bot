@@ -318,6 +318,11 @@ describe('.gitattributes linguist rules', () => {
     expect(at('a/**/b.ts', 'a/x/y/b.ts')).toBe(true);
     expect(at('file[0-9].ts', 'file7.ts')).toBe(true);
     expect(compileGitattributesPattern('vendor/')).toBeNull(); // directories never match files
+    // A bare `**` (no slash) is a file-name glob that matches everything, not a directory walk.
+    expect(at('**', 'src/deep/file.ts')).toBe(true);
+    expect(at('***.ts', 'a/b.ts')).toBe(true);
+    const everything = parseLinguistAttributes('** linguist-generated\n');
+    expect(linguistExclusionFor(everything, 'src/app.ts')).toBe('linguist-generated');
   });
 
   it('matches crafted repository patterns in linear time (no regex backtracking)', () => {
@@ -355,6 +360,12 @@ describe('.gitattributes linguist rules', () => {
   });
 
   const applied = (content: string): DiffShrinkInput => ({ enabled: true, linguist: { status: 'applied', content } });
+
+  it('fails open when a rule cannot be evaluated: the file is not excluded', () => {
+    const attributes = parseLinguistAttributes('*.ts linguist-generated\n');
+    vi.spyOn(attributes.rules[0].matcher, 'test').mockImplementation(() => { throw new Error('boom'); });
+    expect(linguistExclusionFor(attributes, 'src/app.ts')).toBeNull();
+  });
 
   it('lists a linguist-generated file without sending its content', () => {
     const diff = modified('src/api.gen.ts', ['@@ -1 +1 @@', '-GENERATED_OLD', '+GENERATED_MARKER'])
