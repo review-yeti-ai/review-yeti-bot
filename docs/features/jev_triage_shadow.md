@@ -10,7 +10,7 @@ For each changed file in a review run, the worker asks Jev (TypeSafe AI System O
 | Key | Type | Options |
 | --- | --- | --- |
 | `category` | `choice` | `mechanical_rename`, `formatting`, `generated`, `test`, `config`, `docs`, `source_low_risk`, `source`, `security_sensitive` |
-| `risk` | `score` | 5 levels. The written criteria are in `JEV_RISK_CRITERIA`. |
+| `risk` | `score` | 5 levels. The written criteria are in `JEV_RISK_CRITERIA`. See "Reading the risk answer" below. |
 | `lane__<persona id>` | `noul` | One question per enabled persona: should this persona review this file? |
 
 Jev also receives the file path, its extension, the file's hunks, and a set of facts computed in code:
@@ -24,6 +24,31 @@ Jev also receives the file path, its extension, the file's hunks, and a set of f
 Hunks are capped at 12,000 characters per file, and the truncation flag records when the cap was hit. Jev never counts anything itself.
 
 The worker logs Jev's answers. When the panel finishes, it logs them again next to the findings the panel actually produced on each file.
+
+### Reading the risk answer (REL-1100)
+
+The live API (`jev-1.13.0`) returns a score answer like this:
+
+```json
+{"type":"score","score":0.32,"confidence":0.74,
+ "legend":{"0":"Level 1, trivial","1":"Level 2, low","2":"Level 3, moderate","3":"Level 4, high","4":"Level 5, critical"},
+ "probabilities":{"0":0.81,"1":0.07,"2":0.11,"3":0.01,"4":0.0}}
+```
+
+- `legend` and `probabilities` are objects keyed by the 0-based index of the criteria entry, as a string.
+- `score` is a continuous value in [0,1]. It is not a level number.
+- `risk_level` is the index with the highest probability, plus 1. A tie goes to the higher level. In the example, the level is 1.
+- `risk_score` (the raw `score`) and `risk_confidence` are logged as returned.
+
+`JevClient` rejects a score answer as `malformed` when:
+
+- the legend is not an object keyed by an index below the question's level count
+- a probability key does not name a legend entry
+- a value is not a finite number
+
+An ordered legend array is still accepted for back-compat. The client normalizes it to the keyed form.
+
+Captured responses are in `src/gateway/__tests__/jevLiveResponses.fixture.ts`.
 
 ## What it never does
 
@@ -47,6 +72,7 @@ The flag is `REVIEW_YETI_JEV_SHADOW` on the worker. It is off by default.
 - `true`, `1`, `on`, `all` or `*` enables it for every repository.
 - A comma-separated list of `owner/repo` enables it only for those repositories. Start with `review-yeti-ai/review-yeti-bot`.
 - It also needs all four of `TYPESAFE_BASE_URL`, `TYPESAFE_MODEL`, `TYPESAFE_API_KEY` and `TYPESAFE_MODEL_PIN`. If none are set, the triage logs one `jev_triage_shadow_skipped reason=unconfigured` line and does nothing else.
+- `TYPESAFE_BASE_URL` should be the full endpoint, `https://api.typesafe.ai/v1/systemone`. If it is only the host (no path), `JevClient` appends `/v1/systemone`. A URL that already has a path is used as given.
 
 To revert, unset the flag.
 
