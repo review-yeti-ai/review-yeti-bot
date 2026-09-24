@@ -103,11 +103,12 @@ function logsOf(spy: { mock: { calls: unknown[][] } }, event: string): Array<Rec
 
 const JOIN = {
   findings: [
+    { path: 'src/auth/session.ts', severity: 'P0' },
     { path: 'src/auth/session.ts', severity: 'P1' },
     { path: 'src/auth/session.ts', severity: 'P2' },
   ],
   personas: [
-    { id: 'sec-lane', findings: [{ path: 'src/auth/session.ts', severity: 'P1' }] },
+    { id: 'sec-lane', findings: [{ path: 'src/auth/session.ts', severity: 'P0' }, { path: 'src/auth/session.ts', severity: 'P1' }] },
     { id: 'perf-lane', findings: [{ path: 'src/auth/session.ts', severity: 'P2' }] },
   ],
   applicablePersonaIds: ['sec-lane', 'perf-lane'],
@@ -481,9 +482,9 @@ describe('join -- one structured log line per file, joined with actual findings'
       runId: 'run_1', repository: 'review-yeti-ai/review-yeti-bot', prNumber: 7,
       outcome: 'ok', category: 'source', risk_level: 4, model_pin: 'jev-1.13.0',
       security_sensitive: true, panel_mode: 'panel', verdict: 'BLOCK',
-      findings_total: 2, findings_p0: 0, findings_p1: 1, findings_p2: 1, finding_class: 'blocking',
+      findings_total: 3, findings_p0: 1, findings_p1: 1, findings_p2: 1, finding_class: 'blocking',
       lanes: {
-        'sec-lane': { noul: 0.92, said_yes: true, ran: true, applicable: true, findings: 1, blocking: 1 },
+        'sec-lane': { noul: 0.92, said_yes: true, ran: true, applicable: true, findings: 2, blocking: 2 },
         'perf-lane': { noul: 0.12, said_yes: false, ran: true, applicable: true, findings: 1, blocking: 0 },
       },
     });
@@ -497,16 +498,72 @@ describe('join -- one structured log line per file, joined with actual findings'
   });
 
   it('is idempotent and never throws, even on a malformed join input', async () => {
+    const info = vi.spyOn(logger, 'info');
     const handle = startJevTriageShadow(input({ asker: okAsker() }));
     await expect(handle.join({ findings: null, personas: null } as never)).resolves.toBeUndefined();
     await expect(handle.join(JOIN)).resolves.toBeUndefined();
+    expect(logsOf(info, JEV_TRIAGE_LOG.join)).toHaveLength(2);
+    expect(logsOf(info, JEV_TRIAGE_LOG.summary)).toHaveLength(1);
+  });
+
+  it('classifies a P0-only file as blocking and counts it as P0', async () => {
+    const info = vi.spyOn(logger, 'info');
+    const handle = startJevTriageShadow(input({ asker: okAsker() }));
+    await handle.join({
+      findings: [{ path: 'docs/readme.md', severity: 'P0' }],
+      personas: [{ id: 'perf-lane', findings: [{ path: 'docs/readme.md', severity: 'P0' }] }],
+      mode: 'panel', verdict: 'BLOCK', conclusion: 'failure',
+    });
+    expect(logsOf(info, JEV_TRIAGE_LOG.join)[1]).toMatchObject({
+      path: 'docs/readme.md', findings_total: 1, findings_p0: 1, findings_p1: 0, findings_p2: 0, finding_class: 'blocking',
+      lanes: { 'perf-lane': { findings: 1, blocking: 1, ran: true } },
+    });
+  });
+
+  it('marks lanes that did not run, unknown applicability, and a missing noul honestly (never guessed)', async () => {
+    const info = vi.spyOn(logger, 'info');
+    const asker: JevAsker = {
+      ask: vi.fn(async (request: JevAskRequest<string>) => {
+        const outcome = okOutcome(request);
+        if (outcome.status === 'ok') delete (outcome.answers as Record<string, unknown>)[laneQuestionKey('perf-lane')];
+        return outcome;
+      }) as never,
+    };
+    const handle = startJevTriageShadow(input({ asker }));
+    await handle.join({
+      findings: [{ path: '', severity: 'P1' }, { severity: 'P2' }],
+      personas: [{ id: 'sec-lane', findings: [] }, { findings: [] }],
+      mode: 'fast_ship', verdict: 'SHIP', conclusion: 'success',
+    });
+    const first = logsOf(info, JEV_TRIAGE_LOG.join)[0];
+    expect(first).toMatchObject({
+      panel_mode: 'fast_ship', findings_total: 0, finding_class: 'none',
+      lanes: {
+        'sec-lane': { said_yes: true, ran: true, applicable: null, findings: 0 },
+        'perf-lane': { noul: null, said_yes: null, ran: false, applicable: null, findings: 0 },
+      },
+    });
+  });
+
+  it('includes files that never got an answer (not_started, file_cap) in the join with their reason', async () => {
+    const info = vi.spyOn(logger, 'info');
+    const hanging: JevAsker = { ask: vi.fn(() => new Promise<never>(() => undefined)) as never };
+    const handle = startJevTriageShadow(input({ asker: hanging, limits: { hardTimeoutMs: 20, maxFiles: 1 } }));
+    await handle.join(JOIN);
+    const joins = logsOf(info, JEV_TRIAGE_LOG.join);
+    expect(joins.map((j) => [j.path, j.outcome, j.reason])).toEqual([
+      ['src/auth/session.ts', 'not_started', 'timeout'],
+      ['docs/readme.md', 'file_cap', undefined],
+    ]);
+    expect(joins[0]).toMatchObject({ findings_total: 3, category: null, risk_level: null, model: null, lanes: {} });
+    expect(logsOf(info, JEV_TRIAGE_LOG.summary)[0]).toMatchObject({ status: 'timeout', asked: 0, ok: 0, outcomes: { not_started: 1, file_cap: 1 } });
   });
 
   it('logs unavailable files with their reason so availability is measurable', async () => {
     const info = vi.spyOn(logger, 'info');
     const handle = startJevTriageShadow(input({ asker: createFailingJevStub('http_529') }));
     await handle.join(JOIN);
-    expect(logsOf(info, JEV_TRIAGE_LOG.join)[0]).toMatchObject({ outcome: 'unavailable', reason: 'http_529', findings_total: 2 });
+    expect(logsOf(info, JEV_TRIAGE_LOG.join)[0]).toMatchObject({ outcome: 'unavailable', reason: 'http_529', findings_total: 3 });
   });
 });
 
