@@ -745,6 +745,32 @@ export function renderFailureSummary(
   return lines.join('\n');
 }
 
+/**
+ * REL-1093: the head read after an abort runs inside the pod's termination
+ * grace period (30s by default), so it must finish well within it.
+ */
+export const ABORTED_RUN_HEAD_READ_TIMEOUT_MS = 5_000;
+
+/** Current head sha, or undefined when the read fails or exceeds `timeoutMs`. */
+async function readCurrentHeadAfterAbort(
+  read: () => Promise<{ headSha: string }>,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([
+      read().then((current) => current.headSha, () => undefined),
+      timeout,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export interface PublishingReviewDeps {
   checkClient: PublishingCheckClient;
   /** Reports a terminal worker failure with bounded, redacted diagnostics. */
@@ -757,6 +783,11 @@ export interface PublishingReviewDeps {
    * conflict. Injectable for tests; defaults to one GitHub read with `GH_TOKEN`.
    */
   pullRequestIdentityReader?: typeof readPullRequestIdentity;
+  /**
+   * REL-1093: bound on the fresh head read made after the root signal aborted
+   * (SIGTERM from a cancelled Job). Injectable for tests.
+   */
+  abortHeadReadTimeoutMs?: number;
   /** Resolves the repository's visibility with the run's own read token. Injectable for tests. */
   visibilityLookup?: (input: { owner: string; repo: string; token: string }) => Promise<RepositoryVisibility>;
   panelRunner?: typeof executePersonaPanel;
@@ -1978,9 +2009,28 @@ export async function runPublishingReviewWorker(
     // REL-1057: the run-status poller is the service's own verdict that this
     // run is no longer current; whatever the panel threw on the way out, the
     // outcome is a supersession, not a failure.
-    const outcome = !isReviewSuperseded(error) && deps.isCurrentHead && !deps.isCurrentHead()
+    let outcome = !isReviewSuperseded(error) && deps.isCurrentHead && !deps.isCurrentHead()
       ? new ReviewSupersededError('during_review', identity.headSha)
       : error;
+    // REL-1093: the operator cancels a superseded run by deleting its worker
+    // Job, so the pod only sees SIGTERM (the root signal aborts and the panel
+    // throws "review panel was cancelled"). The worker cannot read the CR's
+    // cancelRequested, and a SIGTERM also comes from deadline expiry or node
+    // eviction. Tell them apart the same way the completion stage does: one
+    // bounded fresh read of the pull request head. Only a head that moved is a
+    // supersession; an unchanged head, or a failed/timed-out read, keeps the
+    // original failure.
+    if (!isReviewSuperseded(outcome) && deps.signal?.aborted) {
+      const currentHeadSha = await readCurrentHeadAfterAbort(
+        () => (deps.pullRequestIdentityReader || readPullRequestIdentity)({
+          token: value(env, 'GH_TOKEN'), repo: identity.repo, prNumber: identity.prNumber,
+        }),
+        deps.abortHeadReadTimeoutMs ?? ABORTED_RUN_HEAD_READ_TIMEOUT_MS,
+      );
+      if (currentHeadSha !== undefined && currentHeadSha !== identity.headSha) {
+        outcome = new ReviewSupersededError('during_review', identity.headSha, currentHeadSha);
+      }
+    }
     await reportTerminalFailure(outcome, checkId);
     throw outcome;
   }

@@ -21,6 +21,7 @@ import {
 } from '../../src/review/reviewSupersession';
 import { HttpWorkerCompletionAdapter, WorkerCompletionHttpError } from '../../src/review/workerCompletion';
 import { logger } from '../../src/utils/logger';
+import { PanelCancellationError } from '../../src/panel/panelEngine';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -223,6 +224,93 @@ describe('publishing worker: run superseded mid-review (during_review)', () => {
     const error = await runPublishingReviewWorker(env(), h.deps).catch((e) => e);
     expect(error).not.toBeInstanceOf(ReviewSupersededError);
     expect(h.completion.reportTerminalFailure).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('publishing worker: Job deleted by a cancellation (REL-1093)', () => {
+  // The operator cancels a superseded run by deleting its worker Job; the pod
+  // sees only SIGTERM, which aborts the root signal, and the panel throws
+  // "review panel was cancelled". The service poller is not configured.
+  // SIGTERM lands while the panel runs: the root signal aborts and the panel
+  // throws its cancellation error.
+  function sigtermDuringPanel() {
+    const controller = new AbortController();
+    const panelRunner = vi.fn(async () => {
+      controller.abort(new Error('Process received SIGTERM'));
+      throw new PanelCancellationError();
+    }) as never;
+    return { signal: controller.signal, panelRunner };
+  }
+
+  it('ends superseded (neutral check, no failure callback) when the head moved', async () => {
+    const pullRequestIdentityReader = vi.fn(async () => ({ baseSha: BASE, headSha: NEWER_HEAD }));
+    const h = harness({ ...sigtermDuringPanel(), pullRequestIdentityReader });
+    const error = await runPublishingReviewWorker(env({ REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion' }), h.deps)
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ReviewSupersededError);
+    expect(error).toMatchObject({ stage: 'during_review', reviewedHeadSha: HEAD, currentHeadSha: NEWER_HEAD });
+    expect(pullRequestIdentityReader).toHaveBeenCalledExactlyOnceWith({ token: 'ghs_test', repo: 'calltelemetry/ct-meta', prNumber: 3403 });
+    expectNeutralSupersededCheck(h.checkClient);
+    expect(h.completion.reportTerminalFailure).not.toHaveBeenCalled();
+  });
+
+  it('keeps a SIGTERM on an unchanged head (deadline expiry, eviction) a failure', async () => {
+    const h = harness({
+      ...sigtermDuringPanel(),
+      pullRequestIdentityReader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD })),
+    });
+    const error = await runPublishingReviewWorker(env({ REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion' }), h.deps)
+      .catch((e) => e);
+    expect(error).not.toBeInstanceOf(ReviewSupersededError);
+    expect(error.message).toBe('review panel was cancelled');
+    expect(h.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conclusion: 'failure' }));
+    expect(h.completion.reportTerminalFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the failure when the head cannot be read', async () => {
+    const h = harness({
+      ...sigtermDuringPanel(),
+      pullRequestIdentityReader: vi.fn(async () => { throw new Error('GitHub down'); }),
+    });
+    const error = await runPublishingReviewWorker(env(), h.deps).catch((e) => e);
+    expect(error).toBeInstanceOf(PanelCancellationError);
+    expect(h.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
+  });
+
+  it('keeps the failure when the head read does not answer within the bound', async () => {
+    const h = harness({
+      ...sigtermDuringPanel(), abortHeadReadTimeoutMs: 10,
+      pullRequestIdentityReader: vi.fn(() => new Promise(() => {})) as never,
+    });
+    const error = await runPublishingReviewWorker(env(), h.deps).catch((e) => e);
+    expect(error).toBeInstanceOf(PanelCancellationError);
+    expect(h.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
+  });
+
+  it('does not re-read the head when the poller already called it superseded', async () => {
+    // Poller path: the service said "not current" and the root signal aborted.
+    // The outcome is already a supersession, so the extra GitHub read is skipped.
+    const pullRequestIdentityReader = vi.fn(async () => ({ baseSha: BASE, headSha: HEAD }));
+    const h = harness({ ...sigtermDuringPanel(), isCurrentHead: () => false, pullRequestIdentityReader });
+    const error = await runPublishingReviewWorker(env(), h.deps).catch((e) => e);
+    expect(error).toBeInstanceOf(ReviewSupersededError);
+    expect(error).toMatchObject({ stage: 'during_review', reviewedHeadSha: HEAD });
+    expect(error.currentHeadSha).toBeUndefined();
+    expect(pullRequestIdentityReader).not.toHaveBeenCalled();
+    expectNeutralSupersededCheck(h.checkClient);
+  });
+
+  it('never reads the head for a failure that was not caused by an abort', async () => {
+    const pullRequestIdentityReader = vi.fn(async () => ({ baseSha: BASE, headSha: NEWER_HEAD }));
+    const h = harness({
+      signal: new AbortController().signal,
+      panelRunner: vi.fn(async () => { throw new Error('panel aborted'); }) as never,
+      pullRequestIdentityReader,
+    });
+    const error = await runPublishingReviewWorker(env(), h.deps).catch((e) => e);
+    expect(error).not.toBeInstanceOf(ReviewSupersededError);
+    expect(pullRequestIdentityReader).not.toHaveBeenCalled();
+    expect(h.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
   });
 });
 
