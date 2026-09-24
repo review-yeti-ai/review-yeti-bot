@@ -17,6 +17,11 @@ import {
   type WorkerReviewCompletion,
 } from '../../src/review/workerReviewCompletion';
 
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: skip locally, fail loudly in CI if the database URL is lost.
+requireDatabaseUrlInCi();
+
 /**
  * REL-1085: the verdict cache's source is the SAME stored completion row W7
  * selects, in real SQL: repository- and pull-request-scoped, stored before this
@@ -24,8 +29,8 @@ import {
  * completion transaction hands the service's OWN source (never the worker's)
  * to the resolver, and fails the gate when the resolver cannot verify it.
  */
-const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
-const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const databaseUrl = postgresDatabaseUrl();
+const describeWithPostgres = describeWithPostgresShared;
 const OWNED_SCHEMA = /^verdict_cache_test_[0-9a-f]{16}$/u;
 const APP_ID = 7001;
 const POLICY = 'c'.repeat(64);

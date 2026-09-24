@@ -1,4 +1,5 @@
 import express, { type Express, type NextFunction, type Request, type Response, type RequestHandler, type Router } from 'express';
+import { READINESS_CONTRACTS, readinessBody, readinessStatus } from './health/readinessContract';
 import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './api/actionDispatchApi';
 import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
 import { createRateLimiter } from './security/rateLimiter';
@@ -151,12 +152,13 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
   app.get('/ready', async (_request: Request, response: Response) => {
     try {
       const ready = await options.databaseReady();
-      return response.status(ready ? 200 : 503).json({
-        status: ready ? 'ready' : 'not_ready',
-        databaseReady: ready,
-      });
+      return response.status(readinessStatus(ready)).json(readinessBody(
+        'ct-review-action-dispatch', READINESS_CONTRACTS.database, ready, { databaseReady: ready },
+      ));
     } catch {
-      return response.status(503).json({ status: 'not_ready', databaseReady: false });
+      return response.status(readinessStatus(false)).json(readinessBody(
+        'ct-review-action-dispatch', READINESS_CONTRACTS.database, false, { databaseReady: false },
+      ));
     }
   });
 

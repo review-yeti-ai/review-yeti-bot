@@ -35,7 +35,12 @@ describe('admission-only Action dispatch server', () => {
 
     const response = await request(rejected).get('/ready');
     expect(response.status).toBe(503);
-    expect(response.body).toEqual({ status: 'not_ready', databaseReady: false });
+    // REL-1069 follow-up: /ready is served by three implementations on this same
+    // path, so the body now names the service and the contract it answers.
+    expect(response.body).toMatchObject({
+      status: 'not_ready', databaseReady: false,
+      service: 'ct-review-action-dispatch', readinessContract: 'database',
+    });
   });
 
   it('does not mount webhook, dashboard, provider, metrics, or generic API routes unless the webhook lane is configured', async () => {

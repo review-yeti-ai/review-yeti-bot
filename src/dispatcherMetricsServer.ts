@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { READINESS_CONTRACTS, readinessBody, readinessStatus } from './health/readinessContract';
 import { getPrometheusMetrics } from './telemetry/metrics';
 
 export interface DispatcherMetricsConfig {
@@ -144,8 +145,10 @@ export function createDispatcherMetricsServer(options: DispatcherMetricsServerOp
       // No loop wired means readiness cannot be judged; fail closed.
       const readiness = options.loopHealth?.snapshot()
         ?? { ready: false, reason: 'starting', workerId: 'unknown' };
-      response.writeHead(readiness.ready ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8' });
-      response.end(JSON.stringify({ service: 'review-yeti-job-dispatcher', ...readiness }));
+      response.writeHead(readinessStatus(readiness.ready), { 'Content-Type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify(readinessBody(
+        'review-yeti-job-dispatcher', READINESS_CONTRACTS.loop, readiness.ready, { ...readiness },
+      )));
       return;
     }
     if (request.url !== '/metrics') {

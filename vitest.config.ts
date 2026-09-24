@@ -76,7 +76,7 @@ export default defineConfig({
     //
     // Wall-clock budget assertions are the known hazard here: a `toBeLessThan(<ms>)` measured
     // inside one worker now includes contention from the others. Where those are real signal they
-    // are scaled by the worker count (see tests/support/timing.ts); where a test genuinely cannot
+    // are scaled by the worker count (see tests/support/timeBudget.ts); where a test genuinely cannot
     // tolerate a neighbour it must say so, not force the whole suite back into single file.
     fileParallelism: true,
     isolate: true,
