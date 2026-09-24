@@ -1,6 +1,7 @@
 import {
   GITHUB_JSON_TIMEOUT_LIMITS, isGitHubInstallationToken, PUBLIC_GITHUB_API_BASE_URL,
 } from './githubTransportPolicy';
+import { withGitHubRetry, type GitHubRetryOptions } from './githubRetry';
 
 export const MAX_GITHUB_JSON_RESPONSE_BYTES = 2 * 1024 * 1024;
 
@@ -18,6 +19,8 @@ export function createBoundedGitHubJsonClient(options: {
   fetchImplementation?: typeof fetch;
   baseUrl?: string;
   timeoutMs?: number;
+  /** REL-1103: transient-response retry policy; POSTs are never retried on 5xx here. */
+  retry?: GitHubRetryOptions;
 }): GitHubJsonClient {
   const fetchImpl = options.fetchImplementation || globalThis.fetch;
   const baseUrl = (options.baseUrl || PUBLIC_GITHUB_API_BASE_URL).replace(/\/+$/u, '');
@@ -34,14 +37,19 @@ export function createBoundedGitHubJsonClient(options: {
       throw new Error('GitHub JSON request path is invalid');
     }
     let response: Response;
+    const method = String(init.method || 'GET').toUpperCase();
     try {
-      response = await fetchImpl(`${baseUrl}${path}`, {
-        ...init, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-        headers: {
-          accept: 'application/vnd.github+json', authorization: `Bearer ${options.token}`,
-          'x-github-api-version': '2022-11-28', ...(init.headers || {}),
-        },
-      });
+      response = await withGitHubRetry<Response>({
+        operation: `${method} ${path}`,
+        method,
+        attempt: () => fetchImpl(`${baseUrl}${path}`, {
+          ...init, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
+          headers: {
+            accept: 'application/vnd.github+json', authorization: `Bearer ${options.token}`,
+            'x-github-api-version': '2022-11-28', ...(init.headers || {}),
+          },
+        }),
+      }, options.retry);
     } catch { throw new Error('GitHub JSON request failed before response'); }
     if (!response.ok || response.redirected || !response.body) {
       cancel(response.body);

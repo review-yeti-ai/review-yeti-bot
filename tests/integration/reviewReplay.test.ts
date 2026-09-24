@@ -301,7 +301,8 @@ describe('review pipeline cassette replay', () => {
       event: 'COMMENT', body: 'Retry review',
     });
     expect(retry).toMatchObject({ success: true, reviewId: 4204 });
-    expect(retrySleep).toEqual([100]);
+    // REL-1103: the cassette's `retry-after: 1` is honored in full, not truncated to maxDelayMs.
+    expect(retrySleep).toEqual([1_000]);
 
     const publicationRequests = cassette.observedFingerprints.filter((fingerprint) => fingerprint.includes('/reviews') || fingerprint.includes('/comments'));
     expect(publicationRequests).toHaveLength(7);

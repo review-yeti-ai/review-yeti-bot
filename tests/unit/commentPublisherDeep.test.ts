@@ -145,7 +145,8 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     expect(result.success).toBe(true);
     expect(result.reviewId).toBe(778);
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledWith(100);
+    // REL-1103: Retry-After is honored in full (1 s), not truncated to maxDelayMs.
+    expect(sleep).toHaveBeenCalledWith(1_000);
     expect((fetchImplementation.mock.calls[0][1] as RequestInit).headers).toBeInstanceOf(Headers);
   });
 
@@ -155,7 +156,9 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
       .mockResolvedValueOnce({
         ok: false,
         status: 403,
-        headers: new Headers({ 'x-ratelimit-reset': String(resetTimestampSeconds) }),
+        // REL-1103: a 403 is a rate limit only with remaining=0 (or retry-after);
+        // every GitHub response carries x-ratelimit-reset, so it alone proves nothing.
+        headers: new Headers({ 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(resetTimestampSeconds) }),
         text: async () => 'Rate limit exceeded',
       })
       .mockResolvedValueOnce({
