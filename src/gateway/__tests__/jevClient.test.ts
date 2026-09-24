@@ -725,6 +725,13 @@ describe('JevClient — answer shape validation for choice and score', () => {
     });
   });
 
+  it('back-compat: a duplicated array-legend text maps text-keyed probabilities to its FIRST index', async () => {
+    const outcome = await askScore({ type: 'score', score: 0.5, confidence: 0.6, legend: ['a', 'a'], probabilities: { a: 1 } });
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') throw new Error('expected ok');
+    expect(outcome.answers.risk).toMatchObject({ legend: { '0': 'a', '1': 'a' }, probabilities: { '0': 1 } });
+  });
+
   it.each([
     ['a string legend', { legend: 'low,medium' }],
     ['a null legend', { legend: null }],
@@ -736,6 +743,7 @@ describe('JevClient — answer shape validation for choice and score', () => {
     ['a zero-padded legend index', { legend: { '00': 'Level 1' } }],
     ['a legend index past the question\'s levels', { legend: { '0': 'a', '5': 'b' }, probabilities: { '0': 1 } }],
     ['a non-string legend value', { legend: { '0': 1 } }],
+    ['a non-string element in an array legend', { legend: ['low', 42, 'high'], probabilities: { low: 0.1 } }],
     ['an array legend longer than the question\'s levels', { legend: ['a', 'b', 'c', 'd', 'e', 'f'], probabilities: {} }],
     ['a probability key not in the legend', { probabilities: { '0': 0.5, '7': 0.5 } }],
     ['a probability keyed by level text for an object legend', { probabilities: { 'Level 1, trivial': 1 } }],
