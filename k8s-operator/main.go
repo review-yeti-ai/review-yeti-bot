@@ -135,6 +135,11 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// verbatim (only non-empty values reach the worker).
 		ZoektGroundingEnabled:  strings.TrimSpace(os.Getenv("REVIEW_YETI_ZOEKT_GROUNDING_ENABLED")),
 		ZoektGroundingDisabled: strings.TrimSpace(os.Getenv("REVIEW_YETI_ZOEKT_GROUNDING_DISABLED")),
+		// REL-1086: Jev (TypeSafe AI) is optional. No default Secret name: an
+		// unset value projects nothing, so Jev stays off until
+		// ct-infrastructure provisions it.
+		JevSecretName: strings.TrimSpace(os.Getenv("REVIEW_YETI_JEV_SECRET_NAME")),
+		JevShadow:     strings.TrimSpace(os.Getenv("REVIEW_YETI_JEV_SHADOW")),
 	}
 }
 

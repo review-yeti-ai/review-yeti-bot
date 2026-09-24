@@ -195,6 +195,49 @@ type PublishingConfig struct {
 	// byte-identical until ct-infrastructure opts in.
 	ZoektGroundingEnabled  string
 	ZoektGroundingDisabled string
+	// REL-1086: optional Jev (TypeSafe AI) transport. JevSecretName names a
+	// Secret holding exactly the JevTransportEnvKeys; empty means Jev is not
+	// provisioned and the worker receives none of them. JevShadow is forwarded
+	// verbatim as JevShadowEnv when non-empty.
+	JevSecretName string
+	JevShadow     string
+}
+
+// JevShadowEnv is the worker's Jev (TypeSafe AI) shadow-triage flag
+// (REL-1081). The operator forwards the deployment value verbatim; the worker
+// owns its interpretation.
+const JevShadowEnv = "REVIEW_YETI_JEV_SHADOW"
+
+// JevTransportEnvKeys are the worker's Jev transport variables
+// (src/review/jevTransport.ts). The worker treats all-absent as "Jev disabled"
+// and SOME-present as a misconfiguration that fails the review, so the operator
+// projects all four together or none of them -- never a subset.
+var JevTransportEnvKeys = []string{"TYPESAFE_BASE_URL", "TYPESAFE_MODEL", "TYPESAFE_API_KEY", "TYPESAFE_MODEL_PIN"}
+
+// jevTransportEnv projects the four Jev variables from one Secret, same key
+// name as env name. Each reference is OPTIONAL on purpose: if the Secret has
+// not synced yet (or its Doppler sync broke) all four are absent together and
+// the worker falls back to today's review, instead of the pod failing
+// admission and taking every review down with it. A Secret carrying only some
+// of the keys is prevented upstream by the DopplerSecret contract in
+// ct-infrastructure, which pins the exact four-key mapping.
+func jevTransportEnv(secretName string) []corev1.EnvVar {
+	if secretName == "" {
+		return nil
+	}
+	optional := true
+	env := make([]corev1.EnvVar, 0, len(JevTransportEnvKeys))
+	for _, key := range JevTransportEnvKeys {
+		env = append(env, corev1.EnvVar{
+			Name: key,
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Key:                  key,
+				Optional:             &optional,
+			}},
+		})
+	}
+	return env
 }
 
 // WorkerComponentFor returns the component label for a review's lane. The builder
@@ -399,6 +442,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.ZoektGroundingDisabled != "" {
 			env = append(env, corev1.EnvVar{Name: ZoektGroundingDisabledEnv, Value: input.Publishing.ZoektGroundingDisabled})
+		}
+		env = append(env, jevTransportEnv(input.Publishing.JevSecretName)...)
+		if input.Publishing.JevShadow != "" {
+			env = append(env, corev1.EnvVar{Name: JevShadowEnv, Value: input.Publishing.JevShadow})
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
@@ -732,6 +779,12 @@ func validatePublishing(config PublishingConfig) error {
 	}
 	if len(validation.IsDNS1123Subdomain(config.GatewaySecretName)) != 0 {
 		return configErr("publishing gateway secret name is not a valid Kubernetes object name")
+	}
+	if config.JevSecretName != "" && len(validation.IsDNS1123Subdomain(config.JevSecretName)) != 0 {
+		return configErr("jev transport secret name is not a valid Kubernetes object name")
+	}
+	if strings.ContainsAny(config.JevShadow, "\r\n\t ") {
+		return configErr("jev shadow flag contains whitespace")
 	}
 	return nil
 }
