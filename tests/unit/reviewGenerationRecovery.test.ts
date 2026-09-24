@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { renderIncompleteInfrastructureTitle } from '../../src/review/publicationFailurePolicy';
+import { validateReviewGenerationRecoveryEvidence } from '../../src/review/reviewGenerationRecovery';
 
 const headSha = 'a'.repeat(40);
 const runId = `run_${'b'.repeat(32)}`;
@@ -81,6 +83,32 @@ describe('Review Yeti worker-generation recovery ledger', () => {
     const { client } = clientFor([check]);
     await expect(client.readReviewGenerationRecovery(request()))
       .rejects.toThrow(/generation recovery ledger/u);
+  });
+
+  // REL-1113: an infrastructure-incomplete worker check is recoverable on the generation-recovery
+  // path too, so the admission path and the ledger never disagree about it.
+  const exhaustedIncomplete = renderIncompleteInfrastructureTitle([{ id: 'arch-lane', failureClass: 'provider_error', providerStatus: 502 }]);
+  const retryingIncomplete = renderIncompleteInfrastructureTitle([{ id: 'arch-lane', failureClass: 'transport' }], { nextAttempt: 2, maxAttempts: 3 });
+  const lookalike = 'Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502); retrying soon';
+
+  it.each([exhaustedIncomplete, retryingIncomplete])('accepts an infrastructure-incomplete ledger row titled %s', async (title) => {
+    const { client } = clientFor([workerCheck(1, { output: { title, summary: 'infra', text: null } })]);
+    await expect(client.readReviewGenerationRecovery(request())).resolves.toEqual([{
+      generation: 1, checkId: 1_001, externalId: `${runId}:a1`, conclusion: 'failure', title,
+    }]);
+    expect(validateReviewGenerationRecoveryEvidence(
+      { ...request(), expectedGeneration: 2 } as never,
+      [{ generation: 1, checkId: 1_001, externalId: `${runId}:a1`, conclusion: 'failure', title }],
+    )).toHaveLength(1);
+  });
+
+  it('refuses a lookalike INCOMPLETE title on both generation-recovery validators', async () => {
+    const { client } = clientFor([workerCheck(1, { output: { title: lookalike, summary: 'infra', text: null } })]);
+    await expect(client.readReviewGenerationRecovery(request())).rejects.toThrow(/generation recovery ledger/u);
+    expect(() => validateReviewGenerationRecoveryEvidence(
+      { ...request(), expectedGeneration: 2 } as never,
+      [{ generation: 1, checkId: 1_001, externalId: `${runId}:a1`, conclusion: 'failure', title: lookalike }],
+    )).toThrow(/generation recovery ledger/u);
   });
 
   it('rejects a missing, duplicate, or non-contiguous prior generation', async () => {

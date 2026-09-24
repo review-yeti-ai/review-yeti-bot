@@ -48,6 +48,7 @@
  *   split files, anything a collapsed chunk only summarized, and what the
  *   reduce pass did.
  */
+import { WORKER_TERMINAL_DEADLINE_ENV } from '../config/workerTerminalDeadline';
 import type { OpenRouterMessage, ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import type { LaneAggregateUsage, LaneTurnUsage, PanelFinding, PanelRequestPolicy, PersonaLaneResult } from '../panel/types';
 import type {
@@ -90,7 +91,7 @@ export const MAP_REDUCE_FLAG = 'REVIEW_YETI_MAP_REDUCE';
  * app-gate workers only when map-reduce is configured. The worker's Job is
  * killed 60 s before it (`DeadlineReserveSeconds`).
  */
-export const TERMINAL_DEADLINE_ENV = 'REVIEW_TERMINAL_DEADLINE';
+export const TERMINAL_DEADLINE_ENV = WORKER_TERMINAL_DEADLINE_ENV;
 
 /**
  * Chunk calls in flight at once across one panel run. W1 counted 184 HTTP 429s

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest';
 import { executePersonaPanel, PanelConfigurationError, extractMessageContentText } from '../../src/panel/panelEngine';
 import { ConfigResolver, RepositoryContentClient } from '../../src/config/configResolver';
 import { createDefaultV3Config, ConfigValidationError } from '../../src/config/configLoader';
@@ -535,6 +535,10 @@ path_filters:
     });
 
     it('gracefully logs and recovers when optional personas (docs-lane & finops-lane) fail', async () => {
+      // REL-1113: the docs-lane 503 rides the lane transport budget before failing; zero jitter
+      // keeps that instant. Restored by the spy's own lifetime below.
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+      onTestFinished(() => random.mockRestore());
       const config = build10PersonaConfig(4);
 
       mockClient.complete.mockImplementation(async (opts: any) => {

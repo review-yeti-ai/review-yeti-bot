@@ -1931,7 +1931,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
    * decide whether a fresh execution attempt may be re-admitted. */
   async readRunRetryContext(runId: string): Promise<RunRetryContext | null> {
     const current = await this.queryable.query(
-      `SELECT repository_id, installation_id, identity, publication_mode, authoritative_gate_app_id
+      `SELECT repository_id, installation_id, identity, publication_mode, authoritative_gate_app_id,
+              status, error_text
          FROM review_runs WHERE run_id = $1`,
       [runId],
     );
@@ -1944,6 +1945,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       repositoryId: Number(row.repository_id),
       installationId: Number(row.installation_id),
       identity,
+      ...(typeof row.status === 'string' ? { runStatus: row.status } : {}),
+      ...(typeof row.error_text === 'string' ? { errorText: row.error_text } : {}),
     };
   }
 

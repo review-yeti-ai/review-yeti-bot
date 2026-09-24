@@ -137,16 +137,22 @@ describe('panelEngine.ts — Comprehensive Unit Expansion Tests', () => {
     const changedFiles = [{ path: 'src/main.ts' }];
 
     mockClient.complete.mockRejectedValue(new Error('OmniRoute HTTP 503 Service Unavailable'));
+    // REL-1113: a gateway 503 now rides the lane transport budget first; zero jitter keeps it instant.
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
 
-    await expect(
-      executePersonaPanel({
-        config,
-        changedFiles,
-        repository: 'owner/repo',
-        headSha: 'sha-2',
-        client: mockClient as unknown as OmniRouteClient,
-      })
-    ).rejects.toThrow('required persona failure');
+    try {
+      await expect(
+        executePersonaPanel({
+          config,
+          changedFiles,
+          repository: 'owner/repo',
+          headSha: 'sha-2',
+          client: mockClient as unknown as OmniRouteClient,
+        })
+      ).rejects.toThrow('required persona failure');
+    } finally {
+      random.mockRestore();
+    }
   });
 
   it('records optionalLane failure into optionalFailures array without aborting panel', async () => {

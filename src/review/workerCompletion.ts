@@ -177,7 +177,10 @@ export function classifyWorkerFailureMessage(error: unknown): WorkerFailureClass
   if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
   if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
   if (/429|rate limit/iu.test(message)) return 'rate_limit';
-  if (/ENOTFOUND|ECONNREFUSED|EAI_AGAIN|fetch failed/iu.test(message)) return 'transport';
+  // REL-1113: the path to the model failing -- refused/reset/unreachable connections, an
+  // interrupted stream ("terminated") -- is transport. This is the single source the lane
+  // retry predicate (`isTransientLaneTransportError`) and the published class both read.
+  if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CLOSED|fetch failed|socket hang up|other side closed|\bterminated\b/iu.test(message)) return 'transport';
   if (/invalid (?:or missing )?(?:native )?JSON|native JSON response must be an object|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output|reported INCOMPLETE without a completed review|optional reviewer did not complete/iu.test(message)) {
     return 'malformed_output';
   }

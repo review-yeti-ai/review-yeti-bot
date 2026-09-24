@@ -42,6 +42,16 @@ export type ReviewGateDecision =
     eventId: number; actorLogin: string; actorPermission: string; appliedAt: string; reviewedAt: string;
   } };
 
+/**
+ * REL-1113: the durable `review_runs.error_text` a terminal gate decision records. The ONE
+ * definition of that convention: the gate repository writes it and the authoritative
+ * infrastructure re-attempt reads it, so a wording change is a compile-time contract, not a
+ * silently disabled retry.
+ */
+export function reviewGateErrorText(reason: Exclude<ReviewGateDecision, { status: 'success' }>['reason']): string {
+  return `review gate: ${reason}`;
+}
+
 function timestamp(value: string): number | null {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) return null;
   const parsed = Date.parse(value);

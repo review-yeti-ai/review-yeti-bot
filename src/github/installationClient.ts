@@ -43,8 +43,8 @@ const DELEGATED_FAILURE_REASON_SUMMARY: Record<DelegatedFailureReason, string> =
   worker_contract_rejected: "The Kubernetes operator rejected the publishing worker's configuration",
 };
 import {
-  RECOVERABLE_FAILURE_TITLES,
   REVIEW_REFRESH_ACTION,
+  isRecoverableFailureTitle,
   validateCheckRunTitle,
 } from '../review/reviewCheckIdentity';
 
@@ -838,7 +838,7 @@ export class GitHubInstallationClient {
         conclusion: options.conclusion,
         completed_at: new Date(this.now()).toISOString(),
         output,
-        ...(options.conclusion === 'failure' && RECOVERABLE_FAILURE_TITLES.has(options.title)
+        ...(options.conclusion === 'failure' && isRecoverableFailureTitle(options.title)
           ? { actions: [REVIEW_REFRESH_ACTION] } : {}),
       }),
     });
