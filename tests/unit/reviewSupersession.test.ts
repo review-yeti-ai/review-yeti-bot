@@ -287,6 +287,19 @@ describe('publishing worker: Job deleted by a cancellation (REL-1093)', () => {
     expect(h.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
   });
 
+  it('does not re-read the head when the poller already called it superseded', async () => {
+    // Poller path: the service said "not current" and the root signal aborted.
+    // The outcome is already a supersession, so the extra GitHub read is skipped.
+    const pullRequestIdentityReader = vi.fn(async () => ({ baseSha: BASE, headSha: HEAD }));
+    const h = harness({ ...sigtermDuringPanel(), isCurrentHead: () => false, pullRequestIdentityReader });
+    const error = await runPublishingReviewWorker(env(), h.deps).catch((e) => e);
+    expect(error).toBeInstanceOf(ReviewSupersededError);
+    expect(error).toMatchObject({ stage: 'during_review', reviewedHeadSha: HEAD });
+    expect(error.currentHeadSha).toBeUndefined();
+    expect(pullRequestIdentityReader).not.toHaveBeenCalled();
+    expectNeutralSupersededCheck(h.checkClient);
+  });
+
   it('never reads the head for a failure that was not caused by an abort', async () => {
     const pullRequestIdentityReader = vi.fn(async () => ({ baseSha: BASE, headSha: NEWER_HEAD }));
     const h = harness({
