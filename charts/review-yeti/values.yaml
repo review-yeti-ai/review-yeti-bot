@@ -326,7 +326,7 @@ publishing:
   # REL-1079: deterministic diff shrinking (worker flag REVIEW_YETI_DIFF_SHRINK). Empty by
   # default, so nothing is forwarded and every change is sent in full. The operator forwards a
   # non-empty value verbatim to app-gate workers only; the worker reads it as off/on or a
-  # comma-separated owner/repo allowlist, e.g. "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta".
+  # comma-separated owner/repo allowlist, e.g. "acme/app,acme/api".
   # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
   diffShrink: ""
   # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
