@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
@@ -27,9 +28,9 @@ function helmAvailable(): boolean {
   }
 }
 
-function render(values: Record<string, unknown> = {}): Doc[] {
+function render(values: Record<string, unknown> = {}, chartDir = path.join(root, 'charts/review-yeti')): Doc[] {
   const out = execFileSync('helm', [
-    'template', 'crd-contract', path.join(root, 'charts/review-yeti'),
+    'template', 'crd-contract', chartDir,
     '--namespace', 'ct-review-system', '--values', '-',
   ], { input: yaml.dump(values), encoding: 'utf8', timeout: 30_000 });
   return (yaml.loadAll(out) as Doc[]).filter(Boolean);
@@ -69,5 +70,31 @@ describe.skipIf(!helmAvailable())('rendered chart CRD', () => {
 
   it('renders no CRD when crd.install is false', () => {
     expect(render({ crd: { install: false } }).some((doc) => doc.kind === 'CustomResourceDefinition')).toBe(false);
+  });
+
+  // The template fails the render rather than silently installing no CRD when
+  // the generated copy is absent (e.g. a packaging regression) or unparseable.
+  it.each([
+    ['missing', (file: string) => unlinkSync(file)],
+    ['unparseable', (file: string) => writeFileSync(file, 'spec: [unterminated\n')],
+  ])('fails the render when the generated CRD file is %s', (_label, corrupt) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'chart-crd-'));
+    try {
+      const chart = path.join(dir, 'review-yeti');
+      cpSync(path.join(root, 'charts/review-yeti'), chart, { recursive: true });
+      corrupt(path.join(chart, 'files/review-yeti.ai_prreviewjobs.yaml'));
+      let failure = '';
+      try {
+        execFileSync('helm', ['template', 'crd-contract', chart, '--namespace', 'ct-review-system'],
+          { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (error) {
+        failure = String((error as { stderr?: unknown }).stderr ?? error);
+      }
+      expect(failure).toContain('files/review-yeti.ai_prreviewjobs.yaml is missing or unparseable');
+      // With the CRD disabled the file is not needed, so the install still renders.
+      expect(render({ crd: { install: false } }, chart).some((doc) => doc.kind === 'CustomResourceDefinition')).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
