@@ -35,7 +35,17 @@ describe('the three /ready contracts are distinguishable', () => {
     expect(response.body).toMatchObject({
       service: 'ct-review-bot',
       readinessContract: READINESS_CONTRACTS.configuration,
+      // The app.ts comment promises these are "retained for existing
+      // consumers", so pin them here. Counterfactual verified: dropping the
+      // details argument from the readinessBody call left THIS test green
+      // before these assertions existed -- the claim was unpinned where it was
+      // made (REL-1069 review).
+      configurationReady: true,
+      openRouterReady: true,
+      status: 'ready',
     });
+    // Presence-pinned separately because uptimeSeconds is time-dependent.
+    expect(typeof response.body.uptimeSeconds).toBe('number');
     vi.unstubAllEnvs();
   });
 
