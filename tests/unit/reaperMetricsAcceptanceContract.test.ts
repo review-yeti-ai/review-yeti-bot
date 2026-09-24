@@ -7,9 +7,11 @@ const root = process.cwd();
 
 interface WorkflowStep {
   run?: unknown;
+  if?: unknown;
 }
 
 interface WorkflowJob {
+  needs?: string[];
   env?: Record<string, unknown>;
   services?: Record<string, { image?: unknown }>;
   steps?: WorkflowStep[];
@@ -63,21 +65,28 @@ describe('REL-817 reaper acceptance entry point', () => {
     const workflow = yaml.load(
       fs.readFileSync(path.join(root, '.github/workflows/ci-cd.yaml'), 'utf8'),
     ) as WorkflowDocument;
-    const testJob = workflow.jobs?.test;
-    expect(testJob).toBeDefined();
-    expect(String(testJob?.services?.postgres?.image)).toMatch(/^postgres:/u);
-    expect(testJob?.env?.REVIEW_YETI_TEST_DATABASE_URL).toBe(
+    // REL-1074: the Postgres-backed files and this harness run in `vitest-postgres`, the only job
+    // with a database, and the required `test` aggregator fails unless that job passed.
+    const postgresJob = workflow.jobs?.['vitest-postgres'];
+    expect(postgresJob).toBeDefined();
+    expect(String(postgresJob?.services?.postgres?.image)).toMatch(/^postgres:/u);
+    expect(postgresJob?.env?.REVIEW_YETI_TEST_DATABASE_URL).toBe(
       'postgresql://postgres:postgres@127.0.0.1:5432/postgres',
     );
+    expect(workflow.jobs?.test?.needs).toContain('vitest-postgres');
 
-    const steps = testJob?.steps ?? [];
-    const fullSuite = steps.findIndex(({ run }) => invokesNpmScript(run, 'test'));
+    const steps = postgresJob?.steps ?? [];
+    const postgresSuite = steps.findIndex(({ run }) => commandLines(run).some((tokens) => (
+      tokens[0] === 'npx' && tokens[1] === 'vitest' && tokens[2] === 'run'
+    )));
     const acceptanceSteps = steps
       .map(({ run }, index) => ({ index, invokes: invokesNpmScript(run, 'test:acceptance:reaper') }))
       .filter(({ invokes }) => invokes);
-    expect(fullSuite).toBeGreaterThan(-1);
+    expect(postgresSuite).toBeGreaterThan(-1);
     expect(acceptanceSteps).toHaveLength(1);
     const acceptance = acceptanceSteps[0].index;
-    expect(acceptance).toBeGreaterThan(fullSuite);
+    expect(acceptance).toBeGreaterThan(postgresSuite);
+    // A full run always includes it; an incremental run includes it when the harness is reached.
+    expect(String(steps[acceptance].if)).toBe("needs.test-plan.outputs.reaper-acceptance == 'true'");
   });
 });
