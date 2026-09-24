@@ -521,6 +521,59 @@ function rawFieldsMatchCanonical(result: WorkerReviewResult, canonical: Canonica
 }
 
 /**
+ * The one canonical arbitration of a completion's persona lanes: strict finding validation, then
+ * `computeAppVerdict`. `deriveCanonicalWorkerReviewEvidence` (the gate) and
+ * `deriveStoredCompletionVerdict` (a stored prior review, REL-1084/REL-1085) both call it, so the
+ * verdict a later run relies on is computed exactly as the gate computed it.
+ */
+function arbitrateLanes(
+  personas: readonly WorkerReviewPersonaEvidence[],
+  expectedLanes: number,
+  coverageComplete: boolean,
+  changedFiles: ReviewChangedFile[] | undefined,
+): { valid: true; canonical: CanonicalArbitration } | { valid: false; message: string } {
+  const lanes: ReviewLane[] = [];
+  for (const persona of personas) {
+    const validation = validateReviewFindings(persona.findings, changedFiles);
+    if (!validation.valid) {
+      const suffix = validation.index === undefined ? '' : ` at index ${validation.index}`;
+      return { valid: false, message: `invalid findings for persona ${persona.id}${suffix}: ${validation.error || 'unknown error'}` };
+    }
+    lanes.push({
+      id: persona.id,
+      decision: persona.decision,
+      ...(persona.status ? { status: persona.status } : {}),
+      findings: validation.findings as ReviewFinding[],
+    });
+  }
+  return { valid: true, canonical: computeAppVerdict({ lanes, expectedLanes, changedFiles, coverageComplete }) };
+}
+
+/**
+ * REL-1084/REL-1085: the canonical verdict of a completion the service already accepted and
+ * stored, for deciding whether a later run may rest on it. The worker's optional `result.verdict`
+ * is never read (the authoritative worker does not even set it). The two trusted inputs the gate
+ * took from its live coverage contract come from the gate's own stored evidence for this exact
+ * completion: how many lanes the service required, and whether coverage was complete.
+ *
+ * The changed files' patch text is not stored, so findings are validated without it. That can
+ * only keep a finding the gate dropped as unanchored, never drop one the gate kept, so this is
+ * never more lenient than the gate. Null when the lanes do not validate.
+ */
+export function deriveStoredCompletionVerdict(
+  result: WorkerReviewResult,
+  trusted: { expectedLanes: number; coverageComplete: boolean },
+): CanonicalArbitration | null {
+  if (!Number.isSafeInteger(trusted.expectedLanes) || trusted.expectedLanes <= 0) return null;
+  // Shadow lanes never gated a verdict; the authoritative completion never carries them.
+  const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
+  if (new Set(gating.map((persona) => persona.id)).size !== gating.length) return null;
+  const arbitration = arbitrateLanes(gating, trusted.expectedLanes,
+    trusted.coverageComplete === true && result.coverageComplete, undefined);
+  return arbitration.valid ? arbitration.canonical : null;
+}
+
+/**
  * Re-derives service evidence from the worker's persona lanes. The worker's verdict and summary
  * counts are checked for consistency only; `computeAppVerdict` is the decision source. Required
  * lanes and coverage remain service-owned inputs.
@@ -608,28 +661,10 @@ export function deriveCanonicalWorkerReviewEvidence(
     seen.add(persona.id);
   }
 
-  const lanes: ReviewLane[] = [];
-  for (const persona of completion.result.personas) {
-    const validation = validateReviewFindings(persona.findings, changedFiles);
-    if (!validation.valid) {
-      const suffix = validation.index === undefined ? '' : ` at index ${validation.index}`;
-      return invalidEvidence(`invalid findings for persona ${persona.id}${suffix}: ${validation.error || 'unknown error'}`);
-    }
-    lanes.push({
-      id: persona.id,
-      decision: persona.decision,
-      ...(persona.status ? { status: persona.status } : {}),
-      findings: validation.findings as ReviewFinding[],
-    });
-  }
-
   const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;
-  const canonical = computeAppVerdict({
-    lanes,
-    expectedLanes: expectedPersonaIds.length,
-    changedFiles,
-    coverageComplete,
-  });
+  const arbitration = arbitrateLanes(completion.result.personas, expectedPersonaIds.length, coverageComplete, changedFiles);
+  if (!arbitration.valid) return invalidEvidence(arbitration.message);
+  const { canonical } = arbitration;
   const quorumSatisfied = contract.quorumSatisfied && completion.result.quorumSatisfied && canonical.quorumSatisfied;
   const evidence: ReviewGateEvidence = {
     verdict: canonical.verdict,

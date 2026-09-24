@@ -15,6 +15,7 @@ import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import type { IncrementalVerificationInput } from '../../src/review/incrementalReview';
 import { sha256 } from '../../src/review/reviewCore';
+import { gateRecordFor } from '../support/priorGateRecord';
 import {
   workerReviewCompletionDigest,
   type WorkerReviewCompletion,
@@ -51,10 +52,14 @@ function completionFor(id: string, headSha: string, baseSha: string, executionAt
     result: {
       version: 'WorkerReviewResult.v1', completedAt: '2026-09-24T11:00:00.000Z',
       personas: [{ id: 'sec-lane', decision: findings.length > 0 ? 'FINDINGS' : 'APPROVE', status: 'COMPLETE', findings }],
-      coverageComplete: true, quorumSatisfied: true, verdict: 'SHIP',
+      // No `verdict`: the authoritative worker never sets it (REL-1084).
+      coverageComplete: true, quorumSatisfied: true,
     },
   };
 }
+
+/** The trusted changed files the gate saw for these fixtures (content-only, no hunks). */
+const CHANGED = [{ path: 'src/changed.ts' }, { path: 'src/open.ts' }, { path: 'src/unchanged.ts' }];
 
 describeWithPostgres('incremental prior review selection (real SQL)', () => {
   let pool: Pool | undefined;
@@ -78,12 +83,25 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     `, [id, options.executionAttempt ?? 0, TOKEN_DIGEST]);
   }
 
-  async function insertCompletion(event: WorkerReviewCompletion, createdAt: number): Promise<void> {
+  async function insertCompletion(event: WorkerReviewCompletion, createdAt: number, options: { gate?: boolean } = {}): Promise<void> {
     const json = JSON.stringify(event);
     await pool!.query(`
       INSERT INTO review_worker_completions (run_id, execution_attempt, content_digest, payload, byte_length, created_at)
       VALUES ($1, $2, $3, $4::jsonb, $5, to_timestamp($6/1000.0))
     `, [event.runId, event.executionAttempt, workerReviewCompletionDigest(event), json, Buffer.byteLength(json, 'utf8'), createdAt]);
+    if (options.gate !== false) await insertGate(event);
+  }
+
+  /** The gate attempt row the trusted transaction writes for this completion (`gateRecordFor`). */
+  async function insertGate(event: WorkerReviewCompletion): Promise<void> {
+    const recorded = gateRecordFor(event, { expectedPersonaIds: ['sec-lane'], changedFiles: CHANGED });
+    await pool!.query(`
+      INSERT INTO review_gate_attempts (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number,
+        expected_app_id, coordinates, external_id, current_attempt, desired_state, evidence, decision, worker_result_digest)
+      VALUES ($1, $2, 0, $3, $4, $5, $6, '{}'::jsonb, $7, false, $8, $9::jsonb, $10::jsonb, $11)
+    `, [`gate_${event.runId}_${event.executionAttempt}`, event.runId, event.executionAttempt, event.repositoryId, event.prNumber,
+      APP_ID, `external_${event.runId}_${event.executionAttempt}`, recorded.decision.status,
+      recorded.gate.evidence, recorded.gate.decision, recorded.gate.worker_result_digest]);
   }
 
   beforeAll(async () => {
@@ -165,6 +183,30 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     await insertRun(newer, { status, headSha: '8'.repeat(40), baseSha: PREV_BASE });
     await insertCompletion(completionFor(newer, '8'.repeat(40), PREV_BASE, 1), RECEIVED_AT - 3_600_000);
     expect(await selectPriorReviewRecord(pool!, current)).toMatchObject({ runId: newer, shipComplete: false });
+  });
+
+  it('is not SHIP-complete without the gate\'s record of the completion, whatever the run row says (REL-1084)', async () => {
+    const current = runId(100);
+    await insertRun(current);
+    const prior = runId(1);
+    await insertRun(prior, { status: 'succeeded', headSha: PREV_HEAD, baseSha: PREV_BASE });
+    await insertCompletion(completionFor(prior, PREV_HEAD, PREV_BASE, 1), RECEIVED_AT - 3_600_000, { gate: false });
+    expect(await selectPriorReviewRecord(pool!, current)).toMatchObject({ runId: prior, shipComplete: false });
+    // The gate row for this exact completion makes it SHIP-complete.
+    await insertGate(completionFor(prior, PREV_HEAD, PREV_BASE, 1));
+    expect(await selectPriorReviewRecord(pool!, current)).toMatchObject({ runId: prior, shipComplete: true });
+  });
+
+  it('is not SHIP-complete when the gate recorded a P1 review as failed', async () => {
+    const current = runId(100);
+    await insertRun(current);
+    const prior = runId(1);
+    await insertRun(prior, { status: 'succeeded', headSha: PREV_HEAD, baseSha: PREV_BASE });
+    await insertCompletion(completionFor(prior, PREV_HEAD, PREV_BASE, 1, 42,
+      [{ severity: 'P1', path: 'src/open.ts', line: 3, title: 'Unchecked input reaches the query', body: 'b' }]), RECEIVED_AT - 3_600_000);
+    const gate = (await pool!.query('SELECT decision FROM review_gate_attempts WHERE run_id = $1', [prior])).rows[0];
+    expect(gate.decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
+    expect(await selectPriorReviewRecord(pool!, current)).toMatchObject({ runId: prior, shipComplete: false });
   });
 
   it('returns null when there is no prior record or the current run is unknown', async () => {
@@ -261,6 +303,22 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
         .resolves.toBe('recorded');
       const run = (await pool!.query('SELECT status, error_text FROM review_runs WHERE run_id = $1', [f.id])).rows[0];
       expect(run).toEqual({ status: 'failed', error_text: 'review gate: invalid-evidence' });
+    });
+
+    it('makes a completion recorded by the real trusted transaction a SHIP-complete prior for the next head (REL-1084)', async () => {
+      const f = await fixture();
+      const { incremental: _claim, ...result } = f.event.result;
+      expect(result).not.toHaveProperty('verdict');
+      await expect(f.repository.recordWorkerResult({ ...f.event, result }, { workerTokenDigest: TOKEN_DIGEST },
+        vi.fn(async () => f.trusted(undefined)), RECEIVED_AT + 40_000)).resolves.toBe('recorded');
+      const gate = (await pool!.query('SELECT decision FROM review_gate_attempts WHERE run_id = $1', [f.id])).rows[0];
+      expect(gate.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
+      // The next head is admitted after the completion row was stored (its created_at is the DB clock).
+      const next = runId(200);
+      await insertRun(next, { headSha: '9'.repeat(40), receivedAt: Date.now() + 60_000 });
+      expect(await selectPriorReviewRecord(pool!, next)).toMatchObject({
+        runId: f.id, headSha: HEAD, completionDigest: workerReviewCompletionDigest({ ...f.event, result }), shipComplete: true,
+      });
     });
 
     it('does not read a prior record for a completion without a claim', async () => {

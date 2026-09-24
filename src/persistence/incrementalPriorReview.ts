@@ -33,9 +33,19 @@ export async function selectPriorReviewRows(queryable: Queryable, currentRunId: 
   if (!current || current.repository_id == null || current.received_at == null) return null;
   const row = (await queryable.query(
     `SELECT runs.run_id, runs.repository_id, runs.pr_number, runs.head_sha, runs.base_sha, runs.status,
-            completions.execution_attempt, completions.content_digest, completions.payload, completions.created_at
+            completions.execution_attempt, completions.content_digest, completions.payload, completions.created_at,
+            gate.worker_result_digest AS gate_worker_result_digest, gate.evidence AS gate_evidence,
+            gate.decision AS gate_decision
        FROM review_worker_completions completions
        JOIN review_runs runs ON runs.run_id = completions.run_id
+       LEFT JOIN LATERAL (
+         SELECT attempts.worker_result_digest, attempts.evidence, attempts.decision
+           FROM review_gate_attempts attempts
+          WHERE attempts.run_id = completions.run_id
+            AND attempts.worker_result_digest = completions.content_digest
+          ORDER BY attempts.review_generation DESC
+          LIMIT 1
+       ) gate ON true
       WHERE runs.repository_id = $1 AND runs.pr_number = $2 AND runs.run_id <> $3
         AND completions.created_at < $4
       ORDER BY completions.created_at DESC, completions.execution_attempt DESC
@@ -43,7 +53,11 @@ export async function selectPriorReviewRows(queryable: Queryable, currentRunId: 
     [current.repository_id, current.pr_number, currentRunId, current.received_at],
   )).rows[0];
   if (!row) return null;
-  return { run: row, completion: row, currentReceivedAt: current.received_at };
+  // REL-1084/REL-1085: the gate's own record of this exact completion, from which the prior's
+  // verdict is derived (`priorReviewRecordFromRows`). Null for a record no gate decided.
+  const gate = row.gate_worker_result_digest == null ? null
+    : { worker_result_digest: row.gate_worker_result_digest, evidence: row.gate_evidence, decision: row.gate_decision };
+  return { run: row, completion: row, gate, currentReceivedAt: current.received_at };
 }
 
 export async function selectPriorReviewRecord(queryable: Queryable, currentRunId: string): Promise<PriorReviewRecord | null> {
