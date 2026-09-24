@@ -43,10 +43,15 @@ import {
 } from '../review/personaApplicability';
 import {
   attachDiffShrinkDisclosure,
-  resolveShrunkReviewApplicability,
   type DiffShrinkDisclosure,
   type DiffShrinkInput,
 } from '../review/diffShrink';
+import {
+  attachIncrementalDisclosure,
+  resolveScopedReviewApplicability,
+  type IncrementalReviewDisclosure,
+  type IncrementalReviewScope,
+} from '../review/incrementalReview';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -3500,6 +3505,8 @@ export async function executePersonaPanel(options: {
   deterministicRoster?: boolean;
   /** REL-1079: deterministic diff shrinking (`REVIEW_YETI_DIFF_SHRINK`); absent or disabled sends every change in full. */
   diffShrink?: DiffShrinkInput;
+  /** REL-1084: incremental re-review scope (`REVIEW_YETI_INCREMENTAL`); absent reviews every file in full. */
+  incremental?: IncrementalReviewScope;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
@@ -3507,6 +3514,8 @@ export async function executePersonaPanel(options: {
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks, and
   // attached to whichever result this run returns.
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
+  // REL-1084: what the incremental scope actually carried forward, from the same call.
+  let incrementalDisclosure: IncrementalReviewDisclosure | null = null;
   // REL-1088: files a lane reviews only because the shared decision routed
   // them there. Attached once, below, to whichever result the panel returns.
   let routedFiles: PanelResult['routedFiles'] = [];
@@ -3538,11 +3547,14 @@ export async function executePersonaPanel(options: {
     // context derives, so the lanes this worker runs and the lanes the service
     // requires cannot disagree (REL-1056 / REL-1058).
     // REL-1079: diff shrinking runs after, and cannot change, that decision.
-    const applicability = resolveShrunkReviewApplicability(enabledPersonas, changedFiles as any, {
+    // REL-1084: the incremental scope, like shrinking, only replaces patch text afterwards.
+    const applicability = resolveScopedReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
+      incremental: options.incremental,
     });
     diffShrinkDisclosure = applicability.diffShrink;
+    incrementalDisclosure = applicability.incremental;
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
     routedFiles = applicability.routedFiles;
@@ -4531,6 +4543,7 @@ export async function executePersonaPanel(options: {
     }
   }).then((result) => (routedFiles && routedFiles.length > 0 ? { ...result, routedFiles } : result))
     .then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
+    .then((result) => attachIncrementalDisclosure(result, incrementalDisclosure))
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .finally(deadline.cleanup);
 }

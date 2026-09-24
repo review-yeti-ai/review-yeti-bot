@@ -8,6 +8,7 @@ import { RepositoryVisibility } from '../review/repositoryVisibility';
 // boundary module for a plain value type. See `../types/workerFailure` for the full rationale.
 import type { WorkerFailureClass } from '../types/workerFailure';
 import type { DiffShrinkDisclosure } from '../types/diffShrink';
+import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -126,6 +127,12 @@ export interface PanelResult {
    * publishes exactly this.
    */
   diffShrink?: DiffShrinkDisclosure;
+  /**
+   * REL-1084: what the incremental re-review carried forward. Set only when
+   * `REVIEW_YETI_INCREMENTAL` carried at least one file for a run with at least one lane;
+   * the check summary and the completion claim are built from exactly this.
+   */
+  incremental?: IncrementalReviewDisclosure;
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];
