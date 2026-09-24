@@ -208,6 +208,46 @@ describe('computeTriageFileFacts -- counts are computed in code, never asked', (
   });
 });
 
+describe('computeTriageFileFacts -- every fact field', () => {
+  it('produces exactly the documented fact set for a plain source change', () => {
+    const { facts } = computeTriageFileFacts(file('src/a.ts', '@@ -1 +1 @@\n-x\n+y\n'), 1000);
+    expect(facts).toEqual({
+      path: 'src/a.ts',
+      extension: 'ts',
+      change_kind: 'modified',
+      added_lines: 1,
+      removed_lines: 1,
+      hunk_count: 1,
+      is_test: false,
+      is_docs_or_asset: false,
+      lockfile_or_generated: null,
+      security_sensitive: false,
+      is_submodule: false,
+      is_binary: false,
+      patch_chars: '@@ -1 +1 @@\n-x\n+y\n'.length,
+      hunks_truncated: false,
+    });
+  });
+
+  it('detects both git binary diff forms', () => {
+    const plain = { path: 'assets/logo.png', patch: 'diff --git a/assets/logo.png b/assets/logo.png\nindex 1..2 100644\nBinary files a/assets/logo.png and b/assets/logo.png differ\n' };
+    const literal = { path: 'bin/tool', patch: 'diff --git a/bin/tool b/bin/tool\nindex 1..2 100755\nGIT binary patch\nliteral 12\nzcmV\n' };
+    expect(computeTriageFileFacts(plain, 1000).facts).toMatchObject({ is_binary: true, added_lines: 0, hunk_count: 0 });
+    expect(computeTriageFileFacts(literal, 1000).facts.is_binary).toBe(true);
+  });
+
+  it('carries the submodule marker from the parsed changed file', () => {
+    const sub = { path: 'vendor/lib', patch: 'diff --git a/vendor/lib b/vendor/lib\nindex 1..2 160000\n', isSubmodule: true };
+    expect(computeTriageFileFacts(sub, 1000).facts.is_submodule).toBe(true);
+    expect(computeTriageFileFacts({ ...sub, isSubmodule: undefined }, 1000).facts.is_submodule).toBe(false);
+  });
+
+  it('classifies documentation and assets, and gives an extensionless dotfile no extension', () => {
+    expect(computeTriageFileFacts(file('docs/readme.md', '@@ -1 +1 @@\n+a\n'), 1000).facts.is_docs_or_asset).toBe(true);
+    expect(computeTriageFileFacts(file('.gitignore', '@@ -1 +1 @@\n+a\n'), 1000).facts.extension).toBe('');
+  });
+});
+
 describe('isSecuritySensitivePath / isTestPath', () => {
   it.each([
     'src/auth/login.ts', 'lib/crypto/sign.go', 'config/secrets.yaml', '.github/workflows/ci.yml',
@@ -423,6 +463,7 @@ describe('startJevTriageShadow -- what it sends and records', () => {
       model_pin: 'jev-1.13.0',
       model_pin_match: false,
       input_tokens: 1000,
+      output_tokens: 10,
       cost_usd: (1000 * JEV_INPUT_TOKEN_USD_PER_MILLION) / 1_000_000,
       latency_ms: 42,
     });
@@ -448,7 +489,11 @@ describe('join -- one structured log line per file, joined with actual findings'
     });
     expect(joins[1]).toMatchObject({ findings_total: 0, finding_class: 'none' });
     const summary = logsOf(info, JEV_TRIAGE_LOG.summary)[0];
-    expect(summary).toMatchObject({ status: 'completed', files: 2, asked: 2, ok: 2, input_tokens: 2000, models: ['jev-1.13.0'] });
+    expect(summary).toMatchObject({
+      status: 'completed', files: 2, asked: 2, ok: 2, outcomes: { ok: 2 }, input_tokens: 2000,
+      cost_usd: (2000 * JEV_INPUT_TOKEN_USD_PER_MILLION) / 1_000_000, models: ['jev-1.13.0'], model_pin: 'jev-1.13.0',
+      panel_mode: 'panel', verdict: 'BLOCK', wall_ms: expect.any(Number),
+    });
   });
 
   it('is idempotent and never throws, even on a malformed join input', async () => {
