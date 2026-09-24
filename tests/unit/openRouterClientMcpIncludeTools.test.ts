@@ -51,14 +51,14 @@ describe('Review Yeti opts out of gateway MCP tool injection (REL-1115)', () => 
   });
 
   it('sends an empty tool allowlist on streaming completions', async () => {
-    const fetchImplementation = vi.fn(async () => sse());
+    const fetchImplementation = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => sse());
     const client = new OpenRouterClient({ apiKey: 'test-key', baseUrl: 'https://gw.test/v1', fetchImplementation });
     await expect(client.complete({ ...base, stream: true })).resolves.toMatchObject({ content: 'SHIP' });
     expect(mcpValues(fetchImplementation.mock.calls[0][1] as RequestInit)).toEqual(['']);
   });
 
   it('caller metadata cannot re-open injection on the streaming path', async () => {
-    const fetchImplementation = vi.fn(async () => sse());
+    const fetchImplementation = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => sse());
     const client = new OpenRouterClient({ apiKey: 'test-key', baseUrl: 'https://gw.test/v1', fetchImplementation });
     await client.complete({ ...base, stream: true, metadata: { 'X-BF-MCP-Include-Tools': '*', 'x-ct-test': 'kept' } } as any);
     const init = fetchImplementation.mock.calls[0][1] as RequestInit;
@@ -67,7 +67,7 @@ describe('Review Yeti opts out of gateway MCP tool injection (REL-1115)', () => 
   });
 
   it('sends an empty tool allowlist on non-streaming (SDK) completions', async () => {
-    const fetchImplementation = vi.fn(async () => chatJson());
+    const fetchImplementation = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => chatJson());
     const client = new OpenRouterClient({ apiKey: 'test-key', baseUrl: 'https://gw.test/v1', fetchImplementation });
     await expect(client.complete({ ...base, stream: false })).resolves.toMatchObject({ content: 'SHIP' });
     const init = fetchImplementation.mock.calls[0][1] as RequestInit;
