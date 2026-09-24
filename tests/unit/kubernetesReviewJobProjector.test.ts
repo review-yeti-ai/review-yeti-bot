@@ -270,3 +270,65 @@ describe('KubernetesReviewJobProjector', () => {
     expect(kubernetesStatusCode(new Error('HTTP 404 secret-bearing response'))).toBeUndefined();
   });
 });
+
+describe('KubernetesReviewJobProjector.patchCancellation wire format (REL-1073)', () => {
+  async function withApiServer(
+    status: number,
+    run: (client: import('@kubernetes/client-node').CustomObjectsApi) => Promise<void>,
+  ): Promise<Array<{ method?: string; url?: string; contentType?: string; body: string }>> {
+    const http = await import('node:http');
+    const k8s = await import('@kubernetes/client-node');
+    const seen: Array<{ method?: string; url?: string; contentType?: string; body: string }> = [];
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        seen.push({ method: req.method, url: req.url, contentType: req.headers['content-type'], body });
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end(status < 300 ? '{}' : JSON.stringify({ kind: 'Status', code: status }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    try {
+      const { port } = server.address() as import('node:net').AddressInfo;
+      const kubeConfig = new k8s.KubeConfig();
+      kubeConfig.loadFromOptions({
+        clusters: [{ name: 'test', server: `http://127.0.0.1:${port}`, skipTLSVerify: true }],
+        users: [{ name: 'test', token: 'test-token' }],
+        contexts: [{ name: 'test', cluster: 'test', user: 'test' }],
+        currentContext: 'test',
+      });
+      await run(kubeConfig.makeApiClient(k8s.CustomObjectsApi));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    return seen;
+  }
+
+  it('sends the cancel as a JSON merge patch through the real generated client', async () => {
+    const seen = await withApiServer(200, async (client) => {
+      await new KubernetesReviewJobProjector(client).patchCancellation(
+        projection.metadata.name, 'ct-review-system', 'superseded_by_new_head');
+    });
+    // The generated client defaults to application/json-patch+json, which the
+    // API server rejects for an object body: the cancel would never land.
+    expect(seen).toEqual([{
+      method: 'PATCH',
+      url: `/apis/review-yeti.ai/v1alpha2/namespaces/ct-review-system/prreviewjobs/${projection.metadata.name}`,
+      contentType: 'application/merge-patch+json',
+      body: JSON.stringify({ spec: { cancelRequested: true, cancelReason: 'superseded_by_new_head' } }),
+    }]);
+  });
+
+  it('surfaces a forbidden patch with its structured status and no upstream text', async () => {
+    let caught: unknown;
+    await withApiServer(403, async (client) => {
+      caught = await new KubernetesReviewJobProjector(client)
+        .patchCancellation(projection.metadata.name, 'ct-review-system')
+        .then(() => undefined, (error: unknown) => error);
+    });
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe('Kubernetes PRReviewJob patch failed with status 403');
+    expect(kubernetesStatusCode(caught)).toBe(403);
+  });
+});
