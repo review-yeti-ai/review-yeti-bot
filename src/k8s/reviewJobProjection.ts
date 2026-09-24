@@ -18,7 +18,14 @@ export const TRUSTED_WORKER_IMAGE_REPOSITORIES = [
 export const TRUSTED_WORKER_IMAGE_REPOSITORY = TRUSTED_WORKER_IMAGE_REPOSITORIES[0];
 
 export const DEFAULT_GENERIC_RUNNER_IMAGE = 'node:24-bookworm-slim';
-export const GENERIC_RUNNER_IMAGE_PATTERN = /^(?:node:[a-zA-Z0-9_.-]+|ghcr\.io\/review-yeti-ai\/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$/u;
+// Generic-runner mode's accepted set. It adds NOTHING beyond the shared contract:
+// `node:<tag>` is the generic-runner affordance, and everything else must be
+// digest-pinned like any other image. The previous second alternative
+// (`ghcr.io/review-yeti-ai/<name>:<tag>`) admitted a mutable vendor tag that the
+// CRD rejects, so the dispatcher started cleanly and then every PRReviewJob it
+// created failed at admission — a silently broken upgrade for a configuration
+// that used to work.
+export const GENERIC_RUNNER_IMAGE_PATTERN = /^(?:node:[a-zA-Z0-9_.-]+)$/u;
 
 /**
  * The worker-image contract, as ONE pair of exported patterns.

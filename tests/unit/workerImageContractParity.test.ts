@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  GENERIC_RUNNER_IMAGE_PATTERN,
   PINNED_WORKER_IMAGE_PATTERN,
   WORKER_IMAGE_PATTERN,
 } from '../../src/k8s/reviewJobProjection';
@@ -72,6 +73,8 @@ const CASES: Array<{ image: string; accepted: boolean; why: string }> = [
     why: 'a foreign mutable tag' },
   { image: 'evil.example/backdoor', accepted: false,
     why: 'an untagged reference' },
+  { image: 'ghcr.io/review-yeti-ai/anything:v1', accepted: false,
+    why: 'a mutable VENDOR tag — the generic path accepted this while the CRD rejected it' },
 ];
 
 describe('worker image contract parity across artifacts', () => {
@@ -114,6 +117,23 @@ describe('worker image contract parity across artifacts', () => {
           `PINNED_WORKER_IMAGE_PATTERN rejected ${c.image}, which the CRD accepts (${c.why})`).toBe(true);
       }
     }
+  });
+
+  it('the generic-runner acceptance rule adds nothing beyond the CRD contract', () => {
+    // Generic mode ORs GENERIC_RUNNER_IMAGE_PATTERN with WORKER_IMAGE_PATTERN, so
+    // whatever this pattern accepts is also accepted at startup. If it admits an
+    // image the CRD rejects, the dispatcher starts cleanly and every PRReviewJob
+    // it creates then fails at admission — a silently broken upgrade. This is the
+    // sixth copy of the acceptance rule and it drifted exactly that way.
+    const crd = new RegExp(patternFromCrd(generatedCrd), 'u');
+    for (const c of CASES) {
+      if (!GENERIC_RUNNER_IMAGE_PATTERN.test(c.image)) continue;
+      expect(crd.test(c.image),
+        `generic mode accepts ${c.image} but the CRD rejects it (${c.why})`).toBe(true);
+    }
+    // And it must still cover the generic-runner affordance itself.
+    expect(GENERIC_RUNNER_IMAGE_PATTERN.test('node:24-bookworm-slim'),
+      'generic mode must accept the bare node tag').toBe(true);
   });
 
   it('a bare node tag is accepted by the CRD but rejected by both strict layers', () => {
