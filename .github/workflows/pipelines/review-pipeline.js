@@ -6603,12 +6603,13 @@ function postStickySummaryComment(commentBody, prContext, options = {}) {
 
   try {
     assertCurrentPullRequest(prContext, { commandRunner });
-    const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
+    const publisher = resolveAuthenticatedPublisher(commandRunner);
+    const expectedPublisherLogin = publisher.verified ? publisher.login : null;
     // Without an identity nothing can be matched (issueCommentBelongsToPublisher fails closed), so
     // every run would post a fresh summary and the comment would stop being sticky. Say so instead
     // of quietly reintroducing the comment-per-push behaviour this surface exists to prevent.
     if (!expectedPublisherLogin) {
-      return { success: false, postedViaGh: false, error: `could not determine the publishing GitHub identity; refusing to adopt or patch an unverified summary comment${lastPublisherIdentityFailure ? ` (${lastPublisherIdentityFailure})` : ''}` };
+      return { success: false, postedViaGh: false, error: `could not determine the publishing GitHub identity; refusing to adopt or patch an unverified summary comment${publisher.reason ? ` (${publisher.reason})` : ''}` };
     }
     if (options.expectedPublisherLogin && !isExpectedPublisherLogin(expectedPublisherLogin, options.expectedPublisherLogin)) {
       throw new Error('Action review publisher changed before sticky publication');
@@ -6980,8 +6981,9 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
     const bodyWithRejected = `${commentBody}${rejectedDetails}${overflowDetails}`;
     try {
       assertCurrentPullRequest(prContext, { commandRunner });
-      const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
-      if (!expectedPublisherLogin) throw publisherIdentityError();
+      const publisher = resolveAuthenticatedPublisher(commandRunner);
+      if (!publisher.verified) throw publisherIdentityError(publisher.reason);
+      const expectedPublisherLogin = publisher.login;
       const expectedItems = expectedPublicationItems(plan);
       const existingThreads = expectedItems.length > 0
         ? readActionReviewThreads(commandRunner, prContext)
@@ -7240,20 +7242,22 @@ function resolveAuthenticatedPublisher(commandRunner) {
 
 function readAuthenticatedPublisherLogin(commandRunner) {
   const publisher = resolveAuthenticatedPublisher(commandRunner);
-  // Record WHY before collapsing to null, so the throw at the call site can name the cause
-  // instead of repeating a bare "could not determine" with nothing to act on.
-  if (!publisher.verified && publisher.reason) {
-    lastPublisherIdentityFailure = publisher.reason;
-  }
   return publisher.verified ? publisher.login : null;
 }
 
-/** Most recent redacted identity-probe failure, for the next thrown diagnostic. */
-let lastPublisherIdentityFailure = '';
-
-/** The identity refusal, with the probe statuses that produced it. */
-function publisherIdentityError() {
-  const suffix = lastPublisherIdentityFailure ? `; ${lastPublisherIdentityFailure}` : '';
+/**
+ * The identity refusal, carrying the probe statuses that produced it.
+ *
+ * The reason is passed IN, never read from module state. An earlier revision threaded it
+ * through a module-level variable that `readAuthenticatedPublisherLogin` wrote on failure; that
+ * made an exported function non-deterministic (the message depended on hidden call ordering, not
+ * on its argument) and it was never cleared on success, so any later error site embedding it
+ * could attach a reason from an unrelated earlier attempt. `resolveAuthenticatedPublisher`
+ * already returns the reason in-band, so the global was a second, lossy channel for the same
+ * data (REL-1107 review).
+ */
+function publisherIdentityError(reason) {
+  const suffix = reason ? `; ${reason}` : '';
   return new Error(`could not determine the publishing GitHub identity${suffix}`);
 }
 

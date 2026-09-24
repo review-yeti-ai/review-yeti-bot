@@ -17,8 +17,11 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
 
-const ok = (stdout) => ({ status: 0, stdout, stderr: '' });
-const fail = (stderr) => ({ status: 1, stdout: '', stderr });
+interface ProbeResult { status: number; stdout: string; stderr: string }
+type CommandRunner = (cmd: string, args: string[]) => ProbeResult;
+
+const ok = (stdout: string): ProbeResult => ({ status: 0, stdout, stderr: '' });
+const fail = (stderr: string): ProbeResult => ({ status: 1, stdout: '', stderr });
 
 describe('publishing identity probes (REL-1107)', () => {
   describe('transient classification', () => {
@@ -43,8 +46,8 @@ describe('publishing identity probes (REL-1107)', () => {
 
   describe('resolution', () => {
     it('uses GET /user when the token is a user token', () => {
-      const calls = [];
-      const runner = (_cmd, args) => { calls.push(args.join(' ')); return ok('calltelemetry-jason\n'); };
+      const calls: string[] = [];
+      const runner: CommandRunner = (_cmd, args) => { calls.push(args.join(' ')); return ok('calltelemetry-jason\n'); };
       expect(pipeline.resolveAuthenticatedPublisher(runner))
         .toMatchObject({ login: 'calltelemetry-jason', verified: true });
       // Resolved on the first probe: the others must not be attempted.
@@ -53,7 +56,7 @@ describe('publishing identity probes (REL-1107)', () => {
 
     it('falls back to the installation app slug for an installation token', () => {
       // GET /user rejects installation tokens; the App slug identifies their publisher.
-      const runner = (_cmd, args) => (args.includes('user')
+      const runner: CommandRunner = (_cmd, args) => (args.includes('user')
         ? fail('gh: Bad credentials (HTTP 401)')
         : ok('review-yeti\n'));
       expect(pipeline.resolveAuthenticatedPublisher(runner))
@@ -61,7 +64,7 @@ describe('publishing identity probes (REL-1107)', () => {
     });
 
     it('falls back to the GraphQL viewer', () => {
-      const runner = (_cmd, args) => {
+      const runner: CommandRunner = (_cmd, args) => {
         if (args.includes('graphql')) return ok('{"data":{"viewer":{"login":"calltelemetry-jason"}}}');
         return fail('gh: Bad credentials (HTTP 401)');
       };
@@ -72,7 +75,7 @@ describe('publishing identity probes (REL-1107)', () => {
     it('retries a transient failure and then succeeds', () => {
       // The regression this fixes: one unlucky 503 used to fail the entire publish.
       let userCalls = 0;
-      const runner = (_cmd, args) => {
+      const runner: CommandRunner = (_cmd, args) => {
         if (!args.includes('user')) return fail('gh: Bad credentials (HTTP 401)');
         userCalls += 1;
         return userCalls === 1 ? fail('gh: Server Error (HTTP 502)') : ok('calltelemetry-jason\n');
@@ -82,9 +85,28 @@ describe('publishing identity probes (REL-1107)', () => {
       expect(userCalls).toBe(2);
     });
 
+    it('gives up after exhausting attempts, and reports the LAST status', () => {
+      // The third outcome of the loop, which no test took: a transient failure on EVERY attempt.
+      // Concrete counterfactual the review named -- changing the bound to `attempt < attempts`
+      // (silently halving retries) -- must not survive this.
+      let userCalls = 0;
+      const runner: CommandRunner = (_cmd, args) => {
+        if (!args.includes('user')) return fail('gh: Bad credentials (HTTP 401)');
+        userCalls += 1;
+        return fail('gh: Server Error (HTTP 502)');
+      };
+      const resolved = pipeline.resolveAuthenticatedPublisher(runner);
+      // Exactly the bound, so a 3-attempt loop is pinned, not a 2-attempt one.
+      expect(userCalls).toBe(3);
+      expect(resolved).toMatchObject({ login: null, verified: false });
+      // ...and the exhausted probe's LAST status reaches the reason, so an operator sees 502
+      // rather than only the 401s from its siblings.
+      expect(resolved.reason).toContain('user=HTTP 502');
+    });
+
     it('does NOT retry a non-transient failure', () => {
       let userCalls = 0;
-      const runner = (_cmd, args) => {
+      const runner: CommandRunner = (_cmd, args) => {
         if (!args.includes('user')) return fail('gh: Not Found (HTTP 404)');
         userCalls += 1;
         return fail('gh: Bad credentials (HTTP 401)');
@@ -99,13 +121,13 @@ describe('publishing identity probes (REL-1107)', () => {
     it('never invents an identity when every probe fails', () => {
       // GITHUB_ACTIONS identifies the runner, not the token's publisher. An assumed
       // github-actions[bot] identity must never authorize a mutation.
-      const runner = () => fail('gh: Bad credentials (HTTP 401)');
+      const runner: CommandRunner = () => fail('gh: Bad credentials (HTTP 401)');
       const resolved = pipeline.resolveAuthenticatedPublisher(runner);
       expect(resolved).toMatchObject({ login: null, verified: false });
     });
 
     it('names the probes and their status codes', () => {
-      const runner = () => fail('gh: Bad credentials (HTTP 401)');
+      const runner: CommandRunner = () => fail('gh: Bad credentials (HTTP 401)');
       const { reason } = pipeline.resolveAuthenticatedPublisher(runner);
       expect(reason).toContain('identity probes failed');
       expect(reason).toContain('user=HTTP 401');
@@ -121,20 +143,49 @@ describe('publishing identity probes (REL-1107)', () => {
 
     it('never leaks token material into the reason', () => {
       // The reason reaches CI logs, so it must carry status and endpoint only.
-      const runner = () => fail('gh: Bad credentials (HTTP 401) for token gho_SECRETVALUE123');
+      const runner: CommandRunner = () => fail('gh: Bad credentials (HTTP 401) for token gho_SECRETVALUE123');
       const { reason } = pipeline.resolveAuthenticatedPublisher(runner);
       expect(reason).not.toContain('gho_SECRETVALUE123');
       expect(reason).toContain('user=HTTP 401');
     });
 
     it('carries the reason into the thrown error', () => {
-      const runner = () => fail('gh: Bad credentials (HTTP 401)');
-      pipeline.resolveAuthenticatedPublisher(runner);
-      // The call sites call readAuthenticatedPublisherLogin first, which records the reason.
-      const readLogin = pipeline.resolveAuthenticatedPublisher(runner);
-      expect(readLogin.reason).toBeTruthy();
-      expect(pipeline.publisherIdentityError().message)
-        .toMatch(/could not determine the publishing GitHub identity/);
+      // `publisherIdentityError(reason)` takes the reason as an ARGUMENT. An earlier revision read
+      // it from module state, which made the message depend on hidden call ordering: deleting the
+      // write left every test green while the diagnostic regressed to the bare message
+      // REL-1107 was filed against (REL-1107 review).
+      const reason = pipeline.resolveAuthenticatedPublisher(
+        () => fail('gh: Bad credentials (HTTP 401)'),
+      ).reason;
+      expect(reason).toBeTruthy();
+      const message = pipeline.publisherIdentityError(reason).message;
+      // The SUFFIX, not merely the prefix: the bare message must not satisfy this.
+      expect(message).toContain('identity probes failed');
+      expect(message).toContain('user=HTTP 401');
+      expect(message).not.toBe('could not determine the publishing GitHub identity');
+    });
+
+    it('the publish call site passes the reason, not a bare message', () => {
+      // The helper carrying a reason proves nothing about the CALL SITE. Verified: reverting the
+      // throw to `publisherIdentityError('')` left every other test green, because nothing
+      // observed the wiring. This asserts the wiring itself.
+      //
+      // A source assertion is weaker than behavioural coverage and is used deliberately here:
+      // reaching the real throw requires driving the whole publication path, and the repo already
+      // pins structural properties this way (tests/unit/reviewPipeline.test.ts reads the source).
+      const source = fs.readFileSync(
+        path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'), 'utf-8',
+      );
+      const bare = source.match(/throw publisherIdentityError\(\s*\)/gu) ?? [];
+      expect(bare).toEqual([]);
+      expect(source).toContain('throw publisherIdentityError(publisher.reason);');
+      // The sticky-comment return carries it too.
+      expect(source).toContain('${publisher.reason ?');
+    });
+
+    it('omits the suffix when no reason is supplied', () => {
+      expect(pipeline.publisherIdentityError('').message)
+        .toBe('could not determine the publishing GitHub identity');
     });
   });
 });
