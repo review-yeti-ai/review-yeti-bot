@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.12](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.11...v1.84.12) (2026-09-24)
+
+
+### Bug Fixes
+
+* **review:** compute 406 diffs from git on worker and trusted side (REL-1080) ([#1010](https://github.com/review-yeti-ai/review-yeti-bot/issues/1010)) ([ada674a](https://github.com/review-yeti-ai/review-yeti-bot/commit/ada674a1afa30d2d592a116d29b17d2466bf29e8))
+
 ## [1.84.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.10...v1.84.11) (2026-09-24)
 
 
