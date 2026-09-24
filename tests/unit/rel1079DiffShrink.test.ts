@@ -258,6 +258,17 @@ describe('rename and move detection', () => {
     expect(out[0].patch).toContain('REAL_CHANGE_MARKER');
   });
 
+  it('reads git-quoted rename paths (spaces force quoting)', () => {
+    const quoted = [
+      'diff --git "a/src/old/my file.ts" "b/src/new/my file.ts"', 'similarity index 100%',
+      'rename from "src/old/my file.ts"', 'rename to "src/new/my file.ts"',
+    ].join('\n') + '\n';
+    const { disclosure } = planDiffShrink(effective(quoted), ON);
+    expect(disclosure.renames).toEqual([expect.objectContaining({ from: 'src/old/my file.ts', to: 'src/new/my file.ts' })]);
+    const intoAuth = quoted.replace(/src\/new\/my file\.ts/gu, 'src/auth/my file.ts').replace(/rename from "src\/old/u, 'rename from "src/auth');
+    expect(planDiffShrink(effective(intoAuth), ON).disclosure.renames).toEqual([]);
+  });
+
   it('reports a git -C copy as a copy', () => {
     const copy = pureRename.replace(/rename (from|to)/gu, 'copy $1');
     expect(planDiffShrink(effective(copy), ON).disclosure.renames[0].kind).toBe('copy');
@@ -547,6 +558,10 @@ describe('check-summary disclosure', () => {
     expect(text).toContain('- Whitespace-only, content not sent (1): `src/app.ts`');
     expect(text).toContain('- Whitespace-only hunks collapsed (1 in 1 file(s)): `src/mixed.ts` (1)');
     expect(text).toContain('- Renamed, moved or copied (1): `src/a.ts` -> `src/b.ts` (rename, similarity 97%, content unchanged, not sent)');
+    const modifiedRename = 'diff --git a/src/c.ts b/src/d.ts\nsimilarity index 88%\nrename from src/c.ts\nrename to src/d.ts\n'
+      + 'index 1111111..2222222 100644\n--- a/src/c.ts\n+++ b/src/d.ts\n' + REAL_HUNK + '\n';
+    expect(renderDiffShrinkSummary(planDiffShrink(effective(modifiedRename), ON).disclosure).join('\n'))
+      .toContain('- Renamed, moved or copied (1): `src/c.ts` -> `src/d.ts` (rename, similarity 88%, only changed hunks sent)');
     expect(text).toContain('- Excluded by .gitattributes, content not sent (1): `src/api.gen.ts` (linguist-generated)');
     expect(text).toContain('- Security-sensitive, kept at full depth (1): `src/auth/login.ts` (whitespace)');
     expect(disclosure.estimatedTokensAfter).toBeLessThan(disclosure.estimatedTokensBefore);
