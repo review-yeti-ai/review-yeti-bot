@@ -1,11 +1,13 @@
 import { isDeepStrictEqual } from 'node:util';
 import { PatchStrategy, setHeaderOptions } from '@kubernetes/client-node';
-import type { ReviewJobProjector } from './reviewJobProjector';
+import type { CancellationPatchResult, ReviewJobProjector } from './reviewJobProjector';
 import { deriveRunSecretExecutionAttempt, type PRReviewJobProjection } from './reviewJobProjection';
 
 const GROUP = 'review-yeti.ai';
 const VERSION = 'v1alpha2';
 const PLURAL = 'prreviewjobs';
+/** Mirrors spec.cancelReason maxLength in the v1alpha2 CRD. */
+export const CANCEL_REASON_MAX_LENGTH = 256;
 const projectionConflictMessage = 'existing PRReviewJob conflicts with the durable projection';
 const projectionTerminalMessage = 'existing PRReviewJob is terminal; fresh admission is required';
 
@@ -179,18 +181,21 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
     }
   }
 
-  async patchCancellation(name: string, namespace: string, cancelReason?: string): Promise<void> {
+  async patchCancellation(name: string, namespace: string, cancelReason?: string): Promise<CancellationPatchResult> {
     if (!this.client.patchNamespacedCustomObject) {
       throw new Error('Kubernetes client does not support patchNamespacedCustomObject');
     }
     const patchBody: Record<string, unknown> = {
       spec: {
         cancelRequested: true,
-        ...(cancelReason ? { cancelReason } : {}),
+        // The CRD bounds cancelReason at 256 characters; an over-long reason
+        // would turn every retry into a 422.
+        ...(cancelReason ? { cancelReason: Array.from(cancelReason).slice(0, CANCEL_REASON_MAX_LENGTH).join('') } : {}),
       },
     };
+    let patched: unknown;
     try {
-      await this.client.patchNamespacedCustomObject(
+      patched = await this.client.patchNamespacedCustomObject(
         {
           group: GROUP,
           version: VERSION,
@@ -207,9 +212,10 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
       );
     } catch (error) {
       if (kubernetesStatusCode(error) === 404) {
-        return;
+        return { status: 'not-found' };
       }
       throw apiFailure('patch', error);
     }
+    return { status: 'patched', cancelRequested: record(record(patched)?.spec)?.cancelRequested };
   }
 }

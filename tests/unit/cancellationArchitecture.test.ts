@@ -192,7 +192,7 @@ describe('Two-Tier Cancellation Architecture', () => {
       };
 
       const projector = new KubernetesReviewJobProjector(client as any);
-      await expect(projector.patchCancellation('prj-sample', 'test-ns')).resolves.toBeUndefined();
+      await expect(projector.patchCancellation('prj-sample', 'test-ns')).resolves.toEqual({ status: 'not-found' });
     });
 
     it('re-throws non-404 API errors with structured error message', async () => {

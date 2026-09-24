@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ReviewJobDispatchEngine } from '../../src/k8s/reviewJobDispatchEngine';
+import { ReviewJobDispatchEngine, type ReviewJobProjector } from '../../src/k8s/reviewJobDispatchEngine';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
@@ -519,7 +519,7 @@ describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
 
 describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
   it('sweeps pending cancellations, patches CRs, and marks them propagated', async () => {
-    const patchCancellation = vi.fn(async () => undefined);
+    const patchCancellation = vi.fn(async () => ({ status: 'patched' as const, cancelRequested: true }));
     const findPendingCancellations = vi.fn(async () => [
       { runId: 'run_1', executionAttempt: 1, projectionName: 'prj-run-1', cancelReason: 'superseded_by_new_head' },
       { runId: 'run_2', executionAttempt: 2, projectionName: 'prj-run-2', cancelReason: 'user_cancelled' },
@@ -560,7 +560,7 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
     // just bump a counter nobody reads.
     const patchCancellation = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error('Kubernetes PRReviewJob patch failed with status 403'), { statusCode: 403 }))
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce({ status: 'patched' as const, cancelRequested: true });
     const findPendingCancellations = vi.fn(async () => [
       { runId: 'run_fail', executionAttempt: 1, projectionName: 'prj-fail' },
       { runId: 'run_ok', executionAttempt: 1, projectionName: 'prj-ok' },
@@ -590,7 +590,7 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
     expect(result).toEqual({
       propagated: 1,
       failed: 1,
-      failures: [{ runId: 'run_fail', projectionName: 'prj-fail', statusCode: 403 }],
+      failures: [{ runId: 'run_fail', projectionName: 'prj-fail', reason: 'patch-failed', statusCode: 403 }],
     });
     expect(markCancelPropagated).toHaveBeenCalledTimes(1);
     expect(markCancelPropagated).toHaveBeenCalledWith('run_ok', 1, expect.any(Number));
@@ -606,7 +606,7 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
   ])('REL-1073: drops %s from the sweep failure but keeps sweeping', async (_label, thrown) => {
     const patchCancellation = vi.fn()
       .mockRejectedValueOnce(thrown)
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce({ status: 'patched' as const, cancelRequested: true });
     const markCancelPropagated = vi.fn(async () => true);
     const engine = new ReviewJobDispatchEngine({
       repository: {
@@ -631,14 +631,14 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
     expect(result).toEqual({
       propagated: 1,
       failed: 1,
-      failures: [{ runId: 'run_fail', projectionName: 'prj-fail' }],
+      failures: [{ runId: 'run_fail', projectionName: 'prj-fail', reason: 'patch-failed' }],
     });
     expect(Object.keys(result.failures[0])).not.toContain('statusCode');
     expect(markCancelPropagated).toHaveBeenCalledExactlyOnceWith('run_ok', 1, expect.any(Number));
   });
 
   it('handles immediate cancellation events and marks propagated', async () => {
-    const patchCancellation = vi.fn(async () => undefined);
+    const patchCancellation = vi.fn(async () => ({ status: 'patched' as const, cancelRequested: true }));
     const markCancelPropagated = vi.fn(async () => true);
 
     const engine = new ReviewJobDispatchEngine({
@@ -670,5 +670,70 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
     expect(handled).toBe(true);
     expect(patchCancellation).toHaveBeenCalledWith('prj-event-1', 'test-namespace', 'superseded_by_new_head');
     expect(markCancelPropagated).toHaveBeenCalledWith('run_event_1', 3, 1_700_000_000_000);
+  });
+
+  // REL-1073: the deployed CRD had no spec.cancelRequested. The API server
+  // pruned it, answered 200, and 217 runs were marked propagated while nothing
+  // was cancelled. Only a stored cancelRequested === true (or a CR that is
+  // already gone) may count as propagated.
+  function sweepEngine(
+    patchCancellation: (name: string, namespace: string, cancelReason?: string) => Promise<unknown>,
+    markCancelPropagated = vi.fn(async () => true),
+  ) {
+    return new ReviewJobDispatchEngine({
+      repository: {
+        claimNext: vi.fn(async () => null),
+        markProjected: vi.fn(async () => true),
+        bindWorkerTokenDigest: vi.fn(async () => true),
+        releaseForRetry: vi.fn(async () => true),
+        markTerminal: vi.fn(async () => true),
+        findPendingCancellations: vi.fn(async () => [
+          { runId: 'run_pruned', executionAttempt: 1, projectionName: 'prj-pruned', cancelReason: 'superseded_by_new_head' },
+        ]),
+        markCancelPropagated,
+      },
+      projector: {
+        ensure: vi.fn(async () => undefined),
+        // Deliberately untyped results: the sweep must not trust a malformed one.
+        patchCancellation: patchCancellation as unknown as ReviewJobProjector['patchCancellation'],
+      },
+      workerId: 'worker-1',
+      workerImage: 'review-yeti-worker:latest',
+      namespace: 'test-namespace',
+    });
+  }
+
+  it.each([
+    ['the field pruned from the stored object', { status: 'patched', cancelRequested: undefined }],
+    ['a stored false', { status: 'patched', cancelRequested: false }],
+    ['a stored string "true"', { status: 'patched', cancelRequested: 'true' }],
+    ['no result at all', undefined],
+  ])('REL-1073: a successful patch with %s is a field-pruned failure, never propagated', async (_label, result) => {
+    const markCancelPropagated = vi.fn(async () => true);
+    const outcome = await sweepEngine(vi.fn(async () => result), markCancelPropagated).sweepPendingCancellations(10);
+    expect(outcome).toEqual({
+      propagated: 0,
+      failed: 1,
+      failures: [{ runId: 'run_pruned', projectionName: 'prj-pruned', reason: 'field-pruned' }],
+    });
+    expect(markCancelPropagated).not.toHaveBeenCalled();
+  });
+
+  it('REL-1073: a CR that no longer exists still counts as propagated', async () => {
+    const markCancelPropagated = vi.fn(async () => true);
+    const outcome = await sweepEngine(vi.fn(async () => ({ status: 'not-found' as const })), markCancelPropagated)
+      .sweepPendingCancellations(10);
+    expect(outcome).toEqual({ propagated: 1, failed: 0, failures: [] });
+    expect(markCancelPropagated).toHaveBeenCalledExactlyOnceWith('run_pruned', 1, expect.any(Number));
+  });
+
+  it('REL-1073: an immediate cancellation whose flag was pruned is not marked propagated', async () => {
+    const markCancelPropagated = vi.fn(async () => true);
+    const engine = sweepEngine(vi.fn(async () => ({ status: 'patched' as const, cancelRequested: undefined })), markCancelPropagated);
+    const handled = await engine.handleCancellation({
+      runId: 'run_event_2', executionAttempt: 1, projectionName: 'prj-event-2', cancelReason: 'superseded_by_new_head',
+    });
+    expect(handled).toBe(false);
+    expect(markCancelPropagated).not.toHaveBeenCalled();
   });
 });

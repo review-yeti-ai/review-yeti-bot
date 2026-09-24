@@ -6,14 +6,29 @@ import {
   type RunnerMode,
 } from './reviewJobProjection';
 
-import type { ReviewJobProjector } from './reviewJobProjector';
-export type { ReviewJobProjector };
+import type { CancellationPatchResult, ReviewJobProjector } from './reviewJobProjector';
+export type { CancellationPatchResult, ReviewJobProjector };
 
-/** One cancellation the sweep could not apply; carries no upstream error text. */
+/**
+ * One cancellation the sweep could not apply; carries no upstream error text.
+ * `field-pruned`: the API server accepted the patch but the stored object does
+ * not have spec.cancelRequested === true (e.g. a CRD without the field).
+ */
 export interface CancellationSweepFailure {
   runId: string;
   projectionName: string;
+  reason: 'patch-failed' | 'field-pruned';
   statusCode?: number;
+}
+
+/**
+ * REL-1073: only a stored spec.cancelRequested === true (or a CR that no longer
+ * exists) counts as propagated. A 2xx whose object lacks the flag means the
+ * field was pruned, and marking it propagated would stop every retry.
+ */
+function cancellationLanded(result: CancellationPatchResult | undefined): boolean {
+  if (result?.status === 'not-found') return true;
+  return result?.status === 'patched' && result.cancelRequested === true;
 }
 
 /**
@@ -260,11 +275,16 @@ export class ReviewJobDispatchEngine {
     const failures: CancellationSweepFailure[] = [];
     for (const item of pending) {
       try {
-        await this.options.projector.patchCancellation(
+        const result = await this.options.projector.patchCancellation(
           item.projectionName,
           this.options.namespace,
           item.cancelReason,
         );
+        if (!cancellationLanded(result)) {
+          failed++;
+          failures.push({ runId: item.runId, projectionName: item.projectionName, reason: 'field-pruned' });
+          continue;
+        }
         await this.options.repository.markCancelPropagated(item.runId, item.executionAttempt, this.now());
         propagated++;
       } catch (error) {
@@ -277,6 +297,7 @@ export class ReviewJobDispatchEngine {
         failures.push({
           runId: item.runId,
           projectionName: item.projectionName,
+          reason: 'patch-failed',
           ...(statusCode !== undefined ? { statusCode } : {}),
         });
       }
@@ -294,11 +315,12 @@ export class ReviewJobDispatchEngine {
       return false;
     }
     try {
-      await this.options.projector.patchCancellation(
+      const result = await this.options.projector.patchCancellation(
         event.projectionName,
         this.options.namespace,
         event.cancelReason,
       );
+      if (!cancellationLanded(result)) return false;
       await this.options.repository.markCancelPropagated(
         event.runId,
         event.executionAttempt,
