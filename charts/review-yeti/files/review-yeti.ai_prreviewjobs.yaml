@@ -177,6 +177,14 @@ spec:
                   This accepts any registry, and requires every non-node image to be pinned to
                   a sha256 digest. `node:<tag>` remains allowed because the generic-runner mode
                   executes runtime install steps and is not the review worker.
+                  TRUST ASSUMPTION, load-bearing: this constrains INTEGRITY (an image
+                  reference is immutable), not PROVENANCE (who published it). Any registry is
+                  accepted, so whoever can create or patch a PRReviewJob chooses the code the
+                  worker executes. Correct for a self-hosted install where the submitter owns
+                  the cluster; NOT sufficient for a multi-tenant deployment where a
+                  less-trusted principal can write these resources. Multi-tenant installs
+                  MUST restrict PRReviewJob create/patch via RBAC and SHOULD add publisher
+                  verification or an admission-time registry policy.
                 pattern: ^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$
                 type: string
             required:

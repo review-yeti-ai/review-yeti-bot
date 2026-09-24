@@ -388,3 +388,20 @@ func TestWorkerImagePatternMatchesCRD(t *testing.T) {
 			"  crd:      %s\n  exported: %s", spec.Properties["workerImage"].Pattern, v1alpha2.WorkerImagePattern)
 	}
 }
+
+// The workerImage contract constrains integrity (immutable reference) but not
+// provenance (who published it), so the trust boundary moved from the schema to
+// the deployment. This asserts the schema's own documentation states that, so a
+// future relaxation cannot silently drop the warning a multi-tenant operator
+// needs in order to add RBAC or publisher verification.
+func TestWorkerImageDocumentsTheProvenanceAssumption(t *testing.T) {
+	spec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	description := spec.Properties["workerImage"].Description
+	for _, want := range []string{"PROVENANCE", "multi-tenant", "RBAC"} {
+		if !strings.Contains(description, want) {
+			t.Errorf("workerImage description must state the provenance assumption; "+
+				"missing %q.\nThis matters because the pattern accepts any registry, so a "+
+				"less-trusted principal who can write PRReviewJobs chooses executed code.", want)
+		}
+	}
+}

@@ -100,7 +100,15 @@ type PRReviewJobSpec struct {
 // This accepts any registry, and requires every non-node image to be pinned to
 // a sha256 digest. `node:<tag>` remains allowed because the generic-runner mode
 // executes runtime install steps and is not the review worker.
-// +kubebuilder:validation:Pattern=`^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
+	// TRUST ASSUMPTION, load-bearing: this constrains INTEGRITY (an image
+	// reference is immutable), not PROVENANCE (who published it). Any registry is
+	// accepted, so whoever can create or patch a PRReviewJob chooses the code the
+	// worker executes. Correct for a self-hosted install where the submitter owns
+	// the cluster; NOT sufficient for a multi-tenant deployment where a
+	// less-trusted principal can write these resources. Multi-tenant installs
+	// MUST restrict PRReviewJob create/patch via RBAC and SHOULD add publisher
+	// verification or an admission-time registry policy.
+	// +kubebuilder:validation:Pattern=`^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
 	WorkerImage string `json:"workerImage"`
 	// RunnerMode defines whether the worker image is an immutable prebaked container
 	// or a generic runner image that executes runtime install steps. Defaults to prebaked.
@@ -151,6 +159,25 @@ type PRReviewJobSpec struct {
 //
 // If this pattern changes, update the kubebuilder marker below to match, and
 // re-run `make generate`. TestWorkerImagePatternMatchesCRD fails otherwise.
+//
+// TRUST ASSUMPTION, and it is load-bearing. This pattern constrains INTEGRITY
+// (an image reference is immutable) but NOT PROVENANCE (who published it). Any
+// registry is accepted, so whoever can create or patch a PRReviewJob chooses
+// the code the worker executes.
+//
+// That is correct and intended for a self-hosted install, where the submitter
+// owns the cluster. It is NOT sufficient for a multi-tenant deployment in which
+// a less-trusted principal can write these resources: such a principal could
+// direct the worker pod to run their own image with the per-run Secret and the
+// pod's identity. Multi-tenant installs MUST therefore restrict PRReviewJob
+// create/patch via RBAC (today only the control-plane dispatcher creates them)
+// and SHOULD add publisher verification (for example cosign identity bound to
+// the vendor) or an admission-time registry policy.
+//
+// The previous pattern carried a weaker version of this restriction by naming
+// two vendor registries. Removing that was necessary for self-hosting, and it
+// moved the provenance decision from the schema to the deployment — which is
+// why it is written down here rather than left implicit.
 const WorkerImagePattern = `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
 
 type DispatchTimingStage string
