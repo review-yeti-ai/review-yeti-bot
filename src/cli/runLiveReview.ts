@@ -25,13 +25,12 @@ import {
 } from '../qualification/findingFingerprint';
 import {
   isPublishingReviewWorker,
-  githubRetryOptionsFromEnv,
+  createPublishingCheckClient,
   runPublishingReviewWorker,
 } from './publishingReview';
 import { WorkerStatusPoller } from './workerStatusPoller';
 import { recordSupersededWorkerExit } from './workerSupersededExit';
 import { isReviewSuperseded } from '../review/reviewSupersession';
-import { GitHubInstallationClient } from '../github/installationClient';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
 import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
@@ -1747,7 +1746,7 @@ export async function runWorker(
     }
     // REL-1103: transient GitHub responses on check create/update retry, but
     // never past this worker's terminal deadline.
-    const checkClient = new GitHubInstallationClient({ token, retry: githubRetryOptionsFromEnv(workerEnv) });
+    const checkClient = createPublishingCheckClient(token, workerEnv);
 
     const rootAbortController = new AbortController();
     let terminationSignal: NodeJS.Signals | undefined;

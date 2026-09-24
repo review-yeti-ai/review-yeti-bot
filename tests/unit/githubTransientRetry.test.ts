@@ -10,7 +10,7 @@ import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { CommentPublisher } from '../../src/github/commentPublisher';
 import { loadSameHeadReviewSource } from '../../src/github/qualificationReader';
 import { logger } from '../../src/utils/logger';
-import { githubRetryOptionsFromEnv } from '../../src/cli/publishingReview';
+import { createPublishingCheckClient, githubRetryOptionsFromEnv } from '../../src/cli/publishingReview';
 
 // REL-1103: PRReviewJob ct-review-c3924d5e (ct-infrastructure#778) failed on a
 // single `GitHub API 503 .../check-runs` ("No server is currently available to
@@ -106,6 +106,33 @@ describe('githubRetryOptionsFromEnv (worker wiring)', () => {
     await expect(instance.updateCheck({ owner: 'o', repo: 'r', checkId: 7 })).rejects.toThrow(/^GitHub API 503 /u);
     expect(sleep).not.toHaveBeenCalled();
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createPublishingCheckClient (the live worker check client)', () => {
+  const env = (deadline: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(deadline).toISOString() });
+
+  it('is bounded by REVIEW_TERMINAL_DEADLINE: a retry that cannot fit is not attempted', async () => {
+    const fetchImplementation = vi.fn()
+      .mockResolvedValueOnce(unavailable(503))
+      .mockResolvedValueOnce(json({ id: 7 }));
+    const sleep = vi.fn(async () => undefined);
+    // Job-kill point is 1 s away (deadline - 60 s reserve).
+    const checks = createPublishingCheckClient(token, env(Date.now() + 61_000), { fetchImplementation, sleep });
+    await expect(checks.updateCheck({ owner: 'o', repo: 'r', checkId: 7 })).rejects.toThrow(/^GitHub API 503 /u);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('retries a transient 503 when the deadline leaves room (and with no deadline forwarded)', async () => {
+    for (const workerEnv of [env(Date.now() + 30 * 60_000), {}]) {
+      const fetchImplementation = vi.fn()
+        .mockResolvedValueOnce(unavailable(503))
+        .mockResolvedValueOnce(json({ id: 7 }));
+      const checks = createPublishingCheckClient(token, workerEnv, { fetchImplementation, sleep: async () => undefined });
+      await checks.updateCheck({ owner: 'o', repo: 'r', checkId: 7 });
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    }
   });
 });
 
