@@ -171,11 +171,11 @@ describe('Two-Tier Cancellation Architecture', () => {
             },
           },
         },
-        {
-          headers: {
-            'Content-Type': 'application/merge-patch+json',
-          },
-        },
+        // REL-1073: a client-node Configuration carrying the header middleware,
+        // not a `{ headers }` object (which the generated client ignores). The
+        // wire-level content type is asserted against a real HTTP server in
+        // kubernetesReviewJobProjector.test.ts.
+        expect.objectContaining({ middleware: expect.any(Array) }),
       );
     });
 
