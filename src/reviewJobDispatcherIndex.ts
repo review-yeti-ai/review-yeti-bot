@@ -185,7 +185,14 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       await reaper?.runOnce(controller.signal);
       if (controller.signal.aborted) return { status: 'idle' };
       try {
-        await engine.sweepPendingCancellations();
+        const sweep = await engine.sweepPendingCancellations();
+        if (sweep.failed > 0) {
+          logger.warn('Review cancellation sweep could not cancel superseded PRReviewJobs', {
+            propagated: sweep.propagated,
+            failed: sweep.failed,
+            failures: sweep.failures,
+          });
+        }
       } catch (cancelErr) {
         logger.warn('Review cancellation sweep failed; continuing dispatch cycle', {
           error: cancelErr instanceof Error ? cancelErr.message : String(cancelErr),

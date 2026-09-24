@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
   loop: vi.fn(), error: vi.fn(), loadFromCluster: vi.fn(),
   initTelemetry: vi.fn(), metricsConfig: vi.fn(() => ({ host: '0.0.0.0', port: 9090 })),
   metricsServer: {}, createMetricsServer: vi.fn(), listenMetricsServer: vi.fn(), closeMetricsServer: vi.fn(),
-  loopHealth: vi.fn(), markCycle: vi.fn(), markStopping: vi.fn(),
+  loopHealth: vi.fn(), markCycle: vi.fn(), markStopping: vi.fn(), warn: vi.fn(),
+  sweep: vi.fn(), dispatch: vi.fn(),
 }));
 vi.mock('@kubernetes/client-node', () => ({
   KubeConfig: class { loadFromCluster = mocks.loadFromCluster; makeApiClient = () => ({}); },
@@ -29,7 +30,11 @@ vi.mock('../../src/persistence/reviewCompletionRepository', () => ({
 }));
 vi.mock('../../src/k8s/kubernetesReviewJobProjector', () => ({ KubernetesReviewJobProjector: class {} }));
 vi.mock('../../src/k8s/reviewJobDispatchEngine', () => ({
-  ReviewJobDispatchEngine: vi.fn(function (options) { mocks.engine(options); }),
+  ReviewJobDispatchEngine: vi.fn(function (this: Record<string, unknown>, options) {
+    mocks.engine(options);
+    this.sweepPendingCancellations = mocks.sweep;
+    this.runOnce = mocks.dispatch;
+  }),
 }));
 vi.mock('../../src/k8s/reviewJobDispatcherRuntime', () => ({
   reviewJobDispatcherConfigFromEnv: () => ({ workerId: 'dispatcher-test', namespace: 'ct-review-system',
@@ -37,7 +42,7 @@ vi.mock('../../src/k8s/reviewJobDispatcherRuntime', () => ({
     idleDelayMs: 1_000, activeDelayMs: 50, errorDelayMs: 5_000 }),
   runReviewJobDispatcherLoop: mocks.loop,
 }));
-vi.mock('../../src/utils/logger', () => ({ logger: { error: mocks.error, info: vi.fn(), warn: vi.fn() } }));
+vi.mock('../../src/utils/logger', () => ({ logger: { error: mocks.error, info: vi.fn(), warn: mocks.warn } }));
 vi.mock('../../src/telemetry', () => ({ initTelemetry: mocks.initTelemetry }));
 vi.mock('../../src/dispatcherMetricsServer', () => ({
   dispatcherMetricsConfigFromEnv: mocks.metricsConfig,
@@ -179,6 +184,34 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     expect(sigterm).toBeDefined();
     (sigterm![1] as () => void)();
     expect(mocks.markStopping).toHaveBeenCalledOnce();
+  });
+
+  describe('REL-1073: cancellation sweep failures are logged, not swallowed', () => {
+    async function runCycle() {
+      await callback();
+      mocks.warn.mockClear(); // drop the startup "no App credentials" warning
+      const loop = mocks.loop.mock.calls[0][0] as { runOnce: () => Promise<unknown> };
+      mocks.dispatch.mockResolvedValue({ status: 'idle' });
+      return loop.runOnce();
+    }
+
+    it('warns with the per-run failures when a cancel patch is refused', async () => {
+      const failures = [{ runId: 'run_1', projectionName: 'prj-1', statusCode: 403 }];
+      mocks.sweep.mockResolvedValue({ propagated: 0, failed: 1, failures });
+      await expect(runCycle()).resolves.toEqual({ status: 'idle' });
+      expect(mocks.warn).toHaveBeenCalledExactlyOnceWith(
+        'Review cancellation sweep could not cancel superseded PRReviewJobs',
+        { propagated: 0, failed: 1, failures },
+      );
+      expect(mocks.dispatch).toHaveBeenCalledOnce();
+    });
+
+    it('stays quiet when every pending cancel propagated', async () => {
+      mocks.sweep.mockResolvedValue({ propagated: 2, failed: 0, failures: [] });
+      await runCycle();
+      expect(mocks.warn).not.toHaveBeenCalled();
+      expect(mocks.dispatch).toHaveBeenCalledOnce();
+    });
   });
 
   it('closes storage when the metrics listener cannot bind', async () => {

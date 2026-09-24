@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { PatchStrategy, setHeaderOptions } from '@kubernetes/client-node';
 import type { ReviewJobProjector } from './reviewJobProjector';
 import { deriveRunSecretExecutionAttempt, type PRReviewJobProjection } from './reviewJobProjection';
 
@@ -131,7 +132,9 @@ function assertExact(existing: unknown, projection: PRReviewJobProjection): void
 
 function apiFailure(operation: 'get' | 'create' | 'patch', error: unknown): Error {
   const status = kubernetesStatusCode(error);
-  return new Error(`Kubernetes PRReviewJob ${operation} failed${status ? ` with status ${status}` : ''}`);
+  const failure = new Error(`Kubernetes PRReviewJob ${operation} failed${status ? ` with status ${status}` : ''}`);
+  // Only the structured status is carried forward, never the upstream error.
+  return status !== undefined ? Object.assign(failure, { statusCode: status }) : failure;
 }
 
 export class KubernetesReviewJobProjector implements ReviewJobProjector {
@@ -196,11 +199,11 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
           name,
           body: patchBody,
         },
-        {
-          headers: {
-            'Content-Type': 'application/merge-patch+json',
-          },
-        },
+        // REL-1073: the second argument is a client Configuration, not fetch
+        // options. A plain `{ headers }` object is ignored and the generated
+        // client falls back to application/json-patch+json, which the API server
+        // rejects for this object body -- so no cancel was ever applied.
+        setHeaderOptions('Content-Type', PatchStrategy.MergePatch),
       );
     } catch (error) {
       if (kubernetesStatusCode(error) === 404) {
