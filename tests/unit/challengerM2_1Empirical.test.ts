@@ -1014,7 +1014,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
             err.statusCode = 500;
             throw err;
           }
-          return {};
+          return { spec: { cancelRequested: true } };
         }),
       };
       const projector = new KubernetesReviewJobProjector(mockK8sClient as any);
@@ -1033,7 +1033,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
       expect(sweep1).toEqual({
         propagated: 0,
         failed: 1,
-        failures: [{ runId, projectionName: 'prj-flaky-cr', statusCode: 500 }],
+        failures: [{ runId, projectionName: 'prj-flaky-cr', reason: 'patch-failed', statusCode: 500 }],
       });
       expect(ob.cancel_propagated_at).toBeNull(); // Still unpropagated!
 
@@ -1065,7 +1065,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
 
       const projector = {
         ensure: vi.fn(),
-        patchCancellation: vi.fn(async () => undefined),
+        patchCancellation: vi.fn(async () => ({ status: 'patched' as const, cancelRequested: true })),
       };
 
       const engine = new ReviewJobDispatchEngine({

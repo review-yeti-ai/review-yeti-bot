@@ -37,8 +37,10 @@ const (
 )
 
 // PRReviewJobSpec is an immutable, non-secret projection of an authenticated review run.
-// The CRD schema rejects updates and all fields not declared here.
-// +kubebuilder:validation:XValidation:rule="self == oldSelf || (has(self.cancelRequested) && self.cancelRequested == true && (!has(oldSelf.cancelRequested) || oldSelf.cancelRequested == false) && self.runId == oldSelf.runId && self.deliveryId == oldSelf.deliveryId && self.headSha == oldSelf.headSha)",message="PRReviewJob spec is immutable except for cancelRequested"
+// The CRD schema rejects all fields not declared here and every spec update
+// except the one-way cancelRequested transition (REL-1073).
+// +kubebuilder:validation:XValidation:rule="self == oldSelf || (has(self.cancelRequested) && self.cancelRequested && !(has(oldSelf.cancelRequested) && oldSelf.cancelRequested))",message="PRReviewJob spec is immutable except for a one-way cancelRequested false-to-true transition"
+// +kubebuilder:validation:XValidation:rule="self.runId == oldSelf.runId && self.deliveryId == oldSelf.deliveryId && self.repositoryId == oldSelf.repositoryId && self.repo == oldSelf.repo && self.prNumber == oldSelf.prNumber && self.headSha == oldSelf.headSha && self.baseSha == oldSelf.baseSha && self.receivedAt == oldSelf.receivedAt && self.terminalDeadline == oldSelf.terminalDeadline && self.policyDigest == oldSelf.policyDigest && self.configDigest == oldSelf.configDigest && self.publicationMode == oldSelf.publicationMode && self.workerImage == oldSelf.workerImage && self.runSecretName == oldSelf.runSecretName && has(self.executionAttempt) == has(oldSelf.executionAttempt) && (!has(self.executionAttempt) || self.executionAttempt == oldSelf.executionAttempt) && has(self.preparedReview) == has(oldSelf.preparedReview) && (!has(self.preparedReview) || self.preparedReview == oldSelf.preparedReview) && has(self.runnerMode) == has(oldSelf.runnerMode) && (!has(self.runnerMode) || self.runnerMode == oldSelf.runnerMode) && has(self.qualificationProfile) == has(oldSelf.qualificationProfile) && (!has(self.qualificationProfile) || self.qualificationProfile == oldSelf.qualificationProfile) && has(self.qualificationModel) == has(oldSelf.qualificationModel) && (!has(self.qualificationModel) || self.qualificationModel == oldSelf.qualificationModel)",message="PRReviewJob spec fields other than cancelRequested and cancelReason are immutable"
 // +kubebuilder:validation:XValidation:rule="duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')",message="terminalDeadline must be between 15 and 60 minutes after receivedAt"
 // +kubebuilder:validation:XValidation:rule="(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')",message="qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model"
 // +kubebuilder:validation:XValidation:rule="!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))",message="preparedReview requires the prebaked app-gate lane"
@@ -105,9 +107,14 @@ type PRReviewJobSpec struct {
 	// +optional
 	QualificationModel string `json:"qualificationModel,omitempty"`
 	// CancelRequested indicates that the review run was superseded or explicitly cancelled.
+	// It is the only spec field that may change after creation, and only from
+	// absent/false to true (REL-1073).
 	// +optional
 	CancelRequested *bool `json:"cancelRequested,omitempty"`
-	// CancelReason records the reason why cancellation was requested.
+	// CancelReason records the reason why cancellation was requested. It may be
+	// set only in the same update that sets cancelRequested to true.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	CancelReason *string `json:"cancelReason,omitempty"`
 }
