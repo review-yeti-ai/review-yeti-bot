@@ -7,7 +7,15 @@ import {
 } from './reviewJobProjection';
 
 import type { ReviewJobProjector } from './reviewJobProjector';
+import { kubernetesStatusCode } from './kubernetesReviewJobProjector';
 export type { ReviewJobProjector };
+
+/** One cancellation the sweep could not apply; carries no upstream error text. */
+export interface CancellationSweepFailure {
+  runId: string;
+  projectionName: string;
+  statusCode?: number;
+}
 
 /**
  * Provisions the per-run Secret a publishing review needs, before its PRReviewJob
@@ -235,17 +243,22 @@ export class ReviewJobDispatchEngine {
       : { status: 'lease-lost', runId: claim.runId };
   }
 
-  async sweepPendingCancellations(limit = 10): Promise<{ propagated: number; failed: number }> {
+  async sweepPendingCancellations(limit = 10): Promise<{
+    propagated: number;
+    failed: number;
+    failures: CancellationSweepFailure[];
+  }> {
     if (
       !this.options.repository.findPendingCancellations ||
       !this.options.repository.markCancelPropagated ||
       typeof this.options.projector.patchCancellation !== 'function'
     ) {
-      return { propagated: 0, failed: 0 };
+      return { propagated: 0, failed: 0, failures: [] };
     }
     const pending = await this.options.repository.findPendingCancellations(limit);
     let propagated = 0;
     let failed = 0;
+    const failures: CancellationSweepFailure[] = [];
     for (const item of pending) {
       try {
         await this.options.projector.patchCancellation(
@@ -255,11 +268,19 @@ export class ReviewJobDispatchEngine {
         );
         await this.options.repository.markCancelPropagated(item.runId, item.executionAttempt, this.now());
         propagated++;
-      } catch {
+      } catch (error) {
         failed++;
+        // REL-1073: surfaced so a permanently failing patch (e.g. a 403 from a
+        // Role without `patch`) is visible instead of retrying silently forever.
+        const statusCode = kubernetesStatusCode(error);
+        failures.push({
+          runId: item.runId,
+          projectionName: item.projectionName,
+          ...(statusCode !== undefined ? { statusCode } : {}),
+        });
       }
     }
-    return { propagated, failed };
+    return { propagated, failed, failures };
   }
 
   async handleCancellation(event: {

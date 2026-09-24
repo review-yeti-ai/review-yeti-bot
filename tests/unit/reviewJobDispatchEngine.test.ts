@@ -547,7 +547,7 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
     });
 
     const result = await engine.sweepPendingCancellations(10);
-    expect(result).toEqual({ propagated: 2, failed: 0 });
+    expect(result).toEqual({ propagated: 2, failed: 0, failures: [] });
     expect(findPendingCancellations).toHaveBeenCalledWith(10);
     expect(patchCancellation).toHaveBeenCalledWith('prj-run-1', 'test-namespace', 'superseded_by_new_head');
     expect(patchCancellation).toHaveBeenCalledWith('prj-run-2', 'test-namespace', 'user_cancelled');
@@ -556,8 +556,10 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
   });
 
   it('tolerates individual patch failure during sweep without aborting subsequent items', async () => {
+    // REL-1073: a 403 (Role without `patch`) must surface with its status, not
+    // just bump a counter nobody reads.
     const patchCancellation = vi.fn()
-      .mockRejectedValueOnce(new Error('Kube API error'))
+      .mockRejectedValueOnce(Object.assign(new Error('Kubernetes PRReviewJob patch failed with status 403'), { statusCode: 403 }))
       .mockResolvedValueOnce(undefined);
     const findPendingCancellations = vi.fn(async () => [
       { runId: 'run_fail', executionAttempt: 1, projectionName: 'prj-fail' },
@@ -585,7 +587,11 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
     });
 
     const result = await engine.sweepPendingCancellations(10);
-    expect(result).toEqual({ propagated: 1, failed: 1 });
+    expect(result).toEqual({
+      propagated: 1,
+      failed: 1,
+      failures: [{ runId: 'run_fail', projectionName: 'prj-fail', statusCode: 403 }],
+    });
     expect(markCancelPropagated).toHaveBeenCalledTimes(1);
     expect(markCancelPropagated).toHaveBeenCalledWith('run_ok', 1, expect.any(Number));
   });
