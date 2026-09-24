@@ -106,6 +106,7 @@ import {
 } from './reviewTask';
 import { normalizeRepositoryVisibility, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { logger } from '../utils/logger';
+import { FIND_FILES_TOOL_GUIDE } from './pathMatch';
 import type {
   LaneAggregateUsage,
   LaneTurnUsage,
@@ -623,6 +624,7 @@ function buildSystemPrompt(repository: string): string {
     `You have access to read-only investigation tools via {"tool":"tool_name","args":{}}:`,
     `- Code Reading: view_file, read_file, get_diff`,
     `- AST & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt`,
+    `- ${FIND_FILES_TOOL_GUIDE}`,
     `- Documentation: fetch_docs, context7_search`,
     `- Fleet MCP (ct-mcp): ct_impact, ct_mesh_query, ct_mesh_stats, knowledge_search, knowledge_get, advise_blocker, health`,
     ``,

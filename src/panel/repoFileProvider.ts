@@ -1,6 +1,7 @@
 import type { GitHubInstallationClient } from '../github/installationClient';
 import { logger } from '../utils/logger';
 import type { RepoFileProvider } from './panelEngine';
+import { createPathMatcher } from './pathMatch';
 
 /**
  * Wires the panel engine's `RepoFileProvider` (see `src/panel/panelEngine.ts`) to the live GitHub
@@ -10,8 +11,10 @@ import type { RepoFileProvider } from './panelEngine';
  * could not be located to confirm it exists" -- a false P1 that survived unchanged across review
  * rounds because nothing about the diff-scoped miss ever changed.
  *
- * The full-repository tree is fetched at most once per run (memoized) and only if a persona tool
- * call actually misses in the diff, so a review with no such tool call pays no extra API cost.
+ * The full-repository tree is fetched at most once per run (memoized) and only when a persona
+ * calls find_files, or read_file on a path the contents API does not return. A review with no such
+ * tool call pays no extra API cost. The tree lists every blob (code, JSON, YAML, fixtures); there is
+ * no file-type filter.
  */
 export function createRepoFileProvider(github: GitHubInstallationClient, owner: string, repo: string, headSha: string): RepoFileProvider {
   let treePromise: Promise<{ paths: string[]; truncated: boolean }> | undefined;
@@ -28,8 +31,8 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
   return {
     async findFiles(query: string): Promise<string[]> {
       const { paths, truncated } = await loadTree();
-      const needle = query.toLowerCase();
-      const hits = paths.filter((path) => path.toLowerCase().includes(needle));
+      const matches = createPathMatcher(query);
+      const hits = paths.filter((path) => matches(path));
       if (truncated) {
         logger.warn('Repository tree truncated by GitHub API during persona find_files lookup; results may be incomplete', { owner, repo, headSha, query });
       }

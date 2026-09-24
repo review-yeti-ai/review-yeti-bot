@@ -31,6 +31,7 @@ import {
   throwIfPanelAborted,
   type RepoFileProvider,
 } from './panelEngine';
+import { createPathMatcher, isGlobQuery, normalizeRepoPath } from './pathMatch';
 
 /** Read-only inputs a tool call may need. Mirrors the subset of `invoke()`'s options the original block closed over. */
 export interface ToolRuntimeContext {
@@ -63,7 +64,8 @@ export async function runReadOnlyTool(
   const changedFiles = context.changedFiles;
 
   const tName = toolCall.tool;
-  const targetPath = toolCall.args?.path || toolCall.args?.filePath || '';
+  // A leading './' or '/' would make the contents API return 404 for a file that exists (REL-1102).
+  const targetPath = normalizeRepoPath(String(toolCall.args?.path || toolCall.args?.filePath || ''));
   const searchQ = toolCall.args?.query || toolCall.args?.pattern || '';
 
   // Whitelist check: Code Reading, Context Searching, Dashboard MCPs, Zoekt, Fleet MCPs
@@ -210,8 +212,8 @@ export async function runReadOnlyTool(
                 : `${prefixNote}Full current content:\n${shown}`);
           } else {
             toolScope = 'full-repository';
-            isExhaustive = true;
-            toolOutput += `File '${targetPath}' does not exist in the repository at the reviewed head (checked the full repository tree, not just the diff).`;
+            toolOutput += await describeUnreadablePath(targetPath, options.repoFileProvider, options?.signal)
+              .then((d) => { isExhaustive = d.exhaustive; return d.text; });
           }
         } catch (err: any) {
           toolScope = 'full-repository';
@@ -231,31 +233,44 @@ export async function runReadOnlyTool(
         ? `Matches found in diff: ${hits.map((h: any) => h.path).join(', ')}`
         : `No matches for '${searchQ}' in the diff. This tool's text search scope is changed files only, not the full repository -- a match may still exist outside the diff. Use find_files/read_file to check a specific file directly.`;
     } else if (tName === 'find_files') {
-      const hits = changedFiles.filter((f: any) => f.path.toLowerCase().includes(searchQ.toLowerCase()));
-      if (hits.length > 0) {
-        toolScope = 'changed-patches-only';
-        isExhaustive = false;
-        toolOutput += `Files found in diff: ${hits.map((h: any) => h.path).join(', ')}`;
-      } else if (options?.repoFileProvider) {
+      // REL-1102: glob-aware matching, and the full tree is searched even when the diff has hits.
+      // Returning only the diff hits used to hide committed files outside the diff (for example
+      // a JSON fixture) without saying so.
+      const matches = createPathMatcher(searchQ);
+      const how = matches.mode === 'glob' ? 'glob' : 'substring';
+      const diffHits: string[] = changedFiles.map((f: any) => String(f.path)).filter((p: string) => matches(p));
+      const listHits = (hits: string[]) => (hits.length > REPO_FIND_FILES_MAX_HITS
+        ? `${hits.slice(0, REPO_FIND_FILES_MAX_HITS).join(', ')} (showing the first ${REPO_FIND_FILES_MAX_HITS} of ${hits.length}; narrow the query for the rest)`
+        : hits.join(', '));
+      if (options?.repoFileProvider) {
         try {
-          const repoHits = await raceWithPanelAbort(options.repoFileProvider.findFiles(searchQ), options?.signal);
+          const found = await raceWithPanelAbort(options.repoFileProvider.findFiles(searchQ), options?.signal);
+          const repoHits: string[] = Array.isArray(found) ? found : [];
           const truncated = await raceWithPanelAbort(options.repoFileProvider.treeTruncated?.() ?? Promise.resolve(false), options?.signal);
+          // Diff paths first (the PR's own files), then the rest of the tree. A path deleted by
+          // the PR is in the diff but not in the tree at head, so it stays in the list.
+          const all = [...new Set([...diffHits, ...repoHits])];
           toolScope = 'full-repository';
           isExhaustive = !truncated;
-          if (repoHits.length > REPO_FIND_FILES_MAX_HITS) {
-            toolOutput += `No matches in the diff, but ${repoHits.length} paths match in the full repository at the reviewed head. Showing the first ${REPO_FIND_FILES_MAX_HITS}; narrow the query for the rest: ${repoHits.slice(0, REPO_FIND_FILES_MAX_HITS).join(', ')}`;
-          } else if (repoHits.length > 0) {
-            toolOutput += `No matches in the diff, but found in the full repository at the reviewed head: ${repoHits.join(', ')}`;
+          const truncNote = ' The repository tree was TRUNCATED by GitHub (very large repository), so this list may be incomplete.';
+          if (all.length > 0) {
+            toolOutput += `Found ${all.length} path(s) matching '${searchQ}' (${how} match, full-repository tree at the reviewed head, not just the diff): ${listHits(all)}`
+              + (truncated ? truncNote : '');
           } else if (truncated) {
-            toolOutput += `No files matching '${searchQ}' in the diff, and none in the PORTION of the repository tree the API returned -- the tree was truncated by GitHub, so the file may still exist. Do not report it as missing on this basis; read_file on the exact path is conclusive.`;
+            toolOutput += `No files matching '${searchQ}' (${how} match) in the diff, and none in the PORTION of the repository tree the API returned -- the tree was truncated by GitHub, so the file may still exist. Do not report it as missing on this basis; read_file on the exact path is conclusive.`;
           } else {
-            toolOutput += `No files matching '${searchQ}' found anywhere in the repository at the reviewed head (full-repository search, not just the diff).`;
+            toolOutput += `No files matching '${searchQ}' (${how} match) found anywhere in the repository at the reviewed head (full-repository search, not just the diff).`;
           }
         } catch (err: any) {
           toolScope = 'full-repository';
           isExhaustive = false;
-          toolOutput += `Full-repository file search for '${searchQ}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`;
+          toolOutput += `Full-repository file search for '${searchQ}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`
+            + (diffHits.length > 0 ? ` Matching files in the diff: ${listHits(diffHits)}` : '');
         }
+      } else if (diffHits.length > 0) {
+        toolScope = 'changed-patches-only';
+        isExhaustive = false;
+        toolOutput += `Files found in diff: ${listHits(diffHits)} (${how} match; changed files only, so other matching files may still exist elsewhere in the repository)`;
       } else {
         toolScope = 'changed-patches-only';
         isExhaustive = false;
@@ -336,4 +351,66 @@ export async function runReadOnlyTool(
   throwIfPanelAborted(options?.signal);
 
   return { toolOutput, toolScope, isExhaustive };
+}
+
+/**
+ * REL-1102: the contents API returned no file for `path`. That alone does not prove the file is
+ * absent. The API also returns no inline content for a glob, a directory, or a file too large to
+ * inline. Check the repository tree before telling the model the file does not exist.
+ */
+async function describeUnreadablePath(
+  path: string,
+  provider: RepoFileProvider,
+  signal?: AbortSignal,
+): Promise<{ text: string; exhaustive: boolean }> {
+  let treeHits: string[];
+  let truncated = false;
+  try {
+    const found = await raceWithPanelAbort(provider.findFiles(path), signal);
+    treeHits = Array.isArray(found) ? found : [];
+    truncated = await raceWithPanelAbort(provider.treeTruncated?.() ?? Promise.resolve(false), signal);
+  } catch (err: any) {
+    throwIfPanelAborted(signal);
+    return {
+      text: `The contents API returned no file at '${path}', and the repository-tree cross-check failed (${err?.message || String(err)}). This is not confirmation the file is missing -- do not report it as absent on this basis.`,
+      exhaustive: false,
+    };
+  }
+  const shown = (hits: string[]) => hits.slice(0, REPO_FIND_FILES_MAX_HITS).join(', ')
+    + (hits.length > REPO_FIND_FILES_MAX_HITS ? ` (first ${REPO_FIND_FILES_MAX_HITS} of ${hits.length})` : '');
+  if (treeHits.includes(path)) {
+    return {
+      text: `File '${path}' EXISTS in the repository tree at the reviewed head, but its content could not be fetched through the contents API (typically a large or binary file). Do not report it as missing.`,
+      exhaustive: false,
+    };
+  }
+  const dirPrefix = `${path.replace(/\/+$/u, '')}/`;
+  const children = treeHits.filter((p) => p.startsWith(dirPrefix));
+  if (children.length > 0) {
+    return {
+      text: `'${path}' is a directory in the repository at the reviewed head, not a file. It contains: ${shown(children)}. Call read_file on one of these exact paths.`,
+      exhaustive: true,
+    };
+  }
+  if (isGlobQuery(path)) {
+    return treeHits.length > 0
+      ? {
+        text: `'${path}' is a pattern, not a single file path; read_file needs one exact path. Matching files at the reviewed head: ${shown(treeHits)}.`,
+        exhaustive: !truncated,
+      }
+      : {
+        text: `'${path}' is a pattern, not a single file path; read_file needs one exact path. Use find_files to list matching files${truncated ? ' (note: the repository tree was truncated by GitHub, so a zero-hit search is not proof of absence)' : ''}.`,
+        exhaustive: false,
+      };
+  }
+  if (truncated) {
+    return {
+      text: `The contents API returned no file at '${path}', and it is not in the PORTION of the repository tree GitHub returned (the tree was truncated). Treat this as probably absent but not proven; do not raise a blocking finding on this basis alone.`,
+      exhaustive: false,
+    };
+  }
+  return {
+    text: `File '${path}' does not exist in the repository at the reviewed head (checked the full repository tree, not just the diff).`,
+    exhaustive: true,
+  };
 }
