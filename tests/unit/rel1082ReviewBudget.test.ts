@@ -461,6 +461,40 @@ describe('attachReviewBudgetDisclosure', () => {
     expect(result.truncatedFiles.map((file: any) => file.path)).toEqual(['src/other.ts']);
   });
 
+  it('keeps a security-sensitive file the lane got only as the 20k cut in the truncation disclosure, and names it', () => {
+    const cut = cutCandidate('src/auth/huge.ts', MAX_PACKED_DIFF_CHARS + 10_000, 'h');
+    const lane = packLaneBudget('sec-lane', [cut]);
+    expect(lane.entries.get('src/auth/huge.ts')!.depth).toBe('truncated');
+    const result = attachReviewBudgetDisclosure({
+      personas: [{ id: 'sec-lane' }],
+      truncatedFiles: [{ path: 'src/auth/huge.ts', originalChars: cut.wholePatch!.length, keptChars: MAX_FILE_PATCH_CHARS }],
+    }, { scope: 'per-lane', packs: new Map([['sec-lane', lane]]) }) as any;
+    expect(result.truncatedFiles.map((file: any) => file.path)).toEqual(['src/auth/huge.ts']);
+    const lines = renderReviewBudgetSummary(result.reviewBudget).join('\n');
+    expect(lines).toContain(', 1 cut at the per-file limit;');
+    expect(lines).toContain('Security-sensitive, over the request cap, cut at the per-file limit: `src/auth/huge.ts`');
+  });
+
+  it('lists not-deeply-reviewed files, caps long lists, and sanitizes author-chosen paths', () => {
+    const lane = packLaneBudget('arch-lane', [
+      ...Array.from({ length: 3 }, (_, i) => candidate(`src/auth/s${i}.ts`, 45_000, `a${i}`)),
+      ...Array.from({ length: 80 }, (_, i) => candidate(`docs/page${String(i).padStart(2, '0')}.md`, 18_000, `d${i}`)),
+      candidate('src/we`ird<name>.ts', 18_000, 'w'),
+    ]);
+    const notDeep = lane.disclosure.files.filter((file) => file.depth === 'not-deeply-reviewed');
+    expect(notDeep.length).toBeGreaterThan(15);
+    const lines = renderReviewBudgetSummary({ ordering: 'deterministic-category', requestCapBytes: 1, lanes: [lane.disclosure] }).join('\n');
+    expect(lines).toMatch(/Not deeply reviewed: `docs\/page\d\d\.md`/u);
+    expect(lines).toMatch(new RegExp(`\\+${notDeep.length - 15} more`, 'u'));
+    expect(lines).not.toContain('we`ird');
+    expect(lines).not.toContain('<name>');
+  });
+
+  it('attaches nothing when no budgeted lane ran', () => {
+    const allSkipped = { personas: [{ id: 'sec-lane', notApplicable: true }], truncatedFiles: base.truncatedFiles };
+    expect(attachReviewBudgetDisclosure(allSkipped, plan)).toBe(allSkipped);
+  });
+
   it('leaves a fast-ship result and a budget-off result unchanged', () => {
     expect(attachReviewBudgetDisclosure({ ...base, isFastShip: true }, plan)).toEqual({ ...base, isFastShip: true });
     expect(attachReviewBudgetDisclosure(base, null)).toBe(base);
@@ -685,7 +719,10 @@ describe('composed engine wiring', () => {
   });
 
   // Two ~512 KiB read_file results in the plan phase and two in a task's work phase.
-  async function composedRequests(reviewBudget?: ReviewBudgetInput): Promise<string[]> {
+  async function composedRequests(
+    reviewBudget?: ReviewBudgetInput,
+    tool: { tool: string; args: Record<string, unknown> } = { tool: 'read_file', args: { path: 'vendor/huge.txt' } },
+  ): Promise<string[]> {
     const requests: string[] = [];
     let planCalls = 0;
     let workCalls = 0;
@@ -700,7 +737,7 @@ describe('composed engine wiring', () => {
         const work = all.includes('WORK TURN');
         const calls = work ? ++workCalls : ++planCalls;
         const body = calls <= 2
-          ? { tool: 'read_file', args: { path: 'vendor/huge.txt' } }
+          ? tool
           : work
             ? { nonce, task: 't1', status: 'COMPLETE', findings: [] }
             : { nonce, tasks: [{ id: 't1', dimension: 'security', paths: ['src/core.ts', 'tests/core.test.ts'], question: 'q', rationale: 'r' }] };
@@ -728,6 +765,34 @@ describe('composed engine wiring', () => {
     for (const body of requests) expect(Buffer.byteLength(body)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
     expect(plan.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
     expect(work.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
+  });
+
+  // The last message of the request after each phase's first tool call is that tool's result.
+  function toolResults(requests: string[]): { plan: string; work: string } {
+    const last = (body: string) => {
+      const messages = JSON.parse(body) as Array<{ content: unknown }>;
+      return String(messages[messages.length - 1].content);
+    };
+    const plan = requests.filter((body) => !body.includes('WORK TURN'));
+    const work = requests.filter((body) => body.includes('WORK TURN'));
+    return { plan: last(plan[1]), work: last(work[1]) };
+  }
+
+  it('with the flag: get_diff in the plan and work phases returns the whole patch of a file sent whole', async () => {
+    const { plan, work } = toolResults(await composedRequests(ON, { tool: 'get_diff', args: { path: 'src/core.ts' } }));
+    for (const result of [plan, work]) {
+      expect(result).toContain('[PI_TOOL_RESULT]');
+      expect(result).toContain('core_TAIL_MARKER');
+    }
+  });
+
+  it('without the flag: get_diff in both phases returns today\'s 20k-cut patch', async () => {
+    const { plan, work } = toolResults(await composedRequests(undefined, { tool: 'get_diff', args: { path: 'src/core.ts' } }));
+    for (const result of [plan, work]) {
+      expect(result).toContain('[PI_TOOL_RESULT]');
+      expect(result).not.toContain('core_TAIL_MARKER');
+      expect(result).toContain('Diff truncated to 20k');
+    }
   });
 
   it('without the flag the same composed conversation passes the proxy limit', async () => {
