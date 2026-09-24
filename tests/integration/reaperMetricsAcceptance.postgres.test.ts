@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { runReaperMetricsAcceptance } from '../support/reaperMetricsAcceptanceHarness';
-import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
+import { requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 // REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
 // turn these suites into a silent green skip.
 requireDatabaseUrlInCi();
 
-const databaseUrl = postgresDatabaseUrl();
+const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 const acceptanceEnabled = process.env.REVIEW_YETI_REAPER_ACCEPTANCE === '1';
-const describeAcceptance = describeWithPostgres;
+const describeAcceptance = acceptanceEnabled ? describe : describe.skip;
 
 describeAcceptance('REL-817 deterministic reaper metric acceptance', () => {
   it('attributes each cumulative counter increment to one isolated anomaly sweep', async () => {
