@@ -152,6 +152,33 @@ describe('network errors (no HTTP status)', () => {
   });
 });
 
+describe('server-directed wait cap (maxServerWaitMs) without a deadline', () => {
+  const rateLimited = (retryAfter: string) => json({ message: 'rate' }, 429, { 'retry-after': retryAfter });
+
+  it('returns a 429 whose Retry-After exceeds the cap immediately instead of sleeping', async () => {
+    const attempt = vi.fn().mockResolvedValue(rateLimited('120'));
+    const sleep = vi.fn(async () => undefined);
+    const result = await withGitHubRetry<Response>({ operation: 'GET /x', method: 'GET', attempt }, { sleep });
+    expect(result.status).toBe(429);
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('honors a Retry-After just under the cap in full', async () => {
+    const attempt = vi.fn().mockResolvedValueOnce(rateLimited('59')).mockResolvedValueOnce(json({ ok: true }));
+    const sleep = vi.fn(async () => undefined);
+    const result = await withGitHubRetry<Response>({ operation: 'GET /x', method: 'GET', attempt },
+      { sleep, random: () => 0 });
+    expect(result.status).toBe(200);
+    expect(sleep).toHaveBeenCalledWith(59_000);
+  });
+
+  it('parses an HTTP-date Retry-After relative to now', () => {
+    expect(classifyGitHubTransient(503, new Headers({ 'retry-after': new Date(NOW + 9_000).toUTCString() }), NOW)
+      ?.serverWaitMs).toBe(9_000);
+  });
+});
+
 describe('abort signal', () => {
   it('an already-aborted signal returns the transient outcome without waiting', async () => {
     const controller = new AbortController();
@@ -356,6 +383,22 @@ describe('createCheck is made safe to retry (no duplicate check runs)', () => {
     const { instance } = client(server.fetchImplementation);
     await expect(instance.createCheck('o', 'r', HEAD)).rejects.toThrow(/^GitHub API 503 /u);
     expect(server.posts()).toBe(1);
+  });
+});
+
+describe('CommentPublisher honors the shared retry options', () => {
+  it('uses retry.maxAttempts the same way GitHubInstallationClient does', async () => {
+    const fetchImplementation = vi.fn(async () => unavailable(503));
+    const shared = { maxAttempts: 2, sleep: async () => undefined };
+    const publisher = new CommentPublisher({ githubToken: token, fetchImplementation, retry: shared, sleep: async () => undefined });
+    await publisher.publishReview({ owner: 'o', repo: 'r', prNumber: 9, commitSha: HEAD, event: 'COMMENT', body: 'b', idempotencyKey: 'k' });
+    // One marker lookup GET, retried once: exactly maxAttempts calls, then the 503 surfaces.
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+
+    const installationFetch = vi.fn(async () => unavailable(503));
+    const { instance } = client(installationFetch, shared);
+    await expect(instance.getPullRequest('o', 'r', 1)).rejects.toThrow(/^GitHub API 503 /u);
+    expect(installationFetch).toHaveBeenCalledTimes(2);
   });
 });
 

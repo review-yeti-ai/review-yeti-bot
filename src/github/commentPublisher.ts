@@ -337,7 +337,10 @@ export class CommentPublisher {
       throw new Error('CommentPublisher requires an explicit GitHub App installation token (ghs_)');
     }
     this.token = options.githubToken || process.env.GITHUB_APP_INSTALLATION_TOKEN || process.env.GITHUB_TOKEN || 'ghs_fallback_token_dev';
-    this.maxRetries = options.maxRetries ?? 3;
+    // REL-1103: the shared `retry.maxAttempts` means the same here as on
+    // GitHubInstallationClient; the legacy `maxRetries` still wins when set.
+    this.maxRetries = options.maxRetries
+      ?? (options.retry?.maxAttempts !== undefined ? Math.max(0, options.retry.maxAttempts - 1) : 3);
     this.initialRetryDelayMs = options.initialRetryDelayMs ?? options.retry?.baseDelayMs ?? DEFAULT_GITHUB_RETRY.baseDelayMs;
     this.maxDelayMs = options.maxDelayMs ?? options.retry?.maxDelayMs ?? DEFAULT_GITHUB_RETRY.maxDelayMs;
     this.retry = options.retry || {};
