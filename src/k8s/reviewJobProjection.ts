@@ -9,7 +9,6 @@ const runSecretNamePattern = /^ct-review-run-([a-f0-9]{32})(?:-a([1-9][0-9]*))?$
 const maxExecutionAttempt = 2_147_483_647;
 const repositoryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const namespacePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
-const digestOnlyImagePattern = /^(?:[a-z0-9](?:[a-z0-9._\/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._\/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64})$/u;
 
 export const TRUSTED_WORKER_IMAGE_REPOSITORIES = [
   'ghcr.io/review-yeti-ai/review-yeti-worker',
@@ -20,6 +19,30 @@ export const TRUSTED_WORKER_IMAGE_REPOSITORY = TRUSTED_WORKER_IMAGE_REPOSITORIES
 
 export const DEFAULT_GENERIC_RUNNER_IMAGE = 'node:24-bookworm-slim';
 export const GENERIC_RUNNER_IMAGE_PATTERN = /^(?:node:[a-zA-Z0-9_.-]+|ghcr\.io\/review-yeti-ai\/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$/u;
+
+/**
+ * The worker-image contract, as ONE pair of exported patterns.
+ *
+ * Both enforcement layers import these rather than hand-copying a regex. Every
+ * copy of this contract — the kubebuilder marker, both CRDs, the Go const, the
+ * Go runtime validator, and the two TypeScript layers — drifted at least once
+ * during REL-1025, each time invisibly to the tests covering the other copies. A
+ * second literal in this file's sibling module was the fourth such copy.
+ *
+ * WORKER_IMAGE_PATTERN is the full contract: any registry, digest required, plus
+ * the bare `node:<tag>` form that generic-runner mode needs.
+ * PINNED_WORKER_IMAGE_PATTERN is the worker-image subset: a bare node tag is a
+ * runner affordance, never a review worker, so prebaked mode and the projection
+ * both reject it. The two differ by exactly that one alternative.
+ *
+ * The CRD is the authority; tests/unit/workerImageContractParity.test.ts asserts
+ * this pair agrees with it on a shared fixture table.
+ */
+export const WORKER_IMAGE_PATTERN = /^(?:[a-z0-9](?:[a-z0-9._\/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._\/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$/u;
+export const PINNED_WORKER_IMAGE_PATTERN = /^(?:[a-z0-9](?:[a-z0-9._\/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._\/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64})$/u;
+
+// The projection's prebaked/worker-image check: same contract, bare node tag excluded.
+const digestOnlyImagePattern = PINNED_WORKER_IMAGE_PATTERN;
 
 export type RunnerMode = 'prebaked' | 'generic';
 

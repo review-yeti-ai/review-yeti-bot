@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import ts from 'typescript';
+import {
+  PINNED_WORKER_IMAGE_PATTERN,
+  WORKER_IMAGE_PATTERN,
+} from '../../src/k8s/reviewJobProjection';
 
 /**
  * One contract, five artifacts.
@@ -81,55 +84,61 @@ describe('worker image contract parity across artifacts', () => {
     }
   });
 
-  it('the TypeScript enforcement layers agree with the CRD', () => {
-    // Both TS patterns live beside the code they guard; extract their literals
-    // so the assertion is against the SHIPPED expressions, not a re-typed copy.
-    const runtimeSrc = readFileSync(
-      path.join(root, 'src/k8s/reviewJobDispatcherRuntime.ts'), 'utf8');
-    const projectionSrc = readFileSync(
-      path.join(root, 'src/k8s/reviewJobProjection.ts'), 'utf8');
-    // Two shapes exist: a regex literal (`= /…/u;`) and a template string fed to
-    // `new RegExp(...)`. Both are shipped expressions, so both must be read.
-    const literal = (src: string, name: string): RegExp => {
-      const asLiteral = new RegExp(`${name} = /(.+)/u;`, 'u').exec(src);
-      if (asLiteral) return new RegExp(asLiteral[1], 'u');
-      const asTemplate = new RegExp(`${name} = new RegExp\\(\\s*\`([^\`]*)\``, 'u').exec(src);
-      if (asTemplate) return new RegExp(asTemplate[1], 'u');
-      throw new Error(`${name} not found`);
-    };
+  it('the shipped TypeScript patterns agree with the CRD, fixture by fixture', () => {
+    // Assertions are on the EXPORTED patterns the enforcement layers actually
+    // use, so a divergence cannot be hidden by a re-typed copy agreeing with
+    // itself. No skip list: each pattern gets an explicit expectation (below)
+    // rather than a `continue` that could (and did) become dead code.
     const crd = new RegExp(patternFromCrd(generatedCrd), 'u');
-    const layers: Array<[string, RegExp]> = [
-      ['dispatcher workerImagePattern', literal(runtimeSrc, 'const workerImagePattern')],
-      ['dispatcher PURE_DIGEST_PATTERN', literal(runtimeSrc, 'const PURE_DIGEST_PATTERN')],
-      ['projection digestOnlyImagePattern', literal(projectionSrc, 'const digestOnlyImagePattern')],
-    ];
+    for (const c of CASES) {
+      expect(crd.test(c.image), `the CRD disagrees with the fixture table on ${c.image} (${c.why})`)
+        .toBe(c.accepted);
+    }
 
-    for (const [name, re] of layers) {
-      for (const c of CASES) {
-        // PURE_DIGEST/projection are deliberately STRICTER on one input: the
-        // bare node tag is a generic-runner affordance, never a worker image.
-        if (c.image === 'node:24-bookworm-slim') continue;
-        if (!c.accepted) {
-          expect(re.test(c.image), `${name} accepted ${c.image}, which the contract rejects (${c.why})`)
-            .toBe(false);
-          continue;
-        }
-        expect(re.test(c.image), `${name} rejected ${c.image}, which the contract accepts (${c.why})`)
-          .toBe(crd.test(c.image) || re.test(c.image));
-        expect(re.test(c.image), `${name} rejected ${c.image}, which the CRD accepts (${c.why})`)
-          .toBe(true);
+    for (const c of CASES) {
+      if (!c.accepted) {
+        // A rejected reference is rejected everywhere.
+        expect(WORKER_IMAGE_PATTERN.test(c.image),
+          `WORKER_IMAGE_PATTERN accepted ${c.image}, which the contract rejects (${c.why})`).toBe(false);
+        expect(PINNED_WORKER_IMAGE_PATTERN.test(c.image),
+          `PINNED_WORKER_IMAGE_PATTERN accepted ${c.image}, which the contract rejects (${c.why})`).toBe(false);
+        continue;
+      }
+      expect(WORKER_IMAGE_PATTERN.test(c.image),
+        `WORKER_IMAGE_PATTERN rejected ${c.image}, which the CRD accepts (${c.why})`).toBe(true);
+      // The strict pattern accepts everything the CRD does EXCEPT the bare node
+      // tag, which is the one documented divergence.
+      const isBareNodeTag = /^node:[a-zA-Z0-9_.-]+$/u.test(c.image);
+      if (!isBareNodeTag) {
+        expect(PINNED_WORKER_IMAGE_PATTERN.test(c.image),
+          `PINNED_WORKER_IMAGE_PATTERN rejected ${c.image}, which the CRD accepts (${c.why})`).toBe(true);
       }
     }
   });
 
-  it('the strict layers reject an unpinned node tag the CRD permits for generic mode', () => {
-    // The one deliberate divergence, pinned so it cannot widen silently.
-    const runtimeSrc = readFileSync(
-      path.join(root, 'src/k8s/reviewJobDispatcherRuntime.ts'), 'utf8');
-    const strict = new RegExp(/PURE_DIGEST_PATTERN = \/(.+)\/u;/.exec(runtimeSrc)![1], 'u');
+  it('a bare node tag is accepted by the CRD but rejected by both strict layers', () => {
+    // The divergence is asserted on BOTH strict layers, not just one, so
+    // neither can widen without this failing.
     const crd = new RegExp(patternFromCrd(generatedCrd), 'u');
-    expect(crd.test('node:24-bookworm-slim')).toBe(true);
-    expect(strict.test('node:24-bookworm-slim')).toBe(false);
+    const bare = 'node:24-bookworm-slim';
+    const dispatcherSrc = readFileSync(
+      path.join(root, 'src/k8s/reviewJobDispatcherRuntime.ts'), 'utf8');
+    expect(crd.test(bare), 'the CRD must permit the bare node tag for generic-runner mode').toBe(true);
+    expect(PINNED_WORKER_IMAGE_PATTERN.test(bare),
+      'the projection must reject a bare node tag as a worker image').toBe(false);
+    // Assert on USE, not on the import: `includes('PINNED_WORKER_IMAGE_PATTERN')`
+    // was satisfied by the import line alone, so a private literal in the
+    // enforcement branch passed it — a vacuous guard of exactly the kind this
+    // test exists to prevent.
+    expect(
+      /\.test\(workerImage\)/.test(dispatcherSrc) &&
+        /PINNED_WORKER_IMAGE_PATTERN\.test\(workerImage\)/u.test(dispatcherSrc),
+      'the dispatcher must CALL the shared strict pattern, not merely import it',
+    ).toBe(true);
+    expect(
+      /const PURE_DIGEST_PATTERN = \//u.test(dispatcherSrc),
+      'the dispatcher must not declare a private regex literal for the strict pattern',
+    ).toBe(false);
   });
 
   it('every fixture is actually exercised by more than one pattern', () => {

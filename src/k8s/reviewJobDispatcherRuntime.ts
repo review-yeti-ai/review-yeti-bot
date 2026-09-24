@@ -5,16 +5,11 @@ import type {
 import {
   DEFAULT_GENERIC_RUNNER_IMAGE,
   GENERIC_RUNNER_IMAGE_PATTERN,
+  PINNED_WORKER_IMAGE_PATTERN,
+  WORKER_IMAGE_PATTERN,
   type RunnerMode,
 } from './reviewJobProjection';
 
-const workerImagePattern = new RegExp(
-    `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:/[a-zA-Z0-9._/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`,
-  'u',
-);
-// Worker images (prebaked mode) must be digest-pinned AND not a bare node tag:
-// the node alternative is a generic-runner affordance, not a worker image.
-const PURE_DIGEST_PATTERN = /^(?:[a-z0-9](?:[a-z0-9._\/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._\/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64})$/u;
 const hostnamePattern = /^[a-z0-9](?:[a-z0-9.-]{0,198}[a-z0-9])?$/u;
 
 /**
@@ -68,13 +63,13 @@ export function reviewJobDispatcherConfigFromEnv(
   if (runnerMode === 'generic') {
     if (!workerImage) {
       workerImage = DEFAULT_GENERIC_RUNNER_IMAGE;
-    } else if (!GENERIC_RUNNER_IMAGE_PATTERN.test(workerImage) && !workerImagePattern.test(workerImage)) {
+    } else if (!GENERIC_RUNNER_IMAGE_PATTERN.test(workerImage) && !WORKER_IMAGE_PATTERN.test(workerImage)) {
       throw new Error(
         `REVIEW_JOB_WORKER_IMAGE must be a valid generic runner image (${DEFAULT_GENERIC_RUNNER_IMAGE}) or trusted worker image in generic mode`,
       );
     }
   } else {
-    if (!PURE_DIGEST_PATTERN.test(workerImage)) {
+    if (!PINNED_WORKER_IMAGE_PATTERN.test(workerImage)) {
       throw new Error(
         `REVIEW_JOB_WORKER_IMAGE must be a digest-pinned worker image: any registry is accepted, but the reference must be pinned to @sha256:<64 hex> so the executed content cannot change between runs.`,
       );
