@@ -417,6 +417,13 @@ describe('verdict cache decision', () => {
     expect(await decide({ currentOverrides: { executionAttempt: 2 } })).toEqual({ mode: 'full', reason: 'retry-attempt' });
     expect(await decide({ src: source({ prior: { headSha: HEAD } }) })).toEqual({ mode: 'full', reason: 'same-head' });
     expect(await decide({ src: source({ prior: { shipComplete: false } }) })).toEqual({ mode: 'full', reason: 'prior-not-ship-complete' });
+    // REL-1084: the refusal code travels with the fallback and into the disclosure.
+    const refused = await decide({ src: source({ prior: { shipComplete: false, shipIncompleteReason: 'gate-not-clean' } }) });
+    expect(refused).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'gate-not-clean' });
+    expect(renderVerdictCacheSummary(null, { scope: null, decision: refused as never, contentIndex: null }, undefined)).toEqual([
+      '**Verdict cache** (`REVIEW_YETI_VERDICT_CACHE`): no file served from cache, because the previous review was not a complete SHIP'
+      + ' (`gate-not-clean`: the gate did not pass it as a clean review).',
+    ]);
     expect(await decide({ src: source({ prior: { policyDigest: 'f'.repeat(64) } }) })).toEqual({ mode: 'full', reason: 'policy-or-config-changed' });
     expect(await decide({ src: source({ prior: { configDigest: 'f'.repeat(64) } }) })).toEqual({ mode: 'full', reason: 'policy-or-config-changed' });
     expect(await decide({ maxAgeMs: 1_000 })).toEqual({ mode: 'full', reason: 'prior-too-old' });
