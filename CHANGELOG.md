@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.7...v1.84.8) (2026-09-24)
+
+
+### Bug Fixes
+
+* **REL-1069:** readiness reads the OpenAI/Bifrost standard, not vendor names ([#992](https://github.com/review-yeti-ai/review-yeti-bot/issues/992)) ([32fc6f3](https://github.com/review-yeti-ai/review-yeti-bot/commit/32fc6f37e582cbebde7c257f93afc291e5e1a6f2))
+
 ## [1.84.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.6...v1.84.7) (2026-09-23)
 
 
