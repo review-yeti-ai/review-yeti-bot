@@ -437,6 +437,49 @@ describe('McpFleetManager Unit Tests', () => {
       }
     });
 
+    it('arms the timeout at the request, so a short budget still issues the request', async () => {
+      // The behavioural half of the REL-1116 fix, and the reviewer was right that nothing pinned
+      // it. The discriminating assertion is `fetchCalls === 1`, not the error text: both the
+      // pre-fix and post-fix code can report 'timed out', but only the fix actually ISSUES the
+      // request when the budget is shorter than setup.
+      //
+      // `getHttpHeaders()` awaits a Doppler lookup, measured ~470ms in this environment, so a
+      // 50ms budget expires during setup unless the timer is armed afterwards. Under the pre-fix
+      // placement the signal is already aborted at `fetch`, so the request is never dispatched.
+      // This is load-bearing only while that lookup is slow -- which is why it also asserts the
+      // setup genuinely outran the budget, so it cannot silently become inert.
+      const setupStart = Date.now();
+      let fetchCalls = 0;
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u: any, init: any) => {
+        fetchCalls += 1;
+        return new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            reject(Object.assign(new Error('already aborted'), { name: 'AbortError' }));
+            return;
+          }
+          signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('aborted on timeout'), { name: 'AbortError' }));
+          });
+        });
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool(
+          'ct_impact', { target: 'short-budget' }, { timeoutMs: 50 },
+        );
+        const setupMs = Date.now() - setupStart;
+        expect(result).toMatchObject({ success: false });
+        expect(String(result.error)).toMatch(/timed out/iu);
+        // The request was issued: the budget was charged to the request, not to setup.
+        expect(fetchCalls).toBe(1);
+        // Guard against the test going inert if the header lookup gets faster.
+        expect(setupMs).toBeGreaterThan(50);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
     it('handles HTTP request timeout gracefully', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
         const signal = init?.signal;
