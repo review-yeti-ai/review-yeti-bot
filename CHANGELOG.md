@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.91.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.1...v1.91.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **gateway:** request streamed usage so reviews stop reporting 0 tokens (REL-1105) ([#1045](https://github.com/review-yeti-ai/review-yeti-bot/issues/1045)) ([5883edb](https://github.com/review-yeti-ai/review-yeti-bot/commit/5883edb079c9a1c2b1da64448232bf9a39b4f876))
+
 ## [1.91.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.0...v1.91.1) (2026-09-24)
 
 
