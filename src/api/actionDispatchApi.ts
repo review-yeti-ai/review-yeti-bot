@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { Router, type Request, type Response } from 'express';
 import {
   type GitHubActionsOidcClaims,
@@ -40,12 +40,6 @@ export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '.
 import type { IncrementalBaseLookup } from '../persistence/incrementalPriorReview';
 import { createIncrementalBaseHandler } from './incrementalBaseRoute';
 
-function constantTimeDigestEqual(expected: unknown, actual: string): boolean {
-  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/u.test(expected) || !/^[a-f0-9]{64}$/u.test(actual)) {
-    return false;
-  }
-  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(actual, 'hex'));
-}
 
 export interface ActionOidcVerifier {
   verify(token: string): Promise<GitHubActionsOidcClaims>;

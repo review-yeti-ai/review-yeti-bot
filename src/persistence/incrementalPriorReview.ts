@@ -12,7 +12,7 @@
  * not SHIP-complete and the review is full, rather than reaching back to an
  * older SHIP past newer evidence.
  */
-import { timingSafeEqual } from 'node:crypto';
+import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { priorReviewRecordFromRows, type PriorReviewRecord } from '../review/incrementalReview';
 
 interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
@@ -54,15 +54,13 @@ export interface IncrementalBaseLookup {
   read(input: { runId: string; executionAttempt: number; workerTokenDigest: string }): Promise<IncrementalBaseLookupResult>;
 }
 
-function digestEqual(expected: unknown, actual: string): boolean {
-  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/u.test(expected) || !/^[a-f0-9]{64}$/u.test(actual)) return false;
-  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(actual, 'hex'));
-}
-
 export class PostgresIncrementalBaseLookup implements IncrementalBaseLookup {
   constructor(private readonly queryable: Queryable, private readonly options: { maxAgeMs: number }) {
     if (!Number.isSafeInteger(options.maxAgeMs) || options.maxAgeMs <= 0) throw new Error('Incremental max age must be positive');
   }
+
+  /** The configured age limit the worker is told, the same value trusted verification uses. */
+  get maxAgeMs(): number { return this.options.maxAgeMs; }
 
   async read(input: { runId: string; executionAttempt: number; workerTokenDigest: string }): Promise<IncrementalBaseLookupResult> {
     if (!RUN_ID.test(input.runId) || !Number.isSafeInteger(input.executionAttempt) || input.executionAttempt < 1) {
@@ -74,7 +72,7 @@ export class PostgresIncrementalBaseLookup implements IncrementalBaseLookup {
         WHERE runs.run_id = $1 AND outbox.execution_attempt + 1 = $2`,
       [input.runId, input.executionAttempt],
     )).rows[0];
-    if (!binding || !digestEqual(binding.worker_token_digest, input.workerTokenDigest)
+    if (!binding || !constantTimeDigestEqual(binding.worker_token_digest, input.workerTokenDigest)
       || !['queued', 'running'].includes(String(binding.status))) return { status: 'unauthorized' };
     return { status: 'ok', prior: await selectPriorReviewRecord(this.queryable, input.runId), maxAgeMs: this.options.maxAgeMs };
   }
