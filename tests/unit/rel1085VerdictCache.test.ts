@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import { gateRecordFor } from '../support/priorGateRecord';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
@@ -281,6 +282,7 @@ describe('lane keys and routing', () => {
 // Source record (service side)
 // ---------------------------------------------------------------------------
 
+/** Shaped like the authoritative worker's completion: no `verdict` field (REL-1084). */
 function sourceCompletion(overrides: { personas?: unknown[]; verdictCache?: unknown } = {}) {
   return parseWorkerReviewCompletion({
     version: 'WorkerReviewCompletion.v1', runId: SOURCE_RUN, repositoryId: REPO_ID, owner: 'acme', repo: 'app', prNumber: 7,
@@ -292,9 +294,8 @@ function sourceCompletion(overrides: { personas?: unknown[]; verdictCache?: unkn
         { id: 'arch-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
           { severity: 'P2', path: 'src/open.ts', line: 11, title: 'naming', body: 'rename this' },
         ] },
-        { id: 'shadow-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [], evidenceSource: 'shadow' },
       ],
-      coverageComplete: true, quorumSatisfied: true, verdict: 'SHIP',
+      coverageComplete: true, quorumSatisfied: true,
       ...(overrides.verdictCache === null ? {} : {
         verdictCache: overrides.verdictCache ?? { version: 'VerdictCache.v1', laneKeys: LANE_KEYS, entries: [entry('src/same.ts')] },
       }),
@@ -302,16 +303,19 @@ function sourceCompletion(overrides: { personas?: unknown[]; verdictCache?: unkn
   });
 }
 
-function rows(payload: unknown, overrides: { status?: string; digest?: string } = {}) {
+/** Stored rows; the gate row and run status come from the real gate derivation (`gateRecordFor`). */
+function rows(payload: unknown, overrides: { status?: string; digest?: string; gate?: null } = {}) {
+  const recorded = gateRecordFor(payload, { expectedPersonaIds: ['sec-lane', 'arch-lane'], changedFiles: files(DIFF) });
   return {
     run: { run_id: SOURCE_RUN, repository_id: String(REPO_ID), pr_number: 7, head_sha: SOURCE_HEAD, base_sha: SOURCE_BASE,
-      status: overrides.status ?? 'succeeded' },
+      status: overrides.status ?? recorded.status },
     completion: {
       execution_attempt: 1,
       content_digest: overrides.digest ?? workerReviewCompletionDigest(payload),
       payload: JSON.stringify(payload),
       created_at: '2026-09-24T10:00:05.000Z',
     },
+    gate: overrides.gate === null ? null : recorded.gate,
     currentReceivedAt: '2026-09-24T11:00:05.000Z',
   };
 }
@@ -336,6 +340,19 @@ describe('verdict cache source record', () => {
     expect(errored?.prior.shipComplete).toBe(false);
     expect(verdictCacheSourceFromRows(rows(sourceCompletion({ verdictCache: null })))).toBeNull();
     expect(verdictCacheSourceFromRows(rows(sourceCompletion(), { digest: 'f'.repeat(64) }))).toBeNull();
+  });
+
+  it('excludes shadow lanes from the gating lanes', () => {
+    const shadowed = verdictCacheSourceFromRows(rows(sourceCompletion({ personas: [
+      { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+      { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+      { id: 'shadow-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [], evidenceSource: 'shadow' },
+    ] })));
+    expect(shadowed?.lanes).toEqual(['arch-lane', 'sec-lane']);
+  });
+
+  it('is not a SHIP-complete source without the gate\'s own SHIP record, whatever the run row says (REL-1084)', () => {
+    expect(verdictCacheSourceFromRows(rows(sourceCompletion(), { gate: null, status: 'succeeded' }))?.prior.shipComplete).toBe(false);
   });
 });
 

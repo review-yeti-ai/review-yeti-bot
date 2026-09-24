@@ -63,7 +63,9 @@ import {
   parseWorkerReviewCompletion,
   parseWorkerReviewEvidence,
   workerReviewCompletionDigest,
+  storedCompletionShipComplete,
   workerReviewEvidenceDigest,
+  type StoredGateRecord,
   type WorkerReviewResult,
 } from './workerReviewCompletion';
 
@@ -143,6 +145,12 @@ export type PriorReviewRecord = z.infer<typeof priorReviewRecordSchema>;
 export interface PriorReviewRows {
   run: { run_id: unknown; repository_id: unknown; pr_number: unknown; head_sha: unknown; base_sha: unknown; status: unknown };
   completion: { execution_attempt: unknown; content_digest: unknown; payload: unknown; created_at: unknown };
+  /**
+   * The gate attempt that recorded this exact completion (its `worker_result_digest` is the
+   * completion's content digest): the gate's stored evidence and decision. Absent for a
+   * non-authoritative WorkerReviewEvidence record, which has no gate.
+   */
+  gate?: StoredGateRecord | null;
   /** The current run's admission time; ages are measured from it, so a slow worker cannot age a record out. */
   currentReceivedAt: unknown;
 }
@@ -151,17 +159,6 @@ function timeOf(value: unknown): number {
   if (value instanceof Date) return value.getTime();
   if (typeof value === 'string' || typeof value === 'number') return new Date(value).getTime();
   return Number.NaN;
-}
-
-function isShipCompleteResult(result: WorkerReviewResult, conclusion: 'success' | 'failure' | undefined): boolean {
-  const lanes = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
-  if (conclusion !== undefined && conclusion !== 'success') return false;
-  if (result.verdict !== 'SHIP' || result.coverageComplete !== true || result.quorumSatisfied !== true) return false;
-  if (lanes.length === 0) return false;
-  // An audited no-reviewable-content exemption reviewed nothing to carry forward.
-  if (lanes.length === 1 && lanes[0].id === 'documentation-only') return false;
-  if (result.personas.some((persona) => persona.decision === 'ERROR' || persona.status === 'ERROR' || persona.errorClass !== undefined)) return false;
-  return !result.personas.some((persona) => persona.findings.some((finding) => finding.severity === 'P0' || finding.severity === 'P1'));
 }
 
 /**
@@ -174,7 +171,7 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
     const raw = typeof rows.completion.payload === 'string' ? JSON.parse(rows.completion.payload) : rows.completion.payload;
     const version = (raw as { version?: unknown } | null)?.version;
     let result: WorkerReviewResult;
-    let conclusion: 'success' | 'failure' | undefined;
+    let authoritative = false;
     let coordinates: { runId: string; repositoryId: number; prNumber: number; headSha: string; baseSha: string;
       policyDigest: string; configDigest: string; executionAttempt: number };
     let recomputed: string;
@@ -183,10 +180,10 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
       result = completion.result;
       coordinates = completion;
       recomputed = workerReviewCompletionDigest(completion);
+      authoritative = true;
     } else if (version === 'WorkerReviewEvidence.v1') {
       const evidence = parseWorkerReviewEvidence(raw);
       result = evidence.result;
-      conclusion = evidence.conclusion;
       coordinates = evidence;
       recomputed = workerReviewEvidenceDigest(evidence);
     } else {
@@ -216,7 +213,11 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
       configDigest: coordinates.configDigest,
       completionDigest: storedDigest,
       ageMs: Math.max(0, Math.floor(receivedAt - recordedAt)),
-      shipComplete: rows.run.status === 'succeeded' && isShipCompleteResult(result, conclusion),
+      // A WorkerReviewEvidence record (the worker published its own check, no authoritative gate)
+      // has no service-side gate evidence: the service never learned which lanes were required,
+      // so a missing lane could not be detected. It is never SHIP-complete.
+      shipComplete: rows.run.status === 'succeeded' && authoritative
+        && storedCompletionShipComplete(result, rows.gate, storedDigest),
       findingPaths,
     });
   } catch {

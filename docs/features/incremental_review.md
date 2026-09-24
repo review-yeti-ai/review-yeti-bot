@@ -40,7 +40,7 @@ Each of these is the review that runs today:
 | `no-prior-review` | No earlier stored completion for the pull request. |
 | `retry-attempt` | Any execution attempt after the first. This is also the recovery path for any incremental problem. |
 | `same-head` | The prior review was of this head. |
-| `prior-not-ship-complete` | The prior run did not succeed, or its result is not SHIP with complete coverage and quorum, has an error lane or a P0/P1 finding, or is an audited no-reviewable-content exemption. |
+| `prior-not-ship-complete` | The prior run did not succeed, or it was not a complete SHIP: the gate's own record of that exact completion is not a `clean-review` success (SHIP, every required lane completed, coverage and quorum met, no P0/P1), the verdict re-derived from its stored lanes with the gate's required lane count is not SHIP, a lane reported a raw P0/P1 or an error, or it is an audited no-reviewable-content exemption. The verdict is always derived, never read from the worker's optional `result.verdict`, which the authoritative worker does not set (REL-1084 pilot finding). A non-authoritative `WorkerReviewEvidence` record has no gate record and never qualifies. |
 | `policy-or-config-changed` | The prior review's policy or config digest differs. The config digest covers the persona roster and prompts. |
 | `prior-too-old` | The prior record is older than the configured age, measured from this run's admission time. |
 | `not-ancestor` | The previous head is not an ancestor of the new head (force-push or rebase). |
