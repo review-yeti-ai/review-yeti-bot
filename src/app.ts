@@ -6,6 +6,7 @@ import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } fr
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient, resolveCachedTokens } from './gateway/openRouterClient';
 import { missingGatewaySettings, requireGatewaySettings } from './review/openaiTransport';
+import { READINESS_CONTRACTS, readinessBody, readinessStatus } from './health/readinessContract';
 import { hasWebhookSecret } from './github/webhookServer';
 import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
@@ -837,13 +838,16 @@ export function createApp(): Express {
       && Boolean(process.env.GITHUB_APP_PRIVATE_KEY?.trim())
       && hasWebhookSecret()
       && missingGateway.length === 0;
-    return res.status(configurationReady ? 200 : 503).json({
-      status: configurationReady ? 'ready' : 'not_ready',
+    // Self-identifying: three implementations serve /ready on this same path, so
+    // a bare {status} cannot tell an operator which question was answered
+    // (REL-1069 follow-up). `configurationReady`/`openRouterReady` are retained
+    // for existing consumers.
+    return res.status(readinessStatus(configurationReady)).json(readinessBody(
+      'ct-review-bot',
+      READINESS_CONTRACTS.configuration,
       configurationReady,
-      openRouterReady: configurationReady,
-      timestamp: new Date().toISOString(),
-      uptimeSeconds: process.uptime(),
-    });
+      { configurationReady, openRouterReady: configurationReady, uptimeSeconds: process.uptime() },
+    ));
   });
 
   // Health, Readiness, and Version Endpoints
