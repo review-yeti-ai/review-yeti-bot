@@ -281,6 +281,12 @@ func TestHelmChartCRDWorkerImageMatchesGenerated(t *testing.T) {
 		t.Fatalf("chart CRD workerImage pattern does not match v1alpha2.WorkerImagePattern\n"+
 			"  chart:    %s\n  exported: %s", chartImage.Pattern, v1alpha2.WorkerImagePattern)
 	}
+	// The bound is what keeps the pattern's quadratic backtracking off large
+	// adversarial references at reconcile time, so the chart's copy must carry it.
+	if chartImage.MaxLength == nil || *chartImage.MaxLength != 512 {
+		t.Fatalf("chart CRD workerImage maxLength = %v, want 512 (the bound that makes the "+
+			"pattern's backtracking non-exploitable)", chartImage.MaxLength)
+	}
 }
 
 func TestHelmChartCRDMatchesGeneratedWorkerTermination(t *testing.T) {
@@ -386,6 +392,24 @@ func TestV1Alpha2WorkerImagePatternIsExecutable(t *testing.T) {
 // broadening that updates only the marker fails at reconciliation rather than
 // admission — silently ineffective. Review Yeti caught exactly that. This test
 // makes a one-sided edit fail here instead of shipping.
+// The MaxLength bound is load-bearing, not cosmetic: the pattern backtracks
+// quadratically (measured 25 KB -> ~240 ms) and the operator validates on every
+// reconcile. It is duplicated across the kubebuilder marker, the generated CRD,
+// and the chart copy, so it needs the same drift guard the pattern has — the
+// pattern-only assertions would let a dropped or widened bound ship silently.
+func TestWorkerImageMaxLengthMatchesCRD(t *testing.T) {
+	const want int64 = 512
+	spec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	got := spec.Properties["workerImage"].MaxLength
+	if got == nil {
+		t.Fatal("the CRD has no maxLength on spec.workerImage; the quadratic-backtracking " +
+			"bound the field description calls load-bearing is gone")
+	}
+	if *got != want {
+		t.Fatalf("spec.workerImage maxLength = %d, want %d", *got, want)
+	}
+}
+
 func TestWorkerImagePatternMatchesCRD(t *testing.T) {
 	spec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
 	if spec.Properties["workerImage"].Pattern != v1alpha2.WorkerImagePattern {
