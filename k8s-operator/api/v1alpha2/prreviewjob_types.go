@@ -84,7 +84,37 @@ type PRReviewJobSpec struct {
 	// +kubebuilder:validation:MaxLength=262144
 	// +optional
 	PreparedReview *string `json:"preparedReview,omitempty"`
-	// +kubebuilder:validation:Pattern=`^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`
+	// The real control here is DIGEST PINNING, not a registry allowlist.
+	//
+	// The previous pattern named exactly two registries. That is both too narrow
+	// and too weak, and the weakness is the more serious half:
+	//   too weak  — `ghcr.io/review-yeti-ai/<anything>:<anytag>` was permitted, so a
+	//               mutable tag on the vendor registry passed while a digest-pinned
+	//               image from any other registry was rejected. A tenant could not
+	//               pin from their own registry, and the vendor namespace allowed
+	//               tags. That inverts the control.
+	//   too narrow — it hardcoded two CallTelemetry-controlled registries, so a
+	//               self-hosted install could not pull from its own registry at
+	//               all. Self-hosting was impossible by construction.
+	//
+	// This accepts any registry, and requires every non-node image to be pinned to
+	// a sha256 digest. `node:<tag>` remains allowed because the generic-runner mode
+	// executes runtime install steps and is not the review worker.
+	// TRUST ASSUMPTION, load-bearing: this constrains INTEGRITY (an image
+	// reference is immutable), not PROVENANCE (who published it). Any registry is
+	// accepted, so whoever can create or patch a PRReviewJob chooses the code the
+	// worker executes. Correct for a self-hosted install where the submitter owns
+	// the cluster; NOT sufficient for a multi-tenant deployment where a
+	// less-trusted principal can write these resources. Multi-tenant installs
+	// MUST restrict PRReviewJob create/patch via RBAC and SHOULD add publisher
+	// verification or an admission-time registry policy.
+	// Bounded like its siblings: the pattern's host group and its optional path
+	// group both match '/' and '-', so a long adversarial reference makes the
+	// matcher backtrack quadratically (measured: 25 KB -> ~240 ms, and the
+	// operator validates on every reconcile). A real image reference is far below
+	// this, so the bound costs nothing legitimate and removes the blowup.
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:/[a-zA-Z0-9._/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
 	WorkerImage string `json:"workerImage"`
 	// RunnerMode defines whether the worker image is an immutable prebaked container
 	// or a generic runner image that executes runtime install steps. Defaults to prebaked.
@@ -122,7 +152,42 @@ type PRReviewJobSpec struct {
 // DispatchTimingStage identifies one observable boundary in the receipt-only
 // worker lifecycle. These values are deliberately bounded so status cannot
 // become an unstructured event log.
+
 type DispatchTimingStage string
+
+// WorkerImagePattern is the single source of truth for the worker image
+// contract. It is duplicated by necessity — the kubebuilder marker on
+// PRReviewJobSpec.WorkerImage must be a compile-time literal so controller-gen
+// can read it, and the chart freezes the generated CRD — but the RUNTIME
+// validator in pkg/job must not carry its own copy.
+//
+// That runtime copy is the one with execution authority: a value the CRD admits
+// but this pattern rejects fails at reconciliation, not admission, so a
+// broadening that updates only the marker is silently ineffective. Review Yeti
+// caught exactly that on the change that introduced digest pinning.
+//
+// If this pattern changes, update the kubebuilder marker below to match, and
+// re-run `make generate`. TestWorkerImagePatternMatchesCRD fails otherwise.
+//
+// TRUST ASSUMPTION, and it is load-bearing. This pattern constrains INTEGRITY
+// (an image reference is immutable) but NOT PROVENANCE (who published it). Any
+// registry is accepted, so whoever can create or patch a PRReviewJob chooses
+// the code the worker executes.
+//
+// That is correct and intended for a self-hosted install, where the submitter
+// owns the cluster. It is NOT sufficient for a multi-tenant deployment in which
+// a less-trusted principal can write these resources: such a principal could
+// direct the worker pod to run their own image with the per-run Secret and the
+// pod's identity. Multi-tenant installs MUST therefore restrict PRReviewJob
+// create/patch via RBAC (today only the control-plane dispatcher creates them)
+// and SHOULD add publisher verification (for example cosign identity bound to
+// the vendor) or an admission-time registry policy.
+//
+// The previous pattern carried a weaker version of this restriction by naming
+// two vendor registries. Removing that was necessary for self-hosting, and it
+// moved the provenance decision from the schema to the deployment — which is
+// why it is written down here rather than left implicit.
+const WorkerImagePattern = `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:/[a-zA-Z0-9._/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
 
 const (
 	DispatchStageReceived       DispatchTimingStage = "received"

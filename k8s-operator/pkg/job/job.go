@@ -161,7 +161,10 @@ var (
 	repoPattern        = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
 	shaPattern         = regexp.MustCompile(`^[a-f0-9]{40}$`)
 	digestPattern      = regexp.MustCompile(`^[a-f0-9]{64}$`)
-	workerImagePattern = regexp.MustCompile(`^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`)
+	// Single source of truth in v1alpha2: the CRD marker and this runtime
+	// validator must describe ONE control. A private copy here silently diverged
+	// when the contract moved to digest pinning, rejecting values the CRD admits.
+	workerImagePattern = regexp.MustCompile(v1alpha2.WorkerImagePattern)
 	secretNamePattern  = regexp.MustCompile(`^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$`)
 )
 

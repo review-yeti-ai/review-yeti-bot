@@ -5,15 +5,11 @@ import type {
 import {
   DEFAULT_GENERIC_RUNNER_IMAGE,
   GENERIC_RUNNER_IMAGE_PATTERN,
+  PINNED_WORKER_IMAGE_PATTERN,
+  WORKER_IMAGE_PATTERN,
   type RunnerMode,
-  TRUSTED_WORKER_IMAGE_REPOSITORIES,
-  TRUSTED_WORKER_IMAGE_REPOSITORY,
 } from './reviewJobProjection';
 
-const workerImagePattern = new RegExp(
-  `^(?:${TRUSTED_WORKER_IMAGE_REPOSITORIES.map((repo) => repo.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|')})@sha256:[a-f0-9]{64}$`,
-  'u',
-);
 const hostnamePattern = /^[a-z0-9](?:[a-z0-9.-]{0,198}[a-z0-9])?$/u;
 
 /**
@@ -67,15 +63,15 @@ export function reviewJobDispatcherConfigFromEnv(
   if (runnerMode === 'generic') {
     if (!workerImage) {
       workerImage = DEFAULT_GENERIC_RUNNER_IMAGE;
-    } else if (!GENERIC_RUNNER_IMAGE_PATTERN.test(workerImage) && !workerImagePattern.test(workerImage)) {
+    } else if (!GENERIC_RUNNER_IMAGE_PATTERN.test(workerImage) && !WORKER_IMAGE_PATTERN.test(workerImage)) {
       throw new Error(
         `REVIEW_JOB_WORKER_IMAGE must be a valid generic runner image (${DEFAULT_GENERIC_RUNNER_IMAGE}) or trusted worker image in generic mode`,
       );
     }
   } else {
-    if (!workerImagePattern.test(workerImage)) {
+    if (!PINNED_WORKER_IMAGE_PATTERN.test(workerImage)) {
       throw new Error(
-        `REVIEW_JOB_WORKER_IMAGE must be a digest-pinned trusted worker image (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
+        `REVIEW_JOB_WORKER_IMAGE must be a digest-pinned worker image: any registry is accepted, but the reference must be pinned to @sha256:<64 hex> so the executed content cannot change between runs.`,
       );
     }
   }
