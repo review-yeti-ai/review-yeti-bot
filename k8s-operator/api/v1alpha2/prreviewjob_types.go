@@ -138,6 +138,21 @@ type PRReviewJobSpec struct {
 // DispatchTimingStage identifies one observable boundary in the receipt-only
 // worker lifecycle. These values are deliberately bounded so status cannot
 // become an unstructured event log.
+// WorkerImagePattern is the single source of truth for the worker image
+// contract. It is duplicated by necessity — the kubebuilder marker on
+// PRReviewJobSpec.WorkerImage must be a compile-time literal so controller-gen
+// can read it, and the chart freezes the generated CRD — but the RUNTIME
+// validator in pkg/job must not carry its own copy.
+//
+// That runtime copy is the one with execution authority: a value the CRD admits
+// but this pattern rejects fails at reconciliation, not admission, so a
+// broadening that updates only the marker is silently ineffective. Review Yeti
+// caught exactly that on the change that introduced digest pinning.
+//
+// If this pattern changes, update the kubebuilder marker below to match, and
+// re-run `make generate`. TestWorkerImagePatternMatchesCRD fails otherwise.
+const WorkerImagePattern = `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
+
 type DispatchTimingStage string
 
 const (

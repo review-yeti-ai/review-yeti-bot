@@ -720,8 +720,13 @@ func TestBuildWorkerJobRejectsUnsafeProjection(t *testing.T) {
 		{name: "latest image", mutate: func(review *v1alpha2.PRReviewJob) {
 			review.Spec.WorkerImage = "registry.digitalocean.com/calltelemetry/review-yeti-worker:latest"
 		}},
-		{name: "untrusted image repository", mutate: func(review *v1alpha2.PRReviewJob) {
-			review.Spec.WorkerImage = "attacker.example/review-yeti-worker@sha256:" + strings.Repeat("e", 64)
+		// A non-vendor registry is no longer inherently untrusted: the contract
+		// pins DIGEST, not registry, so a self-hoster can pull from their own
+		// registry (ADR 0675). What remains unsafe is an UNPINNED image, which
+		// is covered by the "latest image" and "untagged image" cases below.
+		// This case now asserts the pinning requirement instead of the vendor.
+		{name: "untrusted image repository without digest", mutate: func(review *v1alpha2.PRReviewJob) {
+			review.Spec.WorkerImage = "attacker.example/review-yeti-worker:latest"
 		}},
 		{name: "deadline not fifteen minutes", mutate: func(review *v1alpha2.PRReviewJob) {
 			review.Spec.TerminalDeadline = metav1.NewTime(now.Add(10 * time.Minute))

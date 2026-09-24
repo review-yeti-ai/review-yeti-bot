@@ -1,6 +1,7 @@
 package v1alpha2_test
 
 import (
+	v1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -315,5 +316,21 @@ func TestV1Alpha2WorkerImagePatternIsExecutable(t *testing.T) {
 		if got := pattern.MatchString(tc.image); got != tc.want {
 			t.Errorf("%s: pattern.MatchString(%q) = %v, want %v", tc.name, tc.image, got, tc.want)
 		}
+	}
+}
+
+// The runtime validator in pkg/job must describe the SAME control as this CRD.
+//
+// The worker image pattern is necessarily duplicated: the kubebuilder marker is
+// a compile-time literal controller-gen reads, and the chart freezes the
+// generated CRD. The runtime copy is the one with execution authority, so a
+// broadening that updates only the marker fails at reconciliation rather than
+// admission — silently ineffective. Review Yeti caught exactly that. This test
+// makes a one-sided edit fail here instead of shipping.
+func TestWorkerImagePatternMatchesCRD(t *testing.T) {
+	spec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	if spec.Properties["workerImage"].Pattern != v1alpha2.WorkerImagePattern {
+		t.Fatalf("CRD workerImage pattern diverged from v1alpha2.WorkerImagePattern\n"+
+			"  crd:      %s\n  exported: %s", spec.Properties["workerImage"].Pattern, v1alpha2.WorkerImagePattern)
 	}
 }
