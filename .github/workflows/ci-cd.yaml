@@ -6,10 +6,16 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
+  # REL-1074: pull requests run only the tests their change reaches, so the whole suite also runs
+  # every night against main, independent of whether anything merged.
+  schedule:
+    - cron: "23 7 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: ct-review-system-${{ github.ref }}
+  # The nightly run gets its own group. Sharing main's would let it replace a main push run that
+  # is still pending behind a running one, and that push run is the one that publishes images.
+  group: ct-review-system-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   # Cancel superseded runs on branches, never on main. Since releases became unattended
   # (ADR 0513) every merge to main is followed within seconds by a release-please commit, so
   # main's own post-merge validation was routinely cancelled mid-suite. A cancelled required
@@ -20,13 +26,117 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  test:
-    # The release-please PR already ran the full suite; a release commit only
-    # bumps the version and changelog, so re-running the ~10-minute gate on
-    # every release commit serialized the 1.81.5/1.81.6/1.81.7 publishes and
-    # delayed each tag by a full gate. Typecheck still gates the commit.
+  # REL-1074. The required `test` check is an aggregator over parallel jobs:
+  #
+  #   test-plan        decides full vs incremental and which files run (scripts/ci/select-vitest-tests.mjs)
+  #   vitest           the selected non-Postgres files, sharded across a matrix
+  #   vitest-postgres  the Postgres-backed files and the REL-817 reaper harness, the only job with a DB
+  #   worker-helper    scripts/advance-review-worker.test.sh
+  #   build            npm run build
+  #   test             fails unless every one of those succeeded (or was legitimately not needed)
+  #
+  # Pull requests run the tests the change reaches from its merge base. Push to main, the nightly
+  # schedule and manual dispatch always run the full suite, and so does any PR that touches a
+  # global input (lockfile, vitest/tsconfig, setup files, workflows, schemas, ...) or whose change
+  # detection fails. The release-please PR already ran the suite, so release commits skip it;
+  # typecheck still gates them.
+  test-plan:
     if: "(github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      shards: ${{ steps.plan.outputs.shards }}
+      shard-count: ${{ steps.plan.outputs.shard-count }}
+      tests: ${{ steps.plan.outputs.tests }}
+      postgres-tests: ${{ steps.plan.outputs.postgres-tests }}
+      exclude-tests: ${{ steps.plan.outputs.exclude-tests }}
+      reaper-acceptance: ${{ steps.plan.outputs.reaper-acceptance }}
+    steps:
+      # Full history, no blobs: enough to compute the merge base and list changed paths.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+          filter: blob:none
+
+      - uses: ./.github/actions/node-deps
+
+      - id: base
+        name: Resolve the pull request merge base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --filter=blob:none origin "$BASE_SHA" "$HEAD_SHA" >/dev/null 2>&1 || true
+          if merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"; then
+            echo "merge-base=${merge_base}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Could not compute the merge base of ${BASE_SHA} and ${HEAD_SHA}; running the full suite"
+          fi
+
+      - id: plan
+        name: Select the test files this run executes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_BASE: ${{ steps.base.outputs.merge-base }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            node scripts/ci/select-vitest-tests.mjs --full "${EVENT_NAME} always runs the full suite" --out plan.json
+          elif [ -z "$MERGE_BASE" ]; then
+            node scripts/ci/select-vitest-tests.mjs --full "merge base unavailable" --out plan.json
+          elif ! node scripts/ci/select-vitest-tests.mjs --base "$MERGE_BASE" --head "$HEAD_SHA" --out plan.json; then
+            echo "::warning::Test selection failed; running the full suite"
+            node scripts/ci/select-vitest-tests.mjs --full "test selection failed" --out plan.json
+          fi
+          node scripts/ci/plan-outputs.mjs plan.json >> "$GITHUB_OUTPUT"
+          node scripts/ci/plan-outputs.mjs --summary plan.json >> "$GITHUB_STEP_SUMMARY"
+
+  vitest:
+    needs: test-plan
+    if: needs.test-plan.outputs.shard-count != '0'
+    name: vitest (${{ matrix.shard }}/${{ needs.test-plan.outputs.shard-count }})
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Headroom for a cold node_modules disk (a lockfile change) on top of a full shard.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.test-plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: ./.github/actions/node-deps
+
+      - name: Build the artifacts the suite reads (npm pretest)
+        run: npm run test:artifacts
+
+      - name: Run Vitest shard
+        env:
+          MODE: ${{ needs.test-plan.outputs.mode }}
+          TESTS: ${{ needs.test-plan.outputs.tests }}
+          EXCLUDE: ${{ needs.test-plan.outputs.exclude-tests }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.test-plan.outputs.shard-count }}
+        run: |
+          set -euo pipefail
+          args=(run "--shard=${SHARD}/${SHARDS}")
+          while IFS= read -r file; do args+=(--exclude "$file"); done < <(jq -r '.[]' <<<"$EXCLUDE")
+          if [ "$MODE" != "full" ]; then
+            while IFS= read -r file; do args+=("$file"); done < <(jq -r '.[]' <<<"$TESTS")
+          fi
+          npx vitest "${args[@]}"
+
+  vitest-postgres:
+    needs: test-plan
+    if: needs.test-plan.outputs.postgres-tests != '[]'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     services:
       postgres:
         image: postgres:17-alpine
@@ -42,14 +152,36 @@ jobs:
           --health-retries 12
     env:
       REVIEW_YETI_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
-    # Keep required validation bounded alongside the review job; a stalled install or suite must
-    # not turn CI into an unbounded review wait. 15 was too tight to be a stall detector: the
-    # measured full suite plus `npm run build` runs ~9-13 minutes, so ordinary runs were landing
-    # 2 minutes from the cap and two of them (including a post-merge run on main) were killed
-    # mid-`npm run build` and reported as `cancelled`. A release-please PR is the worst case,
-    # because its version bump rewrites package-lock.json and misses the npm/vitest cache key.
-    # 25 keeps a real bound while leaving headroom for a cold cache.
     timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: ./.github/actions/node-deps
+
+      - name: Build the artifacts the suite reads (npm pretest)
+        run: npm run test:artifacts
+
+      - name: Run the Postgres-backed test files
+        env:
+          TESTS: ${{ needs.test-plan.outputs.postgres-tests }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(jq -r '.[]' <<<"$TESTS")
+          npx vitest run "${files[@]}"
+
+      - name: Run REL-817 reaper acceptance harness
+        if: needs.test-plan.outputs.reaper-acceptance == 'true'
+        run: npm run test:acceptance:reaper
+
+  # scripts/advance-review-worker.test.sh guards the only sanctioned writer of
+  # the production worker pin, and was never wired into CI -- 88 tests that
+  # only ran when someone remembered to. A guard whose tests do not run is a
+  # guard nobody is checking. It needs node and jq, not node_modules.
+  worker-helper:
+    if: "(github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -57,57 +189,77 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Cache Node Modules & Vitest Results
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: |
-            node_modules
-            node_modules/.vitest
-          key: ${{ runner.os }}-${{ runner.arch }}-vitest-cache-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-vitest-cache-
-
-      - run: npm ci
-      
-      # Runs on pull_request, on push to main, and on manual dispatch.
-      #
-      # History: this replaced `npm run test:changed || npm run test:unit`, which
-      # never ran anything — `vitest run --changed=main` exits 0 when it selects no
-      # files, so the `||` fallback never fired and the job reported success having
-      # executed zero tests (#234). Its sibling step was gated on
-      # `github.event_name == 'push'` while the workflow had no `push:` trigger, so
-      # main was never verified after merge either. The trigger is added here.
-      # Cluster rollout is not this workflow: Flux owns the pins in
-      # calltelemetry/ct-infrastructure, and a kubectl apply from this public
-      # repo cannot move them.
-      - name: Run Full Test Suite
-        run: npm test
-
-      - name: Run REL-817 reaper acceptance harness
-        run: npm run test:acceptance:reaper
-
-      # scripts/advance-review-worker.test.sh guards the only sanctioned writer of
-      # the production worker pin, and was never wired into CI -- 88 tests that
-      # only ran when someone remembered to. A guard whose tests do not run is a
-      # guard nobody is checking.
+          check-latest: true
       - name: Run worker-helper guard tests
         run: npm run test:worker-helper
+
+  build:
+    if: "(github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: ./.github/actions/node-deps
+
+      # Next.js' own content-hashed build cache; a stale entry is a miss, never a wrong build.
+      - name: Mount the Next.js build cache
+        uses: useblacksmith/stickydisk@94697d49e77d0dd78b77deb85ad3de63a28b4b8a # v1.7.1
+        with:
+          key: ${{ github.repository }}-next-cache-${{ runner.os }}-${{ runner.arch }}
+          path: ./.next/cache
+          commit: ${{ github.event_name == 'pull_request' && 'false' || 'on-change' }}
 
       - name: Verify TypeScript Build
         run: npm run build
 
+  test:
+    needs: [test-plan, vitest, vitest-postgres, worker-helper, build]
+    if: "always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      # A skipped shard or Postgres job is only acceptable when the plan said there was nothing
+      # for it to run; a failed or cancelled plan can never be read as "nothing to run".
+      - name: Require every test job to have passed
+        env:
+          PLAN: ${{ needs.test-plan.result }}
+          MODE: ${{ needs.test-plan.outputs.mode }}
+          SHARD_COUNT: ${{ needs.test-plan.outputs.shard-count }}
+          POSTGRES_TESTS: ${{ needs.test-plan.outputs.postgres-tests }}
+          VITEST: ${{ needs.vitest.result }}
+          VITEST_POSTGRES: ${{ needs.vitest-postgres.result }}
+          WORKER_HELPER: ${{ needs.worker-helper.result }}
+          BUILD: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          require() { # name result allowed-results...
+            local name="$1" result="$2"; shift 2
+            for ok in "$@"; do [ "$result" = "$ok" ] && { echo "ok: ${name}=${result}"; return 0; }; done
+            echo "::error::${name} is '${result}', expected one of: $*"; failed=1
+          }
+          require test-plan "$PLAN" success
+          if [ "$PLAN" = success ]; then
+            echo "plan mode: ${MODE}"
+            if [ "$SHARD_COUNT" = "0" ]; then require vitest "$VITEST" skipped; else require vitest "$VITEST" success; fi
+            if [ "$POSTGRES_TESTS" = "[]" ]; then require vitest-postgres "$VITEST_POSTGRES" skipped; else require vitest-postgres "$VITEST_POSTGRES" success; fi
+          fi
+          require worker-helper "$WORKER_HELPER" success
+          require build "$BUILD" success
+          exit "$failed"
+
   typecheck:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # REL-585. `tsconfig.json` stopped excluding `tests/` and `scripts/` (REL-570/REL-573), so
     # `npm run lint:src` (tsc --noEmit) now typechecks the whole tree -- but nothing in CI ran it,
     # so the 464 errors that were burned down to reach that state could silently return unnoticed.
     # `npm run build` does not cover this: it compiles `tsconfig.server.json`, whose `include` is
     # only `src/**/*`. Kept as its own job, not folded into `test`, so a type error is visible at a
-    # glance and does not wait on the ~9-13 minute full suite. Deliberately runs only `lint:src`,
+    # glance and does not wait on the full suite. Deliberately runs only `lint:src`,
     # not the full `npm run lint`: `lint:tests` is `vitest list` and is documented in
     # scripts/check-test-files-parse.mjs as a local-only gate (~1m48s on CI, close to the full
     # suite's own runtime) that would erase the speed benefit of splitting this out. tsc --noEmit
@@ -118,30 +270,17 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
+      - uses: ./.github/actions/node-deps
 
-      - name: Cache Node Modules & Vitest Results
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        with:
-          path: |
-            node_modules
-            node_modules/.vitest
-          key: ${{ runner.os }}-${{ runner.arch }}-vitest-cache-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-vitest-cache-
-
-      - run: npm ci
-
+      # REL-1074: incremental program state lives on the node_modules disk (so it is keyed by the
+      # same lockfile and TypeScript version). tsc re-checks every file whose content hash changed
+      # and everything that depends on it, so a stale file is re-checked, never trusted.
       - name: Typecheck (src, tests, scripts)
-        run: npm run lint:src
+        run: npm run lint:src -- --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo
 
   operator-test:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # REL-896. `k8s-operator/` is a Go module with its own controller tests, but no workflow ever
     # ran them: the only place Go was touched in CI was the `go build` inside Dockerfile.operator,
     # so a reconciler regression could ship with a fully green PR. This job runs vet and the
@@ -159,18 +298,37 @@ jobs:
         working-directory: k8s-operator
     env:
       GOFLAGS: -buildvcs=false
+      GOCACHE: /root/.cache/go-build
+      GOMODCACHE: /go/pkg/mod
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # REL-1074: the build and module caches persist (served by Blacksmith's colocated cache on
+      # these runners; a sticky disk cannot be mounted into a job container). Keyed on every Go
+      # input, so a TypeScript-only change restores an exact hit and saves nothing. With GOCACHE
+      # persisted `go test` reuses a package's result only when its test binary, flags, the env
+      # vars it read and the files it opened are all unchanged; checkout gives every file a fresh
+      # mtime, so tests that read testdata or CRDs always re-run.
+      - name: Restore Go build and module caches
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            /root/.cache/go-build
+            /go/pkg/mod
+          key: go-operator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('k8s-operator/go.sum') }}-${{ hashFiles('k8s-operator/**/*.go', 'k8s-operator/**/testdata/**', 'k8s-operator/go.mod') }}
+          restore-keys: |
+            go-operator-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('k8s-operator/go.sum') }}-
+            go-operator-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Vet the operator module
         run: go vet ./...
 
       - name: Test the operator module
-        run: go test -count=1 ./...
+        run: go test ./...
 
   legacy-runtime:
     if: "(github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: read
@@ -179,6 +337,7 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "24"
+          check-latest: true
           cache: npm
           cache-dependency-path: legacy-runtime/package-lock.json
 
