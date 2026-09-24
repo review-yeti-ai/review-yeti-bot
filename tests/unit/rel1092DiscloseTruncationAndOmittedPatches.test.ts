@@ -52,6 +52,7 @@ describe('REL-1092: per-file patch truncation is recorded and disclosed', () => 
     expect(big.status).toBe('truncated');
     expect(big.truncation).toEqual({ originalChars: patch.length, keptChars: MAX_FILE_PATCH_CHARS });
     expect(small.truncation).toBeUndefined();
+    expect(big.patch).toContain('[Diff truncated to 20k chars by Smart Hunk Filter]');
   });
 
   it('the shared decision reports every truncated file it sends to lanes', () => {
@@ -156,6 +157,27 @@ describe('REL-1092: files the pull-files fallback has no patch for are kept and 
     const { files } = parseChangedFiles(diff);
     expect(files.map((file) => file.path)).toEqual(['src/new.ts']);
     expect(classifyUnavailablePatch(files[0].patch)).toBeNull();
+  });
+
+  it('writes /dev/null for the missing side of an added or removed file, and counts lines from additions/deletions', async () => {
+    const diff = await pullFilesFallbackDiff([
+      { filename: 'src/new.ts', status: 'added', additions: 25_000, deletions: 0 },
+      { filename: 'src/gone.ts', status: 'removed', additions: 0, deletions: 12_000 },
+    ]);
+    expect(diff).toContain('diff --git a/src/new.ts b/src/new.ts\n--- /dev/null\n+++ b/src/new.ts\n'
+      + '\\ Review Yeti: patch unavailable (omitted by GitHub; 25000 changed lines)\n');
+    expect(diff).toContain('diff --git a/src/gone.ts b/src/gone.ts\n--- a/src/gone.ts\n+++ /dev/null\n'
+      + '\\ Review Yeti: patch unavailable (omitted by GitHub; 12000 changed lines)\n');
+    expect(parseChangedFiles(diff).files.map((file) => file.path)).toEqual(['src/new.ts', 'src/gone.ts']);
+  });
+
+  it('an omitted patch on a documentation or asset path is disclosed but is not a coverage gap', async () => {
+    const decision = resolveReviewApplicability(splitRoster(), parseChangedFiles(await pullFilesFallbackDiff([
+      { filename: 'src/a.ts', status: 'modified', patch: smallPatch, changes: 2 },
+      { filename: 'docs/giant.md', status: 'modified', changes: 40_000 },
+    ])).files);
+    expect(decision.unavailablePatches).toEqual([{ path: 'docs/giant.md', kind: 'omitted' }]);
+    expect(decision.omittedSourcePaths).toEqual([]);
   });
 
   it('worker and trusted side derive the same lanes from the shared decision', async () => {

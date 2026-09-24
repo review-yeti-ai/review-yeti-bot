@@ -170,7 +170,8 @@ export function filterDiffHunks(
       // sent; the cut is recorded so the check summary discloses it. Reviewing
       // the rest as further chunks is W5/W6 (REL-1082 / REL-1083).
       truncation = { originalChars: filteredPatch.length, keptChars: MAX_FILE_PATCH_CHARS };
-      filteredPatch = filteredPatch.slice(0, MAX_FILE_PATCH_CHARS) + '\n\n... [Diff truncated to 20k chars by Smart Hunk Filter] ...';
+      filteredPatch = filteredPatch.slice(0, MAX_FILE_PATCH_CHARS)
+        + `\n\n... [Diff truncated to ${MAX_FILE_PATCH_CHARS / 1000}k chars by Smart Hunk Filter] ...`;
       status = 'truncated';
     }
 
