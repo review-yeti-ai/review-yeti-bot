@@ -27,6 +27,7 @@
  */
 import {
   JevClient,
+  isScoreIndexKey,
   type JevAnswer,
   type JevAsker,
   type JevChoiceAnswer,
@@ -356,7 +357,7 @@ function numericRecord(value: unknown): Record<string, number> {
 
 /** Criteria index (0-based) for a score-answer key, or -1 if the key is not a defined risk level. */
 function riskIndexFromKey(answer: JevScoreAnswer, key: string): number {
-  if (!/^(0|[1-9][0-9]*)$/.test(key)) return -1;
+  if (!isScoreIndexKey(key)) return -1;
   if (answer.legend && !Object.prototype.hasOwnProperty.call(answer.legend, key)) return -1;
   const index = Number(key);
   return index < JEV_RISK_CRITERIA.length ? index : -1;

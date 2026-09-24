@@ -266,6 +266,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 const SCORE_INDEX_KEY = /^(0|[1-9][0-9]*)$/;
 
 /**
+ * True when `key` is a score level index key in the live contract's format. The single definition
+ * of that format: score consumers (e.g. the shadow triage's risk level) import this rather than
+ * re-encoding it, so a future contract change is one edit here.
+ */
+export function isScoreIndexKey(key: string): boolean {
+  return SCORE_INDEX_KEY.test(key);
+}
+
+/**
  * Validates a score answer against the question that produced it and normalizes it to the keyed
  * `JevScoreAnswer` shape. Null means malformed. Rules:
  *   - `score` and `confidence` are finite numbers.
@@ -293,7 +302,7 @@ function normalizeScoreAnswer(question: JevScoreQuestion, a: Record<string, unkn
     const entries = Object.entries(a.legend);
     if (entries.length === 0) return null;
     for (const [key, text] of entries) {
-      if (!SCORE_INDEX_KEY.test(key) || Number(key) >= levels || typeof text !== 'string') return null;
+      if (!isScoreIndexKey(key) || Number(key) >= levels || typeof text !== 'string') return null;
       legend[key] = text;
     }
   } else {
@@ -375,8 +384,14 @@ export function resolveJevEndpoint(baseUrl: string): string {
   } catch {
     return trimmed;
   }
+  // `search`/`hash` read '' both when absent and when present-but-empty ("host?", "host#"), so a
+  // stray empty '?' or '#' is treated as absent and dropped -- building the endpoint through the
+  // URL object (not by string concatenation) keeps the path out of the query or fragment.
   if ((parsed.pathname === '' || parsed.pathname === '/') && !parsed.search && !parsed.hash) {
-    return `${trimmed}${JEV_SYSTEM_ONE_PATH}`;
+    parsed.pathname = JEV_SYSTEM_ONE_PATH;
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.href;
   }
   return trimmed;
 }

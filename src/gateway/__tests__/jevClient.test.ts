@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   JevClient,
   JEV_SYSTEM_ONE_PATH,
+  isScoreIndexKey,
   resolveJevEndpoint,
   DisabledJevClient,
   calculateFullJitterDelay,
@@ -441,6 +442,12 @@ describe('JevClient — endpoint resolution (REL-1100)', () => {
     ['https://api.typesafe.ai/v1/systemone/', 'https://api.typesafe.ai/v1/systemone'],
     ['https://proxy.example/typesafe/v1/systemone', 'https://proxy.example/typesafe/v1/systemone'],
     ['https://api.typesafe.ai/?region=us', 'https://api.typesafe.ai/?region=us'],
+    // An EMPTY query or fragment reads as '' from URL#search/#hash: it must be dropped, never
+    // left in front of the appended path (which would put the path inside the query/fragment).
+    ['https://api.typesafe.ai?', 'https://api.typesafe.ai/v1/systemone'],
+    ['https://api.typesafe.ai/?', 'https://api.typesafe.ai/v1/systemone'],
+    ['https://api.typesafe.ai#', 'https://api.typesafe.ai/v1/systemone'],
+    ['https://api.typesafe.ai?#', 'https://api.typesafe.ai/v1/systemone'],
     ['not a url', 'not a url'],
   ])('resolveJevEndpoint(%j) -> %j', (input, expected) => {
     expect(resolveJevEndpoint(input)).toBe(expected);
@@ -459,6 +466,13 @@ describe('JevClient — endpoint resolution (REL-1100)', () => {
     const client = baseClient({ baseUrl: 'https://proxy.example/jev', fetchImplementation });
     await client.ask({ state: 's', questions: { lane__sec: { type: 'noul', instructions: 'Review?' } } });
     expect(String(fetchImplementation.mock.calls[0][0])).toBe('https://proxy.example/jev');
+  });
+});
+
+describe('isScoreIndexKey — the one definition of the score level key format', () => {
+  it('accepts 0-based decimal index strings and nothing else', () => {
+    for (const key of ['0', '1', '4', '9', '10']) expect(isScoreIndexKey(key)).toBe(true);
+    for (const key of ['', '-1', '00', '01', '1.0', ' 1', '1 ', '+1', 'one', 'Level 1, trivial']) expect(isScoreIndexKey(key)).toBe(false);
   });
 });
 
