@@ -9,7 +9,7 @@ const runSecretNamePattern = /^ct-review-run-([a-f0-9]{32})(?:-a([1-9][0-9]*))?$
 const maxExecutionAttempt = 2_147_483_647;
 const repositoryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const namespacePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
-const digestOnlyImagePattern = /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[a-f0-9]{64})$/u;
+const digestOnlyImagePattern = /^(?:[a-z0-9](?:[a-z0-9._\/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._\/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64})$/u;
 
 export const TRUSTED_WORKER_IMAGE_REPOSITORIES = [
   'ghcr.io/review-yeti-ai/review-yeti-worker',
