@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.88.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.87.1...v1.88.0) (2026-09-24)
+
+
+### Features
+
+* **review:** risk-ordered review budget per lane behind REVIEW_YETI_BUDGET (REL-1082) ([#1026](https://github.com/review-yeti-ai/review-yeti-bot/issues/1026)) ([e8e428f](https://github.com/review-yeti-ai/review-yeti-bot/commit/e8e428f7334039072f9105cf3d1b0d9eaffbde2b))
+
 ## [1.87.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.87.0...v1.87.1) (2026-09-24)
 
 
