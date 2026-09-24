@@ -1,6 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   JevClient,
   JEV_SYSTEM_ONE_PATH,
@@ -18,6 +16,7 @@ import {
   type JevOutcome,
 } from '../jevClient';
 import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../../types/jevContract';
+import { JEV_LIVE_RESPONSES } from './jevLiveResponses.fixture';
 import { initTelemetry, getMetrics, getPrometheusMetrics, getRecentSpans, clearSpans } from '../../telemetry';
 import { logger } from '../../utils/logger';
 
@@ -29,9 +28,7 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 }
 
 /** Verbatim live responses (jev-1.13.0), captured for REL-1100. */
-const LIVE = JSON.parse(
-  fs.readFileSync(path.resolve(__dirname, '../../../tests/fixtures/jev/systemone-live-jev-1.13.0.json'), 'utf8'),
-) as Record<'score' | 'noul' | 'choice', { model: string; answers: Record<string, any>; usage: { input_tokens: number; output_tokens: number } }>;
+const LIVE = JEV_LIVE_RESPONSES;
 
 const BASE_QUESTIONS = {
   is_ambiguous: { type: 'noul', instructions: 'Is this ambiguous?' } as JevQuestion,

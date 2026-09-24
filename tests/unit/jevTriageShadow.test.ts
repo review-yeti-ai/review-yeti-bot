@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_JEV_TRIAGE_SHADOW_LIMITS,
@@ -25,6 +23,7 @@ import {
   type JevOutcome,
 } from '../../src/gateway/jevClient';
 import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../../src/types/jevContract';
+import { JEV_LIVE_RESPONSES } from '../../src/gateway/__tests__/jevLiveResponses.fixture';
 import { createFailingJevStub } from '../support/jevStub';
 import { logger } from '../../src/utils/logger';
 import { getMetrics } from '../../src/telemetry';
@@ -38,9 +37,7 @@ import type { ChangedFile } from '../../src/review/changedFiles';
  */
 
 /** Verbatim live responses (jev-1.13.0), captured for REL-1100. */
-const LIVE = JSON.parse(
-  fs.readFileSync(path.resolve(__dirname, '../fixtures/jev/systemone-live-jev-1.13.0.json'), 'utf8'),
-) as Record<'score' | 'noul' | 'choice', { model: string; answers: Record<string, any>; usage: { input_tokens: number; output_tokens: number } }>;
+const LIVE = JEV_LIVE_RESPONSES;
 
 const TYPESAFE_ENV = {
   TYPESAFE_BASE_URL: 'https://api.typesafe.example/v1/systemone',

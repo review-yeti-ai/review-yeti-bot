@@ -13,6 +13,7 @@ import {
   JevCassetteNotFoundError,
 } from '../support/jevStub';
 import { JEV_UNAVAILABLE_REASONS, type JevQuestion } from '../../src/gateway/jevClient';
+import { JEV_LIVE_RESPONSES } from '../../src/gateway/__tests__/jevLiveResponses.fixture';
 
 const QUESTIONS: Record<string, JevQuestion> = {
   is_ambiguous: { type: 'noul', instructions: 'Is this ambiguous?' },
@@ -160,9 +161,7 @@ describe('createLlmBackedJevStub — mode 3: LLM-backed adapter, hard-gated off 
   });
 
   it('asks the LLM for the LIVE score contract: index-keyed legend and probabilities, score in [0,1] (REL-1100)', async () => {
-    const live = JSON.parse(
-      fs.readFileSync(path.resolve(__dirname, '../fixtures/jev/systemone-live-jev-1.13.0.json'), 'utf8'),
-    ).score.answers.risk;
+    const live = JEV_LIVE_RESPONSES.score.answers.risk;
     const criteria = Object.values(live.legend) as string[];
     const client = {
       complete: vi.fn().mockResolvedValue({ model: 'test/model', content: JSON.stringify(live), usage: null, costUSD: 0, raw: {} }),

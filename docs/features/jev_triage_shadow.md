@@ -48,7 +48,7 @@ The live API (`jev-1.13.0`) returns a score answer like this:
 
 An ordered legend array is still accepted for back-compat. The client normalizes it to the keyed form.
 
-Captured responses are in `tests/fixtures/jev/systemone-live-jev-1.13.0.json`.
+Captured responses are in `src/gateway/__tests__/jevLiveResponses.fixture.ts`.
 
 ## What it never does
 
