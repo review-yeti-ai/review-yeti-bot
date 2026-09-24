@@ -198,8 +198,11 @@ export function renderFilePatch(file: PullFileEntry): string {
   const a = quoteGitPath(`a/${previous}`);
   const b = quoteGitPath(`b/${filename}`);
   const header = `diff --git ${a} ${b}\n`;
+  // `---`/`+++` carry one path per line, so a path with a space stays readable
+  // (the `diff --git` line alone is ambiguous for it).
+  const sides = `--- ${file.status === 'added' ? '/dev/null' : a}\n+++ ${file.status === 'removed' ? '/dev/null' : b}\n`;
   const patch = typeof file.patch === 'string' ? file.patch : '';
-  if (patch) return `${header}${patch}\n`;
+  if (patch) return `${header}${sides}${patch}\n`;
   const changes = lineCount(file.changes)
     ?? (lineCount(file.additions) !== undefined && lineCount(file.deletions) !== undefined
       ? lineCount(file.additions)! + lineCount(file.deletions)! : undefined);
@@ -209,9 +212,7 @@ export function renderFilePatch(file: PullFileEntry): string {
   // No changed lines: binary (or an empty file). Unknown or nonzero: GitHub
   // omitted a text patch -- never assume the safer-looking binary case.
   const note = changes === 0 ? patchUnavailableNote('binary') : patchUnavailableNote('omitted', changes);
-  const before = file.status === 'added' ? '/dev/null' : a;
-  const after = file.status === 'removed' ? '/dev/null' : b;
-  return `${header}--- ${before}\n+++ ${after}\n${note}\n`;
+  return `${header}${sides}${note}\n`;
 }
 
 /**

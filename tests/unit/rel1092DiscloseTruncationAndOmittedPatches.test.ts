@@ -172,6 +172,23 @@ describe('REL-1092: files the pull-files fallback has no patch for are kept and 
     expect(files.map((file) => classifyUnavailablePatch(file.patch))).toEqual(['omitted', 'omitted', null]);
   });
 
+  it('round-trips every quoted character class through parseChangedFiles', async () => {
+    const names = ['src/quote"d.ts', 'src/back\\slash.ts', 'src/cr\rhere.ts', 'src/ctl\u0001x.ts', 'src/del\u007fx.ts', 'src/plain name.ts'];
+    for (const status of ['modified', 'added', 'removed']) {
+      const diff = await pullFilesFallbackDiff([
+        ...names.map((filename) => ({ filename, status, changes: 30_000 })),
+        ...names.map((filename) => ({ filename: `with-patch/${filename}`, status, patch: smallPatch, changes: 2 })),
+      ]);
+      const { files, unreadable } = parseChangedFiles(diff);
+      expect(unreadable).toEqual([]);
+      expect(files.map((file) => file.path)).toEqual([...names, ...names.map((name) => `with-patch/${name}`)]);
+    }
+    const renamed = parseChangedFiles(await pullFilesFallbackDiff([
+      { filename: 'src/new"\r.ts', previous_filename: 'src/old\\\u0001.ts', status: 'renamed', changes: 0 },
+    ])).files;
+    expect(renamed.map((file) => file.path)).toEqual(['src/new"\r.ts']);
+  });
+
   it('renders a pure rename with no patch as a rename, not as an unavailable patch', async () => {
     const diff = await pullFilesFallbackDiff([
       { filename: 'src/new.ts', previous_filename: 'src/old.ts', status: 'renamed', changes: 0 },
