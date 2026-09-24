@@ -210,6 +210,33 @@ describe('publishing identity probes (REL-1107)', () => {
       expect(thrown?.message).not.toBe('could not determine the publishing GitHub identity');
     });
 
+    it('the PUBLISH call site refuses with the reason when identity is unresolvable', () => {
+      // Drives the real call site, not just the helper. The review was right that covering
+      // requirePublisherIdentity proves nothing about whether it is CALLED: restoring the old
+      // readAuthenticatedPublisherLogin + bare throw left every helper test green.
+      //
+      // `postOrOutputComment` is exported and takes a commandRunner seam, so this exercises the
+      // actual refusal without spawning gh.
+      const prContext = {
+        prNumber: 42, repo: 'review-yeti-ai/review-yeti-bot',
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      };
+      const runner: CommandRunner = (_cmd, args) => {
+        // Let the PR-head guard pass; fail only the identity probes, which is the condition
+        // under test.
+        if (args.includes('headRefOid,baseRefOid')) {
+          return ok(JSON.stringify({ headRefOid: prContext.headSha, baseRefOid: prContext.baseSha }));
+        }
+        return fail('gh: Bad credentials (HTTP 401)');
+      };
+      const result = pipeline.postStickySummaryComment('# review', prContext, { commandRunner: runner });
+      expect(result.success).toBe(false);
+      // The diagnostic REL-1107 was filed against must not be the bare message.
+      expect(String(result.error)).toContain('could not determine the publishing GitHub identity');
+      expect(String(result.error)).toContain('identity probes failed');
+      expect(String(result.error)).toContain('user=HTTP 401');
+    });
+
     it('the refusal text carries the reason when known, and omits it otherwise', () => {
       expect(pipeline.publisherIdentityRefusal({ reason: 'identity probes failed (user=HTTP 401)' }))
         .toContain('identity probes failed (user=HTTP 401)');
