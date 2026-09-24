@@ -509,7 +509,7 @@ describe('persona panel wiring', () => {
     });
   }
 
-  async function runPanel(reviewBudget?: ReviewBudgetInput, options: { toolRead?: string } = {}) {
+  async function runPanel(reviewBudget?: ReviewBudgetInput, options: { toolRead?: string; toolDiff?: string } = {}) {
     const personaRequests: string[] = [];
     let personaTurn = 0;
     const client = {
@@ -523,6 +523,9 @@ describe('persona panel wiring', () => {
         personaTurn += 1;
         if (options.toolRead && personaTurn <= 2) {
           return { model: req.model, content: JSON.stringify({ tool: 'read_file', args: { path: 'vendor/huge.txt' } }), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+        }
+        if (options.toolDiff && personaTurn === 1) {
+          return { model: req.model, content: JSON.stringify({ tool: 'get_diff', args: { path: options.toolDiff } }), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
         }
         return { model: req.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
       }),
@@ -578,6 +581,25 @@ describe('persona panel wiring', () => {
     expect(requests[2]).toMatch(/tool output (cut to|withheld)/u);
   });
 
+  // The lane's tools (and findings validation) read the pack's tool files: the whole patch of a
+  // file the lane was sent whole, so a finding past the old 20k cut can be anchored.
+  it('with the flag: get_diff on a file sent whole returns the whole patch, past the 20k cut', async () => {
+    const { requests } = await runPanel(ON, { toolDiff: 'src/core.ts' });
+    const messages = JSON.parse(requests[1]) as Array<{ role: string; content: unknown }>;
+    const toolResult = String(messages[messages.length - 1].content);
+    expect(toolResult).toContain('[PI_TOOL_RESULT]');
+    expect(toolResult).toContain('core_TAIL_MARKER');
+  });
+
+  it('without the flag: get_diff returns today\'s 20k-cut patch', async () => {
+    const { requests } = await runPanel(undefined, { toolDiff: 'src/core.ts' });
+    const messages = JSON.parse(requests[1]) as Array<{ role: string; content: unknown }>;
+    const toolResult = String(messages[messages.length - 1].content);
+    expect(toolResult).toContain('[PI_TOOL_RESULT]');
+    expect(toolResult).not.toContain('core_TAIL_MARKER');
+    expect(toolResult).toContain('Diff truncated to 20k');
+  });
+
   it('without the flag the same conversation passes the proxy limit (the cap is the budget\'s guard)', async () => {
     const huge = 'q'.repeat(900_000);
     const { requests } = await runPanel(undefined, { toolRead: huge });
@@ -629,6 +651,57 @@ describe('composed engine wiring', () => {
     expect(text).toContain('core_TAIL_MARKER');
     expect(text).toContain('signatures only');
     expect(text).not.toContain('tests_TAIL_MARKER');
+  });
+
+  // Two ~512 KiB read_file results in the plan phase and two in a task's work phase.
+  async function composedRequests(reviewBudget?: ReviewBudgetInput): Promise<string[]> {
+    const requests: string[] = [];
+    let planCalls = 0;
+    let workCalls = 0;
+    const config = COMPOSED_CONFIG();
+    config.composed = { ...config.composed, max_turns_total: 12, max_turns_per_task: 5 } as typeof config.composed;
+    const client = {
+      complete: vi.fn(async (req: any) => {
+        requests.push(JSON.stringify(req.messages));
+        const all = req.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+        const nonces = [...all.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)];
+        const nonce = nonces.length > 0 ? nonces[nonces.length - 1][1] : 'n';
+        const work = all.includes('WORK TURN');
+        const calls = work ? ++workCalls : ++planCalls;
+        const body = calls <= 2
+          ? { tool: 'read_file', args: { path: 'vendor/huge.txt' } }
+          : work
+            ? { nonce, task: 't1', status: 'COMPLETE', findings: [] }
+            : { nonce, tasks: [{ id: 't1', dimension: 'security', paths: ['src/core.ts', 'tests/core.test.ts'], question: 'q', rationale: 'r' }] };
+        return { model: 'm', content: JSON.stringify(body), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+      }),
+    };
+    await executeComposedReview({
+      config,
+      changedFiles: files(BIG_DIFF),
+      repository: 'acme/app',
+      headSha: 'e'.repeat(40),
+      client: client as never,
+      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn(async () => []) } as never,
+      ...(reviewBudget ? { reviewBudget } : {}),
+    }).catch(() => undefined);
+    return requests;
+  }
+
+  it('with the flag: plan-phase and work-phase tool results are clipped under the request cap', async () => {
+    const requests = await composedRequests(ON);
+    const work = requests.filter((body) => body.includes('WORK TURN'));
+    const plan = requests.filter((body) => !body.includes('WORK TURN'));
+    expect(plan.length).toBeGreaterThanOrEqual(3);
+    expect(work.length).toBeGreaterThanOrEqual(3);
+    for (const body of requests) expect(Buffer.byteLength(body)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
+    expect(plan.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
+    expect(work.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
+  });
+
+  it('without the flag the same composed conversation passes the proxy limit', async () => {
+    const requests = await composedRequests();
+    expect(requests.some((body) => Buffer.byteLength(body) > BIFROST_PROXY_BODY_LIMIT_BYTES)).toBe(true);
   });
 
   it('returns the disclosure of its single pack on a completed run, and none without the flag', async () => {
