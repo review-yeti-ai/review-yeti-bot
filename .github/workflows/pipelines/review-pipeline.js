@@ -5880,6 +5880,13 @@ function resolveActionDeadlineMs(env = process.env, startMs = PIPELINE_START_MS)
   return startMs + budget;
 }
 
+/** REL-1113 (Action pipeline): whether every changed file reached the lanes -- the shared
+ * decision's `coverageComplete`. A submodule coverage gap or a file the diff budget omitted is a
+ * deterministic property of this head, never the re-attempt shape. */
+function resolveLaneCoverageComplete(submoduleReview, coverage) {
+  return submoduleReview?.coverageComplete !== false && !(coverage?.omitted?.length > 0);
+}
+
 /** The coded failure of one Action lane, through the shared classifier (`laneInfrastructure`):
  * the provider status when the lane ended on an HTTP error response, else the message ladder. */
 function describeFailedLane(lane) {
@@ -8069,7 +8076,7 @@ async function main() {
   // REL-1113: inputs to the shared infrastructure-incomplete decision. A file the diff budget or
   // the submodule policy left unreviewed is a deterministic property of this head, so it is never
   // the re-attempt shape; the deadline bounds every lane re-attempt.
-  const laneCoverageComplete = submoduleReview.coverageComplete !== false && !(coverage?.omitted?.length > 0);
+  const laneCoverageComplete = resolveLaneCoverageComplete(submoduleReview, coverage);
   const actionDeadlineMs = resolveActionDeadlineMs();
   const reviewedPersonaIds = reviewScope.mode === 'delta'
     ? new Set(reviewScope.reviewedPersonaIds)
@@ -8496,6 +8503,7 @@ module.exports = {
   computeArbitrationQuorum,
   DEFAULT_ACTION_BUDGET_MS,
   resolveActionDeadlineMs,
+  resolveLaneCoverageComplete,
   resolveInfrastructureIncomplete,
   retryInfrastructureFailedLanes,
   toInfrastructureIncompleteArbitration,

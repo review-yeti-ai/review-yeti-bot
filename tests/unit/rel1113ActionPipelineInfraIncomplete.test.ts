@@ -410,6 +410,7 @@ globalThis.fetch = async (url, init) => {
   let findings = [];
   if (/Testing/i.test(system)) {
     testingCalls += 1;
+    if (mode === 'auth') return new Response('{"error":{"message":"unauthorized"}}', { status: 401, headers: { 'content-type': 'application/json' } });
     if (mode === 'fail' || mode === 'findings' || (mode === 'recover' && testingCalls === 1)) throw new TypeError('terminated');
   } else if (mode === 'findings') {
     findings = [{ severity: 'P0', path: 'src/a.ts', line: 1, title: 'Exported constant leaks a secret', body: 'Breaks when the module is imported by a client bundle.' }];
@@ -438,7 +439,7 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
         STUB_MODE: mode,
         VITEST: 'true',
         GITHUB_ACTIONS: 'false',
-        PR_DIFF: DIFF,
+        PR_DIFF: extraEnv.PR_DIFF ?? DIFF,
         ACTIVE_PERSONAS: JSON.stringify(personas),
         OPENROUTER_API_KEY: 'test-key',
         OPENROUTER_BASE_URL: 'https://api.fireworks.ai/inference/v1',
@@ -492,5 +493,170 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
     expect(stdout).not.toContain('INCOMPLETE');
     expect(outputs.verdict).toBe('BLOCK');
     expect(outputs['incomplete-reason']).toBe('');
+  });
+
+  const PARTITIONED_DIFF = [
+    'diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -0,0 +1,3 @@',
+    '+export const a = 1;', '+export const aa = 11;', '+export const aaa = 111;',
+    'diff --git a/src/b.ts b/src/b.ts', '--- a/src/b.ts', '+++ b/src/b.ts', '@@ -0,0 +1,3 @@',
+    '+export const b = 2;', '+export const bb = 22;', '+export const bbb = 222;', '',
+  ].join('\n');
+
+  it('partitioned review: main() re-attempts the lost partition lane and publishes the real verdict', () => {
+    const { stdout, outputs } = runMain('recover', ['security', 'testing'], {
+      PR_DIFF: PARTITIONED_DIFF, MAX_DIFF_CHARS: '120', REVIEW_ACTION_BUDGET_MS: '600000', REVIEW_LANE_TIMEOUT_MS: '5000',
+    });
+    expect(stdout).toContain('Partitioned into 2');
+    expect(stdout).toContain('Re-attempting lane(s) testing (1/5)');
+    expect(stdout).toContain('MAIN_DONE exitCode=0 testingCalls=3');
+    expect(outputs).toMatchObject({ verdict: 'SHIP', 'gate-decision': 'PASS' });
+  });
+
+  it('partitioned review with no budget left: main() reports INCOMPLETE, not BLOCK', () => {
+    const { stdout, outputs } = runMain('fail', ['security', 'testing'], {
+      PR_DIFF: PARTITIONED_DIFF, MAX_DIFF_CHARS: '120', REVIEW_ACTION_BUDGET_MS: '1000',
+    });
+    expect(stdout).toContain('Partitioned into 2');
+    expect(stdout).toContain('MAIN_DONE exitCode=1');
+    expect(outputs).toMatchObject({ verdict: 'INCOMPLETE', 'gate-decision': 'INCOMPLETE' });
+  });
+
+  it('negative control: every lane failing on credentials (HTTP 401) is still the fail-closed BLOCK, never INCOMPLETE', () => {
+    const { stdout, outputs } = runMain('auth', ['testing'], { REVIEW_ACTION_BUDGET_MS: '600000', REVIEW_LANE_TIMEOUT_MS: '5000' });
+    expect(stdout).toContain('MAIN_DONE exitCode=1');
+    expect(stdout).not.toContain('Re-attempting');
+    expect(stdout).not.toContain('INCOMPLETE');
+    expect(outputs.verdict).toBe('BLOCK');
+    expect(outputs['incomplete-reason']).toBe('');
+  });
+});
+
+describe('REL-1113 Action pipeline: remaining branches', () => {
+  const quiet = { warn: () => {}, error: () => {} };
+  const base = { coverageComplete: true, deadlineMs: Date.now() + 780_000, laneTimeoutMs: 1, sleep: async () => {}, random: () => 0, log: quiet };
+
+  it('resolveActionDeadlineMs falls back to the default for a non-numeric or fractional budget', () => {
+    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: 'abc' }, 0)).toBe(780_000);
+    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: '1.5' }, 0)).toBe(780_000);
+    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: '0' }, 0)).toBe(780_000);
+  });
+
+  it('resolveLaneCoverageComplete: a submodule gap or an omitted file makes coverage incomplete', () => {
+    expect(pipeline.resolveLaneCoverageComplete({ coverageComplete: true }, { omitted: [] })).toBe(true);
+    expect(pipeline.resolveLaneCoverageComplete({}, null)).toBe(true);
+    expect(pipeline.resolveLaneCoverageComplete({ coverageComplete: false }, { omitted: [] })).toBe(false);
+    expect(pipeline.resolveLaneCoverageComplete({ coverageComplete: true }, { omitted: ['src/big.ts'] })).toBe(false);
+  });
+
+  it('resolveInfrastructureIncomplete: no lanes, a non-array, and a lane with a malformed findings field', () => {
+    expect(pipeline.resolveInfrastructureIncomplete([], { coverageComplete: true })).toBeNull();
+    expect(pipeline.resolveInfrastructureIncomplete(null, { coverageComplete: true })).toBeNull();
+    expect(pipeline.resolveInfrastructureIncomplete(panelWithTestingLost(TERMINATED), {})).toBeNull();
+    const lanes = [lane('security', { findings: undefined }), lane('testing', { decision: 'ERROR', error: TERMINATED })];
+    expect(pipeline.resolveInfrastructureIncomplete(lanes, { coverageComplete: true })?.lanes).toEqual([{ id: 'testing', failureClass: 'transport' }]);
+  });
+
+  it('a failed lane with no persona id is named "unknown"', () => {
+    const lanes = [lane('security'), { decision: 'ERROR', error: TERMINATED, findings: [] }];
+    expect(pipeline.resolveInfrastructureIncomplete(lanes, { coverageComplete: true })?.title)
+      .toBe('Review Yeti: INCOMPLETE — infrastructure (lane unknown failed: transport)');
+  });
+
+  it('several lost lanes: the shared title lists each, and the rationale speaks of lanes', () => {
+    const lanes = [lane('security'), lane('performance', { decision: 'ERROR', error: TERMINATED }), lane('testing', { decision: 'ERROR', error: STREAM_DEADLINE })];
+    const incomplete = pipeline.resolveInfrastructureIncomplete(lanes, { coverageComplete: true });
+    expect(incomplete.title).toBe('Review Yeti: INCOMPLETE — infrastructure (lanes performance transport, testing timeout failed)');
+    const reported = pipeline.toInfrastructureIncompleteArbitration(null, incomplete);
+    expect(reported).toMatchObject({ verdict: 'INCOMPLETE', status: 'INCOMPLETE_INFRASTRUCTURE', quorumSatisfied: false, incompleteLanes: incomplete.lanes });
+    expect(reported.rationale).toContain('reviewer lanes could not reach the model');
+    const single = pipeline.toInfrastructureIncompleteArbitration({}, pipeline.resolveInfrastructureIncomplete(panelWithTestingLost(TERMINATED), { coverageComplete: true }));
+    expect(single.rationale).toContain('a reviewer lane could not reach the model');
+  });
+
+  it('never re-attempts a lane whose error names a non-429 4xx even when its last status was 200', async () => {
+    const rerun = vi.fn();
+    const lanes = [lane('security'), lane('testing', { decision: 'ERROR', error: 'Provider returned an error payload: HTTP 404 model not found', responseStatus: 200 })];
+    expect(pipeline.resolveInfrastructureIncomplete(lanes, { coverageComplete: true })).not.toBeNull();
+    const { stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, base);
+    expect(rerun).not.toHaveBeenCalled();
+    expect(stopReason).toBe('not_retryable');
+  });
+
+  it('a deadline cut ends the re-attempts immediately (no further attempt even if the clock reads early)', async () => {
+    const fixed = Date.now();
+    const rerun = vi.fn((_index: number, signal: AbortSignal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve(lane('testing', { decision: 'ERROR', error: 'review_cancelled' })), { once: true });
+    }));
+    const { stopReason, retries } = await pipeline.retryInfrastructureFailedLanes(panelWithTestingLost(TERMINATED), rerun, {
+      ...base, now: () => fixed, deadlineMs: fixed + shared.TRANSPORT_RETRY_TERMINAL_MARGIN_MS + 30,
+    });
+    expect(rerun).toHaveBeenCalledTimes(1);
+    expect(retries).toBe(1);
+    expect(stopReason).toBe('budget');
+  });
+
+  it('a re-attempt that returns nothing keeps the previous failure', async () => {
+    const rerun = vi.fn(async () => undefined);
+    const { results, stopReason } = await pipeline.retryInfrastructureFailedLanes(panelWithTestingLost(TERMINATED), rerun, base);
+    expect(stopReason).toBe('exhausted');
+    expect(results[3]).toMatchObject({ decision: 'ERROR', error: TERMINATED, attemptCount: 1 });
+  });
+
+  it('merges re-attempt telemetry: summed attempts, union of retry reasons, lane-reported recovery action kept', async () => {
+    const lanes = [lane('security'), lane('testing', { decision: 'ERROR', error: TERMINATED, attemptCount: 2, retryReasons: ['transient_socket'], failureClass: 'unknown' })];
+    const rerun = vi.fn(async () => lane('testing', { attemptCount: 3, retryReasons: ['timeout'], recoveryAction: 'model_fallback' }));
+    const { results } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, base);
+    expect(results[1]).toMatchObject({ decision: 'APPROVE', attemptCount: 5, recoveryAction: 'model_fallback' });
+    expect(results[1].retryReasons).toEqual(['transient_socket', 'timeout', 'unknown']);
+  });
+
+  it('a non-array lane set is treated as empty and never re-attempted', async () => {
+    const rerun = vi.fn();
+    const { results, stopReason } = await pipeline.retryInfrastructureFailedLanes(undefined, rerun, base);
+    expect(results).toEqual([]);
+    expect(stopReason).toBe('resolved');
+    expect(rerun).not.toHaveBeenCalled();
+  });
+
+  it('writeStepOutputs and formatPRComment fall back to the generic INCOMPLETE label when no title is attached', () => {
+    const outputs = readOutputs({ verdict: 'INCOMPLETE', rationale: 'x' });
+    expect(outputs).toMatchObject({ verdict: 'INCOMPLETE', 'gate-decision': 'INCOMPLETE', 'incomplete-reason': '' });
+    const comment = pipeline.formatPRComment({ verdict: 'INCOMPLETE', rationale: 'x', metrics: {} }, [], { prNumber: '1', repo: 'o/r', headSha: 'abc1234' });
+    expect(comment).toContain('**Review Yeti: INCOMPLETE — infrastructure** — not a review verdict');
+    expect(comment).not.toContain('Verdict: BLOCK');
+  });
+
+  it('shared classifier: provider status classes, out-of-range statuses and the message fallback', () => {
+    expect(shared.classifyProviderResponseStatus(401)).toBe('auth');
+    expect(shared.classifyProviderResponseStatus(403)).toBe('auth');
+    expect(shared.classifyProviderResponseStatus(429)).toBe('rate_limit');
+    expect(shared.classifyProviderResponseStatus(500)).toBe('provider_error');
+    expect(shared.classifyProviderResponseStatus(200)).toBeUndefined();
+    expect(shared.classifyProviderResponseStatus(null)).toBeUndefined();
+    expect(shared.classifyProviderResponseStatus('abc')).toBeUndefined();
+    expect(shared.classifyLaneFailure({ status: 200, error: TERMINATED })).toBe('transport');
+    expect(shared.classifyLaneFailure({ status: 503, error: TERMINATED })).toBe('provider_error');
+    expect(shared.classifyLaneFailure()).toBe('internal_error');
+    expect(shared.isTransientGatewayMessage('HTTP 502 Bad Gateway')).toBe(true);
+    expect(shared.isTransientGatewayMessage(undefined)).toBe(false);
+    expect(shared.isNonRetryableClientStatus('HTTP 429: slow down')).toBe(false);
+    expect(shared.isNonRetryableClientStatus(Number.NaN)).toBe(false);
+    expect(shared.isNonRetryableClientStatus(undefined)).toBe(false);
+  });
+});
+
+describe('REL-1113 Enforce Verdict: INCOMPLETE with no reason output still names the failure class', () => {
+  const workflow = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/review-bot.yaml'), 'utf8')) as any;
+  const enforce = workflow.jobs.review.steps.find((step: any) => step.name === 'Enforce Verdict');
+
+  it('falls back to a generic INCOMPLETE — infrastructure message and still fails', () => {
+    const scriptPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'enforce-incomplete-empty-')), 'enforce.sh');
+    fs.writeFileSync(scriptPath, `#!/usr/bin/env bash\n${enforce.run}`, { mode: 0o755 });
+    const result = spawnSync('bash', [scriptPath], {
+      env: { ...process.env, VERDICT: 'INCOMPLETE', REVIEW_STATUS: 'INCOMPLETE', GATE_DECISION: 'INCOMPLETE', MERGE_ELIGIBLE: '', FILES_OMITTED: '', INCOMPLETE_REASON: '' },
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('Review Yeti: INCOMPLETE — infrastructure (lane failed). Not a review verdict');
   });
 });
