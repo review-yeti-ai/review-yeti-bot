@@ -287,6 +287,26 @@ describe('riskLevelFromAnswer', () => {
     })).toBe(3);
   });
 
+  it('re-keys legend-keyed risk probabilities as level_N in the recorded decision', async () => {
+    const asker: JevAsker = {
+      ask: vi.fn(async (request: JevAskRequest<string>) => {
+        const outcome = okOutcome(request);
+        if (outcome.status === 'ok') {
+          (outcome.answers as Record<string, unknown>).risk = {
+            type: 'score', score: 2, legend: ['l1', 'l2', 'l3', 'l4', 'l5'], confidence: 0.6,
+            probabilities: { l2: 0.6, l5: 0.3, unexpected: 0.1 },
+          };
+        }
+        return outcome;
+      }) as never,
+    };
+    const summary = await startJevTriageShadow(input({ asker })).settled;
+    expect(summary.decisions[0]).toMatchObject({
+      risk_level: 2,
+      risk_probabilities: { level_2: 0.6, level_5: 0.3, unexpected: 0.1 },
+    });
+  });
+
   it('falls back to an in-range raw score and is null when uninterpretable', () => {
     expect(riskLevelFromAnswer({ type: 'score', score: 3.4, legend: [], confidence: 1, probabilities: {} })).toBe(3);
     expect(riskLevelFromAnswer({ type: 'score', score: 42, legend: [], confidence: 1, probabilities: {} })).toBeNull();
@@ -550,6 +570,18 @@ describe('join -- one structured log line per file, joined with actual findings'
     await expect(handle.join(JOIN)).resolves.toBeUndefined();
     expect(logsOf(info, JEV_TRIAGE_LOG.join)).toHaveLength(2);
     expect(logsOf(info, JEV_TRIAGE_LOG.summary)).toHaveLength(1);
+  });
+
+  it('fails open when logging the join throws: resolves, and reports join_error once', async () => {
+    const warn = vi.spyOn(logger, 'warn');
+    const handle = startJevTriageShadow(input({ asker: okAsker() }));
+    await handle.settled;
+    vi.spyOn(logger, 'info').mockImplementation(() => { throw new Error('logger down'); });
+    await expect(handle.join(JOIN)).resolves.toBeUndefined();
+    await expect(handle.join(JOIN)).resolves.toBeUndefined();
+    expect(logsOf(warn, JEV_TRIAGE_LOG.summary)).toEqual([
+      expect.objectContaining({ reason: 'join_error', error_class: 'Error', runId: 'run_1' }),
+    ]);
   });
 
   it('classifies a P0-only file as blocking and counts it as P0', async () => {
