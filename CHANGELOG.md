@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.86.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.86.1...v1.86.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **dispatch:** cancel the PRReviewJob created after a mid-claim supersede (REL-1095) ([#1022](https://github.com/review-yeti-ai/review-yeti-bot/issues/1022)) ([7b44451](https://github.com/review-yeti-ai/review-yeti-bot/commit/7b4445111792ef40e560bd2b7d1f455c05edecef))
+
 ## [1.86.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.86.0...v1.86.1) (2026-09-24)
 
 
